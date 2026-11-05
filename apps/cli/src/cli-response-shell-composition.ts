@@ -1,4 +1,5 @@
 import { BoxRenderable, TextAttributes } from "@opentui/core"
+import { queuedJobsForAgent } from "@chariox/kernel-client/queued-jobs"
 import {
   sessionAgentRuntimeDisplayStateByAgent,
 } from "@chariox/kernel-client/session-runtime-status"
@@ -37,6 +38,7 @@ import { theme } from "./theme.js"
 import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { STATUS_BADGE_WIDTH } from "./runtime.js"
+import { agentTriggersForAgent, unconfirmedTriggerDeliveriesForAgent } from "@chariox/kernel-client/agent-trigger-state"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
 import { createProviderAccountLabelController } from "./provider-account-label-controller.js"
 import type { ProviderAccountProfile, RuntimeInteraction } from "./cli-types.js"
@@ -137,7 +139,6 @@ export type CliResponseShellCompositionDeps = {
   multiAgentMode: AnyFn
   sessionStatusMode: AnyFn
   workspaceLiveSyncStatus: AnyFn
-  connectionLabel: () => string | null
   footerFlash: AnyFn
   promptMetaParts: AnyFn
 }
@@ -189,8 +190,11 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     customReply: deps.interactionChoiceStore.customReply,
     customEditing: deps.interactionChoiceStore.isCustomEditing,
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
+    agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => agentTriggersForAgent(deps.sessionState(), agentId),
+    unconfirmedTriggerDeliveriesForAgent: (agentId: string | null | undefined) => unconfirmedTriggerDeliveriesForAgent(deps.sessionState(), agentId),
     providerLoginState: deps.providerLoginInteractions.stripState,
     focusCustomChoiceOnce: deps.interactionChoiceStore.focusCustomChoiceOnce,
     onProviderLoginLinkClick: (interaction: RuntimeInteraction) => { void deps.providerLoginInteractions.openLink(interaction) },
@@ -343,7 +347,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     getWorkspaceLiveSyncStatus: deps.workspaceLiveSyncStatus,
     getHotkeyToggleLabel: () => HOTKEY_TOGGLE_LABEL,
     getTerminalWidth: deps.terminalWidth,
-    getConnectionLabel: deps.connectionLabel,
+    getFooterSummaryColumn: (box) => (box as { x?: number } | undefined)?.x ?? 0,
     getFooterFlash: deps.footerFlash,
     getPromptMetaParts: deps.promptMetaParts,
     setPromptMetaRenderables: promptMetaRenderController.setRenderables,

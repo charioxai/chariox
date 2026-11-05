@@ -1,5 +1,147 @@
 use super::*;
 
+// MP-08 / MP-10 / MP-11: enrollment binds the existing OS owner, not a new user.
+#[tokio::test]
+async fn enrolled_owner_can_read_and_prompt_pre_enrollment_run() {
+    enrolled_owner_existing_run(true).await;
+}
+
+#[tokio::test]
+async fn enrolled_owner_can_prompt_pre_enrollment_agent() {
+    enrolled_owner_existing_run(false).await;
+}
+
+async fn enrolled_owner_existing_run(check_read: bool) {
+    crate::test_support::isolated_env_test!();
+    let worktree = crate::test_support::TestWorktree::new("enrolled-existing-owner");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "test-model",
+    );
+    let run_id = run.id().to_string();
+    app.persist_cloud_relay_profile(Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolling-owner".into(),
+        realm_id: "owner-realm".into(),
+        kernel_id: Some(app.config().daemon_id.clone()),
+        ..Default::default()
+    }))
+    .unwrap();
+    let cloud_worktree = crate::test_support::TestWorktree::new("enrolled-cloud-owner");
+    let (_cloud_session, _cloud_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            cloud_worktree
+                .session_request()
+                .with_owner_user_id("enrolling-owner"),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let owner_command = |request: &LocalDaemonRequest, user: &str, realm: &str| {
+        let mut command = remote_command_for_request(request, Some(user));
+        command.caller.realm_id = Some(realm.into());
+        command.caller.connection_class = Some(crate::local::KernelConnectionClass::Terminal);
+        command
+    };
+    let get = LocalDaemonRequest::GetProviderRun(crate::local::GetProviderRunRequest {
+        provider_run_id: run_id,
+    });
+    for (user, realm) in [("collaborator", "owner-realm")] {
+        assert!(
+            router
+                .dispatch(owner_command(&get, user, realm), get.clone())
+                .await
+                .is_err(),
+            "enrollment must confer no authority on another account or tenant"
+        );
+    }
+    if check_read {
+        router
+            .dispatch(owner_command(&get, "enrolling-owner", "owner-realm"), get)
+            .await
+            .expect("enrolling owner must read the existing local provider run");
+    }
+    let state = LocalDaemonRequest::GetSessionState(crate::local::GetSessionStateRequest {
+        session_id: session.id().into(),
+    });
+    let LocalDaemonResponse::SessionState {
+        session: adopted, ..
+    } = router
+        .dispatch(
+            owner_command(&state, "enrolling-owner", "owner-realm"),
+            state,
+        )
+        .await
+        .unwrap()
+    else {
+        panic!("session state");
+    };
+    assert_eq!(adopted.owner_user_id(), "enrolling-owner");
+    assert_eq!(
+        adopted
+            .agents()
+            .iter()
+            .find(|a| a.id() == agent.id())
+            .unwrap()
+            .owner_user_id(),
+        "enrolling-owner"
+    );
+    let attach = LocalDaemonRequest::AttachToSession(crate::local::AttachToSessionRequest {
+        session_id: session.id().into(),
+        client_id: "enrolled-browser".into(),
+        capability_level: crate::attachment::ClientCapabilityLevel::FullTerminal,
+    });
+    let attachment = match router
+        .dispatch(
+            owner_command(&attach, "enrolling-owner", "owner-realm"),
+            attach,
+        )
+        .await
+        .expect("enrolling owner must attach to their existing Room")
+    {
+        LocalDaemonResponse::SessionAttached { attachment, .. } => attachment,
+        other => panic!("unexpected attach response: {other:?}"),
+    };
+    let create = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: session.id().into(),
+        agent_id: agent.id().into(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
+            interval_seconds: 3600,
+            repeat: crate::session::AgentTriggerRepeat::Once,
+        },
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: Some("existing owner's trigger".into()),
+    });
+    router
+        .dispatch(
+            owner_command(&create, "enrolling-owner", "owner-realm"),
+            create,
+        )
+        .await
+        .expect("enrolling owner must manage triggers on their existing agent");
+    let submit = LocalDaemonRequest::SubmitPrompt(SubmitPromptRequest {
+        session_id: session.id().into(),
+        attachment_id: attachment.id().into(),
+        target_agent_id: Some(agent.id().into()),
+        prompt: "continue my local run".into(),
+        attachments: Vec::new(),
+    });
+    router
+        .dispatch(
+            owner_command(&submit, "enrolling-owner", "owner-realm"),
+            submit,
+        )
+        .await
+        .expect("enrolling owner must prompt the existing local agent");
+}
+
 #[test]
 fn remote_owned_session_objects_record_caller_user() {
     run_remote_authorization_large_stack_test(

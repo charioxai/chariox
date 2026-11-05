@@ -41,6 +41,8 @@ pub enum PasskeyPromptKind {
     AccessGrant,
     AccessExtension,
     Sudo,
+    /// Protocol 929: an outside agent asks for a Vault value; the approve choice is the secret.
+    VaultSecret,
 }
 
 /// Protocol 568: how long an access grant lasts. `UntilHolderExits` has no
@@ -131,10 +133,56 @@ pub enum KernelAccessProviderHarness {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestKernelAccessRequest {
-    pub holder_pid: u32,
+    /// Protocol 938: None lets the kernel pick the holder from the peer's host ancestry. A pid
+    /// is a host pid of the requester or one of its OS ancestors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_pid: Option<u32>,
     /// Protocol 568 replaces `lifetime_minutes`. None means the kernel's default.
     #[serde(default)]
     pub term: Option<KernelAccessTerm>,
+    /// Protocol 938: answer `KernelAccessStatus` at once and let the kernel wait for the
+    /// owner; the grant binds to the holder, so the requester may exit before the decision.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_wait: bool,
+}
+
+/// Protocol 938: where a holder's access stands, by the identity the kernel resolves the same way
+/// as `RequestKernelAccess`. Over the Unix socket only, and only for the caller's own chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GetKernelAccessStatusRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KernelAccessHolderState {
+    Granted,
+    Pending,
+    /// The grant ended, or the owner refused or let the request time out: `reason` says which.
+    Ended,
+    NotRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelAccessStatusReason {
+    pub code: String,
+    pub message: String,
+}
+
+/// Protocol 938: one holder identity's access, never another process's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelAccessStatus {
+    pub state: KernelAccessHolderState,
+    pub holder_pid: u32,
+    pub holder_executable: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder_harness: Option<KernelAccessProviderHarness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant: Option<KernelAccessGrant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<KernelAccessStatusReason>,
 }
 
 /// Protocol 641: a process the grant already covers asks the grant to go on covering a

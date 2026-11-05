@@ -34,12 +34,25 @@ pub(crate) async fn bind_mcp_http_server(
     router: &CommandRouter,
 ) -> Result<TcpListener, DaemonError> {
     let (bind_host, bind_port) = router.runtime_mcp_bind_address();
+    let failed = |error: std::io::Error| DaemonError::LocalTransport {
+        operation: "bind runtime mcp",
+        message: error.to_string(),
+    };
+    // Agents' tool calls during a hot reload wait for the new program.
+    #[cfg(unix)]
+    {
+        let listener = crate::hot_reload::tcp_listener("runtime_mcp", &bind_host, bind_port)
+            .and_then(|listener| {
+                listener.set_nonblocking(true)?;
+                TcpListener::from_std(listener)
+            })
+            .map_err(failed)?;
+        Ok(listener)
+    }
+    #[cfg(not(unix))]
     TcpListener::bind((bind_host.as_str(), bind_port))
         .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "bind runtime mcp",
-            message: error.to_string(),
-        })
+        .map_err(failed)
 }
 
 pub(crate) async fn run_mcp_http_server_on_listener(
@@ -106,6 +119,35 @@ async fn handle_http_request_inner(
     request: Request<Incoming>,
     shutdown: tokio::sync::watch::Receiver<()>,
 ) -> Result<Response<HttpBody>, DaemonError> {
+    // Operators reverse-proxy only this public path. MCP retains its existing
+    // bind address and authentication; directory discovery needs no run token.
+    if request.uri().path() == "/.well-known/http-message-signatures-directory" {
+        if *request.method() != Method::GET {
+            return Ok(empty_response(StatusCode::METHOD_NOT_ALLOWED));
+        }
+        let authority = request
+            .headers()
+            .get(hyper::header::HOST)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        let (body, headers) = router.web_bot_auth_directory(authority)?;
+        let mut response = Response::builder()
+            .status(StatusCode::OK)
+            .header(
+                CONTENT_TYPE,
+                "application/http-message-signatures-directory+json",
+            )
+            .header(hyper::header::CACHE_CONTROL, "no-store");
+        for (name, value) in headers {
+            response = response.header(name, value);
+        }
+        return response
+            .body(Full::new(Bytes::from(body)).boxed_unsync())
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "web_bot_auth_directory",
+                message: "directory response encoding failed".into(),
+            });
+    }
     if let Some(origin) = request.headers().get(ORIGIN) {
         if !origin.to_str().ok().is_some_and(valid_runtime_origin) {
             return Ok(text_response(

@@ -87,10 +87,9 @@ contained installation or run any App export.
 
 Linux uses a default-deny seccomp allowlist to remove path access, sockets,
 exec/fork, ptrace, foreign signals, namespaces, kernel interfaces, memfd and
-io_uring. This ports the v1 native worker's allowlist, thread-only clone,
-clone3-to-ENOSYS and self-query-only prlimit checks from
-`apps/app-worker/src/sandbox_linux.c`, narrowed for the Rust broker transport.
-The v1 Node/bubblewrap/cgroup path is unchanged. No user namespace, mount,
+io_uring. The policy permits thread-only clone, clone3-to-ENOSYS and self-query-only
+prlimit for the Rust broker transport. The replaced native JavaScript launch
+path and its privileged storage helper are removed. No user namespace, mount,
 delegated cgroup or privileged host change is required for the WASM entry.
 The one socket call admitted is `socketpair` for an `AF_UNIX` stream pair: the
 async runtime opens one for its signal driver when another crate in the same

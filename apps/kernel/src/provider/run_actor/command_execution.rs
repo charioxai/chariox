@@ -38,7 +38,23 @@ pub(super) fn execute_submit_command(
         "provider prompt dispatch started",
         serde_json::json!({"provider_run_id": run_id, "prompt_id": prompt_id}),
     );
+    // The provider took the prompt but its answer never arrived.
+    if run.adapter_key() == "dev-stub" && run.provider() == "lost-ack-structured" {
+        thread::sleep(Duration::from_millis(100));
+        return Err(DaemonError::LocalTransport {
+            operation: "submit prompt",
+            message: "provider acknowledgement lost".into(),
+        });
+    }
     if run.adapter_key() == "dev-stub" && run.provider() == "slow-structured" {
+        // A provider that took the write but lost its acknowledgement.
+        #[cfg(test)]
+        if run.process_label() == "ack-lost" {
+            return Err(DaemonError::LocalTransport {
+                operation: "acknowledge structured prompt",
+                message: "connection closed after the prompt was written".into(),
+            });
+        }
         thread::sleep(Duration::from_millis(750));
         return Ok(ProviderPromptSubmitAcknowledgement {
             resume_state: run.resume_state().clone(),
@@ -291,6 +307,41 @@ pub(super) fn execute_terminate_command(
     {
         return Ok(());
     }
+    #[cfg(unix)]
+    if run.adapter_key() == "claude" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_claude_runtime(&run_id)?;
+        match crate::provider::hand_over_claude_runtime(state) {
+            Ok(handover) => {
+                crate::hot_reload::hand_over_claude(&run, handover);
+                return Ok(());
+            }
+            Err(state) => {
+                *slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*state);
+            }
+        }
+    }
+    #[cfg(unix)]
+    if run.adapter_key() == "codex" && crate::hot_reload::handing_over() {
+        let (slot, state) = runtime_registry.take_codex_runtime(&run_id)?;
+        // The app-server keeps running the turn, and its connection goes to
+        // the next program with the PTY offered for this run.
+        let handed_over = if crate::hot_reload::provider_pty_offered(&run_id) {
+            crate::provider::hand_over_codex_turn(state)
+                .map(|turn| crate::hot_reload::hand_over_codex(&run, turn))
+        } else {
+            Err(Box::new(state))
+        };
+        match handed_over {
+            Ok(()) => return Ok(()),
+            Err(state) => {
+                *slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(*state);
+            }
+        }
+    }
     if run.adapter_key() == "opencode"
         && runtime_registry.runtime_slot_missing_or_empty_opencode(&run_id)
     {
@@ -340,6 +391,12 @@ pub(super) fn execute_output_poll_command(
         return Ok(None);
     }
     if run.adapter_key() == "codex" {
+        // A hot reload hands the turn over with only the text history has:
+        // output taken now could no longer reach it.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_codex_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),
@@ -410,6 +467,12 @@ pub(super) fn execute_output_poll_command(
         }));
     }
     if run.adapter_key() == "claude" {
+        // A hot reload hands the unapplied output over with the turn: output
+        // taken now could no longer reach history.
+        #[cfg(unix)]
+        if crate::hot_reload::handing_over() {
+            return Ok(None);
+        }
         let (slot, mut state) = match runtime_registry.take_claude_runtime(run_id) {
             Ok((slot, state)) => (slot, state),
             Err(_) => return Ok(None),

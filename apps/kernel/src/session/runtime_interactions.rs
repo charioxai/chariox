@@ -223,6 +223,9 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// Protocol 936: a question owned by a durable task, rather than one turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asking_task_id: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -280,6 +283,11 @@ impl std::fmt::Debug for RuntimeProviderLogin {
     }
 }
 
+/// The longest value an owner may type for an outside agent's Vault request: a long bearer token
+/// fits. The clients advertise the same limit (`VAULT_SECRET_MAX_LENGTH` in the kernel client, the
+/// secret page and popups in Cloud), and the interaction resolver enforces it.
+pub(crate) const VAULT_SECRET_MAX_CHARS: usize = 8192;
+
 impl RuntimeInteraction {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -295,6 +303,7 @@ impl RuntimeInteraction {
         default_on_timeout: Option<String>,
     ) -> Self {
         Self {
+            asking_task_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -316,6 +325,15 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
         }
+    }
+
+    pub fn asking_task_id(&self) -> Option<&str> {
+        self.asking_task_id.as_deref()
+    }
+
+    pub(crate) fn with_asking_task_id(mut self, task: String) -> Self {
+        self.asking_task_id = Some(task);
+        self
     }
 
     pub fn sudo_request(&self) -> Option<&crate::local::SudoRequestPresentation> {
@@ -382,6 +400,40 @@ impl RuntimeInteraction {
             })
     }
 
+    /// An outside agent's request for a Vault value: the owner answers with the secret
+    /// choice or cancels. Critical like every Vault value request, so no grant holder answers it.
+    pub(crate) fn for_vault_secret(
+        id: impl Into<String>,
+        operation_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        timeout_sec: u64,
+    ) -> Self {
+        let mut interaction = Self::for_kernel_operation(
+            id,
+            operation_id,
+            title,
+            message,
+            vec![RuntimeInteractionChoice::new(
+                "cancel",
+                "Cancel",
+                "cancel",
+                Some(RuntimeInteractionChoiceStyle::Danger),
+            )],
+        );
+        interaction.kind = RuntimeInteractionKind::Choice;
+        interaction.level = RuntimeInteractionLevel::Critical;
+        interaction.custom_choice = Some(RuntimeInteractionCustomChoice::secret(
+            "secret",
+            "Secret",
+            None,
+            Some(1),
+            Some(VAULT_SECRET_MAX_CHARS),
+        ));
+        interaction.timeout_sec = Some(timeout_sec);
+        interaction
+    }
+
     /// A kernel-owned decision, projected without creating an agent or prompt.
     /// Only the dedicated registration path binds its authenticated owner.
     pub(crate) fn for_kernel_operation(
@@ -392,6 +444,7 @@ impl RuntimeInteraction {
         choices: Vec<RuntimeInteractionChoice>,
     ) -> Self {
         Self {
+            asking_task_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),

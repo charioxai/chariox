@@ -140,6 +140,29 @@ test("workflow runtime controller pauses and resumes runs through the kernel req
   assert.deepEqual(refreshedSessions, [pausedSession, resumedSession])
 })
 
+test("workflow runtime controller lists every page of workflow runs", async () => {
+  const requests: Record<string, unknown>[] = []
+  const pages: Record<string, { workflow_runs: WorkflowRun[]; next_cursor: string | null }> = {
+    "": { workflow_runs: [workflowRun("run-3")], next_cursor: "after-3" },
+    "after-3": { workflow_runs: [workflowRun("run-2")], next_cursor: "after-2" },
+    "after-2": { workflow_runs: [workflowRun("run-1")], next_cursor: null },
+  }
+  const controller = createWorkflowRuntimeController({
+    sessionId: () => "session-1",
+    applyWorkflowSessionRefresh: () => {},
+    sendRequest: async (request) => {
+      requests.push(request)
+      const cursor = (request as { ListWorkflowRuns: { cursor?: string } }).ListWorkflowRuns.cursor ?? ""
+      return { WorkflowRunsListed: pages[cursor] }
+    },
+  })
+
+  const runs = await controller.listWorkflowRuns()
+
+  assert.deepEqual(runs.map(run => run.id), ["run-3", "run-2", "run-1"])
+  assert.equal(requests.length, 3)
+})
+
 function createHarness(
   responses: Record<string, Record<string, unknown>>,
   refreshedSessions: RuntimeSession[],

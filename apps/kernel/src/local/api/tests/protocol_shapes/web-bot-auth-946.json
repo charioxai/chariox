@@ -1,0 +1,10 @@
+{
+  "protocol_version": 966,
+  "relay_peer_protocol_version": 415,
+  "web_bot_auth": {
+    "projects": [
+      "project-wba"
+    ],
+    "signature_agent": "https://operator.example"
+  }
+}

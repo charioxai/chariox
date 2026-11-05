@@ -1,0 +1,101 @@
+{
+  "local": 966,
+  "peer": 415,
+  "requests": [
+    {
+      "OwnerVault": {
+        "action": "create",
+        "kind": "Password",
+        "name": "GitHub",
+        "value": "owner-input",
+        "use_binding": {
+          "target": {
+            "kind": "site",
+            "origin": "https://github.com"
+          },
+          "value_kind": "secret"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "generate",
+        "kind": "Password",
+        "name": "GitHub",
+        "use_binding": {
+          "target": {
+            "kind": "site",
+            "origin": "https://github.com"
+          },
+          "value_kind": "secret"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "reveal",
+        "id": "entry"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "activity",
+        "id": "entry"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "replace",
+        "id": "entry",
+        "value": "owner-input"
+      }
+    },
+    {
+      "OwnerVault": {
+        "action": "delete",
+        "id": "entry"
+      }
+    }
+  ],
+  "responses": [
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "saved",
+          "id": "entry"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "revealed",
+          "id": "entry",
+          "value": "owner-input"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "activity",
+          "events": [
+            {
+              "at_ms": 2,
+              "event": "Viewed by owner"
+            }
+          ],
+          "id": "entry"
+        }
+      }
+    },
+    {
+      "OwnerVault": {
+        "result": {
+          "action": "deleted",
+          "id": "entry"
+        }
+      }
+    }
+  ]
+}

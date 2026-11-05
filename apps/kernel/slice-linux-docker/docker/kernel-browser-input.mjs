@@ -1,4 +1,5 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
+import { uploadHostFiles } from './kernel-browser-upload.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
 import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
@@ -42,8 +43,9 @@ async function nativeOnce(dispatch) {
   catch (error) { if (error?.code === "native_input_uncertain") return true; throw error; }
 }
 
-export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation } = {}) {
+export async function inputHostTab(browser, tab, input, { viewport=canonicalViewport, signal, onDispatch, resolveMirror, asyncScroll = false, nativeWheel = null, nativeClick = null, nativeKey = null, viewScale = 1, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused = () => false, slow = (_name, operation) => operation , uploadRoots } = {}) {
     assertNotCancelled(signal);
+    if (input.kind === 'upload') return uploadHostFiles(browser, tab, input, { uploadRoots, signal, inputGuard, onDispatch });
     // MP-08/MP-11 protocol498: CDP bits Alt=1, Control=2, Meta=4, Shift=8.
     if (input.kind === 'key' && input.modifiers !== undefined && (!Number.isInteger(input.modifiers) || input.modifiers < 0 || input.modifiers > 15)) throw new Error('MP-11: invalid key modifiers');
     const { connection, sessionId } = await slow('page_target', browser.resolvePageTarget(tab.target_id));
@@ -167,8 +169,17 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
         const shift = !printable && typeof input.key === "string" && /^Shift\+(Tab|ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(input.key);
         // Ctrl only with word deletion (CDP only: the native path presses no Ctrl).
         const ctrl = !printable && typeof input.key === "string" && /^Ctrl\+(Backspace|Delete)$/.test(input.key);
-        if (!printable && !shift && !ctrl && !["Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
+        if (!printable && !shift && !ctrl && !["BrowserBack", "BrowserForward", "Tab", "Enter", "Space", "Escape", "Backspace", "Delete", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(input.key)) throw new Error("MD-2: unsupported key");
         const modifiers = (input.modifiers ?? 0) | (shift ? 8 : ctrl ? 2 : 0);
+        // CDP page keys do not invoke Chromium's browser-level history shortcuts. The toolbar's explicit
+        // BrowserBack/BrowserForward keys keep history in the kernel so every client navigates the same history;
+        // Alt-arrow stays ordinary page input (macOS Option-arrow moves the caret by word).
+        if (input.key === "BrowserBack" || input.key === "BrowserForward") {
+          const history = await connection.send("Page.getNavigationHistory", {}, sessionId);
+          const entry = history.entries?.[history.currentIndex + (input.key === "BrowserBack" ? -1 : 1)];
+          if (entry) await sendInput("Page.navigateToHistoryEntry", { entryId: entry.id });
+          return;
+        }
         const chord = (modifiers & 7) !== 0;
         const name = shift ? input.key.slice(6) : ctrl ? input.key.slice(5) : input.key;
         const key = { key: name === "Space" ? " " : name, code: /^[a-z]$/i.test(name) ? `Key${name.toUpperCase()}` : name,

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { createInterface } from "node:readline/promises"
 import { stdin, stderr } from "node:process"
 
-import { validateCaptureOutput } from "../path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput } from "../path1-capture-output.mjs"
 import {
   requireValue,
   SHUTDOWN_TRIGGER_LIMITS,

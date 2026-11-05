@@ -51,7 +51,27 @@ def process_state(owner):
         return "dead"
 
 
-def browser_owner(pid, port):
+def browser_owner(pid, port, pipe=False, uid=None):
+    if pipe:
+        if not isinstance(pid, int) or pid <= 1:
+            return None
+        try:
+            owner = lifecycle.identity(pid)
+            command = Path(f"/proc/{pid}/cmdline").read_bytes()
+            # Chrome's SUID sandbox can flatten its process title. An exact
+            # switch still needs the verified uid and ancestry below.
+            if owner["uid"] != (os.getuid() if uid is None else uid) or not re.search(rb"(?:^|[\0 ])--remote-debugging-pipe(?:$|[\0 ])", command):
+                return None
+            parent = pid
+            for _ in range(32):
+                parent = int(Path(f"/proc/{parent}/stat").read_text().rpartition(")")[2].split()[1])
+                if parent == os.getppid():
+                    return {"pipe": owner}
+                if parent <= 1:
+                    break
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+        return None
     if not isinstance(pid, int) or pid < 1 or not isinstance(port, int) or not 0 < port < 65536:
         return None
     # Match the actual local listening socket, not a PID reported by a proxy.
@@ -77,6 +97,9 @@ def browser_owner(pid, port):
 
 def retired(record):
     if not record:
+        return False
+    if "pipe" in record:
+        # Losing CDP or the browser parent alone never retires its renderers.
         return False
     try:
         receipt = lifecycle.read_json(lifecycle.directory() / f"{record['instance']}.retired.json")
@@ -126,6 +149,8 @@ def legacy_retirements(root):
 
 def container_retired(entry):
     record = entry.get("lifetime")
+    if record and "pipe" in record:
+        return False
     if not record or not retired(record):
         return False
     owner, supervisor = entry.get("owner") or {}, record.get("supervisor") or {}
@@ -145,7 +170,7 @@ def container_retired(entry):
 
 def prune_receipts(ledger):
     root = lifecycle.directory()
-    retained = {entry["lifetime"]["instance"] for entry in ledger if entry.get("lifetime")}
+    retained = {entry["lifetime"]["instance"] for entry in ledger if entry.get("lifetime") and "instance" in entry["lifetime"]}
     for receipt in root.glob("*.retired.json"):
         record = lifecycle.read_json(receipt)
         if record["instance"] in retained:
@@ -163,7 +188,15 @@ def prune_receipts(ledger):
 def transact(root, request):
     root.mkdir(mode=0o700, exist_ok=True)
     info = root.lstat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != 0o700 or root.resolve() != root:
+    browser_uid, browser_gid = request.get('browserUid'), request.get('browserGid')
+    shared = (os.getuid() == 0 and type(browser_uid) is int and browser_uid > 0 and
+              type(browser_gid) is int and browser_gid > 0)
+    if (browser_uid is not None or browser_gid is not None) and not shared:
+        raise RuntimeError('invalid browser identity')
+    mode = 0o710 if shared else 0o700
+    if shared and info.st_gid != browser_gid:
+        raise RuntimeError('invalid browser staging group')
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o777 != mode or root.resolve() != root:
         raise RuntimeError("upload staging root must be canonical, private and user-owned")
     if (root / "lock").exists():
         raise RuntimeError("legacy upload lock has no verifiable owner; reconciliation required")
@@ -205,7 +238,7 @@ def transact(root, request):
                 raise RuntimeError("invalid upload reservation")
             if len(ledger) >= 128 or sum(item["bytes"] for item in ledger) + entry["bytes"] > min(request["maximumBytes"], MAX_BYTES) or sum(item["count"] for item in ledger) + entry["count"] > min(request["maximumFiles"], MAX_FILES):
                 raise RuntimeError("upload staging quota is full; browser retirement proof is required")
-            lifetime = browser_owner(request.get("browserPid"), request.get("browserPort"))
+            lifetime = browser_owner(request.get("browserPid"), request.get("browserPort"), request.get("browserPipe") is True, browser_uid if shared else None)
             if lifetime is None:
                 raise RuntimeError("upload requires an owned browser lifetime")
             entry.update(phase="preparing", owner=lifecycle.identity(os.getppid()), lifetime=lifetime)
@@ -221,6 +254,16 @@ def transact(root, request):
                     raise RuntimeError("browser retired before upload dispatch")
                 entry["phase"] = "exposed"
             elif entry.get("phase") == "preparing":
+                shutil.rmtree(root / entry["id"]) if (root / entry["id"]).exists() else None
+                ledger.remove(entry)
+        elif action == "retirePipe":
+            entries = [item for item in ledger if item.get("browser") == request.get("browser")]
+            for entry in entries:
+                browser = (entry.get("lifetime") or {}).get("pipe")
+                if (entry.get("owner") != lifecycle.identity(os.getppid()) or not browser
+                        or process_state(browser) != "dead"):
+                    raise RuntimeError("pipe browser retirement is not proven")
+            for entry in entries:
                 shutil.rmtree(root / entry["id"]) if (root / entry["id"]).exists() else None
                 ledger.remove(entry)
         elif action != "reap":

@@ -31,8 +31,13 @@ use crate::pty::{PtyManager, PtySpawnRequest};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 use crate::session::unix_epoch_ms;
 
+#[cfg(unix)]
+mod handover;
 mod outside_events;
 mod pump_task;
+
+#[cfg(unix)]
+pub use handover::TerminalHandover;
 
 const MAX_TERMINALS_PER_ROOM: usize = 16;
 const MAX_INPUT_BYTES: usize = 64 * 1024;
@@ -83,6 +88,9 @@ struct Inner {
     events: BoundEvents,
     outside_events: std::sync::RwLock<Option<crate::durable_state::DurableKernelStateStore>>,
     shell_integration: ShellIntegration,
+    /// The login shell a test opens terminals on, instead of the account's.
+    #[cfg(test)]
+    shell_for_test: Mutex<Option<String>>,
     managed: ManagedWork,
     pump_runtime: OnceLock<tokio::runtime::Handle>,
 }
@@ -123,12 +131,26 @@ impl RoomTerminalService {
             .collect()
     }
     /// Terminals that ran when the kernel last stopped come back as ended by
-    /// the restart, scrollback kept.
+    /// the restart, scrollback kept; a hot reload's running terminals go on.
     pub fn new(store_root: PathBuf) -> Result<Self, DaemonError> {
         let shell_integration = ShellIntegration::install(&store_root.with_extension("shell"));
         let store = TerminalStore::new(store_root)?;
+        #[cfg(unix)]
+        let terminals = {
+            let handovers: BTreeMap<_, _> = crate::hot_reload::take_terminals()
+                .into_iter()
+                .map(|handover| (handover.terminal_id.clone(), handover))
+                .collect();
+            let records = store.recover(&handovers.keys().cloned().collect())?;
+            let (terminals, unadopted) = Self::adopt(records, handovers);
+            for record in &unadopted {
+                store.save(record)?;
+            }
+            terminals
+        };
+        #[cfg(not(unix))]
         let terminals = store
-            .recover()?
+            .recover(&Default::default())?
             .into_iter()
             .map(|record| {
                 (
@@ -140,7 +162,7 @@ impl RoomTerminalService {
                 )
             })
             .collect();
-        Ok(Self {
+        let service = Self {
             inner: Arc::new(Inner {
                 state: Mutex::new(State {
                     terminals,
@@ -151,10 +173,18 @@ impl RoomTerminalService {
                 events: BoundEvents::default(),
                 outside_events: std::sync::RwLock::new(None),
                 shell_integration,
+                #[cfg(test)]
+                shell_for_test: Mutex::new(None),
                 managed: ManagedWork::default(),
                 pump_runtime: OnceLock::new(),
             }),
-        })
+        };
+        for owner in service.owners() {
+            if owner.lock().terminal.is_running() {
+                service.start_pump(&owner);
+            }
+        }
+        Ok(service)
     }
 
     /// Where fired watches go. Bound by the event core, which owns them: the service holds the
@@ -173,7 +203,7 @@ impl RoomTerminalService {
         }
         let (program, args) = match &spec.command {
             None => {
-                let shell = login_shell()?;
+                let shell = self.login_shell()?;
                 let args = self.inner.shell_integration.arguments(&shell);
                 (shell, args)
             }
@@ -274,6 +304,10 @@ impl RoomTerminalService {
             cols: spec.cols,
             rows: spec.rows,
         })?;
+        // A person's own command is counted but never waits for room; what an
+        // agent submits may (each submitted Enter sets it for the command it
+        // starts, below).
+        crate::runtime::process_resources::bind_terminal_for_key(&run_id, reports_first_prompt);
         let shell_pid = pty
             .process_id(&run_id)
             .ok()
@@ -404,6 +438,17 @@ impl RoomTerminalService {
                             [key] => pty.signal_key_behind_blocked_input(&run_id, *key)?,
                             _ => None,
                         };
+                        if let (true, true, None) = (shell_foreground, submits, &interrupted) {
+                            // The command a line starts belongs to whoever
+                            // pressed its Enter; the shell reports when it
+                            // reads it.
+                            for _ in 0..enters(input) {
+                                crate::runtime::process_resources::submit_line_for_key(
+                                    &run_id,
+                                    *actor != TerminalActor::User,
+                                );
+                            }
+                        }
                         match interrupted {
                             Some(dropped) => terminal.dropped_input_bytes += dropped as u64,
                             None => pty.input_writer(&run_id)?.enqueue_input(input)?,
@@ -777,6 +822,19 @@ impl RoomTerminalService {
             .collect()
     }
 
+    fn login_shell(&self) -> Result<String, DaemonError> {
+        #[cfg(test)]
+        if let Some(shell) = self.inner.shell_for_test.lock().unwrap().clone() {
+            return Ok(shell);
+        }
+        login_shell()
+    }
+
+    #[cfg(test)]
+    pub(super) fn use_shell_for_test(&self, shell: &str) {
+        *self.inner.shell_for_test.lock().unwrap() = Some(shell.to_string());
+    }
+
     #[cfg(test)]
     pub(super) fn terminal_for_test(&self, id: &str) -> Arc<TerminalOwner> {
         self.lock().terminals[id].clone()
@@ -850,6 +908,42 @@ fn ended_wait_result(terminal: &mut Terminal, pty: &PtyManager) -> RoomTerminalW
             _ => RoomTerminalEventKind::Finished { exit_code, signal },
         }),
     )
+}
+
+/// How many Enters `input` presses at a shell's prompt. The shell reports
+/// each one, a line that runs or an empty one, so the text may have been typed
+/// earlier or recalled from history. A paste in brackets is one line however
+/// many line breaks it holds.
+pub(super) fn enters(input: &[u8]) -> usize {
+    const PASTE_START: &[u8] = b"\x1b[200~";
+    const PASTE_END: &[u8] = b"\x1b[201~";
+    let mut count = 0;
+    let mut pasting = false;
+    let mut index = 0;
+    while index < input.len() {
+        let rest = &input[index..];
+        if !pasting && rest.starts_with(PASTE_START) {
+            pasting = true;
+            index += PASTE_START.len();
+        } else if pasting && rest.starts_with(PASTE_END) {
+            pasting = false;
+            index += PASTE_END.len();
+        } else {
+            match input[index] {
+                b'\r' if !pasting => {
+                    count += 1;
+                    // A CRLF is one line break.
+                    if input.get(index + 1) == Some(&b'\n') {
+                        index += 1;
+                    }
+                }
+                b'\n' if !pasting => count += 1,
+                _ => {}
+            }
+            index += 1;
+        }
+    }
+    count
 }
 
 fn validate_size(cols: u16, rows: u16) -> Result<(), DaemonError> {

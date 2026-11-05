@@ -45,6 +45,14 @@ fn kernel_browser_protocol_443_request_snapshots() {
     );
     let cases = [
         (Command::Start, serde_json::json!({"op":"start"})),
+        (
+            Command::PasteSecret {
+                credential_id: "login".into(),
+                tab_id: "t".into(),
+                generation: 2,
+            },
+            serde_json::json!({"op":"paste_secret","credential_id":"login","tab_id":"t","generation":2}),
+        ),
         (Command::State, serde_json::json!({"op":"state"})),
         (Command::Stop, serde_json::json!({"op":"stop"})),
         (
@@ -578,7 +586,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "9ffd9f81395659d527cc88b6e670557e90ac1a9a9366781ff2791c7b162d4da8"
+        "e812240fb43f2a2d378aef6f45446cb9d4bcb5fa06ec8dbcc387b68a68fdb0b7"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -681,7 +689,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "31d83e1dfe6ef1233f0314e271e418f904f954da24e0c6b3901cfe5d8e96e73a"
+        "719109b8eaf5749a1da4ea678ecdd2c03593bda741a300a7a12c3c0262802c85"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -708,4 +716,54 @@ fn browser_dialog_protocol630_snapshot() {
         .unwrap()
         .remove("dialog_id");
     assert!(serde_json::from_value::<LocalDaemonRequest>(invalid).is_err());
+}
+
+// MP-08/MP-10: coordinator-allocated portable Browser header, including no-band clients.
+#[test]
+fn mp08_mp10_browser_header_937_shape_and_hash() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 933);
+    }
+    const {
+        assert!(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION >= 382);
+    }
+    let bytes = include_bytes!("browser-header-937.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "834c3caf07329b772493590dd4267d32ad0ddd96dfaeb7b2dd9fd4e06ea8d744"
+    );
+    let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let response: LocalDaemonResponse =
+        serde_json::from_value(snapshot["response"].clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        snapshot["response"]
+    );
+}
+
+#[test]
+fn mp08_mp10_download_cancellation_937_shape() {
+    let wire = serde_json::json!({"op":"cancel_download","tab_id":"t","generation":7,"download_id":"download-a"});
+    let command: Command = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(command).unwrap(), wire);
+}
+
+#[test]
+fn mp08_mp11_vault_fill_941_shape_and_hash() {
+    let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "c4776578ed0af3b7a9f54bb39949a30e1a37e3ddecdba6914a4f87edce201b36"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), fixture["request"]);
+    let response: LocalDaemonResponse =
+        serde_json::from_value(fixture["response"].clone()).unwrap();
+    assert_eq!(serde_json::to_value(response).unwrap(), fixture["response"]);
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
 }

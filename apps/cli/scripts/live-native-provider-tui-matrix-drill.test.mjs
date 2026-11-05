@@ -20,7 +20,7 @@ test("native provider TUI matrix dry-run covers authority placement and provider
     const { stdout } = await execFile(process.execPath, [
       scriptPath,
       "--dry-run",
-      "--include-hetzner",
+      "--include-remote-kernel",
       "--provider-account",
       "codex=work_codex",
       "--report",
@@ -41,16 +41,16 @@ test("native provider TUI matrix dry-run covers authority placement and provider
       "remote-native-tui",
       "slice-native-tui",
       "transcript-parity",
-      "hetzner-native-tui",
+      "remote-kernel-native-tui",
     ])
-    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "hetzner-native-tui").requires, ["hetzner"])
-    assert.equal(report.metadata.deploymentPresets, "hetzner,local,same-host-remote,self-hosted-relay")
+    assert.deepEqual(report.scenarios.find((scenario) => scenario.id === "remote-kernel-native-tui").requires, ["remote-kernel"])
+    assert.equal(report.metadata.deploymentPresets, "local,remote-kernel,same-host-remote,self-hosted-relay")
     assert.equal(report.metadata.providerCount, 3)
     assert.equal(report.metadata.providers, "claude,codex,opencode")
     assert.equal(report.metadata.defaultModel, "provider-default")
     assert.equal(report.metadata.providerModelOverrides, "")
     assert.equal(report.metadata.providerAccountAliases, "codex=work_codex")
-    assert.equal(report.metadata.includeHetzner, true)
+    assert.equal(report.metadata.includeRemoteKernel, true)
     assert.equal(report.metadata.generatedMatrixNames, "native-provider-tui-matrix")
     assert.equal(report.metadata.generatedMatrixRepos, "oss")
     assert.match(stdout, /dry-run local-native-tui classification=provider-error/)
@@ -66,12 +66,12 @@ test("native provider TUI matrix dry-run covers authority placement and provider
   }
 })
 
-test("native provider TUI matrix rejects Hetzner scenario without opt-in", async () => {
+test("native provider TUI matrix rejects remote kernel scenario without opt-in", async () => {
   await assert.rejects(
-    execFile(process.execPath, [scriptPath, "--dry-run", "--only", "hetzner-native-tui"]),
+    execFile(process.execPath, [scriptPath, "--dry-run", "--only", "remote-kernel-native-tui"]),
     (error) => {
       assert.equal(error.code, 1)
-      assert.match(error.stderr, /hetzner-native-tui requires --include-hetzner/)
+      assert.match(error.stderr, /remote-kernel-native-tui requires --include-remote-kernel/)
       return true
     },
   )

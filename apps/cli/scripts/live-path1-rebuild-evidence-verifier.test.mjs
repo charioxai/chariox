@@ -92,7 +92,7 @@ function validEvidence() {
   reviewed.observations[2].evidenceRef = reviewed.approvedImage.approvalRef
 
   const before = common("before", times.before, [
-    observation("before-provider", "hetzner-api", "get server before destructive rebuild", times.before),
+    observation("before-provider", "provider-api", "get server before destructive rebuild", times.before),
     observation("before-host", "host-command", "capture systemd processes state and machine identity", times.before),
     observation("before-cloud", "cloud-api", "capture enrollment and runtime control rows", times.before),
     observation("before-relay", "relay-api", "capture relay registrations and heartbeats", times.before),
@@ -124,8 +124,8 @@ function validEvidence() {
   })
 
   const rebuild = common("rebuild", times.complete, [
-    observation("rebuild-request", "hetzner-api", "server rebuild request", times.request),
-    observation("rebuild-completion", "hetzner-api", "server rebuild completion", times.complete),
+    observation("rebuild-request", "provider-api", "server rebuild request", times.request),
+    observation("rebuild-completion", "provider-api", "server rebuild completion", times.complete),
   ], {
     allocation,
     request: {
@@ -170,7 +170,7 @@ function validEvidence() {
     ],
   }
   const afterObservations = [
-    observation("after-provider", "hetzner-api", "get server after rebuild", times.after),
+    observation("after-provider", "provider-api", "get server after rebuild", times.after),
     observation("after-host", "host-command", "capture new boot systemd processes and state", times.after),
     observation("after-cloud", "cloud-api", "capture new enrollment and control rows", times.after),
     observation("after-relay", "relay-api", "capture new relay registration and heartbeat state", times.after),
@@ -206,7 +206,7 @@ function validEvidence() {
   })
 
   const cleanup = common("cleanup", times.cleanup, [
-    observation("cleanup-provider", "hetzner-api", "verify rebuilt server allocation is retained", times.cleanup),
+    observation("cleanup-provider", "provider-api", "verify rebuilt server allocation is retained", times.cleanup),
     observation("cleanup-host", "host-command", "verify old runtime cleanup", times.cleanup),
     observation("cleanup-cloud", "cloud-api", "verify stale control row cleanup", times.cleanup),
     observation("cleanup-relay", "relay-api", "verify stale heartbeat cleanup", times.cleanup),

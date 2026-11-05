@@ -33,7 +33,7 @@ impl KernelRuntimeState {
         let mut tools: Vec<_> = self
             .runtime_tool_specs_for_current_grants(token)
             .into_iter()
-            .filter(|tool| tool.name != sudo::SUDO_TOOL && tool.name != sudo::VAULT_GENERATE)
+            .filter(|tool| tool.name != sudo::SUDO_TOOL)
             .map(|tool| (tool.name, tool.description, tool.input_schema))
             .collect();
         tools.sort_by(|a, b| a.0.cmp(&b.0));
@@ -77,16 +77,18 @@ impl KernelRuntimeState {
             let Ok(agent) = self.owned.agent_store.get_agent(agent_id) else {
                 continue;
             };
+            // Background catalog changes apply when idle. Only an explicit loader
+            // request may continue an interrupted turn; replaying a finished request
+            // here duplicates scheduled and ordinary prompts after reconnect.
             if self
                 .owned
-                .provider_run_projection
-                .is_leased_provider_run(run.id())
+                .pending_mcp_continuations
+                .write()
+                .contains_key(agent.id())
             {
-                // The home owns prompt continuation. Workers only refresh their provider.
-                self.remember_pending_provider_catalog_reload(agent.session_id(), agent.id());
-            } else {
-                self.remember_runtime_catalog_continuation(&agent, "runtime tool catalog");
+                continue;
             }
+            self.remember_pending_provider_catalog_reload(agent.session_id(), agent.id());
         }
     }
 

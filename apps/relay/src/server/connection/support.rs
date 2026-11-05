@@ -1336,7 +1336,13 @@ pub(super) fn verify_relay_token(
             action,
             target,
         })
-        .map_err(relay_auth_error)
+        .map_err(|error| match error {
+            RelayAuthError::TokenExpired => std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                super::token_refusal::TokenRefusal::expired(action, token, current_unix_ms()),
+            ),
+            other => relay_auth_error(other),
+        })
 }
 
 pub(super) fn relay_auth_error(error: RelayAuthError) -> std::io::Error {
@@ -1384,7 +1390,13 @@ pub(super) fn send_daemon_subscription_cleanup(
 }
 
 pub(super) fn send_close(sender: &RelaySender, reason: String) {
-    let _ = send_envelope(sender, &RelayEnvelope::Close { reason });
+    let _ = send_envelope(
+        sender,
+        &RelayEnvelope::Close {
+            reason,
+            kernel_reload: false,
+        },
+    );
 }
 
 pub(super) fn relay_error(code: &str, message: &str, retryable: bool) -> RelayError {

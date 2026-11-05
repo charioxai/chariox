@@ -9,9 +9,9 @@ import {
   selectDrillMatrixScenarios,
 } from './lib/drill-matrix-runner.mjs'
 import {
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
 } from './lib/drill-environment-presets.mjs'
 import {
   applyProviderAccountAlias,
@@ -48,35 +48,35 @@ const MATRIX = [
   scenario('remote-tracked-codex', 'same-host remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-tracked-parity-target', '--full', '--timeout-ms', '700000'], { remote: true }),
   scenario('remote-tracked-restart-codex', 'same-host remote tracked Codex relay restart recovery', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-restart-tracked-target', '--full', '--restart-relay-before-sync', '--timeout-ms', '700000'], { remote: true }),
   scenario('remote-permission-codex', 'same-host remote Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL], { remote: true }),
-  scenario('hetzner-managed-codex', 'Hetzner remote managed Codex unsupported-platform fast-fail', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '120000'], {
+  scenario('remote-kernel-managed-codex', 'remote kernel remote managed Codex unsupported-platform fast-fail', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--remote-kernel-worker', '--timeout-ms', '120000'], {
     remote: true,
-    hetzner: true,
+    "remote-kernel": true,
     expectedFailure: true,
     expectedOutputIncludes: 'managed mode needs selective write fencing',
   }),
-  scenario('hetzner-tracked-codex', 'Hetzner remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true }),
-  scenario('hetzner-permission-codex', 'Hetzner remote tracked Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--hetzner-worker', '--timeout-ms', '360000'], { remote: true, hetzner: true }),
+  scenario('remote-kernel-tracked-codex', 'remote kernel remote tracked Codex fanout', remoteDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-kernel-live-sync-tracked-parity-target', '--full', '--remote-kernel-worker', '--timeout-ms', '1000000'], { remote: true, "remote-kernel": true }),
+  scenario('remote-kernel-permission-codex', 'remote kernel remote tracked Codex permission gating', remotePermissionDrill, ['--provider', 'codex', ...CODEX_MODEL, '--mode', 'tracked', '--remote-kernel-worker', '--timeout-ms', '360000'], { remote: true, "remote-kernel": true }),
   scenario('local-managed-opencode', 'local managed OpenCode Zen two-target fanout', localDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--timeout-ms', '700000'], { opencode: true }),
   scenario('local-tracked-opencode', 'local tracked OpenCode Zen cross-branch bidirectional fanout', localDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'live-sync-opencode-tracked-parity-target', '--timeout-ms', '700000'], { opencode: true }),
   scenario('local-permission-opencode', 'local OpenCode Zen permission gating', localPermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--timeout-ms', '700000'], { opencode: true }),
   scenario('remote-managed-opencode', 'same-host remote managed OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-tracked-opencode', 'same-host remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-live-sync-opencode-tracked-parity-target', '--full', '--timeout-ms', '700000'], { remote: true, opencode: true }),
   scenario('remote-permission-opencode', 'same-host remote OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--timeout-ms', '700000'], { remote: true, opencode: true }),
-  scenario('hetzner-managed-opencode', 'Hetzner remote managed OpenCode Zen unsupported-platform fast-fail', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--hetzner-worker', '--timeout-ms', '120000'], {
+  scenario('remote-kernel-managed-opencode', 'remote kernel remote managed OpenCode Zen unsupported-platform fast-fail', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'managed', '--managed-target-count', '2', '--full', '--remote-kernel-worker', '--timeout-ms', '120000'], {
     remote: true,
-    hetzner: true,
+    "remote-kernel": true,
     opencode: true,
     expectedFailure: true,
     expectedOutputIncludes: 'managed mode needs selective write fencing',
   }),
-  scenario('hetzner-tracked-opencode', 'Hetzner remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'hetzner-live-sync-opencode-tracked-parity-target', '--full', '--hetzner-worker', '--timeout-ms', '1000000'], { remote: true, hetzner: true, opencode: true }),
-  scenario('hetzner-permission-opencode', 'Hetzner remote tracked OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--hetzner-worker', '--timeout-ms', '700000'], { remote: true, hetzner: true, opencode: true }),
+  scenario('remote-kernel-tracked-opencode', 'remote kernel remote tracked OpenCode Zen fanout', remoteDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--tracked-target-count', '2', '--tracked-bidirectional', '--target-branch', 'remote-kernel-live-sync-opencode-tracked-parity-target', '--full', '--remote-kernel-worker', '--timeout-ms', '1000000'], { remote: true, "remote-kernel": true, opencode: true }),
+  scenario('remote-kernel-permission-opencode', 'remote kernel remote tracked OpenCode Zen permission gating', remotePermissionDrill, ['--provider', 'opencode', ...OPENCODE_MODEL, '--mode', 'tracked', '--remote-kernel-worker', '--timeout-ms', '700000'], { remote: true, "remote-kernel": true, opencode: true }),
 ]
 
 function scenario(id, description, script, args, flags = {}) {
   const requires = []
   if (flags.remote) requires.push('remote')
-  if (flags.hetzner) requires.push('hetzner')
+  if (flags["remote-kernel"]) requires.push('remote-kernel')
   if (flags.opencode) requires.push('opencode')
   return {
     id,
@@ -125,7 +125,7 @@ function workspaceLiveSyncExitCriteria({ id, args, flags }) {
   }
   const provider = valueAfter(args, '--provider') ?? (flags.opencode ? 'opencode' : 'codex')
   const mode = valueAfter(args, '--mode') ?? (id.includes('permission') ? 'permission' : 'managed')
-  const placement = flags.hetzner ? 'Hetzner remote worker' : flags.remote ? 'same-host remote worker' : 'local worker'
+  const placement = flags["remote-kernel"] ? 'remote kernel remote worker' : flags.remote ? 'same-host remote worker' : 'local worker'
   if (id.includes('permission')) {
     return [
       `${provider} permission checks use kernel-owned workspace live sync policy`,
@@ -166,7 +166,7 @@ function printHelp() {
     '',
     'Options:',
     '  --include-remote        Include same-host remote relay scenarios',
-    '  --include-hetzner       Include Hetzner worker scenarios',
+    '  --include-remote-kernel       Include remote kernel worker scenarios',
     '  --include-opencode      Include OpenCode Zen scenarios',
     '  --only IDS              Comma-separated scenario ids',
     '  --dry-run               Print selected commands without running drills',
@@ -174,9 +174,9 @@ function printHelp() {
     '  --report PATH           Write a machine-readable matrix report; defaults under .artifacts/drill-matrices',
     '  --artifact-index PATH   Write a verifiable artifact index for the matrix report',
     '  --provider-account P=A  Label the provider account/profile used by this matrix without exposing credentials',
-    '  --hetzner-host HOST     Forwarded to Hetzner drill scenarios',
-    '  --hetzner-key PATH      Forwarded to Hetzner drill scenarios',
-    '  --hetzner-repo PATH     Forwarded to Hetzner drill scenarios',
+    '  --remote-kernel-host HOST     Forwarded to remote kernel drill scenarios',
+    '  --remote-kernel-key PATH      Forwarded to remote kernel drill scenarios',
+    '  --remote-kernel-repo PATH     Forwarded to remote kernel drill scenarios',
     '',
     'Environment:',
     '  CHARIOX_WORKSPACE_LIVE_SYNC_CODEX_MODEL  Codex model for Codex scenarios; defaults to gpt-5.5',
@@ -198,7 +198,7 @@ function readValue(argv, index, flag) {
 function parseArgs(argv) {
   const options = {
     includeRemote: false,
-    includeHetzner: false,
+    includeRemoteKernel: false,
     includeOpencode: false,
     only: null,
     dryRun: false,
@@ -213,7 +213,7 @@ function parseArgs(argv) {
     const arg = argv[i]
     if (arg === '--') continue
     else if (arg === '--include-remote') options.includeRemote = true
-    else if (arg === '--include-hetzner') options.includeHetzner = true
+    else if (arg === '--include-remote-kernel') options.includeRemoteKernel = true
     else if (arg === '--include-opencode') options.includeOpencode = true
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--continue-on-failure') options.continueOnFailure = true
@@ -227,10 +227,10 @@ function parseArgs(argv) {
     else if (arg === '--only') options.only = parseDrillScenarioIds(readValue(argv, i++, arg))
     else if (arg.startsWith('--only=')) options.only = parseDrillScenarioIds(arg.slice('--only='.length))
     else {
-      const hetznerArg = parseHetznerPassthroughArg(argv, i)
-      if (hetznerArg) {
-        options.passthrough.push(...hetznerArg.args)
-        i = hetznerArg.nextIndex
+      const remoteKernelArg = parseRemoteKernelPassthroughArg(argv, i)
+      if (remoteKernelArg) {
+        options.passthrough.push(...remoteKernelArg.args)
+        i = remoteKernelArg.nextIndex
         continue
       }
       throw new Error(`unknown argument: ${arg}`)
@@ -242,9 +242,9 @@ function parseArgs(argv) {
 function selectScenarios(options) {
   const enabledRequirements = new Set()
   if (options.includeRemote) enabledRequirements.add('remote')
-  if (options.includeHetzner) {
+  if (options.includeRemoteKernel) {
     enabledRequirements.add('remote')
-    enabledRequirements.add('hetzner')
+    enabledRequirements.add('remote-kernel')
   }
   if (options.includeOpencode) enabledRequirements.add('opencode')
   return selectDrillMatrixScenarios({
@@ -253,7 +253,7 @@ function selectScenarios(options) {
     enabledRequirements,
     requirementLabels: {
       remote: '--include-remote',
-      hetzner: '--include-hetzner',
+      "remote-kernel": '--include-remote-kernel',
       opencode: '--include-opencode',
     },
   })
@@ -262,7 +262,7 @@ function selectScenarios(options) {
 function commandForScenario(item, passthrough) {
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough([item.script, ...item.args, '--keep-artifacts-on-failure'], item, passthrough),
+    args: appendRemoteKernelPassthrough([item.script, ...item.args, '--keep-artifacts-on-failure'], item, passthrough),
   }
 }
 
@@ -302,7 +302,7 @@ async function main() {
     artifactIndexPath,
     metadata: {
       includeRemote: options.includeRemote,
-      includeHetzner: options.includeHetzner,
+      includeRemoteKernel: options.includeRemoteKernel,
       includeOpencode: options.includeOpencode,
       generatedMatrixNames: 'workspace-live-sync-matrix',
       generatedMatrixRepos: 'oss',
@@ -310,8 +310,8 @@ async function main() {
       ...drillDeploymentPresetMetadata([
         'local',
         ...(options.includeRemote ? ['same-host-remote', 'self-hosted-relay'] : []),
-        ...(options.includeHetzner ? ['hetzner', 'self-hosted-relay'] : []),
-      ], { hetznerPassthrough: options.passthrough }),
+        ...(options.includeRemoteKernel ? ['remote-kernel', 'self-hosted-relay'] : []),
+      ], { remoteKernelPassthrough: options.passthrough }),
       codexModelId,
       opencodeModelId,
     },

@@ -106,6 +106,9 @@ pub(super) struct ClaudeHeadlessSubmitRetry {
     pub(super) last_attempt_ms: u64,
     #[serde(default)]
     pub(super) visible_prompt: String,
+    /// Claude's transcript holds the prompt in its queue behind a turn that is still running.
+    #[serde(default)]
+    pub(super) queued_in_claude: bool,
 }
 
 pub(super) fn read_claude_headless_submit_retry(context_file: &str) -> ClaudeHeadlessSubmitRetry {
@@ -133,8 +136,21 @@ pub(super) fn write_claude_headless_submit_retry(
         count,
         last_attempt_ms,
         visible_prompt: visible_prompt.to_string(),
+        queued_in_claude: false,
     };
     if let Ok(raw) = serde_json::to_string(&payload) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+/// Typing a prompt again that Claude already queued would make it answer twice.
+pub(super) fn mark_claude_headless_prompt_queued(context_file: &str) {
+    let Some(path) = claude_headless_submit_retry_path(context_file) else {
+        return;
+    };
+    let mut retry = read_claude_headless_submit_retry(context_file);
+    retry.queued_in_claude = true;
+    if let Ok(raw) = serde_json::to_string(&retry) {
         let _ = fs::write(path, raw);
     }
 }
@@ -404,6 +420,28 @@ fn write_claude_permission_payload(context_file: &str, request_id: &str, payload
     let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
 }
 
+// These files are inter-thread mailboxes, not durable state. Rename publishes
+// complete bytes without adding a disk flush to every native terminal drain.
+fn publish_permission_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let pending = path.with_extension(format!("{:016x}.pending", rand::random::<u64>()));
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&pending)?;
+        file.write_all(contents)?;
+        fs::rename(&pending, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&pending);
+    }
+    result
+}
+
 pub(super) fn write_claude_permission_input(
     context_file: &str,
     interaction_id: &str,
@@ -414,7 +452,9 @@ pub(super) fn write_claude_permission_input(
     };
     let _ = fs::create_dir_all(&dir);
     let filename = format!("{}.input", safe_claude_permission_filename(interaction_id));
-    let _ = fs::write(dir.join(filename), input);
+    // The output pump can poll before the readiness signal. Publish only a
+    // complete reply, since an empty reply deliberately means selection failed.
+    let _ = publish_permission_file(&dir.join(filename), input);
 }
 
 pub(super) fn take_claude_permission_inputs(context_file: &str) -> Vec<Vec<u8>> {
@@ -639,13 +679,14 @@ pub(super) fn update_claude_permission_recent(context_file: &str, rendered: &str
             .rev()
             .collect();
     }
-    let _ = fs::write(path, &recent);
+    // The interaction callback reads this frame off the output-pump thread.
+    let _ = publish_permission_file(&path, recent.as_bytes());
     recent
 }
 
 pub(super) fn clear_claude_permission_recent(context_file: &str) {
     if let Some(path) = claude_permission_recent_file(context_file) {
-        let _ = fs::write(path, "");
+        let _ = publish_permission_file(&path, b"");
     }
 }
 
@@ -815,6 +856,34 @@ mod approval_lifetime_tests {
         write_claude_native_marker(&context_file, "injected:prompt-B");
         assert!(take_claude_permission_inputs(&context_file).is_empty());
     }
+    #[test]
+    fn approval_mailbox_publishes_only_complete_replies() {
+        let worktree = crate::test_support::TestWorktree::new("approval-publication");
+        let context_file = worktree.path().join("context.txt");
+        let context_file = context_file.to_str().unwrap();
+        // A large reply keeps the actual write in flight while the real consumer polls.
+        let reply = vec![b'x'; 8 * 1024 * 1024];
+        for _ in 0..8 {
+            write_claude_headless_workspace_trust_interaction_marker(context_file, "trust-A");
+            std::thread::scope(|scope| {
+                let writer = scope.spawn(|| {
+                    write_claude_permission_input(context_file, "trust-A", &reply);
+                });
+                let mut received = Vec::new();
+                while !writer.is_finished() {
+                    received.extend(take_claude_permission_inputs(context_file));
+                }
+                writer.join().unwrap();
+                received.extend(take_claude_permission_inputs(context_file));
+                assert!(
+                    received.len() == 1 && received[0] == reply,
+                    "the mailbox must deliver one complete reply; received lengths: {:?}",
+                    received.iter().map(Vec::len).collect::<Vec<_>>()
+                );
+            });
+        }
+    }
+
     #[test]
     fn approval_lifetime_rendered_mailbox_preserves_matching_startup_reply() {
         let worktree = crate::test_support::TestWorktree::new("approval-startup-mailbox");

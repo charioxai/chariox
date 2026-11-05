@@ -295,7 +295,6 @@ pub(super) async fn handle_incoming_envelope(
                 let relay_response = Box::pin(handle_daemon_peer_request(
                     &router,
                     &state,
-                    &outgoing_tx,
                     &from_daemon_id,
                     caller_identity,
                     encrypted_request,
@@ -531,7 +530,7 @@ pub(super) async fn handle_incoming_envelope(
                 .try_send_display_stream_event(&stream_id, RelayDisplayTunnelClientEvent::Close);
         }
         RelayEnvelope::ClientMetadataResponse { .. } => {}
-        RelayEnvelope::Close { reason } => {
+        RelayEnvelope::Close { reason, .. } => {
             return Err(DaemonError::LocalTransport {
                 operation: "relay closed connection",
                 message: reason,
@@ -572,6 +571,7 @@ fn defer_or_enqueue_relay_close(
 fn enqueue_relay_close(outgoing_tx: &RelayOutgoingSender) -> Result<(), DaemonError> {
     if outgoing_tx.send_after_queued_events(RelayEnvelope::Close {
         reason: "relay configuration changed after peer response".to_string(),
+        kernel_reload: false,
     }) {
         return Ok(());
     }

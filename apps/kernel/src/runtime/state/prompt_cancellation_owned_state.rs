@@ -84,6 +84,25 @@ impl KernelRuntimeOwnedState {
         )
     }
 
+    /// Like the cancellation above, but the queue head stays queued for a caller that starts it
+    /// on the run its kind needs (`start_queue_head_after_cancellation`).
+    pub(super) fn finalize_local_prompt_cancellation_deferring_queue_head(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        self.finalize_local_prompt_ending_with_queue(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+            provider_run_id,
+            PromptEnding::Cancelled,
+            false,
+        )
+    }
+
     pub(super) fn finalize_local_prompt_ending(
         &self,
         session_id: &str,
@@ -91,6 +110,25 @@ impl KernelRuntimeOwnedState {
         expected_prompt_id: &str,
         provider_run_id: Option<&str>,
         ending: PromptEnding,
+    ) -> Result<OwnedPromptCancellation, DaemonError> {
+        self.finalize_local_prompt_ending_with_queue(
+            session_id,
+            agent_id,
+            expected_prompt_id,
+            provider_run_id,
+            ending,
+            true,
+        )
+    }
+
+    fn finalize_local_prompt_ending_with_queue(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        expected_prompt_id: &str,
+        provider_run_id: Option<&str>,
+        ending: PromptEnding,
+        advance_queue: bool,
     ) -> Result<OwnedPromptCancellation, DaemonError> {
         let agent = self.agent_store.get_agent(agent_id)?;
         if agent.session_id() != session_id {
@@ -200,13 +238,21 @@ impl KernelRuntimeOwnedState {
                 "advance queued prompt after cancellation",
             )
         };
-        let started_next = if provider_account_available
+        let queue_head_promotable = provider_account_available
             && !hold_queued_prompts
             && self
                 .prompt_state_owner
                 .active_prompt_for_agent(&self.session_store.get_session(session_id)?, agent_id)
-                .is_none()
-        {
+                .is_none();
+        let _promotion = if advance_queue && queue_head_promotable {
+            self.prompt_state_owner.try_claim_idle_queue_promotion(
+                &self.session_store.get_session(session_id)?,
+                agent_id,
+            )
+        } else {
+            None
+        };
+        let started_next = if _promotion.is_some() {
             let next_prompt = self
                 .prompt_state_owner
                 .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id);
@@ -214,6 +260,23 @@ impl KernelRuntimeOwnedState {
                 cancellation_provider_run_id.as_deref(),
                 next_prompt.as_ref(),
             ) {
+                // The async caller may have inspected a different head. Defer the
+                // exact workflow turn we would activate until its provider is prepared.
+                if next_prompt.workflow_run_id().is_some()
+                    || crate::scheduler::runtime::is_workflow_prompt_attachment(
+                        next_prompt.source_attachment_id(),
+                    )
+                {
+                    return Ok(OwnedPromptCancellation {
+                        cancellation: crate::session::PromptCancellation {
+                            prompt,
+                            started_next: None,
+                        },
+                        released_claim,
+                        dispatch: None,
+                        queue_head_deferred: true,
+                    });
+                }
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
@@ -235,6 +298,7 @@ impl KernelRuntimeOwnedState {
                                 },
                                 released_claim,
                                 dispatch: None,
+                                queue_head_deferred: false,
                             });
                         }
                         let activity_mutation = self.begin_managed_activity_mutation();
@@ -344,6 +408,12 @@ impl KernelRuntimeOwnedState {
             None
         };
         let _ = self.session_snapshot(session_id)?;
+        let queue_head_deferred = started_next.is_none()
+            && queue_head_promotable
+            && self
+                .prompt_state_owner
+                .peek_next_queued_prompt(&self.session_store.get_session(session_id)?, agent_id)
+                .is_some();
         Ok(OwnedPromptCancellation {
             cancellation: crate::session::PromptCancellation {
                 prompt,
@@ -351,6 +421,7 @@ impl KernelRuntimeOwnedState {
             },
             released_claim,
             dispatch,
+            queue_head_deferred,
         })
     }
 

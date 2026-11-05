@@ -1,0 +1,606 @@
+//! The ledger's decisions on observed commands, without processes: what a
+//! pass holds, pauses and resumes given the room it is shown.
+use super::super::submissions::Submissions;
+use super::*;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const GIB: u64 = 1024 * MIB;
+
+/// A 100 GiB volume (floor 10 GiB) with `free` bytes left.
+fn volume(free: &Arc<AtomicU64>) -> Box<Volume> {
+    let free = free.clone();
+    Box::new(move |_| {
+        Some(Space {
+            id: 1,
+            free: free.load(Ordering::SeqCst),
+            total: 100 * GIB,
+        })
+    })
+}
+
+fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
+    Room {
+        memory,
+        tight,
+        light: 512 * MIB,
+        growth_room: GIB,
+        volume,
+    }
+}
+
+fn command(pid: u32, resident: u64, growth: u64) -> pool::CommandUse {
+    pool::CommandUse {
+        pid,
+        group: None,
+        resident,
+        growth,
+        writes: 0,
+        write_growth: 0,
+        effective: pid,
+        root: false,
+    }
+}
+
+fn entry(arrived: u64, expected: Peak) -> Entry {
+    Entry {
+        arrived,
+        holdable: true,
+        expected: Some(expected),
+        seen: Some(Seen {
+            pid: arrived as u32,
+            key: format!("key-{arrived}"),
+            line: format!("job {arrived}"),
+            cwd: Some(PathBuf::from("/scratch")),
+        }),
+        ..Entry::default()
+    }
+}
+
+fn owner(
+    unit: &str,
+    holdable: bool,
+    commands: Vec<pool::CommandUse>,
+    entries: Vec<(u32, Entry)>,
+) -> Arc<Mutex<Observation>> {
+    Arc::new(Mutex::new(Observation {
+        unit: unit.into(),
+        submissions: Submissions::new(holdable),
+        commands,
+        admission: entries.into_iter().collect(),
+        ..Observation::default()
+    }))
+}
+
+fn wait(member: &Arc<Mutex<Observation>>, pid: u32) -> Option<Wait> {
+    member.lock().unwrap().admission[&pid].wait
+}
+
+fn scratch(writes: u64) -> Peak {
+    Peak { memory: 0, writes }
+}
+
+/// Lets the next resume of any reason happen at once.
+fn unsettle(ledger: &mut Ledger) {
+    ledger.resumed_at.clear();
+}
+
+#[test]
+fn two_writers_that_together_reach_the_floor_do_not_both_start() {
+    // 8 GiB above the floor; each job writes 6 GiB of scratch and deletes it.
+    let free = Arc::new(AtomicU64::new(18 * GIB));
+    let volume = volume(&free);
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![
+            (1, entry(1, scratch(6 * GIB))),
+            (2, entry(2, scratch(6 * GIB))),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "the first writer was held");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "the second writer started although both together reach the floor"
+    );
+    // The first ends: the second gets the room.
+    current.lock().unwrap().admission.remove(&1);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 2), None, "the second writer never started");
+}
+
+#[test]
+fn a_resumed_writer_keeps_its_room_from_the_next_to_resume() {
+    let free = Arc::new(AtomicU64::new(18 * GIB));
+    let volume = volume(&free);
+    let held = |arrived| Entry {
+        wait: Some(Wait::Held(WaitReason::Disk)),
+        ..entry(arrived, scratch(6 * GIB))
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![(1, held(1)), (2, held(2))],
+    );
+    let mut ledger = Ledger::new(None);
+    let members = std::slice::from_ref(&current);
+    ledger.pass(members, &current, &room(GIB, false, &volume));
+    assert_eq!(wait(&current, 1), None);
+    assert!(wait(&current, 2).is_some());
+    unsettle(&mut ledger);
+    ledger.pass(members, &current, &room(GIB, false, &volume));
+    assert!(
+        wait(&current, 2).is_some(),
+        "the second writer resumed onto room the first one needs"
+    );
+}
+
+#[test]
+fn writers_on_different_volumes_reserve_room_separately() {
+    // Each volume has 8 GiB above its floor; a path under /other is the second.
+    let volume: Box<Volume> = Box::new(|path| {
+        Some(Space {
+            id: if path.starts_with("/other") { 2 } else { 1 },
+            free: 18 * GIB,
+            total: 100 * GIB,
+        })
+    });
+    let mut elsewhere = entry(3, scratch(6 * GIB));
+    elsewhere.seen.as_mut().unwrap().cwd = Some(PathBuf::from("/other/build"));
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0), command(3, 0, 0)],
+        vec![
+            (1, entry(1, scratch(6 * GIB))),
+            (2, entry(2, scratch(6 * GIB))),
+            (3, elsewhere),
+        ],
+    );
+    Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None);
+    assert_eq!(wait(&current, 2), Some(Wait::Held(WaitReason::Disk)));
+    assert_eq!(
+        wait(&current, 3),
+        None,
+        "another volume's room was reserved"
+    );
+}
+#[test]
+fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    // A runs with 800 MiB still to grow; 1000 MiB are left, so 200 are free.
+    let mut build = entry(
+        1,
+        Peak {
+            memory: 900 * MIB,
+            writes: 0,
+        },
+    );
+    build.admitted = true;
+    build.resident = 100 * MIB;
+    let waiting = Entry {
+        wait: Some(Wait::Held(WaitReason::Disk)),
+        ..entry(
+            2,
+            Peak {
+                memory: 600 * MIB,
+                writes: GIB,
+            },
+        )
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 100 * MIB, 0), command(2, 0, 0)],
+        vec![(1, build), (2, waiting)],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(1000 * MIB, false, &volume),
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "a command held for disk resumed with no memory budget left"
+    );
+}
+
+#[test]
+fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
+    // 2 GiB above the floor, while the command writes 6 GiB.
+    let free = Arc::new(AtomicU64::new(12 * GIB));
+    let volume = volume(&free);
+    let waiting = Entry {
+        wait: Some(Wait::Held(WaitReason::Memory)),
+        ..entry(
+            1,
+            Peak {
+                memory: 600 * MIB,
+                writes: 6 * GIB,
+            },
+        )
+    };
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, waiting)]);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(4 * GIB, false, &volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        Some(Wait::Held(WaitReason::Memory)),
+        "a command held for memory resumed onto a full disk"
+    );
+    free.store(30 * GIB, Ordering::SeqCst);
+    unsettle(&mut ledger);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(4 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "it did not resume with both free");
+}
+#[test]
+fn a_rejected_start_now_leaves_the_running_command_pausable() {
+    let mut running = entry(2, Peak::default());
+    running.expected = None;
+    running.admitted = true;
+    running.resident = 700 * MIB;
+    assert!(!running.force(), "a running command read as waiting");
+    assert!(!running.forced && running.admitted, "flags changed");
+    let mut older = entry(1, Peak::default());
+    older.expected = None;
+    older.admitted = true;
+    older.resident = GIB;
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, GIB, 0), command(2, 700 * MIB, 8 * MIB)],
+        vec![(1, older), (2, running)],
+    );
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let may_stop = Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(100 * MIB, true, &volume),
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "pressure no longer pauses a command whose Start now was refused"
+    );
+    assert!(!may_stop);
+}
+
+#[test]
+fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory() {
+    // Nothing heavy runs; 8 GiB are free and each build needs 6 GiB. One
+    // waits for memory, the other for disk, and both become runnable in one pass.
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let build = |arrived, reason| Entry {
+        wait: Some(Wait::Held(reason)),
+        ..entry(
+            arrived,
+            Peak {
+                memory: 6 * GIB,
+                writes: GIB,
+            },
+        )
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![
+            (1, build(1, WaitReason::Memory)),
+            (2, build(2, WaitReason::Disk)),
+        ],
+    );
+    Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(8 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "the first build did not resume");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "the second build resumed onto the memory the first one took"
+    );
+}
+
+#[test]
+fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let peak = Peak {
+        memory: 6 * GIB,
+        writes: 0,
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![(1, entry(1, peak)), (2, entry(2, peak))],
+    );
+    Ledger::new(None).pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(8 * GIB, false, &volume),
+    );
+    assert_eq!(wait(&current, 1), None, "the first build was held");
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Memory)),
+        "the second build started onto the memory the first one took"
+    );
+}
+
+/// A sample finds `pid`. No platform reports when it started: a command is
+/// tied to its line by the shell's reports alone.
+fn start(ledger: &mut Ledger, member: &Arc<Mutex<Observation>>, pid: u32, resident: u64) {
+    member
+        .lock()
+        .unwrap()
+        .commands
+        .push(command(pid, resident, 8 * MIB));
+    ledger.register(member, 512 * MIB);
+}
+
+/// A line accepted at the terminal.
+fn submit(member: &Arc<Mutex<Observation>>, holdable: bool) {
+    member
+        .lock()
+        .unwrap()
+        .submissions
+        .submit(holdable, std::time::Instant::now(), &[]);
+}
+
+/// The shell reads the next accepted line, runs it and returns to the prompt;
+/// `jobs` are the process groups its job table holds.
+fn run_line(member: &Arc<Mutex<Observation>>, jobs: &[u32]) {
+    let mut member = member.lock().unwrap();
+    let now = std::time::Instant::now();
+    member.submissions.line_started(now);
+    member.submissions.line_finished(jobs, now);
+}
+
+/// An older heavy command of another owner: never the one paused.
+fn oldest(ledger: &mut Ledger) -> Arc<Mutex<Observation>> {
+    let other = owner("other", true, Vec::new(), Vec::new());
+    start(ledger, &other, 4_100_001, GIB);
+    other
+}
+
+/// Memory is short and `pid` of the terminal is the newest growing command.
+fn pressed(
+    ledger: &mut Ledger,
+    other: Arc<Mutex<Observation>>,
+    terminal: &Arc<Mutex<Observation>>,
+) {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let members = [other, terminal.clone()];
+    ledger.pass(&members, terminal, &room(100 * MIB, true, &volume));
+}
+
+#[test]
+fn a_persons_job_stays_unpausable_when_an_agent_types_after_it() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // An agent's job, then a person's own (the newest), then an agent types
+    // at the prompt the person's job returned.
+    submit(&terminal, true);
+    run_line(&terminal, &[4_100_002]);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    submit(&terminal, false);
+    run_line(&terminal, &[4_100_003]);
+    start(&mut ledger, &terminal, 4_100_003, 700 * MIB);
+    submit(&terminal, true);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_003),
+        None,
+        "a person's job was paused after an agent typed"
+    );
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "the agent's job was spared"
+    );
+}
+
+#[test]
+fn an_agents_job_stays_pausable_when_the_person_types_after_it() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    submit(&terminal, true);
+    run_line(&terminal, &[4_100_002]);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    // The person types at the prompt the agent's job returned.
+    submit(&terminal, false);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "an agent's job was exempted by a person's later keystroke"
+    );
+}
+
+#[test]
+fn an_agents_job_first_sampled_after_a_persons_line_is_still_the_agents() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // Both lines are accepted before the shell launches the build, and both
+    // ran before the sampler first sees it.
+    submit(&terminal, true);
+    submit(&terminal, false);
+    run_line(&terminal, &[4_100_002]);
+    run_line(&terminal, &[4_100_002]);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory)),
+        "the agent's build took the person's later line"
+    );
+}
+
+#[test]
+fn a_persons_job_first_sampled_after_an_agents_line_is_still_the_persons() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    submit(&terminal, false);
+    submit(&terminal, true);
+    run_line(&terminal, &[4_100_002]);
+    run_line(&terminal, &[4_100_002]);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        None,
+        "the person's job took the agent's later line"
+    );
+}
+
+#[test]
+fn a_command_no_line_explains_follows_the_terminals_default() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    // A terminal's own shell start precedes every line: the person's.
+    let terminal = owner("terminal", false, Vec::new(), Vec::new());
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(wait(&terminal, 4_100_002), None);
+}
+
+#[test]
+fn a_command_waits_to_be_decided_while_the_shell_has_not_reported_its_line() {
+    let mut ledger = Ledger::new(None);
+    let other = oldest(&mut ledger);
+    let terminal = owner("terminal", true, Vec::new(), Vec::new());
+    // The sampler finds the agent's build before the shell's start mark is read.
+    submit(&terminal, true);
+    start(&mut ledger, &terminal, 4_100_002, 700 * MIB);
+    assert!(
+        !terminal.lock().unwrap().admission.contains_key(&4_100_002),
+        "a command was decided before its line was known"
+    );
+    terminal
+        .lock()
+        .unwrap()
+        .submissions
+        .line_started(std::time::Instant::now());
+    ledger.register(&terminal, 512 * MIB);
+    pressed(&mut ledger, other, &terminal);
+    assert_eq!(
+        wait(&terminal, 4_100_002),
+        Some(Wait::Paused(WaitReason::Memory))
+    );
+}
+
+#[test]
+fn owners_keep_their_turn_while_commands_resume_one_at_a_time() {
+    let free = Arc::new(AtomicU64::new(50 * GIB));
+    let volume = volume(&free);
+    let held = |arrived| Entry {
+        wait: Some(Wait::Held(WaitReason::Memory)),
+        ..entry(arrived, scratch(0))
+    };
+    let owner = |unit: &str, arrivals: &[u64]| {
+        owner(
+            unit,
+            true,
+            arrivals
+                .iter()
+                .map(|pid| command(*pid as u32, 0, 0))
+                .collect(),
+            arrivals
+                .iter()
+                .map(|pid| (*pid as u32, held(*pid)))
+                .collect(),
+        )
+    };
+    let a = owner("a", &[1, 2, 3]);
+    let b = owner("b", &[4]);
+    let members = [a.clone(), b.clone()];
+    let mut ledger = Ledger::new(None);
+    let mut started = Vec::new();
+    for _ in 0..4 {
+        unsettle(&mut ledger);
+        ledger.pass(&members, &a, &room(GIB, false, &volume));
+        for pid in 1..=4 {
+            let member = if pid == 4 { &b } else { &a };
+            if wait(member, pid).is_none() && !started.contains(&pid) {
+                started.push(pid);
+            }
+        }
+        let position =
+            |member: &Arc<Mutex<Observation>>, pid| member.lock().unwrap().admission[&pid].position;
+        if started == [1] {
+            assert_eq!(
+                (position(&b, 4), position(&a, 2), position(&a, 3)),
+                (1, 2, 3),
+                "the displayed line is not the order they resume in"
+            );
+        }
+    }
+    assert_eq!(started, [1, 4, 2, 3]);
+}
+
+#[test]
+fn a_running_command_nobody_forced_is_not_handed_over() {
+    let mut running = entry(1, scratch(0));
+    running.admitted = true;
+    assert!(HeldCommand::of(std::process::id(), &running).is_none());
+    running.forced = true;
+    assert!(HeldCommand::of(std::process::id(), &running).is_some());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_running_start_now_override_cannot_pass_to_a_reused_pid() {
+    let pid = std::process::id();
+    let mut handed_over = HeldCommand::of(
+        pid,
+        &Entry {
+            forced: true,
+            admitted: true,
+            ..Entry::default()
+        },
+    )
+    .expect("the running Start now policy must be handed over");
+    handed_over.identity.start = handed_over.identity.start.wrapping_add(1);
+    adopt_admission(vec![handed_over]);
+    assert!(
+        take_adopted(pid).is_none(),
+        "a different process birth inherited the Start now override"
+    );
+}

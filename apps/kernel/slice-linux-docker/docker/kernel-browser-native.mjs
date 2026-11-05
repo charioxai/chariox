@@ -13,7 +13,8 @@ import {NativeRegionProtection,regionProtectionChanged,hasProtectedTarget} from 
 import {assertCurrentDocument} from './browser-controller-actions.mjs';
 import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
 import {displayMaskRegions} from './kernel-browser-pixels.mjs';
-import {safeChildPid} from './kernel-browser-display.mjs';
+import {closeDisplayChild} from './kernel-browser-display.mjs';
+import {withWindowGeometry} from './kernel-browser-window-geometry.mjs';
 import {fitNativeViewport} from './kernel-browser-native-viewport.mjs';
 export async function selectNativeCapture({platform=process.platform,display,create,refused=()=>{}}){
  if(platform!=='linux'||!ownsDisplay(display)){refused(platform!=='linux'?'platform':'display_not_owned');return null;}
@@ -85,12 +86,15 @@ export class LinuxCapture {
    if(p.width!==width||p.height!==height)throw Error('native viewport geometry differed');
    return {width,height,window_region:{id:window.xid,width:window.bounds.width,height:window.bounds.height,left:p.left,top:p.top}};
   }
+  await withWindowGeometry(this.connection,async()=>{
+  if(!this.valid())throw Error('native attestation retired');
   const {windowId}=await this.connection.send('Browser.getWindowForTarget',{targetId:this.tab.target_id});
   // MP-08/MP-10/MP-11: host-window DIPs are physical pixels (DPR1).
   // Page emulation owns negotiated DPR; keep the crop exact at both scales.
   // Window bounds are host DIPs: the negotiated raster divided by host scale.
   await fitNativeViewport({connection:this.connection,windowId,sessionId:this.sessionId,width:this.size.width*this.scale,height:this.size.height*this.scale,hostScale:this.hostScale,
    measure:async()=>decodePng((await this.screenshot()).data_base64,this.scale)});
+  });
   return {width:this.size.width*this.scale,height:this.size.height*this.scale};
  }
  /** A cached readback masked under the current projection (startup admits only such a sample). */
@@ -339,12 +343,7 @@ export class LinuxCapture {
  async close(){this.fence();return this.closing}
  async cleanup(){
   this.off?.();this.nativeWorker?.close();const child=this.child;this.child=null;
-  if(child&&child.pid!==undefined){
-   safeChildPid(child);child.stdin.end();
-   for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20);
-   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGTERM');for(let n=0;n<50&&child.exitCode===null&&child.signalCode===null;n++)await delay(20)}
-   if(child.exitCode===null&&child.signalCode===null){child.kill('SIGKILL');await new Promise(r=>child.once('exit',r))}
-  }
+  await closeDisplayChild(child,1000);
   if(this.poolRoot){await rm(this.poolRoot,{recursive:true,force:true});this.poolRoot=null}
  }
 }

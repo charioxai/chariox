@@ -274,13 +274,6 @@ impl KernelRuntimeState {
         } else {
             crate::session::WorkflowRunStatus::Stopped
         };
-        if resolved_workflow_run.status() == expected_status {
-            if !pause {
-                self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
-                    .await?;
-            }
-            return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
-        }
         let mut provider_run_ids = owned
             .agent_store
             .get_session_agents(session_id)
@@ -326,6 +319,11 @@ impl KernelRuntimeState {
                     pause,
                     stop_user,
                 )?;
+                // A previous stop may have committed before live cleanup failed.
+                // Skip the durable append but finish cancellation and queue advancement.
+                if current_run.status() == expected_status {
+                    return Ok((current_run, Vec::new()));
+                }
                 // Prompt records of every agent holding this run's queued prompts commit in
                 // the interrupt's SQLite transaction; the live prompt owner is untouched
                 // until that write succeeds, so a rejected write needs no owner restore.
@@ -413,9 +411,6 @@ impl KernelRuntimeState {
                     .is_some_and(|owner| owner.starts_with(&workflow_claim_owner_prefix))
                 && claim.operation == "workflow_node_dispatch"
         });
-        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
-        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
-        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         let session = owned.session_store.get_session(session_id)?;
         let active_agents = owned
             .agent_store
@@ -430,11 +425,12 @@ impl KernelRuntimeState {
                         (
                             agent.id().to_string(),
                             prompt.source_attachment_id().to_string(),
+                            prompt.id().to_string(),
                         )
                     })
             })
             .collect::<Vec<_>>();
-        for (agent_id, attachment_id) in active_agents {
+        for (agent_id, attachment_id, prompt_id) in active_agents {
             let cancellation = match self
                 .cancel_agent_prompt_with_external_authority(
                     session_id,
@@ -448,6 +444,13 @@ impl KernelRuntimeState {
             {
                 Ok(cancellation) => cancellation,
                 Err(DaemonError::NoActivePrompt { .. }) => continue,
+                // A kernel restart left the prompt without a provider run. The interrupt has
+                // already ended the run, so the prompt only needs settling here.
+                Err(DaemonError::NoActiveProviderRun { .. }) => {
+                    self.settle_prompt_without_provider_run(session_id, &agent_id, &prompt_id)
+                        .await?;
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             if let Some(dispatch) = cancellation.dispatch {
@@ -458,7 +461,39 @@ impl KernelRuntimeState {
             self.cancel_workflow_agent_tasks(session_id, &workflow_run_id)
                 .await?;
         }
+        // Capture cancellation against the interrupted turn's provider before
+        // promotion can prepare a replacement provider for the shared agent.
+        // A cancelling prompt keeps its successor queued until abort settlement.
+        let mut workflow_dispatches = owned.workflow_maybe_start_next_queued_prompt(session_id);
+        workflow_dispatches.extend(owned.workflow_retry_blocked_claims());
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         Ok((workflow_run, owned.session_snapshot(session_id)?))
+    }
+
+    async fn settle_prompt_without_provider_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        let Some(prompt) = self
+            .owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, agent_id, Some(prompt_id))
+        else {
+            return Ok(());
+        };
+        self.release_cancelled_local_prompt_after_restart(
+            session_id,
+            agent_id,
+            &prompt,
+            None,
+            super::prompt_cancellation_owned_state::PromptEnding::Cancelled,
+        )
+        .await?;
+        // Without a provider run the release has nothing to advance the queue with.
+        self.recover_queue_head_after_restart(session_id, agent_id)
     }
 
     pub(super) async fn execute_workflow_resume_run_request(

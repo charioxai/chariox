@@ -175,7 +175,10 @@ impl KernelRuntimeState {
         if session.status() == SessionStatus::Ended {
             return Err(error("session has ended"));
         }
-        if session.owner_user_id() != owner {
+        if !self
+            .owned
+            .acts_for_owner_in(session.owner_user_id(), owner, session.owner_user_id())
+        {
             return Err(super::entry::not_session_host(session.owner_user_id()));
         }
         self.owned.attachment_store.attach(
@@ -226,6 +229,7 @@ impl KernelRuntimeState {
                 Some(terminal),
                 false,
                 true,
+                self.interaction_answerer.as_ref(),
             )
             .map_err(|error| {
                 self.owned.closed_interaction_error(

@@ -46,6 +46,7 @@ pub(super) async fn enqueue(
             // A pending admission is cancellable, but cannot receive display ACKs.
             display_id: None,
             display_pump: None,
+            _terminal_lease: None,
             handle,
         },
     );
@@ -150,6 +151,7 @@ mod tests {
                         client_public_key: "viewer".into(),
                         display_id: Some("id".into()),
                         display_pump: None,
+                        _terminal_lease: None,
                         handle: tokio::spawn(tokio::time::sleep(Duration::from_secs(60))),
                     },
                 );

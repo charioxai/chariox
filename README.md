@@ -41,7 +41,7 @@ The daemon is the runtime authority in Chariox v1. It is responsible for hosting
 
 The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. The near-term plan is to close that one-provider cycle fully before broadening to more clients or more providers.
 
-Architecturally, the daemon is now better thought of as a node runtime:
+Architecturally, the daemon is now a kernel for Room execution:
 
 - it owns sessions and prompt routing
 - it will eventually route both local and relay-attached members in the same session domain
@@ -118,6 +118,9 @@ For normal local use, prefer `pnpm run start:kernel` and `pnpm run start:cli`.
 Those launch the cached debug binaries directly and only rebuild when the Rust
 sources are newer than the binary. Keep `cargo run ...` for lower-level Rust
 debugging when you explicitly want Cargo in the loop.
+
+Run the kernel as a normal user. For root self-hosting and Claude YOLO
+compatibility, see [Running Chariox Locally](docs/RUNNING_LOCAL.md#claude-yolo-when-self-hosting-as-root).
 
 OpenCode setup currently requires:
 

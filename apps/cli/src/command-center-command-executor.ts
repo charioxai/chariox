@@ -41,7 +41,7 @@ type CommandCenterCommandExecutorDeps = {
   onSettings?: CommandHandler<"settings">
   onLoop: CommandHandler<"loop">
   onGoal: CommandHandler<"goal">
-  onWait: CommandHandler<"wait">
+  onTrigger: CommandHandler<"trigger">
   onMcp: CommandHandler<"mcp">
   onSkill: CommandHandler<"skill">
   onEnv: CommandHandler<"env">
@@ -110,7 +110,7 @@ export function createCommandCenterCommandExecutor(
       ...(deps.onSettings ? { onSettings: contained(deps.onSettings) } : {}),
       onLoop: contained(deps.onLoop),
       onGoal: contained(deps.onGoal),
-      onWait: contained(deps.onWait),
+      onTrigger: contained(deps.onTrigger),
       onMcp: contained(deps.onMcp),
       onSkill: contained(deps.onSkill),
       onEnv: contained(deps.onEnv),

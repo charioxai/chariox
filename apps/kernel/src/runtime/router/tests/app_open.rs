@@ -248,6 +248,84 @@ done
         serde_json::json!({"ok":true,"value":{"count":1}})
     );
     assert_eq!(catalog.registrations.len(), 1);
+    // A host App Tab has owner authority independently of the Room Environment.
+    let native_views = router.runtime_state.app_control().user_views().clone();
+    let native = native_views
+        .open("alice", binding.clone(), "inspection")
+        .unwrap();
+    native_views
+        .bind_browser(
+            "alice",
+            &native.view_id,
+            "inspection-target".into(),
+            crate::local::UserAppViewBrowser {
+                tab_id: "host-tab-inspection".into(),
+                generation: 1,
+            },
+        )
+        .unwrap();
+    let native_controller = scratch.0.join("native-controller.sh");
+    std::fs::write(&native_controller, r#"#!/bin/sh
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.inspect"'*) printf '{"id":%s,"ok":true,"result":{"registrations":[],"state":{"ok":true,"value":{"native":true}},"controls":[]}}\n' "$id" ;;
+    *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  esac
+done
+"#).unwrap();
+    std::fs::set_permissions(&native_controller, std::fs::Permissions::from_mode(0o700)).unwrap();
+    router
+        .runtime_state
+        .kernel_browser_host_for_test()
+        .install_fixture_backend("alice", &native_controller, &scratch.0);
+    router
+        .runtime_state
+        .kernel_browser_host_for_test()
+        .protected_request(
+            "alice",
+            None,
+            "host.browser",
+            serde_json::json!({"op":"start"}),
+            serde_json::json!({"values":[],"targets":[],"unknown":false}),
+        )
+        .unwrap();
+    let native_inspection = |target: &str| {
+        LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {
+            session_id: rooms[0].clone(),
+            target_id: Some(target.into()),
+        })
+    };
+    let LocalDaemonResponse::AppViewInspected {
+        target_id,
+        catalog_json,
+        ..
+    } = request(&router, native_inspection("host-tab-inspection"))
+        .await
+        .unwrap()
+    else {
+        panic!("native inspection");
+    };
+    assert_eq!(target_id, "host-tab-inspection");
+    let native_catalog: chariox_app_runtime::view_catalog::ViewCatalog =
+        serde_json::from_str(&catalog_json).unwrap();
+    assert_eq!(
+        native_catalog.state,
+        serde_json::json!({"ok":true,"value":{"native":true}})
+    );
+    assert!(request(&router, native_inspection("host-tab-other-owner"))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not an open App view"));
+    assert!(native_views.close("alice", &native.view_id));
+    assert!(request(&router, native_inspection("host-tab-inspection"))
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not an open App view"));
+
     assert_eq!(catalog.warnings.len(), 2);
     assert_eq!(catalog.warnings[1].code, "undeclared_control");
     let controller_id = LocalDaemonRequest::InspectAppView(crate::local::InspectAppViewRequest {

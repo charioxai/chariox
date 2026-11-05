@@ -2,7 +2,6 @@ import { createCliAppActionsComposition } from "./cli-app-actions-composition.js
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { sessionActivePromptForAgent } from "@chariox/kernel-client/session-prompt-identity"
 import type { MutableLocalIpcClient } from "./mutable-local-ipc-client.js"
-import { localKernelConnectionLabel } from "./local-connection-indicator.js"
 import { createCliViewPersistence } from "./cli-view-persistence.js"
 import { recordPaneFirstFrame } from "./pane-first-frame-timing.js"
 import { toggleFocusedTranscriptDetails } from "./transcript-details-controller.js"
@@ -13,7 +12,7 @@ import { clipboardCopyMessage, copyTextToClipboard } from "./clipboard.js"
 import { openExternalUrl } from "./external-url.js"
 import { installTerminalNativeSelection } from "./terminal-native-selection.js"
 import { enableTerminalHyperlinks } from "./terminal-hyperlinks.js"
-import { providerAccountDisplayLabel, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import { createCliRoomWorkflowsComposition } from "./cli-room-workflows-composition.js"
 import { RoomWorkflowsPane } from "./room-workflows-pane.js"
 import { createAppHostTerminal } from "./app-host-action.js"
@@ -22,6 +21,7 @@ import { CloudClient } from "./cloud-client.js"
 import { presentCloudSignedOut } from "./cloud-signed-out.js"
 import { mergeRelayCloudProfile, saveRelayCloudProfile } from "./preferences.js"
 import { AppDevLoop } from "./app-dev-loop.js"
+import { isKernelOnThisMachine } from "./local-kernel-presence.js"
 import { AppFileInstaller, formatInstallProgress } from "./app-install-file.js"
 import { AppPublisherEnrollment } from "./app-publisher-file.js"
 import { randomBytes } from "node:crypto"
@@ -271,8 +271,9 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
     getAccountProfile: (provider, accountProfile) => getProviderAccountProfile(client, provider, accountProfile),
     accountLabel: (provider, accountProfile) => {
+      // The plain label: the strip title and the Retry command must name the account, not its status.
       const profile = selectedProviderAccount(providerAccountsState(), provider, accountProfile)
-      return profile ? providerAccountDisplayLabel(profile) : accountProfile
+      return profile?.label ?? accountProfile
     },
     localDesktop: localDesktopAvailable,
     openUrl: openExternalUrl,
@@ -830,7 +831,6 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     sessionChromeUpdateController: responseShellSessionChromeUpdateController,
     assignStatusIndicatorBox, assignFooterSummaryBox,
   } = createCliResponseShellComposition({
-    connectionLabel: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     renderer,
     scheduleTimer: startTimeout,
     clearTimer: clearTimeout,
@@ -984,7 +984,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const appPublisherEnrollment = new AppPublisherEnrollment((request) => client.send(request), appendNotice)
   const appDevLoop = new AppDevLoop({
     send: (request) => client.send(request), installer: appFileInstaller, notice: appendNotice,
-    isKernelLocal: () => localKernelConnectionLabel(client, sessionState().host_daemon_id ?? relayStatusState()?.daemon_id) !== null,
+    isKernelLocal: () => isKernelOnThisMachine(sessionState().host_daemon_id ?? relayStatusState()?.daemon_id),
     currentSession: () => isAttached() ? sessionState().id : undefined,
   })
   let recordDaemonActivity: (activityType: string) => void = () => {}

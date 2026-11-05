@@ -1150,6 +1150,39 @@ test("MP-11: every Vault-filled non-password field is masked like the pixel path
     assert(rows(packet.nodes).some(r => r.tag === "input" && r.attrs.id === "p" && /^•+$/.test(r.form?.value)), "MP-11: the password field stays a field showing dots");
   }));
 
+test("VAUDIT S3: a captured value shown as page text is a mask in the mirror", () => mirrored(
+  '<p>API keys</p><code id="k">sk_test_51VaudMirrorCaptured</code>', async ({ next, host }) => {
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId);
+    const { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#k" }, sessionId);
+    const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+    const value = "sk_test_51VaudMirrorCaptured", value_hash = createHash("sha256").update(value).digest("hex");
+    await host.protect({ values: [value], targets: [{ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}`, value_hash, fill_revision: 1 }] });
+    const packet = await next(0, true), wire = JSON.stringify(packet);
+    assert.equal(packet.nodes.filter(row => row[2] === 4).length, 1, "VAUDIT S3: the captured code element is a mask");
+    assert(!wire.includes(value) && wire.includes("API keys"), "VAUDIT S3: the value never travels; the rest of the page does");
+  }));
+
+test("VAUDIT S3 / AU-03: the kernel-named owner audience sees captured and filled values; every other stream stays masked", () => mirrored(
+  '<p>API keys</p><code id="k">sk_test_51VaudOwnerView</code><input id="v" value="whsec_VaudOwnerFill">', async ({ next, host, subscribe }) => {
+    const tab = [...host.tabs.values()][0], { connection, sessionId } = await host.browser.resolvePageTarget(tab.target_id);
+    const { root } = await connection.send("DOM.getDocument", { depth: 0 }, sessionId), targets = [];
+    for (const [id, value] of [["k", "sk_test_51VaudOwnerView"], ["v", "whsec_VaudOwnerFill"]]) {
+      const { nodeId } = await connection.send("DOM.querySelector", { nodeId: root.nodeId, selector: `#${id}` }, sessionId);
+      const { node } = await connection.send("DOM.describeNode", { nodeId }, sessionId);
+      targets.push({ kind: "browser", target_id: tab.target_id, document_id: tab.document_id, node_ref: `backend:${node.backendNodeId}`, value_hash: createHash("sha256").update(value).digest("hex"), fill_revision: 1 });
+    }
+    await host.protect({ values: ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"], targets });
+    const masked = JSON.stringify(await next(0, true));
+    for (const value of ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"]) assert(!masked.includes(value), `AU-03: ${value} never reaches a masked stream`);
+    const owner = await subscribe({ audience: "owner" });
+    const shown = JSON.stringify(await owner.next(0, true));
+    for (const value of ["sk_test_51VaudOwnerView", "whsec_VaudOwnerFill"]) assert(shown.includes(value), `AU-03: the owner's view shows ${value} as the page does`);
+    const again = JSON.stringify(await next(0, true));
+    assert(!again.includes("sk_test_51VaudOwnerView"), "AU-03: an owner stream never unmasks another stream");
+    await assert.rejects(subscribe({ audience: "viewer" }), /kernel-owned/);
+  }));
+
 // Decision G (GitHub ref picker): the click's focus must not leave in a packet of its own ahead of the overlay the
 // click renders a frame later; one packet carries both.
 test("MP-10: a click that focuses a button and renders its overlay a frame later reaches the viewer as one packet", () => mirrored(
@@ -2024,6 +2057,34 @@ test('MP-10/MP-11 M2: a published subtree moved into an unvisited parent during 
 // maskleak r3 (MP-11): a Vault fill into a password field that the page then flips to type=text must never put the
 // value on the mirror wire: every packet from the first snapshot on is scanned for the secret (plain, UTF-16, base64).
 const secretForms = secret => { const utf16 = Buffer.from(secret, "utf16le"); return [secret, utf16.toString("latin1"), Buffer.from(secret).toString("base64").replace(/=+$/, ""), utf16.toString("base64").replace(/=+$/, ""), Buffer.from(secret).toString("hex")]; };
+test('MP-08/MP-11 owner-alone display reveals the filled field and shared display masks it again', () => mirrored(
+  '<input id="f" type="password"><input id="ordinary" value="ordinary text">', async ({host, evaluate, next, subscribe}) => {
+    const tab = [...host.tabs.values()][0], {connection, sessionId} = await host.browser.resolvePageTarget(tab.target_id);
+    const {root} = await connection.send('DOM.getDocument', {}, sessionId);
+    const {nodeId} = await connection.send('DOM.querySelector', {nodeId:root.nodeId, selector:'#f'}, sessionId);
+    const node_ref = `backend:${(await connection.send('DOM.describeNode', {nodeId}, sessionId)).node.backendNodeId}`;
+    const secret = 'vfill-owner-display-canary', value_hash = createHash('sha256').update(secret).digest('hex');
+    const policy = {values:[secret], targets:[{kind:'browser',target_id:tab.target_id,document_id:tab.document_id,node_ref,value_hash}]};
+    await host.protect({...policy, display_masked:false});
+    await host.browser.performAction({target_id:tab.target_id,document_id:tab.document_id,node_ref,action:{kind:'fill',text:secret,expected_document_url:tab.url}});
+    await evaluate("f.type='text';true");
+    const owner = JSON.stringify(await next(0,true));
+    assert(owner.includes(secret), 'the owner sees their revealed Vault-filled field');
+    assert(owner.includes('ordinary text'), 'ordinary fields stay visible');
+    const model = await host.request({op:'screenshot',tab_id:tab.tab_id,generation:host.generation,_agent_input:true});
+    assert(model.protected_regions.length > 0, 'the model capture still masks the revealed field while the owner sees it');
+    const image = decodePng(model.data_base64), region = model.protected_regions[0];
+    const offset = (Math.floor(region.y + region.height / 2) * image.width + Math.floor(region.x + region.width / 2)) * 4;
+    assert.deepEqual([...image.pixels.subarray(offset, offset + 3)], [0,0,0]);
+    await host.protect({...policy, display_masked:true});
+    const shared = JSON.stringify(await next(0,true));
+    assert(!shared.includes(secret), 'a non-owner watching masks the shared display');
+    assert(shared.includes('ordinary text'), 'sharing masks only the filled field');
+    const late = await subscribe();
+    assert(!JSON.stringify(await late.next()).includes(secret), 'a late viewer receives the masked policy');
+    await host.protect({...policy, display_masked:false});
+    assert(JSON.stringify(await next(0,true)).includes(secret), 'the owner sees the field again after the viewer leaves');
+  }));
 for (const [name, html, fillAndFlip] of [
   ["the page flips the field after the fill", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate) => { await fill(); await evaluate("f.type='text';true"); }],
   ["the page flips the field in the fill's own task", '<form><input id="f" type="password"><p>after</p></form>', async (fill, evaluate, secret) => { await evaluate(`f.value=${JSON.stringify(secret)};f.dispatchEvent(new Event('input',{bubbles:true}));f.type='text';true`); }],

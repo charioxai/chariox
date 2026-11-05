@@ -144,6 +144,21 @@ fn meta_agent_spawn_parser_supports_provider_model_and_effort() {
 }
 
 #[test]
+fn meta_agent_spawn_parser_does_not_read_trailing_punctuation_as_the_model() {
+    let args = vec![
+        "lh1".to_string(),
+        "--kernel".to_string(),
+        "worker".to_string(),
+        ".".to_string(),
+    ];
+
+    let error = parse_meta_agent_spawn_args(&args, &test_session())
+        .expect_err("a lone period is not a model name");
+
+    assert!(format!("{error}").contains("`.` is not a model name"));
+}
+
+#[test]
 fn meta_agent_spawn_parser_rejects_positional_and_flag_model() {
     let args = vec![
         "verifier".to_string(),

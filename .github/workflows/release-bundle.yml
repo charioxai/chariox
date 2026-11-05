@@ -5,20 +5,13 @@ name: Release bundle
 # signing material run in the protected `release` environment; the workflow never
 # prints a key and removes each key file after use.
 #
-# The App runtime input (the native artifact, launcher, sandbox and platform
-# libraries plus the runtime builder's signed attestation) comes from the
-# runtime builder run named by `runtime_input_run`, as artifacts
-# `runtime-input-<platform>` holding `input/`, `builder.json` and `builder.sig`.
-# Release work happens under $RUNNER_TEMP: the runtime signer refuses inputs
-# and outputs inside a source checkout.
+# The WASM App worker is built, signed and packaged beside the kernel.
 #
 # `release` environment:
 #   secrets  CHARIOX_RELEASE_KEY          Ed25519 PKCS#8 PEM; signs bundle manifests
-#            CHARIOX_RUNTIME_RELEASE_KEY  Ed25519 PKCS#8 PEM; signs App runtime inventories
 #            MACOS_DEVELOPER_ID_P12, MACOS_DEVELOPER_ID_P12_PASSWORD   Developer ID Application identity (base64 .p12)
 #            APPLE_NOTARY_KEY, APPLE_NOTARY_KEY_ID, APPLE_NOTARY_ISSUER  App Store Connect API key for notarytool
 #   vars     CHARIOX_RELEASE_PUBLIC_KEY   the published release key (64 hex), checked against every signed bundle
-#            CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY  SPKI PEM of the trusted runtime builder key
 #            CHARIOX_CODESIGN_IDENTITY    "Developer ID Application: <Name> (<TEAMID>)"
 
 on:
@@ -26,9 +19,6 @@ on:
     inputs:
       version:
         description: 'Release version without the v; tag v<version> must point at the dispatched commit'
-        required: true
-      runtime_input_run:
-        description: 'Run ID of the runtime builder run with runtime-input-linux-x64 and runtime-input-darwin-arm64'
         required: true
 
 permissions:
@@ -77,12 +67,10 @@ jobs:
           - platform: linux-x64
             # The oldest supported runner sets the glibc floor (2.35).
             runner: ubuntu-22.04
-            libexec: chariox-app-storage chariox-app-runtime-install
             # The Room browser's resize and native capture run through this kernel ELF's native display worker.
             kernel_features: --features chariox-kernel/native-display
           - platform: darwin-arm64
             runner: macos-15
-            libexec: chariox-app-runtime-install
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
@@ -114,11 +102,10 @@ jobs:
           # The kernel opens its WASM App worker only beside itself. One cargo invocation builds both, so
           # they share the profile, the feature set and the dependency features (the worker's seccomp filter
           # is tested against the tokio the kernel enables).
-          bins=(chariox-kernel chariox-relay chariox-app-package chariox-app-wasm-worker ${{ matrix.libexec }})
-          cargo build --release --locked ${{ matrix.kernel_features }} -p chariox-kernel -p chariox-relay -p chariox-app-package -p chariox-app-wasm-worker -p chariox-app-runtime "${bins[@]/#/--bin=}"
-          mkdir -p unsigned/bin unsigned/libexec
+          bins=(chariox-kernel chariox-relay chariox-app-package chariox-app-wasm-worker)
+          cargo build --release --locked ${{ matrix.kernel_features }} -p chariox-kernel -p chariox-relay -p chariox-app-package -p chariox-app-wasm-worker "${bins[@]/#/--bin=}"
+          mkdir -p unsigned/bin
           cp target/release/{chariox-kernel,chariox-relay,chariox-app-package,chariox-app-wasm-worker} unsigned/bin/
-          for name in ${{ matrix.libexec }}; do cp "target/release/$name" unsigned/libexec/; done
       - name: Check the WASM App worker starts
         run: unsigned/bin/chariox-app-wasm-worker identity | grep -q worker_build
       - name: Check Linux kernel startup without display libraries
@@ -173,24 +160,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: unsigned-linux-x64
-      - uses: actions/download-artifact@v4
-        with:
-          name: runtime-input-linux-x64
-          path: ${{ runner.temp }}/runtime-input
-          run-id: ${{ inputs.runtime_input_run }}
-          github-token: ${{ github.token }}
-      - name: Sign the App runtime inventory (existing release signer)
-        env:
-          RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
-          RUNTIME_BUILDER_PUBLIC_KEY: ${{ vars.CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY }}
-        run: |
-          trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
-          (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
-          printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
-          node scripts/sign-app-runtime-release.mjs --input "$RUNNER_TEMP/runtime-input/input" \
-            --builder-attestation "$RUNNER_TEMP/runtime-input/builder.json" --builder-signature "$RUNNER_TEMP/runtime-input/builder.sig" \
-            --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
-            --output "$RUNNER_TEMP/runtime" > "$RUNNER_TEMP/runtime-receipt.json"
       - name: Assemble, sign and verify the bundle
         env:
           RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
@@ -201,9 +170,8 @@ jobs:
           mkdir "$RUNNER_TEMP/executables" && tar -xzf unsigned-linux-x64.tar.gz -C "$RUNNER_TEMP/executables"
           node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform linux-x64 --version "$VERSION" --source-commit "$COMMIT" \
-            --executables "$RUNNER_TEMP/executables" --runtime "$RUNNER_TEMP/runtime" \
+            --executables "$RUNNER_TEMP/executables" \
             --slice-build-context "$RUNNER_TEMP/slice-build-context" \
-            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
           node scripts/release-bundle.mjs sign --bundle "$out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"
@@ -245,12 +213,6 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: unsigned-darwin-arm64
-      - uses: actions/download-artifact@v4
-        with:
-          name: runtime-input-darwin-arm64
-          path: ${{ runner.temp }}/runtime-input
-          run-id: ${{ inputs.runtime_input_run }}
-          github-token: ${{ github.token }}
       - name: Load the Developer ID identity and notary profile into a temporary keychain
         env:
           P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
@@ -273,24 +235,6 @@ jobs:
           "$RUNNER_TEMP/signed/bin/chariox-app-wasm-worker" identity | grep -q worker_build
           # MP-07 / MP-11: exercise Setup's JavaScriptCore after signing too.
           test "$("$RUNNER_TEMP/signed/bin/chariox-setup" --version)" = "Chariox Setup $VERSION"
-          # The runtime installer must carry macOS enrollment (#431); without it, it answers platform_unsupported.
-          answer=$("$RUNNER_TEMP/signed/libexec/chariox-app-runtime-install" 2>&1 || true)
-          [[ "$answer" == *app_runtime_installer_requires_root* ]] || { echo "the runtime installer has no macOS enrollment: $answer"; exit 1; }
-      - name: Codesign the App runtime, then sign its inventory over the signed bytes
-        env:
-          RUNTIME_RELEASE_KEY: ${{ secrets.CHARIOX_RUNTIME_RELEASE_KEY }}
-          RUNTIME_BUILDER_PUBLIC_KEY: ${{ vars.CHARIOX_RUNTIME_BUILDER_PUBLIC_KEY }}
-        run: |
-          trap 'rm -f "$RUNNER_TEMP/runtime-release.pem"' EXIT
-          node scripts/sign-macos-release.mjs --input "$RUNNER_TEMP/runtime-input/input" --output "$RUNNER_TEMP/runtime-codesigned" \
-            > "$RUNNER_TEMP/runtime-codesign-receipt.json"
-          (umask 077; printf '%s\n' "$RUNTIME_RELEASE_KEY" > "$RUNNER_TEMP/runtime-release.pem")
-          printf '%s\n' "$RUNTIME_BUILDER_PUBLIC_KEY" > "$RUNNER_TEMP/runtime-builder.pub.pem"
-          node scripts/sign-app-runtime-release.mjs --input "$RUNNER_TEMP/runtime-input/input" \
-            --builder-attestation "$RUNNER_TEMP/runtime-input/builder.json" --builder-signature "$RUNNER_TEMP/runtime-input/builder.sig" \
-            --trusted-builder-key "$RUNNER_TEMP/runtime-builder.pub.pem" --signing-key "$RUNNER_TEMP/runtime-release.pem" \
-            --codesigned "$RUNNER_TEMP/runtime-codesigned" --codesign-identity "$CHARIOX_CODESIGN_IDENTITY" \
-            --output "$RUNNER_TEMP/runtime" > "$RUNNER_TEMP/runtime-receipt.json"
       - name: Assemble, sign and verify the bundle
         env:
           RELEASE_KEY: ${{ secrets.CHARIOX_RELEASE_KEY }}
@@ -300,10 +244,9 @@ jobs:
           out="$RUNNER_TEMP/out"
           node scripts/release-bundle.mjs slice-context --source-commit "$COMMIT" --output "$RUNNER_TEMP/slice-build-context"
           node scripts/release-bundle.mjs assemble --platform darwin-arm64 --version "$VERSION" --source-commit "$COMMIT" \
-            --executables "$RUNNER_TEMP/signed" --runtime "$RUNNER_TEMP/runtime" \
+            --executables "$RUNNER_TEMP/signed" \
             --slice-build-context "$RUNNER_TEMP/slice-build-context" \
             --macos-signing-receipt "$RUNNER_TEMP/macos-signing-receipt.json" \
-            --runtime-public-key "$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).publicKeyHex' "$RUNNER_TEMP/runtime-receipt.json")" \
             --output "$out/$BUNDLE"
           (umask 077; printf '%s\n' "$RELEASE_KEY" > "$RUNNER_TEMP/release.pem")
           node scripts/release-bundle.mjs sign --bundle "$out/$BUNDLE" --signing-key "$RUNNER_TEMP/release.pem"

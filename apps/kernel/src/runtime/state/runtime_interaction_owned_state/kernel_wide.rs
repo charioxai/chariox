@@ -48,6 +48,73 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    /// An outside agent's Vault value request: a kernel-wide decision every owner terminal
+    /// shows as a popup. It has the secret choice and no passkey; the answer is the value.
+    pub(super) fn register_kernel_wide_secret_interaction(
+        &self,
+        interaction: crate::session::RuntimeInteraction,
+        responder: tokio::sync::oneshot::Sender<super::super::PendingInteractionResolution>,
+        owner: Option<&str>,
+        forwarding: Option<&crate::transport::relay_peer::RemoteNativeInteractionContext>,
+        credential_owner: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        let owner = owner
+            .filter(|owner| *owner == self.config_projection.local_owner_user_id())
+            .ok_or_else(|| interaction_error("Only the local kernel owner can receive a secret"))?;
+        if forwarding.is_some()
+            || credential_owner.is_some()
+            || interaction.agent_id().is_some()
+            || interaction.kind() != crate::session::RuntimeInteractionKind::Choice
+            || interaction.default_on_timeout().is_some()
+            || !interaction.custom_choice().is_some_and(|choice| {
+                choice.input_kind() == crate::session::RuntimeInteractionInputKind::Secret
+            })
+            || !interaction
+                .timeout_sec()
+                .is_some_and(|seconds| (1..=3600).contains(&seconds))
+        {
+            return Err(interaction_error("Invalid kernel-wide secret request"));
+        }
+        let scope = crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE;
+        let prompt = super::super::passkey_prompts::vault_secret_prompt(
+            scope,
+            &interaction,
+            crate::session::unix_epoch_ms(),
+        );
+        self.ensure_kernel_decision_capacity(owner, &interaction)?;
+        let mut pending = self.pending_interactions.write();
+        if pending.contains_key(interaction.id()) {
+            return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
+        }
+        self.passkey_prompts
+            .forget_answered(scope, interaction.id());
+        pending.insert(
+            interaction.id().into(),
+            super::super::PendingInteraction {
+                goal_approval: None,
+                session_id: scope.into(),
+                session_store_identity: self.session_store.weak_identity(),
+                agent_lifetime: None,
+                kernel_operation_owner: Some(owner.into()),
+                terminal_credential_owner: None,
+                kernel_operation_deadline: Some(
+                    std::time::Instant::now()
+                        + std::time::Duration::from_secs(
+                            interaction.timeout_sec().expect("validated timeout"),
+                        ),
+                ),
+                passkey_prompt: Some(prompt),
+                responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
+                kernel_wide_interaction: Some(interaction),
+                user_domain_interaction: None,
+                async_task_id: None,
+            },
+        );
+        drop(pending);
+        self.passkey_prompts.record_change();
+        Ok(())
+    }
+
     pub(super) fn register_kernel_wide_access_interaction(
         &self,
         interaction: crate::session::RuntimeInteraction,
@@ -100,6 +167,7 @@ impl KernelRuntimeOwnedState {
             interaction.id().into(),
             super::super::PendingInteraction {
                 goal_approval: None,
+                async_task_id: None,
                 session_id: scope.into(),
                 session_store_identity: self.session_store.weak_identity(),
                 agent_lifetime: None,

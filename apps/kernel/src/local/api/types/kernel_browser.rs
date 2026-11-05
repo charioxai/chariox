@@ -4,6 +4,12 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum KernelBrowserCommand {
+    /// Protocol 941: a person fills the focused page field by Vault handle.
+    PasteSecret {
+        credential_id: String,
+        tab_id: String,
+        generation: u64,
+    },
     /// MP-08/MP-11 local500: human grants only the leased worker's observed desktop.
     GrantLeasedComputer {
         agent_id: String,
@@ -216,6 +222,12 @@ pub enum KernelBrowserCommand {
         generation: u64,
         x: u32,
         y: u32,
+    },
+    /// Cancel an observed download in the current host generation (937/386).
+    CancelDownload {
+        tab_id: String,
+        generation: u64,
+        download_id: String,
     },
     Input {
         tab_id: String,

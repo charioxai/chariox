@@ -39,7 +39,7 @@ struct Fixture {
 impl Fixture {
     fn compile() -> Self {
         let scratch = Scratch::new();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/app-worker/src");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture.c");
         let executable = scratch.0.join("abi-fixture");
         let diagnostics = scratch.0.join("compiler.log");

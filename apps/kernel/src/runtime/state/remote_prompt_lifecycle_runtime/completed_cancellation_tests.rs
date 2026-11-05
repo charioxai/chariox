@@ -127,7 +127,7 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
         )
         .unwrap();
     assert!(runtime
-        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch, Some(WORKER_RUN_ID),)
+        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
         .await
         .is_err());
     assert!(
@@ -143,10 +143,7 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
     let expected = dispatch.clone();
     let recovery = tokio::spawn(async move {
         recovering
-            .resume_delivered_remote_prompt_cancellation_after_restart(
-                &expected,
-                Some(WORKER_RUN_ID),
-            )
+            .resume_delivered_remote_prompt_cancellation_after_restart(&expected)
             .await
     });
     let (id, target, request) = next_peer_request(
@@ -191,6 +188,7 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
         &worker_private_key,
         &home_public_key,
         RelayPeerResponse::LeasedRuntimeProjectionDrained {
+            projection_sequence: Some(1),
             event: Some(
                 crate::transport::relay_peer::RelayPeerEvent::LeasedRuntimeProjection {
                     home_session_id: session_id.clone(),
@@ -209,6 +207,30 @@ async fn completed_remote_cancellation_recovers_after_active_run_was_cleared() {
                     }],
                 },
             ),
+        },
+    )
+    .await;
+    // The drained completion makes the home ask the worker for the turn's git observations.
+    let (id, target, request) = next_peer_request(
+        &mut peer_requests,
+        &worker_private_key,
+        "completed cancellation git observation",
+    )
+    .await;
+    assert_eq!(target, WORKER_ID);
+    assert!(matches!(
+        request,
+        RelayPeerRequest::ObserveLeasedGitAfter { .. }
+    ));
+    acknowledge_peer_request(
+        &relay_state,
+        id,
+        &worker_private_key,
+        &home_public_key,
+        RelayPeerResponse::LeasedGitObserved {
+            provider_run_id: WORKER_RUN_ID.into(),
+            git_observations: Vec::new(),
+            workspace_live_sync_change: None,
         },
     )
     .await;

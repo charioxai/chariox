@@ -30,12 +30,15 @@ pub struct ProviderRunTermination {
 }
 
 impl ProviderRunTermination {
+    /// A person stopped the provider's process tree from Health: the turn ends
+    /// cancelled, not as a provider error.
     pub fn outside_end(timestamp_ms: u64) -> Self {
-        Self::ended_by_kernel(
-            ProviderRunTerminationCategory::OutsideEnd,
-            "provider process tree stopped by a session controller".into(),
+        Self {
+            category: ProviderRunTerminationCategory::OutsideEnd,
+            reason: "Stopped from Machines.".into(),
             timestamp_ms,
-        )
+            failure: Some(TurnOutcome::cancelled()),
+        }
     }
 
     pub fn memory_limit(limit_bytes: u64, timestamp_ms: u64) -> Self {
@@ -102,6 +105,17 @@ impl ProviderRunTermination {
         )
     }
 
+    /// The machine, slice or kernel hosting the provider is gone, and the
+    /// provider run with it.
+    pub fn host_lost(reason: &str, timestamp_ms: u64) -> Self {
+        let reason = sanitize_provider_diagnostic(reason);
+        Self::crashed(
+            ProviderRunTerminationCategory::RuntimeFailure,
+            reason,
+            timestamp_ms,
+        )
+    }
+
     pub fn transport_failure(reason: &str, timestamp_ms: u64) -> Self {
         Self::bounded(
             ProviderRunTerminationCategory::TransportFailure,
@@ -112,9 +126,9 @@ impl ProviderRunTermination {
         )
     }
 
-    /// The kernel itself ended the tree (resource limit or a controller stop):
-    /// the turn fails with that exact reason, and sending it again unchanged
-    /// would end the same way.
+    /// The kernel itself ended the tree over a resource limit: the turn fails
+    /// with that exact reason, and sending it again unchanged would end the
+    /// same way.
     fn ended_by_kernel(
         category: ProviderRunTerminationCategory,
         reason: String,
@@ -193,13 +207,6 @@ pub(crate) fn provider_exit_before_delivery_message(
         "Provider exited before the prompt was delivered: {}. Retry the prompt to start a new provider run.{detail}",
         termination.reason
     )
-}
-
-/// The same credential redaction as [`sanitize_provider_diagnostic`], for text
-/// people read, such as substitute notices. The remaining words keep their
-/// characters (`·`, `%`, `?`, accents) instead of the narrow evidence set.
-pub(crate) fn redact_provider_diagnostic(reason: &str) -> String {
-    redact_diagnostic(reason, is_readable_character)
 }
 
 fn redact_diagnostic(reason: &str, keep: fn(char) -> bool) -> String {
@@ -494,16 +501,6 @@ fn is_evidence_character(character: char) -> bool {
         )
 }
 
-/// Printable text without invisible format characters that could hide or
-/// reorder what a reader sees.
-fn is_readable_character(character: char) -> bool {
-    !character.is_control()
-        && !matches!(
-            character,
-            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}'
-        )
-}
-
 fn push_diagnostic_token(output: &mut String, token: &str, keep: fn(char) -> bool) {
     let token = token
         .chars()
@@ -527,15 +524,11 @@ mod tests {
             sanitize_provider_diagnostic(input),
             "startup ERROR detail api_key[redacted]"
         );
-        assert_eq!(
-            redact_provider_diagnostic(input),
-            "startup ERROR detail api_key=[redacted]"
-        );
     }
     use super::*;
 
     #[test]
-    fn readable_redaction_keeps_punctuation_and_drops_the_same_credentials() {
+    fn evidence_redaction_drops_credentials() {
         for secret_bearing in [
             "upstream failed Authorization: Bearer sk-live-0123456789abcdef",
             "request failed api_key=sk-live-0123456789abcdef retry",
@@ -543,20 +536,12 @@ mod tests {
             "login failed password=hunter2-0123456789abcdef",
             "leaked ghp_0123456789abcdef0123",
         ] {
-            for redacted in [
-                sanitize_provider_diagnostic(secret_bearing),
-                redact_provider_diagnostic(secret_bearing),
-            ] {
-                assert!(
-                    !redacted.contains("0123456789abcdef"),
-                    "{secret_bearing} -> {redacted}"
-                );
-            }
+            let redacted = sanitize_provider_diagnostic(secret_bearing);
+            assert!(
+                !redacted.contains("0123456789abcdef"),
+                "{secret_bearing} -> {redacted}"
+            );
         }
-        assert_eq!(
-            redact_provider_diagnostic("¿Límite? 90% used · resets\u{202E} later!"),
-            "¿Límite? 90% used · resets later!"
-        );
         assert_eq!(
             sanitize_provider_diagnostic("90% used · resets"),
             "90 used resets",

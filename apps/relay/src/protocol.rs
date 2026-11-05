@@ -426,6 +426,12 @@ pub enum RelayEnvelope {
     },
     Close {
         reason: String,
+        /// The kernel ends this connection for a hot reload and is back on the
+        /// relay within about a second: set by the kernel on its last message
+        /// and forwarded to the clients subscribed to it, so they retry soon
+        /// instead of backing off as for an outage.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        kernel_reload: bool,
     },
 }
 

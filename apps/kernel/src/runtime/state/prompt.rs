@@ -246,7 +246,7 @@ impl KernelRuntimeOwnedState {
             agent_id,
             provider_run_id,
             expected_prompt_id,
-            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+            failure.settlement_status(),
             provider_termination,
             Some(failure),
         )

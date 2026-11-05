@@ -58,6 +58,15 @@ impl CodexAuthoritativeBackfillGate {
         *self = Self::default();
     }
 
+    /// For a turn whose start was reconciled before: only completion evidence
+    /// asks for a reconciliation again.
+    #[cfg(unix)]
+    pub(super) fn started_reconciled(now: Instant) -> Self {
+        let mut gate = Self::default();
+        gate.record_attempt(None, now);
+        gate
+    }
+
     fn record_attempt(&mut self, evidence_version: Option<u64>, now: Instant) {
         if self.evidence_version == evidence_version && evidence_version.is_some() {
             self.recovery_attempts = self.recovery_attempts.saturating_add(1);

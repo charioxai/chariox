@@ -237,7 +237,7 @@ const chromium = {
       }
       case "Runtime.callFunctionOn": {
         if (!["worker-save", "worker-note", "worker-shadow", "worker-frame"].includes(params.objectId)) throw new Error("wrong worker object");
-        if (params.functionDeclaration.includes('this.localName === "input"')) {
+        if (params.functionDeclaration.includes('return "detached"') && params.functionDeclaration.includes('this.type')) {
           if (existsSync(join(dirname(pidFile), "hold-upload"))) {
             writeFileSync(join(dirname(pidFile), "upload-pending"), "file input inspection pending");
             while (existsSync(join(dirname(pidFile), "hold-upload"))) {

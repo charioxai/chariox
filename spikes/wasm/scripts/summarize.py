@@ -43,7 +43,7 @@ def size(variant):
     if variant.startswith('wasm'):
         return f"{os.path.getsize(root + '/app.wasm') / 1024:.0f} KiB .wasm, {os.path.getsize(root + '/app.cwasm') / 1024:.0f} KiB .cwasm"
     total = sum(os.path.getsize(os.path.join(d, f)) for d, _, fs in os.walk(root) for f in fs)
-    return f'{total / 1024:.0f} KiB package (+ Node runtime)'
+    return f'{total / 1024:.0f} KiB package (+ legacy native engine)'
 
 for sandbox in ['bwrap', 'none']:
     print(f'\n### sandbox: {sandbox} (median of runs [min–max])\n')

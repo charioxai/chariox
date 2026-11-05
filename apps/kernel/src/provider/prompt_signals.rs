@@ -5,6 +5,15 @@ use super::runtime_run::ProviderRunTokenUsage;
 
 pub(crate) const PROVIDER_CONNECTION_RETRY_MERGE_KEY: &str = "__provider_connection_retry__";
 
+const CLAUDE_ROOT_YOLO_REFUSAL: &str =
+    "--dangerously-skip-permissions cannot be used with root/sudo privileges";
+
+#[derive(Debug, thiserror::Error)]
+enum ProviderTerminalPermissionError {
+    #[error("Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.")]
+    ClaudeRootYolo,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPromptChunk {
     pub kind: TerminalOutputKind,
@@ -80,10 +89,7 @@ pub(crate) fn classify_provider_terminal_failure_text(
         && normalized.contains("dangerously-skip-permissions")
         && normalized.contains("cannot be used with root/sudo privileges")
     {
-        return Some(format!(
-            "Provider reported a terminal permission error: {}",
-            compact_provider_error_snippet(text)
-        ));
+        return Some(ProviderTerminalPermissionError::ClaudeRootYolo.to_string());
     }
     let fatal_model_error = normalized.contains("unsupported model")
         || normalized.contains("invalid model")
@@ -116,7 +122,10 @@ pub(crate) fn classify_provider_terminal_failure_output_text(
     text.lines().find_map(|line| {
         let normalized = line.trim().to_lowercase();
         let exact_provider_dialog = adapter_key == "claude"
-            && claude_normalized_text_reports_resource_limit_dialog(&normalized);
+            && (claude_normalized_text_reports_resource_limit_dialog(&normalized)
+                || normalized
+                    .strip_prefix(CLAUDE_ROOT_YOLO_REFUSAL)
+                    .is_some_and(|suffix| matches!(suffix, "" | " for security reasons")));
         if !provider_normalized_text_has_error_frame(&normalized) && !exact_provider_dialog {
             return None;
         }
@@ -220,47 +229,18 @@ pub(crate) fn provider_coded_failure_text(provider: &str, code: &str, message: &
     format!("{provider} error [{code}]: {message}")
 }
 
-/// Why a provider failed a turn, for the notice that reruns the turn on a
-/// substitute. Every provider failure reruns it; this only names the cause:
-/// the provider's structured code, then a process termination, then a known
-/// limit phrase, then the provider's own words.
+/// The same calm reason used by the failed turn, including in substitute notices.
 pub(crate) fn provider_turn_failure_reason(
     adapter_key: &str,
     message: &str,
     termination: Option<&super::ProviderRunTermination>,
 ) -> String {
-    // The reason is published in notices and history, so it is built only
-    // from redacted text that still reads like the provider's message.
-    let detail = super::redact_provider_diagnostic(message);
-    let detail = detail
-        .strip_prefix("Provider prompt dispatch failed: ")
-        .unwrap_or(&detail);
-    if let Some(code) = provider_failure_code(detail) {
-        return format!("{} ({code})", provider_failure_code_description(code));
-    }
-    if let Some(termination) = termination.filter(|termination| {
-        termination.category != super::ProviderRunTerminationCategory::ExplicitProviderError
-    }) {
-        return super::redact_provider_diagnostic(&termination.reason);
-    }
-    let detail = detail
-        .strip_prefix("Provider reported a substitutable resource limit: ")
-        .unwrap_or(detail);
-    let snippet = bounded_reason_snippet(detail);
-    if snippet.is_empty() {
-        return "provider reported an error".to_string();
-    }
-    if classify_provider_substitutable_failure_text(adapter_key, detail).is_some() {
-        return format!("usage or rate limit: {snippet}");
-    }
-    snippet
+    let failure = termination
+        .and_then(|termination| termination.failure.clone())
+        .unwrap_or_else(|| super::TurnOutcome::classify(adapter_key, message));
+    failure.reason.trim_end_matches('.').to_string()
 }
 
-fn provider_failure_code(detail: &str) -> Option<&str> {
-    split_coded_failure(detail).map(|(code, _, _)| code)
-}
-
-/// The code, native message and optional native retryability in an adapter frame.
 pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bool>)> {
     ["Codex error [", "Claude StopFailure [", "OpenCode error ["]
         .into_iter()
@@ -278,39 +258,6 @@ pub(super) fn split_coded_failure(detail: &str) -> Option<(&str, &str, Option<bo
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
             .then_some((code, message, retryable))
         })
-}
-
-fn provider_failure_code_description(code: &str) -> &'static str {
-    match code {
-        "server_overloaded" => "model at capacity",
-        "usage_limit_exceeded" => "usage limit reached",
-        "rate_limit_exceeded" | "rate_limit" => "rate limited",
-        "session_budget_exceeded" => "session budget exhausted",
-        "billing_error" => "billing or credit limit",
-        "context_window_exceeded" => "context window exceeded",
-        "max_output_tokens" => "output token limit reached",
-        "internal_server_error" | "server_error" => "provider server error",
-        "unauthorized" | "authentication_failed" => "authentication failed",
-        "oauth_org_not_allowed" => "organization not allowed",
-        "bad_request" | "invalid_request" => "request rejected",
-        "model_not_found" => "model not found",
-        "http_connection_failed" | "response_stream_connection_failed" => "connection failed",
-        "response_stream_disconnected" => "stream disconnected",
-        "response_too_many_failed_attempts" => "retries exhausted",
-        "cyber_policy" | "misalignment_policy_violation" => "blocked by provider policy",
-        "sandbox_error" => "sandbox error",
-        _ => "provider error",
-    }
-}
-
-fn bounded_reason_snippet(text: &str) -> String {
-    let mut snippet = compact_provider_error_snippet(text);
-    const MAX_CHARS: usize = 200;
-    if snippet.chars().count() > MAX_CHARS {
-        snippet = snippet.chars().take(MAX_CHARS).collect::<String>();
-        snippet.push_str("...");
-    }
-    snippet
 }
 
 /// A usage, quota, credit or rate limit in a provider's own words, including
@@ -399,99 +346,28 @@ mod tests {
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
         claude_native_stop_failure, provider_retry_status, provider_turn_failure_reason,
+        CLAUDE_ROOT_YOLO_REFUSAL,
     };
     use crate::provider::ProviderRunTermination;
 
     #[test]
-    fn turn_failure_reason_names_the_structured_code_first() {
+    fn failure_reasons_do_not_repeat_provider_words_or_codes() {
+        for (adapter, text, reason) in [
+            ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", "The provider is at capacity"),
+            ("claude", "Claude StopFailure [rate_limit]: You've hit your session limit", "The provider's usage limit was reached"),
+            ("opencode", "Insufficient balance. Manage your billing here.", "The provider's usage limit was reached"),
+            ("codex", "stream disconnected", "The connection to the provider was interrupted"),
+            ("codex", "upstream failed Authorization: Bearer sk-live-0123456789abcdef", "The provider could not complete this request"),
+        ] {
+            assert_eq!(provider_turn_failure_reason(adapter, text, None), reason);
+        }
         assert_eq!(
             provider_turn_failure_reason(
                 "codex",
-                "Provider prompt dispatch failed: Codex error [server_overloaded]: \
-                 Selected model is at capacity. Please try a different model.",
-                None,
-            ),
-            "model at capacity (server_overloaded)"
-        );
-        assert_eq!(
-            provider_turn_failure_reason(
-                "codex",
-                "Codex error [usage_limit_exceeded]: You've hit your usage limit.",
-                None,
-            ),
-            "usage limit reached (usage_limit_exceeded)"
-        );
-        let stop_failure = claude_native_stop_failure(&serde_json::json!({
-            "hook_event_name": "StopFailure",
-            "error": "rate_limit",
-            "last_assistant_message": "You've hit your session limit"
-        }))
-        .unwrap();
-        assert_eq!(
-            provider_turn_failure_reason("claude", &stop_failure, None),
-            "rate limited (rate_limit)"
-        );
-        assert_eq!(
-            provider_turn_failure_reason("codex", "Codex error [someNewCode]: x", None),
-            "provider error (someNewCode)"
-        );
-    }
-
-    #[test]
-    fn turn_failure_reason_falls_back_to_exit_limit_text_and_provider_words() {
-        assert_eq!(
-            provider_turn_failure_reason(
-                "codex",
-                "Provider run `run-1` ended unexpectedly: provider process exited with status 1.",
-                Some(&ProviderRunTermination::process_exit(1, 1)),
+                "",
+                Some(&ProviderRunTermination::process_exit(1, 1))
             ),
             "provider process exited with status 1"
-        );
-        assert_eq!(
-            provider_turn_failure_reason(
-                "opencode",
-                "Insufficient balance. Manage your billing here.",
-                None
-            ),
-            "usage or rate limit: Insufficient balance. Manage your billing here."
-        );
-        assert_eq!(
-            provider_turn_failure_reason("codex", "  stream disconnected  ", None),
-            "stream disconnected"
-        );
-        assert_eq!(
-            provider_turn_failure_reason("codex", "", None),
-            "provider reported an error"
-        );
-        assert!(
-            provider_turn_failure_reason(
-                "codex",
-                "The reviewer wrote Codex error [server_overloaded]: here",
-                None,
-            )
-            .starts_with("The reviewer wrote"),
-            "a code is read only from the kernel's leading frame"
-        );
-    }
-
-    #[test]
-    fn turn_failure_reason_never_carries_credentials() {
-        let reason = provider_turn_failure_reason(
-            "codex",
-            "Provider prompt dispatch failed: upstream failed \
-             Authorization: Bearer sk-live-0123456789abcdef",
-            None,
-        );
-        assert!(reason.starts_with("upstream failed"), "{reason}");
-        assert!(!reason.contains("sk-live-0123456789abcdef"), "{reason}");
-        assert_eq!(
-            provider_turn_failure_reason(
-                "claude",
-                "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
-                None,
-            ),
-            "You've used 90% of your limit · resets 10:40pm (Europe/Madrid)",
-            "the reason keeps the provider's punctuation"
         );
     }
 
@@ -735,16 +611,33 @@ mod tests {
     }
 
     #[test]
-    fn terminal_classifier_preserves_claude_root_permission_restriction() {
+    fn terminal_classifier_explains_claude_root_permission_restriction() {
         let failure = classify_provider_terminal_failure_text(
             "claude",
-            "Error: --dangerously-skip-permissions cannot be used with root/sudo privileges",
+            "--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons",
         )
         .expect("Claude root permission restriction should be terminal");
 
-        assert!(failure.contains("terminal permission error"));
-        assert!(failure.contains("--dangerously-skip-permissions"));
-        assert!(failure.contains("root/sudo privileges"));
+        assert_eq!(failure, "Claude refused YOLO because this kernel runs as root. Run the kernel as a normal user, or update Chariox.");
+        assert_eq!(
+            classify_provider_terminal_failure_output_text(
+                "claude",
+                &format!("{CLAUDE_ROOT_YOLO_REFUSAL} for security reasons")
+            ),
+            Some(failure.clone()),
+            "the recorded unframed refusal must use the existing pane failure path"
+        );
+        for adapter in ["codex", "opencode"] {
+            assert!(
+                classify_provider_terminal_failure_text(adapter, CLAUDE_ROOT_YOLO_REFUSAL)
+                    .is_none()
+            );
+        }
+        assert!(classify_provider_terminal_failure_output_text(
+            "claude",
+            &format!("Review the message: {CLAUDE_ROOT_YOLO_REFUSAL}")
+        )
+        .is_none());
     }
 
     #[test]
@@ -754,7 +647,11 @@ mod tests {
             classify_provider_terminal_failure_text("claude", &format!("{repeated}\n{repeated}"))
                 .expect("Claude root permission restriction should be terminal");
 
-        assert_eq!(failure.matches(repeated).count(), 1, "{failure}");
+        assert_eq!(
+            failure.matches("Claude refused YOLO").count(),
+            1,
+            "{failure}"
+        );
     }
 
     #[test]

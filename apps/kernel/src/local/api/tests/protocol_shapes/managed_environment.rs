@@ -586,7 +586,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
             runtime_release_digest: format!("sha256:{}", "a".repeat(64)),
         },
         desired_release: ManagedEnvironmentReimagePreflightDesiredRelease {
-            provider_id: ManagedEnvironmentReimageProviderId::Hetzner,
+            provider_id: "acme-cloud".to_string(),
             provider_image_id: "987654321".to_string(),
             provider_profile_id: "hetzner-path1".to_string(),
             provider_profile_digest: format!("sha256:{}", "b".repeat(64)),
@@ -628,7 +628,7 @@ fn local_daemon_reimage_preflight_shape_is_versioned_and_allowlisted() {
     // Hash serde_json::Value's sorted object keys, not a JS insertion-order reconstruction.
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "c9c26926c17a881930bfc262d29c55db1bee1450aa51eea49ea94aa98f623d5c"
+        "70b004468a51807ae76599f4a3966d3f4f5308fbdd188459a626db97b35fe8f4"
     );
 }
 

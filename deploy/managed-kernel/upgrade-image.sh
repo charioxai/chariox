@@ -31,7 +31,6 @@ legacy_home=$state_root/home
 script_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_root/managed-kernel-builder-pin-transaction.sh"
 . "$script_root/managed-kernel-recovery-release.sh"
-. "$script_root/managed-app-storage.sh"
 managed_provider_topology=${CHARIOX_MANAGED_PROVIDER_TOPOLOGY-}
 case "$managed_provider_topology" in
   path1|shared_host) ;;
@@ -367,61 +366,15 @@ atomic_symlink() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-symlink "$1" "$2"
 }
 
-# Disable while current still resolves the unit; systemd cannot disable a
-# dangling unit after the pre-Apps release has replaced current.
-prepare_managed_app_release_switch() {
-  [ ! -f "$1/usr/libexec/chariox-app-storage" ] || return 0
-  app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
-  if path_exists "$app_unit_link"; then
-    [ -L "$app_unit_link" ] && [ "$(readlink "$app_unit_link")" = "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ] || {
-      echo "managed App storage release link is obstructed" >&2; return 1;
-    }
-    # A dangling own link means a prior rollback already disabled the helper
-    # before switching current; recovery only needs to remove that link.
-    if [ -e "$app_unit_link" ]; then
-      systemctl disable --now chariox-app-storage.service || return 1
-    fi
-  fi
+. "$script_root/managed-app-release.sh"
+
+sync_managed_app_binaries() {
+  install -d -o root -g root -m 0755 "$install_root/usr/local/bin" || return 1
+  for name in chariox-app-package chariox-app-wasm-worker; do
+    publish_app_release_link "../../../usr/lib/chariox/current/usr/local/bin/$name" "$install_root/usr/local/bin/$name" || return 1
+  done
 }
 
-sync_managed_app_storage() {
-  app_package_link=$install_root/usr/local/bin/chariox-app-package
-  app_helper_link=$install_root/usr/libexec/chariox-app-storage
-  app_unit_link=$install_root/etc/systemd/system/chariox-app-storage.service
-  if [ -f "$current_link/usr/local/bin/chariox-app-package" ]; then
-    enroll_managed_app_storage "$install_root" "$managed_provider_topology" || return 1
-    install -d -o root -g root -m 0755 "$install_root/usr/libexec" "$install_root/usr/local/bin" "$install_root/etc/systemd/system" || return 1
-    publish_managed_app_link "../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" "$app_package_link" || return 1
-    publish_managed_app_link "../lib/chariox/current/usr/libexec/chariox-app-storage" "$app_helper_link" || return 1
-    publish_managed_app_link "../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" "$app_unit_link" || return 1
-  else
-    # Retain enrollment and App data for a later Apps upgrade, but remove only
-    # our own release links. Never replace/remove an unrelated host install.
-    for app_path in "$app_package_link" "$app_helper_link" "$app_unit_link"; do
-      if path_exists "$app_path"; then
-        case "$app_path" in
-          "$app_package_link") app_target="../../../usr/lib/chariox/current/usr/local/bin/chariox-app-package" ;;
-          "$app_helper_link") app_target="../lib/chariox/current/usr/libexec/chariox-app-storage" ;;
-          "$app_unit_link") app_target="../../../usr/lib/chariox/current/etc/systemd/system/chariox-app-storage.service" ;;
-        esac
-        [ -L "$app_path" ] && [ "$(readlink "$app_path")" = "$app_target" ] || {
-          echo "managed App storage release link is obstructed" >&2; return 1;
-        }
-      fi
-    done
-    rm -f -- "$app_package_link" "$app_helper_link" "$app_unit_link" || return 1
-    if [ -f "$install_root/etc/chariox/app-storage.json" ]; then
-      echo "Pre-Apps release: App storage is disabled; enrollment and App data are preserved for a later upgrade." >&2
-    fi
-  fi
-}
-
-start_managed_app_storage() {
-  [ -f "$current_link/usr/libexec/chariox-app-storage" ] || return 0
-  systemctl enable chariox-app-storage.service || return 1
-  systemctl restart chariox-app-storage.service || return 1
-  systemctl is-active --quiet chariox-app-storage.service || return 1
-}
 
 sync_path1_data_volume_unit_links() {
   [ "$managed_provider_topology" = path1 ] || return 0
@@ -495,6 +448,22 @@ plan_home_migration() {
     "$pending_transaction/home-migration.json" \
     "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
     "$chariox_uid" "$chariox_gid"
+}
+
+# A planned upgrade replaces the kernel program in place (`systemctl reload`:
+# the kernel hands its running work to the new program) when nothing around
+# the kernel changes: no home migration, and the same systemd units, among
+# them the Path-1 runtime services a restart would stop and start again.
+plan_activation() {
+  if node -e 'process.exit(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).required === false ? 1 : 0)' \
+    "$pending_transaction/home-migration.json"; then
+    printf '%s\n' restart
+  elif diff -r -q --no-dereference "$current_link/etc/systemd/system" \
+    "$published_release/etc/systemd/system" > /dev/null; then
+    printf '%s\n' reload
+  else
+    printf '%s\n' restart
+  fi
 }
 
 resume_home_migration() {
@@ -690,17 +659,15 @@ rollback_transaction() {
     no) remove_release_override || return 1 ;;
     *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
   esac
-  prepare_managed_app_release_switch "$chariox_root/$previous_target" || return 1
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
-  sync_managed_app_storage || return 1
+  sync_managed_app_binaries || return 1
   atomic_symlink "$previous_slice_build_context" "$slice_build_context_link" || return 1
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
   assert_path1_units_have_no_dropins || return 1
   start_path1_runtime_services || return 1
-  start_managed_app_storage || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
   active_previous_protocol=$(protocol_version "$current_link/usr/local/bin/chariox-kernel") || return 1
@@ -1008,8 +975,6 @@ else
     install -d -o root -g root -m 0755 "$pending_release/usr/libexec"
     install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
     install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-wasm-worker" "$pending_release/usr/local/bin/chariox-app-wasm-worker"
-    install -o root -g root -m 0755 "$image_root/usr/libexec/chariox-app-storage" "$pending_release/usr/libexec/chariox-app-storage"
-    install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-app-storage.service" "$pending_release/etc/systemd/system/chariox-app-storage.service"
   fi
   for release_file in release-manifest.json release-manifest.sig release-public-key build-attestation.json build-attestation.sig builder-public-key; do
     install -o root -g root -m 0644 "$image_root/usr/lib/chariox/$release_file" "$pending_release/usr/lib/chariox/$release_file"
@@ -1098,6 +1063,8 @@ process.stdout.write(["1", id, from, target, ...identity].join("\n") + "\n")
 NODE
 fi
 plan_home_migration
+plan_activation > "$pending_transaction/activation"
+activation=$(read_single_line "$pending_transaction/activation")
 chmod 0600 "$pending_transaction"/*
 node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_transaction"
 node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
@@ -1105,7 +1072,9 @@ node "$script_root/managed-kernel-upgrade-state.mjs" publish-transaction \
 pending_transaction=
 transaction_active=1
 
-if ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
+if [ "$activation" = reload ]; then
+  : # The kernel keeps running until it replaces itself with the new release.
+elif ! systemctl stop "$service_name" || ! stop_path1_runtime_services; then
   if rollback_transaction; then
     echo "managed kernel or Path-1 storage services could not be stopped; restored previous managed kernel release" >&2
   else
@@ -1138,7 +1107,6 @@ else
   remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
-  prepare_managed_app_release_switch "$published_release" || activation_failed=1
   if [ "${activation_failed:-0}" -eq 0 ]; then
     atomic_symlink "releases/$release_name" "$current_link" || activation_failed=1
   fi
@@ -1147,7 +1115,7 @@ if [ "${activation_failed:-0}" -eq 0 ]; then
   sync_path1_data_volume_unit_links || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
-  sync_managed_app_storage || activation_failed=1
+  sync_managed_app_binaries || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   atomic_symlink "$signed_slice_build_context_target" "$slice_build_context_link" \
@@ -1165,10 +1133,20 @@ if [ "${activation_failed:-0}" -ne 0 ]; then
   exit 1
 fi
 write_phase activated
-if ! systemctl daemon-reload \
+if [ "$activation" = reload ]; then
+  if ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
+    || ! systemctl reload "$service_name" \
+    || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then
+    if rollback_transaction; then
+      echo "managed kernel did not replace itself with the new release; restored previous managed kernel release" >&2
+    else
+      echo "managed kernel did not replace itself with the new release; rollback remains pending" >&2
+    fi
+    exit 1
+  fi
+elif ! systemctl daemon-reload \
   || ! assert_path1_units_have_no_dropins \
   || ! start_path1_runtime_services \
-  || ! start_managed_app_storage \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
   || ! check_health "$target_protocol" "$expected_new_digest" "$health_not_before_ms"; then

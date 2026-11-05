@@ -10,8 +10,10 @@ use crate::local::{
     SessionHistoryOutlineAgent, SessionHistoryOutlineCursor, SessionHistoryOutlineTurn,
     SessionHistoryOutlineTurnLifecycle,
 };
-use crate::provider::normalized_observed_prompt_text;
 use crate::provider::ExternalProviderImportMetadata;
+use crate::provider::{
+    normalized_observed_prompt_text, normalized_observed_prompt_text_after_mentions,
+};
 use crate::session::PromptOrigin;
 
 mod prefetch;
@@ -255,12 +257,13 @@ fn load_scoped_agent_outline(
             .map(|event| event.sequence.saturating_sub(1))
             .or_else(|| before_sequence.map(|sequence| sequence.saturating_sub(1)))
             .unwrap_or(i64::MAX as u64);
-        let mut events = operational_history.load_session_events_for_agent_sequence_range(
-            session_id,
-            agent_id,
-            prompt.sequence,
-            sequence_end,
-        )?;
+        let mut events = operational_history
+            .load_session_events_for_agent_sequence_range_incrementally(
+                session_id,
+                agent_id,
+                prompt.sequence,
+                sequence_end,
+            )?;
         if !events
             .iter()
             .any(|event| persisted_prompt_settlement_at_ms(event).is_some())
@@ -281,7 +284,7 @@ fn load_scoped_agent_outline(
                 && !event.is_internal_dispatch_diagnostic()
         });
         let lifecycle_events = scoped_history_events(events, agent_import);
-        let events = if outline_turn_prompt_origin(prompt) == PromptOrigin::Chariox {
+        let events = if outline_turn_prompt_origin(prompt).is_chariox_prompt() {
             suppress_external_observed_events_from_chariox_turn(lifecycle_events.clone())
         } else {
             lifecycle_events.clone()
@@ -389,12 +392,26 @@ fn suppress_chariox_owned_external_prompt_echoes(
     session_id: &str,
     agent_id: &str,
 ) -> Result<(), DaemonError> {
-    let chariox_owned_prompts =
-        operational_history.load_chariox_owned_prompt_texts(session_id, agent_id)?;
+    let chariox_owned = operational_history.load_chariox_owned_prompts(session_id, agent_id)?;
+    let chariox_owned_prompts = chariox_owned
+        .iter()
+        .map(|prompt| prompt.text.clone())
+        .collect::<Vec<_>>();
     let chariox_owned_prompt_texts = chariox_owned_prompts
         .iter()
         .filter_map(|text| normalized_observed_prompt_text(text))
         .collect::<BTreeSet<_>>();
+    // Claude echoes a prompt behind the `@path` mention of each file the kernel attached to it.
+    let chariox_owned_attachment_prompts = chariox_owned
+        .iter()
+        .filter(|prompt| !prompt.attachment_paths.is_empty())
+        .filter_map(|prompt| {
+            Some((
+                normalized_observed_prompt_text(&prompt.text)?,
+                prompt.attachment_paths.clone(),
+            ))
+        })
+        .collect::<Vec<_>>();
     let chariox_owned_workflow_delivery_tokens = chariox_owned_prompts
         .iter()
         .filter_map(|text| workflow_delivery_token(text))
@@ -414,6 +431,7 @@ fn suppress_chariox_owned_external_prompt_echoes(
         !external_prompt_matches_chariox_owned_text(
             prompt,
             &chariox_owned_prompt_texts,
+            &chariox_owned_attachment_prompts,
             &chariox_owned_workflow_delivery_tokens,
             &chariox_owned_workflow_handoff_payloads,
             &chariox_owned_workflow_endpoint_prompts,
@@ -425,6 +443,7 @@ fn suppress_chariox_owned_external_prompt_echoes(
 fn external_prompt_matches_chariox_owned_text(
     prompt: &HistoryEvent,
     chariox_owned_prompt_texts: &BTreeSet<String>,
+    chariox_owned_attachment_prompts: &[(String, Vec<String>)],
     chariox_owned_workflow_delivery_tokens: &BTreeSet<String>,
     chariox_owned_workflow_handoff_payloads: &[serde_json::Value],
     chariox_owned_workflow_endpoint_prompts: &BTreeSet<String>,
@@ -442,6 +461,12 @@ fn external_prompt_matches_chariox_owned_text(
         return false;
     };
     chariox_owned_prompt_texts.contains(&text)
+        || chariox_owned_attachment_prompts
+            .iter()
+            .any(|(owned, paths)| {
+                normalized_observed_prompt_text_after_mentions(&entry.text, paths).as_ref()
+                    == Some(owned)
+            })
         || workflow_delivery_token(&entry.text)
             .is_some_and(|token| chariox_owned_workflow_delivery_tokens.contains(&token))
         || workflow_handoff_payload(&entry.text)
@@ -814,7 +839,7 @@ fn project_workflow_user_prompt(
     user_prompt: &mut crate::session_history_page::SessionHistoryPageEntry,
     prompt_origin: PromptOrigin,
 ) {
-    if prompt_origin != PromptOrigin::Chariox {
+    if !prompt_origin.is_chariox_prompt() {
         return;
     }
     let Some(endpoint_prompt) = workflow_endpoint_prompt(&user_prompt.entry.text) else {
@@ -985,7 +1010,7 @@ fn outline_turn_completed_at_ms(
             .unwrap_or(prompt.timestamp_ms);
         return Some(settled_at_ms.max(latest_content_at_ms));
     }
-    if prompt_origin == PromptOrigin::Chariox && !has_newer_prompt {
+    if prompt_origin.is_chariox_prompt() && !has_newer_prompt {
         return None;
     }
     if prompt_origin == PromptOrigin::External

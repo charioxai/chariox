@@ -16,18 +16,16 @@ use crate::transport::relay_peer::{
 };
 
 use super::daemon_requests::RelayRequestOutcome;
-use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
 use super::sender_identity::{
     require_bound_daemon_sender, require_bound_kernel_sender, require_bound_managed_context_sender,
     validate_optional_daemon_sender,
 };
-use super::{RelayClientState, RelayOutgoingSender};
+use super::RelayClientState;
 
 pub(super) async fn handle_daemon_peer_request(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &RelayOutgoingSender,
     from_daemon_id: &str,
     caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
@@ -1377,34 +1375,12 @@ pub(super) async fn handle_daemon_peer_request(
                 )
                 .await;
             match steered {
-                Ok((provider_run_id, replayed)) => {
-                    if let Err(error) = emit_leased_projection_event(
-                        &router,
-                        state,
-                        outgoing_tx,
-                        &leased_agent_id,
-                        &provider_run_id,
-                        true,
-                    )
-                    .await
-                    {
-                        crate::logging::warn_with_fields(
-                            "daemon.relay",
-                            "failed to emit leased runtime projection after steer",
-                            serde_json::json!({
-                                "leased_agent_id": leased_agent_id,
-                                "provider_run_id": provider_run_id,
-                                "steer_id": steer_id,
-                                "error": error.to_string(),
-                            }),
-                        );
-                    }
-                    RelayPeerResponse::LeasedPromptSteered {
-                        provider_run_id,
-                        steer_id,
-                        replayed,
-                    }
-                }
+                // The home's acknowledged projection drain delivers the steered output.
+                Ok((provider_run_id, replayed)) => RelayPeerResponse::LeasedPromptSteered {
+                    provider_run_id,
+                    steer_id,
+                    replayed,
+                },
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,
@@ -1418,6 +1394,7 @@ pub(super) async fn handle_daemon_peer_request(
             leased_agent_id,
             provider_run_id,
             pump_output,
+            acknowledged_projection_sequence,
         } => {
             let drained = router
                 .relay_drain_leased_runtime_projection_authorized(
@@ -1425,11 +1402,13 @@ pub(super) async fn handle_daemon_peer_request(
                     &provider_run_id,
                     pump_output,
                     true,
+                    acknowledged_projection_sequence,
                 )
                 .await;
             match drained {
-                Ok(event) => RelayPeerResponse::LeasedRuntimeProjectionDrained {
-                    event: event.map(|(_target_daemon_id, event)| event),
+                Ok(drained) => RelayPeerResponse::LeasedRuntimeProjectionDrained {
+                    projection_sequence: drained.as_ref().map(|drained| drained.sequence),
+                    event: drained.map(|drained| drained.event),
                 },
                 Err(error) => {
                     return RelayRequestOutcome {
@@ -1440,8 +1419,18 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id } => {
-            let completion = router.relay_complete_leased_prompt(&leased_agent_id).await;
+        RelayPeerRequest::CompleteLeasedPrompt {
+            leased_agent_id,
+            home_prompt_id,
+            worker_provider_run_id,
+        } => {
+            let completion = router
+                .relay_complete_leased_prompt(
+                    &leased_agent_id,
+                    &home_prompt_id,
+                    &worker_provider_run_id,
+                )
+                .await;
             match completion {
                 Ok(completion) => {
                     let provider_run_id = router
@@ -2499,7 +2488,6 @@ pub(super) async fn handle_daemon_peer_request(
 pub(crate) async fn send_authenticated_peer_request_for_test(
     router: &Arc<CommandRouter>,
     state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &RelayOutgoingSender,
     from_daemon_id: &str,
     caller_identity: RelayCallerIdentity,
     source_private_key: &str,
@@ -2514,7 +2502,6 @@ pub(crate) async fn send_authenticated_peer_request_for_test(
     let outcome = handle_daemon_peer_request(
         router,
         state,
-        outgoing_tx,
         from_daemon_id,
         Some(caller_identity),
         encrypted_request,
@@ -2838,7 +2825,9 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         | RelayPeerRequest::DrainLeasedRuntimeProjection {
             leased_agent_id, ..
         }
-        | RelayPeerRequest::CompleteLeasedPrompt { leased_agent_id }
+        | RelayPeerRequest::CompleteLeasedPrompt {
+            leased_agent_id, ..
+        }
         | RelayPeerRequest::ObserveLeasedGitAfter {
             leased_agent_id, ..
         }
@@ -3090,7 +3079,6 @@ mod tests {
             4,
         ));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (sender, _priority, _events) = RelayOutgoingSender::channel(8);
         let identity = scoped_machine_identity(
             "unrelated-attacker",
             Some(crate::runtime::terminal_pairings::public_key_thumbprint(
@@ -3100,7 +3088,6 @@ mod tests {
         let response = send_authenticated_peer_request_for_test(
             &router,
             &state,
-            &sender,
             "unrelated-attacker",
             identity,
             &attacker.relay_private_key,
@@ -3228,7 +3215,6 @@ mod tests {
     async fn send_lease_worker_request(
         router: &Arc<CommandRouter>,
         state: &Arc<RwLock<RelayClientState>>,
-        outgoing_tx: &RelayOutgoingSender,
         from_daemon_id: &str,
         identity: RelayCallerIdentity,
         source_private_key: &str,
@@ -3244,7 +3230,6 @@ mod tests {
         handle_daemon_peer_request(
             router,
             state,
-            outgoing_tx,
             from_daemon_id,
             Some(identity),
             encrypted_request,
@@ -3363,7 +3348,6 @@ mod tests {
             1,
         ));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let identity = scoped_machine_identity("machine-home-1", Some(source_thumbprint));
         let query = |home_prompt_id: &str| RelayPeerRequest::GetLeasedPromptReceipt {
             leased_agent_id: leased_agent.id.clone(),
@@ -3373,7 +3357,6 @@ mod tests {
         let exact = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity.clone(),
             &source_private_key,
@@ -3397,7 +3380,6 @@ mod tests {
         let unrelated = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity.clone(),
             &source_private_key,
@@ -3413,7 +3395,6 @@ mod tests {
         let repeated = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity.clone(),
             &source_private_key,
@@ -3445,7 +3426,6 @@ mod tests {
         let reconciled = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity.clone(),
             &source_private_key,
@@ -3471,7 +3451,6 @@ mod tests {
         let late_steer = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity.clone(),
             &source_private_key,
@@ -3501,7 +3480,6 @@ mod tests {
         let tombstone_retry = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             identity,
             &source_private_key,
@@ -3561,7 +3539,6 @@ mod tests {
                 1,
             ));
             let state = Arc::new(RwLock::new(RelayClientState::default()));
-            let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
             let source_private_key = relay_crypto::generate_private_key_base64();
             let source_public_key =
                 relay_crypto::public_key_from_private_key_base64(&source_private_key)
@@ -3569,7 +3546,6 @@ mod tests {
             let outcome = send_lease_worker_request(
                 &router,
                 &state,
-                &outgoing_tx,
                 "source-kernel-1",
                 scoped_machine_identity(
                     "machine-home-1",
@@ -3616,7 +3592,6 @@ mod tests {
             1,
         ));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let source_private_key = relay_crypto::generate_private_key_base64();
         let source_public_key =
             relay_crypto::public_key_from_private_key_base64(&source_private_key)
@@ -3641,7 +3616,6 @@ mod tests {
             let outcome = send_lease_worker_request(
                 &router,
                 &state,
-                &outgoing_tx,
                 "source-kernel-1",
                 identity.clone(),
                 &source_private_key,
@@ -3657,7 +3631,6 @@ mod tests {
         let kernel_identity_denied = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX),
             &source_private_key,
@@ -3677,7 +3650,6 @@ mod tests {
         let denied = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             mismatched_realm,
             &source_private_key,
@@ -3694,7 +3666,6 @@ mod tests {
         let denied = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             mismatched_user,
             &source_private_key,
@@ -3709,7 +3680,6 @@ mod tests {
         let confused_home = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "forged-home:peer-tmp:daemon-peer-tmp-4243-1767225600123-8",
             identity.clone(),
             &source_private_key,
@@ -3732,7 +3702,6 @@ mod tests {
         let created = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1:peer-tmp:daemon-peer-tmp-4242-1767225600123-7",
             identity.clone(),
             &source_private_key,
@@ -3766,7 +3735,6 @@ mod tests {
         let rotated_denied = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             rotated_identity.clone(),
             &rotated_private_key,
@@ -3789,7 +3757,6 @@ mod tests {
         let denied = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             attacker.clone(),
             &source_private_key,
@@ -3806,7 +3773,6 @@ mod tests {
             let deleted = send_lease_worker_request(
                 &router,
                 &state,
-                &outgoing_tx,
                 "source-kernel-1",
                 identity.clone(),
                 &source_private_key,
@@ -3822,7 +3788,6 @@ mod tests {
         let denied_retry = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             attacker,
             &source_private_key,
@@ -3840,7 +3805,6 @@ mod tests {
         let rotated_retry = send_lease_worker_request(
             &router,
             &state,
-            &outgoing_tx,
             "source-kernel-1",
             rotated_identity,
             &rotated_private_key,
@@ -3886,7 +3850,6 @@ mod tests {
         ));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let malformed_request = EncryptedRelayPayload {
             sender_public_key: "request-sender-public-key".to_string(),
             nonce: "not-valid-base64".to_string(),
@@ -3904,7 +3867,6 @@ mod tests {
             let outcome = handle_daemon_peer_request(
                 &router,
                 &state,
-                &outgoing_tx,
                 "source-kernel-1",
                 Some(identity),
                 malformed_request.clone(),
@@ -3927,7 +3889,6 @@ mod tests {
         let app = Arc::new(Mutex::new(app));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
             destination: None,
             plan: ManagedKernelContextPlan::empty_for_tests("context-1").package_binding(),
@@ -3946,15 +3907,9 @@ mod tests {
         )
         .expect("encrypt managed context request");
 
-        let outcome = handle_daemon_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
-            "source-kernel-1",
-            None,
-            encrypted_request,
-        )
-        .await;
+        let outcome =
+            handle_daemon_peer_request(&router, &state, "source-kernel-1", None, encrypted_request)
+                .await;
         assert!(outcome.error.is_none());
         let encrypted_response = outcome
             .encrypted_response
@@ -3983,11 +3938,9 @@ mod tests {
         ));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let worker_private_key = relay_crypto::generate_private_key_base64();
         let worker_public_key =
@@ -4183,11 +4136,9 @@ mod tests {
             )
             .expect("slice should enter starting state");
 
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let worker_kernel_id = slice.worker_kernel_ref.as_str();
         let worker_private_key = relay_crypto::generate_private_key_base64();
@@ -4363,11 +4314,9 @@ mod tests {
             ),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let request = RelayPeerRequest::ArmManagedContextImport {
             destination: None,
@@ -4420,7 +4369,6 @@ mod tests {
         let mismatched_key_outcome = handle_daemon_peer_request(
             &router,
             &state,
-            &outgoing_tx,
             source_kernel_id,
             Some(wrong_key),
             mismatched_key_request,
@@ -4597,11 +4545,9 @@ mod tests {
         ));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
         let context_plan = ManagedKernelContextPlan::source_project_for_tests(
@@ -5031,11 +4977,9 @@ mod tests {
                 }),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
-        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let peer_harness = ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let source_vault_path = root.join("source-vault.json");
         let target_vault_path = root.join("target-vault.json");
@@ -5439,7 +5383,6 @@ mod tests {
         let terminal_peer_harness = ManagedPeerRequestHarness {
             router: &terminal_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let terminal_armed = send_managed_peer_request(
             &terminal_peer_harness,
@@ -5732,7 +5675,6 @@ mod tests {
         let recovery_peer_harness = ManagedPeerRequestHarness {
             router: &recovery_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let recovery_armed = send_managed_peer_request(
             &recovery_peer_harness,
@@ -5877,7 +5819,6 @@ mod tests {
         let restarted_peer_harness = ManagedPeerRequestHarness {
             router: &restarted_router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         };
         let rebound = send_managed_peer_request(
             &restarted_peer_harness,
@@ -5956,7 +5897,6 @@ mod tests {
     pub(super) struct ManagedPeerRequestHarness<'a> {
         pub(super) router: &'a Arc<CommandRouter>,
         pub(super) state: &'a Arc<RwLock<RelayClientState>>,
-        pub(super) outgoing_tx: &'a RelayOutgoingSender,
     }
 
     pub(super) async fn send_managed_peer_request(
@@ -5976,7 +5916,6 @@ mod tests {
         let outcome = handle_daemon_peer_request(
             harness.router,
             harness.state,
-            harness.outgoing_tx,
             source_kernel_id,
             Some(identity.clone()),
             encrypted_request,

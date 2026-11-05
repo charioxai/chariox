@@ -34,8 +34,7 @@ impl KernelRuntimeOwnedState {
         };
         if snapshot.before.head_sha == snapshot.after.head_sha
             && snapshot.before.status_fingerprint == snapshot.after.status_fingerprint
-            && snapshot.before.workspace_live_sync_file_snapshots
-                == snapshot.after.workspace_live_sync_file_snapshots
+            && snapshot.files_unchanged
         {
             return Ok(());
         }
@@ -47,16 +46,7 @@ impl KernelRuntimeOwnedState {
         ) else {
             return Ok(());
         };
-        use sha2::{Digest, Sha256};
-        let normalized = serde_json::to_vec(&(
-            &snapshot.after.head_sha,
-            &snapshot.after.status_fingerprint,
-            &snapshot.after.workspace_live_sync_file_snapshots,
-        ))
-        .map_err(|_| {
-            crate::durable_state::agent_lifecycle::error("artifact receipt normalization failed")
-        })?;
-        let receipt = format!("git-artifact:{:x}", Sha256::digest(normalized));
+        let receipt = snapshot.artifact_receipt.clone();
         self.durable_state_store.agent_lifecycle(
             crate::durable_state::agent_lifecycle::Operation::Progress {
                 task: task.task_id,
@@ -72,6 +62,19 @@ impl KernelRuntimeOwnedState {
         &self,
         task: &AgentTaskExecution,
     ) -> Result<Option<serde_json::Value>, DaemonError> {
+        self.public_agent_task_answer_after(task, None)
+    }
+
+    /// `failure` is the outcome of the turn that just ended the task, when the
+    /// caller settled it.
+    pub(super) fn public_agent_task_answer_after(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        if task.state == ExecutionState::Cancelled {
+            return self.failed_task_answer(task, failure);
+        }
         if task.state != ExecutionState::Done {
             return Ok(None);
         }
@@ -100,6 +103,69 @@ impl KernelRuntimeOwnedState {
         let mut answer = serde_json::json!({"agent_id":task.agent_id,"task_id":task.task_id,"prompt_id":task.prompt_id,"excerpt":excerpt});
         crate::secret_redaction::redact_json_secrets(&mut answer);
         Ok(Some(answer))
+    }
+
+    /// What a waiter reads when a task ends because its turn failed: the typed
+    /// outcome the turn's history carries (so every settlement path reads the
+    /// same one), what to do next and, for a leased helper, where it ran. A
+    /// task the owner cancelled has no failed turn and no answer.
+    fn failed_task_answer(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&crate::provider::TurnOutcome>,
+    ) -> Result<Option<serde_json::Value>, DaemonError> {
+        // The settlement in hand wins; otherwise the turn's history has it. The
+        // history append can trail the settlement by a moment.
+        let recorded = if failure.is_some() {
+            None
+        } else {
+            self.operational_history_store
+                .load_prompt_settlement_event(&task.room_id, &task.agent_id, &task.prompt_id)?
+                .and_then(|settlement| {
+                    settlement
+                        .metadata
+                        .get(crate::history::TURN_OUTCOME_METADATA_KEY)
+                        .and_then(|outcome| {
+                            serde_json::from_value::<crate::provider::TurnOutcome>(outcome.clone())
+                                .ok()
+                        })
+                })
+        };
+        let Some(outcome) = failure
+            .cloned()
+            .or(recorded)
+            .filter(crate::provider::TurnOutcome::is_error)
+        else {
+            return Ok(None);
+        };
+        let mut answer = serde_json::json!({
+            "agent_id": task.agent_id,
+            "task_id": task.task_id,
+            "prompt_id": task.prompt_id,
+            "outcome": outcome,
+            "recovery": outcome.notice(),
+        });
+        if let Some(binding) = self
+            .agent_store
+            .get_agent(&task.agent_id)
+            .ok()
+            .and_then(|agent| agent.remote_execution().cloned())
+        {
+            answer["host"] = self.leased_host_name(&binding).into();
+        }
+        crate::secret_redaction::redact_json_secrets(&mut answer);
+        Ok(Some(answer))
+    }
+
+    /// The slice or worker kernel that hosts a leased agent, as users read it.
+    pub(super) fn leased_host_name(&self, binding: &crate::agent::RemoteAgentBinding) -> String {
+        match self
+            .slice_store
+            .resolve_by_worker_kernel_ref(&binding.worker_kernel_id)
+        {
+            Some(slice) => format!("slice `{}`", slice.name),
+            None => format!("worker kernel `{}`", binding.worker_kernel_id),
+        }
     }
 }
 

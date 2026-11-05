@@ -1,11 +1,13 @@
 //! Real PTYs and the user's real shell.
 
 use std::future::Future;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::events::{FinishBinding, OutputMatcher};
+use super::service::enters;
 use super::*;
 
 struct TempDir(std::path::PathBuf);
@@ -364,6 +366,420 @@ async fn one_driver_rule_protects_a_foreground_program() {
     })
     .await;
     service.end_session("room-1");
+}
+
+#[test]
+fn every_enter_at_a_prompt_is_a_submission() {
+    assert_eq!(enters(b"cat"), 0, "typing without a line break");
+    assert_eq!(enters(b"\r"), 1, "Enter on text typed earlier, or empty");
+    assert_eq!(enters(b"\x1b[A\r"), 1, "a recalled line");
+    assert_eq!(enters(b"true\r\n"), 1, "a CRLF is one line break");
+    assert_eq!(enters(b"a\rb\n\nc"), 3, "the last is still being typed");
+    assert_eq!(
+        enters(b"\x1b[200~a\nb\r\x1b[201~\r"),
+        1,
+        "a paste in brackets is one line"
+    );
+}
+
+/// Types each input in turn (on the login shell, or on `shell` when given),
+/// then returns, per pid file the inputs write, whether the kernel may hold
+/// that command for room.
+async fn who_owns(
+    shell: Option<&str>,
+    inputs: &[(&TerminalActor, String)],
+    pid_files: &[&str],
+) -> Vec<bool> {
+    let root = TempDir::new();
+    let service = service(root.path());
+    if let Some(shell) = shell {
+        service.use_shell_for_test(shell);
+    }
+    let id = open(&service, root.path()).terminal_id;
+    let run_id = service
+        .terminal_for_test(&id)
+        .lock_open()
+        .unwrap()
+        .terminal
+        .run_id
+        .clone()
+        .unwrap();
+    // The pid files are named in the inputs through `{dir}`.
+    // A shell without marks can run foreground programs from its login files.
+    // Prove it has read a command before testing who owns subsequent input.
+    assert!(
+        type_as(
+            &service,
+            &id,
+            &TerminalActor::User,
+            "printf 'READY-%s\\n' 42\r"
+        )
+        .await
+        .accepted
+    );
+    until("the shell to read input", || {
+        screen_has(&service, &id, "READY-42")
+    })
+    .await;
+    // The output appears before the shell reports the command finished; an
+    // input in between would find the terminal still driven by the person.
+    until("the shell to be back at its prompt", || async {
+        service.pump_once();
+        service.list("room-1")[0].driver == RoomTerminalDriver::Free
+    })
+    .await;
+    let sampling = crate::runtime::process_resources::pause_sampling_for_key(&run_id);
+    let dir = root.path().display().to_string();
+    for (actor, input) in inputs {
+        let mut input = input.replace("{dir}", &dir);
+        // `{after NAME}` holds an input back until the command before it has
+        // launched what writes the pid file NAME.
+        if let Some(rest) = input.strip_prefix("{after ") {
+            let (name, text) = rest.split_once('}').expect("a closing brace");
+            let file = root.path().join(name);
+            until("the earlier command to be launched", || async {
+                file.exists()
+            })
+            .await;
+            input = text.to_string();
+        }
+        assert!(
+            type_as(&service, &id, actor, &input).await.accepted,
+            "an input was refused, so the race did not happen"
+        );
+    }
+    let mut pids = Vec::new();
+    for name in pid_files {
+        let file = root.path().join(name);
+        let pid = || {
+            std::fs::read_to_string(&file)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+        };
+        until("the command to be launched", || async { pid().is_some() }).await;
+        let pid = pid().unwrap();
+        assert!(pid > 1 && i32::try_from(pid).is_ok(), "a child PID");
+        assert_eq!(
+            crate::runtime::process_resources::command_holdable_for_key(&run_id, pid),
+            None,
+            "the sampler must not see the job before the next submission"
+        );
+        pids.push(pid);
+    }
+    drop(sampling);
+    let mut owners = Vec::new();
+    for &pid in &pids {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let owner = loop {
+            if let Some(holdable) =
+                crate::runtime::process_resources::command_holdable_for_key(&run_id, pid)
+            {
+                break Some(holdable);
+            }
+            if Instant::now() > deadline {
+                break None;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        owners.push(owner);
+    }
+    for pid in pids {
+        // SAFETY: the positive PID of a command this test started; never a group.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+    service.end_session("room-1");
+    owners
+        .into_iter()
+        .map(|owner| owner.expect("the sampler never saw the command"))
+        .collect()
+}
+
+/// The two shells that report their job table: the login shell (bash) and zsh.
+fn integrated_shells(root: &Path) -> [Option<String>; 2] {
+    let zsh = std::env::var("CHARIOX_TEST_ZSH").unwrap_or_else(|_| "/usr/bin/zsh".into());
+    assert!(
+        Path::new(&zsh).exists(),
+        "zsh is not installed at {zsh}: install it or set CHARIOX_TEST_ZSH"
+    );
+    // Keep the real integration .zshenv, but give it only our startup files.
+    // Global rc files can run compinit and consume typed input with a prompt.
+    let startup = root.join("zsh-startup");
+    std::fs::create_dir_all(&startup).unwrap();
+    std::fs::write(startup.join(".zshenv"), "unsetopt GLOBAL_RCS\n").unwrap();
+    let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+    let wrapper = root.join("zsh");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nexport CHARIOX_ORIG_ZDOTDIR={}\nexec {} \"$@\"\n",
+            quote(startup.to_str().unwrap()),
+            quote(&zsh),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+    [None, Some(wrapper.to_str().unwrap().to_string())]
+}
+
+/// A background job's line, then a second line accepted before the shell
+/// launches the first.
+async fn who_owns_the_job_two_lines_launch(first: &TerminalActor, second: &TerminalActor) -> bool {
+    who_owns(
+        None,
+        &[
+            (first, "sleep 120 & echo $! > '{dir}/job'\r".to_string()),
+            (second, "true\r".to_string()),
+        ],
+        &["job"],
+    )
+    .await[0]
+}
+
+#[tokio::test]
+async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let run_id = service
+        .terminal_for_test(&id)
+        .lock_open()
+        .unwrap()
+        .terminal
+        .run_id
+        .clone()
+        .unwrap();
+    let job = root.path().join("job");
+    type_as(
+        &service,
+        &id,
+        &TerminalActor::User,
+        &format!("sleep 120 & echo $! > '{}'\r", job.display()),
+    )
+    .await;
+    until("the job to be launched", || async { job.exists() }).await;
+    let pid: u32 = std::fs::read_to_string(&job)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    until("the sampler to decide the job", || async {
+        crate::runtime::process_resources::command_holdable_for_key(&run_id, pid).is_some()
+    })
+    .await;
+    let handovers = service.hand_over().expect("the terminal is handed over");
+    service.release_handover();
+    // SAFETY: the positive PID of a job this test started; never a group.
+    unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    service.end_session("room-1");
+    let submissions = serde_json::to_value(&handovers[0].pty.submissions).unwrap();
+    assert_eq!(submissions["default"], false, "{submissions}");
+    assert_eq!(submissions["unreported"], false, "{submissions}");
+    assert_eq!(submissions["jobs"][pid.to_string()], false, "{submissions}");
+}
+
+/// A command that records its pid, then sleeps as that same process.
+const SLEEPER: &str = "sh -c 'echo $$ > {dir}/sleeper; exec sleep 120'";
+
+#[tokio::test]
+async fn an_agents_background_job_stays_the_agents_when_a_person_submits_before_the_shell_launches_it(
+) {
+    assert!(
+        who_owns_the_job_two_lines_launch(&agent("a"), &TerminalActor::User).await,
+        "the person's later line took the agent's job"
+    );
+}
+
+#[tokio::test]
+async fn a_persons_background_job_stays_the_persons_when_an_agent_submits_before_the_shell_launches_it(
+) {
+    assert!(
+        !who_owns_the_job_two_lines_launch(&TerminalActor::User, &agent("a")).await,
+        "the agent's later line took the person's job"
+    );
+}
+
+#[tokio::test]
+async fn a_command_belongs_to_whoever_pressed_enter_when_the_text_came_in_separately() {
+    let a = agent("a");
+    let line = SLEEPER.to_string();
+    assert_eq!(
+        who_owns(
+            None,
+            &[(&a, line.clone()), (&a, "\r".to_string())],
+            &["sleeper"]
+        )
+        .await,
+        [true],
+        "an agent's Enter in a separate input did not submit the agent's command"
+    );
+    assert_eq!(
+        who_owns(
+            None,
+            &[(&a, line), (&TerminalActor::User, "\r".to_string())],
+            &["sleeper"]
+        )
+        .await,
+        [false],
+        "the person's Enter did not take the command it submitted"
+    );
+}
+
+#[tokio::test]
+async fn every_job_one_line_starts_belongs_to_that_lines_submitter() {
+    let a = agent("a");
+    let line = "sleep 120 & echo $! > '{dir}/one'; sleep 121 & echo $! > '{dir}/two'\r";
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
+        assert_eq!(
+            who_owns(
+                shell.as_deref(),
+                &[
+                    (&a, line.to_string()),
+                    (&TerminalActor::User, "true\r".to_string())
+                ],
+                &["one", "two"]
+            )
+            .await,
+            [true, true],
+            "{shell:?}: the person's later line took a job the agent's line started"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_pipeline_in_the_background_belongs_to_its_line_in_every_member() {
+    let a = agent("a");
+    let line = "sh -c 'echo $$ > {dir}/head; exec sleep 120' | sh -c 'echo $$ > {dir}/tail; exec sleep 121' &\r";
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
+        assert_eq!(
+            who_owns(
+                shell.as_deref(),
+                &[
+                    (&a, line.to_string()),
+                    (&TerminalActor::User, "true\r".to_string())
+                ],
+                &["head", "tail"]
+            )
+            .await,
+            [true, true],
+            "{shell:?}: a member of the agent's background pipeline took the person's line"
+        );
+    }
+}
+
+#[tokio::test]
+async fn zsh_reports_its_jobs_without_a_word_at_the_prompt() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    service.use_shell_for_test(integrated_shells(root.path())[1].as_deref().unwrap());
+    let id = open(&service, root.path()).terminal_id;
+    type_as(
+        &service,
+        &id,
+        &agent("a"),
+        "sleep 5 & sleep 6 & sleep 7 | cat &\r",
+    )
+    .await;
+    type_as(&service, &id, &TerminalActor::User, "echo DONE-$((2+2))\r").await;
+    until("the prompt to return", || {
+        screen_has(&service, &id, "DONE-4")
+    })
+    .await;
+    let screen = service.snapshot("room-1", &id).unwrap().screen_text;
+    for word in [
+        "zsh:",
+        "not found",
+        "bad ",
+        "no such",
+        "jobstates",
+        "parameter",
+    ] {
+        assert!(
+            !screen.to_lowercase().contains(word),
+            "the prompt shows `{word}`: {screen}"
+        );
+    }
+    service.end_session("room-1");
+}
+
+#[tokio::test]
+async fn a_running_command_is_decided_while_a_later_line_waits_behind_it() {
+    let a = agent("a");
+    let started = Instant::now();
+    assert_eq!(
+        who_owns(None, &[(&a, format!("{SLEEPER}\rtrue\r"))], &["sleeper"]).await,
+        [true]
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(8),
+        "the running command waited for the line queued behind it"
+    );
+}
+
+#[tokio::test]
+async fn an_agents_command_stays_the_agents_in_a_shell_that_reports_no_marks() {
+    // Marks exist for bash and zsh; any other login shell (fish) reports none.
+    let a = agent("a");
+    let started = Instant::now();
+    assert_eq!(
+        who_owns(
+            Some("/bin/dash"),
+            &[(&a, format!("{SLEEPER}\r"))],
+            &["sleeper"]
+        )
+        .await,
+        [true],
+        "an agent's command in a shell without marks fell back to the person's default"
+    );
+    assert!(started.elapsed() < Duration::from_secs(8));
+}
+
+/// Without marks, an agent's job and a person's next Enter, which lands once
+/// the job runs and before the paused sampler first sees it.
+async fn who_owns_a_job_in_a_shell_without_marks(first: &TerminalActor, second: &TerminalActor) {
+    assert_eq!(
+        who_owns(
+            Some("/bin/dash"),
+            &[
+                (first, "sleep 120 & echo $! > '{dir}/job'\r".to_string()),
+                (second, "{after job}true\r".to_string()),
+            ],
+            &["job"]
+        )
+        .await,
+        [*first != TerminalActor::User],
+        "the job went to the later submitter"
+    );
+}
+
+#[tokio::test]
+async fn an_agents_job_stays_the_agents_when_a_person_submits_next_in_a_shell_without_marks() {
+    who_owns_a_job_in_a_shell_without_marks(&agent("a"), &TerminalActor::User).await;
+}
+
+#[tokio::test]
+async fn a_persons_job_stays_the_persons_when_an_agent_submits_next_in_a_shell_without_marks() {
+    who_owns_a_job_in_a_shell_without_marks(&TerminalActor::User, &agent("a")).await;
+}
+
+#[tokio::test]
+async fn typeahead_keeps_its_owner_while_the_command_before_it_runs_past_the_window() {
+    // The first command outlasts the ten seconds an unreported Enter is kept.
+    let a = agent("a");
+    let shells = TempDir::new();
+    for shell in integrated_shells(shells.path()) {
+        assert_eq!(
+            who_owns(
+                shell.as_deref(),
+                &[(&a, format!("sleep 11\r{SLEEPER}\r"))],
+                &["sleeper"]
+            )
+            .await,
+            [true],
+            "{shell:?}: the second command lost its submitter while the first ran"
+        );
+    }
 }
 
 #[tokio::test]

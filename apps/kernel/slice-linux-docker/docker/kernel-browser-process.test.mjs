@@ -3,6 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import path from 'node:path';
 import {LinuxOwnedDesktop} from './linux-owned-desktop.mjs';
 import {HostChromium} from './kernel-browser-process.mjs';
 import {OwnedDisplay,ownsDisplay} from './kernel-browser-owned-display.mjs';
@@ -20,7 +21,7 @@ const chromium=process.env.CHARIOX_TEST_CHROMIUM;
 test('MP-08/MP-11 managed Chromium starts with its singleton in the held private directory',
  {skip:!chromium||process.platform!=='linux'||process.getuid()===0||!policyNamespaceAvailable()?'needs CHARIOX_TEST_CHROMIUM, a non-root Linux user and the policy namespace':false},async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-managed-launch-');
- const host=new HostChromium(root,{environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chromium,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{...process.env,CHARIOX_KERNEL_BROWSER_EXECUTABLE:chromium,CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}});
  try{
   const connection=await host.start();
   assert.equal(host.policy,'managed');
@@ -39,7 +40,7 @@ test('MP-08/MP-11 native window ownership selects the CDP browser only from veri
 test('MP-08/MP-10 production Chromium exposes its shared desktop to native capture',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-desktop-native-binding-'),getuid=process.getuid;
  process.getuid=()=>1000;
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/false'}});
  let linked=false;
  const desktop={runtime:root,binding:()=>({environment:{PATH:process.env.PATH}}),start:async()=>({environment:{PATH:process.env.PATH}}),
   recordOwned:async()=>{linked=host.display===desktop},stop:async()=>{},close:async()=>{}};
@@ -49,7 +50,7 @@ test('MP-08/MP-10 production Chromium exposes its shared desktop to native captu
 });
 test('MD-DISPLAY recovering an exited browser closes the previous X server before a failed restart',async()=>{
  const root=await mkdtemp(tmpdir()+'/chariox-md-recovery-');
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/nonexistent/md-browser',CHARIOX_KERNEL_BROWSER_DISPLAY:'1'}});
  const displays=[];
  try{
   for(let n=0;n<3;n++){
@@ -60,6 +61,15 @@ test('MD-DISPLAY recovering an exited browser closes the previous X server befor
    assert.equal(host.display,null);
   }
  }finally{await host.stop();for(const display of displays)await display.close();await rm(root,{recursive:true,force:true})}
+});
+
+test('MP-08/MP-10/MP-11 the pipe-controlled browser does not announce automation to pages',async()=>{
+ const {launchArguments}=await import('./kernel-browser-process.mjs');
+ for(const display of [false,true]){
+  const args=launchArguments('/private',false,display);
+  assert(args.includes('--disable-blink-features=AutomationControlled'),'navigator.webdriver must stay false');
+  assert(!args.includes('--enable-automation'));
+ }
 });
 
 test('MP-08/MP-10 source browser keeps normal animation cadence rather than outrunning capture',async()=>{
@@ -111,7 +121,7 @@ test('MP-11 headed mirror refuses an unavailable private display before spawning
  const start=LinuxOwnedDesktop.prototype.start,uid=process.getuid;
  process.getuid=()=>2100; // Supplementary policy seam; no real browser is launched.
  LinuxOwnedDesktop.prototype.start=async()=>{throw Error('MD-DISPLAY: owned X server unavailable')};
- const host=new HostChromium(root,{environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
+ const host=new HostChromium(root,{appStorageRoot:path.join(root,"app-wasm-state-test"),environment:{CHARIOX_KERNEL_BROWSER_EXECUTABLE:'/bin/true',CHARIOX_KERNEL_BROWSER_MIRROR:'1',CHARIOX_KERNEL_BROWSER_DISPLAY:'0',CHARIOX_KERNEL_BROWSER_HEADLESS:'0',DISPLAY:':77',XAUTHORITY:'/ambient',WAYLAND_DISPLAY:'wayland-0'}});
  try{await assert.rejects(host.start(),/owned X server unavailable/);assert.equal(host.child,null,'ambient display must not launch a browser');assert.equal(host.display,null);}
  finally{LinuxOwnedDesktop.prototype.start=start;process.getuid=uid;await host.stop();await rm(root,{recursive:true,force:true})}
 });
@@ -179,4 +189,13 @@ test('MP-08/MP-10 a Linux host with a usable VA-API render node launches the bro
   [gpu,[],{LIBVA_DRIVERS_PATH:'/opt/empty'}], // the configured driver path has none
  ])assert.deepEqual(videoDecodeArguments(environment,host(files,denied)),[]);
  assert(!launchArguments('/private',false,true).some(arg=>arg.startsWith('--enable-features')),'the default launch is unchanged');
+});
+// 2026-10-31: on a Mac the kernel browser was a headed Chrome window on the person's desktop (nothing captures it there).
+test('the kernel browser is headless on macOS whatever the environment says, and only the Linux owned desktop shows a window',async()=>{
+ const {headlessLaunch}=await import('./kernel-browser-process.mjs');
+ assert.equal(headlessLaunch('darwin',{}),true);
+ assert.equal(headlessLaunch('darwin',{CHARIOX_KERNEL_BROWSER_HEADLESS:'0'}),true);
+ assert.equal(headlessLaunch('linux',{}),false,'Linux keeps its owned desktop');
+ assert.equal(headlessLaunch('linux',{CHARIOX_KERNEL_BROWSER_HEADLESS:'1'}),true);
+ assert.throws(()=>headlessLaunch('win32',{}),/Linux and macOS only/,'Windows never launches a browser');
 });

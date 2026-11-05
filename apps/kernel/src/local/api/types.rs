@@ -12,13 +12,15 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_deadline;
 mod agent_lifecycle;
-mod agent_prompt_schedule;
+mod agent_triggers;
 mod agent_utility;
 mod apps;
 mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
+mod control_plane;
+mod created_resource;
 mod daemon;
 mod dictation;
 mod disposable_worker;
@@ -55,6 +57,7 @@ mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
 mod user_domain_access;
+mod vault_secret;
 mod waiting_room;
 mod workflow;
 mod workflow_notification;
@@ -62,13 +65,15 @@ mod workspace;
 
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
-pub use agent_prompt_schedule::*;
+pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;
 pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
+pub use control_plane::*;
+pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
 pub use disposable_worker::*;
@@ -105,6 +110,7 @@ pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
 pub use user_domain_access::*;
+pub use vault_secret::*;
 pub use waiting_room::*;
 pub use workflow::*;
 pub use workflow_notification::*;
@@ -268,7 +274,7 @@ pub use workspace::*;
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-/// Version 405 binds native approvals to the originating turn and provider run.
+/// Version 407 binds native approvals to the originating turn and provider run.
 /// Version 407 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
@@ -415,9 +421,48 @@ pub use workspace::*;
 /// viewer that shows the page as video.
 /// Version 923 adds `UnlockCredentialVault`: the owner's own client unlocks the kernel's
 /// existing Vault with no session or agent (`CredentialVaultUnlocked`).
+/// Version 929 adds `RequestVaultSecret` and `GetVaultSecretStatus` for an outside agent that needs a Vault value
+/// the owner types in a connected client or on a link's page, and `PasskeyPromptKind::VaultSecret` for that popup.
 /// Landing union 923 carries 913 (`SessionState` `processes`), 917 (direct browser sessions over WebRTC),
 /// 919 (user-side browser frame stream removed, `display_ack` `paused`), 920 (mirror `document_mode`,
 /// `pointer_cursor`) and 923 (session-less Vault unlock).
-/// Version 933 is the Apps v2 landing: App acquisition sources (`register`, dev), `InspectAppView`, the kernel
-/// App dev push (`BeginAppDevPush`, `GetAppDevPush`), the Room App-agent bridge request and unprojected Room App opens.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 933;
+/// Allocated 924 makes the managed-environment reimage preflight `desiredRelease.providerId` an opaque
+/// string that Cloud defines (it was a one-value enum); the wire value is unchanged.
+/// MP-08/MP-09/MP-10/MP-11: 925 marks a hot reload's relay close (`kernel_reload`), which the relay
+/// forwards to the kernel's subscribed clients so they retry within the swap.
+/// Version 926 makes the direct data channel's liveness a contract: the kernel pings
+/// every second ahead of queued frames and ends a peer silent for 3 s; browsers leave
+/// a direct path silent for 2.5 s (TR-16).
+/// Version 927 adds admission: `SessionProcess.state` (`running`, `held` or `paused`, with the
+/// reason, place in line, need and free room) and `StartSessionProcessNow` (`SessionProcessStartedNow`).
+/// Allocated 928 adds `question` (the decision as the person sees it) to a pending outside `Interaction`
+/// event and `resolution` (`via`, `choice_id`) to a resolved one; an answer to a closed decision fails with
+/// the stable `interaction_closed`.
+/// Allocated 930 adds agent triggers; `/wait-in` and `/wait-every` become schedule triggers.
+/// Allocated 931 adds trigger deliveries the person can resend and removes the `/wait` schedule shape.
+/// Allocated 932 adds the HTTP trigger source and `InvokeAgentTrigger`/`ReadAgentTriggerTranscript`.
+/// Landing union 932 carries 924 (opaque reimage `providerId`), 925 (hot reload `kernel_reload`), 926 (direct
+/// data channel liveness), 927 (process admission), 928 (outside interaction `question`/`resolution`), 929 (Vault
+/// secret requests) and 930 to 932 (agent triggers).
+/// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
+/// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
+/// MP-08/MP-10/MP-11: 934 acknowledges the leased projection drain (peer 383).
+/// MP-08/MP-10/MP-11: 935 binds the leased prompt completion to its exact prompt and worker run (peer 384).
+/// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
+/// through `RespondToInteraction`; peer 385).
+/// Browser downloads 937 adds bounded Room artifacts and cancellation.
+/// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
+/// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
+/// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
+/// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` and `file` credential uses and injection kinds (Vault capture/use by command and file).
+/// Resource register 944 adds project-scoped record/list/revoke tools and metadata.
+/// Vault TOTP 945 adds computed factor input and sibling backup-code credentials.
+/// VAUDIT S3 948 adds the kernel-browser Vault capture_browser and fill_field tools.
+/// Protocol 950 advertises the answering kernel protocol in RelayStatus.
+/// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
+/// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
+/// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
+/// Connected service machine requests use the ordinary Chariox access grant.
+/// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
+/// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;

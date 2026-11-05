@@ -1,37 +1,37 @@
-const HETZNER_PASSTHROUGH_FLAGS = new Set([
-  "--hetzner-host",
-  "--hetzner-key",
-  "--hetzner-repo",
+const REMOTE_KERNEL_PASSTHROUGH_FLAGS = new Set([
+  "--remote-kernel-host",
+  "--remote-kernel-key",
+  "--remote-kernel-repo",
 ])
 
-const HETZNER_METADATA_KEYS = {
-  "--hetzner-host": "hasHetznerHostOverride",
-  "--hetzner-key": "hasHetznerSshIdentityOverride",
-  "--hetzner-repo": "hasHetznerRepoOverride",
+const REMOTE_KERNEL_METADATA_KEYS = {
+  "--remote-kernel-host": "hasRemoteKernelHostOverride",
+  "--remote-kernel-key": "hasRemoteKernelSshIdentityOverride",
+  "--remote-kernel-repo": "hasRemoteKernelRepoOverride",
 }
 
 export const DRILL_DEPLOYMENT_PRESETS = Object.freeze([
-  "hetzner",
   "hosted-cloud",
   "local",
+  "remote-kernel",
   "same-host-remote",
   "self-hosted-relay",
 ])
 
 const DEPLOYMENT_PRESET_FLAGS = {
-  "hetzner": "includesHetzner",
+  "remote-kernel": "includesRemoteKernel",
   "hosted-cloud": "includesHostedCloud",
   "local": "includesLocal",
   "same-host-remote": "includesSameHostRemote",
   "self-hosted-relay": "includesSelfHostedRelay",
 }
 
-export function parseHetznerPassthroughArg(argv, index) {
+export function parseRemoteKernelPassthroughArg(argv, index) {
   const arg = argv[index]
   if (!arg) return null
   const equalsIndex = arg.indexOf("=")
   const flag = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex)
-  if (!HETZNER_PASSTHROUGH_FLAGS.has(flag)) return null
+  if (!REMOTE_KERNEL_PASSTHROUGH_FLAGS.has(flag)) return null
 
   if (equalsIndex !== -1) {
     const value = arg.slice(equalsIndex + 1)
@@ -44,31 +44,31 @@ export function parseHetznerPassthroughArg(argv, index) {
   return { args: [flag, value], nextIndex: index + 1 }
 }
 
-export function appendHetznerPassthrough(baseArgs, scenario, passthrough) {
+export function appendRemoteKernelPassthrough(baseArgs, scenario, passthrough) {
   const requires = Array.isArray(scenario.requires) ? scenario.requires : []
-  return requires.includes("hetzner") ? [...baseArgs, ...passthrough] : baseArgs
+  return requires.includes("remote-kernel") ? [...baseArgs, ...passthrough] : baseArgs
 }
 
-export function hetznerPassthroughMetadata(passthrough) {
+export function remoteKernelPassthroughMetadata(passthrough) {
   const metadata = {
-    hasHetznerHostOverride: false,
-    hasHetznerSshIdentityOverride: false,
-    hasHetznerRepoOverride: false,
+    hasRemoteKernelHostOverride: false,
+    hasRemoteKernelSshIdentityOverride: false,
+    hasRemoteKernelRepoOverride: false,
   }
   for (let index = 0; index < passthrough.length; index += 2) {
-    const key = HETZNER_METADATA_KEYS[passthrough[index]]
+    const key = REMOTE_KERNEL_METADATA_KEYS[passthrough[index]]
     if (key) metadata[key] = true
   }
   return metadata
 }
 
-export function drillDeploymentPresetMetadata(presets, { hetznerPassthrough = [] } = {}) {
+export function drillDeploymentPresetMetadata(presets, { remoteKernelPassthrough = [] } = {}) {
   const normalized = [...new Set((presets ?? []).map((preset) => String(preset).trim()).filter(Boolean))].sort()
   validateDrillDeploymentPresets(normalized, "drill deployment presets")
   const metadata = {
     deploymentPresetCount: normalized.length,
     deploymentPresets: normalized.join(","),
-    includesHetzner: false,
+    includesRemoteKernel: false,
     includesHostedCloud: false,
     includesLocal: false,
     includesSameHostRemote: false,
@@ -79,7 +79,7 @@ export function drillDeploymentPresetMetadata(presets, { hetznerPassthrough = []
   }
   return {
     ...metadata,
-    ...hetznerPassthroughMetadata(hetznerPassthrough),
+    ...remoteKernelPassthroughMetadata(remoteKernelPassthrough),
   }
 }
 

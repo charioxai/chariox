@@ -8,7 +8,7 @@ use super::*;
 mod agent_events;
 mod agent_messaging;
 mod agent_process_permission;
-mod agent_wakes;
+pub(super) mod agent_wakes;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app;
 mod capability_registry;
@@ -20,6 +20,7 @@ mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
+mod popup;
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
@@ -187,7 +188,8 @@ impl KernelRuntimeState {
         }
         // Official provider harnesses cache MCP discovery before sudo begins.
         // Advertising an interface conveys no authority: dispatch still checks
-        // the live exact sudo prompt on every invocation.
+        // the live exact sudo prompt on every privileged invocation.
+        // Vault generation is an ordinary tool bound to its entry's destination.
         if matches!(provider_runs.as_slice(), [run]
             if run.state() != crate::provider::ProviderRunState::Ended)
         {
@@ -196,7 +198,13 @@ impl KernelRuntimeState {
                 description: "Act as the host on this kernel during your sudo window, for the owner-authorized task only. Submit a LocalDaemonRequest using its case-sensitive externally tagged JSON: for example {\"request\":{\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}} or {\"request\":{\"ListSessions\":null}}. Do not use method/params or type fields. Cannot answer approvals, grant sudo/access, read secrets or change the passkey/access configuration. Authority ends at expiry, task end or revocation; regular work continues.".into(),
                 input_schema: serde_json::json!({"type":"object","required":["request"],"properties":{"request":{"type":"object"}},"additionalProperties":false}),
             });
-            specs.push(super::sudo::vault_generate_spec());
+            specs.push(super::vault_generate::vault_generate_spec());
+            specs.push(super::vault_command::capture_command_spec());
+            specs.push(super::vault_command::use_env_spec());
+            specs.push(super::vault_command::capture_file_spec());
+            specs.push(super::vault_command::write_file_spec());
+            specs.extend(super::resource_register::specs());
+            specs.push(super::agent_auth::spec());
         }
         if self.meta_runtime_tool_specs_enabled_for_auth_token(auth_token) {
             let room_tools = self.room_agent_tools_enabled();
@@ -372,8 +380,32 @@ impl KernelRuntimeState {
         {
             return result;
         }
-        if tool_name == super::sudo::VAULT_GENERATE {
+        if matches!(
+            tool_name,
+            super::resource_register::RECORD
+                | super::resource_register::LIST
+                | super::resource_register::REVOKE
+                | super::resource_register::SET_REVOKE
+        ) {
+            return Box::pin(self.resource_register_tool(auth_token, tool_name, arguments)).await;
+        }
+        if tool_name == super::agent_auth::REGISTER {
+            return Box::pin(self.agent_auth_register(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_generate::VAULT_GENERATE {
             return Box::pin(self.vault_generate(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_CAPTURE_COMMAND {
+            return Box::pin(self.vault_capture_command(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_USE_ENV {
+            return Box::pin(self.vault_use_env(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_CAPTURE_FILE {
+            return Box::pin(self.vault_capture_file(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_WRITE_FILE {
+            return Box::pin(self.vault_write_file(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;
@@ -827,6 +859,7 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
         crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL
             | crate::transport::runtime_tools::REQUEST_CREDENTIAL_SECRET_TOOL
             | crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL
+            | crate::transport::runtime_tools::HTTP_REQUEST_TOOL
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
             | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
             | crate::transport::runtime_tools::REQUEST_POPUP_TOOL

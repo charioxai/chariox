@@ -122,7 +122,7 @@ try {
   // The after image carries candidate-k resources plus the actual PR patch.
   // Overlay the same patched public resource files for the provisioner.
   if(args["--patch"]){execFileSync("patch",["-p1","--batch","-i",path.resolve(args["--patch"])],{cwd:resources});}
-  await writeFile(path.join(home,"config.toml"),`version = 1\n[credential_vault]\nbackend = "process_memory"\npath = "${scratch}/vault.json"\nservice = "${run}"\nagent_management = "allow"\n[state]\npath = "${scratch}/state.db"\n[slices]\nroot = "${scratch}/slices"\n[slices.linux]\ndocker_image = "${args["--image"]}"\nbuild_image = "never"\nmemory_mb = 2048\ncpus = "2.0"\n`);
+  await writeFile(path.join(home,"config.toml"),`version = 1\n[credential_vault]\nbackend = "process_memory"\npath = "${scratch}/vault.json"\nservice = "${run}"\n[state]\npath = "${scratch}/state.db"\n[slices]\nroot = "${scratch}/slices"\n[slices.linux]\ndocker_image = "${args["--image"]}"\nbuild_image = "never"\nmemory_mb = 2048\ncpus = "2.0"\n`);
   // A small explicit environment prevents accidental inheritance of live
   // kernel/provider configuration. No auth files, keys or accounts are copied.
   const env={PATH:process.env.PATH,HOME:scratch,LANG:"C.UTF-8",CHARIOX_HOME:home,XDG_CONFIG_HOME:path.join(scratch,"config"),CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT:"1",CHARIOX_KERNEL_PORT:String(port),CHARIOX_MCP_PORT:String(port+1),CHARIOX_CODEX_PORT:String(port+2),CHARIOX_OPENCODE_PORT:String(port+3),CHARIOX_DAEMON_ID:run,CHARIOX_SLICE_DOCKER_PROVISIONER:provisioner};

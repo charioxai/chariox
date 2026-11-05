@@ -10,9 +10,16 @@ use std::time::Duration;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use tokio::sync::Notify;
 
+use super::handover::ReaderGate;
+#[cfg(unix)]
+use super::handover::{AdoptedChild, AdoptedMaster, PtyHandover};
 use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
+
+#[cfg(all(test, unix))]
+#[path = "spawn_failure_tests.rs"]
+mod spawn_failure_tests;
 
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
@@ -47,6 +54,78 @@ fn clone_input_terminal(master: &dyn MasterPty) -> std::io::Result<Option<std::f
 #[cfg(not(unix))]
 fn clone_input_terminal(_master: &dyn MasterPty) -> std::io::Result<Option<std::fs::File>> {
     Ok(None)
+}
+
+/// How long a PTY reader waits for output before it checks for a hot-reload hold.
+#[cfg(unix)]
+const PTY_READER_POLL_MS: libc::c_int = 100;
+
+/// The reading end of a PTY master. On Unix it polls, so a hot reload can hold
+/// the reader between two reads instead of losing a read in flight.
+#[cfg(unix)]
+struct PtyOutputSource(std::fs::File);
+
+#[cfg(unix)]
+impl PtyOutputSource {
+    fn new(master: &dyn MasterPty) -> std::io::Result<Self> {
+        use std::os::fd::BorrowedFd;
+        let fd = master
+            .as_raw_fd()
+            .ok_or_else(|| std::io::Error::other("the PTY master has no descriptor"))?;
+        // The master remains alive throughout this clone.
+        Ok(Self(
+            unsafe { BorrowedFd::borrow_raw(fd) }
+                .try_clone_to_owned()?
+                .into(),
+        ))
+    }
+
+    /// The next chunk, or `None` once the PTY closed.
+    fn next(&mut self, gate: &ReaderGate, buffer: &mut [u8]) -> Option<usize> {
+        use std::os::fd::AsRawFd;
+        loop {
+            gate.checkpoint();
+            let mut poll = libc::pollfd {
+                fd: self.0.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            match unsafe { libc::poll(&mut poll, 1, PTY_READER_POLL_MS) } {
+                0 => continue,
+                ready if ready < 0 => {
+                    if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+            match self.0.read(buffer) {
+                Ok(0) => return None,
+                Ok(size) => return Some(size),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return None,
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct PtyOutputSource(Box<dyn Read + Send>);
+
+#[cfg(not(unix))]
+impl PtyOutputSource {
+    fn new(master: &dyn MasterPty) -> Result<Self, anyhow::Error> {
+        Ok(Self(master.try_clone_reader()?))
+    }
+
+    fn next(&mut self, gate: &ReaderGate, buffer: &mut [u8]) -> Option<usize> {
+        gate.checkpoint();
+        match self.0.read(buffer) {
+            Ok(0) | Err(_) => None,
+            Ok(size) => Some(size),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -90,6 +169,123 @@ fn discard_unread_input(terminal: Option<&std::fs::File>) -> std::io::Result<()>
 #[cfg(not(unix))]
 fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()> {
     Err(std::io::Error::other("PTY input flush is unavailable"))
+}
+
+type MasterEndpoints = (
+    Option<std::fs::File>,
+    PtyOutputSource,
+    Box<dyn Write + Send>,
+);
+
+/// The descriptors a running PTY keeps beside its master: the input terminal
+/// and the reader and writer ends. Running out of descriptors here is refused
+/// like any other spawn step.
+fn open_master_endpoints(
+    master: &dyn MasterPty,
+    provider_run_id: &str,
+) -> Result<MasterEndpoints, DaemonError> {
+    let input_terminal =
+        clone_input_terminal(master).map_err(|error| spawn_failed(provider_run_id, &error))?;
+    let reader =
+        PtyOutputSource::new(master).map_err(|error| spawn_failed(provider_run_id, &error))?;
+    let writer = master
+        .take_writer()
+        .map_err(|error| spawn_failed(provider_run_id, &*error))?;
+    Ok((input_terminal, reader, writer))
+}
+
+/// Resource refusals name the recovery; descriptor numbers and run ids stay in logs.
+fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)) -> DaemonError {
+    let shortage = std::iter::successors(Some(error), |error| error.source())
+        .filter_map(|error| error.downcast_ref::<std::io::Error>())
+        .filter_map(std::io::Error::raw_os_error)
+        .find_map(|errno| resource_refusal(errno).map(|refusal| (errno, refusal)))
+        .or_else(|| {
+            // portable-pty 0.8.1 formats openpty's IO error instead of retaining
+            // its source. Decode only that allocation error at this boundary.
+            let detail = error.to_string();
+            let errno = detail
+                .strip_prefix("failed to openpty: Os { code: ")?
+                .split_once(',')?
+                .0
+                .parse()
+                .ok()?;
+            resource_refusal(errno).map(|refusal| (errno, refusal))
+        });
+    if let Some((errno, refusal)) = shortage {
+        crate::logging::warn_with_fields(
+            "pty.spawn",
+            "terminal creation refused because kernel resources are unavailable",
+            serde_json::json!({"provider_run_id": provider_run_id, "errno": errno, "error": error.to_string()}),
+        );
+        return refusal;
+    }
+    if is_out_of_files_error(error) {
+        return DaemonError::TooManyOpenFiles;
+    }
+    DaemonError::PtySpawn {
+        provider_run_id: provider_run_id.to_string(),
+        message: error.to_string(),
+    }
+}
+
+/// Whether `error`, or anything it wraps, is EMFILE or ENFILE. portable-pty
+/// turns some failures (opening the PTY) into text that only names the errno,
+/// so the messages are matched too.
+fn is_out_of_files_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |error| error.source()).any(|error| {
+        let io_error = error.downcast_ref::<std::io::Error>();
+        io_error
+            .and_then(std::io::Error::raw_os_error)
+            .is_some_and(is_out_of_files)
+            || io_error
+                .and_then(std::io::Error::get_ref)
+                .is_some_and(|inner| is_out_of_files_error(inner))
+            || names_out_of_files(&error.to_string())
+    })
+}
+
+fn names_out_of_files(message: &str) -> bool {
+    #[cfg(unix)]
+    {
+        [libc::EMFILE, libc::ENFILE].into_iter().any(|errno| {
+            let text = std::io::Error::from_raw_os_error(errno).to_string();
+            let description = text.split(" (os error").next().unwrap_or(&text);
+            message.contains(description)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = message;
+        false
+    }
+}
+
+#[cfg(unix)]
+fn is_out_of_files(errno: i32) -> bool {
+    matches!(errno, libc::EMFILE | libc::ENFILE)
+}
+
+#[cfg(not(unix))]
+fn is_out_of_files(_errno: i32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn resource_refusal(errno: i32) -> Option<DaemonError> {
+    match errno {
+        libc::EMFILE | libc::ENFILE => Some(DaemonError::TooManyOpenFiles),
+        libc::EAGAIN | libc::ENOMEM => Some(crate::room_terminal::refusal(
+            "not enough resources in this kernel to open a terminal; close a terminal and try again"
+                .into(),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(not(unix))]
+fn resource_refusal(_errno: i32) -> Option<DaemonError> {
+    None
 }
 
 #[cfg(unix)]
@@ -205,7 +401,7 @@ pub struct PtySpawnRequest {
     pub agent: Option<PtyAgent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PtyAgent {
     pub session_id: String,
     pub agent_id: String,
@@ -256,6 +452,7 @@ struct PtyProcess {
     input_writer: PtyInputWriter,
     output_rx: Receiver<Vec<u8>>,
     diagnostic_tail: Arc<Mutex<VecDeque<u8>>>,
+    reader_gate: Arc<ReaderGate>,
     exit_code: Option<u32>,
     signal: Option<String>,
     reference_count: usize,
@@ -443,6 +640,11 @@ impl PtyManager {
             return Ok(());
         }
 
+        #[cfg(unix)]
+        if let Some(handover) = crate::hot_reload::adopting_pty(run.id()) {
+            return self.adopt(process_key, &handover);
+        }
+
         let program = run.pty_program().ok_or_else(|| DaemonError::PtySpawn {
             provider_run_id: run.id().to_string(),
             message: "provider run does not define a managed PTY program".to_string(),
@@ -562,7 +764,7 @@ impl PtyManager {
         request: PtySpawnRequest,
         credentials: &crate::provider::ProviderCredentialEnvironment,
         scrub_ambient_credentials: bool,
-        mut output_filter: Option<PtyOutputFilter>,
+        output_filter: Option<PtyOutputFilter>,
         keep_input_echo: bool,
     ) -> Result<(), DaemonError> {
         if let Some(process_key) = self.process_aliases.get(&request.provider_run_id) {
@@ -588,18 +790,10 @@ impl PtyManager {
                 pixel_width: 0,
                 pixel_height: 0,
             })
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+            .map_err(|error| spawn_failed(&request.provider_run_id, &*error))?;
         if !keep_input_echo {
             disable_pty_input_echo(pair.master.as_ref(), &request.provider_run_id)?;
         }
-        let input_terminal =
-            clone_input_terminal(pair.master.as_ref()).map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
 
         let prepared = crate::runtime::process_resources::PreparedDomain::new(
             request
@@ -609,10 +803,7 @@ impl PtyManager {
                     agent.agent_id.as_str()
                 }),
         )
-        .map_err(|error| DaemonError::PtySpawn {
-            provider_run_id: request.provider_run_id.clone(),
-            message: error.to_string(),
-        })?;
+        .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
         #[cfg(unix)]
         let inner_program = request.program.clone();
         let (program, args) = prepared.command(request.program, request.args);
@@ -649,19 +840,12 @@ impl PtyManager {
             command.get_cwd().map(std::path::Path::new),
             command.get_env("PATH"),
         )
-        .map_err(|error| DaemonError::PtySpawn {
-            provider_run_id: request.provider_run_id.clone(),
-            message: error.to_string(),
-        })?;
+        .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
 
         // portable-pty calls setsid before exec on Unix, including sandbox
         // wrappers. Keep its controlling-terminal and isolation setup intact.
-        let mut child = crate::process_spawn::spawn_pty(pair.slave, command).map_err(|error| {
-            DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            }
-        })?;
+        let mut child = crate::process_spawn::spawn_pty(pair.slave, command)
+            .map_err(|error| spawn_failed(&request.provider_run_id, &error))?;
 
         let resources = match child
             .process_id()
@@ -672,36 +856,54 @@ impl PtyManager {
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(DaemonError::PtySpawn {
-                    provider_run_id: request.provider_run_id.clone(),
-                    message: error.to_string(),
-                });
+                return Err(spawn_failed(&request.provider_run_id.clone(), &error));
             }
         };
 
         resources.bind_key(&request.provider_run_id);
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|error| DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: error.to_string(),
-            })?;
+        self.attach(
+            request.process_key,
+            request.provider_run_id,
+            request.agent,
+            pair.master,
+            child,
+            resources,
+            output_filter,
+        )
+    }
+
+    /// Reader and writer threads for a running PTY child, spawned here or adopted.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "A spawned and an adopted PTY attach with the same parts; a struct would only rename them"
+    )]
+    fn attach(
+        &mut self,
+        process_key: String,
+        provider_run_id: String,
+        agent: Option<PtyAgent>,
+        master: Box<dyn MasterPty + Send>,
+        mut child: Box<dyn Child + Send + Sync>,
+        resources: crate::runtime::process_resources::ProcessDomain,
+        mut output_filter: Option<PtyOutputFilter>,
+    ) -> Result<(), DaemonError> {
+        let (input_terminal, mut reader, writer) =
+            match open_master_endpoints(master.as_ref(), &provider_run_id) {
+                Ok(endpoints) => endpoints,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let backlog = Arc::new(PtyInputBacklog::default());
         let writer_backlog = backlog.clone();
-        let writer_provider_run_id = request.provider_run_id.clone();
-        let writer_process_key = request.process_key.clone();
+        let writer_provider_run_id = provider_run_id.clone();
+        let writer_process_key = process_key.clone();
         let writer_output_signal = self.output_signal.clone();
         let writer_thread = thread::Builder::new()
-            .name(format!("chariox-pty-writer-{}", request.provider_run_id))
+            .name(format!("chariox-pty-writer-{provider_run_id}"))
             .stack_size(PTY_WRITER_STACK_BYTES)
             .spawn(move || {
                 run_pty_writer(
@@ -713,14 +915,14 @@ impl PtyManager {
                     writer_backlog,
                 )
             });
-        if let Err(error) = writer_thread {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY writer: {error}"),
-            });
-        }
+        let writer_thread = match writer_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(spawn_failed(&provider_run_id, &error));
+            }
+        };
         let input_writer = PtyInputWriter {
             provider_run_id: writer_provider_run_id,
             input_tx,
@@ -733,21 +935,19 @@ impl PtyManager {
         )));
 
         self.output_signal
-            .register_alias(&request.process_key, request.provider_run_id.clone());
+            .register_alias(&process_key, provider_run_id.clone());
         let output_signal = self.output_signal.clone();
-        let output_process_key = request.process_key.clone();
+        let output_process_key = process_key.clone();
         let reader_diagnostic_tail = Arc::clone(&diagnostic_tail);
+        let reader_gate = Arc::new(ReaderGate::default());
+        let gate = Arc::clone(&reader_gate);
         let reader_thread = thread::Builder::new()
-            .name(format!("chariox-pty-reader-{}", request.provider_run_id))
+            .name(format!("chariox-pty-reader-{provider_run_id}"))
             .stack_size(PTY_READER_STACK_BYTES)
             .spawn(move || {
                 let mut buffer = [0_u8; 4096];
 
-                while let Ok(size) = reader.read(&mut buffer) {
-                    if size == 0 {
-                        break;
-                    }
-
+                while let Some(size) = reader.next(&gate, &mut buffer) {
                     // Sensitive utilities filter before queues, diagnostics or projections.
                     let bytes = if let Some(filter) = output_filter.as_mut() {
                         let bytes = filter(&buffer[..size]);
@@ -770,14 +970,15 @@ impl PtyManager {
                     }
                 }
                 output_signal.record_output(&output_process_key);
+                gate.finish();
             });
         if let Err(error) = reader_thread {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: request.provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY reader: {error}"),
-            });
+            drop(input_writer);
+            let _ = writer_thread.join();
+            self.output_signal.unregister_process(&process_key);
+            return Err(spawn_failed(&provider_run_id, &error));
         }
 
         // portable-pty creates a new Unix session whose leader is the child.
@@ -787,24 +988,24 @@ impl PtyManager {
         #[cfg(not(unix))]
         let process_group = None;
         self.processes.insert(
-            request.process_key.clone(),
+            process_key.clone(),
             PtyProcess {
                 discovery_config: None,
                 child,
                 resources,
-                agent: request.agent,
-                master: pair.master,
+                agent,
+                master,
                 process_group,
                 input_writer,
                 output_rx,
                 diagnostic_tail,
+                reader_gate,
                 exit_code: None,
                 signal: None,
                 reference_count: 1,
             },
         );
-        self.process_aliases
-            .insert(request.provider_run_id, request.process_key);
+        self.process_aliases.insert(provider_run_id, process_key);
 
         Ok(())
     }
@@ -835,6 +1036,94 @@ impl PtyManager {
         provider_run_id: &str,
     ) -> Result<PtyInputWriter, DaemonError> {
         self.input_writer(provider_run_id)
+    }
+}
+
+impl PtyManager {
+    fn process_for(&self, provider_run_id: &str) -> Result<&PtyProcess, DaemonError> {
+        let process_key = self.resolve_process_key(provider_run_id)?;
+        self.processes
+            .get(&process_key)
+            .ok_or_else(|| DaemonError::PtyProcessNotFound {
+                provider_run_id: provider_run_id.to_string(),
+            })
+    }
+
+    /// Holds this PTY's reader between two reads for a hot reload. False when it
+    /// did not get there in time; its output queue may be full, so drain and retry.
+    pub(crate) fn hold_output(
+        &self,
+        provider_run_id: &str,
+        timeout: Duration,
+    ) -> Result<bool, DaemonError> {
+        Ok(self.process_for(provider_run_id)?.reader_gate.hold(timeout))
+    }
+
+    pub(crate) fn release_output(&self, provider_run_id: &str) {
+        if let Ok(process) = self.process_for(provider_run_id) {
+            process.reader_gate.release();
+        }
+    }
+
+    /// The master and child a hot reload passes to the next kernel program.
+    #[cfg(unix)]
+    pub(crate) fn handover(&self, provider_run_id: &str) -> Result<PtyHandover, DaemonError> {
+        let process = self.process_for(provider_run_id)?;
+        let unavailable = |message: &str| DaemonError::PtySpawn {
+            provider_run_id: provider_run_id.to_string(),
+            message: message.to_string(),
+        };
+        Ok(PtyHandover {
+            master_fd: process
+                .master
+                .as_raw_fd()
+                .ok_or_else(|| unavailable("the PTY master has no descriptor"))?,
+            pid: process
+                .child
+                .process_id()
+                .ok_or_else(|| unavailable("the PTY child has no PID"))?,
+            process_group: process.process_group,
+            cgroup: process.resources.cgroup_path(),
+            agent: process.agent.clone(),
+            submissions: process.resources.submissions(),
+        })
+    }
+
+    /// Takes over a PTY the previous kernel program handed over: its child is
+    /// still this process's child, and its master fd was inherited.
+    #[cfg(unix)]
+    pub(crate) fn adopt(
+        &mut self,
+        process_key: String,
+        handover: &PtyHandover,
+    ) -> Result<(), DaemonError> {
+        let failed = |message: String| DaemonError::PtySpawn {
+            provider_run_id: process_key.clone(),
+            message,
+        };
+        // The handover named this fd for this PTY alone.
+        let master = unsafe { AdoptedMaster::from_raw(handover.master_fd) };
+        let unit = handover
+            .agent
+            .as_ref()
+            .map_or(process_key.as_str(), |agent| agent.agent_id.as_str());
+        let resources = crate::runtime::process_resources::PreparedDomain::adopted(
+            unit,
+            handover.cgroup.as_deref(),
+        )
+        .map(|domain| domain.launched_by(handover.submissions.clone()))
+        .and_then(|domain| domain.start(handover.pid))
+        .map_err(|e| failed(e.to_string()))?;
+        resources.bind_key(&process_key);
+        self.attach(
+            process_key.clone(),
+            process_key,
+            handover.agent.clone(),
+            Box::new(master),
+            Box::new(AdoptedChild::new(handover.pid)),
+            resources,
+            None,
+        )
     }
 }
 
@@ -1489,8 +1778,9 @@ mod tests {
     };
 
     use super::{
-        mpsc, run_pty_writer, PtyInputBacklog, PtyInputRequest, PtyInputWriter, PtyManager,
-        PtyOutputSignal, PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+        mpsc, native_pty_system, open_master_endpoints, run_pty_writer, PtyInputBacklog,
+        PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal, PtyProcessState, PtySize,
+        PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
     };
 
     struct AttributionProbeWriter {
@@ -2615,5 +2905,111 @@ mod tests {
             "the memory limit did not stop its PTY tree"
         );
         assert_eq!(sibling, PtyProcessState::Running);
+    }
+    // MP-08/MP-10: a terminal that cannot get its descriptors is refused in the
+    // kernel's own words wherever the table runs out. Run in a child process:
+    // RLIMIT_NOFILE is process-wide.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_spawn_short_of_descriptors_is_refused_as_too_many_open_files() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pty::manager::tests::spawn_short_of_descriptors_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .expect("isolated descriptor probe should start");
+        assert!(
+            output.status.success(),
+            "descriptor probe failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "process-wide RLIMIT_NOFILE; explicitly executed by parent"]
+    fn spawn_short_of_descriptors_child() {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        limit.rlim_cur = limit.rlim_cur.min(256);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+
+        let mut manager = PtyManager::new();
+        let mut files = Vec::new();
+        while let Ok(file) = std::fs::File::open("/dev/null") {
+            files.push(file);
+        }
+        // Free one descriptor more each round, so the table runs out at every
+        // step of a spawn in turn.
+        let mut refused = 0;
+        for free in 0..48 {
+            if let Some(file) = files.pop() {
+                drop(file);
+            }
+            let id = format!("terminal-{free}");
+            match manager.spawn_interactive(PtySpawnRequest {
+                process_key: id.clone(),
+                provider_run_id: id.clone(),
+                program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 60".to_string()],
+                env: Default::default(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+                agent: None,
+            }) {
+                Ok(()) => {
+                    // Keep the descriptors the new terminal holds out of the next round.
+                    manager.remove_process(&id).unwrap();
+                }
+                Err(crate::error::DaemonError::TooManyOpenFiles) => refused += 1,
+                Err(error) => {
+                    panic!(
+                        "with {} descriptors free the spawn failed as `{error}`",
+                        free + 1
+                    )
+                }
+            }
+        }
+        assert!(refused > 0, "the table never ran short during a spawn");
+
+        // The ends kept beside a master run out on their own, too.
+        let mut refused = 0;
+        for free in 0..6 {
+            while let Ok(file) = std::fs::File::open("/dev/null") {
+                files.push(file);
+            }
+            // Two descriptors for the master and slave, then `free` more.
+            for _ in 0..free + 2 {
+                files.pop();
+            }
+            let pair = native_pty_system()
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            match open_master_endpoints(pair.master.as_ref(), "terminal-ends") {
+                Ok(_) => {}
+                Err(crate::error::DaemonError::TooManyOpenFiles) => refused += 1,
+                Err(error) => {
+                    panic!("with {free} descriptors free the ends failed as `{error}`")
+                }
+            }
+        }
+        assert!(refused > 0, "the table never ran short opening the ends");
     }
 }

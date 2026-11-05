@@ -269,3 +269,6 @@ TypeScript source, the native TypeScript transformer. Linux requires Bubblewrap 
 beneath-root schema opens and close-on-exec descriptor ranges. Compilation
 fails closed where the isolation backend is unavailable; it never falls back
 to a compiler with home-kernel access.
+
+App backends use the separate Apps v2 WASM component runtime. The Node compiler
+mentioned here generates workflows; it does not execute installed App backends.

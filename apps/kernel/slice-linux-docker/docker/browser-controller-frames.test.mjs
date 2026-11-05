@@ -73,6 +73,23 @@ test("isolated session admission resumes overflow without opening another listen
   await listener.close();
 });
 
+test("a dedicated worker the page starts is resumed at once and stays attachable", async () => {
+  const listener = new BrowserFrameSessions(new BrowserFrameTargets(), () => "tab");
+  const connection = frameConnection();
+  await listener.start(connection, "root");
+  const filter = connection.calls[0].params.filter;
+  assert.ok(filter.some((entry) => entry.type === "worker" && !entry.exclude), "workers must be reported so a paused one can be resumed");
+  const worker = { method: "Target.attachedToTarget", sessionId: "root", params: { sessionId: "worker-1", waitingForDebugger: true, targetInfo: { type: "worker" } } };
+  assert.equal(listener.observe(worker, connection), true);
+  await settle();
+  assert.deepEqual(connection.calls.slice(1).map((call) => [call.method, call.sessionId ?? call.params.sessionId]),
+    [["Runtime.runIfWaitingForDebugger", "worker-1"]], "resumed, never detached: a detached worker cannot be attached again");
+  assert.equal(listener.observe({ method: "Page.frameAttached", sessionId: "worker-1", params: {} }, connection), false);
+  assert.equal(listener.observe({ method: "Target.detachedFromTarget", params: { sessionId: "worker-1", targetId: "worker-target" } }, connection), true, "the detach of a worker is not a page detach");
+  assert.equal(listener.observe({ method: "Target.detachedFromTarget", params: { sessionId: "worker-1" } }, connection), false);
+  await listener.close();
+});
+
 function attached(sessionId, parent) {
   return { method: "Target.attachedToTarget", sessionId: parent, params: { sessionId, targetInfo: { type: "iframe" } } };
 }
@@ -154,5 +171,44 @@ test('ordinary frame registration stays bounded and preserves live isolated desc
  assert.equal(registry.get('nested'),'tab');assert.equal(registry.get('foreign'),'other');assert.equal([...registry.frames.values()].filter(f=>f.targetId==='tab').length,64);assert.deepEqual(calls,['Page.getFrameTree']);
  registry.record({method:'Page.frameDetached',params:{frameId:'isolated',reason:'remove'}},'tab');assert.equal(registry.get('nested'),undefined);
  await assert.rejects(registerBrowserFrameTargets(connection,'session','tab','old-doc',registry),{code:'stale_document_reference'});
- await assert.rejects(withBrowserFrames(connection,'session','tab','doc',registry=>registry),{code:'snapshot_frame_limit'},'structured snapshots still refuse the existing global isolated-frame bound');
+ await assert.rejects(withBrowserFrames(connection,'session','tab','doc',registry=>registry,{strict:true}),{code:'snapshot_frame_limit'},'a strict (protection) read refuses a page above the frame bound');
 })
+
+// browserfix: a page's frames are found from its own top frame, not from every iframe target the browser holds.
+function frameBrowser({ rootTree, targets, trees = {} }) {
+  const calls = [];
+  const sessions = new Map();
+  return { calls, async send(method, params, sessionId) {
+    calls.push({ method, params, sessionId });
+    if (method === "Page.getFrameTree") return { frameTree: sessionId === "page" ? rootTree : trees[sessions.get(sessionId)] };
+    if (method === "Target.getTargets") return { targetInfos: targets };
+    if (method === "Target.attachToTarget") { const id = "s-" + params.targetId; sessions.set(id, params.targetId); return { sessionId: id }; }
+    return {};
+  } };
+}
+const loaded = (id, parentId, childFrames = []) => ({ frame: { id, parentId, loaderId: "doc-" + id }, childFrames });
+
+test("a small page in a browser holding 70 foreign iframe targets reads normally and attaches none of them", async () => {
+  const connection = frameBrowser({ rootTree: loaded("root", undefined), targets: Array.from({ length: 70 }, (_, i) => ({ type: "iframe", targetId: "foreign-" + i, parentFrameId: "other-tab-frame-" + i })) });
+  const seen = await withBrowserFrames(connection, "page", "tab", "doc-root", async (frames, info) => ({ count: frames.length, truncated: info.truncated }));
+  assert.deepEqual(seen, { count: 1, truncated: false });
+  assert.ok(!connection.calls.some((call) => call.method === "Target.attachToTarget"), "no foreign frame is attached");
+});
+
+test("isolated frames are followed down from the top frame, nested ones included", async () => {
+  const connection = frameBrowser({
+    rootTree: loaded("root", undefined, [loaded("ad", "root")]),
+    targets: [{ type: "iframe", targetId: "t-ad", parentFrameId: "root" }, { type: "iframe", targetId: "t-inner", parentFrameId: "ad" }, { type: "iframe", targetId: "t-foreign", parentFrameId: "elsewhere" }],
+    trees: { "t-ad": loaded("ad", "root", [loaded("inner", "ad")]), "t-inner": loaded("inner", "ad") },
+  });
+  const frames = await withBrowserFrames(connection, "page", "tab", "doc-root", async (entries) => entries.map((entry) => [entry.frame.id, entry.parent?.frame.id ?? null]));
+  assert.deepEqual(frames, [["root", null], ["ad", "root"], ["inner", "ad"]]);
+  assert.deepEqual(connection.calls.filter((call) => call.method === "Target.attachToTarget").map((call) => call.params.targetId), ["t-ad", "t-inner"]);
+});
+
+test("a page owning more than 64 frames is read up to the bound and reported truncated, not refused", async () => {
+  const connection = frameBrowser({ rootTree: loaded("root", undefined, Array.from({ length: 70 }, (_, i) => loaded("f" + i, "root"))), targets: [] });
+  const seen = await withBrowserFrames(connection, "page", "tab", "doc-root", async (frames, info) => ({ count: frames.length, truncated: info.truncated }));
+  assert.deepEqual(seen, { count: 1, truncated: true });
+  await assert.rejects(withBrowserFrames(connection, "page", "tab", "doc-root", (frames) => frames, { strict: true }), { code: "snapshot_frame_limit" });
+});

@@ -293,6 +293,7 @@ impl CommandRouter {
         if matches!(
             request,
             LocalDaemonRequest::RequestKernelAccess(_)
+                | LocalDaemonRequest::GetKernelAccessStatus(_)
                 | LocalDaemonRequest::CoverKernelAccessProcess(_)
         ) {
             return Err(error(format!(

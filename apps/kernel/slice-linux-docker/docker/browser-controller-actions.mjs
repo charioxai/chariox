@@ -114,8 +114,11 @@ function normalizeAction(action) {
       throw invalidAction(`fill text exceeds ${MAX_FILL_TEXT_BYTES} UTF-8 bytes`);
     }
     const expectedDocumentUrl = normalizeExpectedDocumentUrl(action.expected_document_url);
-    if (action.mask_code_input === true && expectedDocumentUrl === null) {
-      throw invalidAction("protected owner code requires a bound document URL");
+    if ((action.mask_code_input === true || action.vault_factor_input === true) && expectedDocumentUrl === null) {
+      throw invalidAction("protected code requires a bound document URL");
+    }
+    if (action.plain_target === true && expectedDocumentUrl === null) {
+      throw invalidAction("a Vault fill into a plain field requires a bound document URL");
     }
     return {
       kind: "fill",
@@ -124,6 +127,8 @@ function normalizeAction(action) {
       submit: action.submit === true,
       expectedDocumentUrl,
       maskCodeInput: action.mask_code_input === true,
+      vaultFactorInput: action.vault_factor_input === true,
+      plainTarget: action.plain_target === true,
     };
   }
   if (action?.kind === "submit") {
@@ -181,7 +186,7 @@ export async function assertCurrentDocument(connection, sessionId, targetId, doc
   return frameTree;
 }
 
-async function resolveBackendNode(connection, sessionId, backendNodeId, isolated = false) {
+export async function resolveBackendNode(connection, sessionId, backendNodeId, isolated = false) {
   let resolved;
   try {
     let executionContextId;
@@ -451,14 +456,14 @@ async function fillSecret(connection, sessionId, objectId, action) {
     "Runtime.callFunctionOn",
     {
       objectId,
-      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput) {
+      functionDeclaration: `function(text, append, expectedDocumentUrl, submit, maskCodeInput, vaultFactorInput, plainTarget) {
         const ownerDocument = this.ownerDocument;
         const ownerWindow = ownerDocument?.defaultView;
         if (!ownerWindow || ownerWindow.location.href !== expectedDocumentUrl) {
           return { ok: false, reason: "target_url_changed" };
         }
-        // MP-08 / MP-10 / MP-11: owner codes may use ordinary editable
-        // fields. Mask before focus/value handlers; Vault fills remain password-only.
+        // MP-08 / MP-11: the controller registers Vault fill identity before
+        // dispatch. Page fields keep their native appearance; observations mask them.
         const inputPrototype = ownerWindow.HTMLInputElement?.prototype;
         const textareaPrototype = ownerWindow.HTMLTextAreaElement?.prototype;
         const elementPrototype = ownerWindow.Element?.prototype;
@@ -470,8 +475,13 @@ async function fillSecret(connection, sessionId, objectId, action) {
           !hasAttribute.call(this, "disabled") && !hasAttribute.call(this, "readonly") &&
           String(getAttribute.call(this, "aria-disabled") || "false").toLowerCase() !== "true" &&
           String(getAttribute.call(this, "aria-readonly") || "false").toLowerCase() !== "true";
-        const isMaskedEditableInput = () => {
+        const isAcceptedInput = () => {
           if (!editable()) return false;
+          // The kernel registers Vault factor targets before input, so the
+          // observation boundary masks these without changing the owner's DOM.
+          if (vaultFactorInput && isInput) return ["text", "tel", "number", "password", "search"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase());
+          if (!maskCodeInput) return isTextarea || this.isContentEditable || isInput &&
+            ["text", "password", "search", "tel", "url", "email", "number"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase());
           if (isInput) return String(getAttribute.call(this, "type") || "text").toLowerCase() === "password";
           if (!maskCodeInput || !isTextarea || typeof ownerWindow.getComputedStyle !== "function") return false;
           return ownerWindow.getComputedStyle(this).getPropertyValue("-webkit-text-security") === "disc";
@@ -486,21 +496,28 @@ async function fillSecret(connection, sessionId, objectId, action) {
             if (typeof setter !== "function") return false;
             setter.call(this.style, "-webkit-text-security", "disc", "important");
           } else return false;
-          return isMaskedEditableInput();
+          return isAcceptedInput();
         };
         if (maskCodeInput) {
           const codeType = editable() ? String(getAttribute.call(this, "type") || "text").toLowerCase() : "";
           if (!editable() || !(isTextarea || (isInput && ["text", "tel", "number", "password", "search"].includes(codeType)))) {
             return { ok: false, reason: "target_not_masked" };
           }
-          if (!isMaskedEditableInput() && !maskCodeTarget()) return { ok: false, reason: "target_not_masked" };
+          if (!isAcceptedInput() && !maskCodeTarget()) return { ok: false, reason: "target_not_masked" };
         }
+        // VAUDIT S3: fill_field targets plain inputs (an env var value box). The
+        // page is not changed; the kernel masks the box in model-bound observations.
+        const isPlainEditableTarget = () => editable() && (isTextarea || this.isContentEditable ||
+          (isInput && ["text", "search", "url", "email", "tel", "password"].includes(String(getAttribute.call(this, "type") || "text").toLowerCase())));
+        const acceptsTarget = () => plainTarget ? isPlainEditableTarget() : isAcceptedInput();
+        const rejected = plainTarget ? "target_not_editable" : "target_not_masked";
         const restoreMaskAfterHandler = () => {
-          if (isMaskedEditableInput()) return true;
+          if (acceptsTarget()) return true;
+          if (plainTarget) return false;
           maskCodeTarget();
           return false;
         };
-        if (!isMaskedEditableInput()) return { ok: false, reason: "target_not_masked" };
+        if (!acceptsTarget()) return { ok: false, reason: rejected };
         // MP-08/MP-10: submission eligibility is checked before secret mutation.
         // Some sign-in steps use a separate JavaScript button and no native form.
         const form = submit ? this.form || this.closest?.("form") : null;
@@ -518,8 +535,8 @@ async function fillSecret(connection, sessionId, objectId, action) {
         if (!(activeElement === this || this.contains?.(activeElement))) {
           return { ok: false, reason: "target_not_focusable" };
         }
-        if (!isMaskedEditableInput()) {
-          return { ok: false, reason: "target_not_masked" };
+        if (!acceptsTarget()) {
+          return { ok: false, reason: rejected };
         }
         const currentValue = this.isContentEditable
           ? String(this.textContent || "")
@@ -537,12 +554,10 @@ async function fillSecret(connection, sessionId, objectId, action) {
           }
           setter.call(this, nextValue);
         }
-        const inputEvent = new ownerWindow.Event("input", { bubbles: true, composed: true });
-        this.dispatchEvent(inputEvent);
-        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
-        const changeEvent = new ownerWindow.Event("change", { bubbles: true });
-        this.dispatchEvent(changeEvent);
-        if (!restoreMaskAfterHandler()) return { ok: false, reason: "target_not_masked" };
+        this.dispatchEvent(new ownerWindow.Event("input", { bubbles: true, composed: true }));
+        if (!restoreMaskAfterHandler()) return { ok: false, reason: rejected };
+        this.dispatchEvent(new ownerWindow.Event("change", { bubbles: true }));
+        if (!restoreMaskAfterHandler()) return { ok: false, reason: rejected };
         if (submit) {
           // Form controls named submit/requestSubmit must not shadow DOM methods.
           try { submitForm.call(form); }
@@ -556,6 +571,8 @@ async function fillSecret(connection, sessionId, objectId, action) {
         { value: action.expectedDocumentUrl },
         { value: action.submit },
         { value: action.maskCodeInput },
+        { value: action.vaultFactorInput },
+        { value: action.plainTarget },
       ],
       returnByValue: true,
       awaitPromise: false,
@@ -580,6 +597,12 @@ async function fillSecret(connection, sessionId, objectId, action) {
       throw new BrowserActionError(
         "browser_secret_target_not_masked",
         "browser protected target must remain masked and editable during insertion",
+      );
+    }
+    if (outcome?.reason === "target_not_editable") {
+      throw new BrowserActionError(
+        "browser_secret_target_not_editable",
+        "a Vault fill_field target must stay an editable text field (input, textarea or contenteditable)",
       );
     }
     if (outcome?.reason === "form_not_found") {

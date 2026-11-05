@@ -1,140 +1,16 @@
-# Native worker lifecycle component
+# App worker process ownership
 
-`WorkerProcess` implements the blocking process owner below kernel orchestration.
-It writes native launch ABI 1, compares the complete returned installation,
-generation and digest, verifies the retained resource domain, then sends Continue.
-The existing generation-fenced `wire::Channel` uses FD3; startup control uses FD4.
-Only the one SDK stream can be taken. A native Ready reply means startup ordering,
-not independent proof of sandbox configuration or artifact trust.
+MP-08 / MP-09 / MP-10 / MP-11. `PreparedWorker::prepare_wasm_update` is the
+production preparation path. `wasm::WasmRuntime` verifies the installed worker
+beside the kernel, compiles verified components into the identity-keyed AOT
+cache, and retains runtime/release/data leases through process reap and broker
+drain. The worker enters native containment before its readiness handshake.
 
-`PreparedWorker` has no public constructor. `prepare_linux` and `prepare_macos`
-mint it from the enrolled runtime and platform provisioner after obtaining:
+`spawn`, `monitor` and `private_data` own blocking process lifetime, bounded
+logs, resource checks and private file operations. Cancellation is nonblocking;
+releasing admission waits for physical exit and broker settlement. macOS adds
+native resource monitoring; Linux worker containment denies process creation.
 
-- Verified immutable launcher/runtime/bootstrap objects and the verified App
-  release, with held descriptors **and** generation/pinning ownership preventing
-  rename, replacement or cleanup of their paths throughout execution.
-- Private data/tmp directory ownership and installation disk quotas.
-- A retained per-installation and aggregate resource reservation, with memory,
-  CPU bandwidth, process/thread, and domain termination mechanisms.
-- On Linux, pinned bundled bubblewrap, the exact private read-only filesystem,
-  noexec/nodev/nosuid App mounts, restricted runtime dependency inventory, private
-  namespaces and an owned cgroup. The resource domain must verify the spawned
-  bubblewrap process **and every launcher descendant** before Continue. The
-  direct child PID is not necessarily the nested launcher's PID.
-- On macOS, the Seatbelt launcher with the platform's total resource accounting.
-  `prepare_macos` currently runs **developer runtimes** only: local releases are
-  ad-hoc signed and enrolled by the developer's one-time root installer. Open
-  macOS release gates: Developer ID signing/notarization with the hardened
-  runtime and JIT entitlement, the signed JIT/mprotect executable-memory
-  validation (Seatbelt alone does not deny it), and hosted recovery validation of
-  in-flight DiskImages operations across a kernel crash.
-
-The resource domain must terminate its entire owned tree and await its emptiness
-after direct-child reap. A POSIX process group alone cannot reach bubblewrap's
-nested session. The current test domain covers only the single-process fixture;
-it is not a production cgroup or quota implementation. A bubblewrap block-fd
-would release on EOF, so it is not an authorization substitute for Continue.
-
-Before exec, `posix_spawn` replaces the environment, creates a new session,
-resets signal state, maps only FD0..4 and closes ambient descriptors. Source FDs
-are first relocated above FD4 to avoid aliasing during the ordered dup actions.
-The Linux implementation uses glibc's `addclosefrom_np` (glibc >=2.34); selecting
-and validating the supported Linux installer baseline remains required. macOS
-uses SDK `POSIX_SPAWN_SETSID` and `POSIX_SPAWN_CLOEXEC_DEFAULT` (initial release
-floor macOS 13.5). There is no shell, caller-defined environment or public raw
-executable override.
-
-A joinable supervisor thread polls startup, cancellation, child exit and logs.
-Before Continue on macOS it also attaches a mandatory monitor to its own
-unreaped direct child. Every 100ms the owner calls the retained resource domain's
-bounded running check and the macOS monitor. The domain's default running check
-is only for independently enforced hard limits; it does not approve preparation.
-`prepare_linux`/`prepare_macos` are the only production factories.
-
-The private candidate macOS worker policy is 512MiB for the greater of physical
-footprint and RSS, 64 threads, and one CPU of elapsed-time credit with a 250ms
-burst allowance. Fixed-size `proc_pidinfo`/`proc_pid_rusage` calls validate child
-PID, parent, UID, process start identity and monotonic CPU accounting. CPU usage
-is converted from Mach ticks with `mach_timebase_info`; treating the counters as
-nanoseconds would undercount ARM CPU usage. Apple supplies these counters in
-[`fill_task_rusage`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/bsd_kern.c)
-from [`task_power_info_locked`](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/kern/task.c).
-Memory, thread, CPU and telemetry failures have separate stable error codes;
-each terminates and reaps through the existing reservation owner. Sampling that
-races a completed child preserves normal exit, using the held wait authority.
-A running worker that ends on its own (or whose exit cancels it) is checked
-against its domain once more before reap: a memory or task limit the domain
-recorded, such as a Linux cgroup OOM kill between samples, is its failure.
-
-These are **monitored termination thresholds**, not hard macOS memory/CPU quotas.
-The 100ms sampling interval, ordinary scheduler delay and OS kill/reap latency
-allow overshoot; stalled kernel operations can delay cleanup. The policy has not
-yet been validated with pinned embedded Node, representative Apps, aggregate
-pressure or separately admitted kernel broker/Chromium work. Thread denial in
-the native sandbox, descriptor limits, signed runtime validation, APFS data/tmp
-quotas and aggregate admission remain independent required mechanisms.
-
-Startup is bounded to at most 15 seconds. Logs retain at most 64 KiB per stream
-(16 KiB default), with a combined one-second rate ceiling up to 1 MiB/s
-(128 KiB/s default). Each poll also limits log-drain work. Raw log tails remain
-untrusted bytes: rendering/redaction is a kernel presentation responsibility.
-Lifetime App CPU and disk limits in the native record do not replace aggregate
-resource policies. App workers may run indefinitely until shutdown or failure.
-
-Cancellation and Drop kill the owned process group/domain, wait for the child,
-and retain preparation/reservations until domain cleanup completes. The direct
-child remains unreaped until group termination, preventing reuse of that PID
-during normal cleanup. `spawn_blocking`, `wait_blocking`, `shutdown_blocking` and
-Drop must run under the kernel's bounded blocking ownership. Cancellation clones
-signal without waiting. The owner must never be detached onto an async runtime
-whose shutdown could release its reservation before actual reap. OS wait may
-remain blocked by an uninterruptible kernel operation; reservations deliberately
-remain held in that case.
-
-The test-only libc fixture links the production C record parser and continuation
-function, then exercises real FD/environment/session behavior, SDK transport,
-identity mismatch, withheld continuation, resource rejection, timeout, early
-exit, log flooding, cancellation, Drop and panic cleanup. Its compilation uses
-small temporary native files outside the repository and deletes them afterward.
-Pure tests exercise exact accounting boundaries, identity/counter rollback and
-Mach time conversion. Running-hook tests inject each resource failure and panic,
-checking sampling cadence and reservation retention through actual reap. A
-macOS-only libc fixture commits just 8MiB after Continue under a test-only
-baseline-plus-2MiB threshold, measuring detection and reap timing without a large
-local allocation. It does not load Node or establish native sandbox, hostile
-App, signed runtime, production memory/quota overshoot, Linux namespace, or
-production activation acceptance.
-
-## Portable App launch
-
-`wasm::WasmRuntime` pins the kernel-selected worker executable for identity,
-compilation and launch. `PreparedWorker::prepare_wasm` leases the verified
-release and separately authenticated native cache. The common ready/continue
-monitor retains process and broker ownership. FD5 is private launch JSON, FD6
-the verified portable component, FD7 the read-only signed cache entry and FD8
-the executable inode through exec. FD9 contains the signed portable migration
-components selected by the supervisor. Launch inputs are sealed memfds on Linux.
-
-`WasmLaunch.installation_root` is an optional supervisor-owned path. The
-launcher creates private existing `data` and `tmp` children first. Only `data`
-is the broker/snapshot directory. `supervised::serve` connects this field to
-`InstallationDirectories::open` and `AppWorker::with_directories`. Staged updates
-checkpoint private data outside both preopens; retries and rollback restore it
-before guest entry. The writer's committed data generation retires the checkpoint
-only after activation commits. Explicit data deletion removes the installation
-root under the same data lock. This is an internal kernel/worker ABI.
-
-`prepare_wasm_update` selects a contiguous signed migration chain from the
-writer's rewound schema. Each retained component is reread and digest checked;
-FD9 and the supervisor configuration pin those bytes through launch. The native
-worker runs R6's state-only `MigrationWorker` before App registration and records
-`migration.step` only after success. The existing staged broker, state journal,
-health/activation fence and failed-update recovery remain authoritative.
-
-The worker enters R5's OS containment (Linux seccomp/Landlock, macOS Seatbelt)
-after reading its inputs and before its ready record, so every build profile
-launches the runtime installed beside the kernel (`WasmRuntime::beside_kernel`).
-The offline compiler subprocess (`wasm/compile.rs::run`, `precompile-stdio`)
-does not enter containment yet; it compiles but never runs App code.
-The cache root and provenance key must remain outside the worker's filesystem
-authority.
+`record` carries the WASM identity handshake. The fixed libc fixture codec is
+compiled only for tests or the guarded `test-fixtures` feature. Its C sources
+live in `fixture/`; it exercises transport/lifecycle without executing App code.

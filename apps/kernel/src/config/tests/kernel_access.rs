@@ -152,3 +152,68 @@ fn kernel_access_legacy_configs_are_clamped_instead_of_refusing_boot() {
         );
     }
 }
+
+#[test]
+fn standing_holders_are_read_from_the_file_each_time_and_a_malformed_entry_is_ignored_once() {
+    let logs = crate::logging::capture::start();
+    let dir = std::env::temp_dir().join(format!("standing-{:x}", rand::random::<u64>()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    assert!(
+        read_standing_holders(&path).is_empty(),
+        "no file lists nobody"
+    );
+    let entry = |harness: &str| {
+        format!("[[kernel_access.standing_holders]]\nharness = \"{harness}\"\nexecutable = \"/bin/h\"\n")
+    };
+    fs::write(&path, entry("claude")).unwrap();
+    assert_eq!(
+        read_standing_holders(&path),
+        [StandingHolder {
+            harness: crate::local::KernelAccessProviderHarness::Claude,
+            executable: "/bin/h".into()
+        }]
+    );
+    fs::write(&path, "").unwrap();
+    assert!(
+        read_standing_holders(&path).is_empty(),
+        "removing the entry takes effect"
+    );
+    let ignored = |logs: &crate::logging::capture::LogCapture| {
+        logs.records()
+            .iter()
+            .filter(|record| record.contains("standing_holders entries"))
+            .count()
+    };
+    assert_eq!(ignored(&logs), 0);
+    fs::write(
+        &path,
+        format!(
+            "[[kernel_access.standing_holders]]\nharness = \"vim\"\nexecutable = \"/bin/h\"\n\n[[kernel_access.standing_holders]]\nexecutable = \"/bin/h\"\n\n{}",
+            entry("codex")
+        ),
+    )
+    .unwrap();
+    assert_eq!(read_standing_holders(&path).len(), 1);
+    assert_eq!(ignored(&logs), 1);
+    // A file that no longer parses grants nothing.
+    fs::write(&path, "kernel_access = [ malformed").unwrap();
+    assert!(read_standing_holders(&path).is_empty());
+    // The whole config still loads with entries of any shape.
+    let config = toml::from_str::<CharioxUserConfig>(&format!(
+        "{}\n[[kernel_access.standing_holders]]\nharness = 7\n",
+        entry("claude")
+    ))
+    .unwrap();
+    config.validate().unwrap();
+    assert_eq!(config.kernel_access.standing_holders.len(), 2);
+    // No command sets the list.
+    let mut config = CharioxUserConfig::default();
+    assert!(config
+        .set_value("kernel_access.standing_holders", "[]".into())
+        .is_err());
+    assert!(config
+        .unset_value("kernel_access.standing_holders")
+        .is_err());
+    fs::remove_dir_all(&dir).unwrap();
+}

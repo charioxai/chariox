@@ -4,6 +4,32 @@
 use super::*;
 
 impl BrowserControllerProcessStdioBackend {
+    /// Start a user-domain App command while holding the backend lock, then
+    /// let the caller release that lock before waiting for page code to finish.
+    pub(crate) fn begin_app_view_request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<PendingAppViewResponse, String> {
+        let timeout = if method == "browser.app.agent" {
+            let deadline_ms = params
+                .get("deadline_ms")
+                .and_then(serde_json::Value::as_u64)
+                .filter(|deadline| (1..=120_000).contains(deadline))
+                .ok_or("invalid App agent deadline")?;
+            self.timeout
+                .saturating_add(std::time::Duration::from_millis(deadline_ms))
+        } else {
+            self.timeout
+        };
+        let pending = self.begin_observation_request(method, params)?;
+        Ok(PendingAppViewResponse {
+            pending,
+            method: method.to_owned(),
+            timeout,
+        })
+    }
+
     fn begin_reconciliation_read(
         &mut self,
         viewport: &CanonicalViewport,
@@ -18,7 +44,7 @@ impl BrowserControllerProcessStdioBackend {
 
     pub(super) fn begin_observation_request(
         &mut self,
-        method: &'static str,
+        method: &str,
         params: serde_json::Value,
     ) -> Result<pending_responses::PendingResponse<BrowserControllerRpcResponse>, String> {
         let request_id = self.next_request_id;
@@ -53,6 +79,18 @@ impl BrowserControllerProcessStdioBackend {
         )
         .map_err(|error| format!("failed to encode browser controller `{method}`: {error}"))?;
         Ok(pending)
+    }
+}
+
+pub(crate) struct PendingAppViewResponse {
+    pending: pending_responses::PendingResponse<BrowserControllerRpcResponse>,
+    method: String,
+    timeout: std::time::Duration,
+}
+
+impl PendingAppViewResponse {
+    pub(crate) fn wait(self) -> Result<serde_json::Value, String> {
+        self.pending.wait(self.timeout)?.into_result(&self.method)
     }
 }
 

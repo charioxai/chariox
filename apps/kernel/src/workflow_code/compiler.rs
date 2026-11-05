@@ -224,12 +224,23 @@ pub(crate) mod compile_gate_for_test {
     }
 }
 
+/// A hung Node is told apart from a slow one by time alone, so the window must
+/// outlast a loaded host: `node --version` took over a second at load 130.
+const NODE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const NODE_DISCOVERY_DEADLINE: Duration = Duration::from_secs(15);
+
 pub fn discover_workflow_code_node_path() -> Result<PathBuf, crate::DaemonError> {
-    discover_node_path(env::var_os("NODE"))
+    discover_node_path(
+        env::var_os("NODE"),
+        NODE_PROBE_TIMEOUT,
+        NODE_DISCOVERY_DEADLINE,
+    )
 }
 
 fn discover_node_path(
     configured: Option<std::ffi::OsString>,
+    probe_timeout: Duration,
+    discovery_deadline: Duration,
 ) -> Result<PathBuf, crate::DaemonError> {
     let mut candidates = Vec::new();
     if let Some(path) = configured {
@@ -247,7 +258,7 @@ fn discover_node_path(
     }
     let mut seen = std::collections::HashSet::new();
     candidates.retain(|candidate| seen.insert(candidate.clone()));
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + discovery_deadline;
     for candidate in candidates {
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
@@ -263,7 +274,7 @@ fn discover_node_path(
             continue;
         };
         if child
-            .wait_timeout(remaining.min(Duration::from_millis(500)))
+            .wait_timeout(remaining.min(probe_timeout))
             .is_ok_and(|status| status.is_some_and(|status| status.success()))
         {
             return Ok(candidate);
@@ -288,5 +299,52 @@ fn node_discovery_preserves_the_explicit_runtime_override() {
     let node = worktree.path().join("configured-node");
     std::fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o700)).unwrap();
-    assert_eq!(discover_node_path(Some(node.clone().into())).unwrap(), node);
+    assert_eq!(
+        discover_node_path(
+            Some(node.clone().into()),
+            NODE_PROBE_TIMEOUT,
+            NODE_DISCOVERY_DEADLINE
+        )
+        .unwrap(),
+        node
+    );
+}
+
+/// A Node that is only slow (a loaded host) is found; one that never answers
+/// is still skipped, and discovery still ends with the error.
+#[cfg(unix)]
+#[test]
+fn node_discovery_waits_for_a_slow_node_but_still_skips_a_hung_one() {
+    use std::os::unix::fs::PermissionsExt;
+    let worktree = crate::test_support::TestWorktree::new("node-discovery-slow");
+    let script = |name: &str, body: &str| {
+        let path = worktree.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    };
+    let slow = script("slow-node", "exec sleep 0.8");
+    assert_eq!(
+        discover_node_path(
+            Some(slow.clone().into()),
+            NODE_PROBE_TIMEOUT,
+            NODE_DISCOVERY_DEADLINE
+        )
+        .unwrap(),
+        slow,
+        "a Node that needs 800 ms under load is responsive"
+    );
+    let hung = script("hung-node", "exec sleep 30");
+    let started = std::time::Instant::now();
+    let found = discover_node_path(
+        Some(hung.clone().into()),
+        Duration::from_millis(200),
+        Duration::from_secs(2),
+    );
+    assert_ne!(
+        found.ok(),
+        Some(hung),
+        "a Node that never answers is not responsive"
+    );
+    assert!(started.elapsed() < Duration::from_secs(10));
 }

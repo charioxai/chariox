@@ -71,15 +71,11 @@ fn root(f: &super::tests::Fixture) -> ProcessIdentity {
         .unwrap()
 }
 
-#[tokio::test]
-async fn sudo_shell_process_identity_rejects_pid_reuse_and_shared_provider() {
-    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
-    let turn = running(&f);
-    let launched = root(&f);
-    // Launch may capture the PTY wrapper shell; a socket peer is inspected live, once
-    // the wrapper has exec'd the provider program.
+/// Launch may capture the PTY wrapper shell; a socket peer is inspected live,
+/// once the wrapper has exec'd the provider program.
+async fn exec_settled(launched: &ProcessIdentity) -> ProcessIdentity {
     let program = std::fs::canonicalize("/bin/bash").unwrap();
-    let identity = tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let current = inspect(launched.pid).unwrap().0;
             if Path::new(&current.executable) == program {
@@ -89,7 +85,15 @@ async fn sudo_shell_process_identity_rejects_pid_reuse_and_shared_provider() {
         }
     })
     .await
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn sudo_shell_process_identity_rejects_pid_reuse_and_shared_provider() {
+    let f = fixture_with_provider(Some("while :; do sleep 1; done"));
+    let turn = running(&f);
+    let launched = root(&f);
+    let identity = exec_settled(&launched).await;
     assert_eq!(
         unsafe { libc::getsid(identity.pid as i32) },
         identity.pid as i32
@@ -623,7 +627,7 @@ async fn a_sudo_connection_survives_a_failure_to_read_its_peer() {
     use crate::runtime::kernel_access::process::fault;
     let f = fixture_with_provider(Some("while :; do sleep 1; done"));
     let turn = running(&f);
-    let peer = root(&f);
+    let peer = exec_settled(&root(&f)).await;
     assert!(f.state.sudo_peer_live(&turn.entry_id, &peer));
     for errno in [libc::ENOMEM, libc::ENFILE, libc::EMFILE, libc::EIO] {
         let _fault = fault::inject(peer.pid, errno);

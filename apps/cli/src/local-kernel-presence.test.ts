@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
+import { isKernelOnThisMachine, loadLocalKernelPresences, localKernelEndpoint } from "./local-kernel-presence.js"
 
 test("local kernel presence exposes only fresh lease endpoints", (context) => {
   const directory = mkdtempSync(join(tmpdir(), "chariox-kernel-presence-"))
@@ -66,4 +66,21 @@ test("MP-08/MP-10 VERSION(P01) finds the protocol lease under explicit CHARIOX_H
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, "kernel.json"), JSON.stringify({ schema_version: 1, kernel_id: "old-kernel", machine_id: "machine", host: "127.0.0.1", port: 43121, heartbeat_at_ms: 100000, local_daemon_protocol_version: 435 }))
   assert.equal(loadLocalKernelPresences(undefined, 100001)[0]?.protocolVersion, 435)
+})
+
+test("only a kernel with a fresh presence lease counts as on this machine", (context) => {
+  const directory = mkdtempSync(join(tmpdir(), "chariox-kernel-presence-"))
+  context.after(() => rmSync(directory, { force: true, recursive: true }))
+  writeFileSync(join(directory, "kernel-a.json"), JSON.stringify({
+    schema_version: 1, kernel_id: "kernel-a", machine_id: "machine-a", host: "127.0.0.1", port: 43_121, heartbeat_at_ms: 100_000,
+  }))
+  writeFileSync(join(directory, "slice.json"), JSON.stringify({
+    schema_version: 1, kernel_id: "slice:one", machine_id: "machine-a", host: "127.0.0.1", port: 43_122, heartbeat_at_ms: 100_000,
+  }))
+
+  assert.equal(isKernelOnThisMachine("kernel-a", directory, 100_500), true)
+  assert.equal(isKernelOnThisMachine("kernel-a", directory, 200_000), false)
+  assert.equal(isKernelOnThisMachine("kernel-b", directory, 100_500), false)
+  assert.equal(isKernelOnThisMachine("slice:one", directory, 100_500), false)
+  assert.equal(isKernelOnThisMachine(undefined, directory, 100_500), false)
 })

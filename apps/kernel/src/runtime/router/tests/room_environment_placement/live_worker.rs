@@ -35,6 +35,7 @@ mod controller_upload_cancellation;
 mod controller_upload_recovery;
 mod controller_worker_mcp;
 mod display;
+mod forwarded_delete;
 mod lease_release;
 mod leased_run_settle;
 mod leased_wakes;

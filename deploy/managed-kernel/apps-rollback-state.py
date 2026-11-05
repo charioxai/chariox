@@ -21,22 +21,12 @@ def has_app_state(root):
     homes = [root / "home/chariox/.chariox", root / "var/lib/chariox/home",
              root / "var/lib/chariox/home/.chariox"]
     databases = [home / "state/kernel.db" for home in homes]
-    enrollment = root / "etc/chariox/app-storage.json"
-    if enrollment.exists() or enrollment.is_symlink():
-        if not stat.S_ISREG(safe_metadata(enrollment, root).st_mode):
-            raise ValueError("invalid storage enrollment")
-        for owner in json.loads(enrollment.read_text()).get("owners", []):
-            for name in owner.get("kernel_database_paths", []):
-                path = pathlib.PurePosixPath(name)
-                if not path.is_absolute() or ".." in path.parts:
-                    raise ValueError("invalid enrolled database path")
-                databases.append(root / str(path).lstrip("/"))
-    roots = [root / "var/lib/chariox-app-storage"]
+    roots = []
     for database in set(databases):
         parent = database.parent
         if parent.exists():
             safe_metadata(parent, root)
-            roots.extend(item for item in parent.iterdir() if item.name.startswith("app-releases-")
+            roots.extend(item for item in parent.iterdir() if item.name.startswith(("app-releases-", "app-wasm-state-"))
                          or item.name in ("app-storage", "app-restores", "app-snapshots"))
         if database.exists() or database.is_symlink():
             if not stat.S_ISREG(safe_metadata(database, root).st_mode):

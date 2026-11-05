@@ -85,10 +85,12 @@ pub(crate) use claude::{
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
+pub(crate) use claude_runtime::{bounded_result, bounded_result_images};
 #[cfg(test)]
 pub(crate) use claude_runtime::{
     drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
 };
+pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
@@ -96,11 +98,15 @@ pub(crate) use codex::{
     ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
     shutdown_codex_account_endpoints,
 };
+#[cfg(test)]
+pub(crate) use codex_client::test_codex_connect;
 pub use codex_client::{
-    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
+    CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexStream, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
 };
 pub use codex_runtime::CodexRuntimeState;
+#[cfg(unix)]
+pub(crate) use codex_runtime::{hand_over_codex_turn, CodexHandover};
 pub use command_catalog::{
     default_provider_command_catalogs, ProviderCommandCatalog, ProviderCommandCatalogDiscovery,
     ProviderCommandCatalogSource, ProviderCommandDescriptor,
@@ -108,8 +114,8 @@ pub use command_catalog::{
 pub(crate) use credential_environment::ProviderCredentialEnvironment;
 pub(crate) use external_observation::{
     claude_native_pasted_prompt_body, clean_observed_turn_text, clean_provider_prompt,
-    normalized_observed_prompt_text, observed_role, text_from_content,
-    ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
+    normalized_observed_prompt_text, normalized_observed_prompt_text_after_mentions, observed_role,
+    text_from_content, ExternalProviderObservationPolicy, ObservedExternalProviderTurn,
     ObservedExternalProviderTurnRole,
 };
 pub(crate) use launch_contract::TurnSubstitute;
@@ -154,10 +160,9 @@ pub use opencode_client::{
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
-    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
-    classify_provider_terminal_failure_text, claude_native_stop_failure,
-    provider_coded_failure_text, provider_retry_status, provider_turn_failure_reason,
-    text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+    classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
+    claude_native_stop_failure, provider_coded_failure_text, provider_retry_status,
+    provider_turn_failure_reason, text_reports_resource_limit, PROVIDER_CONNECTION_RETRY_MERGE_KEY,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
@@ -166,8 +171,8 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderPromptSubmitAcknowledgement, ProviderRunActorCompletionSignal, ProviderRunActorMailbox,
-    ProviderRunOperationLanes,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
@@ -177,7 +182,7 @@ pub use service::{ProviderProcessService, ProviderProcessServiceStore};
 pub(crate) use service::{ProviderRunLivenessReconciliation, ProviderRuntimeBinding};
 pub(crate) use termination::{
     provider_exit_before_delivery_message, provider_launch_failure_diagnostic,
-    redact_provider_diagnostic, sanitize_provider_diagnostic,
+    sanitize_provider_diagnostic,
 };
 pub use termination::{ProviderRunTermination, ProviderRunTerminationCategory};
 pub use turn_outcome::{TurnOutcome, TurnOutcomeKind};
@@ -195,6 +200,9 @@ pub(crate) fn adapter_key_for_provider(provider: &str) -> &str {
     match provider {
         "default" => "opencode",
         "claude-headless" | "claude-p" => "claude",
+        // Deferred queue promotion may relaunch these structured fixtures.
+        #[cfg(test)]
+        "slow-structured" | "lost-ack-structured" => "dev-stub",
         value => value,
     }
 }
@@ -310,7 +318,8 @@ pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -
             && run.client_interface().is_chariox()
             && !provider_run_uses_claude_native_bridge(run))
         || run.adapter_key() == "opencode"
-        || (run.adapter_key() == "dev-stub" && run.provider() == "slow-structured")
+        || (run.adapter_key() == "dev-stub"
+            && matches!(run.provider(), "slow-structured" | "lost-ack-structured"))
 }
 
 pub(crate) fn provider_run_requires_authoritative_turn_completion(
@@ -502,6 +511,9 @@ pub(crate) use workspace_write_fence::{
     apply_workspace_write_fence, workspace_write_fence_active, workspace_write_fence_backend,
     workspace_write_fence_supported, workspace_write_fence_unavailable_reason,
 };
+
+#[cfg(test)]
+pub(crate) use opencode_runtime::assert_native_non_retryability as assert_opencode_native_non_retryability;
 
 #[cfg(test)]
 mod tests {

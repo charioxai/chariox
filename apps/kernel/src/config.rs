@@ -8,6 +8,8 @@ use crate::transport::relay_crypto;
 use serde::{Deserialize, Serialize};
 
 mod credentials;
+pub(crate) mod vault_use;
+pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;
 mod identity;
 mod kernel_access;
@@ -21,29 +23,31 @@ mod publication_state;
 mod relay_peer_keys;
 mod relay_profile;
 mod room_environment;
+mod secret_link;
 mod slices;
 mod socket_path;
 mod storage;
+pub(crate) use paths::default_state_dir;
 pub(crate) use socket_path::validate_local_socket_path;
+mod totp;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
+pub use totp::{TotpAlgorithm, TotpConfig};
 
 pub use credentials::{
-    validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
-    CredentialVaultUnlockPolicy, UserCredentialConfig, UserCredentialInjectionConfig,
-    UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
-    UserCredentialVaultConfig,
+    validate_credentials, CredentialVaultBackend, CredentialVaultUnlockPolicy,
+    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
+    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
 };
 pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
 pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
-pub use kernel_access::UserKernelAccessConfig;
+pub(crate) use kernel_access::read_standing_holders;
+pub use kernel_access::{StandingHolder, UserKernelAccessConfig};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
-#[cfg(test)]
-use persisted_daemon::HOSTED_STAGING_RELAY_URL;
 pub(crate) use persisted_daemon::{
     load_managed_cloud_relay_profile, persist_managed_cloud_relay_profile,
 };
@@ -55,6 +59,7 @@ pub use persisted_daemon::{
 pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use room_environment::RoomEnvironmentWorkerBinding;
+pub use secret_link::UserSecretLinkConfig;
 pub use slices::{
     SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig,
     DEFAULT_LINUX_SLICE_DOCKER_IMAGE, DEFAULT_LOCAL_DOCKER_SLICE_MEMORY_MB,
@@ -385,8 +390,14 @@ impl DaemonConfig {
     }
 
     pub fn kernel_websocket_url(&self) -> String {
+        format!("{}/kernel", self.kernel_websocket_origin())
+    }
+
+    /// The endpoint kernel clients connect to: without a path, which is what a
+    /// credential read from the environment is bound to.
+    pub fn kernel_websocket_origin(&self) -> String {
         format!(
-            "ws://{}:{}/kernel",
+            "ws://{}:{}",
             self.kernel_websocket_host, self.kernel_websocket_port
         )
     }
@@ -517,9 +528,13 @@ pub struct CharioxUserConfig {
     #[serde(default)]
     pub kernel_access: UserKernelAccessConfig,
     #[serde(default)]
+    pub secret_link: UserSecretLinkConfig,
+    #[serde(default)]
     pub workflow: UserWorkflowConfig,
     #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
+    #[serde(default)]
+    pub web_bot_auth: UserWebBotAuthConfig,
 }
 
 impl Default for CharioxUserConfig {
@@ -535,9 +550,40 @@ impl Default for CharioxUserConfig {
             relay: UserRelayConfig::default(),
             kernel: UserKernelConfig::default(),
             kernel_access: UserKernelAccessConfig::default(),
+            secret_link: UserSecretLinkConfig::default(),
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
+            web_bot_auth: UserWebBotAuthConfig::default(),
         }
+    }
+}
+
+/// Explicit project opt-in to operator identification on agent HTTP traffic.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserWebBotAuthConfig {
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// Self-hosted public HTTPS origin; enrolled kernels use their Cloud issuer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_agent: Option<String>,
+}
+
+impl UserWebBotAuthConfig {
+    pub(crate) fn validate(&self) -> Result<(), DaemonError> {
+        if self
+            .projects
+            .iter()
+            .any(|project| project.trim().is_empty())
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "web_bot_auth.projects",
+                message: "project ids must not be empty",
+            });
+        }
+        if let Some(origin) = &self.signature_agent {
+            crate::web_bot_auth::validate_origin(origin)?;
+        }
+        Ok(())
     }
 }
 

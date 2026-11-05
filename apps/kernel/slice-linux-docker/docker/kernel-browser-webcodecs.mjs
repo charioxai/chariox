@@ -98,5 +98,5 @@ export class BrowserEncoder {
   }finally{this.busy=false}
  }
  async closeContext(){const c=this.context;this.context=null;if(c)await c.connection.send('Runtime.callFunctionOn',{executionContextId:c.id,functionDeclaration:'function(){globalThis.charioxDisplayCodec?.close()}',returnByValue:true},c.sessionId).catch(()=>{});}
- async close(){this.closed=true;await this.closeContext();await this.fallback.close();}
+ async close(){this.closed=true;const results=await Promise.allSettled([this.closeContext(),this.fallback.close()]);const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;}
 }

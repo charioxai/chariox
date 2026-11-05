@@ -93,8 +93,7 @@ impl KernelRuntimeOwnedState {
                 .publish_outside_interaction(
                     &session_id,
                     &interaction,
-                    crate::local::EventInteractionState::Resolved,
-                    None,
+                    InteractionPhase::cancelled(),
                 )
                 .is_err()
             {
@@ -106,8 +105,8 @@ impl KernelRuntimeOwnedState {
                 continue;
             }
             sessions.restore_session(session);
-            activity_mutation.record();
             drop(sessions);
+            activity_mutation.record();
             let _ = self.session_snapshot(&session_id);
             self.terminal_stream
                 .notify_terminal_projection_change(&session_id);

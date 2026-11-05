@@ -45,7 +45,7 @@ function uploadFixture(scope, boundary) {
         case "Page.getFrameTree": return { frameTree: { frame: sessionId === "child-session"
           ? { id: "child", parentId: "page", loaderId: childDocument }
           : { id: "page", loaderId: pageDocument } } };
-        case "Target.getTargets": return { targetInfos: [{ type: "iframe", targetId: "child" }] };
+        case "Target.getTargets": return { targetInfos: [{ type: "iframe", targetId: "child", parentFrameId: "page" }] };
         case "Target.attachToTarget": return { sessionId: "child-session" };
         case "Target.detachFromTarget": return {};
         case "DOM.resolveNode": return { object: { objectId: "file-input" } };

@@ -192,6 +192,14 @@ export type KernelEvent =
     prompts: PasskeyPrompt[]
   }
 
+export type SessionProcessWaitReason = "memory" | "disk"
+
+/** Whether a command runs or waits for room; set on the command's own process. */
+export type SessionProcessState =
+  | { kind: "running" }
+  | { kind: "held"; reason: SessionProcessWaitReason; position: number; need_bytes: number; free_bytes: number; command_line: string }
+  | { kind: "paused"; reason: SessionProcessWaitReason; command_line: string }
+
 export type SessionProcess = {
   process_id: string
   owner: { kind: "agent" | "terminal"; id: string }
@@ -199,6 +207,9 @@ export type SessionProcess = {
   command: string
   resident_set_bytes: number
   cpu_millis: number
+  /** Cumulative storage reads and writes; null when the OS cannot report it. */
+  disk_io_bytes: number | null
   age_ms: number
   sampled_at_ms: number
+  state: SessionProcessState
 }

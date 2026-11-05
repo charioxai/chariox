@@ -23,7 +23,12 @@ fn metadata(text: &str) -> String {
         .collect()
 }
 
-fn new_wake(task: &AgentTaskExecution, kind: &str, label: String, now: u64) -> AgentWake {
+pub(in crate::runtime::state) fn new_wake(
+    task: &AgentTaskExecution,
+    kind: &str,
+    label: String,
+    now: u64,
+) -> AgentWake {
     let id = format!("wake-{:032x}", rand::random::<u128>());
     AgentWake {
         registration_id: format!("completion-{id}"),
@@ -181,38 +186,15 @@ impl KernelRuntimeState {
                         "watched processes require an active unrestricted build agent",
                     ));
                 };
-                if (run.execution_mode() != crate::provider::AgentExecutionMode::Build
-                    || run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-                    || run.write_access_mode()
-                        != crate::provider::ProviderWriteAccessMode::Unrestricted)
-                    && !self.sudo_task_authorizes_run(run).await
+                let run = self.watched_process_run(run.id())?;
+                if run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
+                    && !self.sudo_task_authorizes_run(&run).await
                 {
                     return Err(ledger::error("watched processes require an unrestricted build agent with unattended command permission"));
                 }
-                let root = run
-                    .working_directory()
-                    .and_then(|p| p.canonicalize().ok())
-                    .ok_or_else(|| ledger::error("agent workspace unavailable"))?;
-                let cwd = match args["cwd"].as_str().filter(|c| !c.is_empty()) {
-                    None => root.clone(),
-                    Some(rel) => root
-                        .join(rel)
-                        .canonicalize()
-                        .ok()
-                        .filter(|p| p.starts_with(&root) && p.is_dir())
-                        .ok_or_else(|| {
-                            ledger::error("cwd must be a directory inside the agent workspace")
-                        })?,
-                };
-                let argv: Vec<String> = serde_json::from_value(args["argv"].clone())
-                    .ok()
-                    .filter(|a: &Vec<String>| {
-                        !a.is_empty()
-                            && a.len() <= 64
-                            && !a[0].is_empty()
-                            && a.iter().all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
-                    })
-                    .ok_or_else(|| ledger::error("argv of 1-64 arguments required (no shell; control characters are refused)"))?;
+                let cwd =
+                    super::super::agent_process_watch::workspace_cwd(&run, args["cwd"].as_str())?;
+                let argv = super::super::agent_process_watch::command_argv(&args["argv"])?;
                 let match_text = match args["match_text"].as_str() {
                     Some(m) if m.is_empty() || m.len() > 200 => {
                         return Err(ledger::error("match_text of 1-200 bytes required"))
@@ -227,21 +209,20 @@ impl KernelRuntimeState {
                 let mut wake = new_wake(task, "process", label(args)?, now);
                 wake.command = argv.clone();
                 wake.match_text = match_text;
-                self.approve_agent_process(run, &wake, &cwd, &task.prompt_id)
+                self.approve_agent_process(&run, &wake, &cwd, &task.prompt_id)
                     .await?;
-                if (run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
-                    || run.write_access_mode()
-                        != crate::provider::ProviderWriteAccessMode::Unrestricted
-                    || run.execution_mode() != crate::provider::AgentExecutionMode::Build)
-                    && !self.sudo_task_authorizes_run(run).await
+                let run = self.watched_process_run(run.id())?;
+                if run.permission_level() != crate::provider::AgentPermissionLevel::Yolo
+                    && !self.sudo_task_authorizes_run(&run).await
                 {
                     return Err(ledger::error(
                         "sudo task ended before watched process launch",
                     ));
                 }
+                let run = self.watched_process_run(run.id())?;
                 self.authorize_current_external_command()?;
                 let wake = self
-                    .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, run)
+                    .start_agent_process(wake, argv, cwd, &task.task_id, &task.prompt_id, &run)
                     .await?;
                 self.refresh_wake_projection(&task.room_id);
                 serde_json::json!({"wake_id":wake.id,"registration_id":wake.registration_id,"pid":wake.pid,"verified_at_ms":wake.verified_at_ms})
@@ -320,7 +301,7 @@ mod security_tests {
                     ProviderClientInterface::Chariox
                 });
         request.write_access_mode = ProviderWriteAccessMode::Unrestricted;
-        let run = RuntimeProviderRun::new(
+        let mut run = RuntimeProviderRun::new(
             "security-run",
             &request,
             ProviderLaunchResult {
@@ -349,6 +330,9 @@ mod security_tests {
         else {
             panic!("task required")
         };
+        // Watched processes read the agent's current run from the provider store.
+        run.mark_running();
+        app.providers_mut().insert_run_for_test(run.clone());
         let router = crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
             Arc::new(tokio::sync::Mutex::new(app)),
             1,

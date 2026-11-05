@@ -13,6 +13,7 @@ test("terminal resize controller resizes only attached sessions", () => {
     resizeSession: (id) => {
       resizedSessions.push(id)
     },
+    rebuildWaitingRoom: () => {},
   })
 
   assert.equal(controller.handleResize(), false)
@@ -25,4 +26,27 @@ test("terminal resize controller resizes only attached sessions", () => {
   sessionId = "session-b"
   controller.handleResize()
   assert.deepEqual(resizedSessions, ["session-a", "session-b"])
+})
+
+// The waiting room draws its rows to the terminal width of the moment it was built; a panel that is resized or
+// maximized after the TUI started must redraw it, or its centered rows run past both edges.
+test("terminal resize controller redraws the waiting room when no session is attached", () => {
+  let rebuilds = 0
+  const resizedSessions: string[] = []
+  let attached = false
+  const controller = createTerminalResizeController({
+    isAttached: () => attached,
+    sessionId: () => "session-a",
+    resizeSession: (id) => { resizedSessions.push(id) },
+    rebuildWaitingRoom: () => { rebuilds += 1 },
+  })
+
+  controller.handleResize()
+  assert.equal(rebuilds, 1)
+  assert.deepEqual(resizedSessions, [])
+
+  attached = true
+  controller.handleResize()
+  assert.equal(rebuilds, 1, "an attached session resizes its terminal instead")
+  assert.deepEqual(resizedSessions, ["session-a"])
 })

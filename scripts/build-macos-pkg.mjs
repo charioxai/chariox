@@ -1,36 +1,7 @@
 #!/usr/bin/env node
-// Builds the Chariox macOS installer package from one platform release bundle:
-//   bin/      chariox-kernel, its WASM App worker chariox-app-wasm-worker (the kernel opens it
-//             only beside itself) and chariox, the single-executable CLI/TUI; optionally
-//             chariox-app-package, chariox-relay and chariox-cli. Installed in
-//             /usr/local/bin. The release bundle (release-bundle.mjs) is the source
-//             of this layout.
-//   libexec/  chariox-app-runtime-install, the root App runtime installer.
-//   runtime/  the signed App runtime release (runtime-inventory.json and .sig).
-//   share/chariox/slice-build-context/
-//             the tree a release kernel runs local Docker slices from. The kernel
-//             looks for it beside its real bin/ (installed_slice_script in
-//             apps/kernel/src/slice/local_docker.rs), so it installs in
-//             /usr/local/share/chariox/slice-build-context. A kernel without that
-//             lookup is refused.
-// Other top-level entries are not packaged. The runtime's trusted key and
-// inventory digest come from the release authority (the runtime signing
-// receipt), never from the bundle. They are pinned in the postinstall, the
-// package's one privileged step (macos-pkg/postinstall). The payload also holds
-// the kernel LaunchAgent dev.chariox.kernel and, in /usr/local/libexec/chariox,
-// the runtime installer, the agent's start script, uninstall.sh and the SHA-256
-// manifests of the binaries and the slice build context. A root RunAtLoad
-// LaunchDaemon recreates the shared Docker admission locks in volatile /tmp.
-//
-// A release names "Developer ID Installer: <Name> (<TEAMID>)" and a notarytool
-// keychain profile at run time (--identity and --keychain-profile, or
-// CHARIOX_INSTALLER_IDENTITY and CHARIOX_NOTARY_PROFILE). Every Mach-O in the
-// bundle must already be Developer ID Application-signed by the same team with
-// the hardened runtime (sign-macos-release.mjs), and the runtime inventory
-// signed over those bytes. This tool then runs productsign, notarytool submit
-// --wait, stapler staple and spctl. It never creates, stores or reads
-// credentials. --unsigned builds a test package that Gatekeeper refuses; its
-// binaries may be ad-hoc signed. --dry-run checks the bundle and prints the plan.
+// Build a macOS package from release binaries and their slice context.
+// The WASM App worker ships and is signed beside the kernel. Only system
+// packaging/signing tools run during planning and assembly.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
@@ -57,26 +28,18 @@ const SLICE_PROVISIONER = 'apps/kernel/slice-linux-docker/provision-linux-docker
 const CONTEXT_PATH = /^\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*(\/\.?[A-Za-z0-9_+-][A-Za-z0-9._+-]*)*$/u;
 const BINARIES = new Map([['chariox-kernel', true], ['chariox', true], ['chariox-app-package', false],
   ['chariox-app-wasm-worker', true], ['chariox-relay', false], ['chariox-cli', false]]);
-const RUNTIME_INSTALLER = 'chariox-app-runtime-install';
 const IDENTITY = /^Developer ID Installer: [^\r\n]+ \(([A-Z0-9]{10})\)$/u;
 const PROFILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const VERSION = /^\d{1,6}(\.\d{1,6}){0,3}$/u;
-// The runtime installer's own limits.
-const RUNTIME_FILES = 256;
-const RUNTIME_BYTES = 512 * 1024 * 1024;
 const CPU = new Map([[0x0100000c, 'arm64'], [0x01000007, 'x86_64']]);
-// The runtime inventory's target for each Mach-O architecture (runtime_enrollment::manifest::target).
-const TARGETS = new Map([['arm64', 'darwin-arm64'], ['x86_64', 'darwin-x64']]);
 // Static marker compiled into supported installers. Bundle programs never run here.
-const INSTALLER_MARKER = 'app_runtime_installer_requires_root';
 const TOOLS = { codesign: '/usr/bin/codesign', pkgbuild: '/usr/bin/pkgbuild', productbuild: '/usr/bin/productbuild',
   productsign: '/usr/bin/productsign', pkgutil: '/usr/sbin/pkgutil', spctl: '/usr/sbin/spctl', xcrun: '/usr/bin/xcrun' };
 
 export class UsageError extends Error {}
 
 const FLAGS = new Map([['--bundle', 'bundle'], ['--output', 'output'], ['--version', 'version'],
-  ['--runtime-key', 'runtimeKey'], ['--runtime-digest', 'runtimeDigest'],
   ['--identity', 'identity'], ['--keychain-profile', 'keychainProfile']]);
 const SWITCHES = new Map([['--dry-run', 'dryRun'], ['--unsigned', 'unsigned']]);
 
@@ -104,8 +67,6 @@ export function parseArguments(argv, env = process.env) {
   if (!options.bundle || !options.output || !options.version) throw new UsageError('--bundle, --output and --version are required');
   if (!options.output.endsWith('.pkg')) throw new UsageError('--output must name a .pkg file');
   if (!VERSION.test(options.version)) throw new UsageError('--version must be numeric, such as 1.2.3');
-  for (const [flag, key] of [['--runtime-key', 'runtimeKey'], ['--runtime-digest', 'runtimeDigest']])
-    if (!HEX64.test(options[key] ?? '')) throw new UsageError(`${flag} must be the 64 lowercase hex characters of the runtime signing receipt`);
   if (options.unsigned) {
     if (options.identity || options.keychainProfile) throw new UsageError('--unsigned takes no --identity or --keychain-profile');
     return { ...options, identity: null, keychainProfile: null, teamId: null };
@@ -176,17 +137,7 @@ async function bundleFiles(bundle, label, { maxFiles = Infinity, maxBytes = Infi
   return { path: root, files, bytes };
 }
 
-async function runtimeFiles(bundle) {
-  const runtime = await bundleFiles(bundle, 'runtime', { maxFiles: RUNTIME_FILES, maxBytes: RUNTIME_BYTES, maxDepth: 8 });
-  for (const file of runtime.files) {
-    // The installer refuses group- or other-writable input; it sets its own modes on publication.
-    file.mode &= 0o555;
-    file.archs = await machO(file.source);
-  }
-  return runtime;
-}
 
-// The slice build context. Its files install as root's, 0755 when executable and 0644 otherwise, as the release bundle has them.
 async function contextFiles(bundle, kernel) {
   // Only a release kernel with that lookup finds it (the path is a string constant of the lookup); an older
   // or debug kernel would look in /usr/lib, which macOS does not let a package write, or in its build checkout.
@@ -209,11 +160,11 @@ async function contextFiles(bundle, kernel) {
   return context;
 }
 
-export async function readBundle(input, runtimeDigest) {
+export async function readBundle(input) {
   const bundle = await realpath(input);
   if (!(await lstat(bundle)).isDirectory()) throw new Error('--bundle must be a directory');
   const top = (await readdir(bundle)).sort();
-  for (const name of ['bin', 'libexec', 'runtime'])
+  for (const name of ['bin'])
     if (!(await lstat(join(bundle, name)).catch(() => null))?.isDirectory()) throw new Error(`the bundle has no ${name}/ directory`);
   const binaries = [];
   for (const name of (await readdir(join(bundle, 'bin'))).sort()) {
@@ -222,30 +173,12 @@ export async function readBundle(input, runtimeDigest) {
   }
   for (const [name, required] of BINARIES)
     if (required && !binaries.some(binary => binary.name === name)) throw new Error(`the bundle has no bin/${name}`);
-  if ((await readdir(join(bundle, 'libexec'))).join('/') !== RUNTIME_INSTALLER) throw new Error(`libexec/ must hold only ${RUNTIME_INSTALLER}`);
-  const installer = await executable(join(bundle, 'libexec', RUNTIME_INSTALLER), `libexec/${RUNTIME_INSTALLER}`);
   const { archs } = binaries.find(binary => binary.name === 'chariox-kernel');
-  for (const [label, item] of [...binaries.map(binary => [`bin/${binary.name}`, binary]), [`libexec/${RUNTIME_INSTALLER}`, installer]])
+  for (const [label, item] of binaries.map(binary => [`bin/${binary.name}`, binary]))
     if (item.archs.join() !== archs.join()) throw new Error(`${label} is ${item.archs.join('+')}, but bin/chariox-kernel is ${archs.join('+')}`);
-  const runtime = await runtimeFiles(bundle);
-  for (const name of ['runtime-inventory.json', 'runtime-inventory.sig'])
-    if (!runtime.files.some(file => file.path === name)) throw new Error(`runtime/ has no ${name}`);
-  const digest = await hashFile(join(runtime.path, 'runtime-inventory.json'));
-  if (digest !== runtimeDigest) throw new Error(`runtime/runtime-inventory.json has SHA-256 ${digest}, not the --runtime-digest ${runtimeDigest}`);
-  // The installer enrolls only a runtime built for its own native target, so a package holds exactly one.
   if (archs.length !== 1) throw new Error(`bin/chariox-kernel is ${archs.join('+')}; build one package per architecture`);
-  let target;
-  try { ({ target } = JSON.parse(await readFile(join(runtime.path, 'runtime-inventory.json'), 'utf8'))); } catch {
-    throw new Error('runtime/runtime-inventory.json is not JSON');
-  }
-  if (target !== TARGETS.get(archs[0])) throw new Error(`runtime/ targets ${target}, but bin/chariox-kernel is ${archs[0]}`);
-  for (const file of runtime.files)
-    if (file.archs && file.archs.join() !== archs.join())
-      throw new Error(`runtime/${file.path} is ${file.archs.join('+')}, but bin/chariox-kernel is ${archs[0]}`);
-  if (!(await readFile(installer.path)).includes(INSTALLER_MARKER))
-    throw new Error(`libexec/${RUNTIME_INSTALLER} cannot enroll on macOS; build it from a tree with the macOS installer`);
   const context = await contextFiles(bundle, binaries.find(binary => binary.name === 'chariox-kernel').path);
-  return { bundle, binaries, installer, runtime, context, archs, ignored: top.filter(name => !['bin', 'libexec', 'runtime', 'share'].includes(name)) };
+  return { bundle, binaries, context, archs, ignored: top.filter(name => !['bin', 'share'].includes(name)) };
 }
 
 // Templates name host paths below @@ROOT@@, which is empty in the package.
@@ -289,13 +222,11 @@ export async function packagePlan(options) {
   const log = `${output}.notarization-log.json`;
   for (const path of options.unsigned ? [output, work] : [output, work, log])
     if (!(await absent(path))) throw new Error(`${path} already exists`);
-  const release = await readBundle(options.bundle, options.runtimeDigest);
+  const release = await readBundle(options.bundle);
   if (output.startsWith(`${release.bundle}${sep}`)) throw new Error('--output must be outside --bundle');
-  const staged = `${PACKAGE_DIR}/staging/runtime-${options.runtimeDigest}`;
   const content = (path, mode, text) => ({ path, mode, content: text, sha256: sha256(text) });
   const payload = [
     ...release.binaries.map(binary => ({ path: `usr/local/bin/${binary.name}`, mode: 0o755, source: binary.path, sha256: binary.sha256 })),
-    { path: `${PACKAGE_DIR}/${RUNTIME_INSTALLER}`, mode: 0o555, source: release.installer.path, sha256: release.installer.sha256 },
     content(`${PACKAGE_DIR}/provision-docker-admission-locks.py`, 0o555, await readFile(join(DEPLOY, 'local-linux/provision-docker-admission-locks.py'), 'utf8')),
     content(`Library/LaunchDaemons/${ADMISSION_LABEL}.plist`, 0o644, await readFile(join(DEPLOY, `local-macos/${ADMISSION_LABEL}.plist`), 'utf8')),
     content(`${PACKAGE_DIR}/start-kernel.sh`, 0o555, await renderTemplate('start-kernel.sh', { ROOT: '' })),
@@ -303,12 +234,9 @@ export async function packagePlan(options) {
     content(`${PACKAGE_DIR}/bin.sha256`, 0o444, release.binaries.map(binary => `${binary.sha256}  /usr/local/bin/${binary.name}\n`).join('')),
     content(`${PACKAGE_DIR}/slice-build-context.sha256`, 0o444, release.context.files.map(file => `${file.sha256}  /${CONTEXT_DIR}/${file.path}\n`).join('')),
     content(`Library/LaunchAgents/${AGENT_LABEL}.plist`, 0o644, await readFile(join(TEMPLATES, `${AGENT_LABEL}.plist`), 'utf8')),
-    // Two trees, summarized in the plan and receipt: the context's manifest and the pinned inventory record their bytes.
     ...release.context.files.map(file => ({ path: `${CONTEXT_DIR}/${file.path}`, mode: file.mode, source: file.source })),
-    ...release.runtime.files.map(file => ({ path: `${staged}/${file.path}`, mode: file.mode, source: file.source })),
   ];
-  const postinstall = await renderTemplate('postinstall', { ROOT: '', VERSION: options.version,
-    RUNTIME_KEY: options.runtimeKey, RUNTIME_DIGEST: options.runtimeDigest });
+  const postinstall = await renderTemplate('postinstall', { ROOT: '', VERSION: options.version });
   const root = join(work, 'root');
   const scripts = join(work, 'scripts');
   const component = join(work, COMPONENT);
@@ -316,8 +244,7 @@ export async function packagePlan(options) {
   const expanded = join(work, 'expanded');
   const product = options.unsigned ? output : join(work, 'unsigned.pkg');
   // Signed releases accept only Developer ID-signed code of the installer's team.
-  const code = options.unsigned ? [] : [...release.binaries, release.installer,
-    ...release.runtime.files.filter(file => file.archs).map(file => ({ path: file.source }))];
+  const code = options.unsigned ? [] : release.binaries;
   const checks = [
     ...code.map(file => ({ phase: 'code-verify', file, command: [TOOLS.codesign, '--verify', '--strict', '--verbose=2', file.path] })),
     ...code.map(file => ({ phase: 'code-describe', file, command: [TOOLS.codesign, '--display', '--verbose=2', file.path] })),
@@ -350,12 +277,10 @@ export function formatPlan(plan) {
   const { release } = plan;
   const lines = ['# Dry run: nothing below was executed or written.',
     `# bundle ${release.bundle} (${release.archs.join('+')}); not packaged: ${release.ignored.join(', ') || 'nothing'}`,
-    `# postinstall pins runtime key ${plan.runtimeKey} and inventory ${plan.runtimeDigest}`];
+    `# postinstall installs the WASM worker with the kernel`];
   for (const entry of plan.payload) if (entry.sha256) lines.push(`# payload ${octal(entry.mode)} /${entry.path}`);
   lines.push(`# payload 0755 /${CONTEXT_DIR}/: the slice build context, ${release.context.files.length} files, `
     + `${release.context.bytes} bytes, listed in /${PACKAGE_DIR}/slice-build-context.sha256`);
-  lines.push(`# payload 0700 /${PACKAGE_DIR}/staging/runtime-${plan.runtimeDigest}/: ${release.runtime.files.length} files, `
-    + `${release.runtime.bytes} bytes, removed by the postinstall`);
   let phase = '';
   for (const step of [...plan.checks, ...plan.steps]) {
     if (step.phase !== phase) lines.push(`# ${(phase = step.phase)}`);
@@ -424,7 +349,7 @@ async function checkExpanded(plan) {
     `minimumSystemVersion="${MIN_MACOS}"`, '<postinstall file="./postinstall"'])
     if (!info.includes(needle)) throw new Error(`the component PackageInfo lacks ${needle}`);
   if (await readFile(join(expanded, COMPONENT, 'Scripts', 'postinstall'), 'utf8') !== plan.postinstall)
-    throw new Error('the product\'s postinstall is not the one rendered with the pinned runtime');
+    throw new Error('the product\'s postinstall is not the one rendered with the release binaries');
   const scripts = (await readdir(join(expanded, COMPONENT, 'Scripts'))).filter(name => !name.startsWith('._'));
   if (scripts.join() !== 'postinstall') throw new Error(`the product has unexpected scripts: ${scripts.join(', ')}`);
 }
@@ -499,8 +424,6 @@ export async function buildMacosPkg(options, { run = runCommand, platform = proc
       schema: 'chariox.macos-pkg.v1', identifier: IDENTIFIER, version: plan.version, output: plan.output,
       sha256: await hashFile(plan.output), bytes: (await lstat(plan.output)).size,
       architectures: plan.release.archs, minimumMacos: MIN_MACOS,
-      runtime: { inventorySha256: plan.runtimeDigest, publicKeyHex: plan.runtimeKey,
-        files: plan.release.runtime.files.length, bytes: plan.release.runtime.bytes },
       sliceBuildContext: { path: `/${CONTEXT_DIR}`, files: plan.release.context.files.length, bytes: plan.release.context.bytes },
       payload: plan.payload.filter(entry => entry.sha256).map(entry => ({ path: `/${entry.path}`, mode: octal(entry.mode), sha256: entry.sha256 })),
       appleDoubleEntries: appleDouble, notPackaged: plan.release.ignored,

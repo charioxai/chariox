@@ -67,6 +67,10 @@ pub(super) struct Link {
 }
 
 impl Link {
+    pub(super) fn has_target_key(&self, key: &str) -> bool {
+        self.target_public_key == key
+    }
+
     pub(super) async fn open(params: LinkParams) -> Result<Self, LinkFailure> {
         let (mut socket, _) = tokio::time::timeout(
             CONNECT_TIMEOUT,
@@ -100,7 +104,7 @@ impl Link {
                             Ok(RelayEnvelope::ClientConnected {
                                 daemon_public_key, ..
                             }) => return Ok(daemon_public_key),
-                            Ok(RelayEnvelope::Close { reason }) => {
+                            Ok(RelayEnvelope::Close { reason, .. }) => {
                                 return Err(relay_failure("connect_refused", reason))
                             }
                             Ok(RelayEnvelope::ClientResponse {

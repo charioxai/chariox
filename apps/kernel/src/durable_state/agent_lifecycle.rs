@@ -11,7 +11,9 @@ mod delegation;
 mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
+mod worker_stops;
 pub use leased_processes::{LeasedProcessBinding, LeasedProcessReceipt};
+pub(crate) use worker_stops::{UnstoppedWorkerRun, WorkerStopMutation};
 #[cfg(test)]
 mod blocked_intent_tests;
 mod delivery_waits;
@@ -108,6 +110,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
+    worker_stops::initialize(db)?;
     workflow_tasks::initialize(db)?;
     migration::migrate(db)
 }
@@ -325,6 +328,18 @@ impl DurableKernelStateStore {
         let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
+    /// Steers into a leased turn whose outcome is still unconfirmed, as
+    /// `(room, agent, steer id)`: a restart must ask their workers again.
+    pub(crate) fn agent_unconfirmed_leased_steers(
+        &self,
+    ) -> Result<Vec<(String, String, String)>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.unconfirmed_leased_steers")?;
+        let mut q = db.prepare("SELECT room_id,agent_id,json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE json_valid(payload) AND json_extract(payload,'$.state') IN ('uncertain','blocked') AND json_extract(payload,'$.target_prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.provider_run_id') LIKE 'leased:%' ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }

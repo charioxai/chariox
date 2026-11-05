@@ -518,3 +518,442 @@ async fn public_history_agent_vault_credential_keeps_room_output_visible() {
         .hits
         .is_empty());
 }
+
+// A Vault value request stores what the owner typed against the registry as it is when the
+// Vault lifecycle lock is held, not as it was when the answer arrived.
+struct RequestFixture {
+    room: TestRoom,
+    registry: crate::credential::CharioxCredentialRegistry,
+    service: crate::secret::RuntimeSecretService,
+    _root: TestRoot,
+    _home: IsolatedHome,
+    _environment: crate::env_lock::EnvGuard,
+}
+
+fn owner_credential(vault_key: &str) -> crate::config::UserCredentialConfig {
+    crate::config::UserCredentialConfig {
+        id: "owner_key".into(),
+        description: Some("Owner key".into()),
+        source: crate::config::UserCredentialSourceConfig::Vault {
+            key: vault_key.into(),
+        },
+        allowed_hosts: vec!["api.example.com".into()],
+        allowed_uses: vec![crate::config::UserCredentialUse::Http],
+        injection: crate::config::UserCredentialInjectionConfig::Header {
+            name: "x-api-key".into(),
+            value: "${secret}".into(),
+        },
+        metadata: None,
+    }
+}
+
+fn requested_credential(id: &str, vault_key: &str) -> crate::config::UserCredentialConfig {
+    let mut credential = owner_credential(vault_key);
+    credential.id = id.into();
+    credential.injection = crate::config::UserCredentialInjectionConfig::Header {
+        name: "authorization".into(),
+        value: "Bearer ${secret}".into(),
+    };
+    credential
+}
+
+async fn request_fixture(label: &str) -> RequestFixture {
+    let environment = crate::env_lock::lock();
+    let root = TestRoot::new();
+    let home = IsolatedHome::new(root.path());
+    let room = TestRoom::new(label);
+    let vault_path = root.path().join("vault");
+    let mut config = room.runtime.owned.config_projection.snapshot();
+    config.user_config.credential_vault.path = vault_path.display().to_string();
+    room.runtime.owned.config_projection.update(config);
+    crate::secret::create_chariox_encrypted_vault_for_test(
+        &vault_path,
+        "synthetic-passphrase-only",
+    )
+    .unwrap();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &vault_path,
+        "synthetic-passphrase-only",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &room
+            .runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault,
+    )
+    .unwrap();
+    RequestFixture {
+        room,
+        registry,
+        service,
+        _root: root,
+        _home: home,
+        _environment: environment,
+    }
+}
+
+fn typed(
+    value: &str,
+) -> tokio::sync::oneshot::Receiver<super::super::super::PendingInteractionResolution> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+    send.send(super::super::super::PendingInteractionResolution {
+        status: "answered",
+        choice_id: Some("secret".into()),
+        reply: Some(value.into()),
+    })
+    .unwrap();
+    receive
+}
+
+#[tokio::test]
+async fn an_overwrite_stores_against_the_record_the_lock_holder_left() {
+    let fixture = request_fixture("overwrite-race").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .upsert_observed_vault_credential(
+            &fixture.service,
+            &fixture.registry,
+            owner_credential("owner-slot"),
+            "old-value",
+            false,
+        )
+        .await
+        .unwrap();
+
+    // A concurrent credential update holds the Vault lifecycle lock while the owner's answer arrives.
+    let guard = runtime.vault_observation_mutation_guard().await;
+    let mut store = Box::pin(runtime.store_answer(
+        typed("typed-by-the-owner"),
+        requested_credential("owner_key", "owner_key"),
+        true,
+    ));
+    tokio::select! {
+        _ = &mut store => panic!("the answer was stored while the lifecycle lock was held"),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+    }
+    let mut updated = owner_credential("owner-slot");
+    updated.injection = crate::config::UserCredentialInjectionConfig::Header {
+        name: "x-updated".into(),
+        value: "${secret}".into(),
+    };
+    updated.allowed_uses = vec![crate::config::UserCredentialUse::Http];
+    fixture.registry.upsert(updated.clone()).unwrap();
+    drop(guard);
+
+    assert_eq!(store.await, crate::local::VaultSecretStatus::Stored);
+    assert_eq!(
+        fixture.registry.get("owner_key").unwrap().unwrap(),
+        updated,
+        "the answer wrote a stale record over the concurrent update"
+    );
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("owner-slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+}
+
+#[tokio::test]
+async fn an_answer_for_a_new_handle_never_replaces_another_handles_vault_slot() {
+    let fixture = request_fixture("occupied-slot").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .upsert_observed_vault_credential(
+            &fixture.service,
+            &fixture.registry,
+            owner_credential("token_slot"),
+            "original-value",
+            false,
+        )
+        .await
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            false,
+        )
+        .await;
+
+    assert_ne!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        value.as_str(),
+        "original-value",
+        "the other handle's value was replaced"
+    );
+    assert!(fixture.registry.get("token_slot").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_answer_for_a_new_handle_never_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("orphan-slot").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("token_slot", "original-value")
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            false,
+        )
+        .await;
+
+    assert_ne!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        value.as_str(),
+        "original-value",
+        "the stored value was replaced"
+    );
+    assert!(fixture.registry.get("token_slot").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_overwrite_answer_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("orphan-overwrite").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("token_slot", "original-value")
+        .unwrap();
+
+    let status = runtime
+        .store_answer(
+            typed("typed-by-the-owner"),
+            requested_credential("token_slot", "token_slot"),
+            true,
+        )
+        .await;
+
+    assert_eq!(status, crate::local::VaultSecretStatus::Stored);
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("token_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+    assert!(fixture.registry.get("token_slot").unwrap().is_some());
+}
+
+fn handoff_on(origin: &str) -> crate::session::RuntimeHandoff {
+    crate::session::RuntimeHandoff {
+        kind: crate::session::HandoffKind::Secret,
+        reason: crate::session::HandoffReason::ModelRefusal,
+        agent_id: "agent".into(),
+        task_id: "task".into(),
+        obligation_id: "obligation".into(),
+        explanation: "Enter the password".into(),
+        target: crate::session::HandoffTarget {
+            tab_id: "tab".into(),
+            generation: 1,
+            document_id: "doc".into(),
+            node_ref: "backend:7".into(),
+            origin: origin.into(),
+            path: "/login".into(),
+            label: "Password".into(),
+        },
+        change: Vec::new(),
+        expires_at_ms: crate::session::unix_epoch_ms() + 900_000,
+        save_to_vault_offered: true,
+    }
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_replaces_a_stored_value_that_has_no_record() {
+    let fixture = request_fixture("handoff-orphan").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("site_login", "original-value")
+        .unwrap();
+
+    runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "typed-by-the-owner",
+        )
+        .await
+        .expect("the owner's own save must replace what is stored");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "typed-by-the-owner");
+    assert!(fixture.registry.get("site_login").unwrap().is_some());
+}
+
+#[tokio::test]
+async fn the_owner_saves_again_after_deleting_the_handle_record() {
+    let fixture = request_fixture("handoff-deleted").await;
+    let runtime = &fixture.room.runtime;
+    let handoff = handoff_on("https://example.com");
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "first-value")
+        .await
+        .unwrap();
+    fixture.registry.remove("site_login").unwrap();
+
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "second-value")
+        .await
+        .expect("the owner's save over the value of a deleted handle must succeed");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "second-value");
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_replaces_the_value_of_its_own_handle() {
+    let fixture = request_fixture("handoff-own-handle").await;
+    let runtime = &fixture.room.runtime;
+    let handoff = handoff_on("https://example.com");
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "first-value")
+        .await
+        .unwrap();
+
+    runtime
+        .save_handoff_secret(&handoff, "site_login", "second-value")
+        .await
+        .expect("the owner's save over their own saved handle must succeed");
+
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "second-value");
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_never_takes_the_slot_of_another_handle() {
+    let fixture = request_fixture("handoff-other-handle").await;
+    let runtime = &fixture.room.runtime;
+    fixture
+        .service
+        .set_vault_secret("other_slot", "other-value")
+        .unwrap();
+    fixture
+        .registry
+        .upsert(owner_credential("other_slot"))
+        .unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "other_slot",
+            "typed-by-the-owner",
+        )
+        .await;
+
+    assert!(saved.is_err(), "another handle's slot was taken");
+    let value = fixture
+        .service
+        .vault_secret_for_dictation("other_slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(value.as_str(), "other-value");
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_never_replaces_an_existing_credential_record() {
+    let fixture = request_fixture("handoff-existing-record").await;
+    let runtime = &fixture.room.runtime;
+    let mut existing = owner_credential("owner-slot");
+    existing.id = "site_login".into();
+    fixture
+        .service
+        .upsert_vault_backed_credential_with_secret(
+            &fixture.registry,
+            existing.clone(),
+            "service-token",
+            false,
+        )
+        .unwrap();
+    let record_path = fixture.registry.path_for("site_login").unwrap();
+    let record_before = std::fs::read(&record_path).unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "typed-by-the-owner",
+        )
+        .await;
+
+    assert!(saved.is_err(), "an incompatible record was replaced");
+    assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+    assert_eq!(fixture.registry.get("site_login").unwrap(), Some(existing));
+    let kept = fixture
+        .service
+        .vault_secret_for_dictation("owner-slot")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.as_str(), "service-token");
+    assert!(fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn the_owners_hand_off_save_keeps_a_browser_record_of_another_site() {
+    let fixture = request_fixture("handoff-other-site").await;
+    let runtime = &fixture.room.runtime;
+    runtime
+        .save_handoff_secret(
+            &handoff_on("https://example.com"),
+            "site_login",
+            "first-value",
+        )
+        .await
+        .unwrap();
+    let record_path = fixture.registry.path_for("site_login").unwrap();
+    let record_before = std::fs::read(&record_path).unwrap();
+
+    let saved = runtime
+        .save_handoff_secret(
+            &handoff_on("https://other.example.org"),
+            "site_login",
+            "second-value",
+        )
+        .await;
+
+    assert!(saved.is_err(), "the record of another site was replaced");
+    assert_eq!(std::fs::read(&record_path).unwrap(), record_before);
+    let kept = fixture
+        .service
+        .vault_secret_for_dictation("site_login")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.as_str(), "first-value");
+}

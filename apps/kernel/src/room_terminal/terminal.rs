@@ -93,6 +93,43 @@ impl Terminal {
     }
 
     /// An ended terminal whose scrollback survived a kernel restart.
+    /// A terminal a hot reload handed over: the saved screen, the retained
+    /// output at its original offsets, and the command state the shell reported.
+    #[cfg(unix)]
+    pub(super) fn adopted(record: TerminalRecord, handover: &super::TerminalHandover) -> Self {
+        let screen = Screen::replay(
+            record.rows,
+            record.cols,
+            &record.scrollback_text,
+            &record.screen_text,
+        );
+        let run_id = format!("room-terminal:{}", record.terminal_id);
+        let shell_pid = i32::try_from(handover.pty.pid).ok();
+        let mut terminal = Self::new(record, Some(run_id), shell_pid, screen);
+        let retained = handover.retained_output();
+        terminal.plain.append(&retained);
+        terminal.log = OutputLog::restored(handover.output_start, retained);
+        terminal.mark_tracking = handover.mark_tracking;
+        terminal.command_in_flight = handover.command_in_flight;
+        terminal.program_running = handover.program_running;
+        terminal.commands_started = handover.commands_started;
+        terminal
+    }
+
+    #[cfg(unix)]
+    pub(super) fn handover(&self, pty: crate::pty::PtyHandover) -> super::TerminalHandover {
+        super::TerminalHandover {
+            terminal_id: self.record.terminal_id.clone(),
+            pty,
+            output_start: self.log.start_offset(),
+            output_base64: base64::engine::general_purpose::STANDARD.encode(self.log.retained()),
+            mark_tracking: self.mark_tracking,
+            command_in_flight: self.command_in_flight,
+            program_running: self.program_running,
+            commands_started: self.commands_started,
+        }
+    }
+
     pub(super) fn recovered(record: TerminalRecord) -> Self {
         let screen = Screen::replay(
             record.rows,
@@ -169,6 +206,9 @@ impl Terminal {
     fn on_mark(&mut self, mark: ShellMark) -> Fired {
         match mark {
             ShellMark::CommandStarted => {
+                if let Some(run_id) = &self.run_id {
+                    crate::runtime::process_resources::line_started_for_key(run_id);
+                }
                 // Login files never report a start: this is a real command,
                 // even when the shell has not reported a prompt yet (zsh
                 // installs its finish hook during the first prompt).
@@ -177,7 +217,10 @@ impl Terminal {
                 self.commands_started += 1;
                 Fired::new()
             }
-            ShellMark::CommandFinished { exit_code } => {
+            ShellMark::CommandFinished { exit_code, jobs } => {
+                if let Some(run_id) = &self.run_id {
+                    crate::runtime::process_resources::line_finished_for_key(run_id, &jobs);
+                }
                 self.mark_tracking = true;
                 self.first_prompt_deadline = None;
                 // The first prompt reports before any command has run.

@@ -36,6 +36,7 @@ use crate::transport::relay_peer::RelayPeerEvent;
 mod browser_display;
 mod browser_input_order;
 mod cloud_presence;
+mod connected_relays;
 mod connection_config;
 mod connection_state;
 mod connector;
@@ -59,6 +60,11 @@ mod sender_identity;
 mod subscriptions;
 pub(crate) use browser_input_order::release_input_turn;
 use cloud_presence::CloudPresencePublisher;
+#[cfg(test)]
+pub(crate) use connected_relays::ConnectedWorkerRig;
+pub(crate) use connected_relays::{
+    ConnectedRelays, SlicePrivateRelayConnector, SlicePrivateRelayConnectors,
+};
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{publish_offline_and_set_disconnected, set_connected};
 use daemon_requests::{handle_prepared_daemon_request, prepare_daemon_request};
@@ -295,5 +301,7 @@ fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
 
 type RelayCommandResultCache = Arc<CommandResultCache>;
 
+#[cfg(test)]
+mod admission_drill;
 #[cfg(test)]
 mod tests;

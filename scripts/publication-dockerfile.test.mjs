@@ -63,7 +63,8 @@ test("publication Rust build consumes the workspace lock and every kernel path d
     "COPY packages/app-runtime packages/app-runtime",
     "COPY packages/app-wit packages/app-wit",
     "COPY packages/app-wasm-worker packages/app-wasm-worker",
-    "COPY packages/app-sdk packages/app-sdk",
+    "COPY packages/app-sdk-rust packages/app-sdk-rust",
+    "COPY packages/app-sdk-tools packages/app-sdk-tools",
   ]) {
     const copy = rustStage.indexOf(requiredCopy)
     assert.ok(copy >= 0, `the Rust stage must include ${requiredCopy}`)
@@ -261,10 +262,4 @@ test("kernel runtime images install the mandatory process sampler", async () => 
     assert.ok(/\bprocps\b/.test(runtime), `${path} must install procps in its runtime stage`)
     assert.ok(runtime.includes("RUN node /usr/local/lib/chariox/check-process-sampler.mjs"), `${path} must check a real launched process in the image`)
   }
-})
-
-test("the native managed image explicitly installs and checks the sampler", async () => {
-  const source = await readFile(new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url), "utf8")
-  assert.match(source, /\n  procps \\\n/)
-  assert.ok(source.includes("ps -axo pid=,ppid=,rss=,pcpu=,etime=,comm="))
 })

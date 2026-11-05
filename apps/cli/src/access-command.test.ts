@@ -1,66 +1,68 @@
 // MP-08 / MP-10 / MP-11: one process-bound grant for the whole local kernel.
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
 import { parseAccessRequest, runAccessCommand } from "./access-command.js"
 import { replyWith, startFakeKernel } from "./fake-unix-kernel.test-support.js"
 
-test("access request has no session scope and defaults to the caller's OS ancestor", () => {
-  const result = parseAccessRequest(["--holder-pid", "42", "--minutes", "480", "--socket", "/tmp/k.sock"], () => { throw new Error("unused") })
+test("access request has no session scope and leaves the holder to the kernel unless --holder-pid names a host pid", () => {
+  const result = parseAccessRequest(["--holder-pid", "42", "--minutes", "480", "--socket", "/tmp/k.sock"])
   assert.deepEqual(result, { request: { RequestKernelAccess: { holder_pid: 42, term: { minutes: 480 } } }, socket: "/tmp/k.sock", noWait: false })
-  assert.equal(parseAccessRequest([], () => 43).request.RequestKernelAccess.holder_pid, 43)
+  assert.deepEqual(parseAccessRequest([]).request, { RequestKernelAccess: {} })
   for (const argv of [["--session", "s"], ["--holder-pid", "0"], ["--holder-pid", "1"], ["--minutes", "1.5"], ["--holder-pid", "5", "--holder-pid", "6"], ["--passkey", "never"], ["--until-exit", "--minutes", "30"], ["--until-exit", "--until-exit"]]) {
-    assert.throws(() => parseAccessRequest(argv, () => 43))
+    assert.throws(() => parseAccessRequest(argv))
   }
 })
 
-test("access request can ask to last until the agent exits, and says nothing when no term is given", () => {
-  assert.deepEqual(parseAccessRequest(["--until-exit"], () => 43).request, { RequestKernelAccess: { holder_pid: 43, term: "until_holder_exits" } })
-  assert.deepEqual(parseAccessRequest(["--socket", "/tmp/k.sock", "--until-exit", "--holder-pid", "7"], () => 43), { request: { RequestKernelAccess: { holder_pid: 7, term: "until_holder_exits" } }, socket: "/tmp/k.sock", noWait: false })
-  assert.deepEqual(parseAccessRequest([], () => 43).request, { RequestKernelAccess: { holder_pid: 43 } })
+test("access request can ask to last until the agent exits, and --no-wait asks the kernel to wait instead", () => {
+  assert.deepEqual(parseAccessRequest(["--until-exit"]).request, { RequestKernelAccess: { term: "until_holder_exits" } })
+  assert.deepEqual(parseAccessRequest(["--socket", "/tmp/k.sock", "--until-exit", "--holder-pid", "7"]), { request: { RequestKernelAccess: { holder_pid: 7, term: "until_holder_exits" } }, socket: "/tmp/k.sock", noWait: false })
+  assert.deepEqual(parseAccessRequest(["--until-exit", "--no-wait"]), { request: { RequestKernelAccess: { term: "until_holder_exits", no_wait: true } }, socket: undefined, noWait: true })
+  assert.throws(() => parseAccessRequest(["--no-wait", "--no-wait"]))
 })
 
-test("--no-wait is a flag of access request and changes nothing else", () => {
-  assert.deepEqual(parseAccessRequest(["--until-exit", "--no-wait"], () => 43), {
-    request: { RequestKernelAccess: { holder_pid: 43, term: "until_holder_exits" } }, socket: undefined, noWait: true,
-  })
-  assert.throws(() => parseAccessRequest(["--no-wait", "--no-wait"], () => 43))
-})
-
-async function statusOf(answer: Parameters<typeof replyWith>[2], runtimeDir: string, holder: number): Promise<{ out: string; exit: number | undefined }> {
+async function run(argv: string[], answer: Parameters<typeof replyWith>[2]) {
   const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, answer))
-  const previous = { out: console.log, dir: process.env.XDG_RUNTIME_DIR, exit: process.exitCode }
+  const previous = { out: console.log, err: console.error, exit: process.exitCode }
   let out = ""
   console.log = (line: string) => { out += line }
-  process.env.XDG_RUNTIME_DIR = runtimeDir
+  console.error = () => {}
   try {
-    await runAccessCommand(["access", "status", "--holder-pid", String(holder), "--socket", kernel.path])
-    return { out, exit: process.exitCode as number | undefined }
+    await runAccessCommand([...argv, "--socket", kernel.path])
+    return { out, exit: process.exitCode as number | undefined, requests: kernel.frames.map(frame => frame.request) }
   } finally {
     console.log = previous.out
-    if (previous.dir === undefined) delete process.env.XDG_RUNTIME_DIR; else process.env.XDG_RUNTIME_DIR = previous.dir
+    console.error = previous.err
     process.exitCode = previous.exit
     await kernel.close()
   }
 }
 
-test("access status reports granted, ended, pending and not_requested from a probe and the waiter pid file", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "chx-status-"))
-  const refusal = (code: string) => ({ error: { code, message: code, retryable: false } })
-  try {
-    assert.equal((await statusOf({ response: { GatewayKernelsListed: { kernels: [] } } }, dir, 4242)).out, '{"status":"granted"}')
-    assert.equal((await statusOf(refusal("kernel_access_ended"), dir, 4242)).out, '{"status":"ended"}')
-    assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
-    writeFileSync(join(dir, "access-waiter-4242.pid"), String(process.pid), { mode: 0o600 })
-    assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"pending"}')
-    assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4243)).out, '{"status":"not_requested"}')
-    for (const invalid of ["0", "1", "-1", "NaN", ""]) {
-      writeFileSync(join(dir, "access-waiter-4242.pid"), invalid, { mode: 0o600 })
-      assert.equal((await statusOf(refusal("kernel_access_not_covered"), dir, 4242)).out, '{"status":"not_requested"}')
-    }
-  } finally { rmSync(dir, { recursive: true, force: true }) }
+const status = (state: string, extra: Record<string, unknown> = {}) => ({ response: { KernelAccessStatus: { status: { state, holder_pid: 4242, holder_executable: "/usr/bin/codex", ...extra } } } })
+
+test("--no-wait leaves the pending request with the kernel: exit 6 and no process left behind", async () => {
+  const pending = await run(["access", "request", "--until-exit", "--no-wait"], status("pending"))
+  assert.deepEqual(pending.requests, [{ RequestKernelAccess: { term: "until_holder_exits", no_wait: true } }])
+  assert.deepEqual(JSON.parse(pending.out), { status: "pending", holder_pid: 4242, note: "approve in your Chariox client, then run chariox access status" })
+  assert.equal(pending.exit, 6)
+  const grant = { grant_id: "access-1", owner_user_id: "local", holder_pid: 4242, holder_executable: "/usr/bin/codex", term: "until_holder_exits" }
+  const standing = await run(["access", "request", "--until-exit", "--no-wait"], status("granted", { grant }))
+  assert.deepEqual(JSON.parse(standing.out), grant)
+  assert.equal(standing.exit, undefined)
+})
+
+test("access status asks the kernel about one holder identity and prints its state and reason", async () => {
+  const granted = await run(["access", "status"], status("granted"))
+  assert.deepEqual(granted.requests, [{ GetKernelAccessStatus: {} }])
+  assert.equal(granted.out, '{"status":"granted","holder_pid":4242}')
+  const named = await run(["access", "status", "--holder-pid", "4243"], status("not_requested"))
+  assert.deepEqual(named.requests, [{ GetKernelAccessStatus: { holder_pid: 4243 } }])
+  assert.equal(named.out, '{"status":"not_requested","holder_pid":4242}')
+  const refused = await run(["access", "status"], status("ended", { reason: { code: "access_refused", message: "the user refused access" } }))
+  assert.deepEqual(JSON.parse(refused.out), { status: "ended", holder_pid: 4242, reason: "access_refused", message: "the user refused access" })
+  // A pid outside the caller's chain is the kernel's refusal, never the caller's own grant.
+  const outside = await run(["access", "status", "--holder-pid", "99999999"], { error: { code: "kernel_access_not_covered", message: "not covered", retryable: false } })
+  assert.equal(outside.out, "")
+  assert.notEqual(outside.exit, 0)
 })
 
 test("access cover names one pid to the kernel and prints the grant id and the process it now covers", async () => {
@@ -85,5 +87,38 @@ test("access cover names one pid to the kernel and prints the grant id and the p
     console.error = previous.err
     process.exitCode = previous.exit
     await kernel.close()
+  }
+})
+
+test("access --help prints the usage and exits 0", async () => {
+  const printed: string[] = []
+  const log = console.log
+  const previous = process.exitCode
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    process.exitCode = undefined
+    assert.equal(await runAccessCommand(["access", "--help"]), true)
+    assert.match(printed.join("\n"), /chariox access request/)
+    assert.ok(!process.exitCode)
+  } finally { console.log = log; process.exitCode = previous }
+})
+
+test("an unknown access verb is a usage answer, not a crash", async () => {
+
+  const previous = { err: process.stderr.write, exit: process.exitCode }
+  let err = ""
+  process.stderr.write = ((chunk: string) => { err += chunk; return true }) as typeof process.stderr.write
+  try {
+    for (const verb of ["bogus", "constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      process.exitCode = undefined
+      err = ""
+
+      assert.equal(await runAccessCommand(["access", verb]), true)
+      assert.equal(JSON.parse(err.trim().split("\n").pop()!).error.code, "usage", verb)
+      assert.equal(process.exitCode, 2, verb)
+    }
+  } finally {
+    process.stderr.write = previous.err
+    process.exitCode = previous.exit
   }
 })

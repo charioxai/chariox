@@ -791,6 +791,190 @@ async fn pause_append_failure_preserves_interrupt_state_and_retries_once() {
 }
 
 #[tokio::test]
+async fn repeated_stop_finishes_committed_workflow_cancellation() {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    // Model interruption after the durable stop, before live prompt cleanup.
+    owned
+        .session_store
+        .write()
+        .cancel_workflow_run(&fixture.session_id, &fixture.workflow_run_id)
+        .unwrap();
+    owned
+        .persist_workflow_runtime_session(&fixture.session_id, "committed_stop_fixture")
+        .unwrap();
+
+    let (result, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    result.expect("repeating a committed stop should finish cleanup");
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let (active, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
+    assert!(
+        active.is_none_or(|prompt| {
+            prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str())
+                || prompt.status() == crate::session::PromptStatus::Cancelling
+        }),
+        "a committed stop must still cancel its active provider turn"
+    );
+    assert!(
+        queued
+            .iter()
+            .all(|prompt| { prompt.workflow_run_id() != Some(fixture.workflow_run_id.as_str()) }),
+        "a committed stop must still remove its queued agent prompts"
+    );
+    assert!(
+        !owned.prompt_workspace_claims.contains(&fixture.claim_id),
+        "a committed stop must still release its workflow workspace claim"
+    );
+    let (repeated, _) = fixture
+        .runtime
+        .execute_workflow_cancel_run_request(crate::local::CancelWorkflowRunRequest {
+            session_id: fixture.session_id.clone(),
+            workflow_run_ref: fixture.workflow_run_id.clone(),
+        })
+        .await;
+    repeated.expect("a fully settled stop should remain idempotent");
+    assert_eq!(
+        workflow_interrupt_event_count(&fixture, "workflow_run_cancelled"),
+        0,
+        "repeating a committed stop must not append another durable stop"
+    );
+}
+
+fn idle_workflow_prompt_fixture() -> InterruptFixture {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &fixture.target_agent_id)
+        .unwrap();
+    // Ordinary queued work takes precedence over workflow turns. This fixture
+    // exercises retry admission of the workflow head itself.
+    owned
+        .prompt_state_owner
+        .remove_queued_prompt(
+            &session,
+            &fixture.target_agent_id,
+            &fixture.target_unrelated_prompt_id,
+        )
+        .unwrap();
+    let (active, queued) = owned
+        .prompt_state_owner
+        .state_parts(&session, &fixture.target_agent_id);
+    owned
+        .mirror_prompt_owner_agent_state(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active,
+            queued,
+        )
+        .unwrap();
+    fixture
+}
+
+#[tokio::test]
+async fn queued_dispatch_respects_existing_promotion_owner() {
+    let fixture = idle_workflow_prompt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let _promotion = owned
+        .prompt_state_owner
+        .try_claim_idle_queue_promotion(&session, &fixture.target_agent_id)
+        .unwrap();
+    let dispatch = owned
+        .advance_next_queued_prompt_dispatch(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            "interrupt-provider-run",
+        )
+        .unwrap();
+    assert!(
+        dispatch.is_none(),
+        "another promoter owns provider preparation"
+    );
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn blocked_workflow_retry_respects_existing_promotion_owner() {
+    let fixture = idle_workflow_prompt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let _promotion = owned
+        .prompt_state_owner
+        .try_claim_idle_queue_promotion(&session, &fixture.target_agent_id)
+        .unwrap();
+    let dispatches = owned.workflow_retry_blocked_claims();
+    assert!(
+        dispatches.local.is_empty(),
+        "retry must wake the shared promoter"
+    );
+    assert!(dispatches
+        .project_queue_promotions
+        .contains(&(fixture.session_id.clone(), fixture.target_agent_id.clone())));
+    assert!(owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .is_none());
+}
+
+#[tokio::test]
+async fn cancellation_defers_workflow_head_until_provider_preparation() {
+    let fixture = interrupt_fixture();
+    let owned = &fixture.runtime.owned;
+    let session = owned
+        .session_store
+        .get_session(&fixture.session_id)
+        .unwrap();
+    let active = owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &fixture.target_agent_id)
+        .unwrap();
+    owned
+        .cancel_local_prompt(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.source_attachment_id(),
+        )
+        .unwrap()
+        .unwrap();
+    let cancellation = owned
+        .finalize_local_prompt_cancellation_with_queued_advance(
+            &fixture.session_id,
+            &fixture.target_agent_id,
+            active.id(),
+            Some("interrupt-provider-run"),
+        )
+        .unwrap();
+    assert!(cancellation.cancellation.started_next.is_none());
+    assert!(cancellation.dispatch.is_none());
+    assert!(cancellation.queue_head_deferred);
+}
+
+#[tokio::test]
 async fn cancel_append_failure_preserves_interrupt_state_and_retries_once() {
     run_interrupt_append_failure_regression(false).await;
 }
@@ -803,6 +987,77 @@ fn paused_interrupt_prompt_removal_survives_restart() {
 #[test]
 fn cancelled_interrupt_prompt_removal_survives_restart() {
     assert_interrupt_prompt_removal_survives_restart(false);
+}
+
+// HW-04: a run whose prompt was active when the kernel stopped has no provider run after the
+// restart. Stopping it ends the run, so the answer is the Stopped run, not a missing provider.
+#[test]
+fn stop_after_restart_answers_the_stopped_run() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("restart test executor should start");
+    let fixture = interrupt_fixture();
+    let (config, session_id, run_id, agent_id, target_unrelated_prompt_id) = (
+        fixture.config.clone(),
+        fixture.session_id.clone(),
+        fixture.workflow_run_id.clone(),
+        fixture.target_agent_id.clone(),
+        fixture.target_unrelated_prompt_id.clone(),
+    );
+    drop(fixture.runtime);
+    let restored = runtime_state_from_app(
+        DaemonApp::bootstrap(config).expect("restarted kernel should restore the running run"),
+    );
+    let (result, _) = executor.block_on(restored.execute_workflow_cancel_run_request(
+        crate::local::CancelWorkflowRunRequest {
+            session_id: session_id.clone(),
+            workflow_run_ref: run_id.clone(),
+        },
+    ));
+    let Ok(LocalDaemonResponse::WorkflowRunCancelled { workflow_run, .. }) = result else {
+        panic!("a stop that ended the run must answer success: {result:?}");
+    };
+    assert_eq!(
+        workflow_run.status(),
+        crate::session::WorkflowRunStatus::Stopped
+    );
+    let session = restored
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    let active = restored
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &agent_id);
+    assert!(
+        active.is_none_or(|prompt| prompt.workflow_run_id() != Some(run_id.as_str())),
+        "the stopped run must not keep an active prompt"
+    );
+    // The prompt queued behind the stopped run is next on this agent. With no provider left
+    // after the restart, Stop must have launched one to take it, or it would wait forever.
+    let successor_prompts = restored
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, &agent_id);
+    assert!(
+        successor_prompts
+            .0
+            .iter()
+            .chain(successor_prompts.1.front())
+            .any(|prompt| prompt.id() == target_unrelated_prompt_id),
+        "the unrelated prompt must still be the agent's next prompt"
+    );
+    let run = restored
+        .owned
+        .provider_store
+        .get_run_for_agent(&session_id, &agent_id)
+        .expect("the queued successor needs a provider run after the stop");
+    assert!(matches!(
+        run.state(),
+        crate::provider::ProviderRunState::Starting | crate::provider::ProviderRunState::Running
+    ));
 }
 
 async fn run_interrupt_append_failure_regression(pause: bool) {
@@ -3062,7 +3317,11 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
         task.state,
         crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
     );
-    assert!(task.reason.contains("Provider run failed"));
+    assert!(
+        task.reason.contains(failure.reason.as_str()),
+        "{}",
+        task.reason
+    );
     let settled = runtime
         .with_app_side_effect(|app| {
             app.completed_git_turn_snapshot_store()

@@ -11,8 +11,8 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
 const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
-const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? "root@195.201.123.115"
-const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? path.join(os.homedir(), ".ssh/chariox_hetzner_staging")
+const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? ""
+const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? ""
 const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -62,9 +62,14 @@ export function shellQuote(value) {
 }
 
 export function sshArgs(command, options = {}) {
+  const host = options.host ?? remoteCliHost
+  const key = options.key ?? remoteCliKey
+  if (!host || !key) {
+    throw new Error("remote CLI host and SSH key are not set: set CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST and CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY")
+  }
   const args = [
     "-i",
-    options.key ?? remoteCliKey,
+    key,
     "-o",
     "IdentitiesOnly=yes",
     "-o",
@@ -73,7 +78,7 @@ export function sshArgs(command, options = {}) {
     "ConnectTimeout=10",
   ]
   if (options.tty) args.push("-tt")
-  args.push(options.host ?? remoteCliHost, command)
+  args.push(host, command)
   return args
 }
 

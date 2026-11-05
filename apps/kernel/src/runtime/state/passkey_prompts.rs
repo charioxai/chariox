@@ -18,6 +18,8 @@ use crate::local::{
 use crate::session::{RuntimeInteraction, RuntimeInteractionChoice, RuntimeSession};
 
 pub(crate) const PASSKEY_ALREADY_ANSWERED: &str = "PASSKEY_ALREADY_ANSWERED";
+/// The kernel error code of an answer to a decision that is no longer pending.
+pub(crate) const INTERACTION_CLOSED: &str = "interaction_closed";
 /// Recent definitive outcomes, including answers needed by late replies.
 const CLOSURE_MEMORY: usize = 64;
 
@@ -144,6 +146,36 @@ pub(super) fn passkey_prompt_for_scope(
     })))
 }
 
+/// The popup for an outside agent's Vault value request: the approve choice is the secret
+/// the owner types, the refuse choice cancels.
+pub(super) fn vault_secret_prompt(
+    scope: &str,
+    interaction: &RuntimeInteraction,
+    registered_at_ms: u64,
+) -> Arc<PasskeyPrompt> {
+    Arc::new(PasskeyPrompt {
+        sudo_request: None,
+        requester: None,
+        kind: PasskeyPromptKind::VaultSecret,
+        session_id: scope.to_owned(),
+        session_alias: None,
+        interaction_id: interaction.id().to_owned(),
+        title: interaction
+            .title()
+            .unwrap_or("Value for the Vault")
+            .to_owned(),
+        message: interaction.message().to_owned(),
+        approve_choice_id: "secret".to_owned(),
+        refuse_choice_id: "cancel".to_owned(),
+        requested_at_ms: interaction.requested_at_ms(),
+        expires_at_ms: registered_at_ms
+            .saturating_add(interaction.timeout_sec().unwrap_or_default() * 1000),
+        term: None,
+        lifetime_minutes: None,
+        max_lifetime_minutes: None,
+    })
+}
+
 impl KernelRuntimeOwnedState {
     fn passkey_prompts_for(&self, user_id: &str) -> Vec<PasskeyPrompt> {
         let _mutation = self
@@ -212,7 +244,8 @@ impl KernelRuntimeOwnedState {
     }
 
     /// The refusal for an answer to a decision that is no longer pending:
-    /// "already answered" when a terminal answered it.
+    /// "already answered" when a terminal answered a passkey prompt, otherwise
+    /// the stable `interaction_closed`.
     pub(super) fn closed_interaction_error(
         &self,
         session_id: &str,
@@ -224,17 +257,22 @@ impl KernelRuntimeOwnedState {
             .write()
             .get(interaction_id)
             .is_some_and(|pending| pending.session_id == session_id);
-        if !pending
-            && self
-                .passkey_prompts
-                .was_answered(session_id, interaction_id)
+        if pending {
+            return error;
+        }
+        if self
+            .passkey_prompts
+            .was_answered(session_id, interaction_id)
         {
             return super::critical_approval_passkey::passkey_error(
                 PASSKEY_ALREADY_ANSWERED,
                 "already answered",
             );
         }
-        error
+        DaemonError::LocalTransport {
+            operation: INTERACTION_CLOSED,
+            message: "someone else answered or it expired".into(),
+        }
     }
 }
 

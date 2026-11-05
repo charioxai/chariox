@@ -185,7 +185,10 @@ impl KernelRuntimeState {
                 agent_id,
             });
         }
-        if agent.owner_user_id() != caller_user_id {
+        if !self
+            .owned
+            .acts_for_owner(&request.session_id, caller_user_id, agent.owner_user_id())
+        {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: caller_user_id.to_string(),
                 owner_user_id: agent.owner_user_id().to_string(),
@@ -257,7 +260,7 @@ impl KernelRuntimeState {
                                 agent_id,
                             });
                         }
-                        if agent.owner_user_id() != caller_user_id {
+                        if !state.acts_for_owner(&session_id, &caller_user_id, agent.owner_user_id()) {
                             return Err(DaemonError::OwnershipAccessDenied {
                                 user_id: caller_user_id,
                                 owner_user_id: agent.owner_user_id().to_string(),
@@ -467,7 +470,11 @@ impl KernelRuntimeState {
             .launch_provider_request_from_local_request(request.clone());
         {
             let owned = &self.owned;
-            if launch_request.owner_user_id != caller_user_id {
+            if !owned.acts_for_owner(
+                &launch_request.session_id,
+                &caller_user_id,
+                &launch_request.owner_user_id,
+            ) {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id,
                     owner_user_id: launch_request.owner_user_id.clone(),
@@ -618,22 +625,6 @@ impl KernelRuntimeState {
             match result {
                 Ok(run) => {
                     if let Some(agent_id) = run.agent_instance_id() {
-                        match owned.advance_next_queued_prompt_dispatch(
-                            run.session_id(),
-                            agent_id,
-                            run.id(),
-                        ) {
-                            Ok(Some(dispatch)) => {
-                                if let Err(error) = self.enqueue_prompt_dispatch(&dispatch).await {
-                                    let _ = self.fail_prompt_dispatch(dispatch, error).await;
-                                }
-                            }
-                            Ok(None) => {}
-                            Err(error) => {
-                                self.fail_provider_launch_in_lane(started, &error).await;
-                                return;
-                            }
-                        }
                         match owned.retry_pending_metaagent_event_prompts_for_provider_run(&run) {
                             Ok(dispatches) => {
                                 retry_metaagent_event_dispatches = dispatches;
@@ -643,6 +634,12 @@ impl KernelRuntimeState {
                                 return;
                             }
                         }
+                        // The queue promoter owns preparation as well as activation.
+                        // A readiness wake must not consume its head against the old run
+                        // while it is preparing a fresh workflow provider context.
+                        retry_metaagent_event_dispatches
+                            .project_queue_promotions
+                            .push((run.session_id().to_string(), agent_id.to_string()));
                         let _ = owned.session_snapshot(run.session_id());
                     }
                 }

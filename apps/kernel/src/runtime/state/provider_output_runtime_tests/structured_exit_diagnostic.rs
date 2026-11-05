@@ -178,15 +178,15 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
     assert!(!failed.failed_requests()[0].reason.contains(SYNTHETIC_TOKEN));
     let terminal_error = String::from_utf8_lossy(&terminal_errors[0].bytes);
     assert!(
-        terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        !terminal_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
         "{terminal_error}"
     );
     assert!(
-        terminal_error.contains("api_key[redacted]"),
+        !terminal_error.contains("api_key[redacted]"),
         "{terminal_error}"
     );
     assert!(
-        terminal_error.contains("token[redacted]"),
+        !terminal_error.contains("token[redacted]"),
         "{terminal_error}"
     );
     assert!(
@@ -226,15 +226,15 @@ async fn managed_structured_codex_exit_preserves_redacted_diagnostic_without_rep
         .as_deref()
         .expect("provider error history should have content");
     assert!(
-        provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
+        !provider_error.contains(SAFE_DIAGNOSTIC_CONTEXT),
         "{provider_error}"
     );
     assert!(
-        provider_error.contains("api_key[redacted]"),
+        !provider_error.contains("api_key[redacted]"),
         "{provider_error}"
     );
     assert!(
-        provider_error.contains("token[redacted]"),
+        !provider_error.contains("token[redacted]"),
         "{provider_error}"
     );
     assert!(

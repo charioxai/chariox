@@ -18,6 +18,7 @@ mod native_provider;
 mod profile_update;
 mod project_environment;
 mod projection;
+mod projection_delivery;
 mod prompt_attachments;
 mod prompt_lifecycle;
 mod provider_account;
@@ -27,6 +28,8 @@ mod relay_context;
 mod skill_sync;
 mod turn_capacity;
 
+pub(crate) use projection::RemoteCompletionHarvest;
+pub(crate) use projection_delivery::{DrainedLeasedProjection, LeasedProjectionDelivery};
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 pub(crate) use turn_capacity::LeasedTurnWaitingForCapacity;
 
@@ -732,6 +735,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(caller) = caller.as_ref() {
             self.retain_leased_agent_caller(&agent.id, caller)?;
         }
+        // The hidden backing session stays out of lists but is a real session: health checks
+        // the backing agent against the session projection.
+        crate::app::KernelSessionReadService::new(&*self.app).session_snapshot(session.id())?;
         Ok(agent)
     }
 
@@ -909,6 +915,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         self.app.leased_agent_cleanup_phases.remove(leased_agent_id);
         self.app.leased_agents.remove(leased_agent_id);
+        self.app
+            .leased_projection_deliveries
+            .remove(leased_agent_id);
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);

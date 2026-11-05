@@ -4,8 +4,8 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::{
-    create_scaffold, generate_manifest, inspect_archive, keygen, pack_directory, read_manifest,
-    read_publisher, validate_archive, write_manifest, ManifestOptions,
+    create_scaffold, inspect_archive, keygen, pack_directory, read_manifest, read_publisher,
+    validate_archive, ManifestOptions,
 };
 use crate::{ErrorCode, Limits, NetworkDestination, PackageError, Result};
 
@@ -190,8 +190,11 @@ pub fn run_cli(args: &[String]) -> Result<Value> {
                     methods,
                 });
             }
-            let manifest = generate_manifest(options, &limits)?;
-            write_manifest(Path::new(args.required("--output")?), &manifest, &limits)?;
+            let manifest = super::v2::generate_manifest(options, &limits)?;
+            super::fs::write_new(
+                Path::new(args.required("--output")?),
+                &crate::json::canonical(&manifest)?,
+            )?;
             Ok(
                 json!({"status":"manifest-created","manifest":manifest,"output":args.required("--output")?}),
             )

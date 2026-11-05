@@ -3,23 +3,23 @@ import test from "node:test"
 
 import {
   DATA_ROOT,
-  HETZNER_BYTES_PER_GB,
+  BYTES_PER_GIB,
   admitDataVolume,
   expectedVolumeBytes,
-  selectHetznerVolumeDevice,
+  selectDataVolumeDevice,
 } from "./chariox-data-volume-admission.mjs"
 
 const SERIAL = "12345"
 const UUID = "12345678-1234-1234-1234-123456789abc"
 
-function makeDevices({ sizeBytes = 10 * HETZNER_BYTES_PER_GB, filesystem = "", uuid = "", mounted = false, partitionedVolume = false } = {}) {
+function makeDevices({ sizeBytes = 10 * BYTES_PER_GIB, filesystem = "", uuid = "", mounted = false, partitionedVolume = false } = {}) {
   return [
     {
       path: "/dev/vda",
       type: "disk",
       model: "System disk",
-      size: 80 * HETZNER_BYTES_PER_GB,
-      children: [{ path: "/dev/vda1", type: "part", pkname: "vda", size: 80 * HETZNER_BYTES_PER_GB }],
+      size: 80 * BYTES_PER_GIB,
+      children: [{ path: "/dev/vda1", type: "part", pkname: "vda", size: 80 * BYTES_PER_GIB }],
     },
     {
       path: "/dev/sdb",
@@ -41,7 +41,7 @@ function makeDevices({ sizeBytes = 10 * HETZNER_BYTES_PER_GB, filesystem = "", u
 
 function fakeAdmission({
   initialFilesystem = "",
-  sizeBytes = 10 * HETZNER_BYTES_PER_GB,
+  sizeBytes = 10 * BYTES_PER_GIB,
   blockdevSizeBytes = sizeBytes,
   busyDevice = false,
   busyFilesystem = false,
@@ -138,33 +138,39 @@ function fakeAdmission({
   }
 }
 
-test("Hetzner API GB maps to exact binary block bytes", () => {
+test("Provider GB maps to exact binary block bytes", () => {
   assert.equal(expectedVolumeBytes(10), 10 * 1024 ** 3)
-  assert.throws(() => expectedVolumeBytes(9), /supported integer-GB range/)
+  assert.throws(() => expectedVolumeBytes(0), /supported integer-GB range/)
   assert.throws(() => expectedVolumeBytes(Number.MAX_SAFE_INTEGER), /supported integer-GB range/)
 })
 
-test("selects one matching whole Hetzner Volume disk apart from the root disk", () => {
-  const device = selectHetznerVolumeDevice(makeDevices(), SERIAL, "/dev/vda1")
+test("selects one matching whole data volume disk apart from the root disk", () => {
+  const device = selectDataVolumeDevice(makeDevices(), SERIAL, "/dev/vda1")
   assert.equal(device.path, "/dev/sdb")
   assert.equal(device.serial, SERIAL)
-  assert.equal(device.sizeBytes, 10 * HETZNER_BYTES_PER_GB)
+  assert.equal(device.sizeBytes, 10 * BYTES_PER_GIB)
+})
+
+test("selects a data volume whatever model name the platform reports", () => {
+  const devices = makeDevices()
+  devices[1].model = "NVMe Data Disk"
+  assert.equal(selectDataVolumeDevice(devices, SERIAL, "/dev/vda1").path, "/dev/sdb")
 })
 
 test("rejects duplicate volumes, partitions, mounts, and the root disk", () => {
   const devices = makeDevices()
   assert.throws(
-    () => selectHetznerVolumeDevice([...devices, { ...devices[1], path: "/dev/sdc", serial: "54321" }], SERIAL, "/dev/vda1"),
-    /exactly one Hetzner Volume disk/,
+    () => selectDataVolumeDevice([...devices, { ...devices[1], path: "/dev/sdc", serial: "54321" }], SERIAL, "/dev/vda1"),
+    /exactly one data volume disk/,
   )
   const partitioned = makeDevices()
   partitioned[1].children = [{ path: "/dev/sdb1", type: "part", pkname: "sdb" }]
-  assert.throws(() => selectHetznerVolumeDevice(partitioned, SERIAL, "/dev/vda1"), /partitions or child devices/)
+  assert.throws(() => selectDataVolumeDevice(partitioned, SERIAL, "/dev/vda1"), /partitions or child devices/)
   assert.throws(
-    () => selectHetznerVolumeDevice(makeDevices({ mounted: true }), SERIAL, "/dev/vda1"),
+    () => selectDataVolumeDevice(makeDevices({ mounted: true }), SERIAL, "/dev/vda1"),
     /already mounted/,
   )
-  assert.throws(() => selectHetznerVolumeDevice(makeDevices(), SERIAL, "/dev/sdb"), /root filesystem disk/)
+  assert.throws(() => selectDataVolumeDevice(makeDevices(), SERIAL, "/dev/sdb"), /root filesystem disk/)
 })
 
 test("production lsblk tree output with a data-volume partition fails before formatting", () => {
@@ -220,11 +226,11 @@ test("fresh matching blank volume is formatted once, bound, mounted, and quota-v
 })
 
 test("capacity mismatch and stale unbound signatures fail before formatting", () => {
-  const wrongSize = fakeAdmission({ sizeBytes: 10 * HETZNER_BYTES_PER_GB + 1 })
+  const wrongSize = fakeAdmission({ sizeBytes: 10 * BYTES_PER_GIB + 1 })
   assert.throws(() => admitDataVolume(wrongSize), /block capacity mismatch/)
   assert.equal(wrongSize.calls.some(([command]) => command === "/usr/sbin/mkfs.xfs"), false)
 
-  const inconsistent = fakeAdmission({ blockdevSizeBytes: 10 * HETZNER_BYTES_PER_GB - 1 })
+  const inconsistent = fakeAdmission({ blockdevSizeBytes: 10 * BYTES_PER_GIB - 1 })
   assert.throws(() => admitDataVolume(inconsistent), /lsblk and blockdev disagree/)
   assert.equal(inconsistent.calls.some(([command]) => command === "/usr/sbin/mkfs.xfs"), false)
 

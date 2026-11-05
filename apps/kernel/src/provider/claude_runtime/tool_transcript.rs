@@ -47,7 +47,7 @@ fn append_result(output: &mut String, text: &str) -> bool {
 }
 
 /// The result's PNG, JPEG, GIF and WebP blocks as data URLs, for the transcript to draw, and how many of those were too large or past the limit; other blocks are left out.
-fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, usize) {
+pub(crate) fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, usize) {
     let Some(Value::Array(items)) = content else {
         return (Vec::new(), 0);
     };
@@ -84,7 +84,7 @@ fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, usize) {
     (images, omitted)
 }
 
-fn bounded_result(content: Option<&Value>) -> String {
+pub(crate) fn bounded_result(content: Option<&Value>) -> String {
     let mut output = String::new();
     let truncated = match content {
         Some(Value::String(text)) => append_result(&mut output, text),
@@ -121,7 +121,8 @@ fn bounded_result(content: Option<&Value>) -> String {
     output
 }
 
-#[derive(Default)]
+// A hot reload hands a turn's pending tool calls to the next kernel program.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct ClaudeToolTranscript {
     pending: BTreeMap<String, PendingTool>,
     pending_bytes: usize,
@@ -130,6 +131,7 @@ pub(super) struct ClaudeToolTranscript {
     unsupported_results: Vec<Value>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingTool {
     name: String,
     // Retain bounded encoded input, not an expanded JSON tree per pending call.

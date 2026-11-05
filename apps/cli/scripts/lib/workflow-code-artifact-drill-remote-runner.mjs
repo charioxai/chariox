@@ -33,7 +33,7 @@ export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 const sha256Hex = (value) => createHash('sha256').update(value).digest('hex')
 
 export function stage(message) {
-  console.error('[workflow-code-hetzner] ' + message)
+  console.error('[workflow-code-remote-kernel] ' + message)
 }
 
 export function expectationFromDefinition(definition) {
@@ -83,7 +83,7 @@ export async function waitForKernel(client, requests, workspace, worktree, timeo
     try {
       const session = unwrap(
         await withTimeout(
-          client.send(requests.createSessionRequest(workspace, worktree, 'workflow-code-hetzner-ready-probe', undefined, null, 'off')),
+          client.send(requests.createSessionRequest(workspace, worktree, 'workflow-code-remote-kernel-ready-probe', undefined, null, 'off')),
           3_000,
           'kernel readiness request timed out',
         ),
@@ -119,7 +119,7 @@ export async function send(client, request, label, timeoutMs = 30_000) {
 export async function startKernel(repo, bundle, timeoutMs, LocalIpcClient, requests) {
   stage('starting isolated kernel')
   const port = 52000 + Math.floor(Math.random() * 1000)
-  const runId = 'workflow-code-hetzner-second-kernel-' + process.pid + '-' + Date.now()
+  const runId = 'workflow-code-remote-kernel-second-kernel-' + process.pid + '-' + Date.now()
   const root = path.join(bundle, 'remote-kernel-root')
   const workspace = path.join(bundle, 'workspace')
   const worktree = path.join(bundle, 'worktree')
@@ -170,7 +170,7 @@ export function printKernelLogTail(kernel) {
     try {
       const contents = readFileSync(filePath, 'utf8')
       if (contents.trim()) {
-        console.error('[workflow-code-hetzner] kernel ' + label + ' tail:')
+        console.error('[workflow-code-remote-kernel] kernel ' + label + ' tail:')
         console.error(contents.slice(-8000))
       }
     } catch {
@@ -344,7 +344,7 @@ export async function completeAppliedTopologyWorkflow(client, requests, sessionI
   const invokeResponse = unwrap(
     await send(
       client,
-      requests.invokeWorkflowEndpointRequest(sessionId, apply.workflow_id, endpointId, 'Run ' + exampleName + ' Hetzner topology validation.'),
+      requests.invokeWorkflowEndpointRequest(sessionId, apply.workflow_id, endpointId, 'Run ' + exampleName + ' remote kernel topology validation.'),
       'invoke topology workflow ' + exampleName,
       30_000,
     ),
@@ -404,7 +404,7 @@ export async function main() {
     const session = unwrap(
       await send(
         kernel.client,
-        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-hetzner-second-kernel', undefined, null, 'off'),
+        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-remote-kernel-second-kernel', undefined, null, 'off'),
         'create validation session',
       ),
       'SessionCreated',
@@ -417,10 +417,10 @@ export async function main() {
       await send(kernel.client, requests.installSkillRequest(kernel.workspace, skillSourceDir), 'install bundled drill skill'),
       'SkillInstalled',
     )
-    assert(skillInstall?.skill?.name === metadata.skillName, 'Hetzner kernel should install workflow-code drill skill', skillInstall)
+    assert(skillInstall?.skill?.name === metadata.skillName, 'remote kernel kernel should install workflow-code drill skill', skillInstall)
     installedSkill = true
     const nodePath = process.execPath
-    const importedName = 'hetzner-package-' + Date.now()
+    const importedName = 'remote-kernel-package-' + Date.now()
     const imported = unwrap(
       await send(
         kernel.client,
@@ -430,7 +430,7 @@ export async function main() {
       ),
       'WorkflowCodePackageImported',
     ).artifact
-    assert(imported?.metadata?.validation?.ok, 'Hetzner package import should validate', imported?.metadata?.validation)
+    assert(imported?.metadata?.validation?.ok, 'remote kernel package import should validate', imported?.metadata?.validation)
     const packageExpected = expectationFromDefinition(packageExport.definition)
     const packageRebindings = rebindingsForDefinition(packageExport.definition)
     const packageApplyResponse = unwrap(
@@ -441,25 +441,25 @@ export async function main() {
       ),
       'WorkflowCodeApplied',
     )
-    const packageApply = validateApplyResult(packageApplyResponse.result, 'Hetzner package', packageExpected)
-    validateSessionProjection(packageApplyResponse.session, packageApply, 'Hetzner package')
+    const packageApply = validateApplyResult(packageApplyResponse.result, 'remote kernel package', packageExpected)
+    validateSessionProjection(packageApplyResponse.session, packageApply, 'remote kernel package')
     const packageRun = unwrap(
       await send(
         kernel.client,
-        requests.runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the Hetzner package workflow.', { endpoint: 'entry', providerRebindings: packageRebindings }),
+        requests.runWorkflowCodeArtifactRequest(session.id, importedName, 'Run the remote kernel package workflow.', { endpoint: 'entry', providerRebindings: packageRebindings }),
         'run workflow-code package',
         60_000,
       ),
       'WorkflowCodeRun',
     )
-    const packageRunApply = validateApplyResult(packageRun.result.apply, 'Hetzner package run', packageExpected)
-    validateSessionProjection(packageRun.session, packageRunApply, 'Hetzner package run')
-    assert(packageApply.workflow_id !== metadata.sourceWorkflowId, 'Hetzner package workflow id must be fresh', { packageApply, metadata })
-    assert(packageRunApply.workflow_id !== metadata.sourceWorkflowId, 'Hetzner package run workflow id must be fresh', { packageRunApply, metadata })
+    const packageRunApply = validateApplyResult(packageRun.result.apply, 'remote kernel package run', packageExpected)
+    validateSessionProjection(packageRun.session, packageRunApply, 'remote kernel package run')
+    assert(packageApply.workflow_id !== metadata.sourceWorkflowId, 'remote kernel package workflow id must be fresh', { packageApply, metadata })
+    assert(packageRunApply.workflow_id !== metadata.sourceWorkflowId, 'remote kernel package run workflow id must be fresh', { packageRunApply, metadata })
 
-    const inline = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, inlineSource, 'Hetzner inline source')
-    await writeSourceDirectoryExport(kernel.workspace, directorySource, 'Hetzner source directory')
-    const directory = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, directorySource, 'Hetzner source directory')
+    const inline = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, inlineSource, 'remote kernel inline source')
+    await writeSourceDirectoryExport(kernel.workspace, directorySource, 'remote kernel source directory')
+    const directory = await validateSourceExportOnKernel(kernel.client, requests, session, nodePath, directorySource, 'remote kernel source directory')
     await send(kernel.client, requests.endSessionRequest(session.id), 'end package/source validation session', 10_000)
     const endedSessionIndex = sessionIds.indexOf(session.id)
     if (endedSessionIndex !== -1) {
@@ -468,7 +468,7 @@ export async function main() {
     const topologySession = unwrap(
       await send(
         kernel.client,
-        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-hetzner-topology-suite', undefined, null, 'off'),
+        requests.createSessionRequest(kernel.workspace, kernel.worktree, 'workflow-code-remote-kernel-topology-suite', undefined, null, 'off'),
         'create topology validation session',
       ),
       'SessionCreated',
@@ -484,7 +484,7 @@ export async function main() {
         kernel.workspace,
         { ...liveExport.inlineSource, source_workflow_id: liveExport.sourceWorkflowId },
         liveExport.exampleName,
-        'Hetzner ' + liveExport.exampleName + ' live inline source',
+        'remote kernel ' + liveExport.exampleName + ' live inline source',
         options.timeoutMs,
       )
       const directoryTopology = await validateTopologySourceExportOnKernel(
@@ -495,7 +495,7 @@ export async function main() {
         kernel.workspace,
         { ...liveExport.directorySource, source_workflow_id: liveExport.sourceWorkflowId },
         liveExport.exampleName,
-        'Hetzner ' + liveExport.exampleName + ' live source directory',
+        'remote kernel ' + liveExport.exampleName + ' live source directory',
         options.timeoutMs,
       )
       topologySourceRuns.push({

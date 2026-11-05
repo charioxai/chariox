@@ -99,7 +99,10 @@ pub(crate) async fn execute_create_session_invite_request(
         .expires_in_ms
         .map(|expires_in_ms| now_ms.saturating_add(expires_in_ms));
     let invite_id = random_hex_id();
-    let created_by_user_id = command_caller_user_id(command);
+    // The invite is created by the room member the caller is: members keep the identity the
+    // room stores for them.
+    let created_by_user_id =
+        runtime_state.room_member_user_id(&request.session_id, &command_caller_user_id(command));
     let (session, invite) = runtime_state.create_session_invite(
         &request.session_id,
         invite_id,

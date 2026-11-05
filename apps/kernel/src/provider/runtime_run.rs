@@ -307,6 +307,20 @@ impl RuntimeProviderRun {
     pub fn agent_instance_id(&self) -> Option<&str> {
         self.agent_instance_id.as_deref()
     }
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) -> Result<(), DaemonError> {
+        if self.owner_user_id != crate::session::DEFAULT_LOCAL_USER_ID {
+            return Err(DaemonError::InvalidConfig {
+                field: "provider account authority",
+                message: "only a local run can follow Cloud enrollment",
+            });
+        }
+        if let Some(account) = self.resolved_provider_account.as_mut() {
+            account.enroll_local_runtime_owner(owner)?;
+        }
+        self.owner_user_id = owner.into();
+        Ok(())
+    }
+
     pub fn owner_user_id(&self) -> &str {
         &self.owner_user_id
     }
@@ -498,6 +512,9 @@ impl RuntimeProviderRun {
     ) {
         self.execution_mode = execution_mode;
         self.permission_level = permission_level;
+        if self.adapter_key == "claude" {
+            super::claude::apply_claude_root_yolo_environment(&mut self.pty_env, permission_level);
+        }
         self.touch_activity();
     }
 
@@ -511,6 +528,12 @@ impl RuntimeProviderRun {
 
     pub(crate) fn metadata_only_discovery(&self) -> bool {
         self.metadata_only_discovery
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_working_directory_for_test(mut self, directory: PathBuf) -> Self {
+        self.working_directory = Some(directory);
+        self
     }
 
     /// MP-08: Ephemeral utility clone only; never persist or mutate the ordinary run.
@@ -954,6 +977,43 @@ mod tests {
         run.clear_terminal_diagnostic();
 
         assert!(run.terminal_diagnostic().is_none());
+    }
+
+    #[test]
+    fn execution_config_keeps_root_yolo_environment_claude_specific() {
+        for adapter in ["claude", "codex", "opencode"] {
+            let request =
+                LaunchProviderRequest::new("session-1", adapter, adapter, "default", "default");
+            let launch = ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::External,
+                process_label: adapter.into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: None,
+            };
+            let mut run = RuntimeProviderRun::new("run-1", &request, launch);
+            run.set_execution_config(
+                super::AgentExecutionMode::Build,
+                super::AgentPermissionLevel::Yolo,
+            );
+            #[cfg(unix)]
+            let root_claude = adapter == "claude" && unsafe { libc::geteuid() } == 0;
+            #[cfg(not(unix))]
+            let root_claude = false;
+            assert_eq!(
+                run.pty_env().get("IS_SANDBOX").map(String::as_str),
+                root_claude.then_some("1")
+            );
+            run.set_execution_config(
+                super::AgentExecutionMode::Build,
+                super::AgentPermissionLevel::Required,
+            );
+            assert!(!run.pty_env().contains_key("IS_SANDBOX"));
+        }
     }
 
     #[test]

@@ -491,7 +491,7 @@ mod workspace_live_sync_tests {
         assert!(specs
             .iter()
             .any(|spec| spec.name == PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS));
-        // MP-08/MP-10/MP-11 A06: generation is sudo-only (`chariox.vault.generate`).
+        // MP-08/MP-10/MP-11 A06: generation uses the ordinary dedicated `chariox.vault.generate` tool.
         assert!(!specs
             .iter()
             .any(|spec| spec.name.contains("generated_credential")));

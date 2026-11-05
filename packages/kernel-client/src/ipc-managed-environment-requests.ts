@@ -209,7 +209,7 @@ export type ManagedEnvironmentReimagePreflight = {
     readonly runtimeReleaseDigest: string
   }
   readonly desiredRelease: {
-    readonly providerId: "hetzner"
+    readonly providerId: string
     readonly providerImageId: string
     readonly providerProfileId: string
     readonly providerProfileDigest: string

@@ -163,27 +163,6 @@
       "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
     },
     {
-      "path": "packages/app-runtime/src/worker_process/storage_linux/formatter.rs",
-      "kind": "rust-group",
-      "text": "libc::kill(-self.pid, libc::SIGKILL);",
-      "count": 1,
-      "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
-    },
-    {
-      "path": "packages/app-runtime/src/worker_process/storage_macos/commands.rs",
-      "kind": "rust-group",
-      "text": "libc::kill(-self.pid, libc::SIGKILL);",
-      "count": 1,
-      "reason": "MP-11 reviewed (mp11a signal-guards): the worker is a posix_spawn SETSID child that is still unreaped (WNOWAIT) when its group is signalled, so the PID cannot be reused."
-    },
-    {
-      "path": "packages/app-runtime/src/worker_process/storage_macos/tests/hosted.rs",
-      "kind": "rust-group",
-      "text": "libc::kill(-(child.id() as i32), libc::SIGKILL);",
-      "count": 1,
-      "reason": "MP-11 test-only cleanup of the fixture's own unreaped child group."
-    },
-    {
       "path": "apps/kernel/src/slice/local_docker/home_archive_capture.rs",
       "kind": "rust-group",
       "text": "libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);",

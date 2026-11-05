@@ -19,7 +19,7 @@ pub(super) struct FailingTurn {
     pub(super) agent_id: String,
     pub(super) failed_run_id: String,
     pub(super) prompt_id: String,
-    worktree: std::path::PathBuf,
+    pub(super) worktree: std::path::PathBuf,
 }
 
 impl Drop for FailingTurn {
@@ -42,6 +42,21 @@ impl FailingTurn {
             .active_prompt_for_agent(&session, &self.agent_id)
     }
 
+    /// The failed run works in the test's worktree, as a provider run does.
+    pub(super) async fn run_in_worktree(&self) {
+        let run = self
+            .live_run()
+            .expect("the failing run is live")
+            .with_working_directory_for_test(self.worktree.clone());
+        self.runtime
+            .with_app_side_effect(move |app| {
+                app.providers_mut().insert_run_for_test(run);
+                Ok::<_, crate::error::DaemonError>(())
+            })
+            .await
+            .unwrap();
+    }
+
     fn live_run(&self) -> Option<crate::provider::RuntimeProviderRun> {
         self.runtime
             .owned
@@ -59,7 +74,7 @@ impl FailingTurn {
             .collect()
     }
 
-    fn rerun_notices(&self) -> Vec<String> {
+    pub(super) fn rerun_notices(&self) -> Vec<String> {
         self.notices()
             .into_iter()
             .filter(|notice| notice.starts_with("This turn runs on "))
@@ -349,7 +364,7 @@ async fn codex_server_overloaded_reruns_the_turn_on_the_first_substitute() {
         turn.rerun_notices(),
         vec![format!(
             "This turn runs on {SUBSTITUTE_A} because {PRIMARY_MODEL} failed: \
-             model at capacity (server_overloaded)."
+             The provider is at capacity."
         )]
     );
     let failure_outputs = turn
@@ -409,7 +424,7 @@ async fn a_failing_substitute_hands_the_same_turn_to_the_next_one() {
         Some(
             format!(
                 "This turn runs on {SUBSTITUTE_B} because {SUBSTITUTE_A} failed: \
-                 OpenCode error: upstream request failed."
+                 The provider could not complete this request."
             )
             .as_str()
         )
@@ -429,7 +444,7 @@ async fn an_exhausted_chain_fails_the_turn_visibly() {
     assert!(turn.live_run().is_none());
     assert!(turn.notices().contains(&format!(
         "No substitute is left for this turn: {SUBSTITUTE_A} failed: \
-         You have exceeded your usage limit."
+         The provider's usage limit was reached."
     )));
     let agent = turn
         .runtime
@@ -1148,7 +1163,7 @@ async fn substitute_notices_never_carry_provider_credentials() {
             .iter()
             .filter(|notice| notice.starts_with("This turn runs on ")
                 || notice.starts_with("No substitute is left"))
-            .all(|notice| notice.contains("upstream failed · retry later")),
+            .all(|notice| notice.contains("The provider could not complete this request")),
         "the notices stay readable: {notices:?}"
     );
 }

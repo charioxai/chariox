@@ -4,6 +4,11 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         return Some(crate::provider_account_copy::failure_message(code));
     }
     Some(match code {
+        "control_plane_grant_required" => "Use the owner's Chariox access grant for machine requests",
+        "control_plane_unavailable" => "This kernel has no connected machine service",
+        "control_plane_authorization_denied" => "Reconnect the owner's signed-in client and refresh machine capabilities",
+        "control_plane_binding_invalid" => "The connected service returned an invalid machine binding",
+
         "provider_profile_unverified" => "provider profile has not been verified; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel, then retry the prompt",
         "provider_profile_unauthenticated" => "provider profile is not authenticated; run RefreshProviderAccountProfile {provider, account_profile} on the executing kernel. If it remains unauthenticated, reconnect it in Provider Accounts before retrying",
         "provider_profile_usage_exhausted" => "provider profile usage is exhausted; run RefreshProviderAccountProfile {provider, account_profile} to refresh usage, or select another account before starting work",
@@ -19,6 +24,13 @@ pub(crate) fn message(code: &str) -> Option<&'static str> {
         "prompt_steer_rejected" => "active prompt changed or did not accept steering; run GetSessionState {session_id} and steer only with the expected current prompt id. Do not submit a replacement prompt automatically",
         "prompt_steer_event_unrecorded" => "the steer was delivered but its event was not recorded; do not send it again",
         "heartbeat_interval_not_routable" => "a subscription routed to another kernel uses that kernel's heartbeat interval; leave heartbeat_interval_ms out of the subscribe frame",
+        "secret_link_unavailable" => "this kernel has no page for secret links; ask the user to answer in a connected Chariox client, or to set secret_link.page_url",
+        "vault_locked" => "the user's Vault is locked; ask them to unlock it in a Chariox client, then ask again",
+        "secret_request_exists" => "this id already has a credential or a stored value; ask again with overwrite true (--overwrite) to replace the value, or choose another id",
+        "secret_request_invalid" => "the credential id is letters, digits, - and _ separated by dots, the label is one line of 1 to 80 characters, and the key needs the API host(s) that may receive it, for example `--host api.example.com` (an existing handle keeps the hosts it has)",
+        "secret_request_denied" => "the user's settings do not let agents create Vault credentials on this kernel",
+        "secret_request_unknown" => "this agent has no such secret request; use the interaction_id that chariox secret request printed",
+        "too_many_open_files" => "too many open files in this kernel; close a terminal and try again",
         "agent_deadline_reached" => "agent deadline reached; this agent cannot start another turn. Start a new agent for new work",
         "agent_deadline_requires_executor" => "arm an agent deadline on its executing kernel; an agent with a deadline cannot move to a leased worker without worker enforcement",
         "agent_deadline_extension_refused" => "an agent deadline cannot be extended; start a new agent for new work",

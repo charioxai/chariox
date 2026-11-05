@@ -47,7 +47,17 @@ impl RuntimeSession {
             return Ok((true, false));
         }
         let Some(creator) = run.created_by_agent_id() else {
-            return Ok((invoker.as_deref() == Some(user_id), false));
+            let owned = invoker.as_deref().is_some_and(|invoker| {
+                history.is_some_and(|store| {
+                    store.workflow_invoker_matches(
+                        self.host_daemon_id(),
+                        self.owner_user_id(),
+                        user_id,
+                        invoker,
+                    )
+                })
+            });
+            return Ok((owned, false));
         };
         for id in std::iter::once(creator)
             .chain(run.node_runs().iter().map(|node| node.agent_id()))

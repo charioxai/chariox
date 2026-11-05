@@ -188,8 +188,7 @@ const IGNORED_PATH_PARTS = [
 ];
 
 const PRODUCTION_PATH_PREFIXES = [
-  "apps/app-worker/",
-  "apps/app-storage-helper/",
+  "packages/app-wasm-worker/",
   "adapters/",
   "apps/cli/",
   "apps/ios/",

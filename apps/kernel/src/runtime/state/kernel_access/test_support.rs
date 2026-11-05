@@ -2,6 +2,7 @@ use super::*;
 
 mod approval;
 mod capability_room_authority;
+mod choice_events;
 mod control_authority;
 mod cover;
 mod credential_authority;
@@ -13,6 +14,7 @@ mod meta_authority;
 mod native_launch_authority;
 mod pressure;
 mod session_authority;
+mod standing;
 pub(in crate::runtime::state) mod worker_spy;
 mod workflow_authority;
 
@@ -45,6 +47,71 @@ impl KernelRuntimeState {
         id
     }
 
+    /// One open choice for `agent_id`, watched by a fresh grant; returns the grant.
+    pub(crate) fn open_watched_decision_for_test(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        interaction_id: &str,
+    ) -> String {
+        use crate::session::{
+            RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+            RuntimeInteractionLevel,
+        };
+        let grant = self.insert_access_grant_for_test(session_id);
+        self.subscribe_outside_part(
+            &grant,
+            true,
+            vec![EventTarget {
+                kernel: self.owned.config_projection.snapshot().daemon_id,
+                session_id: session_id.into(),
+                agent_id: Some(agent_id.into()),
+            }],
+        )
+        .unwrap();
+        let interaction = RuntimeInteraction::new(
+            interaction_id,
+            agent_id,
+            RuntimeInteractionKind::Choice,
+            RuntimeInteractionLevel::Info,
+            Some("Which colour?".to_string()),
+            "Pick one",
+            vec![RuntimeInteractionChoice::new("red", "Red", "red", None)],
+            None,
+            Some(300),
+            Some("red".to_string()),
+        );
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        self.owned
+            .register_runtime_interaction(session_id, interaction, tx, None, None, None)
+            .unwrap();
+        grant
+    }
+
+    /// How the watched decision `interaction_id` was recorded as closed.
+    pub(crate) fn closed_decision_via_for_test(
+        &self,
+        grant: &str,
+        interaction_id: &str,
+    ) -> serde_json::Value {
+        let events = self
+            .outside_store()
+            .outside_list(grant, None, 100)
+            .unwrap()
+            .unwrap()
+            .events;
+        events
+            .into_iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .find(|event| {
+                event["refs"]["interaction_id"] == interaction_id
+                    && event["value"]["state"] == "resolved"
+            })
+            .map_or(serde_json::Value::Null, |event| {
+                event["value"]["resolution"]["via"].clone()
+            })
+    }
+
     pub(crate) fn use_kernel_ancestor_holder_for_test(&self) -> String {
         let (_, parent) = process::inspect(std::process::id()).unwrap();
         let mut state = self.owned.kernel_access.lock().unwrap();
@@ -62,6 +129,117 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn control_access_for_test(&self, action: &str, vault: &std::path::Path) {
+        if let Some(handle) = action.strip_prefix("vault-secret-sha256:") {
+            use sha2::Digest;
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let value = service.vault_secret_for_dictation(handle).unwrap().unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("vault-secret-sha256"),
+                format!("{:x}", sha2::Sha256::digest(value.as_bytes())),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("credential-hosts:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-hosts"),
+                credential.allowed_hosts.join("\n"),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(seed) = action.strip_prefix("seed-credential:") {
+            let (handle, vault_key) = seed.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+            service
+                .upsert_vault_backed_credential_with_secret(
+                    &registry,
+                    crate::config::UserCredentialConfig {
+                        id: handle.into(),
+                        description: Some("Owner key".into()),
+                        source: crate::config::UserCredentialSourceConfig::Vault {
+                            key: vault_key.into(),
+                        },
+                        allowed_hosts: vec!["api.example.com".into()],
+                        allowed_uses: vec![
+                            crate::config::UserCredentialUse::Http,
+                            crate::config::UserCredentialUse::Mcp,
+                        ],
+                        injection: crate::config::UserCredentialInjectionConfig::Header {
+                            name: "x-api-key".into(),
+                            value: "${secret}".into(),
+                        },
+                        metadata: None,
+                    },
+                    "seed-value",
+                    false,
+                )
+                .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("remove-credential-record:") {
+            crate::credential::CharioxCredentialRegistry::user()
+                .unwrap()
+                .remove(handle)
+                .unwrap();
+            return;
+        }
+        if let Some(handle) = action.strip_prefix("credential-record:") {
+            let credential = crate::credential::load_user_credentials()
+                .unwrap()
+                .into_iter()
+                .find(|credential| credential.id == handle)
+                .unwrap();
+            std::fs::write(
+                vault.parent().unwrap().join("credential-record"),
+                serde_json::to_string(&credential).unwrap(),
+            )
+            .unwrap();
+            return;
+        }
+        if let Some(check) = action.strip_prefix("credential-policy:") {
+            let (handle, url) = check.split_once('|').unwrap();
+            let user_config = self.owned.config_projection.snapshot().user_config;
+            let service = crate::secret::RuntimeSecretService::with_vault_config(
+                crate::credential::load_user_credentials().unwrap(),
+                &user_config.credential_vault,
+            )
+            .unwrap();
+            let verdict = match service.prepare_http_request_with_credential(
+                crate::secret::CredentialHttpRequest {
+                    credential_id: handle.into(),
+                    method: "GET".into(),
+                    url: url.into(),
+                    headers: Default::default(),
+                    body_text: None,
+                    body_json: None,
+                    timeout_ms: 1_000,
+                    max_response_bytes: 1_024,
+                },
+            ) {
+                Ok(_) => "ok".to_owned(),
+                Err(DaemonError::LocalTransport { operation, .. }) => operation.to_owned(),
+                Err(other) => other.to_string(),
+            };
+            std::fs::write(vault.parent().unwrap().join("credential-policy"), verdict).unwrap();
+            return;
+        }
         if self.control_credential_access_for_test(action, vault).await {
             return;
         }
@@ -966,4 +1144,118 @@ async fn a_decision_open_before_the_holder_subscribes_is_delivered_on_subscribe(
     state
         .authorize_external_request(&grant, &answer)
         .expect("the holder can answer the decision it was told about");
+}
+
+// MP-08 / MP-11: enrollment changes the caller identity, not grant ownership.
+#[tokio::test]
+async fn enrolled_owner_can_manage_grants_approved_before_login() {
+    let workspace = crate::test_support::TestWorktree::new("enrolled-access-owner");
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let state =
+        crate::runtime::state::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(
+            app,
+        );
+    let id = state.insert_access_grant_for_test(session.id());
+    assert_eq!(state.list_kernel_access("local").len(), 1);
+    let mut pending = state.access_grant_summary(&id).unwrap();
+    pending.grant_id = "pending-before-login".into();
+    state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .pending
+        .insert((42, 1, "request".into()), pending);
+    let extension_id = format!("{id}-extension");
+    let extension = RuntimeInteraction::for_kernel_operation(
+        &extension_id,
+        format!("access-extension:{id}"),
+        "Extend access",
+        "Extend access",
+        vec![
+            RuntimeInteractionChoice::new("refuse", "Refuse", "refuse", None),
+            RuntimeInteractionChoice::new("approve", "Approve", "approve", None)
+                .requiring_passkey(),
+        ],
+    )
+    .with_timeout_sec(60);
+    let _answer = state
+        .create_kernel_operation_interaction(
+            crate::runtime::kernel_access::ACCESS_INTERACTION_SCOPE,
+            "local",
+            extension,
+        )
+        .await
+        .unwrap();
+    let mut config = state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        ..Default::default()
+    });
+    state.owned.config_projection.update(config);
+    assert!(state.list_kernel_access("another-account").is_empty());
+    assert_eq!(
+        state
+            .revoke_kernel_access(Some("another-account"), None, "revoked_by_owner")
+            .unwrap(),
+        0
+    );
+    assert_eq!(state.owned.kernel_access.lock().unwrap().pending.len(), 1);
+    assert!(state
+        .owned
+        .pending_interactions
+        .write()
+        .contains_key(&extension_id));
+    assert_eq!(state.list_kernel_access("enrolled-owner").len(), 1);
+    assert_eq!(
+        state
+            .revoke_kernel_access(Some("enrolled-owner"), None, "revoked_by_owner")
+            .unwrap(),
+        1
+    );
+    assert!(state.owned.kernel_access.lock().unwrap().pending.is_empty());
+    assert!(!state
+        .owned
+        .pending_interactions
+        .write()
+        .contains_key(&extension_id));
+    assert!(state.list_kernel_access("local").is_empty());
+}
+
+#[tokio::test]
+async fn enrolled_owner_can_finish_prelogin_grant_revocation_after_storage_recovers() {
+    let root = crate::test_support::TestWorktree::new("enrolled-owed-access");
+    let (router, faults, _guard) = failed_revocation(&root);
+    let state = router.runtime_state();
+    let mut config = state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        ..Default::default()
+    });
+    state.owned.config_projection.update(config);
+    std::fs::remove_file(faults.join("writer-fail")).unwrap();
+    assert_eq!(
+        state
+            .revoke_kernel_access(Some("another-account"), Some("kept"), "revoked_by_owner")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        state
+            .revoke_kernel_access(Some("enrolled-owner"), Some("kept"), "revoked_by_owner")
+            .unwrap(),
+        1
+    );
+    assert!(state
+        .owned
+        .kernel_access
+        .lock()
+        .unwrap()
+        .owed_ends
+        .is_empty());
 }

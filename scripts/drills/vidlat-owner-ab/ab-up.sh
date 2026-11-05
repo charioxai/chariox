@@ -1,5 +1,5 @@
 #!/bin/bash
-# MP-08/MP-10/MP-11: public prebuilt runtimes only; no builds on the CCX43.
+# MP-08/MP-10/MP-11: public prebuilt runtimes only; no builds on the drill host.
 set -euo pipefail
 umask 077
 KIT=$(cd -- "$(dirname -- "$0")" && pwd)

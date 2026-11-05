@@ -25,7 +25,7 @@ function fakeClient(requests) {
   }
 }
 
-test("installs matching MCP and skill capabilities on a relay-addressed Hetzner worker", async (t) => {
+test("installs matching MCP and skill capabilities on a relay-addressed remote kernel worker", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-native-capabilities-test-"))
   t.after(() => rm(root, { recursive: true, force: true }))
   const workspace = path.join(root, "workspace")
@@ -49,7 +49,7 @@ test("installs matching MCP and skill capabilities on a relay-addressed Hetzner 
     options: {
       includeMcpSkills: true,
       standardHomeWorker: true,
-      hetznerWorker: true,
+      remoteKernelWorker: true,
     },
     markers: {
       nativeSkill: "NATIVE_SKILL_MARKER",
