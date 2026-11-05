@@ -426,6 +426,7 @@ const cleanup = async () => {
           if (["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0])) continue
         } catch { continue }
       }
+      if (startTime(pid) !== start || !members(poolCgroup).includes(pid)) continue
       assert(homeMatches, `unrecognized process in this drill's cgroup: ${pid}`)
       if (startTime(pid) !== start || !members(poolCgroup).includes(pid)) continue
       const signal = attempt < 5 ? "SIGTERM" : "SIGKILL"
