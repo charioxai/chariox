@@ -9,13 +9,15 @@ pub struct ProcessSample {
     pub resident_set_bytes: u64,
     /// CPU usage in thousandths of one core.
     pub cpu_millis: u64,
+    /// Cumulative bytes read from and written to storage; null when unavailable.
+    pub disk_io_bytes: Option<u64>,
     pub sampled_at_ms: u64,
     pub age_ms: u64,
 }
 
 /// A process still executing its program is unreadable for a moment (its
 /// executable is missing), which looks like an exit. Ownership of a process
-/// ends only after this many samples in a row that could not read it.
+/// ends only after this many non-resource failures in a row that could not read it.
 const UNREADABLE_SAMPLES: u8 = 8;
 
 /// The processes a watch owns, as a hot reload hands them to the next program:
@@ -129,15 +131,16 @@ impl ProcessTree {
             #[cfg(target_os = "linux")]
             empty_since: None,
         };
-        tree.identify_root();
+        // A first read under resource pressure leaves identification for the next sample.
+        let _ = tree.identify_root();
         tree
     }
 
     /// The root is identified at its first readable sample. Only a child of
     /// the kernel is adopted, and a root that never became readable is given up.
-    fn identify_root(&mut self) {
+    fn identify_root(&mut self) -> Result<(), SamplingError> {
         let Some(failed) = self.root_unread else {
-            return;
+            return Ok(());
         };
         self.root_unread = match inspect(self.root) {
             Ok((identity, parent)) => {
@@ -146,9 +149,13 @@ impl ProcessTree {
                 }
                 None
             }
-            Err(_) if failed < UNREADABLE_SAMPLES => Some(failed + 1),
-            Err(_) => None,
+            Err(error) => match shortage(&error) {
+                Some(errno) => return Err(SamplingError::Short(errno)),
+                None if failed < UNREADABLE_SAMPLES => Some(failed + 1),
+                None => None,
+            },
         };
+        Ok(())
     }
 
     fn adopt(&mut self, pid: u32, identity: ProcessIdentity) {
@@ -223,7 +230,7 @@ impl ProcessTree {
 
     pub fn sample(&mut self) -> Result<Vec<ProcessSample>, SamplingError> {
         let rows = process_rows()?;
-        self.observe(&rows).map_err(SamplingError::Unusable)?;
+        self.observe(&rows)?;
         self.parents = rows
             .iter()
             .filter(|row| self.owned.contains_key(&row.pid))
@@ -260,36 +267,50 @@ impl ProcessTree {
                 command: row.command,
                 resident_set_bytes: row.rss,
                 cpu_millis: row.cpu,
+                disk_io_bytes: super::admission::disk_io(row.pid)
+                    .and_then(|(read, written)| read.checked_add(written)),
                 age_ms: row.age_ms,
                 sampled_at_ms: row.sampled_at_ms,
             })
             .collect())
     }
 
-    fn observe(&mut self, rows: &[Row]) -> Result<(), String> {
-        self.identify_root();
+    fn observe(&mut self, rows: &[Row]) -> Result<(), SamplingError> {
+        self.identify_root()?;
         // A recorded start identity survives exec but never PID recycling.
         let unreadable = &mut self.unreadable;
+        let mut short_errno = None;
         self.owned.retain(|pid, identity| match inspect(*pid) {
             Ok((current, _)) => {
                 unreadable.remove(pid);
                 same_birth(&current, identity)
             }
-            Err(_) => {
-                let failed = unreadable.entry(*pid).or_default();
-                *failed += 1;
-                *failed <= UNREADABLE_SAMPLES
-            }
+            Err(error) => match shortage(&error) {
+                Some(errno) => {
+                    short_errno = Some(errno);
+                    true
+                }
+                None => {
+                    let failed = unreadable.entry(*pid).or_default();
+                    *failed += 1;
+                    *failed <= UNREADABLE_SAMPLES
+                }
+            },
         });
+        if let Some(errno) = short_errno {
+            return Err(SamplingError::Short(errno));
+        }
         self.unreadable
             .retain(|pid, _| self.owned.contains_key(pid));
         self.ids.retain(|pid, _| self.owned.contains_key(pid));
         #[cfg(target_os = "linux")]
         if let Some(group) = self.cgroup.clone() {
-            for pid in group
-                .pids()
-                .map_err(|error| format!("owned process cgroup membership unavailable: {error}"))?
-            {
+            for pid in group.pids().map_err(|error| match shortage(&error) {
+                Some(errno) => SamplingError::Short(errno),
+                None => SamplingError::Unusable(format!(
+                    "owned process cgroup membership unavailable: {error}"
+                )),
+            })? {
                 if pid > 1 && !self.owned.contains_key(&pid) && group.owns(pid) {
                     if let Ok((identity, _)) = inspect(pid) {
                         if group.owns(pid) && same_process(pid, &identity) {
@@ -699,9 +720,13 @@ struct Row {
 /// Why the process table could not be read.
 #[derive(Debug, Clone)]
 pub(super) enum SamplingError {
-    /// The kernel lacks descriptors, files or memory for a moment, so it could
-    /// not start `ps`. The tree it watches is fine; the next tick may read.
+    /// The kernel lacks resources to start `ps` or read a process or cgroup.
+    /// This says nothing about the tree; the next tick may read it.
     Short(i32),
+    /// A signal ended `ps` before it answered, as a restart of the kernel does
+    /// to the children it leaves behind. The tree is as it was; the next tick
+    /// may read it.
+    Ended,
     /// Nothing will change by trying again: `ps` is missing, refused or
     /// answers with columns the monitor cannot read.
     Unusable(String),
@@ -711,9 +736,10 @@ impl std::fmt::Display for SamplingError {
         match self {
             Self::Short(errno) => write!(
                 f,
-                "process resource monitor cannot start ps for now: {}",
+                "process resource monitor cannot sample for now: {}",
                 std::io::Error::from_raw_os_error(*errno)
             ),
+            Self::Ended => f.write_str("process resource monitor's ps was ended by a signal"),
             Self::Unusable(message) => f.write_str(message),
         }
     }
@@ -724,8 +750,7 @@ impl From<SamplingError> for String {
     }
 }
 
-/// Starting `ps` failed for want of descriptors, files or memory, which the
-/// kernel gets back; anything else (no `ps`, no permission) stays failed.
+/// Sampling can retry when the kernel gets descriptors, files or memory back.
 fn shortage(error: &std::io::Error) -> Option<i32> {
     #[cfg(unix)]
     return error.raw_os_error().filter(|errno| {
@@ -802,6 +827,7 @@ pub(super) fn live_groups(root: u32) -> Vec<u32> {
 pub(super) fn ensure_available() -> std::io::Result<()> {
     process_rows().map(|_| ()).map_err(|error| match error {
         SamplingError::Short(errno) => std::io::Error::from_raw_os_error(errno),
+        SamplingError::Ended => std::io::Error::other(SamplingError::Ended.to_string()),
         SamplingError::Unusable(message) => std::io::Error::other(message),
     })
 }
@@ -833,6 +859,18 @@ pub(super) mod ps_failure {
     }
 }
 
+/// Why `ps` did not answer: a signal ends it for now, an exit status means it
+/// cannot give the columns.
+pub(super) fn ps_refusal(status: std::process::ExitStatus) -> SamplingError {
+    if status.code().is_none() {
+        return SamplingError::Ended;
+    }
+    SamplingError::Unusable(
+        "process resource monitor failed: ps must support pid, ppid, rss, pcpu, etime and comm"
+            .into(),
+    )
+}
+
 fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
     let sampled_at_ms = crate::session::unix_epoch_ms();
     let output = run_ps().map_err(|error| match shortage(&error) {
@@ -842,10 +880,7 @@ fn read_process_rows() -> Result<Vec<Row>, SamplingError> {
         )),
     })?;
     if !output.status.success() {
-        return Err(SamplingError::Unusable(
-            "process resource monitor failed: ps must support pid, ppid, rss, pcpu, etime and comm"
-                .into(),
-        ));
+        return Err(ps_refusal(output.status));
     }
     let rows = String::from_utf8_lossy(&output.stdout)
         .lines()

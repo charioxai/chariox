@@ -547,7 +547,7 @@ fn begin_registration(
         generation,
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
-        managed_repository_root: matches!(envelope.schema_version, 2 | 3)
+        managed_repository_root: matches!(envelope.schema_version, 2..=4)
             .then_some(managed_repository_root),
         confirmed_at: None,
         context_plan: Some(exchanged.context_plan),
@@ -867,7 +867,7 @@ fn expected_data_volume_identity(
         envelope.expected_data_volume_size_gb,
     ) {
         (3, Some(serial), Some(size_gb)) => Ok(Some((serial, size_gb))),
-        (1 | 2, None, None) => Ok(None),
+        (1 | 2 | 4, None, None) => Ok(None),
         _ => Err(bootstrap_error(
             "managed protected data-volume identity is incomplete",
         )),

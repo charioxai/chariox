@@ -30,6 +30,7 @@ use crate::session::{SessionStateOwner, SessionStateStore};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
+mod agent_auth;
 mod workspace_live_sync;
 use workspace_live_sync::*;
 mod workspace_live_sync_workspace_context;
@@ -57,6 +58,7 @@ mod app_automation_owned_state;
 mod app_connection_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_control_requests;
+mod app_dev_runtime;
 mod app_event_delivery_owned_state;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_event_pump_runtime;
@@ -89,6 +91,8 @@ mod app_validation_pump_runtime;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_host;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+mod app_view_inspection;
+#[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_poll;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod app_view_runtime;
@@ -96,6 +100,7 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
 use outside_events::InteractionPhase;
@@ -106,6 +111,9 @@ mod user_app_view_browser;
 mod user_app_view_restore;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_runtime;
+mod vault_command;
+mod vault_generate;
+mod vault_use;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -118,6 +126,7 @@ mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
+mod legacy_room_owner;
 mod native_catalog_refresh;
 mod owner_context_review;
 mod project_environment_export;
@@ -182,6 +191,7 @@ mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
 mod usage_snapshot;
 mod visible_region_capture;
+mod web_bot_auth_runtime;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
 #[derive(Clone)]
@@ -192,6 +202,7 @@ pub(crate) struct KernelRuntimeState {
     /// MP-08 / MP-11: the transport admitted this command from a terminal
     /// (local token or relay client), not from a granted or launched agent.
     terminal_caller: bool,
+    interaction_answerer: Option<crate::runtime::command::KernelCaller>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
     #[cfg(test)]
@@ -213,6 +224,7 @@ pub(crate) struct KernelRuntimeState {
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
+    interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
     /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
     /// own the runtime state that owns the terminal service.
     managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -227,10 +239,13 @@ type UncertainLeasedTasks = Arc<
 #[derive(Clone)]
 struct KernelRuntimeOwnedState {
     app_control: crate::runtime::app_control::AppControlService,
+    dev_app_bindings: Arc<app_dev_runtime::DevAppBindings>,
     critical_approval_passkeys: critical_approval_passkey::CriticalApprovalPasskeys,
     passkey_prompts: Arc<passkey_prompts::PasskeyPromptBoard>,
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
+    agent_auth_registrations: agent_auth::RegistrationClaims,
+    vault_capture_claims: vault_command::CaptureClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -241,6 +256,7 @@ struct KernelRuntimeOwnedState {
     /// Home side of A10: windows whose first worker fence was confirmed.
     leased_sudo_fenced: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
     config_projection: crate::runtime::projection::DaemonConfigProjectionStore,
+    web_bot_auth: Arc<web_bot_auth_runtime::WebBotAuthState>,
     session_store: SessionStateStore,
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
@@ -367,6 +383,7 @@ struct KernelRuntimeOwnedState {
     task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
+    slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
     remote_prompt_projection_drains:
         remote_prompt_claim_runtime::RemotePromptProjectionDrainClaimStore,
@@ -374,7 +391,6 @@ struct KernelRuntimeOwnedState {
     remote_prompt_recoveries: remote_prompt_claim_runtime::RemotePromptRecoveryClaimStore,
     remote_steer_receipt_reconciliations:
         Arc<std::sync::Mutex<BTreeSet<(String, String, String)>>>,
-    slice_private_relay_connectors: Arc<Mutex<BTreeMap<String, SlicePrivateRelayConnector>>>,
     agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
@@ -446,13 +462,6 @@ type RemoteWorkspaceLiveSyncInvocationResult = (
     Vec<crate::transport::relay_peer::RemoteWorkspaceLiveSyncArtifactState>,
 );
 
-struct SlicePrivateRelayConnector {
-    relay_url: String,
-    state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
-    shutdown_tx: tokio::sync::watch::Sender<bool>,
-    task: std::thread::JoinHandle<()>,
-}
-
 mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
@@ -499,6 +508,7 @@ mod prompt;
 mod prompt_activity_owned_state;
 mod prompt_cancellation_owned_state;
 mod prompt_dispatch;
+mod resource_register;
 mod room_pin;
 mod session_activity_owned_state;
 use external_command_authority::ExternalCommandAuthority;
@@ -547,6 +557,7 @@ mod provider_prompt_failure_runtime;
 mod provider_prompt_settlement_runtime;
 mod provider_substitute_runtime;
 mod relay_peer_runtime_state;
+mod remote_completion_harvest;
 mod remote_native_provider_launch;
 mod remote_prompt_claim_runtime;
 mod remote_prompt_dispatch_execution_runtime;
@@ -561,6 +572,7 @@ mod remote_provider_failure_runtime;
 #[cfg(test)]
 mod remote_queue_advance_tests;
 mod restart_recovery_runtime;
+mod worker_lease_trust;
 pub(crate) use restart_recovery_runtime::is_internal_recovery_prompt_attachment;
 mod agent_batch_runtime_state;
 mod claude_token_checks;
@@ -568,6 +580,7 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod owner_vault;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
@@ -586,12 +599,15 @@ pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
+mod kernel_browser_audience;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
 mod kernel_browser_state_wait;
+mod kernel_browser_upload;
+mod kernel_browser_vault_capture;
 mod owner_handoff_runtime;
 pub(crate) use owner_handoff_runtime::{is_handoff_interaction_id, HANDOFF_OBLIGATION_KIND};
 mod declined_workspace_trust_runtime;
@@ -600,6 +616,8 @@ mod kernel_computer_runtime;
 mod leased_computer_runtime;
 #[cfg(test)]
 mod leased_computer_runtime_tests;
+#[cfg(test)]
+mod leased_worker_route_tests;
 mod notes_runtime;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
@@ -782,6 +800,7 @@ impl KernelRuntimeState {
             provider_process_projection,
             provider_launch_failure_retries,
             relay_state,
+            slice_private_relay_connectors,
             notification_inventory_projection,
             legacy_workflow_history,
             agent_runtime_projection,
@@ -804,6 +823,7 @@ impl KernelRuntimeState {
                         app.provider_process_projection_store(),
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
+                        app.connected_relays().slice_private,
                         app.remote_relay_inventory_projection_store(),
                         app.legacy_workflow_history_store(),
                         app.agent_runtime_projection_store(),
@@ -994,6 +1014,7 @@ impl KernelRuntimeState {
             room_provider_origin: None,
             room_request_origin: None,
             terminal_caller: false,
+            interaction_answerer: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
             #[cfg(test)]
@@ -1008,9 +1029,11 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
+            interaction_wake_driver: None,
             managed_terminal_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
+                dev_app_bindings: Default::default(),
                 critical_approval_passkeys:
                     critical_approval_passkey::CriticalApprovalPasskeys::new(
                         &config_projection.snapshot().user_config.credential_vault,
@@ -1018,6 +1041,8 @@ impl KernelRuntimeState {
                 passkey_prompts: Arc::default(),
                 kernel_access: Default::default(),
                 sudo_turns: sudo_windows.store(),
+                agent_auth_registrations: Default::default(),
+                vault_capture_claims: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
@@ -1025,6 +1050,7 @@ impl KernelRuntimeState {
                 leased_sudo_grants: Default::default(),
                 leased_sudo_fenced: Default::default(),
                 config_projection,
+                web_bot_auth: Default::default(),
                 session_store,
                 agent_store,
                 attachment_store,
@@ -1154,7 +1180,7 @@ impl KernelRuntimeState {
                 remote_steer_receipt_reconciliations: Arc::new(std::sync::Mutex::new(
                     BTreeSet::new(),
                 )),
-                slice_private_relay_connectors: Arc::new(Mutex::new(BTreeMap::new())),
+                slice_private_relay_connectors,
                 agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
@@ -1164,6 +1190,7 @@ impl KernelRuntimeState {
         };
         runtime.link_room_terminals_to_managed_kernel();
         runtime.register_terminal_wake_driver();
+        runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
@@ -1489,10 +1516,13 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
+#[cfg(test)]
+mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};

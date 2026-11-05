@@ -1,26 +1,5 @@
 #!/bin/bash
-# Postinstall of the Chariox macOS package (dev.chariox.pkg). The macOS Installer
-# runs it as root once the payload is in place; it is the package's one
-# privileged step. The kernel and its Apps then run as ordinary users.
-#   1. removes from /usr/local/share/chariox/slice-build-context, the tree a
-#      release kernel builds its local Docker slices from, every file its
-#      manifest slice-build-context.sha256 does not list: an upgrade's payload
-#      leaves the previous release's other files in place;
-#   2. checks that the staged App runtime is the one this package pins: the
-#      SHA-256 of its runtime-inventory.json must be RUNTIME_DIGEST;
-#   3. provisions the shared Docker admission locks and loads their root boot
-#      LaunchDaemon, then enrolls it with chariox-app-runtime-install, which verifies the inventory's
-#      Ed25519 signature against RUNTIME_KEY before it publishes
-#      /Library/Application Support/Chariox/AppRuntimes/<digest> and the
-#      enrollment. The key and digest are pinned here, in the signed package,
-#      never read from the runtime;
-#   4. removes the staged copy, whatever the outcome;
-#   5. restarts the kernel LaunchAgent in the console user's gui domain; other
-#      users get it at their next login.
-# Before step 3 and after step 5 it retires the runtime generations no kernel
-# holds any more, so repeated upgrades stay under the installer's limit of
-# eight generations. A failure in steps 1 to 3 fails the installation and does
-# not restart the kernel.
+# Install the kernel, its WASM App worker, slice context and boot admission locks.
 set -euo pipefail
 umask 022
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -30,17 +9,11 @@ export PATH
 # every host path, including the launchctl it drives, resolves.
 R='@@ROOT@@'
 VERSION='@@VERSION@@'
-RUNTIME_KEY='@@RUNTIME_KEY@@'
-RUNTIME_DIGEST='@@RUNTIME_DIGEST@@'
 LABEL=dev.chariox.kernel
 SUPPORT="$R/Library/Application Support/Chariox"
 PACKAGE="$R/usr/local/libexec/chariox"
-STAGING="$PACKAGE/staging"
-STAGED="$STAGING/runtime-$RUNTIME_DIGEST"
-INSTALLER="$PACKAGE/chariox-app-runtime-install"
 CONTEXT="$R/usr/local/share/chariox/slice-build-context"
 CONTEXT_MANIFEST="$PACKAGE/slice-build-context.sha256"
-RUNTIMES="$SUPPORT/AppRuntimes"
 AGENT="$R/Library/LaunchAgents/$LABEL.plist"
 LAUNCHCTL="$R/bin/launchctl"
 ADMISSION_LABEL=dev.chariox.docker-admission-locks
@@ -64,28 +37,10 @@ trusted() {
 if [ -z "$R" ]; then
   [ "$(id -u)" = 0 ] || die "the macOS Installer runs this as root"
   [ "${3:-/}" = / ] || die "Chariox installs only on the startup volume, not ${3:-}"
-  trusted "$INSTALLER" || die "$INSTALLER or a directory above it is not root's alone"
   trusted "$ADMISSION_PROGRAM" || die "$ADMISSION_PROGRAM or a directory above it is not root's alone"
   trusted "$ADMISSION_DAEMON" || die "$ADMISSION_DAEMON or a directory above it is not root's alone"
   trusted "$CONTEXT" || die "$CONTEXT or a directory above it is not root's alone"
 fi
-trap 'rm -rf -- "$STAGING"' EXIT
-# cleanup refuses the enrolled generation and any whose shared lease a kernel or
-# App worker holds; those stay for a later install or the uninstaller.
-retire_unused() {
-  local generation name
-  for generation in "$RUNTIMES"/*; do
-    name=${generation##*/}
-    [ "${#name}" = 64 ] && [ "$name" != "$RUNTIME_DIGEST" ] || continue
-    case "$name" in *[!0-9a-f]*) continue ;; esac
-    if "$INSTALLER" cleanup --inventory-sha256 "$name" >/dev/null 2>&1; then
-      say "retired App runtime $name"
-    else
-      say "kept App runtime $name: it is enrolled or still in use"
-    fi
-  done
-}
-
 # 1. The slice build context.
 [ -f "$CONTEXT_MANIFEST" ] && [ -d "$CONTEXT" ] || die "the package's slice build context is missing"
 stale=$(cd "$R/" && find usr/local/share/chariox/slice-build-context ! -type d | sed 's|^|/|' | LC_ALL=C sort \
@@ -96,14 +51,6 @@ if [ -n "$stale" ]; then
   say "removed $(wc -l <<<"$stale" | tr -d ' ') files an earlier release left in $CONTEXT"
 fi
 
-# 2. and 3. The runtime.
-say "Chariox $VERSION: enrolling App runtime $RUNTIME_DIGEST"
-inventory="$STAGED/runtime-inventory.json"
-[ -f "$inventory" ] && [ ! -L "$inventory" ] || die "the package's staged runtime is missing"
-actual=$(shasum -a 256 "$inventory")
-actual=${actual%% *}
-[ "$actual" = "$RUNTIME_DIGEST" ] \
-  || die "the staged runtime inventory is $actual, not the pinned $RUNTIME_DIGEST; nothing was enrolled"
 # Provision immediately: launchd's RunAtLoad is asynchronous, and /tmp is
 # volatile. Never unlink or adopt a legacy user-owned lock, even on upgrade.
 [ -f "$ADMISSION_PROGRAM" ] && [ ! -L "$ADMISSION_PROGRAM" ] \
@@ -117,13 +64,6 @@ if "$LAUNCHCTL" print "system/$ADMISSION_LABEL" >/dev/null 2>&1; then
 fi
 "$LAUNCHCTL" enable "system/$ADMISSION_LABEL"
 "$LAUNCHCTL" bootstrap system "$ADMISSION_DAEMON"
-
-# Generations whose leases were released since the last install no longer
-# count against the limit.
-retire_unused
-"$INSTALLER" install --source "$STAGED" \
-  --trusted-public-key-hex "$RUNTIME_KEY" --inventory-sha256 "$RUNTIME_DIGEST" \
-  || die "chariox-app-runtime-install refused the runtime; the kernel was not restarted"
 
 # 5. The console user's kernel. bootout stops a running kernel (launchd waits up
 # to the agent's ExitTimeOut) and fails when none is loaded.
@@ -141,6 +81,4 @@ case "$console" in
     fi ;;
 esac
 
-# The restart released the previous generation's lease.
-retire_unused
-say "done: Chariox $VERSION, App runtime $RUNTIME_DIGEST"
+say "done: Chariox $VERSION"

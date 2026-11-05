@@ -274,3 +274,29 @@ for (const ended of [false, true]) test(`exec real socket loss preserves resume 
     assert.ok(requestNames(kernel.frames).includes("ListGatewayKernels"))
   } finally { await kernel.close() }
 })
+
+// `--help` is a success path: the usage on stdout, exit 0, for every command, without needing a kernel.
+test("--help answers with usage and exit 0 for every agent command; bare terminal shows both families", async () => {
+  const printed: string[] = []
+  const log = console.log
+  const previous = process.exitCode
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    for (const [argv, expected] of [
+      [["events", "--help"], /Usage: chariox events subscribe\|/],
+      [["events", "wait", "--help"], /Usage: chariox events wait/],
+      [["files", "--help"], /Usage: chariox files stat\|/],
+      [["request", "--help"], /Usage: chariox request/],
+      [["kernels", "--help"], /Usage: chariox kernels/],
+      [["terminal", "open", "--help"], /Usage: chariox terminal open/],
+      [["terminal", "--help"], /chariox terminal --session[^]*chariox terminal open\|/],
+      [["terminal"], /chariox terminal --session[^]*chariox terminal open\|/],
+    ] as const) {
+      printed.length = 0
+      process.exitCode = undefined
+      assert.equal(await runKernelsCommand([...argv]), true, argv.join(" "))
+      assert.match(printed.join("\n"), expected, argv.join(" "))
+      assert.ok(!process.exitCode, `${argv.join(" ")} exits 0`)
+    }
+  } finally { console.log = log; process.exitCode = previous }
+})

@@ -44,6 +44,8 @@ fn entry(
 
 pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
     vec![
+        entry("web_bot_auth.projects", "string", &[], true, true, "runtime_config", "live", "JSON array of project ids whose agent HTTP and browser requests identify this operator using Web Bot Auth."),
+        entry("web_bot_auth.signature_agent", "string", &[], true, true, "runtime_config", "live", "Self-hosted public HTTPS origin serving the kernel's Web Bot Auth key directory. Cloud-enrolled kernels use their enrolled issuer."),
         entry(
             "providers.workspace_live_sync",
             "enum",
@@ -112,6 +114,7 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("kernel_access.grant_max_minutes", "u32", &[], true, true, "runtime_policy", "live", "Maximum access-grant term in minutes; defaults to 1440; cannot exceed 1440."),
         entry("kernel_access.grant_extend_notice_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes before expiry to offer an extension; defaults to 5."),
         entry("kernel_access.request_timeout_minutes", "u32", &[], true, true, "runtime_policy", "live", "Minutes to wait for an access-request answer; defaults to 10."),
+        entry("kernel_access.standing_holders", "array", &[], false, false, "none", "live", "Development only, edited by hand in the config file: [[kernel_access.standing_holders]] entries with harness (codex, claude or opencode) and the holder's exact executable path. A matching holder's until-exit access request is admitted without an owner popup. Any process of that executable under your user can obtain access, so leave it empty on shared or production kernels."),
         entry("kernel.websocket_host", "string", &[], true, true, "restart_required", "boot", "Kernel websocket bind host."),
         entry("kernel.websocket_port", "port", &[], true, true, "restart_required", "boot", "Kernel websocket bind port."),
         entry("kernel.runtime_mcp_host", "string", &[], true, true, "restart_required", "boot", "Runtime MCP bind host."),
@@ -135,7 +138,6 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("credential_vault.unlock_policy", "enum", &["kernel_init", "ttl", "always"], true, true, "none", "live", "When the kernel should request Chariox vault unlock."),
         entry("credential_vault.default_ttl_minutes", "u64", &[], true, true, "none", "live", "Default Chariox vault unlock duration for ttl policy."),
         entry("credential_vault.max_ttl_minutes", "u64", &[], true, true, "none", "live", "Maximum Chariox vault unlock duration offered by the kernel."),
-        entry("credential_vault.agent_management", "enum", &["allow", "deny"], true, true, "none", "live", "Whether runtime agents may create or update user vault-backed credential handles."),
         entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),
     ]
 }

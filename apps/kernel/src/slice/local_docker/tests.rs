@@ -1077,9 +1077,12 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "tint2rc",
         "browser-app-restore.mjs",
         "browser-app-drafts.mjs",
+        "browser-app-input-callers.mjs",
+        "browser-app-view-actions.mjs",
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-apps.mjs",
+        "browser-controller-capture.mjs",
         "browser-controller-bar.mjs",
         "browser-focus-world.mjs",
         "browser-controller-cursor.mjs",
@@ -1414,14 +1417,11 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
     assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
     assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
     // The kernel links the App packages; the runtime image must build them.
-    for package in ["app-package", "app-runtime", "app-sdk"] {
+    for package in ["app-package", "app-runtime"] {
         let root = format!("packages/{package}");
         assert!(dockerfile.contains(&format!("COPY {root} {root}")));
         assert!(roots.contains(&root.as_str()));
     }
-    let bundle_lock = "apps/app-worker/bundle.lock.json";
-    assert!(dockerfile.contains(&format!("COPY {bundle_lock} {bundle_lock}")));
-    assert!(roots.contains(&bundle_lock));
     assert!(!dockerfile.contains("chariox-app-storage.service"));
     assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
     assert!(dockerfile.contains("cargo build --locked --release"));
@@ -1489,7 +1489,7 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-managed-bootstrap /chariox-managed-bootstrap",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-relay /chariox-relay",
             "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-package /chariox-app-package",
-            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-storage /chariox-app-storage",
+            "COPY --from=rust-builder /opt/chariox-source/target/release/chariox-app-wasm-worker /chariox-app-wasm-worker",
         ],
         "the release artifact stage must export only the five signed runtime binaries"
     );

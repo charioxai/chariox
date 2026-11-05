@@ -6,6 +6,7 @@
 //! App-supplied decision string cannot enroll themselves. Library trust is out
 //! of scope. No private signing key is stored here.
 
+mod dev;
 mod enrollment;
 mod store;
 pub use enrollment::enroll_in;
@@ -106,6 +107,14 @@ impl TrustedPublisherSnapshot {
         if self.owner_id != trusted_owner {
             return Err(PublisherTrustError::NotFound);
         }
+        if self.publisher.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            let current = dev::snapshot(transaction, trusted_owner, &self.publisher.key_id)?;
+            return if current.publisher.public_key == self.publisher.public_key {
+                Ok(())
+            } else {
+                Err(PublisherTrustError::Conflict)
+            };
+        }
         let current = store::get(
             transaction,
             trusted_owner,
@@ -135,7 +144,8 @@ impl<'a> PublisherTrustRegistry<'a> {
         Self { connection }
     }
     pub fn initialize(&mut self) -> Result<()> {
-        store::initialize(self.connection)
+        store::initialize(self.connection)?;
+        dev::initialize(self.connection)
     }
 
     /// Zero expected revision creates a new immutable key binding. Re-enrolling
@@ -243,6 +253,9 @@ impl<'a> PublisherTrustRegistry<'a> {
     ) -> Result<TrustDecisionReceipt> {
         valid_owner(owner)?;
         valid_identifier(publisher_id)?;
+        if publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            return Err(PublisherTrustError::Invalid);
+        }
         valid_identifier(key_id)?;
         valid_text(&decision.decision_id, 128)?;
         valid_text(&decision.authority_ref, 512)?;
@@ -294,6 +307,9 @@ impl<'a> PublisherTrustRegistry<'a> {
         publisher_id: &str,
         key_id: &str,
     ) -> Result<TrustedPublisherSnapshot> {
+        if publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+            return dev::snapshot(self.connection, trusted_owner, key_id);
+        }
         let entry = self.get(trusted_owner, publisher_id, key_id)?;
         if !entry.enrolled {
             return Err(PublisherTrustError::Revoked);

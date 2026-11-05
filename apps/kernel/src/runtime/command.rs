@@ -10,8 +10,8 @@ mod terminal_lifetime;
 pub(crate) use terminal_lifetime::TerminalLifetime;
 mod local_request_metadata;
 
-pub(crate) use caller::command_caller_user_id;
 pub(crate) use caller::relay_connection_class;
+pub(crate) use caller::{caller_user_id, command_caller_user_id};
 pub use caller::{KernelCaller, KernelCallerKind, KernelCommandSource};
 
 use local_request_metadata::local_request_metadata;
@@ -49,7 +49,9 @@ pub struct KernelCommand {
 
 impl KernelCommand {
     pub(crate) fn external_grant_id(&self) -> Option<String> {
-        (self.caller.connection_class == Some(crate::local::KernelConnectionClass::ExternalAgent)
+        // A request a gateway forwards for an external agent names no grant of this kernel.
+        ((self.caller.connection_class == Some(crate::local::KernelConnectionClass::ExternalAgent)
+            && self.caller.caller_kind != KernelCallerKind::RemoteClient)
             || (self.caller.connection_class
                 == Some(crate::local::KernelConnectionClass::KernelAgent)
                 && self.caller.caller_id.starts_with("sudo:")))
@@ -157,6 +159,7 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
                 "encoded_bytes": request.data_base64.len(),
             }
         }),
+        LocalDaemonRequest::OwnerVault(_) => serde_json::json!({ "OwnerVault": "[redacted]" }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
                 "session_id": request.session_id,

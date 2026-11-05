@@ -1,0 +1,626 @@
+{
+  "mpItems": [
+    "MP-08",
+    "MP-10",
+    "MP-11"
+  ],
+  "scope": "Compiler research only. No App UI/product acceptance. Apps remains PAUSED.",
+  "identities": {
+    "date": "2026-10-22T18:53:22.814424+00:00",
+    "base": "5c4d888b9347a93575a8412244b29650c9222799",
+    "head": "1cd7394216ac1276d7d24ccfca13d9b0b4e3ef0c",
+    "branch": "texspike/r1",
+    "platform": "Linux-7.0.0-38-generic-x86_64-with-glibc2.43",
+    "cpu": "AMD Ryzen 9 9950X 16-Core Processor",
+    "tectonicFork": "d1a46a5d127ea40c6a1afcb45e91bb3d7c1f5e47",
+    "tecgonic": "b758df17ffa5453b2d2f255f55a6605b80a55a54",
+    "harfbuzz": "894a1f72ee93a1fd8dc1d9218cb3fd8f048be29a",
+    "nativeTectonic": "Tectonic 0.17.0",
+    "nativeTypst": "typst 0.15.1 (9dfd3a08)",
+    "wasiClang": "clang version 22.1.0-wasi-sdk (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)",
+    "measurementHead": "e37838f590950668bbf8b4f4ba8860f36776582d",
+    "binaries": {
+      "worker": {
+        "sha256": "d7ff4ee487ccf5bdb976cc4d1736da825b752c7f565edf8f1bd93897366cdcc0",
+        "bytes": 201918472
+      },
+      "harness": {
+        "sha256": "6c21e1fc0511c38a4c0e1c7c0a9f7b34e3668964a67ec822d299024031377906",
+        "bytes": 49690680
+      },
+      "app.wasm": {
+        "sha256": "c6bae45a72a7b4ddc596ffab114f5e145b1392e6a77e557d477e05d2a44cde47",
+        "bytes": 4234950
+      },
+      "app.cwasm": {
+        "sha256": "e056f25f138afca18366ea9948fa68aadea86d31236434b7a0c8645db48279f5",
+        "bytes": 12187552
+      }
+    },
+    "sealedSourceHead": "73869f3ce5f323ee5e02edadf6b67f0380494ac0",
+    "sourceSha256": {
+      "spikes/wasm/tex/guest.rs": "b725d282a8742ac7afb034646c9ff66d10492ac09063d73a5db358babb4da5f1",
+      "spikes/wasm/tex/prepare-guest.py": "154ad533885b9ebb758f5615d4dfc71e9e74d3dfeefc98c68c6d8707621adb84",
+      "spikes/wasm/harness/src/main.rs": "1e6ae4ea53b5199ffdfc508220287e8e7b6768586e0a3c33d5036444bc59e1db",
+      "spikes/wasm/harness/src/process.rs": "66cfb980eaf881cced30c9fe84c4ea0df5fa74d0fc7bd796edc7ea1f6d453d63",
+      "spikes/wasm/worker-async/src/main.rs": "6c125317d265dab01fd10876679a479b3ccfdb7706a4a5ad8dd35c48dac6095c",
+      "spikes/wasm/worker-async/src/host.rs": "2bddd67137fe038f7e1fdde040a2a9c8021661f7ced7d7a9fc524c84860cc079",
+      "spikes/wasm/worker-async/src/ipc.rs": "b12643b4f71cb49e46a36b027454a857f78f2b7362280a739dd9f4c21e2b96c6"
+    },
+    "pdflatexAvailable": false,
+    "bibtex": "In-process Tectonic BibtexEngine",
+    "biberAvailable": false,
+    "runtime": "wasmtime 50.0.0, async Chariox app@0.2.0 exports",
+    "bundle": {
+      "url": "https://relay.fullyjustified.net/default_bundle_v33.tar",
+      "resolvedUrl": "https://data1b.fullyjustified.net/tlextras-2022.0r0.tar",
+      "sha256sum": "6ffe055852f8faf66c0acbe1a7fb27f87b869a90bad1204f3bf4d9683f597c7c",
+      "resources": 440,
+      "resourceBytes": 16780219
+    },
+    "generatedGuestSha256": {
+      "Cargo.lock": "0c73552fecbf5a0a2a0983936e5a7607c6d0a594c81da1ce9fead025a5b9038b",
+      "Cargo.toml": "0976ecede84be6eec82c8ff0502317c0ae450687bf4c88a89e28830215c32bfc",
+      "src/lib.rs": "b725d282a8742ac7afb034646c9ff66d10492ac09063d73a5db358babb4da5f1",
+      "src/driver.rs": "30a2f3cf86533d3934f5d52b1143b58c3784ed764f2133922c30729265adf475"
+    }
+  },
+  "precompile": {
+    "compileMs": 365.46212,
+    "cwasmBytes": 12187552,
+    "wasmBytes": 4234950
+  },
+  "component": [
+    {
+      "document": "hello",
+      "runs": 3,
+      "readyMs": [
+        8.450297,
+        9.382278000000001,
+        7.905956000000001
+      ],
+      "cgroupPeakMiB": [
+        399.46875,
+        399.26953125,
+        396.9921875
+      ],
+      "cold": {
+        "ms": [
+          83697.175519,
+          86093.12103800001,
+          83294.472693
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          16780219,
+          16780219,
+          16780219
+        ],
+        "peakRssMiB": [
+          303.0390625,
+          303.52734375,
+          303.90625
+        ]
+      },
+      "warm": {
+        "ms": [
+          531.4833719999999,
+          2541.553989,
+          666.5783
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          320.328125,
+          320.7734375,
+          322.36328125
+        ]
+      },
+      "edit": {
+        "ms": [
+          497.692248,
+          668.78435,
+          656.080944
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          324.50390625,
+          324.62109375,
+          326.55078125
+        ]
+      },
+      "cgroupOom": false
+    },
+    {
+      "document": "paper",
+      "runs": 3,
+      "readyMs": [
+        7.23666,
+        8.013531,
+        8.088313
+      ],
+      "cgroupPeakMiB": [
+        397.81640625,
+        396.17578125,
+        396.77734375
+      ],
+      "cold": {
+        "ms": [
+          86680.195424,
+          85800.45915,
+          86320.525769
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          16780219,
+          16780219,
+          16780219
+        ],
+        "peakRssMiB": [
+          306.50390625,
+          305.015625,
+          305.11328125
+        ]
+      },
+      "warm": {
+        "ms": [
+          1176.028599,
+          1239.929093,
+          961.6519890000001
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          319.546875,
+          316.33203125,
+          317.3671875
+        ]
+      },
+      "edit": {
+        "ms": [
+          784.28707,
+          768.3588120000001,
+          1516.510383
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          319.546875,
+          316.33203125,
+          317.3671875
+        ]
+      },
+      "cgroupOom": false
+    },
+    {
+      "document": "beamer",
+      "runs": 3,
+      "readyMs": [
+        7.548166,
+        7.806573,
+        9.330131
+      ],
+      "cgroupPeakMiB": [
+        395.4296875,
+        398.21875,
+        397.2265625
+      ],
+      "cold": {
+        "ms": [
+          85822.714654,
+          85326.924101,
+          83702.47045000001
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          16780219,
+          16780219,
+          16780219
+        ],
+        "peakRssMiB": [
+          298.609375,
+          298.1328125,
+          298.03125
+        ]
+      },
+      "warm": {
+        "ms": [
+          2376.971711,
+          1342.205251,
+          1308.090352
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          319.33984375,
+          318.59765625,
+          317.0234375
+        ]
+      },
+      "edit": {
+        "ms": [
+          2265.3966,
+          2274.971278,
+          2340.111603
+        ],
+        "ok": true,
+        "fetchedBytes": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          324.15234375,
+          322.94921875,
+          321.91015625
+        ]
+      },
+      "cgroupOom": false
+    }
+  ],
+  "failedComponentAttempts": [
+    {
+      "document": "beamer",
+      "run": 3,
+      "date": "2026-10-22T19:27:35.431220+00:00",
+      "wallMs": 78463.58484798111,
+      "cells": [
+        {
+          "fetchedBytes": 16594190,
+          "memory": {
+            "anonKb": 2320,
+            "hwmKb": 19600,
+            "processes": 3,
+            "rssKb": 18496,
+            "treeRssKb": 22444
+          },
+          "ms": 78406.242113,
+          "outcome": {
+            "Err": {
+              "code": "TEX_ERROR",
+              "message": "bundle fetch umsb.fd: 502"
+            }
+          },
+          "phase": "cold",
+          "prepareMs": 78406.241642
+        }
+      ],
+      "evidence": "component-beamer-3-range-failure.json"
+    }
+  ],
+  "native": [
+    {
+      "engine": "tectonic",
+      "document": "hello",
+      "cold": {
+        "ms": [
+          72717.26551814936,
+          74220.97251098603,
+          72086.9403318502
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          237.3203125,
+          236.375,
+          235.79296875
+        ],
+        "pdfBytes": [
+          6250,
+          6250,
+          6250
+        ],
+        "downloadedFileBytes": [
+          12900256,
+          12900256,
+          12900256
+        ]
+      },
+      "warm": {
+        "ms": [
+          364.77635405026376,
+          264.2234049271792,
+          264.2990530002862
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          184.046875,
+          183.63671875,
+          183.640625
+        ],
+        "pdfBytes": [
+          6250,
+          6250,
+          6250
+        ]
+      },
+      "edit": {
+        "ms": [
+          365.5210770666599,
+          264.2034369055182,
+          264.391457894817
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          184.04296875,
+          183.9375,
+          184.01171875
+        ],
+        "pdfBytes": [
+          6621,
+          6620,
+          6622
+        ]
+      }
+    },
+    {
+      "engine": "tectonic",
+      "document": "paper",
+      "cold": {
+        "ms": [
+          107195.08608500473,
+          106846.35096089914,
+          105294.34593184851
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          236.3515625,
+          236.5703125,
+          237.578125
+        ],
+        "pdfBytes": [
+          43544,
+          43544,
+          43544
+        ],
+        "downloadedFileBytes": [
+          15696495,
+          15696495,
+          15696495
+        ]
+      },
+      "warm": {
+        "ms": [
+          614.7827480453998,
+          614.7041921503842,
+          768.0774540640414
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          188.8515625,
+          189.140625,
+          188.3984375
+        ],
+        "pdfBytes": [
+          43544,
+          43544,
+          43544
+        ]
+      },
+      "edit": {
+        "ms": [
+          614.7595860529691,
+          614.6822201553732,
+          865.8371199853718
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          189.03515625,
+          189.07421875,
+          188.6015625
+        ],
+        "pdfBytes": [
+          43660,
+          43660,
+          43660
+        ]
+      }
+    },
+    {
+      "engine": "tectonic",
+      "document": "beamer",
+      "cold": {
+        "ms": [
+          122564.25838801078,
+          120664.40097498707,
+          117402.69379410893
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          235.93359375,
+          237.0859375,
+          236.421875
+        ],
+        "pdfBytes": [
+          24349,
+          24349,
+          24348
+        ],
+        "downloadedFileBytes": [
+          15668932,
+          15668932,
+          15668932
+        ]
+      },
+      "warm": {
+        "ms": [
+          664.9475500453264,
+          614.81146607548,
+          717.0484559610486
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          189.390625,
+          190.140625,
+          189.953125
+        ],
+        "pdfBytes": [
+          24349,
+          24349,
+          24349
+        ]
+      },
+      "edit": {
+        "ms": [
+          1165.8071889542043,
+          1065.3114570304751,
+          1265.8532080240548
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          189.2421875,
+          188.69140625,
+          189.46484375
+        ],
+        "pdfBytes": [
+          26223,
+          26223,
+          26223
+        ]
+      }
+    },
+    {
+      "engine": "typst",
+      "document": "typst",
+      "cold": {
+        "ms": [
+          314.3063897732645,
+          314.17449307627976,
+          314.0848041512072
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          40.046875,
+          39.6171875,
+          38.83203125
+        ],
+        "pdfBytes": [
+          148575,
+          148575,
+          148575
+        ],
+        "downloadedFileBytes": [
+          null,
+          null,
+          null
+        ]
+      },
+      "warm": {
+        "ms": [
+          364.2348500434309,
+          314.18089498765767,
+          314.2126041930169
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          39.015625,
+          39.2578125,
+          38.9375
+        ],
+        "pdfBytes": [
+          148575,
+          148575,
+          148575
+        ]
+      },
+      "edit": {
+        "ms": [
+          314.17776900343597,
+          314.21937700361013,
+          314.0624219086021
+        ],
+        "exit": [
+          0,
+          0,
+          0
+        ],
+        "peakRssMiB": [
+          39.91015625,
+          40.8359375,
+          39.0625
+        ],
+        "pdfBytes": [
+          148803,
+          148803,
+          148803
+        ]
+      }
+    }
+  ],
+  "conditions": {
+    "linearMemoryMiB": 512,
+    "processTreeCgroupMiB": 512,
+    "cpuSliceMs": 30000,
+    "network": "Real HTTPS archive range fetches through the existing spike HTTP import, broker and parent-side proxy; not the hosted Chariox relay.",
+    "coldCache": "Fresh private data preopen for each run, including format creation and the same curated union of package/font files. Native cold caches independently discover per-document files.",
+    "warm": "Same App instance, format and package cache, aux/bbl feedback; fresh native CLI process for the comparator.",
+    "coldReady": "AOT component loaded and tools registered; no format or TeX bundle loaded at ready.",
+    "nativeTypst": "Native CLI only; no new Typst component measured in this spike.",
+    "timing": "Shared b3. No quiet-host latency acceptance claim.",
+    "pdflatex": "Not installed. No comparison invented."
+  }
+}

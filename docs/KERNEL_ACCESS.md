@@ -25,7 +25,7 @@ Protocol 478 adds the kernel pairing confirmation. Relay peer protocol is unchan
 
 An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel over the Unix socket. Run `chariox guide` for the short, static agent guide; it is generated from the same command table the CLI parser uses and installs nothing into the agent's harness.
 
-- `chariox access request --until-exit` asks the user for access once. With `--no-wait` it exits 6 and a detached waiter keeps the request; `chariox access status` then prints `granted`, `pending`, `ended` or `not_requested`.
+- `chariox access request --until-exit` asks the user for access once. The kernel picks the holder from the caller's host process ancestry: the installed Codex, Claude Code or OpenCode that runs the shell, skipping a provider sandbox's per-command PID namespace and helper processes, so it works inside Codex's standard `workspace-write` sandbox when the kernel socket's directory is writable. `--holder-pid` names a host pid of the caller or an OS ancestor instead. In an agent shell with a command timeout use `--no-wait`: the kernel records the request, raises the popup and the command exits 6 at once; the decision binds to the holder, so the shell (and its sandbox) may end before the owner answers. Poll `chariox access status` until it prints `granted` (`pending` while the user decides; `ended` with a `reason` when the user refused, the request timed out or was invalidated, or the grant ended; `not_requested` otherwise). Status is about that one holder: a pid that is not the caller or its ancestor is refused, never answered with the caller's grant. The grant lasts until the holder exits and survives a kernel restart while the holder lives: after a restart run `chariox access status` before asking again (a timed grant ends with the restart).
 - `chariox access cover --pid PID` keeps your access for a background process you started (`nohup tool &`, then `chariox access cover --pid $!`) after its parent exits, until that process exits or the grant ends. Run it right after starting the process, or from the process itself; `chariox access status --holder-pid $$` then prints `granted` for it. A grant covers at most 16 processes this way. A process that forks twice gets a new pid and can't be covered.
 - `chariox secret request CREDENTIAL_ID --label TEXT` asks the user for a value that goes straight into their Vault. It prints the link as its first line (show it to the user verbatim, do not open it, never ask for the value in chat), then waits and prints `{interaction_id, credential_id, status}` with `stored` (exit 0), `cancelled` (exit 3) or `timed_out` (exit 5). `--no-wait` exits 6 after the link; `chariox secret status INTERACTION_ID` reads the outcome later. The user types the value in a connected Chariox client or on the link's page, behind their Cloud sign-in; the agent never receives it and uses the stored value through its credential handle (default handle: `Authorization: Bearer ${secret}` over HTTP). `--overwrite` replaces an existing handle's value. Without a page for the link (`secret_link.page_url`, defaulted from the enrolled Cloud) the request fails with `secret_link_unavailable`: ask the user to answer in a connected Chariox client.
 - `chariox kernels` lists the kernels this kernel can reach, grouped by machine. A kernel's name is its machine's name when you have one kernel there and `<machine>/<label>` when the machine runs several (a name that fits two kernels is `kernel_ambiguous` and lists both). `chariox request [--kernel M] [--command-id ID] [--timeout SECONDS]` sends one `LocalDaemonRequest` read from stdin to this kernel, or through it to kernel `M`, and prints the response JSON. `--timeout` is how long the CLI waits for the answer (default 30 seconds); a forwarded request is also waited for by this kernel for 30 seconds, plus the request's own wait: a `RunShellCommand`'s `timeout_ms` (up to one hour) or a terminal wait. So `RunShellCommand` with `"timeout_ms": 400000` needs `--timeout 430` or more.
@@ -33,6 +33,20 @@ An external agent (Claude Code, Codex, OpenCode) talks only to its local kernel 
 - `chariox files stat|ls|get|put --kernel M ...` moves files in chunks of 256 KiB, resumable and verified by sha256 (2 GiB per file); run the same command again after an interruption.
 - A person pairs this kernel with a self-hosted kernel with `/kernel add <link>` in a Chariox terminal (`/kernel linked`, `/kernel unlink NAME`); agents cannot.
 - Output is one JSON document on stdout. Errors are `{"error":{"code","message","kernel"}}` on stderr.
+
+### Development standing grants
+
+By default a grant lasts only while the holder's process does: when the agent's process restarts, it asks the owner again. On a development kernel the owner can pre-approve a holder so that restart needs no popup. Edit the user config file by hand (there is no command, popup or API for it, so no agent can enable it for itself):
+
+```toml
+[[kernel_access.standing_holders]]
+harness = "claude"                        # codex, claude or opencode
+executable = "/usr/local/bin/claude"      # the holder's exact executable path, as the kernel shows it in the access popup
+```
+
+A request that asks for `--until-exit`, from a holder with that harness and that executable, is admitted at once, without a popup. It is an ordinary until-exit grant: it ends when the holder exits, comes back after a kernel restart while the holder lives, shows in `chariox access list`, and `chariox access revoke` ends it. The audit record says `granted` with the reason `standing_policy`. Revoking does not stop the holder's next request from being admitted again: remove the entry to stop that. The file is read at each request, so adding or removing an entry needs no restart; a malformed entry is ignored with a log line, and a timed (`--minutes`) request always asks the owner.
+
+Trade-off: any process of that executable and harness under the same user can obtain access, so keep the list empty on shared or production kernels. It is empty by default.
 
 Exit codes and the error codes behind them:
 
@@ -55,6 +69,6 @@ On `kernel_request_timeout`, `kernel_connection_lost` or `kernel_access_unconfir
 MP-08 / MP-10 / MP-11: `kernel_sudo_refused` means the person refused the request;
 `kernel_sudo_expired` means no approval arrived before its deadline. Neither
 starts elevation or retries automatically. Submit a new request only when needed,
-and approve it in an already paired Chariox client. The launcher and the bare
-TypeScript CLI both walk past shells to the nearest installed provider harness;
-no `CHARIOX_CLI_ACCESS_HOLDER_PID` override is needed for ordinary use.
+and approve it in an already paired Chariox client. The kernel, not the CLI,
+picks the access holder from the Unix peer's host ancestry, so no holder pid is
+needed for ordinary use, including from a sandboxed tool shell.

@@ -129,22 +129,26 @@ impl Entry {
     }
 }
 
-/// A command whose admission policy must survive a hot reload: it is waiting,
-/// being resumed, or running with the person's Start now override.
+/// A command the previous kernel program's admission had stopped (or was
+/// resuming) when it handed its processes over, or that the person started
+/// now: the next program keeps it waiting and controllable, resumes it when
+/// room frees, and never makes a forced one wait again.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct HeldCommand {
     pub(super) identity: crate::runtime::kernel_access::process::ProcessIdentity,
     pub(super) wait: Option<Wait>,
     pub(super) admitted: bool,
     pub(super) forced: bool,
+    pub(super) stopped: bool,
     pub(super) paused_rate: u64,
     pub(super) peak: Peak,
     pub(super) arrived: u64,
 }
 
 impl HeldCommand {
-    /// What a hot reload must carry for `pid`: a command admission has stopped,
-    /// is resuming, or must never pause again after Start now.
+    /// What a hot reload must carry for `pid`: a command admission has
+    /// stopped, or has resumed but not yet continued, or that Start now
+    /// admitted for good.
     pub(super) fn of(pid: u32, entry: &Entry) -> Option<Self> {
         if entry.wait.is_none() && !entry.stopped && !entry.forced {
             return None;
@@ -154,14 +158,16 @@ impl HeldCommand {
             wait: entry.wait,
             admitted: entry.admitted,
             forced: entry.forced,
+            stopped: entry.stopped,
             paused_rate: entry.paused_rate,
             peak: entry.peak,
             arrived: entry.arrived,
         })
     }
 
-    /// Treat it as stopped so a pending resume sends SIGCONT. For an already
-    /// running forced command, the extra SIGCONT leaves its policy unchanged.
+    /// Admission's view of the command in the program that adopts it: as
+    /// stopped as it was, so that whatever resumes it also continues the
+    /// process.
     fn into_entry(self) -> Entry {
         Entry {
             arrived: self.arrived,
@@ -169,7 +175,7 @@ impl HeldCommand {
             admitted: self.admitted,
             forced: self.forced,
             holdable: true,
-            stopped: true,
+            stopped: self.stopped,
             paused_rate: self.paused_rate,
             peak: self.peak,
             ..Entry::default()
@@ -276,7 +282,7 @@ impl Ledger {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(vacant) => {
                     if let Some(held) = take_adopted(command.pid) {
-                        // Keep the previous program's wait or Start now policy.
+                        // Still waiting, or still forced, as in the previous program.
                         self.arrivals = self.arrivals.max(held.arrived);
                         let entry = vacant.insert(held.into_entry());
                         entry.seen = recognise(command.effective);
@@ -882,21 +888,23 @@ fn arguments(_pid: u32) -> Option<(Vec<String>, Option<PathBuf>)> {
     None
 }
 
-/// Bytes a process has written to storage.
+/// Storage I/O, shared by admission and the session process feed. Unreadable
+/// counters stay unknown in the feed rather than looking like zero usage.
 #[cfg(target_os = "linux")]
-pub(super) fn written(pid: u32) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/io"))
-        .ok()
-        .and_then(|io| {
-            io.lines()
-                .find_map(|line| line.strip_prefix("write_bytes:"))
-                .and_then(|value| value.trim().parse().ok())
-        })
-        .unwrap_or(0)
+pub(super) fn disk_io(pid: u32) -> Option<(u64, u64)> {
+    let io = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    let counter = |name: &str| {
+        io.lines()
+            .find_map(|line| line.strip_prefix(name))?
+            .trim()
+            .parse()
+            .ok()
+    };
+    Some((counter("read_bytes:")?, counter("write_bytes:")?))
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn written(pid: u32) -> u64 {
+pub(super) fn disk_io(pid: u32) -> Option<(u64, u64)> {
     let mut info = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
     // SAFETY: the buffer is one rusage_info_v2, the flavor asked for.
     let read = unsafe {
@@ -907,15 +915,20 @@ pub(super) fn written(pid: u32) -> u64 {
         )
     };
     if read != 0 {
-        return 0;
+        return None;
     }
     // SAFETY: proc_pid_rusage succeeded and filled the buffer.
-    unsafe { info.assume_init() }.ri_diskio_byteswritten
+    let info = unsafe { info.assume_init() };
+    Some((info.ri_diskio_bytesread, info.ri_diskio_byteswritten))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(super) fn written(_pid: u32) -> u64 {
-    0
+pub(super) fn disk_io(_pid: u32) -> Option<(u64, u64)> {
+    None
+}
+
+pub(super) fn written(pid: u32) -> u64 {
+    disk_io(pid).map_or(0, |(_, written)| written)
 }
 
 /// Expected peaks by command key, kept across kernel restarts.

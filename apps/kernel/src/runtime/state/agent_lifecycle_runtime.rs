@@ -286,16 +286,7 @@ impl KernelRuntimeOwnedState {
         run: &str,
         outcome: &crate::provider::TurnOutcome,
     ) -> Result<Option<(AgentTaskExecution, bool)>, DaemonError> {
-        self.end_failed_agent_task_with_reason(
-            room,
-            agent,
-            prompt,
-            run,
-            &format!(
-                "Provider run failed: {}. Owner must reconcile and resume or cancel",
-                outcome.reason
-            ),
-        )
+        self.end_failed_agent_task_with_reason(room, agent, prompt, run, &outcome.notice())
     }
 
     pub(super) fn end_failed_agent_task_with_reason(
@@ -321,6 +312,31 @@ impl KernelRuntimeOwnedState {
             ledger::end_failed_turn(&self.durable_state_store, &task, reason.into_owned())?
                 .map(|ended| (ended, false)),
         )
+    }
+    /// Binds the loader turn's task to the continuation it was promised. An
+    /// already prepared, blocked, waiting or finished task comes back unchanged.
+    pub(super) fn prepare_catalog_continuation(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+        run: &str,
+    ) -> Result<AgentTaskExecution, DaemonError> {
+        match self
+            .durable_state_store
+            .agent_lifecycle(Operation::PrepareCatalogContinuation {
+                room: room.into(),
+                agent: agent.into(),
+                prompt: prompt.into(),
+                run: run.into(),
+                next_prompt: format!("task-catalog:{prompt}"),
+                now: crate::session::unix_epoch_ms(),
+            })? {
+            Outcome::Task(task) => Ok(task),
+            _ => Err(crate::durable_state::agent_lifecycle::error(
+                "catalog continuation returned no task",
+            )),
+        }
     }
     pub(super) fn settle_agent_task_answered_by(
         &self,
@@ -358,22 +374,12 @@ impl KernelRuntimeOwnedState {
                 });
             if catalog_handoff {
                 let next_prompt = format!("task-catalog:{}", prompt.id());
-                if let Outcome::Task(task) = self.durable_state_store.agent_lifecycle(
-                    Operation::PrepareCatalogContinuation {
-                        room: room.into(),
-                        agent: agent.into(),
-                        prompt: prompt.id().into(),
-                        run: run.into(),
-                        next_prompt: next_prompt.clone(),
-                        now: crate::session::unix_epoch_ms(),
-                    },
-                )? {
-                    if task.state == ExecutionState::Blocked
-                        || (task.state == ExecutionState::Working
-                            && task.pending_prompt_id.as_ref() == Some(&next_prompt))
-                    {
-                        return Ok(Some((task, false)));
-                    }
+                let task = self.prepare_catalog_continuation(room, agent, prompt.id(), run)?;
+                if task.state == ExecutionState::Blocked
+                    || (task.state == ExecutionState::Working
+                        && task.pending_prompt_id.as_ref() == Some(&next_prompt))
+                {
+                    return Ok(Some((task, false)));
                 }
             }
         }
@@ -514,8 +520,19 @@ impl KernelRuntimeState {
         }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
-        self.owned
-            .require_agent_account_authenticated(target, None, "send agent message")?;
+        if let Err(error) =
+            self.owned
+                .require_agent_account_authenticated(target, None, "send agent message")
+        {
+            // The refusal is definite: a delegate that cannot start never completes, so nothing
+            // may keep the sender's turn waiting on it.
+            self.owned.settle_failed_delegate_start(
+                session.id(),
+                target.id(),
+                &error.to_string(),
+            )?;
+            return Err(error);
+        }
         // Room admission precedes resource lookup; no cross-room discovery.
         let id = args
             .idempotency_key
@@ -821,7 +838,19 @@ impl KernelRuntimeState {
         self.dispatch_task_continuation_with_context(task, attachment, text, None)
             .await
     }
+    /// The continuation is the kernel's work for the task's owner, never the command that settled it.
     pub(super) async fn dispatch_task_continuation_with_context(
+        &self,
+        task: &AgentTaskExecution,
+        attachment: &str,
+        text: String,
+        hidden_system_context: Option<String>,
+    ) -> Result<(), DaemonError> {
+        self.as_kernel()
+            .dispatch_kernel_task_continuation(task, attachment, text, hidden_system_context)
+            .await
+    }
+    async fn dispatch_kernel_task_continuation(
         &self,
         task: &AgentTaskExecution,
         attachment: &str,

@@ -5,8 +5,10 @@ import { BrowserMemory } from './browser-memory.mjs';
 import { BrowserRendererRecovery } from './browser-renderer-recovery.mjs';
 import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
 import { createHash } from "node:crypto";
+import { BrowserWebBotAuth } from "./browser-controller-web-bot-auth.mjs";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
+import { captureBrowserValue } from "./browser-controller-capture.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { readPointerCursor } from "./browser-controller-cursor.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -45,6 +47,7 @@ import {
   BrowserHistoryError,
   navigateBrowserHistory,
 } from "./browser-controller-history.mjs";
+import { BrowserPagePermissions } from './browser-page-permissions.mjs';
 import { BrowserDialogDefaults } from "./browser-controller-dialogs.mjs";
 import { applyBrowserBar } from "./browser-controller-bar.mjs";
 import { acquireBrowserCookieWriterFence } from "./browser-controller-cookie-fence.mjs";
@@ -101,6 +104,7 @@ export class BrowserCdpClient {
     applyCanonicalDisplay,
     focusWorldSource,
     memory = new BrowserMemory(),
+    permissionRequests = false,
   } = {}) {
     this.memory = memory;
     this.rendererRecovery = new BrowserRendererRecovery(this);
@@ -118,6 +122,8 @@ export class BrowserCdpClient {
     this.stageUploads = stageUploads;
     this.eventJournal = eventJournal;
     this.connection = null;
+    this.webBotAuth = new BrowserWebBotAuth(() => this.connection);
+    this.webBotAuthTargets = new Map();
     this.connectionEpoch = 0;
     this.connectionAttempt = null;
     this.pageCloseQueue = Promise.resolve();
@@ -145,6 +151,7 @@ export class BrowserCdpClient {
     this.fillTargets = new Map();
     this.fillRevision = 0;
     this.dialogDefaults = new BrowserDialogDefaults();
+    this.pagePermissions = permissionRequests ? new BrowserPagePermissions(this) : null;
     this.networkRequestsBySession = new Map();
     this.responseBodies = new BrowserResponseBodies();
     this.cookieWriterFence = null;
@@ -218,16 +225,16 @@ export class BrowserCdpClient {
       // browser connection is re-established): it drops out of this
       // reconcile; a live Tab whose session went stale is attached again.
       const appTargets = new Map([...(this.appTabs?.apps?.values() ?? [])].map((app) => [app.targetId, app]));
-      const metricsFor = (target) => (appTargets.has(target.targetId) && this.appMetrics(appTargets.get(target.targetId).page))
-        || this.layoutMetrics(target.targetId, viewport);
+      const metricsFor = (target) => this.targetMetrics(target.targetId, viewport);
+      const projectedPages = pages.filter(target => !appTargets.get(target.targetId)?.background);
       // Window mode changes the available content area. Measure only after
       // Chromium has applied it, and retire page metrics when that mode changes.
       if (typeof browserBarVisible === "boolean") {
         const before = JSON.stringify([...this.browserBarApplied]);
-        await applyBrowserBar(connection, pages, appTargets, browserBarVisible, this.browserBarApplied);
+        await applyBrowserBar(connection, projectedPages, appTargets, browserBarVisible, this.browserBarApplied);
         if (before !== JSON.stringify([...this.browserBarApplied])) this.viewportByTarget.clear();
       }
-      const inspected = (await Promise.all(pages.map(async (target) => {
+      const inspected = (await Promise.all(projectedPages.map(async (target) => {
         try {
           return await this.inspectPage(connection, target, metricsFor(target), {visibleTargetId});
         } catch (error) {
@@ -272,6 +279,8 @@ export class BrowserCdpClient {
   }
 
   async close() {
+    await this.webBotAuth.clearAll();
+    this.webBotAuthTargets.clear();
     this.memory.close();
     const connection = this.invalidateConnection(undefined, { preserveFrameSessions: true });
     await this.frameSessions.close();
@@ -377,6 +386,7 @@ export class BrowserCdpClient {
     }
     this.targetSessionAttempts.clear();
     this.connection = null;
+    this.webBotAuth.detachSessions();
     this.rendererRecovery.close();
     this.appliedViewport = null;
     this.viewportByTarget.clear(); this.contentInsetsByWindow.clear();
@@ -396,6 +406,7 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.clear(); this.pageFramesByTarget.clear(); this.suspendedPageFrames.clear();
     this.fillTargets.clear();
     this.snapshotStateByTarget.clear();
+    this.pagePermissions?.clear();
     this.dialogDefaults.clear();
     this.networkRequestsBySession.clear();
     this.responseBodies.clear();
@@ -463,6 +474,7 @@ export class BrowserCdpClient {
       }
       this.unsubscribeFromConnection = unsubscribe ?? null;
       this.assertConnectionAttemptCurrent(attempt, connection);
+      await this.pagePermissions?.initialize(connection);
       await connection.send("Target.setDiscoverTargets", { discover: true });
       this.assertConnectionAttemptCurrent(attempt, connection);
       this.memory.watch(connection);
@@ -519,6 +531,7 @@ export class BrowserCdpClient {
     ]);
     const failed = results.find((result) => result.status === "rejected");
     if (failed) throw failed.reason;
+    await this.pagePermissions?.install(connection, sessionId);
   }
 
   async configureWriterTargetSession(connection, sessionId) {
@@ -645,6 +658,7 @@ export class BrowserCdpClient {
     this.documentIdsByTarget.delete(targetId); this.pageFramesByTarget.delete(targetId); this.suspendedPageFrames.delete(targetId);
     this.focusWorldsByTarget.delete(targetId);
     this.snapshotStateByTarget.delete(targetId);
+    this.pagePermissions?.dropTarget(targetId);
     this.dialogDefaults.delete(targetId);
     this.targetsByFrame.removeTarget(targetId);
     await this.frameSessions.removeTarget(targetId);
@@ -668,6 +682,13 @@ export class BrowserCdpClient {
     return layout ? { ...viewport, css_width: layout.width, css_height: layout.height } : viewport;
   }
 
+  // What the Tab's page is configured with: beside the panel for an App Tab,
+  // the viewer layout for any other.
+  targetMetrics(targetId, viewport) {
+    const app = [...(this.appTabs?.apps?.values() ?? [])].find((open) => open.targetId === targetId);
+    return (app && this.appMetrics(app.page)) || this.layoutMetrics(targetId, viewport);
+  }
+
   layoutMetrics(targetId, viewport) {
     return { ...deviceMetricsFor(viewport, !!this.applyCanonicalDisplay), ...(this.layoutByTarget.get(targetId) ?? {}) };
   }
@@ -677,6 +698,12 @@ export class BrowserCdpClient {
   setLayout(targetId, layout) {
     if (layout) this.layoutByTarget.set(targetId, { width: layout.width, height: layout.height });
     else this.layoutByTarget.delete(targetId);
+    return this.queueLayout(targetId, () => this.applyLayout(targetId));
+  }
+
+  // The page can lose the applied viewport when it moves to another renderer; the recorded key would then skip the next apply.
+  reapplyLayout(targetId) {
+    this.viewportByTarget.delete(targetId);
     return this.queueLayout(targetId, () => this.applyLayout(targetId));
   }
 
@@ -701,7 +728,8 @@ export class BrowserCdpClient {
   async applyLayout(targetId) {
     const connection = this.connection;
     if (!this.canonical || !connection) return;
-    if ([...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
+    // Room Apps keep their panel-sized page; tabbed user-domain Apps use the viewer layout.
+    if (this.appViewport && [...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId)) return;
     const sessionId = await this.ensureTargetSession(connection, targetId);
     const metrics = this.layoutMetrics(targetId, this.canonical);
     const key = JSON.stringify(metrics);
@@ -933,6 +961,34 @@ export class BrowserCdpClient {
     };
   }
 
+  async configureWebBotAuth(tabId, signer, targetId = this.webBotAuthTargets.get(tabId)) {
+    const appOwnsFetch = typeof targetId === "string"
+      && [...(this.appTabs?.apps?.values() ?? [])].some((app) => app.targetId === targetId);
+    if (appOwnsFetch) {
+      this.webBotAuthTargets.delete(tabId);
+      return this.webBotAuth.configureIgnoredTab(tabId, signer);
+    }
+    const result = await this.webBotAuth.configureTab(tabId, signer);
+    if (signer === null) {
+      this.webBotAuthTargets.delete(tabId);
+      return result;
+    }
+    if (targetId) await this.attachWebBotAuth(tabId, targetId);
+    return result;
+  }
+
+  async attachWebBotAuth(tabId, targetId, attachedSessionId) {
+    this.webBotAuthTargets.set(tabId, targetId);
+    const connection = await this.ensureConnection();
+    const sessionId = attachedSessionId ?? await this.ensureTargetSession(connection, targetId);
+    await this.webBotAuth.attachTab(tabId, sessionId);
+  }
+
+  async clearWebBotAuth(tabId) {
+    await this.webBotAuth.clearTab(tabId);
+    this.webBotAuthTargets.delete(tabId);
+  }
+
   async closePageTarget(connection, targetId, { signal } = {}) {
     const previous = this.pageCloseQueue;
     let release;
@@ -1047,40 +1103,70 @@ export class BrowserCdpClient {
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
     try {
-      const result = await withBrowserActionFrame({
-        connection,
-        sessionId,
-        targetId,
-        documentId,
-        nodeRef: rawRequest?.node_ref,
-        action: rawRequest?.action,
-        timeoutMs: rawRequest?.timeout_ms,
-        signal,
-        withInput: operation => this.inputCapture.run(connection, sessionId, operation),
-      }, async options => {
-        if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
-          const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
-          this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
-          // MP-11: a new protected target ends every display lease before the value is typed.
-          retireNativeStates();
-          // MP-11: bind the completed value before releasing in-flight coverage.
-          // A failed action still fingerprints whatever it inserted; an
-          // unprovable completion keeps the fill pending (covered).
-          let result;
-          try { result = await performBrowserAction(options); }
-          catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
-          await finishBrowserFill(connection, target);
-          return result;
-        }
-        return performBrowserAction(options);
-      });
-      return {
-        browser_generation: this.browserGeneration,
-        ...result,
+      const dispatch = async (inputTimestamp, inputToken) => {
+        const result = await withBrowserActionFrame({
+          inputTimestamp, inputToken,
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          nodeRef: rawRequest?.node_ref,
+          action: rawRequest?.action,
+          timeoutMs: rawRequest?.timeout_ms,
+          signal,
+          withInput: operation => this.inputCapture.run(connection, sessionId, operation),
+        }, async options => {
+          if (rawRequest?.action?.kind === 'fill' && rawRequest.action.expected_document_url) {
+            const target = await recordBrowserFill(connection, {...options, browserGeneration:this.browserGeneration, trackingDocumentId:documentId, trackingNodeRef:rawRequest.node_ref}, rawRequest.action.text, ++this.fillRevision);
+            this.fillTargets.set(`${targetId}:${rawRequest.node_ref}`, target);
+            // MP-11: a new protected target ends every display lease before the value is typed.
+            retireNativeStates();
+            // MP-11: bind the completed value before releasing in-flight coverage.
+            // A failed action still fingerprints whatever it inserted; an
+            // unprovable completion keeps the fill pending (covered).
+            let result;
+            try { result = await performBrowserAction(options); }
+            catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
+            await finishBrowserFill(connection, target);
+            return result;
+          }
+          return performBrowserAction(options);
+        });
+        return {
+          browser_generation: this.browserGeneration,
+          ...result,
+        };
       };
+      const app = this.appTabs && [...this.appTabs.apps.values()].find(app => app.targetId === targetId);
+      return app && rawRequest.agent_id
+        ? await this.appTabs.input(app, rawRequest.agent_id, dispatch)
+        : await dispatch();
     } catch (error) {
       throw normalizeControllerError(error);
     }
+  }
+
+  // VAUDIT S3: the kernel holds its observation barrier across this call and
+  // registers the returned value before any later frame or snapshot.
+  async captureValue(rawRequest, { signal } = {}) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const value = await captureBrowserValue({
+      connection,
+      sessionId,
+      targetId,
+      documentId,
+      nodeRef: rawRequest?.node_ref,
+      revealNodeRef: rawRequest?.reveal_node_ref ?? null,
+      read: rawRequest?.read ?? "node",
+      expectedDocumentUrl: rawRequest?.expected_document_url,
+      signal,
+      click: (nodeRef) => this.performAction({ target_id: targetId, document_id: documentId, node_ref: nodeRef,
+        action: { kind: "click", expected_document_url: rawRequest.expected_document_url }, timeout_ms: 10_000 }, { signal }),
+    }).catch((error) => { throw normalizeControllerError(error); });
+    this.protectedValues.add(value);
+    return value;
   }
 
   async navigate(rawRequest, { signal } = {}) {
@@ -1195,6 +1281,14 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
       );
     }
+    const permissionDialog = this.dialogDefaults.permissions.get(rawRequest.dialog_id);
+    if (permissionDialog) {
+      if (promptText != null || !this.dialogDefaults.current(targetId, rawRequest.dialog_id, documentId)) {
+        throw new BrowserControllerError("browser_dialog_invalid", "Browser permission answer is invalid");
+      }
+      await this.pagePermissions.answer(permissionDialog, action === "accept");
+      return { browser_generation:this.browserGeneration, target_id:targetId, document_id:documentId, action };
+    }
     const defaultPrompt = action === "accept" && promptText == null
       ? this.dialogDefaults.get(targetId, documentId)
       : undefined;
@@ -1308,7 +1402,7 @@ export class BrowserCdpClient {
       if (request.browser_generation !== generation) throw new BrowserControllerError("stale_browser_generation", "Browser artifact needs the observed browser generation");
       const canonical = canonicalViewport(request.viewport);
       const viewport = this.layoutViewport(targetId, canonical);
-      const metricsKey = JSON.stringify(this.layoutMetrics(targetId, canonical));
+      const metricsKey = JSON.stringify(this.targetMetrics(targetId, canonical));
       const assertBound = async () => {
         const tree = await connection.send("Page.getFrameTree", {}, sessionId);
         if (connection !== this.connection || generation !== this.browserGeneration || tree?.frameTree?.frame?.loaderId !== documentId)
@@ -1470,6 +1564,8 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    this.webBotAuth.observe(message);
+    this.pagePermissions?.observe(message);
     this.rendererRecovery.observe(message);
     this.responseBodies.observe(message);
     if (message?.method === "Network.requestWillBeSent" && typeof message.sessionId === "string"
@@ -1493,6 +1589,7 @@ export class BrowserCdpClient {
     this.dialogDefaults.observe(redactObservation(message, this.protectedValues), dialogTargetId, this.documentIdsByTarget.get(dialogTargetId));
     if (message?.method === "Target.detachedFromTarget") {
       const sessionId = message.params?.sessionId ?? message.sessionId;
+      this.webBotAuth.detachSession(sessionId);
       const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
       if (typeof sessionId === "string") {
         this.targetsBySession.delete(sessionId);
@@ -1509,6 +1606,7 @@ export class BrowserCdpClient {
         this.sessionsByTarget.delete(targetId);
         this.viewportByTarget.delete(targetId);
         this.focusWorldsByTarget.delete(targetId);
+        this.pagePermissions?.dropTarget(targetId);
         this.dialogDefaults.delete(targetId);
         this.targetsByFrame.removeTarget(targetId);
         void this.frameSessions.removeTarget(targetId);
@@ -1676,7 +1774,8 @@ export class CdpConnection {
     const caller = {};
     Error.captureStackTrace(caller);
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // App handlers remain owned until CDP answers or the connection retires.
+      const timeout = timeoutMs === null ? null : setTimeout(() => {
         this.pending.delete(id);
         const error = new BrowserControllerError(
           "browser_cdp_timeout",

@@ -48,7 +48,14 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
    // source-publication snapshot, bounded by native owner and document events.
    ...(cachedCurrent?{regionFrameCurrent:()=>{host.timing.event?.('native_cached_lease',{source_kind:sourceKind,lease_phase:2});return lease.isAlive()&&window.isCurrent()&&cachedCurrent();}}:{})});
   const close=stream.close.bind(stream);let closing,offRetire;
-  stream.close=()=>closing??=(async()=>{if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);try{await close();}finally{try{await source.close();}finally{await lease.close();}}})();
+  stream.close=()=>closing??=(async()=>{
+   if(typeof offRetire==='function')offRetire();host.displays.delete(stream.subscription_id);
+   try{
+    const results=await Promise.allSettled([close(),source.close()]);
+    const errors=results.filter(result=>result.status==='rejected').map(result=>result.reason);
+    if(errors.length)throw new AggregateError(errors,'MD-DISPLAY: region teardown failed');
+   }finally{await lease.close();}
+  })();
   if(target.kind==='region')lease.attachDisplay(stream);else host.displays.set(stream.subscription_id,stream);
   const unwatch=target.kind==='browser_chrome'&&typeof source.windows==='function'?host.chromeWindows.watch?.(()=>source.windows(),undefined,fn=>source.onWindowsChanged?.(fn)):null;
   // The band's own frames tell when a browser-modal dialog dims the window (no other signal exists).

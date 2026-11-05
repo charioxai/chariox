@@ -55,7 +55,8 @@ async function statusOf(argv: string[]): Promise<number> {
 export async function runSecretCommand(argv: string[]): Promise<boolean> {
   if (argv[0] !== "secret") return false
   try {
-    if (argv[1] === "request") process.exitCode = await request(argv.slice(2))
+    if (argv[1] === "--help") console.log(`${usageOf("secret request")} | ${usageOf("secret status")}`)
+    else if (argv[1] === "request") process.exitCode = await request(argv.slice(2))
     else if (argv[1] === "status") process.exitCode = await statusOf(argv.slice(2))
     else throw new CommandFailure("usage", `${usageOf("secret request")} | ${usageOf("secret status")}`)
   } catch (error) { reportFailure(error) }

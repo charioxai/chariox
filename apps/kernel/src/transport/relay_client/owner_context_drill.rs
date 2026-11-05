@@ -460,11 +460,9 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     };
     let (router, _store) = target_router(target.clone()).await;
     let state = Arc::new(RwLock::new(RelayClientState::default()));
-    let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
     let harness = ManagedPeerRequestHarness {
         router: &router,
         state: &state,
-        outgoing_tx: &outgoing_tx,
     };
     let arm = RelayPeerRequest::ArmManagedContextImport {
         plan: plan.clone(),
@@ -554,7 +552,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
     let key_refusal = handle_daemon_peer_request(
         &router,
         &state,
-        &outgoing_tx,
         &source.daemon_id,
         Some(wrong_source_key),
         wrong_key_request,
@@ -651,7 +648,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         harness: ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         },
         source: &source,
         identity: identity.clone(),
@@ -674,7 +670,6 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         harness: ManagedPeerRequestHarness {
             router: &router,
             state: &state,
-            outgoing_tx: &outgoing_tx,
         },
         source: &source,
         identity,

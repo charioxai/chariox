@@ -1,0 +1,100 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "namespaces": [
+          {
+            "kind": "domain",
+            "name": "example.com"
+          }
+        ],
+        "valid": true
+      },
+      "input": {
+        "appId": "com.example.todo"
+      },
+      "name": "domain-two-labels"
+    },
+    {
+      "expected": {
+        "namespaces": [
+          {
+            "kind": "domain",
+            "name": "tools.example.com"
+          },
+          {
+            "kind": "domain",
+            "name": "example.com"
+          }
+        ],
+        "valid": true
+      },
+      "input": {
+        "appId": "com.example.tools.todo"
+      },
+      "name": "domain-subdomain"
+    },
+    {
+      "expected": {
+        "namespaces": [
+          {
+            "kind": "github",
+            "name": "octo-cat"
+          }
+        ],
+        "valid": true
+      },
+      "input": {
+        "appId": "io.github.octo-cat.todo"
+      },
+      "name": "github-account"
+    },
+    {
+      "expected": {
+        "namespaces": [],
+        "valid": true
+      },
+      "input": {
+        "appId": "io.github.todo"
+      },
+      "name": "github-without-app-name"
+    },
+    {
+      "expected": {
+        "valid": false
+      },
+      "input": {
+        "appId": "com.Example.todo"
+      },
+      "name": "uppercase-rejected"
+    },
+    {
+      "expected": {
+        "valid": false
+      },
+      "input": {
+        "appId": "com.example-.todo"
+      },
+      "name": "trailing-hyphen-rejected"
+    },
+    {
+      "expected": {
+        "valid": false
+      },
+      "input": {
+        "appId": "example.todo"
+      },
+      "name": "two-labels-rejected"
+    },
+    {
+      "expected": {
+        "valid": false
+      },
+      "input": {
+        "appId": "com.example.my_todo"
+      },
+      "name": "underscore-rejected"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §2: App ID syntax and the namespaces whose verified owner may hold it"
+}

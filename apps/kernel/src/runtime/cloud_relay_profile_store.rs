@@ -74,9 +74,10 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     if profile.kernel_credential.is_some() {
         return Ok(());
     }
-    // Managed bootstrap remains its explicit dedicated capability path.
-    if crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?
-        .is_some_and(|r| r.kernel_id == config.daemon_id && r.machine_id == config.host_machine_id)
+    // The relay-ready child runs before confirmation. Its machine credential
+    // belongs to bootstrap and must survive the confirmed-child restart.
+    if std::env::var_os(crate::managed_bootstrap::MANAGED_PROVIDER_TOPOLOGY_ENV).is_some()
+        || std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT").is_some()
     {
         return Ok(());
     }
@@ -111,4 +112,44 @@ pub(crate) async fn migrate_legacy_kernel_profile(
     profile.token_expires_at_ms = None;
     persist_cloud_profile(runtime_state, profile).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn pending_managed_bootstrap_preserves_its_machine_credential() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        // Before confirmation there is no ConfirmedManagedKernelRegistration.
+        // Exercise the migration entry point with the supervisor's environment.
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            api_url: "http://127.0.0.1:1".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            machine_credential: Some("synthetic-managed-machine-credential".into()),
+            ..Default::default()
+        });
+        let expected = config.cloud_relay.clone();
+        let app = crate::DaemonApp::bootstrap(config).expect("pending managed kernel boots");
+        let projection = app.config_projection_store();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            4,
+        );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(migrate_legacy_kernel_profile(
+                &router.runtime_state(),
+                &projection,
+            ))
+            .expect("managed bootstrap must not call the ordinary migration endpoint");
+        assert_eq!(projection.snapshot().cloud_relay, expected);
+    }
 }

@@ -10,7 +10,7 @@ import type { AppInstallationSummary } from "@chariox/kernel-client/kernel-types
 import type { AppDevLoop } from "./app-dev-loop.js"
 import type { AppFileInstaller } from "./app-install-file.js"
 import type { AppPublisherEnrollment } from "./app-publisher-file.js"
-import type { BootstrapState, RuntimeSession } from "./cli-types.js"
+import type { AgentInstance, BootstrapState, RuntimeSession } from "./cli-types.js"
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
@@ -210,6 +210,7 @@ type AnyFn = (...args: any[]) => any
 export type CliCommandActionCompositionDeps = {
   openSessionProcesses?: () => void
   confirmProcessStop?: (agent: string) => Promise<boolean>
+  appActions?: { handle(args: string[]): Promise<boolean> }
   userAppViews?: { handle(args: string[], sessionId?: string): Promise<boolean>; hostOfferIds?(): Promise<string[]> }
   cloudClient?: CloudClient
   kernelConnected?: () => boolean
@@ -236,6 +237,7 @@ export type CliCommandActionCompositionDeps = {
   providerRunState: AnyFn
   currentModelId: AnyFn
   currentVariantId: AnyFn
+  currentAccountProfileId?: AnyFn
   focusedAgentId: AnyFn
   multiAgentResponseLayout: AnyFn
   maxAgentsPerScreen: AnyFn
@@ -357,6 +359,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
+    currentAccountProfileId,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
@@ -456,6 +459,9 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSplitPaneFocusRepaint,
   } = deps
 
+  const focusedAgent = (): AgentInstance | undefined => isAttached()
+    ? sessionState().agents.find((agent: AgentInstance) => agent.id === focusedAgentId())
+    : undefined
   const openRoomViewer = async (target: { sessionId: string; agentId: string; sliceId: string }) => {
     const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
       ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
@@ -489,7 +495,10 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
-    currentProviderId: () => options.provider ?? "opencode",
+    currentProviderId: () => focusedAgent()?.provider ?? options.provider ?? "opencode",
+    // The account belongs to the same agent as the provider: the waiting-room
+    // selection may name another provider's account.
+    currentAccountProfileId: () => focusedAgent()?.account_profile || currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
     submitGoalPrompt: async (text, targetAgentId) => {
@@ -539,6 +548,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     sendAppRequest: (request) => client.send(request),
+    ...(deps.appActions ? { appActions: deps.appActions } : {}),
     ...(deps.userAppViews ? { userAppViews: deps.userAppViews } : {}),
     ...(deps.appFileInstaller ? { appFileInstaller: deps.appFileInstaller } : {}),
     ...(deps.appDevLoop ? { appDevLoop: deps.appDevLoop } : {}),

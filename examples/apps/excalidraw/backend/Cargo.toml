@@ -1,0 +1,23 @@
+[package]
+name = "chariox-excalidraw"
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+chariox-app-sdk = { path = "../../../../packages/app-sdk-rust" }
+serde_json = "=1.0.150"
+futures = "=0.3.32"
+base64 = "=0.22.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+
+[workspace]

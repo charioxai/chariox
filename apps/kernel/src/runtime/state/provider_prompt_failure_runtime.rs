@@ -147,12 +147,7 @@ impl KernelRuntimeState {
         {
             return Ok(true);
         }
-        let safe_message = crate::provider::sanitize_provider_diagnostic(message);
-        let safe_message = if safe_message.is_empty() {
-            "provider reported an error".to_string()
-        } else {
-            safe_message
-        };
+        let safe_message = failure.notice();
         let failed_attempt = FailedProviderAttempt {
             provider_run: &provider_run,
             agent_id: &agent_id,
@@ -291,7 +286,10 @@ impl KernelRuntimeState {
         }
         // Provider EOF/error cannot promote a partial answer to done. Task
         // bookkeeping is best-effort: the prompt failure path below always runs.
-        let task_settlement = if owned.config_projection.snapshot().room_agent_tools {
+        let task_settlement = if !failure.is_error() {
+            // A stop the person made (from Health) ends the task as a Stop does.
+            owned.settle_stopped_agent_task(session_id, &agent_id, &active_prompt, provider_run_id)
+        } else if owned.config_projection.snapshot().room_agent_tools {
             let settle = || -> Result<_, DaemonError> {
                 let prepared = crate::app::KernelPreparedPromptSubmission {
                     session_id: session_id.into(),
@@ -306,7 +304,11 @@ impl KernelRuntimeState {
                     .ok_or_else(|| {
                         crate::durable_state::agent_lifecycle::error("failed turn has no task")
                     })?;
-                crate::durable_state::agent_lifecycle::end_failed_turn(&owned.durable_state_store,&task,format!("Provider run failed: {safe_message}. Owner must reconcile and resume or cancel"))?;
+                crate::durable_state::agent_lifecycle::end_failed_turn(
+                    &owned.durable_state_store,
+                    &task,
+                    safe_message.clone(),
+                )?;
                 Ok(owned
                     .durable_state_store
                     .agent_tasks(Some(session_id), Some(&agent_id))?

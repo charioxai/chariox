@@ -236,7 +236,7 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
     }
 }
 
-pub(super) fn vault_store_for_config(
+pub(crate) fn vault_store_for_config(
     config: &UserCredentialVaultConfig,
 ) -> Result<Arc<dyn CredentialVaultStore>, DaemonError> {
     match config.backend {

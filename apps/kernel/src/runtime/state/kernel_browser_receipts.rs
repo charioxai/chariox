@@ -32,7 +32,7 @@ impl KernelRuntimeState {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(&user);
         protection.require(&scope, false)?;
-        protection.revision(&scope).map(Some)
+        self.kernel_browser_policy_revision(&user).map(Some)
     }
     pub(crate) async fn validate_kernel_browser_receipt(
         &self,
@@ -60,7 +60,7 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(&user);
         let _barrier = protection.barrier(&scope)?.read_owned().await;
         protection.require(&scope, false)?;
-        if revision != Some(protection.revision(&scope)?) {
+        if revision != Some(self.kernel_browser_policy_revision(&user)?) {
             return Err(host_error(
                 "MD-5: browser receipt protection changed; fetch a fresh observation".into(),
             ));
@@ -78,7 +78,10 @@ while IFS= read -r request; do
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
   *'"method":"host.revoke_subscriptions"'*) printf 'revoked\n' > "$1/subscriptions-revoked"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.downloads.cleanup"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.computer.retire"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.browser.retire_input"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state_signal"'*) after=${request#*'"after":'}; after=${after%%,*}; ms=${request#*'"wait_ms":'}; ms=${ms%%[!0-9]*}; ( n=0; while test "$(cat "$1/signal" 2>/dev/null || echo 0)" = "$after" && test "$n" -lt $((ms / 10)); do sleep 0.01; n=$((n+1)); done; printf '{"id":%s,"ok":true,"result":{"signal":%s}}\n' "$id" "$(cat "$1/signal" 2>/dev/null || echo 0)" ) & ;;
   *'"state_wait":true'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;

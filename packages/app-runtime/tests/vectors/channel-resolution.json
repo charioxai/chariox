@@ -1,0 +1,184 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "installation_id": "dev-todo-r1",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "ownerId": "o1",
+        "roomId": "r1"
+      },
+      "name": "automatic-in-the-dev-room-uses-the-dev-copy"
+    },
+    {
+      "expected": {
+        "installation_id": "rel-todo",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "ownerId": "o1",
+        "roomId": "r3"
+      },
+      "name": "automatic-in-another-room-uses-release"
+    },
+    {
+      "expected": {
+        "installation_id": "rel-todo",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "ownerId": "o1"
+      },
+      "name": "automatic-without-a-room-uses-release"
+    },
+    {
+      "expected": {
+        "installation_id": "rel-todo",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "channel": "release",
+        "ownerId": "o1",
+        "roomId": "r1"
+      },
+      "name": "explicit-release-in-the-dev-room"
+    },
+    {
+      "expected": {
+        "installation_id": "dev-todo-r2",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "channel": "dev",
+        "ownerId": "o1",
+        "roomId": "r2"
+      },
+      "name": "explicit-dev-in-its-room"
+    },
+    {
+      "expected": {
+        "installation_ids": [
+          "dev-todo-r1",
+          "dev-todo-r2"
+        ],
+        "result": "ambiguous"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "channel": "dev",
+        "ownerId": "o1"
+      },
+      "name": "explicit-dev-without-room-is-ambiguous"
+    },
+    {
+      "expected": {
+        "result": "not_found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "channel": "dev",
+        "ownerId": "o1",
+        "roomId": "r3"
+      },
+      "name": "explicit-dev-in-an-unbound-room"
+    },
+    {
+      "expected": {
+        "result": "not_found"
+      },
+      "input": {
+        "appId": "com.example.draft",
+        "ownerId": "o1",
+        "roomId": "r2"
+      },
+      "name": "dev-only-app-is-not-found-elsewhere"
+    },
+    {
+      "expected": {
+        "installation_id": "dev-draft-r1",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.draft",
+        "channel": "dev",
+        "ownerId": "o1"
+      },
+      "name": "dev-only-app-without-room-explicit-dev"
+    },
+    {
+      "expected": {
+        "installation_id": "rel-todo-o2",
+        "result": "found"
+      },
+      "input": {
+        "appId": "com.example.todo",
+        "ownerId": "o2",
+        "roomId": "r1"
+      },
+      "name": "other-owner-keeps-its-own-release"
+    },
+    {
+      "expected": {
+        "result": "not_found"
+      },
+      "input": {
+        "appId": "com.example.missing",
+        "ownerId": "o1",
+        "roomId": "r1"
+      },
+      "name": "unknown-app"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §3: an App ID resolves by owner, channel and the dev Room; the first match is never taken",
+  "shared": {
+    "installations": [
+      {
+        "appId": "com.example.todo",
+        "channel": "release",
+        "installationId": "rel-todo",
+        "ownerId": "o1",
+        "updateChannel": "stable"
+      },
+      {
+        "appId": "com.example.todo",
+        "channel": "dev",
+        "devRoomId": "r1",
+        "installationId": "dev-todo-r1",
+        "ownerId": "o1"
+      },
+      {
+        "appId": "com.example.todo",
+        "channel": "dev",
+        "devRoomId": "r2",
+        "installationId": "dev-todo-r2",
+        "ownerId": "o1"
+      },
+      {
+        "appId": "com.example.notes",
+        "channel": "release",
+        "installationId": "rel-notes",
+        "ownerId": "o1"
+      },
+      {
+        "appId": "com.example.draft",
+        "channel": "dev",
+        "devRoomId": "r1",
+        "installationId": "dev-draft-r1",
+        "ownerId": "o1"
+      },
+      {
+        "appId": "com.example.todo",
+        "channel": "release",
+        "installationId": "rel-todo-o2",
+        "ownerId": "o2",
+        "updateChannel": "preview"
+      }
+    ]
+  }
+}

@@ -15,6 +15,8 @@ export type KernelBrowserDisplayTarget =
   | { kind: "browser_auxiliary"; window_generation: number; auxiliary_id: number }
   | { kind: "browser_window"; window_generation: number }
 export type KernelBrowserCommand =
+  | { op: "paste_secret"; credential_id: string; tab_id: string; generation: number }
+
   | { op: "grant_leased_computer"; agent_id: string; target: KernelDesktopTarget }
   | { op: "revoke_leased_computer"; agent_id: string }
   | { op: "grant_room_computer"; agent_id: string | null }
@@ -45,6 +47,7 @@ export type KernelBrowserCommand =
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
+  | { op: "cancel_download"; tab_id: string; generation: number; download_id: string }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }
   | { op: "unsubscribe"; subscription_id: string; generation: number }
 export type KernelBrowserRequest = { KernelBrowser: { command: KernelBrowserCommand } }
@@ -77,12 +80,18 @@ export function userDomainWindowBadge(access: UserDomainWindowAccess): string | 
 }
 export type KernelBrowserTabActor = { actor_id: string; kind: "agent" | "human"; display_label: string }
 export type KernelBrowserAgentActivity = { sequence: number; tab_id: string; actor: KernelBrowserTabActor }
-export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null }
+export type KernelBrowserTab = { can_go_back?: boolean | null; can_go_forward?: boolean | null; favicon_png_base64?: string | null; tab_id: string; document_id: string; url: string; title: string; opened_by?: KernelBrowserTabActor | null; taken_over?: boolean }
 export type KernelBrowserDialog = {
   dialog_id: string; tab_id: string; generation: number; document_id: string;
-  kind: "alert" | "confirm" | "prompt" | "beforeunload"; message: string; origin: string; default_prompt?: string
+  kind: "alert" | "confirm" | "prompt" | "beforeunload" | "permission"; message: string; origin: string; default_prompt?: string
+}
+export type KernelBrowserDownload = {
+  download_id: string; tab_id: string; name: string;
+  state: "in_progress" | "done" | "failed" | "cancelled"; bytes: number;
+  path: string | null; reason?: string
 }
 export type KernelBrowserResult = {
+  downloads?: KernelBrowserDownload[];
   active_tab_id?: string | null;
   generation?: number; state?: "ready" | "stopped"; tabs?: KernelBrowserTab[]; agent_activity?: KernelBrowserAgentActivity | null;
   tab_id?: string; subscription_id?: string; frame?: KernelBrowserFrame | null;

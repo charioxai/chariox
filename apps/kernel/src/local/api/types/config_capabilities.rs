@@ -448,3 +448,58 @@ pub struct ListMcpServersRequest {
 pub struct ListSkillsRequest {
     pub workspace_id: Option<String>,
 }
+
+/// Owner controls for the same bound entries used by agents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum OwnerVaultRequest {
+    Create {
+        name: String,
+        kind: String,
+        use_binding: crate::config::VaultUseBinding,
+        value: VaultPassphrase,
+    },
+    Generate {
+        name: String,
+        kind: String,
+        use_binding: crate::config::VaultUseBinding,
+    },
+    Reveal {
+        id: String,
+    },
+    Activity {
+        id: String,
+    },
+    Replace {
+        id: String,
+        value: VaultPassphrase,
+    },
+    Delete {
+        id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerVaultActivity {
+    pub at_ms: u64,
+    pub event: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum OwnerVaultResult {
+    Saved {
+        id: String,
+    },
+    Deleted {
+        id: String,
+    },
+    Revealed {
+        id: String,
+        value: VaultPassphrase,
+    },
+    Activity {
+        id: String,
+        events: Vec<OwnerVaultActivity>,
+    },
+}

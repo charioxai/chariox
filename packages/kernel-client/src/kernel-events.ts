@@ -207,6 +207,8 @@ export type SessionProcess = {
   command: string
   resident_set_bytes: number
   cpu_millis: number
+  /** Cumulative storage reads and writes; null when the OS cannot report it. */
+  disk_io_bytes: number | null
   age_ms: number
   sampled_at_ms: number
   state: SessionProcessState

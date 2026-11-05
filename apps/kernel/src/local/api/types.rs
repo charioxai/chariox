@@ -19,6 +19,8 @@ mod browser_import;
 mod capability;
 mod cloud_relay;
 mod config_capabilities;
+mod control_plane;
+mod created_resource;
 mod daemon;
 mod dictation;
 mod disposable_worker;
@@ -70,6 +72,8 @@ pub use browser_import::*;
 pub use capability::*;
 pub use cloud_relay::*;
 pub use config_capabilities::*;
+pub use control_plane::*;
+pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
 pub use disposable_worker::*;
@@ -270,7 +274,7 @@ pub use workspace::*;
 /// `primary_model`, `primary_effort`, `primary_account_profile`,
 /// `active_substitute_index` and `last_substitution`. An agent persisted on a
 /// substitute loads on its primary profile.
-/// Version 405 binds native approvals to the originating turn and provider run.
+/// Version 407 binds native approvals to the originating turn and provider run.
 /// Version 407 exposes `AppWorkerPhase::Quarantined` after the supervisor's
 /// restart limit is exhausted. Recovery uses the existing explicit start action.
 /// Version 409 adds owner-mediated App clipboard and link acceptance.
@@ -442,4 +446,23 @@ pub use workspace::*;
 /// secret requests) and 930 to 932 (agent triggers).
 /// Browser header 933 adds the portable active Tab, history bounds and bounded favicon PNGs to the
 /// `KernelBrowser` state (`active_tab_id`, `can_go_back`, `can_go_forward`, `favicon_png_base64`).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 933;
+/// MP-08/MP-10/MP-11: 934 acknowledges the leased projection drain (peer 383).
+/// MP-08/MP-10/MP-11: 935 binds the leased prompt completion to its exact prompt and worker run (peer 384).
+/// MP-08/MP-10/MP-11: 936 adds non-blocking task-owned questions (`asking_task_id` on interactions, answered
+/// through `RespondToInteraction`; peer 385).
+/// Browser downloads 937 adds bounded Room artifacts and cancellation.
+/// MP-08/MP-10/MP-11: 938 lets the kernel pick an access holder from the peer's host ancestry, own
+/// `--no-wait` requests and report one holder's status (`GetKernelAccessStatus`; peer 387).
+/// MP-08/MP-10/MP-11: 941 adds person Vault fill and audience-specific display masking (peer 390).
+/// MP-08/MP-09/MP-10/MP-11: 943 adds the `env` and `file` credential uses and injection kinds (Vault capture/use by command and file).
+/// Resource register 944 adds project-scoped record/list/revoke tools and metadata.
+/// Vault TOTP 945 adds computed factor input and sibling backup-code credentials.
+/// VAUDIT S3 948 adds the kernel-browser Vault capture_browser and fill_field tools.
+/// Protocol 950 advertises the answering kernel protocol in RelayStatus.
+/// MP-08 / MP-09 / MP-10 / MP-11: 954 adds nullable cumulative process disk I/O (peer403).
+/// MP-08/MP-09/MP-10/MP-11: 960 integrates Machines and canonical owner/agent Vault uses (peer409).
+/// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
+/// Connected service machine requests use the ordinary Chariox access grant.
+/// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
+/// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;

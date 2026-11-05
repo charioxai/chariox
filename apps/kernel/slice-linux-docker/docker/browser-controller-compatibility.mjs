@@ -32,6 +32,8 @@ export async function navigateBrowser({
     { url: normalizedUrl },
     sessionId,
   );
+  // An attachment keeps the current document; Chrome reports ERR_ABORTED with isDownload.
+  if (result?.isDownload === true) return { target_id: targetId, document_id: documentId, url: normalizedUrl, download_started: true };
   if (typeof result?.errorText === "string" && result.errorText) {
     throw new BrowserCompatibilityError(
       "browser_navigation_failed",

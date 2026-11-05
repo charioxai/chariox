@@ -82,13 +82,38 @@ impl Dir {
         Ok(Some(child))
     }
 
-    fn open_owned_parent(path: &Path) -> Result<Self> {
+    pub(crate) fn open_owned_parent(path: &Path) -> Result<Self> {
         let parent = Self::open_real(path)?;
         let metadata = parent.0.metadata()?;
         if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o022 != 0 {
             return Err(FsError::UnsafeEntry);
         }
         Ok(parent)
+    }
+
+    /// The kernel's own installation: a system install belongs to root, a user
+    /// install to the kernel's user. Others must not be able to write either.
+    pub(crate) fn open_installed_parent(path: &Path) -> Result<Self> {
+        let parent = Self::open_real(path)?;
+        let metadata = parent.0.metadata()?;
+        if ![0, unsafe { libc::geteuid() }].contains(&metadata.uid())
+            || metadata.mode() & 0o022 != 0
+        {
+            return Err(FsError::UnsafeEntry);
+        }
+        Ok(parent)
+    }
+    /// Opens an installed program, not private data: its caller decides which
+    /// owners and modes it trusts.
+    pub(crate) fn open_installed(&self, name: &OsStr) -> Result<File> {
+        let name = cstring(name)?;
+        file(unsafe {
+            libc::openat(
+                self.0.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })
     }
 
     fn open_real(path: &Path) -> Result<Self> {
@@ -163,6 +188,12 @@ impl Dir {
     }
     pub(crate) fn try_lock_shared(&self) -> Result<bool> {
         try_flock(&self.0, libc::LOCK_SH)
+    }
+    /// Releases the lock now. Closing a descriptor does not: a flock lives as
+    /// long as any copy of the open file does, and a child forked meanwhile
+    /// keeps its copy until it execs.
+    pub(crate) fn unlock(&self) {
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
     pub(crate) fn create_private_file(&self, name: &OsStr) -> Result<File> {
         let name = cstring(name)?;

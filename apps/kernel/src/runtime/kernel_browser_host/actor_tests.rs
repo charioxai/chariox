@@ -78,6 +78,113 @@ done
         "MP-10: held App drain must not own the host input lock"
     );
 }
+
+#[test]
+fn mp11_native_app_agent_releases_backend_for_nested_page_calls() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-app-agent-call-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(
+        &script,
+        r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"browser.app.agent"'*)
+  printf started > "$root/agent-started"
+  (while [ ! -f "$root/saved" ]; do sleep 0.01; done
+   sleep 2.2
+   printf '{"id":%s,"ok":true,"result":{"ok":true,"value":{"saved":true}}}\n' "$id") & ;;
+ *'"method":"browser.app.calls"'*)
+  printf '{"id":%s,"ok":true,"result":{"calls":[{"target_id":"target","installation_id":"app","call_id":"call-1","method":"save_scene","params":{"scene":{"elements":[]}}}]}}\n' "$id" ;;
+ *'"method":"browser.app.respond"'*)
+  printf saved > "$root/saved"
+  printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#,
+    )
+    .unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let outcome = std::thread::scope(|scope| {
+        let invoke_host = &host;
+        let invoke_policy = policy.clone();
+        let invoke = scope.spawn(move || {
+            invoke_host.protected_request(
+                "alice",
+                None,
+                "browser.app.agent",
+                json!({"target_id":"target","agent":"agent-7","call":"invoke","name":"add_elements","input":{"elements":[]},"deadline_ms":1000,"_host_generation":1}),
+                invoke_policy,
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !root.join("agent-started").exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let agent_started = root.join("agent-started").exists();
+        let calls = host.protected_request(
+            "alice",
+            None,
+            "browser.app.calls",
+            json!({}),
+            policy.clone(),
+        );
+        let response = host.protected_request(
+            "alice",
+            None,
+            "browser.app.respond",
+            json!({"target_id":"target","call_id":"call-1","result":{"saved":true}}),
+            policy,
+        );
+        let invoked = invoke.join().unwrap();
+        (
+            agent_started,
+            calls,
+            response,
+            invoked,
+            root.join("saved").exists(),
+        )
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(outcome.0, "agent action should reach the controller");
+    assert!(
+        outcome.1.is_ok(),
+        "nested App call drain should proceed: {:?}",
+        outcome.1
+    );
+    assert!(
+        outcome.2.is_ok(),
+        "nested App call response should proceed: {:?}",
+        outcome.2
+    );
+    assert!(
+        outcome.3.is_ok(),
+        "agent action should settle: {:?}",
+        outcome.3
+    );
+    assert!(
+        outcome.4,
+        "nested backend action should commit its saved state"
+    );
+}
+
 #[test]
 fn human_takeover_cancels_the_running_controller_and_fences_the_focused_agent() {
     check_running_cancellation(false, false);
@@ -237,11 +344,13 @@ done
         assert_eq!(state["actions"][0]["state"], "cancelled");
         assert_eq!(state["actions"][0]["outcome"]["reason"], "human_takeover");
         assert!(!state.to_string().contains("must-not-be-retained"));
-        assert!(host
-            .release_input("alice", "terminal:b", "host-tab-a", 1)
-            .is_err());
-        host.release_input("alice", "terminal:a", "host-tab-a", 1)
+        // The person's other (or reloaded) connection returns the control terminal:a took.
+        host.release_input("alice", "terminal:b", "host-tab-a", 1)
             .unwrap();
+        assert!(host.actor_snapshot("alice").unwrap()["input_ownership"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();

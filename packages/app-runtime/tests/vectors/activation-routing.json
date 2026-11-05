@@ -1,0 +1,182 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "entry": "install"
+      },
+      "input": {
+        "existingGeneration": null,
+        "kind": "entry"
+      },
+      "name": "first-activation-installs"
+    },
+    {
+      "expected": {
+        "entry": "update",
+        "expected_generation": 7
+      },
+      "input": {
+        "existingGeneration": 7,
+        "kind": "entry"
+      },
+      "name": "later-activation-updates-fenced-on-generation"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "register"
+      },
+      "name": "register-by-publisher-on-release"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "library"
+      },
+      "name": "library-by-publisher-on-release"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "direct_feed"
+      },
+      "name": "direct-feed-by-publisher-on-release"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "local_file"
+      },
+      "name": "local-file-by-publisher-on-release"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "channel": "dev",
+        "kind": "source",
+        "signer": "dev",
+        "source": "dev_push"
+      },
+      "name": "dev-push-by-dev-identity-on-dev"
+    },
+    {
+      "expected": {
+        "refusal": "dev_signer_on_release"
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "dev",
+        "source": "local_file"
+      },
+      "name": "dev-identity-cannot-install-a-release"
+    },
+    {
+      "expected": {
+        "refusal": "dev_signer_on_release"
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "dev",
+        "source": "register"
+      },
+      "name": "dev-identity-cannot-register"
+    },
+    {
+      "expected": {
+        "refusal": "publisher_signer_on_dev"
+      },
+      "input": {
+        "channel": "dev",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "dev_push"
+      },
+      "name": "publisher-cannot-replace-a-dev-build"
+    },
+    {
+      "expected": {
+        "refusal": "dev_source_needs_dev_channel"
+      },
+      "input": {
+        "channel": "release",
+        "kind": "source",
+        "signer": "dev",
+        "source": "dev_push"
+      },
+      "name": "dev-push-cannot-target-release"
+    },
+    {
+      "expected": {
+        "refusal": "dev_source_needs_dev_channel"
+      },
+      "input": {
+        "channel": "dev",
+        "kind": "source",
+        "signer": "publisher",
+        "source": "library"
+      },
+      "name": "download-cannot-target-dev"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "incoming": "sha256:aa",
+        "kind": "immutable",
+        "known": "sha256:aa",
+        "version": "1.0.0"
+      },
+      "name": "same-version-same-bytes"
+    },
+    {
+      "expected": {
+        "conflict": "com.example.todo 1.0.0 is already released with different content; publish a new version"
+      },
+      "input": {
+        "incoming": "sha256:bb",
+        "kind": "immutable",
+        "known": "sha256:aa",
+        "version": "1.0.0"
+      },
+      "name": "same-version-different-bytes"
+    },
+    {
+      "expected": {
+        "allowed": true
+      },
+      "input": {
+        "incoming": "sha256:bb",
+        "kind": "immutable",
+        "known": null,
+        "version": "1.0.1"
+      },
+      "name": "new-version"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §4: one staging entry per activation, source/channel/signer pairing, immutable versions"
+}

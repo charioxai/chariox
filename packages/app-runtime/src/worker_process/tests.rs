@@ -39,7 +39,7 @@ struct Fixture {
 impl Fixture {
     fn compile() -> Self {
         let scratch = Scratch::new();
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/app-worker/src");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture.c");
         let executable = scratch.0.join("abi-fixture");
         let diagnostics = scratch.0.join("compiler.log");
@@ -129,7 +129,8 @@ impl Fixture {
                 heap_mib: 64,
                 v8_threads: 1,
                 max_file_bytes: 1048576,
-            },
+            }
+            .into(),
             _objects: objects,
             domain: Box::new(TestDomain {
                 observed: observed.clone(),
@@ -254,6 +255,7 @@ fn native_abi_and_process_lifecycle() {
         ("normal", true, false, WorkerError::ResourceDomain),
         ("normal", false, true, WorkerError::Supervisor),
         ("early", false, false, WorkerError::EarlyExit),
+        ("uncontained", false, false, WorkerError::Containment),
         ("timeout", false, false, WorkerError::StartupTimeout),
     ] {
         let (prepared, observed, marker) = fixture.prepare(mode, reject, panic_verify);

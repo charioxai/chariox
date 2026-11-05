@@ -216,29 +216,31 @@ async fn mdnotes_two_local_connections_child() {
             .await
             .unwrap();
         assert_eq!(take["state"], "granted");
+        let mut other_person = caller_b.clone();
+        other_person.caller.user_id = Some("different-person".into());
         assert!(
             state
                 .kernel_browser_display_request(
-                    &caller_b,
+                    &other_person,
                     Display::Release {
                         tab_id: tab.clone(),
-                        generation
-                    }
+                        generation,
+                    },
                 )
                 .await
                 .is_err(),
-            "MD-N5: B cannot release A takeover"
+            "MD-N5: another person cannot release A takeover"
         );
         state
             .kernel_browser_display_request(
-                &caller_a,
+                &caller_b,
                 Display::Release {
                     tab_id: tab.clone(),
                     generation,
                 },
             )
             .await
-            .unwrap();
+            .expect("MD-N5: the same person's B connection can return A takeover");
         // MP-08/MP-10/MP-11: the production typed mirror adapter over the
         // same two authenticated sockets cannot borrow subscription authority.
         let subscribed = success(

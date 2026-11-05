@@ -104,12 +104,15 @@ impl KernelRuntimeState {
                 let mutation = self.owned.begin_managed_activity_mutation();
                 let mut sessions = self.owned.session_store.write();
                 let mut latest = sessions.get_session(&task.room_id)?;
-                if let Some(current) = latest.remove_active_interaction(&id) {
+                let reworded = latest.remove_active_interaction(&id).map(|current| {
                     latest.add_active_interaction(current.with_message(message));
                     sessions.restore_session(latest);
+                });
+                // The count reads the Room store: record it after this write lock is released.
+                drop(sessions);
+                if reworded.is_some() {
                     mutation.record();
                 }
-                drop(sessions);
                 self.owned.session_snapshot(&task.room_id)?;
                 self.owned
                     .terminal_stream
@@ -136,7 +139,7 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
-        let state = self.clone();
+        let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
                 if answer.status == "timed_out" {

@@ -13,4 +13,5 @@ mod kernel_runtime_role;
 mod publication_control_state;
 mod runtime_identity;
 mod user_config_policy;
+mod web_bot_auth;
 mod workflow_history_state;

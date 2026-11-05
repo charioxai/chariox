@@ -44,6 +44,7 @@ mod provider_processes;
 mod provider_prompt_launch;
 mod provider_run_read;
 mod provider_runtime;
+mod provider_tool_close;
 mod provider_tracking;
 mod relay_runtime;
 mod remote_agent_binding;
@@ -96,6 +97,7 @@ pub(crate) use provider_output_claude_native::{
     format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
     NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
+pub(crate) use provider_tool_close::{ended_open_provider_tool_rows, ProviderToolEnding};
 pub(crate) use provider_tracking::{
     ProviderCatalogCacheStore, ProviderProcessTrackingStore, TrackedProviderProcess,
 };
@@ -148,8 +150,8 @@ pub(crate) use provider_processes::{
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget, PreparedLeasedProviderRun,
-    RemoteLeaseRuntime,
+    DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
+    PreparedLeasedProviderRun, RemoteCompletionHarvest, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
@@ -160,6 +162,7 @@ pub struct DaemonApp {
     config: DaemonConfig,
     started_at_ms: u64,
     relay_client_state: Arc<tokio::sync::RwLock<RelayClientState>>,
+    slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     pub(crate) agents: AgentServiceStore,
     pub(crate) attachments: AttachmentServiceStore,
     pty: PtyManager,
@@ -219,6 +222,7 @@ pub struct DaemonApp {
     pending_workflow_remote_prompt_dispatches: Vec<KernelRemotePromptDispatch>,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    leased_projection_deliveries: BTreeMap<String, remote_lease::LeasedProjectionDelivery>,
     execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     leased_agent_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
     completed_execution_lease_callers: BTreeMap<String, remote_lease::LeaseCallerBinding>,
@@ -384,7 +388,9 @@ impl DaemonApp {
             .migrate_effective_defaults(crate::session::DEFAULT_LOCAL_USER_ID, &provider_home)?;
 
         let mut app = Self {
-            agents: AgentServiceStore::new(AgentService::new()),
+            agents: AgentServiceStore::new(
+                AgentService::new().with_worker_run_durability(durable_state.clone()),
+            ),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
             pty: PtyManager::new(),
             room_terminals: crate::room_terminal::RoomTerminalService::new(
@@ -399,9 +405,15 @@ impl DaemonApp {
             active_turns: ActiveTurnStore::default(),
             prompt_activity: PromptActivityStore::default(),
             runtime_tool_call_activity: crate::runtime::state::RuntimeToolCallActivity::default(),
-            kernel_browser_host: crate::runtime::kernel_browser_host::KernelBrowserHost::new(
-                config.private_runtime_state_root(),
-            ),
+            kernel_browser_host:
+                crate::runtime::kernel_browser_host::KernelBrowserHost::for_database(
+                    config.private_runtime_state_root(),
+                    &config.durable_state_path(),
+                )
+                .map_err(|_| DaemonError::InvalidConfig {
+                    field: "durable_state_path",
+                    message: "must be an absolute file path for private App storage",
+                })?,
             dictation: crate::dictation::DictationService::new(
                 config.private_runtime_state_root().join("dictation"),
             ),
@@ -414,7 +426,11 @@ impl DaemonApp {
             ),
             history,
             operational_history,
-            app_control: crate::runtime::app_control::AppControlService::new(durable_state.clone()),
+            app_control: crate::runtime::app_control::AppControlService::with_vault_config(
+                durable_state.clone(),
+                config.user_config.credential_vault.clone(),
+                config.daemon_id.clone(),
+            ),
             durable_state,
             worker_prompt_receipts,
             worker_steer_receipts,
@@ -448,6 +464,7 @@ impl DaemonApp {
             pending_workflow_remote_prompt_dispatches: Vec::new(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            leased_projection_deliveries: BTreeMap::new(),
             execution_lease_callers: BTreeMap::new(),
             leased_agent_callers: BTreeMap::new(),
             completed_execution_lease_callers: BTreeMap::new(),
@@ -478,6 +495,7 @@ impl DaemonApp {
                     DaemonConfig::relay_peer_public_key_entries(),
                 ),
             )),
+            slice_private_relay_connectors: Arc::default(),
             config,
         };
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -555,6 +573,13 @@ impl DaemonApp {
 
     pub(crate) fn relay_client_state(&self) -> Arc<tokio::sync::RwLock<RelayClientState>> {
         Arc::clone(&self.relay_client_state)
+    }
+
+    pub(crate) fn connected_relays(&self) -> crate::transport::relay_client::ConnectedRelays {
+        crate::transport::relay_client::ConnectedRelays {
+            primary: Arc::clone(&self.relay_client_state),
+            slice_private: Arc::clone(&self.slice_private_relay_connectors),
+        }
     }
 
     pub(crate) fn credential_enrollment_control(

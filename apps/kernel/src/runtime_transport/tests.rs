@@ -2773,7 +2773,7 @@ async fn md3_transport_disconnect_fences_input_queued_behind_vault_barrier() {
     })
     .await
     .unwrap();
-    disconnect_browser_terminal(&router, &connection).await;
+    disconnect_browser_terminal(&connection).await;
     drop(barrier);
     let response = pending.await.unwrap().unwrap();
     assert!(

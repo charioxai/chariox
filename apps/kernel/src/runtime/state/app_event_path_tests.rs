@@ -1,5 +1,5 @@
 //! MP-08/MP-10/MP-11: local vertical path on the ordinary kernel.
-//! The fixed native ABI App exercises real IPC/broker calls, not embedded Node
+//! The fixed native ABI App exercises real IPC/broker calls, not retired native JavaScript engine
 //! or production sandbox admission. No provider is dispatched by this harness.
 use super::*;
 use crate::{

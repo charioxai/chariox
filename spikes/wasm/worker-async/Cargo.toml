@@ -1,0 +1,9 @@
+[package]
+name = "chariox-wasm-worker-async"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Historical binary name only; the product owns the one worker implementation.
+[dependencies]
+chariox-app-wasm-worker = { path = "../../../packages/app-wasm-worker" }

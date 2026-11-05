@@ -125,6 +125,7 @@ response_policies! {
         CredentialsListed,
     ],
     Withhold => [
+        OwnerVault,
         SessionViewAttached,
         SessionInviteCreated,
         // MP-11: prototype user App views carry App frontends and channel data.
@@ -133,6 +134,7 @@ response_policies! {
         UserAppViewClosed,
         UserAppViewFrontend,
         UserAppViewCallResult,
+        AppViewInspected,
         UserAppViewsChanged,
         DebugBundleExported,
         McpServerInstalled,
@@ -190,6 +192,7 @@ response_policies! {
         UserDomainInteractionAnswered,
     ],
     Public => [
+        ControlPlane,
         EventSubscription,
         EventsListed,
         EventsAcknowledged,
@@ -210,6 +213,7 @@ response_policies! {
         VaultSecretStatusReported,
         KernelSudoExtended,
         KernelAccessGranted,
+        KernelAccessStatus,
         KernelAccessCovered,
         KernelAccessGrantsListed,
         KernelAccessRevoked,
@@ -226,6 +230,8 @@ response_policies! {
         RoomTerminal,
         AppPublisherEnrollmentStatus,
         AppInstallOperationStatus,
+        AppDevPushBuilding,
+        AppDevPushFailed,
         AppPackageUploadStatus,
         AppInstallationsListed,
         AppInstallation,

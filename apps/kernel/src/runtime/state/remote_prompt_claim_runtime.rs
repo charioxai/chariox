@@ -299,15 +299,12 @@ impl KernelRuntimeState {
                         return Ok(true);
                     };
                     if let Err(error) = self
-                        .resume_delivered_remote_prompt_cancellation_after_restart(
-                            &dispatch,
-                            prompt.durable_delivery_provider_run_id(),
-                        )
+                        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
                         .await
                     {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
-                            "restart kept delivered remote cancellation held because its worker receipt was not reconciled",
+                            "restart could not reconcile a delivered remote cancellation from its worker receipt; retrying it",
                             serde_json::json!({
                                 "session_id": dispatch.session_id,
                                 "agent_id": dispatch.agent_id,
@@ -317,6 +314,7 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
+                        self.spawn_delivered_remote_cancellation_resume(dispatch);
                     }
                     return Ok(true);
                 }
@@ -912,7 +910,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn end_lost_leased_provider_run(
+    pub(super) fn end_lost_leased_provider_run(
         &self,
         session_id: &str,
         projected_run_id: &str,
@@ -940,6 +938,31 @@ impl KernelRuntimeState {
         lost: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
+        let diagnostic =
+            format!("{lost}. The turn may have partly run; Chariox did not run it again");
+        self.end_accepted_remote_prompt_run(
+            session_id,
+            agent_id,
+            stale_binding,
+            stale_provider_run_id,
+            &diagnostic,
+            trigger_error,
+        )
+        .await
+    }
+
+    /// Ends the accepted turn of a leased agent without replaying it: the
+    /// turn fails with `diagnostic` as a typed host-lost outcome and its task
+    /// resolves with it.
+    pub(in crate::runtime::state) async fn end_accepted_remote_prompt_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        diagnostic: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let Some(binding) = agent.remote_execution().filter(|current| {
             current.leased_agent_id == stale_binding.leased_agent_id
@@ -955,11 +978,9 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        let diagnostic =
-            format!("{lost}. The turn may have partly run; Chariox did not run it again");
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
-            "worker lost an accepted remote prompt; ending it for the owner without replay",
+            "ending an accepted remote prompt for the owner without replay",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
@@ -975,6 +996,12 @@ impl KernelRuntimeState {
             &binding.leased_agent_id,
             stale_provider_run_id,
         );
+        self.owned.end_open_provider_tools(
+            session_id,
+            &projected_run_id,
+            agent_id,
+            crate::app::ProviderToolEnding::Failed,
+        )?;
         self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
         self.settle_remote_prompt_receipt(
             session_id,
@@ -984,7 +1011,7 @@ impl KernelRuntimeState {
                 binding,
                 provider_run_id: stale_provider_run_id,
                 termination: Some(crate::provider::ProviderRunTermination::host_lost(
-                    &diagnostic,
+                    diagnostic,
                     crate::session::unix_epoch_ms(),
                 )),
                 diagnostic: None,

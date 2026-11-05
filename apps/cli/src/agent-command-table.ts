@@ -1,5 +1,5 @@
 import {
-  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, endSessionRequest, getSessionStateRequest,
+  attachToSessionRequest, cancelActivePromptRequest, createSessionRequest, destroyAgentRequest, endSessionRequest, getSessionStateRequest,
   listProjectsRequest, listSessionsRequest, respondToInteractionRequest, searchWorkspaceDirectoriesRequest, spawnAgentRequest, submitPromptRequest,
 } from "./ipc-requests.js"
 
@@ -22,9 +22,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "access request",
     flags: [{ name: "--until-exit" }, { name: "--minutes", value: "N" }, { name: "--no-wait" }, HOLDER, SOCKET],
-    summary: "ask the user to approve access for you; prints the grant",
+    summary: "ask the user to approve access for you; prints the grant. In a shell with a command timeout use --no-wait, then poll access status until granted. The kernel picks your harness as holder (--holder-pid takes a host pid); in a sandbox, make the kernel socket's directory writable",
   },
-  { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended or not_requested" },
+  { name: "access status", flags: [HOLDER, SOCKET], summary: "granted, pending, ended (with the reason) or not_requested" },
   {
     name: "access cover",
     flags: [{ name: "--pid", value: "PID", required: true }, SOCKET],
@@ -53,7 +53,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "terminal open",
     flags: [KERNEL, SESSION, HOST_AGENT, { name: "--cols", value: "N" }, { name: "--rows", value: "N" }, { name: "--title", value: "TITLE" }, TIMEOUT, SOCKET],
-    summary: "open a terminal in that Room (a login shell, or the argv after --); it keeps running when you disconnect",
+    summary: "open a terminal in that Room (a login shell, or the argv after --); prints terminal.terminal_id; it keeps running when you disconnect",
   },
   { name: "terminal list", flags: [KERNEL, SESSION, TIMEOUT, SOCKET], summary: "the Room's terminals with their output offsets; a terminal that shows host_agent runs on that agent's machine: pass that id as --host-agent to send, read, wait and close" },
   {
@@ -95,9 +95,10 @@ export const REQUEST_EXAMPLES: readonly { body: object; note: string }[] = [
   { body: createSessionRequest("/PATH", "/PATH"), note: "workspace_id and worktree_id are one such directory path; SessionCreated.session.id" },
   { body: attachToSessionRequest("SESSION_ID", "CLIENT_NAME"), note: "SessionAttached.attachment.id; client_id is any name you pick" },
   { body: getSessionStateRequest("SESSION_ID"), note: "SessionState: agents, prompts, output" },
-  { body: spawnAgentRequest("SESSION_ID", "codex"), note: "provider is claude, codex or opencode; AgentSpawned.agent.id" },
+  { body: { SpawnAgent: { ...spawnAgentRequest("SESSION_ID", "codex").SpawnAgent, account_profile: "PROFILE_ID" } }, note: "provider is claude, codex or opencode; use the chosen profile_id from ListProviderAccountProfiles, and set model and effort; AgentSpawned.agent.id" },
   { body: submitPromptRequest("SESSION_ID", "ATTACHMENT_ID", null, "PROMPT", []), note: "target_agent_id is an agent id, or null for the default agent" },
   { body: cancelActivePromptRequest("SESSION_ID", "ATTACHMENT_ID", null), note: "stops the running prompt" },
+  { body: destroyAgentRequest("SESSION_ID", "AGENT_ID"), note: "removes that agent from the Room; AgentDestroyed" },
   {
     body: { RunShellCommand: { session_id: "SESSION_ID", attachment_id: "ATTACHMENT_ID", command: "ls", args: ["-la"], working_directory: "/PATH", timeout_ms: 60000 } },
     note: "runs on that machine; ShellCommandCompleted.result has exit_code, stdout, stderr",
@@ -134,6 +135,16 @@ export class CommandFailure extends Error {
     super(message)
     this.name = "CommandFailure"
   }
+}
+
+/** `--help` before any `--` (what follows is a program's argv). */
+export function wantsHelp(argv: readonly string[]): boolean {
+  const end = argv.indexOf("--")
+  return (end < 0 ? argv : argv.slice(0, end)).includes("--help")
+}
+
+export function familyUsageOf(family: string, verbs: readonly string[]): string {
+  return `Usage: chariox ${family} ${verbs.join("|")} (chariox guide lists the arguments)`
 }
 
 export function usageOf(command: string): string {
@@ -185,7 +196,7 @@ export function guideText(): string {
     "1. Ask once: chariox access request --until-exit",
     "   It waits while the user decides; exit 0 and a printed grant mean approved: go on to step 2.",
     "   If a command prints a pointer or says the user must approve, show it to the user verbatim and wait.",
-    "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status.",
+    "   If your tool calls time out, add --no-wait (exit 6), then poll chariox access status until granted (lasts until your harness exits).",
     "2. List kernels: chariox kernels (a name is the machine name, or <machine>/<label> when the machine runs several of your kernels)",
     "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json",
     "   Always pass --kernel for another kernel; without it the request runs on this one.",
@@ -211,15 +222,14 @@ export function guideText(): string {
     "Requests for chariox request (replace the UPPERCASE values; ids come from earlier answers):",
     ...REQUEST_EXAMPLES.map(({ body, note }) => `  ${JSON.stringify(body)}  | ${note}`),
     "A request the kernel cannot parse comes back with a message naming the expected variants and fields: read it and fix the request.",
-    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
+    "Give every request that changes state (CreateSession, AttachToSession, SpawnAgent, DestroyAgent, SubmitPrompt, RunShellCommand, EndSession, RequestKernelSudo) its own --command-id ID; reuse one only to retry.",
     "An AttachToSession you make on another kernel is kept alive for you while your access lasts; send DetachFromSession when you are done with it.",
     "",
     "Exec streams raw binary stdout and stderr and returns the remote command's exit code (128 + signal). Other commands print one JSON document on stdout. Errors are JSON on stderr: {\"error\":{\"code\",\"message\",\"kernel\"}}.",
     "Exit codes:",
     ...exits,
     "",
-    "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment).",
-    "None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
+    "Sudo outcomes: kernel_sudo_refused means the person refused; kernel_sudo_expired means the approval deadline passed; kernel_sudo_room_owner_local means the Room predates enrollment (re-create the Room after enrollment). None starts elevation or retries automatically. Submit a new request only when needed and approve it in a Chariox client.",
     "Retry rule: on kernel_request_timeout or kernel_connection_lost retry ONCE with the same --command-id. On kernel_outcome_unknown read the state first; never retry blindly.",
     "Human-only, never attempted by you: passkey approvals, grants, sudo approvals, secrets and credentials, relay and pairing configuration.",
   ].join("\n")

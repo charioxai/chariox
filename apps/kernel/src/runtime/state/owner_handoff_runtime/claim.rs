@@ -110,8 +110,8 @@ impl KernelRuntimeOwnedState {
         drop(claims);
         session.remove_active_interaction(interaction_id);
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         self.pending_interactions.write().remove(interaction_id);
         // Dropping the responder tells the waiter the answer was claimed here.
         pending.responder.lock().expect("hand-off responder").take();

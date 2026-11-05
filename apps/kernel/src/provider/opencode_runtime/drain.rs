@@ -619,8 +619,10 @@ fn record_terminal_failure(
     if terminal_failure.is_some() || drain_active_user_message_id.is_none() {
         return;
     }
-    let message = crate::provider::sanitize_provider_diagnostic(&message);
-    let message = if message.is_empty() {
+    // This is an internal protocol frame: punctuation carries native retryability.
+    // Public rendering happens after classification in the kernel output path.
+    let message = crate::secret_redaction::redact_secrets(&message).into_owned();
+    let message = if message.trim().is_empty() {
         "provider reported an explicit error".to_string()
     } else {
         message

@@ -108,7 +108,7 @@ pub(super) async fn handle_subscribe(
         crate::local::LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
             command: crate::local::KernelBrowserCommand::State,
         });
-    let subscription_caller = match display_subscription_caller(router, identity, &public_key) {
+    let subscription_caller = match stream_caller(router, identity, &public_key) {
         Ok(caller) => caller,
         Err(error) => {
             // MP-08/MP-10/MP-11: a revoked grant or failed pairing read rejects
@@ -218,6 +218,7 @@ pub(super) async fn handle_subscribe(
         &request,
     );
     let key = format!("display:{display_id}:{public_key}");
+    let terminal_lease = super::subscriptions::terminal_lease(router, &caller.caller);
     // MP-08/MP-10: protocol 491 push pump, dormant until the first ack (or granted at registration).
     // MP-08 TR-16: a viewer registering again (its lanes moved carrier) keeps the pump serving it.
     let delivery = register_delivery(
@@ -233,6 +234,7 @@ pub(super) async fn handle_subscribe(
         },
         generation,
         !recover,
+        terminal_lease,
     )
     .await;
     let pump = delivery.pump().clone();
@@ -308,6 +310,7 @@ async fn register_delivery(
     route: super::display_pump::PumpRoute,
     generation: u64,
     takeover: bool,
+    terminal_lease: Option<crate::runtime::kernel_browser_host::TerminalLease>,
 ) -> Delivery {
     let route = Arc::new(route);
     let moved = takeover
@@ -339,6 +342,7 @@ async fn register_delivery(
         RelaySubscriptionTask {
             display_id: Some(route.display_id.clone()),
             display_pump: Some(delivery.pump().clone()),
+            _terminal_lease: terminal_lease,
             relay_subscription_id: route.relay_id.clone(),
             client_public_key: route.public_key.clone(),
             handle: tokio::spawn(sleep(Duration::from_secs(60))),
@@ -441,6 +445,7 @@ mod tests {
             RelaySubscriptionTask {
                 display_id: Some("d".into()),
                 display_pump: None,
+                _terminal_lease: None,
                 relay_subscription_id: "relay".into(),
                 client_public_key: "key".into(),
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
@@ -477,6 +482,7 @@ mod tests {
             RelaySubscriptionTask {
                 display_id: Some("d".into()),
                 display_pump: Some(pump.clone()),
+                _terminal_lease: None,
                 relay_subscription_id: "relay".into(),
                 client_public_key: "key".into(),
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
@@ -578,7 +584,7 @@ fn rejected_delivery_release(
     Some((id.to_string(), generation))
 }
 
-fn display_subscription_caller(
+pub(super) fn stream_caller(
     router: &CommandRouter,
     identity: Option<RelayCallerIdentity>,
     public_key: &str,
@@ -775,6 +781,7 @@ mod pump_move_tests {
             route(&router, &relay, display, "relay-lane", "viewer"),
             7,
             true,
+            None,
         )
         .await
         else {
@@ -803,6 +810,7 @@ mod pump_move_tests {
             route(&router, &direct, display, "direct-lane", "viewer"),
             7,
             true,
+            None,
         )
         .await;
         let Delivery::Moved { pump: moved, left } = moved else {
@@ -870,6 +878,7 @@ mod pump_move_tests {
             route(&router, &relay, display, "relay-lane", "viewer"),
             7,
             true,
+            None,
         )
         .await
         else {
@@ -890,6 +899,7 @@ mod pump_move_tests {
             route(&router, &direct, display, "direct-lane", "viewer"),
             7,
             true,
+            None,
         )
         .await
         else {
@@ -928,6 +938,7 @@ mod pump_move_tests {
                 route(&router, carrier, display, "lane", viewer),
                 generation,
                 takeover,
+                None,
             )
         };
         let Delivery::Fresh(first) = register(&relay, "viewer", 7, true).await else {
@@ -1016,7 +1027,7 @@ mod paired_tests {
             .runtime_state()
             .kernel_browser_terminal_context(&command(rpc))
             .unwrap();
-        let display = display_subscription_caller(&router, None, &public).unwrap();
+        let display = stream_caller(&router, None, &public).unwrap();
         assert_eq!(
             router
                 .runtime_state()
@@ -1026,7 +1037,7 @@ mod paired_tests {
         );
         crate::runtime::self_host_terminal_grants::revoke(&config, &grant.client_id).unwrap();
         assert!(
-            display_subscription_caller(&router, None, &public).is_err(),
+            stream_caller(&router, None, &public).is_err(),
             "MP-11: revoked keys never acquire a display caller"
         );
         // MP-08/MP-10/MP-11: revocation between outer admission and the display
@@ -1038,6 +1049,7 @@ mod paired_tests {
                 client_public_key: "other-key".into(),
                 display_id: None,
                 display_pump: None,
+                _terminal_lease: None,
                 handle: tokio::spawn(sleep(Duration::from_secs(60))),
             },
         )])));

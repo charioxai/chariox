@@ -21,6 +21,44 @@ impl KernelRuntimeState {
             &user_config.credential_vault,
         )?;
         match tool_name {
+            crate::transport::runtime_tools::HTTP_REQUEST_TOOL => {
+                let args =
+                    serde_json::from_value::<crate::transport::runtime_tools::HttpRequestArgs>(
+                        arguments,
+                    )
+                    .map_err(|_| DaemonError::LocalTransport {
+                        operation: "http_request",
+                        message: "invalid HTTP request arguments".into(),
+                    })?;
+                let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "http_request",
+                        message: "an agent-scoped run is required".into(),
+                    }
+                })?;
+                let signer = self
+                    .web_bot_auth_signer(provider_run.session_id(), agent_id)
+                    .await?;
+                let response = tokio::task::spawn_blocking(move || {
+                    crate::secret::RuntimeSecretService::prepare_plain_http_request(args)?
+                        .with_web_bot_auth(signer.as_deref())?
+                        .execute()
+                })
+                .await
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "http_request",
+                    message: "HTTP request task failed".into(),
+                })??;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult {
+                    ok: true,
+                    payload: serde_json::to_value(response).map_err(|_| {
+                        DaemonError::LocalTransport {
+                            operation: "http_request",
+                            message: "HTTP response encoding failed".into(),
+                        }
+                    })?,
+                })
+            }
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
@@ -48,6 +86,7 @@ impl KernelRuntimeState {
                     credential_from_runtime_input(args.credential)?,
                     provider_run,
                 );
+
                 match &credential.source {
                     crate::config::UserCredentialSourceConfig::Vault { .. } => {}
                     crate::config::UserCredentialSourceConfig::Env { .. }
@@ -234,13 +273,74 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                let (credential, _) =
+                    match service.validate_http_request_target(&args.credential_id, &args.url) {
+                        Ok(target) => target,
+                        Err(error) => {
+                            if service.credential(&args.credential_id).is_ok() {
+                                self.record_vault_refusal(
+                                    &args.credential_id,
+                                    &crate::config::VaultUseTarget::site(&args.url)?,
+                                    provider_run.agent_instance_id().unwrap_or("agent"),
+                                )?;
+                            }
+                            return Err(error);
+                        }
+                    };
+                let vault_actor = if credential
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|m| m.use_binding.is_some())
+                {
+                    let token = provider_run.runtime_mcp_auth_token().ok_or_else(|| {
+                        crate::runtime::kernel_access::error("Vault provider authentication ended")
+                    })?;
+                    let actor = self.vault_agent_context(token)?;
+                    if actor.run.id() != provider_run.id() {
+                        return Err(crate::runtime::kernel_access::error(
+                            "the Vault operation's provider run changed",
+                        ));
+                    }
+                    Some(actor)
+                } else {
+                    None
+                };
                 let _vault_unlock = self
                     .ensure_vault_unlocked_for_provider_run(
                         provider_run,
                         "runtime_tool_http_request_with_credential",
                     )
                     .await?;
+                let approval = if vault_actor.is_some() {
+                    Some(
+                        self.authorize_vault_use(
+                            provider_run.owner_user_id(),
+                            provider_run.agent_instance_id().unwrap_or("agent"),
+                            credential,
+                            &crate::config::VaultUseTarget::site(&args.url)?,
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
+                if let Some(actor) = &vault_actor {
+                    self.recheck_vault_agent(actor)?;
+                }
+                let service = self.home_runtime_secret_service()?;
+                let service = match approval {
+                    Some(approval) => service.with_vault_use_approval(approval),
+                    None => service,
+                };
+                service.validate_http_request_target(&args.credential_id, &args.url)?;
+                service.record_vault_activity(
+                    &args.credential_id,
+                    &format!(
+                        "Use attempted over HTTP by {}",
+                        provider_run.agent_instance_id().unwrap_or("agent")
+                    ),
+                )?;
+                let audit_id = args.credential_id.clone();
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,
@@ -251,14 +351,33 @@ impl KernelRuntimeState {
                     timeout_ms: args.timeout_ms,
                     max_response_bytes: args.max_response_bytes,
                 };
+                let agent_id = provider_run.agent_instance_id().ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "web_bot_auth",
+                        message: "an agent-scoped run is required".into(),
+                    }
+                })?;
+                let signer = self
+                    .web_bot_auth_signer(provider_run.session_id(), agent_id)
+                    .await?;
                 let response = tokio::task::spawn_blocking(move || {
-                    service.http_request_with_credential(request)
+                    service
+                        .prepare_http_request_with_credential(request)?
+                        .with_web_bot_auth(signer.as_deref())?
+                        .execute()
                 })
                 .await
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "runtime_tool_http_request_with_credential",
                     message: error.to_string(),
                 })??;
+                self.home_runtime_secret_service()?.record_vault_activity(
+                    &audit_id,
+                    &format!(
+                        "Used over HTTP by {}",
+                        provider_run.agent_instance_id().unwrap_or("agent")
+                    ),
+                )?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {
@@ -284,12 +403,28 @@ impl KernelRuntimeState {
                         "runtime_tool_send_secret_to_terminal",
                     )
                     .await?;
-                let mut input = service.terminal_secret_input(&args.credential_id)?;
-                if args.append_newline {
-                    input.push('\n');
-                }
                 let provider_run_id = provider_run.id().to_string();
-                self.with_app_side_effect(move |app| {
+                self.with_app_side_effect(|app| {
+                    // Unlock can wait while the owner changes this handle's kind or scope.
+                    let service = self.home_runtime_secret_service()?;
+                    service.validate_terminal_secret_input(&args.credential_id)?;
+                    let mut input = zeroize::Zeroizing::new(
+                        service.terminal_secret_input(&args.credential_id)?,
+                    );
+                    if matches!(
+                        service
+                            .validate_terminal_secret_input(&args.credential_id)?
+                            .injection,
+                        crate::config::UserCredentialInjectionConfig::Totp(_)
+                            | crate::config::UserCredentialInjectionConfig::BackupCodes
+                    ) {
+                        self.owned
+                            .room_secret_observations
+                            .register(provider_run.session_id(), &input)?;
+                    }
+                    if args.append_newline {
+                        input.push('\n');
+                    }
                     app.write_provider_pty_input_for_runtime(&provider_run_id, input.as_bytes())
                 })
                 .await?;
@@ -366,186 +501,7 @@ impl KernelRuntimeState {
                 }
             }
             crate::transport::runtime_tools::REQUEST_POPUP_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::RequestPopupArgs,
-                >(arguments)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "runtime_tool_request_popup",
-                    message: format!("invalid tool arguments: {error}"),
-                })?;
-                if args.choices.is_empty() {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_request_popup",
-                        message: "popup interactions require at least one choice".to_string(),
-                    });
-                }
-                let choices = args
-                    .choices
-                    .into_iter()
-                    .map(|choice| {
-                        crate::session::RuntimeInteractionChoice::new(
-                            choice.id,
-                            choice.label,
-                            choice.reply,
-                            choice.style,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                let custom_choice = args.custom_choice.map(|choice| {
-                    crate::session::RuntimeInteractionCustomChoice::new(
-                        choice.id,
-                        choice.label,
-                        choice.placeholder,
-                        choice.min_length,
-                        choice.max_length,
-                    )
-                });
-                if let Some(custom_choice) = custom_choice.as_ref() {
-                    if choices
-                        .iter()
-                        .any(|choice| choice.id() == custom_choice.id())
-                    {
-                        return Err(DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_popup",
-                            message: format!(
-                                "custom_choice id `{}` duplicates a fixed choice",
-                                custom_choice.id()
-                            ),
-                        });
-                    }
-                    if let Some(max_length) = custom_choice.max_length() {
-                        if max_length < custom_choice.min_length() {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "runtime_tool_request_popup",
-                                message: "custom_choice max_length must be greater than or equal to min_length".to_string(),
-                            });
-                        }
-                    }
-                }
-                let default_choice_id = args.default_on_timeout.clone();
-                if let Some(default_choice_id) = default_choice_id.as_deref() {
-                    if !choices
-                        .iter()
-                        .any(|choice| choice.id() == default_choice_id)
-                    {
-                        return Err(DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_popup",
-                            message: format!(
-                                "default_on_timeout choice `{default_choice_id}` is not defined"
-                            ),
-                        });
-                    }
-                }
-                let interaction = crate::session::RuntimeInteraction::new(
-                    format!(
-                        "interaction-{}-{}",
-                        provider_run.agent_instance_id().unwrap_or("agent"),
-                        crate::session::unix_epoch_ms()
-                    ),
-                    provider_run.agent_instance_id().ok_or_else(|| {
-                        DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_popup",
-                            message: "provider run is not bound to an agent".to_string(),
-                        }
-                    })?,
-                    crate::session::RuntimeInteractionKind::Choice,
-                    args.level
-                        .unwrap_or(crate::session::RuntimeInteractionLevel::Info),
-                    args.title,
-                    args.message,
-                    choices,
-                    custom_choice,
-                    args.timeout_sec,
-                    default_choice_id.clone(),
-                );
-                let interaction =
-                    interaction.with_native_origin(self.owned.capture_native_interaction_origin(
-                        provider_run.session_id(),
-                        provider_run.agent_instance_id().unwrap_or(""),
-                        provider_run.id(),
-                    ));
-                let interaction_id = interaction.id().to_string();
-                let session_id = provider_run.session_id().to_string();
-                let timeout_sec = interaction.timeout_sec();
-                let remote_target = if let Some(origin) = interaction.native_origin() {
-                    self.remote_native_interaction_context(
-                        provider_run.session_id(),
-                        provider_run.agent_instance_id().unwrap_or(""),
-                        origin,
-                    )
-                    .await?
-                } else {
-                    None
-                };
-                if let Some((config, target_daemon_id, context)) = remote_target {
-                    // Home owns the popup deadline and its resolution. Leave time
-                    // for that outcome to return; an indefinite card has no relay cap.
-                    let response_timeout = timeout_sec.map(|seconds| {
-                        std::time::Duration::from_secs(seconds)
-                            .saturating_add(crate::runtime::native_interaction_bridge::REMOTE_NATIVE_INTERACTION_RESPONSE_BUFFER)
-                    });
-                    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_optional_timeout(
-                        &config,
-                        ClientTarget { daemon_id: Some(target_daemon_id), daemon_alias: None },
-                        RelayPeerRequest::ForwardNativeTurnInteraction { context, interaction },
-                        response_timeout,
-                    ).await?;
-                    let resolution = match response {
-                        RelayPeerResponse::NativeInteractionResolved { resolution } => resolution,
-                        other => {
-                            return Err(DaemonError::LocalTransport {
-                                operation: "runtime_tool_request_popup",
-                                message: format!(
-                                    "unexpected relay response for remote popup interaction: {other:?}"
-                                ),
-                            });
-                        }
-                    };
-                    return Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                        ok: true,
-                        payload: serde_json::json!({
-                            "interaction_id": interaction_id,
-                            "status": resolution.status,
-                            "choice_id": resolution.choice_id,
-                            "reply": resolution.reply,
-                        }),
-                    });
-                }
-                let resolution_rx = self
-                    .create_runtime_interaction(&session_id, interaction)
-                    .await?;
-                if let Some(timeout_sec) = timeout_sec {
-                    let state = self.clone();
-                    let timeout_session_id = session_id.clone();
-                    let timeout_interaction_id = interaction_id.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
-                        let _ = state
-                            .timeout_runtime_interaction(
-                                &timeout_session_id,
-                                &timeout_interaction_id,
-                            )
-                            .await;
-                    });
-                }
-                let resolution =
-                    resolution_rx
-                        .await
-                        .map_err(|error| DaemonError::LocalTransport {
-                            operation: "runtime_tool_request_popup",
-                            message: format!(
-                                "popup interaction dropped before resolution: {error}"
-                            ),
-                        })?;
-                Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                    ok: true,
-                    payload: serde_json::json!({
-                        "interaction_id": interaction_id,
-                        "status": resolution.status,
-                        "choice_id": resolution.choice_id,
-                        "reply": resolution.reply,
-                    }),
-                })
+                self.dispatch_popup_tool(provider_run, arguments).await
             }
             _ => Err(DaemonError::LocalTransport {
                 operation: "dispatch_credential_runtime_tool_call",
@@ -560,13 +516,18 @@ impl KernelRuntimeState {
         service: crate::secret::RuntimeSecretService,
         request: crate::secret::CredentialHttpRequest,
     ) -> Result<crate::secret::CredentialHttpResponse, DaemonError> {
+        let signer = self
+            .web_bot_auth_signer(&context.home_session_id, &context.home_agent_id)
+            .await?;
         let state = self.clone();
         let preparation_context = context.clone();
         let prepared = self
             .with_app_side_effect_blocking(move |_| {
                 state.authorize_home_credential_context(&preparation_context)?;
                 state.with_forwarded_binding_operation(|| {
-                    service.prepare_http_request_with_credential(request)
+                    service
+                        .prepare_http_request_with_credential(request)?
+                        .with_web_bot_auth(signer.as_deref())
                 })
             })
             .await?;
@@ -592,6 +553,18 @@ impl KernelRuntimeState {
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let agent = self.authorize_home_credential_context(&context)?;
         match tool_name.as_str() {
+            crate::transport::runtime_tools::HTTP_REQUEST_TOOL => {
+                let args = serde_json::from_value::<crate::transport::runtime_tools::HttpRequestArgs>(arguments)
+                    .map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "invalid HTTP request arguments".into() })?;
+                let signer = self.web_bot_auth_signer(&context.home_session_id, agent.id()).await?;
+                self.authorize_home_credential_context(&context)?;
+                let response = tokio::task::spawn_blocking(move || {
+                    crate::secret::RuntimeSecretService::prepare_plain_http_request(args)?
+                        .with_web_bot_auth(signer.as_deref())?.execute()
+                }).await.map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "HTTP request task failed".into() })??;
+                self.authorize_home_credential_context(&context)?;
+                Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload: serde_json::to_value(response).map_err(|_| DaemonError::LocalTransport { operation: "http_request", message: "HTTP response encoding failed".into() })? })
+            }
             crate::transport::runtime_tools::LIST_CREDENTIAL_HANDLES_TOOL => {
                 let service = self.home_runtime_secret_service()?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -755,6 +728,7 @@ impl KernelRuntimeState {
                 });
             }
         };
+
         let _vault_unlock = self
             .ensure_vault_unlocked_for_agent(
                 &context.home_session_id,
@@ -765,6 +739,20 @@ impl KernelRuntimeState {
         let secret_input = self
             .with_app_side_effect(|_| {
                 self.authorize_home_credential_context(&context)?;
+                let service = self.home_runtime_secret_service()?;
+                match &injection {
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
+                        target_url,
+                    } => service
+                        .validate_browser_secret_input_for_target_url(&credential_id, target_url)?,
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Pty => {
+                        service.validate_terminal_secret_input(&credential_id)?
+                    }
+                    crate::transport::relay_peer::RemoteCredentialSecretInjection::Computer => {
+                        unreachable!("unbound Computer resolution was rejected before unlock")
+                    }
+                };
+
                 let secret_input = self.with_forwarded_binding_operation(|| match injection {
                     crate::transport::relay_peer::RemoteCredentialSecretInjection::Browser {
                         target_url,
@@ -813,6 +801,7 @@ impl KernelRuntimeState {
             agent.provider(),
             Some(&context.worker_provider_run_id),
         );
+
         match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { .. } => {}
             crate::config::UserCredentialSourceConfig::Env { .. }

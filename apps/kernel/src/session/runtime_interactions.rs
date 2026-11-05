@@ -223,6 +223,9 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// Protocol 936: a question owned by a durable task, rather than one turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asking_task_id: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -300,6 +303,7 @@ impl RuntimeInteraction {
         default_on_timeout: Option<String>,
     ) -> Self {
         Self {
+            asking_task_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -321,6 +325,15 @@ impl RuntimeInteraction {
             decision_expires_at: None,
             sudo_request: None,
         }
+    }
+
+    pub fn asking_task_id(&self) -> Option<&str> {
+        self.asking_task_id.as_deref()
+    }
+
+    pub(crate) fn with_asking_task_id(mut self, task: String) -> Self {
+        self.asking_task_id = Some(task);
+        self
     }
 
     pub fn sudo_request(&self) -> Option<&crate::local::SudoRequestPresentation> {
@@ -431,6 +444,7 @@ impl RuntimeInteraction {
         choices: Vec<RuntimeInteractionChoice>,
     ) -> Self {
         Self {
+            asking_task_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),

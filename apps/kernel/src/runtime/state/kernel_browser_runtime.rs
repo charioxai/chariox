@@ -104,11 +104,15 @@ struct BrowserToolArguments {
     document_id: Option<String>,
 }
 fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value, DaemonError> {
+    if arguments["command"]["input"]["kind"] == "upload" {
+        return super::kernel_browser_upload::params(arguments);
+    }
     let request: BrowserToolArguments = serde_json::from_value(arguments)
         .map_err(|error| host_error(super::kernel_browser_command_error::public_reason(&error)))?;
     if matches!(
         &request.command,
-        KernelBrowserCommand::GrantLeasedComputer { .. }
+        KernelBrowserCommand::PasteSecret { .. }
+            | KernelBrowserCommand::GrantLeasedComputer { .. }
             | KernelBrowserCommand::RevokeLeasedComputer { .. }
             | KernelBrowserCommand::GrantRoomComputer { .. }
             | KernelBrowserCommand::ListGrants
@@ -200,6 +204,16 @@ impl KernelRuntimeState {
         caller: &crate::runtime::command::KernelCommand,
         command: KernelBrowserCommand,
     ) -> Result<serde_json::Value, DaemonError> {
+        if let KernelBrowserCommand::PasteSecret {
+            credential_id,
+            tab_id,
+            generation,
+        } = command
+        {
+            return self
+                .kernel_browser_terminal_paste_secret(caller, credential_id, tab_id, generation)
+                .await;
+        }
         if let KernelBrowserCommand::Unsubscribe {
             subscription_id,
             generation,
@@ -511,12 +525,6 @@ impl KernelRuntimeState {
         &self,
         caller: &crate::runtime::command::KernelCommand,
     ) -> Result<(String, String), DaemonError> {
-        use sha2::{Digest, Sha256};
-        if self.slice_kernel_id().is_some() {
-            return Err(host_error(
-                "MD-3: the home kernel owns the user-domain browser".into(),
-            ));
-        }
         if caller
             .terminal_lifetime
             .as_ref()
@@ -524,20 +532,35 @@ impl KernelRuntimeState {
         {
             return Err(host_error("MD-3: terminal connection closed".into()));
         }
+        self.kernel_browser_terminal_actor(&caller.caller)
+    }
+    /// The user and browser actor of an authenticated terminal, from its caller alone.
+    pub(crate) fn kernel_browser_terminal_actor(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Result<(String, String), DaemonError> {
+        use sha2::{Digest, Sha256};
+        if self.slice_kernel_id().is_some() {
+            return Err(host_error(
+                "MD-3: the home kernel owns the user-domain browser".into(),
+            ));
+        }
         if !caller.is_terminal_caller() {
             return Err(host_error("MD-3: authenticated terminal required".into()));
         }
         let user = self.provider_account_authority_owner_user_id(
-            &crate::runtime::command::command_caller_user_id(caller),
+            &crate::runtime::command::caller_user_id(caller),
         );
-        let bytes = serde_json::to_vec(&caller.caller)
-            .map_err(|_| host_error("MD-3: invalid caller".into()))?;
+        let bytes =
+            serde_json::to_vec(caller).map_err(|_| host_error("MD-3: invalid caller".into()))?;
         Ok((user, format!("terminal:{:x}", Sha256::digest(bytes))))
     }
-    pub(crate) fn kernel_browser_terminal_disconnected(&self, user: &str, actor: &str) {
-        self.owned
-            .kernel_browser_host
-            .disconnect_terminal(user, actor);
+    /// Holds the actor of `context` registered until the connection that uses it ends.
+    pub(crate) fn kernel_browser_terminal_lease(
+        &self,
+        (user, actor): &(String, String),
+    ) -> crate::runtime::kernel_browser_host::TerminalLease {
+        self.owned.kernel_browser_host.lease_terminal(user, actor)
     }
 
     /// MD-3/display: typed internal seam for the coordinator-owned public adapter.
@@ -801,6 +824,8 @@ impl KernelRuntimeState {
             agent.id(),
         ) {
             tools.push(super::kernel_browser_secret_runtime::paste_spec());
+            tools.push(super::kernel_browser_vault_capture::capture_spec());
+            tools.push(super::kernel_browser_vault_capture::fill_spec());
             tools.extend(self.owner_handoff_tool_spec());
             if self.room_agent_tools_enabled() {
                 tools.push(RuntimeToolSpec { name: SHARE.into(),
@@ -808,8 +833,8 @@ impl KernelRuntimeState {
                     input_schema: serde_json::json!({"type":"object","properties":{"agent":{"type":"string","minLength":1},"resources":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"object","properties":{"kind":{"type":"string","enum":["browser_tab","app_view"]},"tab_id":{"type":"string"},"view_id":{"type":"string"}},"required":["kind"]}}},"required":["agent","resources"],"additionalProperties":false}), });
             }
             tools.push(RuntimeToolSpec { name: BROWSER.into(),
-                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; input requires the observed document_id beside command and accepts click/text/key/scroll; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Vault input is separate.".into(),
-                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll"]},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
+                description: "MD-3: control the user's kernel browser outside sessions/slices. Read state/snapshot/screenshot to obtain tab IDs, generation and document_id; Downloads appear in state.downloads (in_progress/done/failed/cancelled); a done path is readable with file tools until the Room ends or the browser stops. Downloads are limited to 256 MiB per file and 1 GiB per Room. Cancel with cancel_download and its download_id, tab_id and generation. The input op requires the observed document_id beside command and accepts click/text/key/scroll/upload; upload uses target=node_ref from snapshot and path (or paths, 1 through 20 files, 512 MiB total) inside the Room workspace; traversal and symlink escapes are refused; only input type=file is supported, not drop zones or chooser buttons; click/scroll x,y are CSS pixels inside the state viewport (screenshot pixels / device_scale_factor). Pending dialogs appear in state.dialogs; answer with dialog using its dialog_id, tab_id, document_id, generation and action accept/dismiss (optional prompt_text, empty allowed). Permission dialogs use accept for Allow and dismiss for Deny; unanswered requests deny after 30 seconds. Camera, microphone and screen capture are unavailable. Vault input is separate.".into(),
+                input_schema: serde_json::json!({"type":"object","properties":{"document_id":{"type":"string","minLength":1,"maxLength":256},"command":{"type":"object","properties":{"op":{"type":"string","enum":["start","state","stop","open","close","navigate","snapshot","input","dialog","cancel_download","screenshot"]},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"url":{"type":"string"},"subscription_id":{"type":"string"},"document_id":{"type":"string","minLength":1,"maxLength":256},"download_id":{"type":"string","minLength":1,"maxLength":128},"dialog_id":{"type":"string","minLength":1,"maxLength":256},"action":{"type":"string","enum":["accept","dismiss"]},"prompt_text":{"type":"string","maxLength":2048},"input":{"type":"object","properties":{"kind":{"type":"string","enum":["click","text","key","scroll","upload"]},"target":{"type":"string","description":"Upload: node_ref from a fresh snapshot of an input type=file."},"path":{"type":"string","minLength":1,"maxLength":4096,"description":"Upload: a file relative to the Room workspace, or an absolute path inside it. Use path or paths."},"paths":{"type":"array","minItems":1,"maxItems":20,"items":{"type":"string","minLength":1,"maxLength":4096}},"x":{"type":"integer","minimum":0,"maximum":1279},"y":{"type":"integer","minimum":0,"maximum":799},"text":{"type":"string","maxLength":16384},"key":{"type":"string","minLength":1,"maxLength":16,"description":"Named navigation/editing key or a single printable character; validated by the shared browser input path."},"modifiers":{"type":"integer","minimum":0,"maximum":15,"description":"Optional bounded CDP keyboard bitset: Alt=1, Ctrl=2, Meta=4, Shift=8; omitted means zero."},"delta_x":{"type":"integer","minimum":-10000,"maximum":10000},"delta_y":{"type":"integer","minimum":-10000,"maximum":10000}},"required":["kind"],"additionalProperties":false}},"required":["op"],"additionalProperties":false}},"required":["command"],"additionalProperties":false}), });
         }
         tools
     }
@@ -829,6 +854,8 @@ impl KernelRuntimeState {
             LOADER,
             BROWSER,
             PASTE,
+            super::kernel_browser_vault_capture::CAPTURE,
+            super::kernel_browser_vault_capture::FILL,
             SHARE,
             super::owner_handoff_runtime::HANDOFF,
         ]
@@ -888,21 +915,49 @@ impl KernelRuntimeState {
                 .kernel_browser_handoff(&agent, arguments, admission)
                 .await;
         }
-        if name == PASTE {
+        if [
+            PASTE,
+            super::kernel_browser_vault_capture::CAPTURE,
+            super::kernel_browser_vault_capture::FILL,
+        ]
+        .contains(&name)
+        {
             let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key(
                 &self.provider_account_authority_owner_user_id(agent.owner_user_id()),
             );
-            return self
-                .kernel_browser_paste_secret(run.session_id(), &agent, arguments, admission)
-                .await
-                .map_err(|error| {
-                    self.owned
-                        .kernel_browser_secret_observations
-                        .scrub_error(&scope, error)
-                });
+            let session = run.session_id();
+            let result = match name {
+                super::kernel_browser_vault_capture::CAPTURE => {
+                    self.kernel_browser_capture(token, session, &agent, arguments, admission)
+                        .await
+                }
+                super::kernel_browser_vault_capture::FILL => {
+                    self.kernel_browser_fill_field(token, session, &agent, arguments, admission)
+                        .await
+                }
+                _ => {
+                    self.kernel_browser_paste_secret(session, &agent, arguments, admission, false)
+                        .await
+                }
+            };
+            return result.map_err(|error| {
+                self.owned
+                    .kernel_browser_secret_observations
+                    .scrub_error(&scope, error)
+            });
         }
         let mut params = browser_tool_params(arguments)?;
+        if matches!(params["op"].as_str(), Some("open" | "navigate" | "input")) {
+            params["_web_bot_auth"] = self
+                .web_bot_auth_browser_material(run.session_id(), agent.id())
+                .await?;
+        }
+        if params["input"]["kind"] == "upload" {
+            params["_upload_roots"] =
+                serde_json::json!([self.room_project_directory(run.session_id())?]);
+        }
         self.claim_app_view_tab(&user, &admission, &mut params)?;
+        params["_download_session"] = serde_json::json!(agent.session_id());
         let payload = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;
@@ -1232,6 +1287,29 @@ mod document_tests {
     }
 
     #[test]
+    fn mcp_upload_uses_the_document_bound_input_lane() {
+        let arguments = serde_json::json!({"document_id":"doc","command":{
+            "op":"input","tab_id":"tab","generation":1,
+            "input":{"kind":"upload","target":"backend:7","path":"report.txt"}
+        }});
+        let params = browser_tool_params(arguments.clone()).unwrap();
+        assert_eq!(params["input"]["kind"], "upload");
+        assert_eq!(params["document_id"], "doc");
+        assert_eq!(params["focused_agent"], true);
+        for extra in ["_upload_roots", "_agent_input"] {
+            let mut invalid = arguments.clone();
+            invalid["command"][extra] = serde_json::json!(["/"]);
+            assert!(browser_tool_params(invalid).is_err());
+        }
+        let mut invalid = arguments.clone();
+        invalid.as_object_mut().unwrap().remove("document_id");
+        assert!(browser_tool_params(invalid).is_err());
+        let mut invalid = arguments;
+        invalid["command"]["input"]["paths"] = serde_json::json!(["other.txt"]);
+        assert!(browser_tool_params(invalid).is_err());
+    }
+
+    #[test]
     fn mcp_input_requires_an_observed_document_without_changing_terminal_protocol() {
         let input = serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"input":{"kind":"click","x":1,"y":2}}});
         assert!(browser_tool_params(input.clone()).is_err());
@@ -1243,6 +1321,21 @@ mod document_tests {
         assert!(browser_tool_params(serde_json::json!({"command":{"op":"state"}})).is_ok());
         assert!(serde_json::from_value::<crate::local::KernelBrowserRequest>(serde_json::json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"caller-cannot-inject-private-fields","input":{"kind":"click","x":1,"y":2}}})).is_err());
     }
+    #[test]
+    fn mcp_download_cancel_uses_an_observed_download_without_a_renderer_document() {
+        let params = browser_tool_params(serde_json::json!({"command":{
+            "op":"cancel_download","tab_id":"tab","generation":7,"download_id":"download-a"
+        }}))
+        .unwrap();
+        assert_eq!(params["download_id"], "download-a");
+        assert_eq!(params["focused_agent"], true);
+        assert!(params.get("document_id").is_none());
+        assert!(browser_tool_params(serde_json::json!({"command":{
+            "op":"cancel_download","tab_id":"tab","generation":7
+        }}))
+        .is_err());
+    }
+
     #[test]
     fn provider_tools_cannot_open_a_live_stream() {
         // Agents read with state, snapshot and screenshot; a stream is only for a person watching.

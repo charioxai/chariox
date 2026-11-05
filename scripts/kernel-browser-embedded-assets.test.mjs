@@ -11,6 +11,24 @@ import { fileURLToPath } from "node:url";
 const exec = promisify(execFile);
 const source = fileURLToPath(new URL("../apps/kernel/src/runtime/kernel_browser_assets.rs", import.meta.url));
 
+test("MP-08/MP-09/MP-10/MP-11 embedded upload storage runs without a source checkout", async () => {
+  const inventory = await readFile(source, "utf8");
+  const assets = [...inventory.matchAll(/"([^"/]+\.(?:mjs|py))",\s*include_bytes!\("([^"]+)"\)/g)];
+  const directory = await mkdtemp(path.join(tmpdir(), "chariox-embedded-upload-"));
+  try {
+    for (const [, name, relative] of assets) {
+      await writeFile(path.join(directory, name), await readFile(path.resolve(path.dirname(source), relative)));
+    }
+    const { stdout } = await exec("python3", ["-c",
+      'import subprocess,sys; subprocess.run([sys.executable, sys.argv[1], sys.argv[2]], input=b\'{"action":"reap"}\', check=True)',
+      path.join(directory, "browser-upload-store.py"), path.join(directory, "uploads")],
+    { cwd: directory, env: { ...process.env, CHARIOX_BROWSER_LIFECYCLE_ROOT: path.join(directory, "lifetimes") } });
+    assert.equal(stdout.trim(), "null");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("MP-08/MP-10/MP-11 embedded host imports all controller dependencies outside the checkout", async () => {
   const inventory = await readFile(source, "utf8");
   const assets = [...inventory.matchAll(/"([^"/]+\.(?:mjs|py))",\s*include_bytes!\("([^"]+)"\)/g)];

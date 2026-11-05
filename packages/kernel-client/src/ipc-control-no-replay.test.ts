@@ -40,6 +40,8 @@ for (const request of [
   { KernelBrowser: { command: { op: "display_next", subscription_id: "s", generation: 1, after_sequence: 2 } } },
   { OpenUserAppView: { installation_id: "todo", host: "client_native" } },
   { CallUserAppView: { view_id: "user-app-fixture", method: "increment", input: {} } },
+  { OwnerVault: { action: "reveal", id: "fixture" } },
+  { OwnerVault: { action: "create", name: "fixture", kind: "Password", usage: "example.test", value: "fixture" } },
 ]) {
   const kind = Object.keys(request)[0]
 

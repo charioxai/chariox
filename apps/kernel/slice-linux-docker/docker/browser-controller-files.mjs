@@ -168,6 +168,8 @@ export async function uploadBrowserFiles({
   signal,
   stageUploads = stageBrowserUploadFiles,
   clickChooser = performBrowserAction,
+  fileInputOnly = false,
+  withInput = operation => operation(),
 }) {
   assertNotCancelled(signal);
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
@@ -240,14 +242,22 @@ export async function uploadBrowserFiles({
     if (!objectId) throw staleFileInput();
     const inspected = await connection.send("Runtime.callFunctionOn", {
       objectId,
-      functionDeclaration: `function() {
+      functionDeclaration: `function(count, strict) {
         if (!this.isConnected || this.ownerDocument !== this.ownerDocument.defaultView?.document) return "detached";
-        return this.localName === "input" && this.type === "file" ? "file" : "invalid";
+        if (this.localName !== "input" || this.type !== "file") return "invalid";
+        return strict && count > 1 && !this.multiple ? "single" : "file";
       }`,
+      arguments: [{ value: files.length }, { value: fileInputOnly }],
       returnByValue: true,
       awaitPromise: false,
     }, sessionId);
     if (inspected?.exceptionDetails || inspected?.result?.value !== "file") {
+      if (fileInputOnly && inspected?.result?.value === "invalid") {
+        throw invalidUpload("upload target must be an input type=file; drop zones and chooser buttons are unsupported");
+      }
+      if (fileInputOnly && inspected?.result?.value === "single") {
+        throw invalidUpload("upload target must allow multiple files");
+      }
       if (inspected?.result?.value === "invalid") {
         // MP-08/MP-10/MP-11: only a real chooser opened by the observed,
         // actionable control can bind its hidden input. Never guess a selector.
@@ -312,11 +322,11 @@ export async function uploadBrowserFiles({
     await assertContext();
     await assertCurrentDocument(connection, sessionId, targetId, documentId);
     assertNotCancelled(signal);
-    await connection.send(
+    await withInput(() => connection.send(
       "DOM.setFileInputFiles",
       { objectId, files: staged.files },
       sessionId,
-    );
+    ));
   } catch (error) {
     if (error?.code !== "browser_cdp_command_failed") throw error;
     throw staleFileInput();

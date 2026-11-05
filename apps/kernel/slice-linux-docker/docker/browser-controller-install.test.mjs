@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchChromium } from './browser-protection-fixture.mjs';
+import { executable } from './kernel-browser-process.mjs';
 
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 test('MP-08/MP-11: Docker-installed controller starts and captures a canonical image', async () => {
@@ -31,7 +32,7 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
     });
     assert.equal(health.status, 0, health.stderr);
     assert.equal(JSON.parse(health.stdout).result.state, 'ready');
-    chrome = await launchChromium({ executable: process.env.CHARIOX_KERNEL_BROWSER_EXECUTABLE, root });
+    chrome = await launchChromium({ executable: await executable(), root });
     const { browser, connection } = chrome;
     const { targetInfos } = await connection.send('Target.getTargets');
     const targetId = targetInfos.find(t => t.type === 'page').targetId;

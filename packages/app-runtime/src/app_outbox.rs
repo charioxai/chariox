@@ -11,7 +11,7 @@ mod transactions;
 
 use crate::app_catalog::{AppCatalog, CatalogError};
 pub use admission::{EventCatalog, VerifiedAutomation};
-use chariox_app_package::VerifiedPackage;
+use chariox_app_package::VerifiedApp;
 pub use configuration::{
     AutomationConfiguration, AutomationStatus, AutomationTarget, NotificationDeliveryMode,
 };

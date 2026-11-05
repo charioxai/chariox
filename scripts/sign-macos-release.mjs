@@ -5,7 +5,7 @@
 // tool never creates, stores or reads credentials, identities or profiles.
 // It signs a copy (the unsigned input is kept), notarizes it, and verifies the
 // signatures and the Gatekeeper assessment. Code signing changes bytes, so the
-// Chariox runtime inventory is signed over this tool's output, never before it.
+// Chariox release manifest is signed over this tool's output, never before it.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { lstat, open, readdir, readFile, realpath, rm } from 'node:fs/promises';
@@ -16,12 +16,13 @@ export const WORKER_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)),
 export const CLI_ENTITLEMENTS = join(dirname(fileURLToPath(import.meta.url)), 'macos-cli.entitlements');
 const JIT_ENTITLEMENT = 'com.apple.security.cs.allow-jit';
 const LIBRARY_ENTITLEMENT = 'com.apple.security.cs.disable-library-validation';
-// V8 in the App worker and Bun's JavaScriptCore in the compiled CLI/TUI are the only JITs. The CLI also loads the
+// The kernel's WASM App worker (its Seatbelt entry refuses anything but hardened runtime
+// with allow-jit alone) and Bun's JavaScriptCore in the compiled CLI/TUI are the only JITs. The CLI also loads the
 // OpenTUI renderer, which Bun extracts unsigned at run time, so it needs library validation off. Every other artifact
 // runs without entitlements.
 const ENTITLED = new Map([
   ['chariox-setup', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
-  ['chariox-app-worker', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
+  ['chariox-app-wasm-worker', { role: 'jit-executable', file: WORKER_ENTITLEMENTS, keys: [JIT_ENTITLEMENT] }],
   ['chariox', { role: 'cli-executable', file: CLI_ENTITLEMENTS, keys: [JIT_ENTITLEMENT, LIBRARY_ENTITLEMENT] }],
 ]);
 // A Chariox inventory signed before platform signing describes the wrong bytes.
@@ -99,7 +100,7 @@ async function artifacts(input) {
       const relativePath = relative(input, path);
       if (metadata.isDirectory()) { await walk(path, depth + 1); continue; }
       if (!metadata.isFile()) throw new Error(`input contains a link or special file: ${relativePath}`);
-      if (STALE.has(name)) throw new Error(`input contains ${relativePath}; sign the Chariox runtime inventory after platform signing`);
+      if (STALE.has(name)) throw new Error(`input contains ${relativePath}; sign the Chariox release manifest after platform signing`);
       if (files.length === FILE_LIMIT) throw new Error(`input has more than ${FILE_LIMIT} files`);
       files.push({ path: relativePath, role: role(relativePath, await header(path)),
         size: metadata.size, unsignedSha256: sha256(await readFile(path)) });
@@ -155,7 +156,7 @@ export function formatPlan(plan) {
     lines.push(step.command.map(quote).join(' '));
   }
   lines.push(`# staple: ${STAPLE}`);
-  lines.push('# next: sign the Chariox runtime inventory over the signed output bytes');
+  lines.push('# next: sign the Chariox release manifest over the signed output bytes');
   return `${lines.join('\n')}\n`;
 }
 

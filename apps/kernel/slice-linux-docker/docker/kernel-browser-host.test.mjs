@@ -3,6 +3,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { PortableEncoder } from "./kernel-browser-display.mjs";
+import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
@@ -28,7 +32,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root) {
+function fixture(root, { realCdp = false } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -36,6 +40,7 @@ function fixture(root) {
   const sent = [];
   const connection = {
     isOpen: () => true,
+    close: async () => {},
     subscribe: handler => { handlers.add(handler); return () => handlers.delete(handler); },
     send: async (method, params, session) => {
       if (connection.beforeSend) await connection.beforeSend(method, params, session);
@@ -43,6 +48,7 @@ function fixture(root) {
       if (method === "Target.getTargets") return { targetInfos: [...pages].map(([targetId, tab]) => ({ targetId, type: "page", ...tab })) };
       if (method === 'Target.getTargetInfo') return {targetInfo:pages.get(params.targetId)};
       if (method === "Target.createTarget") { const id = `target-${++next}`; pages.set(id, { url: params.url }); return { targetId: id }; }
+      if (method === "Target.attachToTarget") return { sessionId: `session-${params.targetId}` };
       if (method === "Target.closeTarget") {
         pages.delete(params.targetId);
         if (pages.size === 0 && chromium.child) chromium.child.exitCode = 0;
@@ -65,7 +71,8 @@ function fixture(root) {
     },
   };
   const chromium = { child: null, start: async () => { chromium.child = { exitCode: null, signalCode: null }; return "http://127.0.0.1:1"; }, stop: async () => { chromium.child = null; } };
-  const browserFactory = () => ({ connection, ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
+  const webBotAuth={byTab:new Map()};
+  const browserFactory = () => ({ connection, webBotAuth, configureWebBotAuth:async(tabId,signer)=>{if(signer===null||signer?.disabled===true)webBotAuth.byTab.delete(tabId);else webBotAuth.byTab.set(tabId,signer);return{configured:true,kid:'fixture-kid'};}, attachWebBotAuth:async(_tabId,_targetId,session)=>{await connection.send('Fetch.enable',{patterns:[{urlPattern:'*',requestStage:'Request'}]},session);},clearWebBotAuth:async(tabId)=>webBotAuth.byTab.delete(tabId), ensureConnection: async () => connection,ensureTargetSession:async (_connection,target)=>`session-${target}`, close: async () => {},
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
@@ -74,14 +81,93 @@ function fixture(root) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory }), chromium, handlers, sent, pages, connection };
+  return { host: new KernelBrowserHost(root, { chromium, browserFactory: realCdp
+    ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
-async function using(callback) {
+async function using(callback, options) {
   const root = await mkdtemp(path.join(os.tmpdir(), "chariox-md2-test-"));
-  const context = fixture(root);
+  const context = fixture(root, options);
   try { await callback(context, root); } finally { fixture.secretFocused = false; fixture.protectedField = false; await context.host.stop(); await rm(root, { recursive: true, force: true }); }
 }
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before a Tab's first navigation", () => using(async ({ host, sent }) => {
+  const signer = { private_key: "private-seed-must-not-return", signature_agent: "https://agents.example.test", not_before: 1, expires_at: 2 };
+  const reply = await host.handle({ id: 701, method: "host.browser", params: {
+    op: "open", tab_id: "wba-tab", url: "https://example.test/", _web_bot_auth: signer,
+  } });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.result.tabs[0].tab_id, "wba-tab");
+  assert.equal(JSON.stringify(reply).includes("private-seed-must-not-return"), false);
+  const create = sent.findIndex(({ method, params }) => method === "Target.createTarget" && params.url === "about:blank");
+  const enable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const navigate = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/");
+  assert.ok(create >= 0 && enable > create && navigate > enable);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 restores opted-in tabs only after the signer is attached", () => using(async ({ host, sent }, root) => {
+  const tabId = "host-tab-wba-restore";
+  await writeFile(path.join(root, "tabs.json"), JSON.stringify({
+    generation: 4,
+    tabs: [{ tab_id: tabId, url: "https://example.test/restored", web_bot_auth: true, web_bot_auth_project_id: "project-a" }],
+  }));
+  await host.start();
+  assert.equal(sent.some(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored"), false,
+    "opted-in restore URL stays pending until a signer is available");
+  assert.equal(host.tabState().tabs.find(tab => tab.tab_id === tabId)?.title,
+    "Web Bot Auth restore requires an agent to resume this tab");
+
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, signer, targetId) => {
+    const result = await configure(id, signer, targetId);
+    if (signer && targetId) await host.browser.attachWebBotAuth(id, targetId, `session-${targetId}`);
+    return result;
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const signer = { private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: now - 10, expires_at: now + 10, project_id: "project-a", policy_revision: 1 };
+  const response = await host.handle({ id: 702, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: signer,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  const fetchEnable = sent.findIndex(({ method }) => method === "Fetch.enable");
+  const restoreNavigation = sent.findIndex(({ method, params }) => method === "Page.navigate" && params.url === "https://example.test/restored");
+  assert.ok(fetchEnable >= 0 && restoreNavigation > fetchEnable, JSON.stringify(sent.map(({ method, params }) => [method, params])));
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 project WBA policy acknowledges without signer data", () => using(async ({ host }) => {
+  await host.request({ op: "open", url: "https://example.test/" });
+  let applied;
+  host.browser.webBotAuth.applyProjectPolicy = (projects, reset, revision) => { applied = { projects, reset, revision }; };
+  const response = await host.handle({ id: "wba-policy", method: "host.web_bot_auth_policy", params: {
+    projects: ["enabled-project"], reset: false, revision: 4,
+  } });
+  assert.deepEqual(applied, { projects: ["enabled-project"], reset: false, revision: 4 });
+  assert.equal(response.ok, true);
+  assert.deepEqual(response.result, { updated: true });
+  assert.equal(JSON.stringify(response).includes("private_key"), false);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 a disabled signer marker reaches CDP and clears project bookkeeping", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/" });
+  const tabId = opened.tabs[0].tab_id;
+  host.webBotAuthProjects.set(tabId, "project-a");
+  host.browser.webBotAuth.byTab.set(tabId, { projectId: "project-a" });
+  let received;
+  const configure = host.browser.configureWebBotAuth;
+  host.browser.configureWebBotAuth = async (id, marker, targetId) => {
+    received = marker;
+    return configure(id, marker, targetId);
+  };
+  const marker = { disabled: true, policy_revision: 9 };
+  const response = await host.handle({ id: 703, method: "host.browser", params: {
+    op: "state", tab_id: tabId, generation: host.generation, _web_bot_auth: marker,
+  } });
+  assert.equal(response.ok, true, JSON.stringify(response));
+  assert.equal(received, marker, "the revision marker is forwarded intact to CDP");
+  assert.equal(host.webBotAuthProjects.has(tabId), false);
+  assert.equal(host.browser.webBotAuth.byTab.has(tabId), false);
+}));
 
 test("MP-08/MP-09/MP-10/MP-11 a dialog without Chrome chrome is shared and answerable while its renderer is blocked", () => using(async ({ host }) => {
   const opened = await host.request({ op: "open", url: "https://example.com" });
@@ -412,7 +498,7 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
   if(method==='Page.startScreencast')for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:session,params:{data:encodePng(1280,800,Buffer.alloc(1280*800*4,255)),sessionId:1}});
   return result;
  };
- const stream={codec:'avc1.420033',device_scale_factor:1};
+ const stream={subscription_id:'host-display-a',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
  for(let n=0;n<4;n++)assert.equal(await host.compositorFor(tab,stream),null);
  assert.equal(attempts,1,'credits cannot rebuild a refused source');
  host.compositors.get(tab.tab_id).retryAt=-Infinity;
@@ -420,6 +506,30 @@ test('MP-11 a refused compositor attestation is cached per document with backoff
  assert(host.compositors.get(tab.tab_id).retryAt>performance.now()+1500,'consecutive refusals back off further');
  pages.get(tab.target_id).document_id='next';tab.document_id='next';
  assert.equal(await host.compositorFor(tab,stream),null);assert.equal(attempts,3,'a new document retries at once');
+ host.displays.delete(stream.subscription_id);
+}));
+// F-5 (b3, browserfix r5): a credit still in flight when its display was removed started a compositor that nobody
+// stopped; its protected capture per screencast frame held the sample lane, and each typed key waited 30-50 ms.
+test('MP-08/MP-10 a credit for a removed display starts no compositor',()=>using(async({host,sent})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+ const stream={subscription_id:'host-display-gone',codec:'avc1.420033',device_scale_factor:1};host.displays.set(stream.subscription_id,stream);
+ const resolve=host.browser.resolvePageTarget.bind(host.browser);
+ host.browser.resolvePageTarget=async target=>{const page=await resolve(target);host.displays.delete(stream.subscription_id);return page};
+ const screencasts=sent.filter(c=>c.method==='Page.startScreencast').length;
+ assert.equal(await host.compositorFor(tab,stream),null);
+ assert.equal(host.compositors.has(tab.tab_id),false,'no compositor is left for the removed display');
+ assert.equal(sent.filter(c=>c.method==='Page.startScreencast').length,screencasts,'no screencast starts');
+}));
+test('MP-08/MP-10 removing the last display stops the compositor without waiting for the stream close',()=>using(async({host})=>{
+ const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),order=[];
+ let streamClosed;const source={close:async()=>{order.push('compositor')}};
+ host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+ // The stream's close is slow (encoder helpers): the compositor's captures must not wait behind it.
+ const stream={subscription_id:'host-display-last',tab_id:tab.tab_id,close:()=>new Promise(resolve=>{streamClosed=resolve;})};host.displays.set(stream.subscription_id,stream);
+ await host.removeDisplay(stream);assert.equal(host.compositors.has(tab.tab_id),false);
+ await new Promise(resolve=>setTimeout(resolve,10));
+ assert.deepEqual(order,['compositor']);
+ streamClosed();await Promise.all(host.displayTeardowns);
 }));
 test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>using(async({host},root)=>{
  await host.request({op:'open',url:'about:blank'});
@@ -429,7 +539,7 @@ test('MP-11 overlapping saves serialize the shared tabs.json.new writer',()=>usi
 test('MP-11 a compositor close rejected by a dead connection cannot abort stop',()=>using(async({host,chromium})=>{
  const opened=await host.request({op:'open',url:'about:blank'});
  host.compositors.set(opened.tab_id,{ready:Promise.resolve(null),source:{close:async()=>{throw Error('connection closed')}}});
- assert.equal((await host.request({op:'stop'})).state,'stopped');assert.equal(chromium.child,null);
+ await assert.rejects(host.request({op:'stop'}),/owned display teardown failed/);assert.equal(chromium.child,null);
 }));
 test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore URL", () => using(async ({ host }, root) => {
   const opened = await host.request({ op: "open", url: "https://example.com/?q=synthetic-protected-value" });
@@ -451,7 +561,7 @@ test("MD-5: metadata scrubs echoes and never persists a secret-bearing restore U
   const offscreen = macEnvironment({ ...environment, CHARIOX_KERNEL_BROWSER_HEADLESS: "0" });
   assert(launchArguments("/private/drill/profile", offscreen.CHARIOX_KERNEL_BROWSER_HEADLESS === "1", true).includes("--headless=new"), "Browser does not create native windows on the owner's Mac desktop");
   assert.equal(environment.DISPLAY, ":99");
-  assert.throws(() => linuxEnvironment({}, 0), /normal Unix user/);
+  assert.deepEqual(linuxEnvironment({}, 0), {});
   assert.deepEqual(linuxEnvironment({ DISPLAY: ":99" }, 501), { DISPLAY: ":99" });
   const args = launchArguments("/private/drill/profile", false);
   assert(!args.some(arg => /headless|no-sandbox|password-store|mock-keychain/.test(arg)));
@@ -495,6 +605,27 @@ test("MD-4 reviewer R3: discovery and legacy restoration stay within the durable
   assert.equal((await host.request({ op: "state" })).tabs.length, 127);
 }));
 
+
+test("F-5 a restarted browser opens at the size its last viewer gave the window, before any viewer attaches", () => using(async ({ host, chromium, connection }, root) => {
+  const opened = await host.request({ op: "open", url: "https://example.com/kept" });
+  const send = connection.send, bounds = { width: 1280, height: 888, windowState: "normal" }, moves = [];
+  connection.send = async (method, params, session) => {
+    if (method === "Browser.getWindowForTarget") return { windowId: 7, bounds: { ...bounds } };
+    if (method === "Browser.setWindowBounds") { moves.push(params.bounds); Object.assign(bounds, params.bounds); return {}; }
+    if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { scale: 1, zoom: 1, pageX: 0, pageY: 0 }, cssLayoutViewport: { clientWidth: bounds.width, clientHeight: bounds.height - 88 } };
+    return send(method, params, session);
+  };
+  const tab = opened.tabs.find(entry => entry.url === "https://example.com/kept");
+  await host.request({ op: "resize", tab_id: tab.tab_id, generation: opened.generation, width: 900, height: 600 });
+  assert.deepEqual(host.pageSize(tab.tab_id), { width: 900, height: 600 });
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, "tabs.json"), "utf8")).window_layout, { width: 900, height: 600 });
+  // The restarted Chrome window opens at its default size.
+  Object.assign(bounds, { width: 1280, height: 888 }); moves.length = 0;
+  chromium.child.exitCode = 1;
+  const recovered = await host.request({ op: "start" });
+  assert.deepEqual(host.pageSize(recovered.tabs.find(entry => entry.url === "https://example.com/kept").tab_id), { width: 900, height: 600 }, "the page has the viewer's size before a viewer attaches");
+  assert.deepEqual(moves, [{ width: 900, height: 688 }]);
+}));
 
 test("MD-3 b220: cancelled pending input never inserts text", () => using(async ({ host, sent, connection }) => {
   const opened = await host.request({ op: "open", url: "about:blank" });
@@ -607,9 +738,8 @@ test("MD-3: bound capture carries the captured document and rejects a capture na
 test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; App tabs are not restored", () => using(async ({ host, sent }, root) => {
   const opened = await host.request({op:"open",url:"https://app.a.invalid/"});
   const target = host.tabs.get(opened.tab_id).target_id;
-  const inputs = [];
-  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]),
-    noteAgent: (targetId, agent) => inputs.push([targetId, agent])};
+  host.browser.appTabs = {apps:new Map([["app", {targetId:target, origin:"https://app.a.invalid"}]]), noteActivity() {},
+    async input(app, agent, dispatch) { assert.equal(agent, 'agent-7'); return dispatch(12345); }};
   const agent = {focused_agent:true,_agent_input:true,observed_by:"agent:agent-7"};
   const command = {op:"input",tab_id:opened.tab_id,generation:opened.generation,document_id:`doc-${target}`,input:{kind:"click",x:12,y:20}};
   for (const op of ["input", "navigate", "close"]) {
@@ -619,18 +749,12 @@ test("MP-08/MP-11: agents drive App tabs only with the kernel's App view claim; 
   const claimed = {...command,...agent,_app_view_tab:opened.tab_id};
   await host.request(claimed);
   assert(sent.some(call=>call.method==="Input.dispatchMouseEvent"));
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   await host.request({...command});
-  // A person's input is not an agent's: the Tab's record does not change.
-  assert.deepEqual(inputs.slice(1), []);
   // The App page stays on its own origin, whoever navigates it.
   await assert.rejects(host.request({...claimed,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
   await assert.rejects(host.request({...command,op:"navigate",url:"https://example.com/"}), error => error.code === "user_domain_not_granted");
-  // An agent's navigation is its input too.
-  inputs.length = 0;
   await host.request({...claimed,op:"navigate",url:"https://app.a.invalid/list"});
   await host.request({...command,op:"navigate",url:"https://app.a.invalid/"});
-  assert.deepEqual(inputs, [[target, "agent-7"]]);
   const {readFile} = await import("node:fs/promises");
   assert.deepEqual(JSON.parse(await readFile(path.join(root,"tabs.json"),"utf8")).tabs, []);
   await host.request({...claimed,op:"close"});
@@ -877,6 +1001,47 @@ test("MP-08/MP-10/MP-11 owner code flag reaches the bound controller action", ()
   assert.equal(denied.ok, false);
   assert.equal(captured, null, "a non-terminal code exception cannot reach physical input");
 }));
+
+test("MP-08/MP-10/MP-11 kernel factor fill reaches the bound controller without owner masking", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  let captured;
+  host.browser.performAction = async action => { captured = action; return {}; };
+  const result = await host.handle({ id: "factor", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:104", observed_by: "agent:factor-user", vault_factor_input: true,
+    action: { kind: "fill", text: "fixture-only-code", expected_document_url: url },
+  } });
+  assert.equal(result.ok, true);
+  assert.equal(captured.action.vault_factor_input, true);
+  assert.notEqual(captured.action.mask_code_input, true);
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 configures Web Bot Auth before an agent Vault fill", () => using(async ({ host }) => {
+  const opened = await host.request({ op: "open", url: "https://example.test/account" });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async (tabId, signer, targetId) => {
+    order.push(["configure", tabId, targetId]);
+    signer.private_key = "";
+    return { configured: true, kid: "fixture-kid" };
+  };
+  host.browser.performAction = async () => { order.push(["fill"]); return {}; };
+  const signer = {
+    private_key: "A".repeat(43), signature_agent: "https://agents.example.test",
+    not_before: Math.floor(Date.now() / 1000) - 1, expires_at: Math.floor(Date.now() / 1000) + 3600,
+  };
+  const result = await host.handle({ id: "agent-vault-fill", method: "host.secret", params: {
+    tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+    node_ref: "backend:105", observed_by: "agent:agent-7", _web_bot_auth: signer,
+    action: { kind: "fill", text: "fixture-secret", append: false, submit: false },
+  } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(order, [["configure", tab.tab_id, host.tabs.get(tab.tab_id).target_id], ["fill"]]);
+  assert.equal(signer.private_key, "");
+  assert.equal(JSON.stringify(result).includes("A".repeat(43)), false);
+}));
 test('MP-11 agent native input cannot bypass App human-channel admission', () => using(async ({host}) => {
   await host.request({op:'open',url:'https://example.com'});
   host.browser.appTabs={apps:new Map([['app',{targetId:'target-1'}]])};
@@ -945,6 +1110,18 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  assert.equal(sent.filter(c=>c.method==='Emulation.setDeviceMetricsOverride').length,0,'a Browser viewer never emulates density on the desktop');
  await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
  assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,1);assert.equal(host.scales.has(tab.tab_id),false);
+ }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
+// MP-08/MP-10: the unsubscribe no longer holds the controller lock, so it can finish after the viewer resized the window;
+// its late clear must not wipe the viewport the resize set (the region screenshot then has the wrong size).
+test('MP-08/MP-10 a late display unsubscribe does not clear the viewer-sized viewport',()=>using(async({host,sent})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>null};
+ const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:2});
+ host.windowLayout={width:800,height:600};
+ await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ assert.equal(sent.filter(c=>c.method==='Emulation.clearDeviceMetricsOverride').length,0,'the resized window keeps its viewport');assert.equal(host.scales.has(tab.tab_id),false);
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
@@ -1032,7 +1209,7 @@ test("MP-08 completed agent input cannot attribute a later native popup on the s
   assert.equal(state._tab_openers?.[human.tab_id], undefined, "opener alone carries no actor evidence");
   assert.equal(state._tab_creation_actions?.[agent.tab_id], "action-agent");
   assert.equal(state._tab_creation_actions?.[human.tab_id], undefined);
-  assert.equal(handlers.size, 3, "activation, lockdown and recovery observers remain until host shutdown");
+  assert.equal(handlers.size, 4, "activation, downloads, lockdown and recovery observers remain until host shutdown");
 }));
 
 // MP-08/MP-10/MP-11: shared viewers observe one canonical tab, never change
@@ -1288,7 +1465,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1445,8 +1622,8 @@ test('MP-11 agents cannot reach extension management; the person can', () => usi
 
 // MP-08/MP-10/MP-11 (protocol 530/138): the public Browser state keys are the hashed
 // Rust fixture's; a new key needs a protocol bump and a new fixture.
-test('MP-08 public Browser state keys match the protocol 933 fixture', () => using(async ({ host }) => {
-  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-933.json', import.meta.url), 'utf8'));
+test('MP-08 public Browser state keys match the protocol 937 fixture', () => using(async ({ host }) => {
+  const fixture = JSON.parse(await readFile(new URL('../../src/local/api/tests/protocol_shapes/browser-header-937.json', import.meta.url), 'utf8'));
   const display = process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
   process.env.CHARIOX_KERNEL_BROWSER_DISPLAY = '1';
   try {
@@ -1600,7 +1777,7 @@ test('MP-11 the host allows downloads and closes Tabs on blocked schemes only', 
   await host.request({ op: 'open', url: 'about:blank' });
   // Miguel 2026-10-15: no CDP download deny (r8 live drill: it also cancelled the Web Store package
   // of an extension the person adds); Chrome's settings/internal pages and DevTools stay open.
-  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior'), 'no CDP download deny');
+  assert(!sent.some(call => call.method === 'Browser.setDownloadBehavior' && call.params.behavior === 'deny'), 'downloads stay allowed in the managed spool');
   const send = connection.send;
   connection.send = async (method, params, session) => method === 'DOM.getDocument'
     ? { root: { nodeId: 1, documentURL: session === 'refused' ? 'chrome-error://chromewebdata/' : params.url } }
@@ -1865,11 +2042,11 @@ test('MP-08/MP-10/MP-11 a native key reads the active Tab live on a snapshot mis
 // MP-08/MP-10/MP-11: failed extension startup and browser recovery release observers.
 test('MP-08/MP-10/MP-11 native owner observers retire on recovery and shutdown',()=>using(async({host,chromium,handlers,connection})=>{
  const {ChromeTabGroups}=await import('./kernel-browser-tab-groups.mjs');
- await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,2,'failed extension load leaves lockdown and recovery');
- const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,3);
+ await host.request({op:'open',url:'about:blank'});assert.equal(host.tabGroups,null);assert.equal(handlers.size,3,'failed extension load leaves downloads, lockdown and recovery');
+ const groups=new ChromeTabGroups(connection);await groups.nativeState.attach('worker-session');host.tabGroups=groups;assert.equal(handlers.size,4);
  chromium.child.exitCode=1;await host.request({op:'start'});
  assert.equal(groups.nativeState.closed,true);assert.equal(groups.nativeState.off,null);assert.equal(host.tabGroups,null);
- assert.equal(handlers.size,2,'lockdown and recovery remain; the retired native observer is gone');
+ assert.equal(handlers.size,3,'downloads, lockdown and recovery remain; the retired native observer is gone');
  await host.request({op:'stop'});assert.equal(handlers.size,0);
 }));
 
@@ -2649,6 +2826,82 @@ test('MP-08/MP-10/MP-11: a crash arriving during inventory does not cancel recov
   assert.equal(sent.filter(call => call.method === 'Page.reload').length, 0, 'pressure must hold recovery while close stays usable');
 }));
 
+test('MP-08 / MP-10 user-domain App open and bridge polling keep the native Chrome window', () => using(async ({host, sent}) => {
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const opened = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(opened.ok,true,JSON.stringify(opened));
+  assert.equal(sent.find(call=>call.method==='Target.createTarget' && call.params.newWindow!==undefined)?.params.newWindow,false);
+  await host.handle({id:2,method:'browser.app.open',params});
+  await host.handle({id:3,method:'browser.app.calls',params:{wait_ms:0}});
+  assert(!sent.some(call=>call.method==='Browser.setWindowBounds' && call.params.bounds.windowState==='fullscreen'));
+}));
+
+test('MP-08 / MP-10 opening and reopening an App refresh its native window before exposure', () => using(async ({host}) => {
+  host.chromium.display = {};
+  let nativeTarget = null;
+  host.chromeWindows.resolve = async () => { nativeTarget = [...host.tabs.values()].at(-1)?.target_id ?? null };
+  const params = {origin_label:'native-app',installation_id:'installation-1',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<canvas/>').toString('base64')}]};
+  const first = await host.handle({id:1,method:'browser.app.open',params});
+  assert.equal(first.ok,true,JSON.stringify(first));
+  assert.equal(nativeTarget,first.result.target_id);
+  nativeTarget = 'retired-window';
+  const reopened = await host.handle({id:2,method:'browser.app.open',params});
+  assert.equal(reopened.ok,true,JSON.stringify(reopened));
+  assert.equal(nativeTarget,reopened.result.target_id);
+}));
+
+test('MP-08 / MP-10 a mirror stays inside the owned native page viewport', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+  try {
+    const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id),applied=[];
+    chromium.desktop={};
+    host.browser.nativeViewport=async target=>({target_id:target,width:1272,height:709});
+    host.browser.setLayout=async(target,layout)=>{applied.push({target,layout})};
+    host.mirror.v2.begin=()=>{};
+    const subscribe=options=>host.request({op:'mirror_subscribe',tab_id:tab.tab_id,generation:host.generation,device_scale_factor:1,wire:2,...options});
+    await subscribe({layout_width:1920,layout_height:1080});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:1272,height:708},'the native viewport, rounded inward for the codec, bounds the canonical page');
+    assert.deepEqual(applied.at(-1),{target:tab.target_id,layout:{width:1272,height:708}});
+    await subscribe({layout_width:900,layout_height:500});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'a smaller viewer keeps its requested layout');
+    host.browser.nativeViewport=async()=>null;
+    await assert.rejects(subscribe({}),{code:'user_domain_stale_reference'});
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:900,height:500},'an unavailable native query does not publish a partial layout');
+  } finally {
+    delete chromium.desktop;
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
+  }
+}));
+
+test('MP-08 / MP-10 an App mirror applies its native cap through CDP before publication', () => using(async ({host,chromium,sent}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_MIRROR;
+  process.env.CHARIOX_KERNEL_BROWSER_MIRROR='1';
+  try {
+    const opened=await host.handle({id:1,method:'browser.app.open',params:{origin_label:'layout-app',installation_id:'layout-app',assets:[{path:'index.html',content_type:'text/html',body_base64:Buffer.from('<button style="position:fixed;right:0;bottom:0">Save</button>').toString('base64')}]}});
+    assert.equal(opened.ok,true,JSON.stringify(opened));
+    const tab=[...host.tabs.values()].find(tab=>tab.target_id===opened.result.target_id);
+    assert([...host.browser.appTabs.apps.values()].some(app=>app.targetId===tab.target_id));
+    chromium.desktop={};
+    host.browser.nativeViewport=async target=>({target_id:target,width:1272,height:709});
+    const applied=()=>sent.filter(call=>call.method==='Emulation.setDeviceMetricsOverride'&&call.session===`session-${tab.target_id}`).at(-1)?.params;
+    let publications=0;
+    host.mirror.v2.begin=()=>{
+      const size=host.pageSize(tab.tab_id),metrics=applied();
+      assert.deepEqual({width:metrics.width,height:metrics.height},size,'the App must be resized before the mirror starts');
+      publications++;
+    };
+    await host.request({op:'mirror_subscribe',tab_id:tab.tab_id,generation:host.generation,device_scale_factor:1,wire:2,layout_width:1920,layout_height:1080});
+    assert.equal(publications,1);
+    assert.deepEqual(host.pageSize(tab.tab_id),{width:1272,height:708});
+    await host.browser.setLayout(tab.target_id,null);
+    assert.deepEqual({width:applied().width,height:applied().height},{width:1280,height:800});
+  } finally {
+    delete chromium.desktop;
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_MIRROR;else process.env.CHARIOX_KERNEL_BROWSER_MIRROR=previous;
+  }
+}, {realCdp:true}));
+
 test('MP-08/MP-10 protocol933 portable header follows Chromium without a native band', () => using(async ({host,connection}) => {
  const first=await host.request({op:'open',url:'https://example.com/first'}),second=await host.request({op:'open',url:'https://example.com/second'});
  const png=encodePng(16,16,Buffer.alloc(16*16*4,255));
@@ -2658,4 +2911,139 @@ test('MP-08/MP-10 protocol933 portable header follows Chromium without a native 
  assert.equal(state.chrome_window,null);assert.equal(state.active_tab_id,second.tab_id);
  const tab=state.tabs.find(t=>t.tab_id===second.tab_id);assert.equal(tab.can_go_back,true);assert.equal(tab.can_go_forward,false);assert.equal(tab.favicon_png_base64,png);
  assert(state.tabs.some(t=>t.tab_id===first.tab_id));
+}));
+test("MP-11: the kernel's policy with its own key order is the same policy and keeps bound mirror streams current", async () => {
+  const host = new KernelBrowserHost("/unused-policy-order", { chromium: { start: async () => { throw new Error("must not launch"); } } });
+  const bound = host.protection;
+  let invalidated = 0;
+  host.mirror.invalidate = () => { invalidated++; };
+  // The kernel serializes its policy with sorted keys.
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":[]}'));
+  assert.equal(invalidated, 0);
+  assert.ok(host.protection === bound, "a mirror stream bound to the first policy must stay current");
+  await host.protect(JSON.parse('{"targets":[],"unknown":false,"values":["synthetic-protected-value"]}'));
+  assert.equal(invalidated, 1);
+});
+test("MD-2: the host process exits after its shutdown reply even when a handle is left open", async () => {
+  const { spawn } = await import("node:child_process");
+  const root = await mkdtemp(path.join(os.tmpdir(), "host-shutdown-"));
+  try {
+    // A leftover handle (a helper socket, a timer) must not keep the process alive: the kernel waits for its exit.
+    const child = spawn(process.execPath, ["--import", "data:text/javascript,setInterval(()=>{},1000)", path.join(import.meta.dirname, "kernel-browser-host.mjs"), "stdio", root], { stdio: ["pipe", "pipe", "inherit"] });
+    const reply = new Promise(resolve => readline.createInterface({ input: child.stdout }).once("line", resolve));
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    child.stdin.write(JSON.stringify({ id: 1, method: "shutdown", params: {} }) + "\n");
+    assert.equal(JSON.parse(await reply).ok, true);
+    const outcome = await Promise.race([exited.then(() => "exited"), new Promise(resolve => setTimeout(resolve, 3000, "still running"))]);
+    if (outcome !== "exited") child.kill("SIGKILL");
+    assert.equal(outcome, "exited");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('MP-08/MP-09/MP-10/MP-11 unsubscribe answers before slow helpers exit and stop reaps them', {timeout:10000}, () => using(async ({host, connection}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;
+  process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  const children=[];
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const opened=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    const stream=host.displays.get(opened.subscription_id);
+    const encoders=[];
+    for(let i=0;i<2;i++){
+      const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});process.stdin.resume();process.stdin.on('end',()=>{});setInterval(()=>{},1000);console.log('ready')"],{stdio:['pipe','pipe','ignore']});
+      children.push(child);await once(child.stdout,'data');
+      const encoder=new PortableEncoder();encoder.child=child;encoders.push(encoder);
+    }
+    stream.encoder=encoders[0];
+    const source=new CompositorSource({connection,sessionId:'fixture',tab,scale:1,policy:{},hasher:encoders[1],allowed:()=>true});
+    host.compositors.set(tab.tab_id,{source,ready:Promise.resolve(source)});
+    const started=performance.now();
+    const reply=await host.request({op:'unsubscribe',subscription_id:opened.subscription_id,generation:tab.generation});
+    assert.equal(reply.unsubscribed,true);
+    assert.ok(performance.now()-started<250,'unsubscribe must answer within 250ms while slow helpers still run');
+    assert.equal(host.displays.has(opened.subscription_id),false);
+    assert.equal(host.compositors.has(tab.tab_id),false,'detach the old compositor before a replacement viewer attaches');
+    assert.equal(source.closed,true,'a detached compositor cannot capture more frames');
+    assert.ok(children.every(child=>child.exitCode===null&&child.signalCode===null),'answer does not wait for helper exit');
+    const stopped=host.stop();
+    await new Promise(resolve=>setTimeout(resolve,30));
+    assert.ok(children.some(child=>child.exitCode===null&&child.signalCode===null),'teardown remains owned while stop waits');
+    await stopped;
+    assert.ok(children.every(child=>child.signalCode==='SIGKILL'),'stop waits for every stubborn helper to be reaped');
+    assert.ok(performance.now()-started<1800,'helper grace periods run concurrently');
+  } finally {
+    if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;
+    for(const child of children)if(child.exitCode===null&&child.signalCode===null){assert.ok(Number.isSafeInteger(child.pid)&&child.pid>1);child.kill('SIGKILL');await once(child,'exit');}
+  }
+}));
+
+
+test('MP-08/MP-10/MP-11 a background display failure is reported after stopping Chromium', () => using(async ({host,chromium}) => {
+  const previous=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+  try {
+    const tab=await host.request({op:'open',url:'about:blank'});
+    const sub=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs:['png'],bitrate:8000000,device_scale_factor:1});
+    host.displays.get(sub.subscription_id).encoder={close:async()=>{throw Error('owned helper did not exit')}};
+    assert.equal((await host.request({op:'unsubscribe',subscription_id:sub.subscription_id,generation:sub.generation})).unsubscribed,true);
+    await assert.rejects(host.stop(),/owned display teardown failed/);
+    assert.equal(chromium.child,null,'a teardown failure cannot skip Chromium shutdown');
+    assert.equal(host.displayTeardowns.size,0);
+  } finally {if(previous===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=previous;}
+}));
+
+test('MP-08/MP-09/MP-10/MP-11 host state, cancellation and Room cleanup use the shared download registry', () => using(async ({host,handlers}) => {
+  const opened=await host.request({op:'open',url:'about:blank',_download_session:'room-a'});
+  const tab=host.tabs.get(opened.tab_id); host.browser.targetsByFrame=new Map([['download-frame',tab.target_id]]);
+  const emit=(method,params)=>{for(const handler of handlers)handler({method,params});};
+  emit('Browser.downloadWillBegin',{guid:'download-a',frameId:'download-frame',suggestedFilename:'test.txt'});
+  let state=await host.request({op:'state'}); assert.equal(state.downloads[0].state,'in_progress');
+  await assert.rejects(host.request({op:'cancel_download',generation:opened.generation+1,tab_id:tab.tab_id,download_id:'download-a'}));
+  state=await host.request({op:'cancel_download',generation:opened.generation,tab_id:tab.tab_id,download_id:'download-a'});
+  assert.equal(state.downloads[0].state,'in_progress');
+  emit('Browser.downloadProgress',{guid:'download-a',state:'canceled',receivedBytes:0}); await host.downloads.settle();
+  assert.equal((await host.request({op:'state'})).downloads[0].state,'cancelled');
+  const reply=await host.handle({id:1,method:'host.downloads.cleanup',params:{session_id:'room-a'}});
+  assert.equal(reply.ok,true); assert.deepEqual((await host.request({op:'state'})).downloads,[]);
+  const directory=host.downloads.root; await host.stop();
+  const {access}=await import('node:fs/promises'); await assert.rejects(access(directory));
+}));
+
+test("MP-08/MP-09/MP-10/MP-11 signed Vault fills retain factor and plain target admission", () => using(async ({ host }) => {
+  const url = "https://example.test/verification";
+  const opened = await host.request({ op: "open", url });
+  const tab = opened.tabs[0];
+  const order = [];
+  host.browser.configureWebBotAuth = async () => { order.push("sign"); };
+  host.browser.performAction = async ({ action }) => { order.push(action); return {}; };
+  for (const flag of ["vault_factor_input", "plain_target"]) {
+    const result = await host.handle({ id: flag, method: "host.secret", params: {
+      tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id,
+      node_ref: "backend:104", observed_by: "agent:factor-user", [flag]: true,
+      _web_bot_auth: { project_id: "project-fixture" },
+      action: { kind: "fill", text: "fixture-only-value", expected_document_url: url },
+    } });
+    assert.equal(result.ok, true);
+    assert.equal(order.at(-2), "sign");
+    assert.equal(order.at(-1)[flag], true);
+    assert.equal(order.at(-1).mask_code_input, false);
+  }
+}));
+
+test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {timeout:20000}, t=>using(async({host})=>{
+ const {LinuxCapture}=await import('./kernel-browser-native.mjs');
+ const {OwnedDisplay}=await import('./kernel-browser-owned-display.mjs');
+ const display=new OwnedDisplay(os.tmpdir());await display.start();
+ const start=LinuxCapture.prototype.start,close=LinuxCapture.prototype.close;
+ try{
+  const opened=await host.request({op:'open',url:'about:blank'}),tab=host.tabs.get(opened.tab_id);
+  host.chromium.display=display;host.chromeWindows.resolve=async()=>{};
+  LinuxCapture.prototype.start=async function(){return this};LinuxCapture.prototype.close=async function(){this.closed=true};
+  const stream={subscription_id:'native-fit',codec:'avc1.420033',device_scale_factor:1,tab_id:tab.tab_id,close:async()=>{}};host.displays.set(stream.subscription_id,stream);
+  const source=await host.compositorFor(tab,stream);assert(source instanceof LinuxCapture);assert(source.allowed(host.protection));
+  const revision=host.layoutRevision(tab.tab_id);
+  host.windowLayout={...host.pageSize(tab.tab_id)};
+  assert.equal(host.layoutRevision(tab.tab_id),revision,'same CSS size retains its page revision');
+  assert.equal(source.allowed(host.protection),false,'the resize owns the shared window even without a CSS-size change');
+ }finally{await host.closeCompositors();LinuxCapture.prototype.start=start;LinuxCapture.prototype.close=close;await display.close()}
 }));

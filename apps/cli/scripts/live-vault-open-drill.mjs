@@ -1,0 +1,128 @@
+// MP-08 / MP-09 / MP-10 / MP-11: real hosted new-UI Vault generation/fill.
+// Prepare an unlocked disposable Vault and a real provider Room as a non-root
+// kernel. VOPEN_EXPECT=requires-sudo runs the same creation step on the base.
+import assert from 'node:assert/strict'
+import {mkdir,writeFile} from 'node:fs/promises'
+import {resolve} from 'node:path'
+import {fileURLToPath} from 'node:url'
+
+const {chromium}=await import(process.env.VOPEN_PLAYWRIGHT_MODULE ?? 'playwright-core')
+const origin=process.env.VOPEN_ORIGIN, room=process.env.VOPEN_ROOM, output=process.env.VOPEN_EVIDENCE
+assert.ok(origin && new URL(origin).protocol==='https:', 'VOPEN_ORIGIN must name the owned HTTPS stack')
+assert.ok(room && output, 'VOPEN_ROOM and VOPEN_EVIDENCE are required')
+const repo=resolve(fileURLToPath(new URL('../../..',import.meta.url)))
+assert.ok(!resolve(output).startsWith(repo+'/'), 'evidence must stay outside the repository')
+const expected=process.env.VOPEN_EXPECT ?? 'allowed'
+assert.ok(['allowed','requires-sudo'].includes(expected))
+const dpr=Number(process.env.VOPEN_DPR ?? 1), marker=`VOPEN_${Date.now()}`
+await mkdir(output,{recursive:true})
+let browser, page
+const sockets=[], dialogs=[], checks=[]
+try{
+browser=await chromium.launch({headless:true,executablePath:process.env.VOPEN_CHROME ?? '/opt/google/chrome/chrome',
+ args:['--no-sandbox','--disable-dev-shm-usage'],
+ ...(process.env.SHAPE_PROXY?{proxy:{server:process.env.SHAPE_PROXY,bypass:''}}:{})})
+const context=await browser.newContext({viewport:{width:1440,height:1000},deviceScaleFactor:dpr,
+ recordVideo:{dir:output+'/video',size:{width:1440,height:1000}}})
+page=await context.newPage()
+page.on('websocket',socket=>sockets.push(new URL(socket.url()).origin))
+page.on('dialog',async dialog=>{dialogs.push(dialog.type());await dialog.dismiss()})
+const check=(name,ok)=>{checks.push({name,ok:Boolean(ok)});assert.ok(ok,name)}
+const shot=name=>page.screenshot({path:output+'/'+name+'.png'})
+async function relayOnly(){
+ await page.keyboard.press('F8')
+ await page.locator('[data-link-developer-tool]').waitFor()
+ const choices=page.locator('[data-link-developer-tool] [data-carrier-mode=relay]')
+ for(let i=0;i<await choices.count();i++)await choices.nth(i).click()
+ await page.waitForTimeout(2500)
+ const carriers=await page.locator('[data-link-developer-tool] [data-link-carrier]').evaluateAll(es=>es.map(e=>({
+  carrier:e.getAttribute('data-link-carrier'), selected:e.querySelector('[data-carrier-mode=relay]')?.getAttribute('aria-pressed')})))
+ check('real relay selected',carriers.length>0&&carriers.every(c=>c.selected==='true'&&['relay','none'].includes(c.carrier)))
+ await page.getByRole('button',{name:'Close inspector',exact:true}).click()
+ return carriers
+}
+async function submit(prompt,success,failure){
+ await page.evaluate(()=>{
+  const selector='[data-passkey-prompt],[data-interaction-id],section[data-kernel-interaction-id]'
+  const probe={seen:document.querySelectorAll(selector).length,observer:null}
+  probe.observer=new MutationObserver(()=>{probe.seen+=document.querySelectorAll(selector).length})
+  probe.observer.observe(document.body,{childList:true,subtree:true})
+  window.__vopenInteractionProbe=probe
+ })
+ const field=page.locator('[data-prompt-input]');await field.click();await field.fill(prompt);await field.press('Enter')
+ await page.waitForFunction(({success,failure})=>[...document.querySelectorAll('.pane-transcript-reply')]
+  .some(e=>e.innerText.includes(success)||e.innerText.includes(failure)),{success,failure},{timeout:240000})
+ const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
+ check(success,replies.some(reply=>reply.includes(success))&&!replies.some(reply=>reply.includes(failure)))
+ const seen=await page.evaluate(()=>{const probe=window.__vopenInteractionProbe;probe.observer.disconnect();return probe.seen})
+ check('no owner interaction or sudo popup during Vault cell',seen===0)
+}
+async function navigate(url){
+ const omni=page.locator('.kernel-browser-omnibox').first();await omni.waitFor({timeout:60000})
+ await omni.fill(url);await omni.press('Enter')
+ await page.waitForFunction(host=>[...document.querySelectorAll('.desktop iframe')].some(f=>{
+  try{return f.offsetWidth>0&&f.style.visibility!=='hidden'&&f.contentDocument?.body?.innerText.includes(host)}catch{return false}
+ }),new URL(url).hostname==='github.com'?'Sign in to GitHub':'Log in',{timeout:60000})
+}
+async function prepareBrowser(){
+ const ready=marker+'_BROWSER_READY',failed=marker+'_BROWSER_SETUP_FAILED'
+ const field=page.locator('[data-prompt-input]')
+ await field.fill(`MP-08 / MP-09 / MP-10 / MP-11 setup only: I want you to use my currently displayed kernel browser this turn. Call chariox.load_kernel_browser exactly once, using necessary discovery wrappers, then get browser state. I will approve ordinary browser access if requested. Do not request sudo or use any Vault tool. Finish with exactly ${ready}, or ${failed} if setup fails.`)
+ await field.press('Enter')
+ const deadline=Date.now()+240000
+ for(;;){
+  const cards=page.locator('section[data-kernel-interaction-id]')
+  for(let i=0;i<await cards.count();i++){
+   const card=cards.nth(i),text=(await card.getAttribute('aria-label')??'')+' '+await card.innerText()
+   assert.ok(/Chariox resource access/i.test(text)&&/browser/i.test(text)&&!/(?:sudo|payment card)/i.test(text),'only ordinary browser admission is approved during setup')
+   await shot('browser-admission-before-vault-cell')
+   await card.locator('button[data-kernel-interaction-choice="allow"]').click()
+  }
+  const replies=await page.locator('.pane-transcript-reply').allInnerTexts()
+  assert.ok(!replies.some(r=>r.includes(failed)),'browser admission setup succeeded')
+  if(replies.some(r=>r.includes(ready)))break
+  assert.ok(Date.now()<deadline,'browser admission setup completed')
+  await page.waitForTimeout(250)
+ }
+ await page.waitForFunction(()=>document.querySelectorAll('section[data-kernel-interaction-id]').length===0,{},{timeout:10000})
+ check('ordinary browser access prepared before Vault cell',true)
+ await shot('browser-ready-before-vault-cell')
+}
+ await page.goto(origin+'/validation/ready')
+ await page.goto(origin+'/terminal?ui=os',{waitUntil:'domcontentloaded'})
+ await page.locator('[data-feature-new=room]').waitFor({state:'attached',timeout:60000})
+ const open=page.locator(`[data-action=open-room][aria-label^="Open ${room}."]`)
+ await open.waitFor({timeout:60000});await open.click();await page.waitForTimeout(700)
+ if(!await page.locator('.kernel-browser-window').count()){
+  await page.locator('[data-action=open-room-view]').last().click()
+  await page.locator('[data-open-room-view=browser]').click()
+ }
+ const carriers=await relayOnly()
+ await navigate('https://github.com/login');await shot('before-generation')
+ if(expected==='requires-sudo'){
+  await submit(`MP-08 / MP-09 / MP-10 / MP-11 regression drill: call chariox.vault.generate exactly once with request_id ${marker} and origin https://github.com. Use the necessary tool-discovery/dispatch wrapper if the tool is deferred. Do not request sudo, approval, or a plan. Do not infer the outcome: actually call the generation tool exactly once. If the actual tool result refuses generation because it needs a sudo window, finish with exactly ${marker}_REQUIRES_SUDO. Otherwise finish with exactly ${marker}_UNEXPECTED. Never print or read secret values.`,marker+'_REQUIRES_SUDO',marker+'_UNEXPECTED')
+  await shot('base-sudo-refusal')
+ }else{
+  await prepareBrowser()
+  await submit(`MP-08 / MP-09 / MP-10 / MP-11 live drill: generate a password with chariox.vault.generate, request_id ${marker}, origin https://github.com. Retry that same request once and verify the same credential_id. Use the Chariox kernel Browser tools on the existing GitHub sign-in tab: get a fresh snapshot, fill only the Password input with that handle using chariox.kernel_browser_paste_secret and submit=false. Do not sign in, submit, request sudo, approval, a plan, or read/copy/re-display any secret. Get a fresh model snapshot and screenshot to verify the password stays masked. Remember the credential_id for the next turn. Finish with exactly ${marker}_FILLED if both generation and fill succeeded; otherwise exactly ${marker}_FAILED.`,marker+'_FILLED',marker+'_FAILED')
+  const fields=await page.evaluate(()=>[...document.querySelectorAll('.desktop iframe')].filter(f=>f.offsetWidth>0&&f.style.visibility!=='hidden').map(f=>{
+   const doc=f.contentDocument,inputs=[...doc?.querySelectorAll('input[type=password],#password')??[]]
+   return {loginPresent:Boolean(doc?.body?.innerText.includes('Sign in to GitHub')),passwordNodeOmitted:inputs.length===0,
+    inputs:inputs.map(input=>({type:input.type,safeValue:!input.value||/^[•●]+$/.test(input.value)}))}
+  }))
+  await writeFile(output+'/field-protection.json',JSON.stringify(fields,null,2))
+  check('mirrored DOM omits protected password or carries only bullets',fields.some(f=>f.loginPresent)&&fields.every(f=>f.inputs.every(input=>input.safeValue)))
+  await shot('generated-and-filled')
+  await navigate('https://www.djangoproject.com/accounts/login/');await shot('other-origin-before-use')
+  await submit(`MP-08 / MP-09 / MP-10 / MP-11: reuse the exact credential_id generated in the previous turn, without generating or changing an entry. Get a fresh snapshot of the current Django project sign-in tab at https://www.djangoproject.com/accounts/login/ and attempt chariox.kernel_browser_paste_secret into its Password input with submit=false. This must be refused because the entry belongs to https://github.com. Do not submit, sign in, request sudo or approvals, or inspect/copy a secret. Finish with exactly ${marker}_OTHER_ORIGIN_REFUSED only if the actual fill tool refuses the origin; otherwise exactly ${marker}_WRONG_ORIGIN_FAILED.`,marker+'_OTHER_ORIGIN_REFUSED',marker+'_WRONG_ORIGIN_FAILED')
+  await shot('other-origin-refused')
+ }
+ check('encrypted hosted WebSocket used',sockets.some(url=>url.startsWith('wss://')))
+ check('no browser dialogs',dialogs.length===0)
+ await writeFile(output+'/result.json',JSON.stringify({expected,dpr,room,marker,checks,sockets,carriers,dialogs},null,2))
+ console.log('PASS',expected,room,'DPR'+dpr)
+}catch(error){
+ await page?.screenshot({path:output+'/failure.png'}).catch(()=>{})
+ await writeFile(output+'/result.json',JSON.stringify({expected,dpr,room,marker,checks,sockets,dialogs,error:error.message},null,2))
+ throw error
+}finally{await browser?.close()}

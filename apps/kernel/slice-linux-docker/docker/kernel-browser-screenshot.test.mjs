@@ -21,3 +21,29 @@ test('MP-08/MP-11 an unknown screenshot owner retains fresh renderer checks befo
  const {host,tab,calls}=setup(false);await KernelBrowserHost.prototype.screenshot.call(host,tab,null,true);
  assert.deepEqual(calls,['Page.getFrameTree','Page.captureScreenshot','Page.getFrameTree']);
 });
+const pngHeader=(width,height)=>{const b=Buffer.alloc(33);Buffer.from([137,80,78,71,13,10,26,10]).copy(b);b.writeUInt32BE(13,8);b.write('IHDR',12,'ascii');b.writeUInt32BE(width,16);b.writeUInt32BE(height,20);return b.toString('base64');};
+// After a cross-site navigation the page can keep the old viewport while the controller believes the layout is applied;
+// the kernel then refused the region capture ("Screenshot dimensions changed") for as long as the page stayed there.
+test('a screenshot that lost the layout viewport applies it again and captures again',async()=>{
+ const calls=[],tab={tab_id:'tab',target_id:'target',document_id:'doc'};let reapplied=false;
+ const connection={send:async(method,params)=>{calls.push(method);
+  if(method==='Page.getFrameTree')return {frameTree:{frame:{loaderId:'doc'}}};
+  if(method==='Page.captureScreenshot')return {data:reapplied?pngHeader(506,622):pngHeader(1280,800)};
+  assert.fail('unexpected CDP '+method);}};
+ const frame={connection,sessionId:'s',frame:{id:'top',loaderId:'doc'}};
+ const browser={connection,currentPageFrame:()=>frame,fillTargets:new Map(),inputCapture:{run:async(_c,_s,read)=>read()},reapplyLayout:async target=>{calls.push('reapplyLayout '+target);reapplied=true;}};
+ const host={browser,generation:1,scales:new Map([['tab',1]]),layouts:new Map([['tab',{width:506,height:622}]]),viewport:()=>({device_scale_factor:1}),protection:{unknown:false,values:[],targets:[]},compositors:new Map(),sampleLane:()=>({run:(_kind,read)=>read()}),timing:()=>{}};
+ const shot=await KernelBrowserHost.prototype.screenshot.call(host,tab,null,true);
+ assert.ok(shot.width===506&&shot.height===622,'reports the layout size');
+ assert.ok(Buffer.from(shot.data_base64,'base64').readUInt32BE(16)===506,'the PNG follows the layout');
+ assert.ok(calls.join()==='Page.captureScreenshot,reapplyLayout target,Page.captureScreenshot','captured, applied the layout again, captured again: '+calls.join());
+});
+test('a screenshot that already has the layout size is captured once',async()=>{
+ const calls=[],tab={tab_id:'tab',target_id:'target',document_id:'doc'};
+ const connection={send:async method=>{calls.push(method);if(method==='Page.captureScreenshot')return {data:pngHeader(1012,1244)};assert.fail('unexpected CDP '+method);}};
+ const frame={connection,sessionId:'s',frame:{id:'top',loaderId:'doc'}};
+ const browser={connection,currentPageFrame:()=>frame,fillTargets:new Map(),inputCapture:{run:async(_c,_s,read)=>read()}};
+ const host={browser,generation:1,scales:new Map([['tab',2]]),layouts:new Map([['tab',{width:506,height:622}]]),viewport:()=>({device_scale_factor:2}),protection:{unknown:false,values:[],targets:[]},compositors:new Map(),sampleLane:()=>({run:(_kind,read)=>read()}),timing:()=>{}};
+ await KernelBrowserHost.prototype.screenshot.call(host,tab,null,true);
+ assert.ok(calls.join()==='Page.captureScreenshot',calls.join());
+});

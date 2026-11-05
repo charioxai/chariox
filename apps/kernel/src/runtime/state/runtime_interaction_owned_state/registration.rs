@@ -68,6 +68,23 @@ impl KernelRuntimeOwnedState {
                 terminal_credential_owner,
             );
         }
+        if let Some(task_id) = interaction.asking_task_id() {
+            let wake = self
+                .durable_state_store
+                .agent_wake(interaction.id())?
+                .ok_or_else(|| interaction_error("Async question has no admitted wake"))?;
+            if wake.kind != super::super::interaction_wake::KIND
+                || wake.task_id != task_id
+                || wake.room_id != session_id
+                || interaction.agent_id() != Some(wake.agent_id.as_str())
+                || !matches!(wake.state.as_str(), "starting" | "running")
+                || serde_json::to_value(&interaction).ok().as_ref() != Some(&wake.detail)
+            {
+                return Err(interaction_error(
+                    "Async question does not match its admitted wake",
+                ));
+            }
+        }
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
@@ -97,7 +114,7 @@ impl KernelRuntimeOwnedState {
         match (interaction.agent_id(), kernel_operation_owner) {
             (Some(_), None) => {}
             (None, Some(owner)) if interaction.kernel_operation_id().is_some() => {
-                if !session.has_member(owner)
+                if !self.is_room_member(&session, owner)
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
@@ -209,26 +226,36 @@ impl KernelRuntimeOwnedState {
             }
             drop(pending);
             if let Err(error) = self.ensure_kernel_decision_capacity(owner, &interaction) {
-                activity_mutation.record();
                 drop(sessions);
+                activity_mutation.record();
                 self.session_snapshot(session_id)?;
                 self.terminal_stream
                     .notify_terminal_projection_change(session_id);
                 return Err(error);
             }
         }
-        if session
-            .active_interactions()
-            .iter()
-            .any(|existing| existing.subject() == interaction.subject())
-            || self
-                .pending_interactions
-                .write()
-                .contains_key(interaction.id())
+        if session.active_interactions().iter().any(|existing| {
+            (existing.id() == interaction.id() && existing != &interaction)
+                || (existing.subject() == interaction.subject()
+                    && existing.asking_task_id().is_none()
+                    && interaction.asking_task_id().is_none())
+        }) || self
+            .pending_interactions
+            .write()
+            .contains_key(interaction.id())
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
         let agent_lifetime = interaction.agent_id().map(|agent_id| {
+            if interaction.asking_task_id().is_some() {
+                return super::super::PendingAgentInteractionLifetime {
+                    agent_id: agent_id.into(),
+                    prompt_id: None,
+                    native_turn_id: None,
+                    provider_run_id: None,
+                    worker: None,
+                };
+            }
             if let Some(origin) = interaction.native_origin() {
                 use crate::session::NativeInteractionOrigin;
                 let (mut prompt_id, native_turn_id) = match origin {
@@ -325,6 +352,7 @@ impl KernelRuntimeOwnedState {
         )?;
         let mut pending = super::super::PendingInteraction {
             goal_approval: None,
+            async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
             agent_lifetime,
             session_id: session_id.into(),
@@ -389,8 +417,8 @@ impl KernelRuntimeOwnedState {
             self.passkey_prompts.record_change();
         }
         sessions.restore_session(session);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if let Err(error) = self.session_snapshot(session_id) {
             let mut pending = self.pending_interactions.write();
             if pending

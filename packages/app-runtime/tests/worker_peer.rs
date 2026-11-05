@@ -14,6 +14,8 @@ use tokio::{
 };
 
 const BUDGET: Duration = Duration::from_secs(2);
+#[path = "worker_peer/queues.rs"]
+mod queues;
 struct Handler<F>(F);
 impl<F> Broker for Handler<F>
 where
@@ -289,6 +291,7 @@ async fn reservations_bound_admission_and_do_not_accept_forged_identity() {
     let (host, stream) = tokio::io::duplex(4096);
     let limits = PeerLimits {
         pending_calls: 1,
+        queued_calls: 0,
         ..PeerLimits::default()
     };
     let (peer, _events, task) = WorkerPeer::start(
@@ -536,6 +539,7 @@ async fn cancelled_inbound_handler_keeps_its_slot_until_it_actually_finishes() {
     });
     let limits = PeerLimits {
         broker_handlers: 1,
+        queued_broker_requests: 0,
         ..PeerLimits::default()
     };
     let (peer, _events, task) = WorkerPeer::start(

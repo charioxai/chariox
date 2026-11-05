@@ -1128,6 +1128,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::NoActiveProviderRun { .. } => {
             kernel_error("no_active_provider_run", error, false)
         }
+        DaemonError::LeasedBackingSessionRefused { .. } => {
+            kernel_error("leased_backing_session_refused", error, false)
+        }
         DaemonError::ProviderRunNotFound { .. } => {
             kernel_error("provider_run_not_found", error, false)
         }
@@ -1150,6 +1153,16 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code,
+            message,
+            retryable,
+        } => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         DaemonError::RelayTransport {
             operation: "dictation",
             code,

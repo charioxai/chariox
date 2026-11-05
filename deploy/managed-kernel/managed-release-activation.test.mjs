@@ -7,7 +7,6 @@ import test from "node:test"
 
 const installSource = await readFile(new URL("./install-image.sh", import.meta.url), "utf8")
 const upgradeSource = await readFile(new URL("./upgrade-image.sh", import.meta.url), "utf8")
-const prepareSource = await readFile(new URL("./prepare-worker-image.sh", import.meta.url), "utf8")
 const path1Service = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
 const disposableWorkerService = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const providerPathSource = await readFile(new URL("../../apps/kernel/src/managed_bootstrap/provider_path.rs", import.meta.url), "utf8")
@@ -223,8 +222,6 @@ test("Path-1 install and upgrade keep the independent builder key available to r
   const publishKey = indexOf(installSource, 'install -o root -g root -m 0644 "$trusted_builder_public_key" "$trusted_builder_runtime_key"', "runtime builder key publication")
   const activate = indexOf(installSource, 'atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"', "current activation")
   assert.ok(publishKey < activate)
-  assert.ok(prepareSource.includes('runtime_builder_key=/etc/chariox/trusted-builder-public-key'))
-  assert.ok(prepareSource.includes('cmp -s "$CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY" "$runtime_builder_key"'))
 })
 
 test("install durably publishes the verified release before activating current", () => {

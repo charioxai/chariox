@@ -215,7 +215,9 @@ pub(crate) fn claude_native_recent_terminal_failure(
         .get("CHARIOX_CLAUDE_NATIVE_CONTEXT")?;
     let recent_failure_file = claude_permission_recent_file(context_file)?;
     let recent_failure = fs::read_to_string(recent_failure_file).ok()?;
-    crate::provider::classify_provider_terminal_failure_text(
+    // The recent frame holds the model's own replies too: only a provider
+    // error frame or limit dialog counts, never prose that mentions a limit.
+    crate::provider::classify_provider_terminal_failure_output_text(
         provider_run.adapter_key(),
         &recent_failure,
     )
@@ -827,6 +829,12 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             } else if event_name == "StopFailure" {
                 outcome.terminal_failure = crate::provider::claude_native_stop_failure(&event);
                 return Ok(outcome);
+            } else if event_name == "SessionEnd"
+                && crate::runtime::process_resources::outside_ended_for_key(provider_run_id)
+            {
+                // Claude shuts down because a stop from Health ended its tree,
+                // not because the turn finished: the process exit settles it.
+                continue;
             } else if matches!(event_name, "Stop" | "SessionEnd") {
                 // Stop is the authoritative settlement signal for every
                 // managed Claude interface. Drain now and once more after a

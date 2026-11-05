@@ -104,8 +104,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
   // Releases built before Apps carry no App binaries or App storage unit.
   const appPackage = join(rootfs, "usr/local/bin/chariox-app-package")
-  const appStorage = join(rootfs, "usr/libexec/chariox-app-storage")
-  const appStorageService = join(rootfs, "etc/systemd/system/chariox-app-storage.service")
+  const appWasmWorker = join(rootfs, "usr/local/bin/chariox-app-wasm-worker")
   const managedService = join(rootfs, `etc/systemd/system/${serviceName}`)
   const rootlessService = join(rootfs, "etc/systemd/system/chariox-rootless-docker.service")
   const brokerService = join(rootfs, "etc/systemd/system/chariox-slice-broker.service")
@@ -120,8 +119,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   await put(supervisor, `#!/bin/sh\necho supervisor-${label}\n`, 0o755)
   if (includeAppArtifacts) {
     await put(appPackage, `#!/bin/sh\necho app-package-${label}\n`, 0o755)
-    await put(appStorage, `#!/bin/sh\necho app-storage-${label}\n`, 0o755)
-    await put(appStorageService, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-app-storage.service")))
+    await put(appWasmWorker, `#!/bin/sh\necho app-wasm-worker-${label}\n`, 0o755)
   }
   await put(managedService, `[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap\n# ${unitLabel}\n`)
   await put(rootlessService, `[Service]\n# rootless ${unitLabel}\n`)
@@ -158,7 +156,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
         { name: "chariox-relay", sha256: await sha256File(relay) },
         ...(includeAppArtifacts ? [
           { name: "chariox-app-package", sha256: await sha256File(appPackage) },
-          { name: "chariox-app-storage", sha256: await sha256File(appStorage) },
+          { name: "chariox-app-wasm-worker", sha256: await sha256File(appWasmWorker) },
         ] : []),
       ],
     }))
@@ -185,8 +183,7 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
   if (includeAppArtifacts) {
     artifactSpecs.push(
       ["chariox-app-package", "/usr/local/bin/chariox-app-package", appPackage, "file"],
-      ["chariox-app-storage", "/usr/libexec/chariox-app-storage", appStorage, "file"],
-      ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", appStorageService, "file"],
+      ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", appWasmWorker, "file"],
     )
   }
   const artifacts = []
@@ -434,9 +431,6 @@ exec /usr/bin/install "\${arguments[@]}"
   await put(join(bin, "systemctl"), `#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$HARNESS_STATE/systemctl.log"
-if [ "$1" = disable ] && [ "\${3:-}" = chariox-app-storage.service ]; then
-  [ -f "$CHARIOX_MANAGED_UPGRADE_ROOT/etc/systemd/system/chariox-app-storage.service" ] || exit 1
-fi
 if [ "$1" = "show" ]; then
   case "$*" in
     *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service)
@@ -628,18 +622,7 @@ if [ "\${1##*/}" = "managed-kernel-home-migration.mjs" ] \
   kill -KILL "$PPID"
   exit 1
 fi
-if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
-  && [ "\${2:-}" = "atomic-symlink" ] \
-  && [ "\${4##*/}" = current ] \
-  && [ -f "$HARNESS_STATE/crash-after-pre-apps-current" ]; then
-  "${process.execPath}" "$@"
-  if [ ! -f "$CHARIOX_MANAGED_UPGRADE_ROOT/usr/lib/chariox/current/usr/libexec/chariox-app-storage" ]; then
-    rm -f "$HARNESS_STATE/crash-after-pre-apps-current"
-    kill -KILL "$PPID"
-    exit 1
-  fi
-  exit 0
-fi
+
 if [ "\${1##*/}" = "managed-kernel-upgrade-state.mjs" ] \
   && [ "\${2:-}" = "atomic-symlink" ] \
   && [ -f "$HARNESS_STATE/crash-before-symlink" ]; then

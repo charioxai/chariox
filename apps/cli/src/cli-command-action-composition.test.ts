@@ -7,7 +7,7 @@ import { createCliCommandActionComposition, type CliCommandActionCompositionDeps
 import { CloudClient } from "./cloud-client.js"
 import type { CloudClientCredentialStore, CloudClientCredential } from "./cloud-client-credential-store.js"
 import { cloudClientCallerScope } from "./cloud-client-collaboration-scope.js"
-import { makeCommandDeps, makeSession } from "./command-actions-test-support.js"
+import { makeAgent, makeCommandDeps, makeSession } from "./command-actions-test-support.js"
 import { parseSlashCommand } from "./commands.js"
 
 test("MP-08/MP-10/MP-11 TUI resend sends the resend request", async () => {
@@ -279,3 +279,100 @@ for (const caller of ["owner", "relay-owner", "collaborator"] as const) {
     assert.match(text, /kernel=offline in Cloud/)
   })
 }
+
+// MP-08 / MP-10 / MP-11 G01: a paired TUI may have a different startup provider.
+test("agent spawn uses the focused agent provider with its account and model", async () => {
+  const focused = makeAgent({provider: "codex", model: "gpt-6-luna", account_profile: "codex-account"})
+  const session = makeSession({agents: [focused]})
+  let submitted: Record<string, unknown> | undefined
+  const base = {
+    ...makeCommandDeps(),
+    options: {provider: "opencode"},
+    preferencesState: () => ({}),
+    initialWorkspaceTarget: "/workspace",
+    initialWorktreeTarget: "/workspace",
+    sessionState: () => session,
+    focusedAgentId: () => focused.id,
+    currentModelId: () => focused.model,
+    currentVariantId: () => "low",
+    currentAccountProfileId: () => focused.account_profile,
+    client: {send: async (request: Record<string, Record<string, unknown>>) => {
+      assert.ok(request.SpawnAgent)
+      submitted = request.SpawnAgent
+      throw new Error("request captured before provider launch")
+    }},
+  }
+  const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+  await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    .handleAgentCommand({kind: "agent", raw: "/agent spawn peer gpt-6-luna", args: ["spawn", "peer", "gpt-6-luna"]})
+  assert.ok(submitted)
+  assert.equal(submitted.provider, "codex")
+  assert.equal(submitted.account_profile, "codex-account")
+  assert.equal(submitted.model, "gpt-6-luna")
+})
+
+// MP-08 / MP-10 / MP-11 A04: a spawn without --account takes the focused agent's account, not the waiting-room selection of another provider.
+test("agent spawn without --account ignores a waiting-room account of another provider", async () => {
+  const focused = makeAgent({provider: "codex", model: "gpt-6-luna", account_profile: "codex-account"})
+  const session = makeSession({agents: [focused]})
+  let submitted: Record<string, unknown> | undefined
+  const base = {
+    ...makeCommandDeps(),
+    options: {provider: "opencode"},
+    preferencesState: () => ({}),
+    initialWorkspaceTarget: "/workspace",
+    initialWorktreeTarget: "/workspace",
+    sessionState: () => session,
+    isAttached: () => true,
+    focusedAgentId: () => focused.id,
+    currentModelId: () => focused.model,
+    currentVariantId: () => "low",
+    currentAccountProfileId: () => "opencode-1-stale",
+    client: {send: async (request: Record<string, Record<string, unknown>>) => {
+      assert.ok(request.SpawnAgent)
+      submitted = request.SpawnAgent
+      throw new Error("request captured before provider launch")
+    }},
+  }
+  const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+  await createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+    .handleAgentCommand({kind: "agent", raw: "/agent spawn peer gpt-6-luna", args: ["spawn", "peer", "gpt-6-luna"]})
+  assert.ok(submitted)
+  assert.equal(submitted.provider, "codex")
+  assert.equal(submitted.account_profile, "codex-account")
+})
+
+// Reviewer P2 on #1098: without a model the kernel uses the session defaults' provider, so the focused agent's account must not ride along.
+test("agent spawn without a model leaves the account to the session defaults when the focused provider differs", async () => {
+  const focused = makeAgent({provider: "codex", model: "gpt-6-luna", account_profile: "codex-account"})
+  const session = makeSession({agents: [focused]})
+  const submitted: Record<string, unknown>[] = []
+  const base = {
+    ...makeCommandDeps(),
+    options: {provider: "opencode"},
+    preferencesState: () => ({}),
+    initialWorkspaceTarget: "/workspace",
+    initialWorktreeTarget: "/workspace",
+    sessionState: () => session,
+    isAttached: () => true,
+    focusedAgentId: () => focused.id,
+    currentModelId: () => focused.model,
+    currentVariantId: () => "low",
+    currentAccountProfileId: () => "opencode-1-stale",
+    client: {send: async (request: Record<string, Record<string, unknown>>) => {
+      submitted.push((request.SpawnAgent ?? request.SpawnAgents) as Record<string, unknown>)
+      throw new Error("request captured before provider launch")
+    }},
+  }
+  const deps = new Proxy(base, {get: (target, key) => key in target ? target[key as keyof typeof target] : () => {}})
+  const composition = createCliCommandActionComposition(deps as unknown as CliCommandActionCompositionDeps)
+  await composition.handleAgentCommand({kind: "agent", raw: "/agent spawn peer", args: ["spawn", "peer"]})
+  await composition.handleAgentCommand({kind: "agent", raw: "/agent spawn 2", args: ["spawn", "2"]})
+  assert.equal(submitted.length, 2)
+  const single = submitted[0]!
+  const bulk = submitted[1]!
+  assert.ok(!single.provider)
+  assert.ok(!single.account_profile)
+  const bulkAgents = bulk.agents as Record<string, unknown>[]
+  assert.ok(bulkAgents.every(agent => !agent.provider && !agent.account_profile))
+})

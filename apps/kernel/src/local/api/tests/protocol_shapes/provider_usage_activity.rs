@@ -1312,7 +1312,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
                 "failure": {
                     "kind": "other",
                     "retryable": false,
-                    "reason": "provider rejected request",
+                    "reason": "The provider could not complete this request.",
                 },
             },
             {
@@ -1356,7 +1356,7 @@ fn local_daemon_protocol_provider_termination_categories_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "1ed25493c88d333dbd4ef83a314681b83ba9f35c0c88fd7b4e6b7806dcdb6b00"
+        "6dd3a05a435f59762d5d346abced5950e28d916aede5491e00ac697c45ac3383"
     );
 }
 

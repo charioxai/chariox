@@ -168,6 +168,7 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .unwrap();
     f.request("logged-out-profile");
     f.request("also-waiting");
+    let capture = crate::logging::capture::start();
     let error = f
         .runtime
         .deliver_agent_inbox(&f.room, &f.child)
@@ -176,6 +177,12 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
     assert!(
         matches!(error, DaemonError::ProviderProfileRefused { .. }),
         "{error}"
+    );
+    assert!(
+        capture.records().iter().any(|record| record
+            .contains("delegate could not start its requested turn")
+            && record.contains("not authenticated")),
+        "a failed start must log why the delegate did not start"
     );
     f.runtime.sweep_agent_lifecycle().await.unwrap();
     f.assert_gone(2);
@@ -197,6 +204,85 @@ async fn delegate_reply_failed_start_settles_without_deletion() {
         .deliver_agent_inbox(&f.room, &f.child)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn delegate_failed_start_closes_the_delegate_obligation_so_the_parent_turn_ends() {
+    let f = Fixture::new();
+    let store = &f.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: f.owner.clone(),
+            room: f.room.clone(),
+            agent: f.parent.clone(),
+            prompt: "parent-turn".into(),
+            run: None,
+            id: "spawned-child".into(),
+            kind: "delegate".into(),
+            resource: None,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::DispatchReceipt {
+            id: "spawned-child".into(),
+            accepted: true,
+            resource: Some(f.child.clone()),
+        })
+        .unwrap();
+    let profiles = &f.runtime.owned.provider_account_profiles;
+    let profile = profiles.get(&f.owner, "codex", "default").unwrap();
+    profiles
+        .mark_logged_out(&f.owner, "codex", &profile.profile_id)
+        .unwrap();
+    f.request("logged-out-profile");
+    f.runtime
+        .deliver_agent_inbox(&f.room, &f.child)
+        .await
+        .unwrap_err();
+    let task = store
+        .agent_tasks(Some(&f.room), Some(&f.parent))
+        .unwrap()
+        .remove(0);
+    assert!(
+        task.obligations.iter().all(|o| o.status == "failed"),
+        "a delegate that cannot start must not keep its obligation open: {:?}",
+        task.obligations
+    );
+    let lost = f.replies();
+    assert!(
+        lost.iter().any(
+            |e| e.kind == "source_lost" && e.payload["public_answer"]["delegate_id"] == f.child
+        ),
+        "the parent is told that its delegate is gone"
+    );
+    for event in lost {
+        store
+            .agent_lifecycle(Operation::Ack {
+                room: f.room.clone(),
+                agent: f.parent.clone(),
+                sequence: event.sequence,
+                handled: true,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the parent handles the loss");
+    }
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: f.room.clone(),
+            agent: f.parent.clone(),
+            prompt: "parent-turn".into(),
+            run: "run".into(),
+            has_answer: true,
+            cancelled: false,
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("settlement outcome")
+    };
+    assert!(!correction, "{}", task.reason);
+    assert_eq!(task.state, ExecutionState::Done, "{}", task.reason);
 }
 
 #[tokio::test]
