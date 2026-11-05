@@ -1,6 +1,7 @@
 // The disk cells of the process-admission live drill (OF-37 attribution, OF-38 temp, OF-39 trim, OF-40 ask,
 // OF-42 runaway). Each flow gives real agents real work through their own tools, then checks the kernel's
 // side on the real machine: files, processes and the session's process rows. Nothing here talks to a provider.
+import { runDiskWaits } from "./process-admission-disk-waits.mjs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
@@ -25,6 +26,8 @@ export async function runDiskCells(ctx) {
   const df = () => { const [total, free] = ctx.execFileSync("df", ["-B1", "--output=size,avail", work], { encoding: "utf8" }).trim().split("\n")[1].trim().split(/\s+/).map(Number); return { total, free } }
   const hogs = () => ctx.osProcesses("hog.py")
   const rowsOf = agent => latestRows().filter(p => p.owner?.id === agent.id)
+
+  if (scenario === "disk-waits") await runDiskWaits(ctx, check)
 
   if (scenario === "room-isolation") {
     await say(`Run exactly sh -c 'printf "%s" "$TMPDIR" > answer-room-path-b{N}.txt; echo keep > "$TMPDIR/room-keep.txt"; echo DONE > answer-room-ready-b{N}.txt' in the current directory. Do not change or retry it.`, "room-ready")

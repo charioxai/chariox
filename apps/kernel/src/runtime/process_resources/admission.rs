@@ -671,8 +671,8 @@ impl Ledger {
         Some(member.clone())
     }
 
-    /// Starts the first command in line for `reason` once its room is free,
-    /// or when nothing heavy runs (waiting longer cannot make room).
+    /// Starts the first eligible command in the owners' fair line. A full
+    /// volume must not block commands whose receiving volume has room.
     fn resume(
         &mut self,
         members: &[Arc<Mutex<Observation>>],
@@ -688,39 +688,39 @@ impl Ledger {
         {
             return None;
         }
-        let (member, pid) = line(members, reason, self.served.get(&(reason as u8)))
-            .into_iter()
-            .next()?;
-        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = observation.admission.get_mut(&pid)?;
-        // Both resources must have room now: what it waited for, and the
-        // other one for the peak it is known to reach.
-        let (memory, disk) = match reason {
-            WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
-            WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
-        };
-        let volume = entry.disk(room);
-        let fits = (memory <= *available || !state.heavy_running)
-            && volume.is_none_or(|volume| disk <= state.spare(volume));
-        if !fits {
-            return None;
+        for (member, pid) in line(members, reason, self.served.get(&(reason as u8))) {
+            let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = observation.admission.get_mut(&pid)?;
+            // Both resources must have room now: what it waited for, and the
+            // other one for the peak it is known to reach.
+            let (memory, disk) = match reason {
+                WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
+                WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
+            };
+            let volume = entry.disk(room);
+            let fits = (memory <= *available || !state.heavy_running)
+                && volume.is_none_or(|volume| disk <= state.spare(volume));
+            if !fits {
+                continue;
+            }
+            *available = available.saturating_sub(
+                entry
+                    .expected
+                    .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
+            );
+            if let Some(volume) = volume {
+                state.reserve(volume, entry.writes_ahead(room));
+            }
+            entry.stop_waiting();
+            entry.admitted = true;
+            state.running(entry, room);
+            let unit = observation.unit.clone();
+            drop(observation);
+            self.served.insert(reason as u8, unit);
+            self.resumed_at.insert(reason as u8, Instant::now());
+            return Some(member);
         }
-        *available = available.saturating_sub(
-            entry
-                .expected
-                .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
-        );
-        if let Some(volume) = volume {
-            state.reserve(volume, entry.writes_ahead(room));
-        }
-        entry.stop_waiting();
-        entry.admitted = true;
-        state.running(entry, room);
-        let unit = observation.unit.clone();
-        drop(observation);
-        self.served.insert(reason as u8, unit);
-        self.resumed_at.insert(reason as u8, Instant::now());
-        Some(member)
+        None
     }
 }
 

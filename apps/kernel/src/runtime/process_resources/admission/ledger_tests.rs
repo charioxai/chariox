@@ -1176,3 +1176,56 @@ fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
         );
     }
 }
+
+#[test]
+fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
+    let recovered = Arc::new(AtomicU64::new(10 * GIB));
+    let first_free = Arc::new(AtomicU64::new(10 * GIB));
+    let first_space = first_free.clone();
+    let free = recovered.clone();
+    let volume: Box<Volume> = Box::new(move |path| {
+        let other = path.starts_with("/other");
+        Some(Space {
+            id: if other { 2 } else { 1 },
+            free: if other {
+                free.load(Ordering::SeqCst)
+            } else {
+                first_space.load(Ordering::SeqCst)
+            },
+            total: 100 * GIB,
+        })
+    });
+    let held = |arrived| Entry {
+        wait: Some(Wait::Held(WaitReason::Disk)),
+        ..entry(arrived, scratch(6 * GIB))
+    };
+    let mut later = held(2);
+    later.seen.as_mut().unwrap().cwd = Some("/other/build".into());
+    let first = owner("first", true, vec![command(1, 0, 0)], vec![(1, held(1))]);
+    let second = owner(
+        "second",
+        true,
+        vec![command(2, 0, 0), command(3, 0, 0)],
+        vec![(2, later), (3, held(3))],
+    );
+    let members = [first.clone(), second.clone()];
+    let mut ledger = Ledger::new(None);
+    ledger.pass(&members, &first, &room(GIB, false, &*volume));
+    assert!(wait(&first, 1).is_some());
+    assert!(wait(&second, 2).is_some());
+    recovered.store(18 * GIB, Ordering::SeqCst);
+    ledger.pass(&members, &first, &room(GIB, false, &*volume));
+    assert_eq!(
+        wait(&second, 2),
+        None,
+        "another volume blocked a runnable writer"
+    );
+    assert_eq!(wait(&first, 1), Some(Wait::Held(WaitReason::Disk)));
+    assert_eq!(wait(&second, 3), Some(Wait::Held(WaitReason::Disk)));
+    // Skipping an ineligible owner must not consume its next fair turn.
+    first_free.store(18 * GIB, Ordering::SeqCst);
+    unsettle(&mut ledger);
+    ledger.pass(&members, &first, &room(GIB, false, &*volume));
+    assert_eq!(wait(&first, 1), None);
+    assert!(wait(&second, 3).is_some());
+}
