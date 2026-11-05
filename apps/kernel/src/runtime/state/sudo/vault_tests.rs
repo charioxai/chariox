@@ -1493,7 +1493,15 @@ async fn vflag_capture_schema_label_preserves_the_next_snapshot_through_mcp() {
 #[tokio::test]
 async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    // A plain field cannot rely on the browser's password-field masking.
+    let controller = LOGIN_CONTROLLER
+        .replace(r#""type":"password""#, r#""type":"text""#)
+        .replace(
+            " case \"$request\" in",
+            r#" case "$request" in
+  *'"method":"host.protect"'*) printf '%s' "$request" > "$1/protection"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;"#,
+        );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
     let f = &login.f;
     unlock(f);
     let first = call(f, CAPTURE, capture_args("equal-first")).await.unwrap();
@@ -1508,6 +1516,10 @@ async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key()
         registry.get(second).unwrap().unwrap().source
     );
     call(f, FILL, paste_args(second)).await.unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(CAPTURED));
+    assert!(std::fs::read_to_string(login.root.path().join("plain"))
+        .unwrap()
+        .contains(r#""plain_target":true"#));
     call(f, REMOVE, json!({"credential_id": first}))
         .await
         .unwrap();
@@ -1523,6 +1535,10 @@ async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key()
     .await
     .unwrap();
     assert_eq!(
+        observed["snapshot"]["dom_nodes"][0]["attributes"]["type"],
+        "text"
+    );
+    assert_eq!(
         observed["snapshot"]["dom_nodes"][0]["text"], "echo [redacted]",
         "removing another key must not expose the retained entry through the outer MCP response"
     );
@@ -1535,10 +1551,28 @@ async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key()
             .unwrap(),
     )
     .unwrap();
-    assert!(
-        !policy["targets"].as_array().unwrap().is_empty(),
-        "the model frame still needs its field mask"
+    let expected_hash = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(CAPTURED.as_bytes())
     );
+    assert!(
+        policy["targets"].as_array().unwrap().iter().any(|target| {
+            target["kind"] == "browser"
+                && target["target_id"] == "target-login"
+                && target["document_id"] == "doc-login"
+                && target["node_ref"] == "backend:7"
+                && target["value_hash"] == expected_hash
+        }),
+        "the retained plain field still needs its exact model-frame mask"
+    );
+    // The next model observation must send those masks to the host, where
+    // snapshots and frames share the protection policy.
+    let delivered: Value = serde_json::from_str(
+        &std::fs::read_to_string(login.root.path().join("protection")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delivered["params"]["targets"], policy["targets"]);
+    assert_eq!(delivered["params"]["values"], policy["values"]);
     assert_eq!(
         f.state
             .owned
