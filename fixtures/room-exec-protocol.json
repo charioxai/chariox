@@ -195,13 +195,14 @@
                 "owner": {
                   "kind": "terminal",
                   "id": "exec-1"
-                }
+                },
+                "command_line": "/bin/cat"
               }
             ]
           }
         }
       },
-      "sha256": "c26efaf7097446605bb1b07615e751e057f4390bbae113fcedd0d1c97f2e9f4d"
+      "sha256": "7ddb0d2426c4d93f0468f19082a382cab17700134e02b5b4772832bb0360c757"
     },
     {
       "kind": "request",
@@ -241,13 +242,14 @@
                 "owner": {
                   "kind": "terminal",
                   "id": "exec-held"
-                }
+                },
+                "command_line": "/bin/cat"
               }
             ]
           }
         }
       },
-      "sha256": "71f824eee42d875d2a152fc82b4b2eecdb7244c48dd5527735baa4aac0e55eac"
+      "sha256": "ff603e110abc73fc50f14fb30004f68c8b5dfe6a0f60bf0cd7ed1d45abb69586"
     }
   ]
 }

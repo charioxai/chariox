@@ -57,7 +57,7 @@ async function held(name, host = 'A') {
   return until(async () => {
     assert.equal(await exists(marker(name, host)), false, 'user code executed before resource admission')
     const listed = await operation({operation: 'exec_list'}, host)
-    return listed.execs?.find(row => row.command?.at(-1) === marker(name, host) && row.state.kind === 'queued')
+    return listed.execs?.find(row => row.command?.at(-1) === name && row.state.kind === 'queued')
   }, `native exec ${name} held before start`)
 }
 

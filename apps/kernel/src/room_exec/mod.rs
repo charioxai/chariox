@@ -73,6 +73,7 @@ pub struct ExecSummary {
     pub state: ExecState,
     pub age_ms: u64,
     pub buffered_bytes: usize,
+    pub command_line: String,
     pub command: Vec<String>,
     pub owner: crate::runtime::process_resources::SessionProcessOwner,
 }
@@ -281,6 +282,9 @@ impl RoomExecService {
                     age_ms: record.created_at.elapsed().as_millis() as u64,
                     buffered_bytes: output.retained_bytes(),
                     command: record.intent.command.clone(),
+                    command_line: crate::runtime::process_resources::command_line(
+                        &record.intent.command,
+                    ),
                     owner: record.intent.process_owner(),
                 }
             })

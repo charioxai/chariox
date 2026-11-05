@@ -6,7 +6,7 @@ import { Fixture } from './fixture.mjs'
 
 const script = 'import sys,hashlib; open(sys.argv[1],"ab").write(b"x"); data=sys.stdin.buffer.read(); sys.stdout.buffer.write(data); sys.stderr.write(hashlib.sha256(data).hexdigest()); sys.exit(23)'
 export const marker = (home, name, host = 'A') => path.join(home, host, 'work', name)
-export const command = (home, name, host = 'A') => ['/usr/bin/python3', '-c', script, marker(home, name, host)]
+export const command = (home, name, host = 'A') => ['/usr/bin/python3', path.join(home, host, 'work', 'binary-stream.py'), name]
 
 function key(argv, cwd) {
   const hash = createHash('sha256')
@@ -25,6 +25,7 @@ export class AdmissionFixture extends Fixture {
       const root = path.join(env.CHARIOX_HOME, 'state')
       await mkdir(root, {recursive: true, mode: 0o700})
       const cwd = await realpath(path.join(this.home, host, 'work'))
+      await writeFile(path.join(cwd, 'binary-stream.py'), script, {mode: 0o600})
       // This is the ordinary learned-peak input to admission, not a gate override.
       // An impossible predicted peak makes the side-effect assertion red on the old kernel.
       const peaks = Object.fromEntries(['cancel', 'start', 'revoke', 'peer-start', 'peer-cancel', 'peer-revoke', 'ui-start-standard', 'ui-cancel-standard', 'ui-start-retina', 'ui-cancel-retina'].map(name => [key(command(this.home, name, host), cwd), {memory: 2 ** 52, writes: 0}]))
