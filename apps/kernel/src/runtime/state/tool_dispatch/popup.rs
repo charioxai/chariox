@@ -7,6 +7,12 @@ use chariox_relay::protocol::ClientTarget;
 /// card ends itself just before that instead of staying open for a call that is gone.
 const BLOCKING_POPUP_MAX_SECONDS: u64 = 280;
 
+pub(in crate::runtime::state) fn blocking_popup_timeout_seconds(requested: Option<u64>) -> u64 {
+    requested
+        .unwrap_or(BLOCKING_POPUP_MAX_SECONDS)
+        .min(BLOCKING_POPUP_MAX_SECONDS)
+}
+
 fn popup_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -252,12 +258,7 @@ impl KernelRuntimeState {
             if args.wait == Some(false) {
                 args.timeout_sec
             } else {
-                Some(
-                    args.timeout_sec
-                        .map_or(BLOCKING_POPUP_MAX_SECONDS, |seconds| {
-                            seconds.min(BLOCKING_POPUP_MAX_SECONDS)
-                        }),
-                )
+                Some(blocking_popup_timeout_seconds(args.timeout_sec))
             },
             default_choice_id.clone(),
         );

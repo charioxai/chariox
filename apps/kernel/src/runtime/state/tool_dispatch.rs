@@ -21,7 +21,9 @@ mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
 mod popup;
-pub(in crate::runtime::state) use popup::{popup_status, CANCEL_CHOICE_ID};
+pub(in crate::runtime::state) use popup::{
+    blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,
+};
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,

@@ -349,25 +349,52 @@ async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
 #[tokio::test]
 async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
     crate::test_support::isolated_env_test!();
-    for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
-        let f = fixture();
-        let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
-        if let Some(seconds) = asked {
-            arguments["timeout_sec"] = json!(seconds);
+    for action in [false, true] {
+        for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
+            let f = fixture();
+            let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
+            if action {
+                arguments["action"] = json!({"request": {"AliasSession": {"session_id": f.request.session_id, "alias": "after-approval"}}});
+            }
+            if let Some(seconds) = asked {
+                arguments["timeout_sec"] = json!(seconds);
+            }
+            let mut waiting = Box::pin(call(&f, "chariox.request_popup", arguments));
+            tokio::select! {
+                result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
+                () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+            }
+            let snapshot = f
+                .state
+                .owned
+                .session_snapshot(&f.request.session_id)
+                .unwrap();
+            let cards = snapshot.active_interactions();
+            assert_eq!(cards.len(), 1);
+            assert_eq!(
+                cards[0].timeout_sec(),
+                Some(expected),
+                "action {action}, asked {asked:?}"
+            );
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(expected)).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+                .await
+                .expect("card settles before provider timeout")
+                .unwrap();
+            assert_eq!(result["status"], "timed_out");
+            if action {
+                assert_eq!(result["ran"], false);
+            }
+            assert!(f
+                .state
+                .owned
+                .session_snapshot(&f.request.session_id)
+                .unwrap()
+                .active_interactions()
+                .is_empty());
+            tokio::time::resume();
         }
-        let mut waiting = Box::pin(call(&f, "chariox.request_popup", arguments));
-        tokio::select! {
-            result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
-            () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
-        }
-        let snapshot = f
-            .state
-            .owned
-            .session_snapshot(&f.request.session_id)
-            .unwrap();
-        let cards = snapshot.active_interactions();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0].timeout_sec(), Some(expected), "asked {asked:?}");
     }
 }
 

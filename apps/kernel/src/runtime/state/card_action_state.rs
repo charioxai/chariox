@@ -65,6 +65,7 @@ impl KernelRuntimeState {
         if timeout_sec == Some(0) {
             return Err(refused("timeout_sec must be at least 1"));
         }
+        let timeout_sec = super::tool_dispatch::blocking_popup_timeout_seconds(timeout_sec);
         let agent_id = run
             .agent_instance_id()
             .ok_or_else(|| refused("provider run is not bound to an agent"))?;
@@ -111,7 +112,7 @@ impl KernelRuntimeState {
                     },
                 ),
         ))
-        .with_timeout_sec(timeout_sec.unwrap_or(300));
+        .with_timeout_sec(timeout_sec);
         let receiver = self
             .create_kernel_operation_interaction(
                 run.session_id(),
@@ -126,14 +127,12 @@ impl KernelRuntimeState {
             .get(&interaction_id)
             .cloned()
             .ok_or_else(|| refused("asking prompt ended before the action card was registered"))?;
-        if let Some(seconds) = timeout_sec.or(Some(300)) {
-            let state = self.clone();
-            let (session, id) = (run.session_id().to_owned(), interaction_id.clone());
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
-                let _ = state.timeout_runtime_interaction(&session, &id).await;
-            });
-        }
+        let state = self.clone();
+        let (session, id) = (run.session_id().to_owned(), interaction_id.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
+            let _ = state.timeout_runtime_interaction(&session, &id).await;
+        });
         Ok(ActionCard {
             interaction_id,
             owner_user_id: agent.owner_user_id().to_owned(),
