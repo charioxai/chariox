@@ -1062,7 +1062,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         const style = getComputedStyle(at), cause = style.filter !== 'none' ? 'filter' : linear(style.transform) ? 'transform' : style.rotate !== 'none' ? 'rotate' : style.scale !== 'none' ? 'scale' : Number(style.opacity) < 1 ? 'opacity' : style.mixBlendMode !== 'normal' ? 'blend' : '';
         if (cause) return cause + (at === node ? '' : '_ancestor');
       }
-      return false;
+      // A script-disabled mirror cannot reliably paint video inside canvas fallback content.
+      // Its region is already composited by Chrome and must use a root video patch.
+      return node.namespaceURI === HTML && node.localName === 'canvas' ? 'canvas' : false;
     };
     // Whether the node or an ancestor (through frame owners) moves or resizes pixels, independent of the one cause distorted() names:
     // a crop of the frame inside maps into the page by translation only.

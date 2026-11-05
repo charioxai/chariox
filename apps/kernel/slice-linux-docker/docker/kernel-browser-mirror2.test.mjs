@@ -1078,8 +1078,8 @@ test('MP-08/MP-10: sanitizing a sheet with a long inline data URL and an escape 
  assert.equal(out, '.a{content:"\\2022"}.b{background:url("mr:r1")}.c{background:url("mr:r1")}');
 });
 
-test('MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800', async () => {
-  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40]}];
+for (const distorted of [false, 'canvas']) test(`MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800 (${distorted})`, async () => {
+  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40],distorted}];
   assert.equal(regionArea(boxes,size),3200);
   assert.equal(regionOverBudget([{box:[0,0,1280,800]}],size),true);
   assert.equal(regionOverBudget([{box:[0,0,1000,800]}],size),false);

@@ -1638,6 +1638,9 @@ test("MP-10 mirrorregion: an oversized opaque region (>60 % of the view) stays a
   const packet = await stayDom(next, 3000, "MP-10: stays DOM");
   const lease = await regionLease(ctx, packet.sequence);
   assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 600 });
+  const stream = ctx.host.mirror.streams.get(ctx.subscription_id);
+  const boxes = await ctx.host.mirror.v2.regionBoxes(stream, ctx.host.tabs.get(stream.tab_id));
+  assert.equal(boxes.find(box => box.id === lease.region_id).distorted, 'canvas', 'canvas video uses the composited region path even without CSS transforms');
 }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600"><rect width="1280" height="600" fill="rgb(255,0,0)"/></svg>' } }));
 
 // vimeo.com: an attached foreign frame whose owner has no box (a 0x0 iframe in a closed dialog) made regionBoxes
