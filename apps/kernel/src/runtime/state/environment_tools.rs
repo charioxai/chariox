@@ -42,7 +42,7 @@ pub(crate) fn environment_tool_specs() -> Vec<RuntimeToolSpec> {
             object(serde_json::json!({"operationId":{"type":"string"}}))),
         (ENVIRONMENT_UPDATE, "Bring the entries this machine lacks (Secrets, Files outside Git, registered MCPs and Skills) from another machine of the user. A machine with no Environment yet (`exists` false in the read result) gets the Environment itself first, then what it lacks. `from` is the id or name of the machine (see `otherMachines` in the read result; optional when there is one other machine), `entries` limits it to some entries (default: everything missing). Returns the operation id at once; read it for the result of each entry.",
             object(serde_json::json!({"from":{"type":"string"},"entries":{"type":"array","items":entry}}))),
-        (ENVIRONMENT_SETUP, "Run the Project's saved Setup script in this room's checkout. Returns the operation id at once; read it, or read the Environment again, for the Setup state when it ends.",
+        (ENVIRONMENT_SETUP, "Run the Project's saved Setup script in your checkout. Returns the operation id at once; read it, or read the Environment again, for the Setup state when it ends.",
             object(serde_json::json!({}))),
         (ENVIRONMENT_CHECK, "Compare what the Project's files declare (MCPs, Skills, variables named in .env.example) with the saved Environment, with no model. Returns proposals with the file that shows each; nothing is changed.",
             object(serde_json::json!({}))),
@@ -73,7 +73,12 @@ impl KernelRuntimeState {
         let context = self.vault_agent_context(token)?;
         let session = self.owned.session_store.get_session(&context.session_id)?;
         let project = self.tool_project(&session, &context.owner_user_id)?;
-        let checkout = self.project_checkout(&project, Some(session.worktree_id()))?;
+        let directory = context
+            .run
+            .working_directory()
+            .and_then(|path| path.to_str())
+            .ok_or_else(|| environment_error("the agent's checkout is unavailable"))?;
+        let checkout = self.project_checkout(&project, Some(directory))?;
         let record = self.environment_store().load(project.id())?;
         if matches!(tool_name, ENVIRONMENT_READ | ENVIRONMENT_UPDATE) {
             self.ensure_machine_inventory().await;

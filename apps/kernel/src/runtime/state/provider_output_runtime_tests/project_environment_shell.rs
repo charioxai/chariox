@@ -238,3 +238,208 @@ async fn assert_placed_project_environment(remote: bool) {
         "a leased checkout must not register a remote-lease workspace root"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: authenticated tools follow the calling provider's checkout.
+#[tokio::test]
+async fn environment_tools_use_the_authenticated_agent_checkout() {
+    crate::test_support::isolated_env_test!();
+    let root = crate::test_support::TestWorktree::new("environment-agent-checkout");
+    let room = root.path().join("repo");
+    let target = root.path().join("repo-task");
+    std::fs::create_dir_all(&room).unwrap();
+    for args in [
+        vec!["init"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial",
+        ],
+        vec!["worktree", "add", "-b", "task", target.to_str().unwrap()],
+    ] {
+        assert!(crate::process_spawn::command("git")
+            .args(args)
+            .current_dir(&room)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    std::fs::write(room.join("private.local"), "room only").unwrap();
+    std::fs::write(target.join(".env.example"), "AGENT_ONLY=example\n").unwrap();
+    let mut app =
+        crate::test_support::bootstrap_authenticated_app(crate::config::DaemonConfig::for_tests())
+            .unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            room.display().to_string(),
+            room.display().to_string(),
+        ))
+        .unwrap();
+    let store = app.session_state_store();
+    ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
+        .save(
+            session.project_id(),
+            0,
+            ProjectEnvironmentRecord {
+                schema: PROJECT_ENVIRONMENT_SCHEMA,
+                setup_script: "printf prepared > prepared.local".into(),
+                files: vec!["private.local".into()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let agent = app
+        .agents()
+        .update_agent_config(
+            agent.id(),
+            None,
+            None,
+            None,
+            Some(Some(target.display().to_string())),
+        )
+        .unwrap();
+    assert_eq!(agent.worktree_id(), target.to_str());
+    let launch = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "test",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "environment-checkout-run",
+        &launch,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "checkout tool regression".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: Some(target.clone()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    run.set_runtime_mcp_auth_token(Some("environment-checkout-token".into()));
+    app.providers_mut().insert_run_for_test(run);
+    let mut outside = crate::provider::RuntimeProviderRun::new(
+        "environment-outside-run",
+        &launch,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "outside checkout regression".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: vec![],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: Some(root.path().to_owned()),
+            structured_endpoint: None,
+        },
+    );
+    outside.mark_running();
+    outside.set_runtime_mcp_auth_token(Some("environment-outside-token".into()));
+    app.providers_mut().insert_run_for_test(outside);
+
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    assert_eq!(
+        store.get_session(session.id()).unwrap().worktree_id(),
+        room.to_str().unwrap()
+    );
+    for name in ["read", "update", "setup", "check"] {
+        let refused = runtime
+            .dispatch_authenticated_runtime_tool_call(
+                "environment-outside-token",
+                &format!("chariox.environment.{name}"),
+                serde_json::json!({}),
+            )
+            .await;
+        assert!(
+            refused.is_err(),
+            "a checkout outside the Project must be refused"
+        );
+    }
+    let call = |name| {
+        runtime.dispatch_authenticated_runtime_tool_call(
+            "environment-checkout-token",
+            name,
+            serde_json::json!({}),
+        )
+    };
+    let read = call("chariox.environment.read").await.unwrap();
+    assert_eq!(
+        read.payload["files"][0]["presence"], "missing",
+        "read must inspect the agent checkout"
+    );
+    let check = call("chariox.environment.check").await.unwrap();
+    assert!(
+        check.payload["proposals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["text"] == "AGENT_ONLY"),
+        "check must inspect the agent files"
+    );
+    runtime.owned.notification_inventory_projection.update(
+        vec![],
+        vec![chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "source-kernel".into(),
+            machine_id: "source-machine".into(),
+            machine_alias: None,
+            kernel_alias: Some("Source".into()),
+            relay_alias: None,
+            available_providers: vec![],
+            provider_accounts: vec![],
+            capabilities: vec![],
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "00".repeat(32),
+        }],
+    );
+    let update = runtime
+        .dispatch_authenticated_runtime_tool_call(
+            "environment-checkout-token",
+            "chariox.environment.update",
+            serde_json::json!({"from":"Source"}),
+        )
+        .await
+        .unwrap();
+    let update_id = update.payload["operationId"].as_str().unwrap();
+    assert_eq!(
+        runtime
+            .environment_operation(update_id)
+            .unwrap()
+            .unwrap()
+            .checkout_path,
+        target.display().to_string()
+    );
+    runtime
+        .cancel_environment_operation_by_id(update_id)
+        .unwrap();
+    let setup = call("chariox.environment.setup").await.unwrap();
+    let id = setup.payload["operationId"].as_str().unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let op = runtime.environment_operation(id).unwrap().unwrap();
+            if op.state != crate::local::EnvironmentOperationState::Running {
+                assert_eq!(op.state, crate::local::EnvironmentOperationState::Succeeded);
+                assert_eq!(op.checkout_path, target.display().to_string());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(target.join("prepared.local").exists());
+    assert!(!room.join("prepared.local").exists());
+}
