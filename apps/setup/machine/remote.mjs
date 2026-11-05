@@ -103,11 +103,11 @@ async function verifyImage(image, digest, pins, stage) {
   const manifest = JSON.parse(await readFile(join(image, "usr/lib/chariox/release-manifest.json")))
   const files = new Set(manifest.artifacts.filter(a => a.name !== "chariox-slice-build-context").map(a => a.path.slice(1)))
   for (const path of ["release-manifest.json", "release-manifest.sig", "release-public-key"]) files.add(`usr/lib/chariox/${path}`)
-  const context = "usr/lib/chariox/slice-build-context"
+  const trees = manifest.artifacts.filter(a => ["chariox-slice-build-context", "chariox-slice-image"].includes(a.name)).map(a => a.path.slice(1))
   async function walk(dir, prefix = "") {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const p = prefix ? `${prefix}/${entry.name}` : entry.name
-      if (!(files.has(p) || [...files].some(f => f.startsWith(`${p}/`)) || p === context || p.startsWith(`${context}/`) || context.startsWith(`${p}/`))) fail("unexpected unsigned release material")
+      if (!(files.has(p) || [...files].some(f => f.startsWith(`${p}/`)) || trees.some(tree => p === tree || p.startsWith(`${tree}/`) || tree.startsWith(`${p}/`)))) fail("unexpected unsigned release material")
       if (entry.isDirectory()) await walk(join(dir, entry.name), p)
     }
   }

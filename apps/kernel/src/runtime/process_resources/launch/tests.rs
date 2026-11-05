@@ -250,7 +250,7 @@ fn binary_descendant_prediction_is_reserved_once_during_enforcement() {
 fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
     use std::sync::atomic::AtomicU64;
     let floor = 10 * 1024 * MIB;
-    let free = Arc::new(AtomicU64::new(floor + 200 * MIB));
+    let free = Arc::new(AtomicU64::new(floor + 400 * MIB));
     let sampled = free.clone();
     let volume_id = admission::statvfs(&std::env::temp_dir()).unwrap().id;
     let admission = LaunchAdmission(Arc::new(Pool::with_volume(
@@ -265,11 +265,11 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
     )));
     let dir = std::env::temp_dir().join(format!("binary-writes-{:016x}", rand::random::<u64>()));
     std::fs::create_dir_all(&dir).unwrap();
-    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import sys; f=open('output','wb'); f.write(b'x'*(100*1048576)); f.flush(); print('ready',flush=True); sys.stdin.readline()".into()];
+    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import sys,time; f=open('output','wb'); print('ready',flush=True); [(f.write(b'x'*(10*1048576)),f.flush(),time.sleep(0.1)) for _ in range(20)]; sys.stdin.readline()".into()];
     let second = vec!["second-writer".into()];
     {
         let mut ledger = admission.0.ledger.lock().unwrap();
-        for (command, writes) in [(&argv, 120 * MIB), (&second, 80 * MIB)] {
+        for (command, writes) in [(&argv, 300 * MIB), (&second, 80 * MIB)] {
             let key = admission::seen_argv(0, command, Some(dir.clone())).key;
             ledger.peaks.remember(
                 &key,
@@ -307,7 +307,7 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
         .unwrap();
     assert_eq!(ready.trim(), "ready");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while first.peak.writes < 100 * MIB {
+    while first.reserved_volume_written < 100 * MIB {
         assert!(
             std::time::Instant::now() < deadline,
             "writer was not sampled"
@@ -315,7 +315,10 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
         std::thread::sleep(std::time::Duration::from_millis(25));
         first.observe();
     }
-    free.store(floor + 100 * MIB, Ordering::SeqCst);
+    free.store(
+        floor + 300 * MIB - first.reserved_volume_written + 80 * MIB,
+        Ordering::SeqCst,
+    );
     let result = admission.reserve("second", &second, &dir, false);
     child.stdin.take().unwrap().write_all(b"done\n").unwrap();
     assert!(child.wait().unwrap().success());
@@ -493,7 +496,12 @@ fn waiting_descendant_can_use_its_binary_disk_reservation() {
         admission::Peak {
             memory: 0,
             writes: 10 * 1024 * MIB,
-
+            exact: admission::seen_argv(0, &argv, Some(cwd.into())).exact,
+            volume: Some(admission::ReceivingVolume {
+                path: cwd.into(),
+                id: 1,
+            }),
+            volume_writes: 10 * 1024 * MIB,
             ..Default::default()
         },
         512 * MIB,

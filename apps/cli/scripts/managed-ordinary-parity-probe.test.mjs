@@ -38,6 +38,15 @@ async function copyProbeRuntimeSources(root) {
   for (const path of PROBE_FIXTURE_PATHS.slice(4)) {
     await writeFile(join(root, path), await readFile(new URL(path.replace("apps/cli/scripts/", "./"), import.meta.url)))
   }
+  // These fixtures deliberately run as an unprivileged user, including under a private umask.
+  for (const path of PROBE_FIXTURE_PATHS) {
+    let directory = root
+    for (const part of path.split("/").slice(0, -1)) {
+      directory = join(directory, part)
+      await chmod(directory, 0o755)
+    }
+    await chmod(join(root, path), 0o644)
+  }
   return probePath
 }
 
@@ -185,6 +194,7 @@ test("control-file protection requires its parent to remain writable as a worksp
     stderr: String(error.stderr ?? error.message ?? ""),
   }))
   assert.equal(result.code, 1, result.stdout || result.stderr)
+  assert.ok(result.stdout, `probe exited before its JSON result: ${result.stderr}`)
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /parent workspace/)
@@ -259,6 +269,7 @@ test("control-file protection rejects an accessible file outside the control wor
     stderr: String(error.stderr ?? error.message ?? ""),
   }))
   assert.equal(result.code, 1, result.stdout || result.stderr)
+  assert.ok(result.stdout, `probe exited before its JSON result: ${result.stderr}`)
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /same parent/)
@@ -292,6 +303,7 @@ test("probe fails closed when a required product observation is absent", async (
     stderr: String(error.stderr ?? error.message ?? ""),
   }))
   assert.equal(result.code, 1, result.stderr)
+  assert.ok(result.stdout, `probe exited before its JSON result: ${result.stderr}`)
   const payload = JSON.parse(result.stdout)
   assert.equal(payload.ok, false)
   assert.match(payload.error, /missing observation context|session[ /]agent product observation is missing|session agent/i)
@@ -352,6 +364,7 @@ async function probeFixture(t) {
     }
     const args = [destination, "--json", ...Object.entries(argumentsByName).flatMap(([name, value]) => [`--${name}`, value])]
     const result = await execFileAsync(process.execPath, args, {cwd: root, encoding: "utf8", ...options, env: {...(options.env ?? process.env), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "safe.directory", GIT_CONFIG_VALUE_0: root}}).catch(error => error)
+    assert.ok(result.stdout, `probe exited before its JSON result: ${result.stderr}`)
     return JSON.parse(result.stdout)
   }
 }

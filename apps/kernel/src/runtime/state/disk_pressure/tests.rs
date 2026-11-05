@@ -262,6 +262,7 @@ async fn a_disk_pressure_unlock_does_not_stall_another_rooms_timer() {
             0,
             ProjectEnvironmentRecord {
                 schema: PROJECT_ENVIRONMENT_SCHEMA,
+                secrets: vec!["SYNTHETIC_TOKEN".into()],
                 ..Default::default()
             },
         )
