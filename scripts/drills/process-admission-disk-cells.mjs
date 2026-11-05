@@ -2,7 +2,7 @@
 // OF-42 runaway). Each flow gives real agents real work through their own tools, then checks the kernel's
 // side on the real machine: files, processes and the session's process rows. Nothing here talks to a provider.
 import assert from "node:assert/strict"
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -125,6 +125,48 @@ except Exception as error:
     const room = join(tempRoot, short(sessionId))
     await rpc({ EndSession: { session_id: sessionId } })
     await until(() => !existsSync(room), "the ended Room's temp folder to go", 20000).then(() => check("ending the Room clears its temp at once", true), () => check("ending the Room clears its temp at once", false, { left: existsSync(room) ? readdirSync(room) : [] }))
+  }
+
+  if (scenario === "disk-volumes") {
+    assert.equal(agents.length, 2, "disk-volumes needs two agents")
+    assert(Number(flags.get("--disk-gb")) === 12, "disk-volumes needs its own 12 GiB loop filesystem")
+    const roomy = join(dir, "roomy")
+    mkdirSync(roomy)
+    ctx.execFileSync("fallocate", ["-l", "8G", join(work, "prefill")])
+    const before = df()
+    note("crossed-volumes", { ...before, full_device: statSync(work).dev, roomy_device: statSync(roomy).dev })
+    assert.notEqual(statSync(work).dev, statSync(roomy).dev, "the output volumes must differ")
+    writeFileSync(join(roomy, "cross-write.py"), `import json, os, pathlib, sys, time
+n, cwd, output, result = sys.argv[1:]
+os.chdir(cwd)
+with open(output, "wb") as out:
+    os.unlink(output)
+    pathlib.Path(result + ".ready").write_text(json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "cwd_dev": os.stat(".").st_dev, "output_dev": os.fstat(out.fileno()).st_dev}))
+    chunk = b"x" * (4 << 20)
+    for _ in range(128):
+        out.write(chunk)
+        out.flush()
+        os.fsync(out.fileno())
+        time.sleep(0.125)
+pathlib.Path(result).write_text("PASS DONE")
+`)
+    await Promise.all(agents.map((target, i) => {
+      const n = i + 1, cwd = i ? roomy : work, output = join(i ? work : roomy, `output-${n}`)
+      const command = `cd "${cwd}" && exec python3 "${join(roomy, "cross-write.py")}" ${n} "${cwd}" "${output}" "${answer("cross", n)}" 2> "${join(roomy, `writer-${n}.err`)}"`
+      return ask(`Run exactly this command once. Do not retry if it is stopped: ${command}`, target)
+    }))
+    const ready = await Promise.all(agents.map((_, i) => until(() => existsSync(answer("cross", i + 1) + ".ready") && JSON.parse(readFileSync(answer("cross", i + 1) + ".ready", "utf8")), `writer ${i + 1} ready`, 120000)))
+    note("crossed-writers", { writers: ready })
+    for (const row of ready) assert.notEqual(row.cwd_dev, row.output_dev)
+    await until(() => ready.every(row => { try { return readFileSync(`/proc/${row.pid}/stat`, "utf8").split(") ")[1].startsWith("Z ") } catch { return true } }), "both bounded writers to end", 60000)
+    const innocent = existsSync(answer("cross", 1)) && readFileSync(answer("cross", 1), "utf8") === "PASS DONE"
+    const stopped = /was filling it/.test(readFileSync(join(roomy, "writer-2.err"), "utf8"))
+    check("cwd on a full disk does not kill a writer on the roomy disk", innocent)
+    check("cwd on a roomy disk does not hide the actual filler", stopped)
+    report.crossed_writers = ready
+    report.volume_before = before
+    report.writer_errors = ready.map((_, i) => readFileSync(join(roomy, `writer-${i + 1}.err`), "utf8"))
+    assert(checks.every(c => c.ok), "the receiving-volume regression failed")
   }
 
   if (scenario === "ask" || scenario === "runaway") {

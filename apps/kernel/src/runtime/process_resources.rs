@@ -311,6 +311,8 @@ impl PreparedDomain {
         // Per command: process-table time, resident and written bytes, and
         // their growth per second.
         let mut previous = std::collections::BTreeMap::<u32, Rates>::new();
+        let mut write_growth_cache =
+            std::collections::BTreeMap::<u32, disk_use::WriteGrowth>::new();
         let worker = std::thread::Builder::new()
             .name("chariox-process-resources".into())
             .spawn(move || loop {
@@ -335,6 +337,7 @@ impl PreparedDomain {
                     .iter()
                     .map(|sample| (sample.pid, sample.deleted_open_bytes))
                     .collect::<std::collections::BTreeMap<_, _>>();
+                let mut disk_writes = std::collections::BTreeMap::new();
                 let commands = tree
                     .commands(&samples)
                     .into_iter()
@@ -354,6 +357,10 @@ impl PreparedDomain {
                             Some(before) => (before.growth, before.write_growth),
                             None => (0, 0),
                         };
+                        if write_growth >= admission::GROWING {
+                            let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
+                            disk_writes.insert(pid, volumes);
+                        }
                         pool::CommandUse {
                             pid,
                             deleted_open: pids
@@ -370,6 +377,7 @@ impl PreparedDomain {
                         }
                     })
                     .collect::<Vec<_>>();
+                write_growth_cache.retain(|pid, _| disk_writes.contains_key(pid));
                 previous = commands
                     .iter()
                     .map(|command| {
@@ -391,6 +399,7 @@ impl PreparedDomain {
                     let mut observation = watched.lock().unwrap_or_else(|e| e.into_inner());
                     observation.samples = samples;
                     observation.commands = commands;
+                    observation.disk_writes = disk_writes;
                     observation.owned = Some(tree.owned());
                 }
                 #[cfg(target_os = "linux")]
@@ -708,6 +717,7 @@ struct Observation {
     outside_ended: bool,
     samples: Vec<ProcessSample>,
     commands: Vec<pool::CommandUse>,
+    disk_writes: std::collections::BTreeMap<u32, Vec<disk_use::VolumeWrites>>,
     /// Admission per command, by the command's top process.
     admission: std::collections::BTreeMap<u32, admission::Entry>,
     memory_stop: Option<MemoryStop>,

@@ -3,6 +3,20 @@
 //! holder lets go, and no directory listing shows them.
 use std::collections::BTreeSet;
 
+mod writes;
+pub(super) use writes::WriteGrowth;
+
+/// Space a command actually added on one receiving volume.
+#[derive(Clone, Debug)]
+pub(super) struct VolumeWrites {
+    pub id: u64,
+    pub path: std::path::PathBuf,
+    pub written: u64,
+    pub rate: u64,
+    /// Growing writable inodes; shared writers cannot be attributed safely.
+    pub files: BTreeSet<u64>,
+}
+
 /// Below this written, a process is not looked at: checking its descriptors
 /// costs more than the space it could hold.
 pub(super) const LOOK_AT_WRITTEN: u64 = 64 * super::MIB;

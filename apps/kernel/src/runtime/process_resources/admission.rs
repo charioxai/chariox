@@ -17,7 +17,7 @@ const MAX_GROWTH_ROOM: u64 = 1024 * MIB;
 /// Disk floor: max(5 %, 10 GiB) of the volume (OF-05).
 const DISK_FLOOR: u64 = 10 * 1024 * MIB;
 /// Slower than this a command is not growing (or writing).
-const GROWING: u64 = MIB;
+pub(super) const GROWING: u64 = MIB;
 /// A start needs a moment to show in the samples.
 const SETTLE: Duration = Duration::from_secs(1);
 /// A paused command continues with room for this long at its last rate.
@@ -133,7 +133,8 @@ impl Entry {
         self.holdable
     }
 
-    /// The volume its writes go to, from the directory it runs in.
+    /// The workspace volume used for advisory reservations. A destructive
+    /// disk stop requires observed output-file growth on the receiving volume.
     fn disk(&self, room: &Room) -> Option<Disk> {
         self.seen
             .as_ref()
@@ -467,6 +468,24 @@ impl Ledger {
         {
             return None;
         }
+        // A shared writable file can grow because of either holder. Neither
+        // command supplies destructive evidence for that receiving volume.
+        let mut holders = BTreeMap::<(u64, u64), usize>::new();
+        for member in members {
+            let observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            for command in &observation.commands {
+                for output in observation
+                    .disk_writes
+                    .get(&command.pid)
+                    .into_iter()
+                    .flatten()
+                {
+                    for inode in &output.files {
+                        *holders.entry((output.id, *inode)).or_default() += 1;
+                    }
+                }
+            }
+        }
         let mut largest: Option<(u64, u32, Filling, &Arc<Mutex<Observation>>)> = None;
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
@@ -474,29 +493,47 @@ impl Ledger {
                 let Some(entry) = observation.admission.get(&command.pid) else {
                     continue;
                 };
-                let Some(disk) = entry.disk(room).filter(|disk| disk.free < disk.floor / 2) else {
-                    continue;
-                };
-                if !entry.holdable
-                    || command.write_growth < GROWING
-                    || largest
-                        .as_ref()
-                        .is_some_and(|(written, ..)| command.writes <= *written)
-                {
+                if !entry.holdable || command.write_growth < GROWING {
                     continue;
                 }
-                largest = Some((
-                    command.writes,
-                    command.pid,
-                    Filling {
-                        free: disk.free,
-                        floor: disk.floor,
-                        rate: command.write_growth,
-                        written: command.writes,
-                        deleted_open: command.deleted_open,
-                    },
-                    member,
-                ));
+                for output in observation
+                    .disk_writes
+                    .get(&command.pid)
+                    .into_iter()
+                    .flatten()
+                {
+                    if output.rate < GROWING
+                        || output.files.is_empty()
+                        || output.files.iter().any(|inode| {
+                            holders
+                                .get(&(output.id, *inode))
+                                .is_none_or(|count| *count != 1)
+                        })
+                        || largest
+                            .as_ref()
+                            .is_some_and(|(written, ..)| output.written <= *written)
+                    {
+                        continue;
+                    }
+                    // A descriptor can close or be reused between samples.
+                    let Some(disk) = disk_room(room.volume, &output.path)
+                        .filter(|disk| disk.id == output.id && disk.free < disk.floor / 2)
+                    else {
+                        continue;
+                    };
+                    largest = Some((
+                        output.written,
+                        command.pid,
+                        Filling {
+                            free: disk.free,
+                            floor: disk.floor,
+                            rate: output.rate,
+                            written: output.written,
+                            deleted_open: command.deleted_open,
+                        },
+                        member,
+                    ));
+                }
             }
         }
         let (_, pid, filling, member) = largest?;

@@ -68,6 +68,22 @@ fn owner(
     Arc::new(Mutex::new(Observation {
         unit: unit.into(),
         submissions: Submissions::new(holdable),
+        disk_writes: commands
+            .iter()
+            .filter(|command| command.write_growth > 0)
+            .map(|command| {
+                (
+                    command.pid,
+                    vec![disk_use::VolumeWrites {
+                        id: 1,
+                        path: "/scratch/output".into(),
+                        written: command.writes,
+                        rate: command.write_growth,
+                        files: [u64::from(command.pid)].into(),
+                    }],
+                )
+            })
+            .collect(),
         commands,
         admission: entries.into_iter().collect(),
         ..Observation::default()
@@ -772,7 +788,18 @@ fn the_disk_never_fills_up_while_five_builds_write_and_the_filler_goes() {
                 member.lock().unwrap().commands.clear();
                 finished.push(pid);
             } else {
-                member.lock().unwrap().commands = vec![writer(pid, total, STEP)];
+                let mut observation = member.lock().unwrap();
+                observation.commands = vec![writer(pid, total, STEP)];
+                observation.disk_writes.insert(
+                    pid,
+                    vec![disk_use::VolumeWrites {
+                        id: 1,
+                        path: "/scratch/output".into(),
+                        written: total,
+                        rate: STEP,
+                        files: [u64::from(pid)].into(),
+                    }],
+                );
             }
         }
         for member in &owners {
@@ -1012,6 +1039,30 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
         vec![roomy_use, full_use],
         vec![(1, roomy), (2, full)],
     );
+    current.lock().unwrap().disk_writes = [
+        (
+            1,
+            vec![disk_use::VolumeWrites {
+                id: 1,
+                path: "/roomy/output".into(),
+                written: 8 * GIB,
+                rate: 50 * MIB,
+                files: [1].into(),
+            }],
+        ),
+        (
+            2,
+            vec![disk_use::VolumeWrites {
+                id: 2,
+                path: "/full/output".into(),
+                written: GIB,
+                rate: 50 * MIB,
+                files: [2].into(),
+            }],
+        ),
+    ]
+    .into_iter()
+    .collect();
     let mut ledger = Ledger::new(None);
     ledger.pass(
         std::slice::from_ref(&current),
@@ -1023,4 +1074,105 @@ fn a_full_volume_stops_its_own_writer_and_leaves_one_on_a_roomy_volume_alone() {
         vec![2],
         "the writer on the full volume is the filler, the older bigger one on the roomy volume is not"
     );
+}
+
+#[test]
+fn cwd_on_a_full_volume_does_not_make_a_writer_elsewhere_the_filler() {
+    crossed_volume_writer("/full/build", "/roomy/output", 1, false);
+}
+
+#[test]
+fn cwd_on_a_roomy_volume_does_not_hide_a_writer_filling_another_volume() {
+    crossed_volume_writer("/roomy/build", "/full/output", 2, true);
+}
+
+fn crossed_volume_writer(cwd: &str, output: &str, id: u64, should_stop: bool) {
+    let volume: Box<Volume> = Box::new(|path: &Path| {
+        let (id, free) = if path.starts_with("/roomy") {
+            (1, 50 * GIB)
+        } else {
+            (2, 4 * GIB)
+        };
+        Some(Space {
+            id,
+            free,
+            total: 100 * GIB,
+        })
+    });
+    let (_, mut build, usage) = writing(1, 6 * GIB, 50 * MIB);
+    build.seen.as_mut().unwrap().cwd = Some(cwd.into());
+    let current = owner("agent", true, vec![usage], vec![(1, build)]);
+    current.lock().unwrap().disk_writes.insert(
+        1,
+        vec![disk_use::VolumeWrites {
+            id,
+            files: [1].into(),
+            path: output.into(),
+            written: 6 * GIB,
+            rate: 50 * MIB,
+        }],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        !ledger.take_fillers(&current).is_empty(),
+        should_stop,
+        "the receiving volume, not cwd, decides which writer fills it"
+    );
+}
+
+#[test]
+fn a_shared_growing_file_is_not_attributed_to_either_command() {
+    let free = Arc::new(AtomicU64::new(4 * GIB));
+    let volume = volume(&free);
+    let (_, first, first_use) = writing(1, 6 * GIB, 50 * MIB);
+    let (_, second, second_use) = writing(2, 6 * GIB, 50 * MIB);
+    let current = owner(
+        "agent",
+        true,
+        vec![first_use, second_use],
+        vec![(1, first), (2, second)],
+    );
+    for outputs in current.lock().unwrap().disk_writes.values_mut() {
+        outputs[0].files = [42].into();
+    }
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert!(
+        ledger.take_fillers(&current).is_empty(),
+        "shared file growth has no unambiguous writer"
+    );
+}
+
+#[test]
+fn unknown_or_reused_output_descriptors_cannot_justify_a_disk_stop() {
+    let free = Arc::new(AtomicU64::new(4 * GIB));
+    let volume = volume(&free);
+    for reused in [false, true] {
+        let (_, build, usage) = writing(1, 6 * GIB, 50 * MIB);
+        let current = owner("agent", true, vec![usage], vec![(1, build)]);
+        if reused {
+            current.lock().unwrap().disk_writes.get_mut(&1).unwrap()[0].id = 2;
+        } else {
+            current.lock().unwrap().disk_writes.clear();
+        }
+        let mut ledger = Ledger::new(None);
+        ledger.pass(
+            std::slice::from_ref(&current),
+            &current,
+            &room(GIB, false, &*volume),
+        );
+        assert!(
+            ledger.take_fillers(&current).is_empty(),
+            "missing or changed output volume supplied destructive evidence"
+        );
+    }
 }

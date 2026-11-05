@@ -129,9 +129,10 @@ const GIB: u64 = 1024 * MIB;
 fn volume_with(free: u64) -> Arc<pool::Pool> {
     Arc::new(pool::Pool::with_volume(
         1 << 40,
-        Box::new(move |_| {
+        Box::new(move |path| {
+            use std::os::unix::fs::MetadataExt;
             Some(admission::Space {
-                id: 1,
+                id: std::fs::metadata(path).ok()?.dev(),
                 free,
                 total: 100 * GIB,
             })
