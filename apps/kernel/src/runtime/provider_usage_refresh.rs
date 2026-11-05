@@ -55,6 +55,8 @@ pub(crate) enum UsageRefreshOutcome {
     Failed,
     /// Another read of this account was already running.
     Joined,
+    /// A completed read installed a retry delay after this candidate was selected.
+    BackingOff,
 }
 
 struct AccountSchedule {
@@ -134,8 +136,9 @@ impl ProviderUsageRefresher {
 
     /// Accounts whose reading has reached the interval of their state.
     pub(crate) fn due_accounts(&self, now_ms: u64) -> Vec<UsageAccountKey> {
+        let enrolled = self.enrolled(None, None);
         let mut schedules = self.lock();
-        self.enrolled(None, None)
+        enrolled
             .into_iter()
             .filter_map(|profile| {
                 let key = key_of(&profile);
@@ -159,8 +162,9 @@ impl ProviderUsageRefresher {
         provider: Option<&str>,
         now_ms: u64,
     ) -> Vec<UsageAccountKey> {
+        let enrolled = self.enrolled(Some(owner_user_id), provider);
         let mut schedules = self.lock();
-        self.enrolled(Some(owner_user_id), provider)
+        enrolled
             .into_iter()
             .filter_map(|profile| {
                 let key = key_of(&profile);
@@ -183,6 +187,9 @@ impl ProviderUsageRefresher {
             let schedule = schedules.entry(key.clone()).or_default();
             if schedule.in_flight {
                 return UsageRefreshOutcome::Joined;
+            }
+            if now_ms < schedule.no_read_before_ms {
+                return UsageRefreshOutcome::BackingOff;
             }
             schedule.in_flight = true;
         }

@@ -272,6 +272,40 @@ fn a_failed_read_keeps_the_last_reading_and_backs_off_with_doubling_waits() {
 }
 
 #[test]
+fn a_selected_candidate_cannot_bypass_a_retry_delay_installed_by_another_reader() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::new(vec![
+        Err(ProviderUsageReadError::new("rate limited")
+            .retry_after(Some(Duration::from_secs(60)))),
+        Ok(7.0),
+    ]);
+    // Both callers select the account before either worker claims the read.
+    let first = f.refresher.due_accounts(f.at(0.0));
+    let second = f.refresher.stale_accounts("local", None, f.at(0.0));
+    assert_eq!(first, vec![f.key.clone()]);
+    assert_eq!(second, first);
+    assert_eq!(
+        f.refresher.refresh_account(&first[0], f.at(0.0)),
+        UsageRefreshOutcome::Failed
+    );
+    let retry_at = f.refresher.lock()[&f.key].no_read_before_ms;
+
+    assert_eq!(
+        f.refresher.refresh_account(&second[0], f.at(0.1)),
+        UsageRefreshOutcome::BackingOff
+    );
+
+    assert_eq!(f.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(f.refresher.lock()[&f.key].no_read_before_ms, retry_at);
+    assert!(f.refresher.due_accounts(f.at(0.5)).is_empty());
+    assert_eq!(
+        f.refresher.refresh_account(&second[0], f.at(1.2)),
+        UsageRefreshOutcome::Refreshed
+    );
+    assert_eq!(f.reads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
 fn a_wait_the_provider_names_is_honored_and_the_wait_is_capped_at_one_hour_without_one() {
     crate::test_support::isolated_env_test!();
     let f =
