@@ -731,7 +731,7 @@ impl KernelBrowserHost {
         if method == "host.browser"
             && matches!(params["op"].as_str(), Some("dialog" | "cancel_download"))
         {
-            let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }
@@ -1038,6 +1038,12 @@ impl KernelBrowserHost {
         result
     }
     fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {
+        // Same order as `lease_terminal`: a viewer that connected before the model existed is
+        // registered here, so a takeover can move to it when the viewer that took it leaves.
+        let leases = self
+            .terminal_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut state = self
             .inner
             .lock()
@@ -1048,7 +1054,17 @@ impl KernelBrowserHost {
         Ok(state
             .actors
             .entry(user.into())
-            .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
+            .or_insert_with(|| {
+                let mut model = KernelBrowserActors::default();
+                for (_, viewer) in leases.keys().filter(|(leased, _)| leased == user) {
+                    model.viewer_connected(EnvironmentActor::new(
+                        viewer,
+                        EnvironmentActorKind::Human,
+                        "Human",
+                    ));
+                }
+                Arc::new(Mutex::new(model))
+            })
             .clone())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from
@@ -1142,6 +1158,7 @@ impl KernelBrowserHost {
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
         model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        model.reclaim_lapsed_takeovers(std::time::Instant::now());
         Ok(model.snapshot())
     }
 
