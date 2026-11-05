@@ -1,8 +1,8 @@
 # MP-08 / MP-09 / MP-10 / MP-11 — client App view feasibility
 
-AV1 acceptance contract, 2026-11-05 (round 6): **accepted only WITH the named
-`chromium-network-service-ipv6-route-probe` exemption** after the complete built-Cloud
-matrices pass. This is a renderer/security proof, not an admitted App-open path.
+AV1 result, 2026-11-05 (round 6): **PASS, accepted WITH the named
+`chromium-network-service-ipv6-route-probe` exemption** on both pinned built-Cloud
+matrices at DPR1 and DPR2. This is a renderer/security proof, not an admitted App-open path.
 Session, conversation, relay and TUI opens remain dependent on AV2–AV5.
 
 The implementation is in `packages/app-view-host`. Cloud vendors its five runtime
@@ -225,10 +225,44 @@ network boundary or proof that every upstream feature works.
 
 ## Reproduction and evidence
 
-Round 6 reruns the complete built-Cloud matrix on both pinned engines at DPR1/2.
-Acceptance requires 72/72 frame/policy checks, 72/72 positive controls, four
-reference renders and all strict captures passing with the named exemption.
-Evidence is under `/root/.codex/evidence/browser-resume-20260930/appview/r6/`.
+Round 6 completed both pinned Chrome matrices on OSS `8b93dfb54b` and Cloud
+`e52b13392a`, using identical hashed Cloud host/client assets. This accepts only
+AV1's renderer/security proof **WITH** `chromium-network-service-ipv6-route-probe`;
+it does not assert zero sockets or real Room/backend/provider acceptance.
+The tested configuration is Linux headless, fresh ordinary dedicated restricted
+profiles, root-only `--no-sandbox`, and actual renderer DPR1/DPR2.
+
+| Browser | Frame/policy | Positive controls | References DPR1/2 | Strict captures | Audited exempt connects | Gate / exit |
+| --- | --- | --- | --- | --- | --- | --- |
+| 155.0.8059.39 | 72/72 | 72/72 | 4/4 | 81/81 | 129 | PASS / 0 |
+| 155.0.8059.79 | 72/72 | 72/72 | 4/4 | 81/81 | 123 | PASS / 0 |
+
+Both completed captures have zero strict receiver packets, zero packets to the
+probe destination, zero kernel capture drops, zero DNS sends, unknown destinations,
+unidentified senders or incomplete traces, and no send/write on a probe socket.
+Isolation/native input/compilation, source binding, signature-before-execution and
+independent launch controls pass. The 57 host regressions pass, including 30
+shared-assessment route-probe cases and a real offline pcap-reader regression.
+The initial fail-first route tests rejected both permitted connect results on
+the base while retaining all 24 forbidden variants; the final suite adds four
+duplicated-descriptor write variants. Process-signal lint passes.
+
+Evidence root: `/root/.codex/evidence/browser-resume-20260930/appview/r6/`.
+Completed runs are `verified-15539/` and `verified2-15579/`. Their `results.json`
+and `attribution.json` retain all 252 exact exemptions (PID/TID, destination,
+socket identity, result and source trace); `packet-assessment.json` retains wire
+counts, phase labels and capture integrity. `FINAL_RESULTS_IDENTITY.json` joins
+source, browser, asset and per-capture identities. Each run's `steps.tsv` records
+all build/test/browser steps exiting 0. Screenshots, console, PID maps, NetLogs,
+syscalls and pcaps remain alongside the results.
+
+Two attempts are explicitly excluded: `final-15539/` stopped at the offline
+pcap reader's host confinement error after rendering; `verified-15579/` was
+interrupted with SIGTERM before final assessment. Neither is acceptance evidence.
+The reader was fixed with a fail-first regression by feeding capture bytes via
+stdin, without changing evidence permissions or the gate. A fresh detached full
+.79 run completed. `EXCLUDED.md` in each failed directory preserves the details.
+
 Historical round 3/4 results below retain their original, stricter gate labels;
 they are not relabeled as new runs or evidence of acceptance.
 
@@ -284,7 +318,7 @@ complete result is 72/72 frame/response-policy checks, 72/72 positive controls,
 4/4 reference renders and passing auxiliary checks. All 81 strict browser
 captures have zero DNS/unknown/incomplete/unidentified operations; only the
 specified browser route socket remains. Both browser commands exit 1 solely
-for `whole-browser-tree-zero-network`. No narrower gate is accepted.
+for `whole-browser-tree-zero-network`. At that time no narrower gate was accepted.
 `ENFORCEMENT_IDENTITY.json` records exact source/artifact hashes and results.
 `ATTRIBUTION.md` maps the seven baseline classes to actual renderer/PID/TID and
 destinations. `enforce-complete-15579/` repeats the frozen assets on the newer
@@ -298,7 +332,7 @@ this is labeled as a control phase. Every actual strict phase has zero receiver
 traffic. Per-case rows and `launch` results preserve that distinction; the gate
 does not silently ignore a strict request.
 
-Each final run has:
+Historical round 3/4 checks and their evidence:
 
 | Check | Evidence |
 | --- | --- |
@@ -328,7 +362,7 @@ proof, not backend commit/reconnect/update durability or provider acceptance.
 
 | Slice / surface | Missing real-path requirement |
 | --- | --- |
-| AV1 Web boundary | Complete both pinned built-Cloud matrices with the named connect-only probe exemption and zero wire packets. This accepts only the AV1 renderer/security proof with that explicit exemption. |
+| AV1 Web boundary | PASS on both pinned built-Cloud matrices WITH the named connect-only probe exemption and zero strict wire packets. Accepted only as the AV1 renderer/security proof. |
 | AV2 assets/admission | Kernel-authenticated descriptor, trusted key projection, release lease, inventory/chunk delivery, cancellation/revocation and cache rules |
 | AV3 backend/state | Generation-fenced operation/state port and receipts, declared actions, committed state and bounded streams; no live UI-adapter authority |
 | AV4 Web | Enforceable dedicated browser launch; actual App-open routing into host alongside the real conversation, gestures/clipboard/files and reconnect/update behavior on the existing WSS connection |

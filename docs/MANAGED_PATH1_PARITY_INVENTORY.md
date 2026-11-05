@@ -12,9 +12,13 @@ strict gate, including DNS, TCP, other destinations and other processes.
 
 The shared final assessment used by the real built-Cloud browser drill records
 each exempted PID/TID, destination, result and source trace. Raw non-loopback
-findings remain visible. Both pinned Chrome155 engines must pass the complete
-DPR1/2 frame/control/reference/strict-capture matrix before AV1 is accepted WITH
-this named exemption. This is not a zero-sockets claim. Round 4's rejected
+findings remain visible. Both pinned Chrome155 engines passed the complete
+DPR1/2 matrix: each has 72/72 frame/policy checks, 72/72 controls, 4/4 references
+and 81/81 strict captures. AV1 is accepted WITH this named exemption. The .39
+and .79 runs audit 129 and 123 exempt connects respectively, with zero strict
+receiver/probe wire packets or capture drops. Tested OSS 8b93dfb54b and Cloud
+e52b13392a; exact source/artifact/capture identity is in the r6 evidence linked
+from the AV1 document. This is not a zero-sockets claim. Round 4's rejected
 namespace/feature attempts and original gate results remain historical evidence.
 See [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md) for the exact five conditions,
 source research, fail-first regressions and browser evidence.
