@@ -1,5 +1,16 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 Room membership read isolation (2026-11-05)
+
+Ordinary and managed kernels use the same default-agent creation path. It releases
+the agent roster lock before awaiting the outside membership event's durable
+result. Membership operations remain ordered, publication stays synchronous, and
+publication errors still reach the caller. Unrelated roster reads can proceed
+while that event commits. The real-writer regression is
+`a_membership_commit_does_not_block_another_rooms_session_state`; it holds SQLite's
+writer while another Room reads through GetSessionState. This changes no wire
+shape and does not establish the KR-06 quiet-host latency or stability gates.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

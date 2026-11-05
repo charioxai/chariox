@@ -16,6 +16,8 @@ use super::{
 #[derive(Debug, Clone)]
 pub struct AgentServiceStore {
     inner: Arc<Mutex<AgentService>>,
+    // Membership order is independent of roster reads while an addition commits to disk.
+    membership_changes: Arc<Mutex<()>>,
 }
 
 #[derive(Debug)]
@@ -30,6 +32,7 @@ impl AgentServiceStore {
     pub fn new(service: AgentService) -> Self {
         Self {
             inner: Arc::new(Mutex::new(service)),
+            membership_changes: Arc::new(Mutex::new(())),
         }
     }
 
@@ -57,6 +60,10 @@ impl AgentServiceStore {
         request: CreateAgentRequest,
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
         self.write().create_agent(request, sessions)
     }
 
@@ -65,6 +72,10 @@ impl AgentServiceStore {
         requests: Vec<CreateAgentRequest>,
         sessions: &mut SessionService,
     ) -> Result<Vec<AgentInstance>, DaemonError> {
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
         self.write().create_agents(requests, sessions)
     }
 
@@ -73,7 +84,21 @@ impl AgentServiceStore {
         request: CreateAgentRequest,
         session: &RuntimeSession,
     ) -> Result<AgentInstance, DaemonError> {
-        self.write().create_agent_for_session(request, session)
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
+        let (created, publisher) = {
+            let mut service = self.write();
+            let created = service.create_agent_for_session(request, session)?;
+            (created, service.outside_events.clone())
+        };
+        super::outside_events::publish_membership(
+            publisher.as_ref(),
+            &created,
+            crate::local::EventSessionState::AgentAdded,
+        )?;
+        Ok(created)
     }
 
     pub(crate) fn restore_agent(&self, agent: AgentInstance) -> AgentInstance {
@@ -129,6 +154,10 @@ impl AgentServiceStore {
         agent_id: &str,
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
         self.write()
             .destroy_workflow_runtime_agent(agent_id, sessions)
     }
@@ -140,6 +169,10 @@ impl AgentServiceStore {
         provider: &str,
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
         self.write()
             .create_default_agent(session_id, worktree_id, provider, sessions)
     }
@@ -158,6 +191,10 @@ impl AgentServiceStore {
         agent_id: &str,
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
+        let _membership = self
+            .membership_changes
+            .lock()
+            .expect("membership mutex poisoned");
         self.write().destroy_agent(agent_id, sessions)
     }
 

@@ -1502,6 +1502,8 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
+#[cfg(test)]
+mod agent_membership_read_tests;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
