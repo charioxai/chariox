@@ -70,7 +70,7 @@ pub(crate) fn get_workspace_file_content(
         .and_then(|mtime| mtime.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0);
-    let max_bytes = max_bytes.unwrap_or(250_000).clamp(1, 1_000_000) as usize;
+    let max_bytes = max_bytes.unwrap_or(250_000).clamp(1, 8 * 1024 * 1024) as usize;
     let mut file =
         std::fs::File::open(&full_path_canonical).map_err(|error| DaemonError::LocalTransport {
             operation: "read workspace file",
@@ -266,6 +266,97 @@ mod tests {
         normalize_workspace_file_content_path, workspace_file_fingerprint, workspace_file_language,
         workspace_file_mime,
     };
+
+    #[test]
+    fn workspace_file_content_reads_images_above_one_megabyte() {
+        use base64::Engine as _;
+        let root =
+            std::env::temp_dir().join(format!("workspace-large-image-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 700, 600);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            encoder.set_compression(png::Compression::Fast);
+            let mut random = 1_u32;
+            let pixels: Vec<u8> = (0..700 * 600 * 3)
+                .map(|_| {
+                    random ^= random << 13;
+                    random ^= random >> 17;
+                    random ^= random << 5;
+                    random as u8
+                })
+                .collect();
+            encoder
+                .write_header()
+                .unwrap()
+                .write_image_data(&pixels)
+                .unwrap();
+        }
+        assert!(bytes.len() > 1_000_000 && bytes.len() < 8 * 1024 * 1024);
+        std::fs::write(root.join("chart.png"), &bytes).unwrap();
+        let read = |limit| {
+            super::get_workspace_file_content(
+                "workspace",
+                root.to_str().unwrap(),
+                "chart.png",
+                None,
+                None,
+                Some(limit),
+            )
+            .unwrap()
+        };
+        let crate::local::LocalDaemonResponse::WorkspaceFileContent { content } =
+            read(8 * 1024 * 1024)
+        else {
+            panic!("expected content")
+        };
+        assert!(
+            !content.truncated,
+            "the gateway's supported image size must survive the kernel read boundary"
+        );
+        assert_eq!(content.size_bytes, bytes.len() as u64);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(content.content_base64.unwrap())
+                .unwrap(),
+            bytes
+        );
+        let crate::local::LocalDaemonResponse::WorkspaceFileContent { content } = read(250_000)
+        else {
+            panic!("expected content")
+        };
+        assert!(content.truncated);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(root.join("chart.png"))
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        let crate::local::LocalDaemonResponse::WorkspaceFileContent { content } = read(u32::MAX)
+        else {
+            panic!("expected content")
+        };
+        assert!(content.truncated, "even an explicit request is bounded");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(content.content_base64.unwrap())
+                .unwrap()
+                .len(),
+            8 * 1024 * 1024
+        );
+        assert!(super::get_workspace_file_content(
+            "workspace",
+            root.to_str().unwrap(),
+            "../outside.png",
+            None,
+            None,
+            Some(8 * 1024 * 1024)
+        )
+        .is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn workspace_file_content_paths_are_repo_relative() {
