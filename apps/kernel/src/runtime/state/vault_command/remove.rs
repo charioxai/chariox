@@ -81,7 +81,9 @@ impl KernelRuntimeState {
             if let crate::config::UserCredentialSourceConfig::Vault { key: other_key } =
                 &other.source
             {
-                if service.vault_secret_for_dictation(other_key)?.as_deref() == Some(value.as_str())
+                if service
+                    .vault_secret_for_dictation(other_key)?
+                    .is_some_and(|other_value| other_value.as_str() == value.as_str())
                 {
                     retained = true;
                     break;
