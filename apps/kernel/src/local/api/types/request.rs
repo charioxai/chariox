@@ -59,6 +59,7 @@ pub enum LocalDaemonRequest {
     DisableAppAutomation(DisableAppAutomationRequest),
     OpenAppView(OpenAppViewRequest),
     InspectAppView(InspectAppViewRequest),
+    ClientAppView(ClientAppViewRequest),
     OpenUserAppView(OpenUserAppViewRequest),
     ListUserAppViews(ListUserAppViewsRequest),
     CloseUserAppView(UserAppViewRequest),

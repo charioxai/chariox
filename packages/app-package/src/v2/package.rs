@@ -83,9 +83,18 @@ impl PolicyV2 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedViewControls {
+    pub manifest: String,
+    pub inventory: String,
+    pub signature: Value,
+}
+
 #[derive(Debug)]
 pub struct VerifiedPackageV2<'a> {
     manifest: ManifestV2,
+    view_controls: SignedViewControls,
     signer: TrustedPublisher,
     declarations: Declarations,
     ui_actions: Vec<UiActionDeclaration>,
@@ -95,6 +104,10 @@ pub struct VerifiedPackageV2<'a> {
 }
 
 impl<'a> VerifiedPackageV2<'a> {
+    pub fn view_controls(&self) -> &SignedViewControls {
+        &self.view_controls
+    }
+
     pub fn manifest(&self) -> &ManifestV2 {
         &self.manifest
     }
@@ -361,8 +374,17 @@ pub fn verify<'a>(bytes: &'a [u8], policy: &PolicyV2) -> Result<VerifiedPackageV
         publisher_archive: digest(&archive::encode(&publisher_entries, limits)?),
         delivered: digest(bytes),
     };
+    let view_controls = SignedViewControls {
+        manifest: String::from_utf8(json::canonical(&manifest_value)?).expect("canonical UTF-8"),
+        inventory: String::from_utf8(json::canonical(
+            &serde_json::to_value(&inventory).expect("inventory encoding"),
+        )?)
+        .expect("canonical UTF-8"),
+        signature: serde_json::to_value(&signature).expect("signature encoding"),
+    };
     Ok(VerifiedPackageV2 {
         manifest,
+        view_controls,
         signer: trusted.clone(),
         declarations,
         ui_actions,

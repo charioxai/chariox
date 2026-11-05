@@ -754,3 +754,62 @@ pub struct AppViewChannelError {
     pub code: String,
     pub message: String,
 }
+
+/// MP-08/09/10/11: worker-free client delivery over the authenticated transport.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum ClientAppViewRequest {
+    Open {
+        installation_id: String,
+    },
+    Read {
+        view_id: String,
+        offset: u32,
+        max_bytes: u32,
+    },
+    Check {
+        view_id: String,
+    },
+    Close {
+        view_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientAppViewDescriptor {
+    pub view_id: String,
+    pub installation_id: String,
+    pub generation: String,
+    pub package_digest: String,
+    pub bundle: chariox_app_package::v2::SignedViewControls,
+    pub trust: ClientAppViewTrust,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ClientAppViewTrust {
+    pub publisher_id: String,
+    pub key_id: String,
+    pub content_digest: String,
+    pub public_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum ClientAppViewResponse {
+    Opened(ClientAppViewDescriptor),
+    Chunk {
+        view_id: String,
+        offset: u32,
+        body_base64: String,
+        eof: bool,
+    },
+    Valid {
+        view_id: String,
+        generation: String,
+    },
+    Closed {
+        view_id: String,
+    },
+}

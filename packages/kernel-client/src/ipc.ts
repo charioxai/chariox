@@ -92,7 +92,7 @@ const KERNEL_CONTROL_RESPONSE_STALL_MS = 5_000
 // and are never resent; losing the answer rejects with `outcome_unknown`.
 // User view opens allocate instances/tabs and frontend calls may mutate App
 // state. They likewise have no request-id receipts: neither may be resent.
-const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "OpenUserAppView", "CallUserAppView", "RespondToHandoff", "CreateTerminalPairingLink", "OwnerVault"])
+const KERNEL_REQUESTS_RUN_AGAIN_ON_REPLAY = new Set(["ControlAppWorker", "UninstallApp", "OpenUserAppView", "ClientAppView", "CallUserAppView", "RespondToHandoff", "CreateTerminalPairingLink", "OwnerVault"])
 const MAX_KERNEL_LOCAL_AUTH_TOKEN_BYTES = 8 * 1024
 
 export type { KernelEvent } from "./kernel-events.js"

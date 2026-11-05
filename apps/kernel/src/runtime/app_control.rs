@@ -74,6 +74,7 @@ pub(crate) struct AppControlService {
     wake_scheduler: Arc<Semaphore>,
     views: super::app_views::AppViews,
     user_views: super::user_app_views::UserAppViews,
+    client_views: super::client_app_views::ClientAppViews,
     validation_pump: super::app_wake_pump::AppWakePump,
     /// Shown prompts: operation → (owner, the session showing it once known).
     validation_prompts:
@@ -166,6 +167,7 @@ impl AppControlService {
             wake_scheduler: Arc::new(Semaphore::new(1)),
             views: Default::default(),
             user_views: Default::default(),
+            client_views: Default::default(),
             validation_pump: Default::default(),
             validation_prompts: Default::default(),
             publishers,
@@ -232,6 +234,25 @@ impl AppControlService {
 
     pub(crate) fn wake_pump(&self) -> &super::app_wake_pump::AppWakePump {
         &self.wake_pump
+    }
+
+    pub(crate) async fn client_view_request(
+        &self,
+        owner: &str,
+        request: crate::local::ClientAppViewRequest,
+    ) -> Result<crate::local::ClientAppViewResponse, crate::local::AppRequestErrorCode> {
+        let permit = self.try_admit()?;
+        let (views, store, owner) = (
+            self.client_views.clone(),
+            self.store.clone(),
+            owner.to_owned(),
+        );
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            views.handle(&store, &owner, request)
+        })
+        .await
+        .map_err(|_| crate::local::AppRequestErrorCode::StorageUnavailable)?
     }
 
     pub(crate) fn user_views(&self) -> &super::user_app_views::UserAppViews {

@@ -625,6 +625,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::Notes(_)
         | LocalDaemonRequest::Dictation(_)
         | LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::ClientAppView(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
         | LocalDaemonRequest::CloseUserAppView(_)

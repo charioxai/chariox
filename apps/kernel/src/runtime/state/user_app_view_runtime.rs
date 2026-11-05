@@ -18,7 +18,8 @@ impl KernelRuntimeState {
     ) -> futures_util::future::BoxFuture<'a, Option<Result<LocalDaemonResponse, DaemonError>>> {
         if !matches!(
             request,
-            LocalDaemonRequest::OpenUserAppView(_)
+            LocalDaemonRequest::ClientAppView(_)
+                | LocalDaemonRequest::OpenUserAppView(_)
                 | LocalDaemonRequest::ListUserAppViews(_)
                 | LocalDaemonRequest::CloseUserAppView(_)
                 | LocalDaemonRequest::GetUserAppViewFrontend(_)
@@ -72,6 +73,18 @@ impl KernelRuntimeState {
         let instances = self.app_control().user_views();
         let failed = crate::runtime::app_control::failed;
         let mut response = match request {
+            LocalDaemonRequest::ClientAppView(request) => {
+                return Ok(
+                    match self
+                        .app_control()
+                        .client_view_request(owner, request.clone())
+                        .await
+                    {
+                        Ok(response) => LocalDaemonResponse::ClientAppView(response),
+                        Err(code) => failed(code),
+                    },
+                );
+            }
             LocalDaemonRequest::OpenUserAppView(request) => {
                 match self
                     .open_user_app_view(owner, &request.installation_id, request.host)

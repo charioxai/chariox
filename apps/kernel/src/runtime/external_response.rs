@@ -129,6 +129,7 @@ response_policies! {
         SessionViewAttached,
         SessionInviteCreated,
         // MP-11: prototype user App views carry App frontends and channel data.
+        ClientAppView,
         UserAppViewOpened,
         UserAppViewsListed,
         UserAppViewClosed,

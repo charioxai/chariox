@@ -190,3 +190,25 @@ export type AppViewAction = {
 export type AppViewInspection = {
   installation_id: string; target_id: string; generation: string; development: boolean; catalog_json: string
 }
+
+/** MP-08/09/10/11: read-only App-view delivery; no backend authority. */
+export type ClientAppViewRequest =
+  | { Open: { installation_id: string } }
+  | { Read: { view_id: string; offset: number; max_bytes: number } }
+  | { Check: { view_id: string } }
+  | { Close: { view_id: string } }
+
+export type ClientAppViewDescriptor = {
+  view_id: string
+  installation_id: string
+  generation: string
+  package_digest: string
+  bundle: { manifest: string; inventory: string; signature: unknown }
+  trust: { publisherId: string; keyId: string; contentDigest: string; publicKey: string }
+}
+
+export type ClientAppViewResponse =
+  | { Opened: ClientAppViewDescriptor }
+  | { Chunk: { view_id: string; offset: number; body_base64: string; eof: boolean } }
+  | { Valid: { view_id: string; generation: string } }
+  | { Closed: { view_id: string } }

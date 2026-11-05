@@ -261,3 +261,8 @@ export function answerUserDomainInteractionRequest(options: {
 export function inspectAppViewRequest(sessionId: string, targetId?: string) {
   return { InspectAppView: { session_id: sessionId, ...(targetId ? { target_id: targetId } : {}) } }
 }
+
+export const clientAppViewMinimumProtocolVersion = 999
+export function clientAppViewRequest(command: import("./kernel-types-apps.js").ClientAppViewRequest) {
+  return { ClientAppView: command }
+}
