@@ -32,7 +32,7 @@ test('connected DNS sends with no repeated sockaddr still fail the gate', async 
   assert.equal(result.unknown.length, 0);
 });
 
-test('the browser IPv6 route probe has no automatic acceptance exception', async () => {
+test('raw syscall findings retain the IPv6 route probe for the final assessment', async () => {
   const result = await capture(['1.0 connect(19<UDPv6:[993178997]>, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = 0']);
   assert.equal(result.passed, false);
   assert.equal(result.nonLoopback.length, 1);

@@ -1,8 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-// This report never grants an exception. The unchanged zero-socket gate uses
-// network.passed; a narrower candidate is evidence for an explicit owner choice.
+// Raw findings remain visible beside the shared assessment and exact exemptions.
 export async function attribution(evidence, results) {
   const rows = [];
   const runs = results.attacks.flatMap(item => item.runs.map(run => ({ name: item.name, dpr: item.dpr, ...run })));
@@ -26,14 +25,16 @@ export async function attribution(evidence, results) {
       outgoingProcesses: [...new Map(network.outgoing.map(row => [row.pid, { pid: row.pid, type: row.type }])).values()],
       dnsNames: [...names], frameInitiatedDns: appDns, nonLoopback: network.nonLoopback,
       dnsQueries: network.dnsQueries.length, unknown: network.unknown.length, unidentified: network.unidentified.length, incomplete: network.incomplete.length,
-      zeroNetworkGatePassed: network.passed,
+      rawZeroNetworkPassed: network.passed, assessment: run.processNetwork.assessment,
       diagnosticRouteProbeOnly: network.nonLoopback.length > 0 && network.nonLoopback.every(routeProbe)
         && network.dnsQueries.length === 0 && network.unknown.length === 0 && network.unidentified.length === 0 && network.incomplete.length === 0 });
   }
-  const report = { scope: results.scope, diagnosticOnly: true, accepted: false,
-    proposedException: 'Network Service UDP connect only to [2001:4860:4860::8888]:443, Chromium IPv6 route probe; no send call permitted. This is NOT accepted by the zero-network gate.', rows };
+  const report = { scope: results.scope, accepted: results.containmentPassed,
+    acceptance: 'AV1 with the named chromium-network-service-ipv6-route-probe exception authorized 2026-11-05; no AV2–AV5 acceptance.',
+    networkExemptions: results.networkExemptions, packetCapture: results.packetCapture, rows };
   await writeFile(join(evidence, 'attribution.json'), JSON.stringify(report, null, 2));
   return { strictRuns: rows.filter(row => !row.control).length,
-    strictZeroNetworkPassed: rows.filter(row => !row.control && row.zeroNetworkGatePassed).length,
+    strictRawZeroNetworkPassed: rows.filter(row => !row.control && row.rawZeroNetworkPassed).length,
+    strictNetworkPassed: rows.filter(row => !row.control && row.assessment?.passed).length,
     strictRouteProbeOnly: rows.filter(row => !row.control && row.diagnosticRouteProbeOnly).length };
 }

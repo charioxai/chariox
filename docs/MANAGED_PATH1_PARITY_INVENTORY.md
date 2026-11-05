@@ -2,29 +2,30 @@
 
 ## MP-08 / MP-09 / MP-10 / MP-11 client App view feasibility (AV1)
 
-The 2026-11-05 renderer candidate is shared client code in
-`packages/app-view-host`, pinned into Cloud's built web assets. Both reference
-frontends render at native DPR 1/2. The unrestricted-profile Chrome155 baseline
-fails with frame-triggered TCP/DNS. The restricted launch/profile removes those
-failures; the whole-browser gate still fails on its internal IPv6 route socket. There is no accepted contained
-browser, App-open cutover, kernel/protocol change or managed activity lease.
-Real ordinary/managed Web/TUI/relay opens require AV2–AV5 and remain untested.
+The shared renderer candidate in `packages/app-view-host` is pinned into Cloud's
+built web assets. AV1's 2026-11-05 acceptance contract explicitly includes the
+owner-authorized `chromium-network-service-ipv6-route-probe` exemption: only
+Network Service `connect()` on an attributed `AF_INET6 SOCK_DGRAM` socket to
+`[2001:4860:4860::8888]:443`, no sends/writes on that socket, complete trace and
+zero strict receiver/probe wire packets. Every other operation retains the
+strict gate, including DNS, TCP, other destinations and other processes.
+
+The shared final assessment used by the real built-Cloud browser drill records
+each exempted PID/TID, destination, result and source trace. Raw non-loopback
+findings remain visible. Both pinned Chrome155 engines must pass the complete
+DPR1/2 frame/control/reference/strict-capture matrix before AV1 is accepted WITH
+this named exemption. This is not a zero-sockets claim. Round 4's rejected
+namespace/feature attempts and original gate results remain historical evidence.
+See [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md) for the exact five conditions,
+source research, fail-first regressions and browser evidence.
 
 The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
-pre-script bootstrap, inherited policy and Cloud's dedicated static response are
-the security anchors for this candidate. Their rule-removal controls and exact
-evidence/limitations are in [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md).
-The restricted dedicated-browser launch/profile and data/blob stylesheet policy
-remove the measured frame-triggered TCP/DNS traffic. The unchanged whole-tree
-gate still fails on the Network Service IPv6 route socket; no narrower gate is
-accepted. Ordinary Web tabs cannot apply the required launch settings.
-Renderer/source checks do not close live MP parity or the AV1 network gate.
-Round 4 includes every strict launch capture in the acceptance conjunction and
-fixes Cloud development serving of the client ES module. An IPv6-disabled private
-network namespace still permits the UDPv6 socket and failed external connect;
-the original syscall gate rejects it. Packet isolation does not replace the
-zero-socket contract. No probe-skipping Chrome155 launch flag was found in the
-inspected source lists; the IPv6 reachability override feature retains the probe.
+pre-script bootstrap, inherited policy, dedicated restricted browser/profile
+and Cloud static response remain the security anchors. Ordinary Web tabs cannot
+apply the required launch settings. There is no App-open cutover, new protocol,
+managed activity lease or shutdown-policy change. Real ordinary/managed
+Room/backend/provider/Web/TUI/relay opens require AV2–AV5 and remain deferred;
+AV1 does not close the wider MP parity matrix.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

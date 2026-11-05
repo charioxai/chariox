@@ -18,7 +18,7 @@ export async function browserProfile(chromium, options) {
     await mkdir(captureDirectory, { recursive: true });
     const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
     const wrapper = join(directory, 'trace-chrome');
-    await writeFile(wrapper, '#!/bin/sh\nexec /usr/bin/strace -ff -ttt -yy -s 256 -e trace=network,process,close -o '
+    await writeFile(wrapper, '#!/bin/sh\nexec /usr/bin/strace -ff -ttt -yy -s 256 -e trace=network,process,close,write,writev,sendfile,splice,dup,dup2,dup3,fcntl -o '
       + quote(join(captureDirectory, 'syscall')) + ' ' + quote(launch.executablePath) + ' "$@"\n', { mode: 0o700 });
     launch.executablePath = wrapper;
   }

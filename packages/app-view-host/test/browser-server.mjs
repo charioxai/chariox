@@ -8,6 +8,7 @@ import { join, resolve, sep, extname } from 'node:path';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { controlHost } from './control-host.mjs';
+import { routeProbeFilter, assessPackets } from './packet-capture.mjs';
 
 export async function browserServer({ evidence, webDist, build }) {
   const hostPath = '/assets/app-view-host/host.html';
@@ -19,6 +20,8 @@ export async function browserServer({ evidence, webDist, build }) {
   for (const name of ['csp', 'sandbox', 'bootstrap', 'all', 'wasm', 'source']) controls.set(name, await controlHost(build, name));
   const sockets = new Set(), receivers = [], hits = [], connections = [], packets = [];
   let boundary = null, phase = 'initialization', capture, captureLog = '';
+  let closed = false;
+  const phases = [{ name: phase, time: Date.now() }];
   function track(server) {
     server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
   }
@@ -115,12 +118,16 @@ export async function browserServer({ evidence, webDist, build }) {
   return {
     origin, hostDocument, controlReceiver, strictReceiver, receivers, hits, connections, packets, open, frame,
     setBoundary(value) { assert(value === null || controls.has(value)); boundary = value; },
-    setPhase(value) { phase = value; },
+    setPhase(value) { phase = value; phases.push({ name: value, time: Date.now() }); },
+    async assessPackets() {
+      const receiver = receivers.find(receiver => !receiver.control);
+      return assessPackets(evidence, phases, `dst host 127.0.0.1 and (tcp dst port ${receiver.tcpPort} or udp dst port ${receiver.udpPort})`);
+    },
     async capture() {
       const ports = receivers.flatMap(r => [`tcp port ${r.tcpPort}`, `udp port ${r.udpPort}`]).join(' or ');
       // Capture only this drill's DNS names, never other lanes' resolver traffic.
       const dns = 'udp dst port 53 and udp[21:4] = 0x61707076 and udp[25:4] = 0x6965772d and udp[29:4] = 0x646e732d';
-      const filter = `(dst host 127.0.0.1 and (${ports})) or (${dns})`;
+      const filter = `(dst host 127.0.0.1 and (${ports})) or (${dns}) or (${routeProbeFilter})`;
       const output = openSync(join(evidence, 'receiver.pcap'), 'wx');
       try {
         capture = spawn('tcpdump', ['-Z', 'root', '-U', '-n', '-i', 'any', '-s', '0', '-w', '-', filter], { stdio: ['ignore', output, 'pipe'] });
@@ -134,6 +141,8 @@ export async function browserServer({ evidence, webDist, build }) {
       await writeFile(join(evidence, 'receiver-ports.json'), JSON.stringify(receivers.map(({ control, tcpPort, udpPort }) => ({ control, tcpPort, udpPort })), null, 2));
     },
     async close() {
+      if (closed) return;
+      closed = true;
       if (capture && Number.isSafeInteger(capture.pid) && capture.pid > 1 && capture.exitCode === null) {
         const exited = once(capture, 'exit'); capture.kill('SIGINT'); await exited;
       }

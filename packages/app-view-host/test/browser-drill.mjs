@@ -134,6 +134,8 @@ try {
   results.references = await referenceCases({ chromium, launchOptions: { ...launchOptions, args: [...launchOptions.args, ...clientViewChromiumArgs] }, server, evidence, builds });
   results.strictReceived = server.hits.filter(hit => !hit.control);
   results.receiver = { hits: server.hits, connections: server.connections, udpPackets: server.packets };
+  await server.close();
+  results.packetCapture = await server.assessPackets(); server = null;
   assessResults(results);
   results.limitations.push('Real authenticated descriptor, Room conversation, backend broker, live WSS and TUI hosts require AV2–AV5; frontend-only fixture is not their acceptance.');
   results.attribution = await attribution(evidence, results);
