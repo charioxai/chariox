@@ -37,18 +37,6 @@ pub(super) struct ExchangeResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerEnrollmentReceipt {
-    pub(super) grant_id: String,
-    pub(super) allocation_id: String,
-    pub(super) worker_machine_id: String,
-    pub(super) worker_kernel_id: String,
-    pub(super) image_digest: String,
-    pub(super) runtime_release_digest: String,
-    pub(super) exchanged_at: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedCloudRelayProfile {
     pub(super) api_url: String,
     pub(super) email: String,

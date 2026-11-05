@@ -9,7 +9,6 @@ use crate::runtime::event_catalog_control::execute_event_catalog_request_with_cl
 use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
-use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::relay_config_control::execute_relay_config_request;
@@ -36,29 +35,6 @@ impl CommandRouter {
                     execute_managed_bootstrap_observation_request(
                         self.config_projection.snapshot(),
                         self.managed_kernel_registration.clone(),
-                        caller_user_id,
-                        request.clone(),
-                    )
-                    .await
-                    .map(Some)
-                }))
-            }
-            request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
-            | LocalDaemonRequest::GetManagedEnvironment(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
-            | LocalDaemonRequest::CreateManagedEnvironment(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)) => {
-                Some(Box::pin(async move {
-                    execute_managed_environment_control_request(
-                        self.config_projection.snapshot(),
-                        self.provider_account_profiles.clone(),
-                        self.managed_context_outbound.clone(),
                         caller_user_id,
                         request.clone(),
                     )

@@ -23,7 +23,6 @@ mod control_plane;
 mod created_resource;
 mod daemon;
 mod dictation;
-mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
@@ -76,7 +75,6 @@ pub use control_plane::*;
 pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
-pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
@@ -151,7 +149,7 @@ pub use workspace::*;
 /// Version 348 projects owner-authorized managed activity and operation history.
 /// Version 349 binds CLI relay and display requests to a persisted terminal key.
 /// Version 350 exposes paired writable-layer and persistent-home slice caps in user config and
-/// coordinates the signed managed auto-stop quiescence HTTP contract.
+/// coordinates the signed managed quiescence HTTP contract.
 /// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
 /// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
@@ -465,6 +463,8 @@ pub use workspace::*;
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
+/// OSS boundary: 967 removes the 25 retired Cloud controls (human session invites and collaborators, relay pairing,
+/// managed-environment and disposable-worker requests) and their responses; peer 416 pairs the embedded union.
 /// MP-08/MP-10: 981 names a quirks-mode frame document in its mirror v2 record (`compat`), so the viewer lays frames out in their source's mode.
 /// Allocated 983 gives a waiting command one row: `SessionProcessState` `held` and `paused` carry the
 /// same fields (reason, place in line, need, free, command line, folder, waiting since), and an

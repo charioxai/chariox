@@ -8,10 +8,6 @@ use crate::managed_context::cloud_completion::{
     context_manifest_digest, validate_disposable_worker_completion_binding,
     validate_managed_context_completion_binding,
 };
-use crate::managed_context::git_credential_enrollment::{
-    authorize_git_credential_enrollment, complete_git_credential_enrollment,
-    GitCredentialEnrollmentSource,
-};
 use crate::managed_context::package::{
     apply_managed_context_package, rollback_managed_context_package_application,
     rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
@@ -125,46 +121,16 @@ impl CommandRouter {
             )
             .await?;
             plan
-        } else if let Some(registration) = self.managed_kernel_registration.as_ref() {
-            let static_authorization = managed_context_caller(self, &identity, &source_kernel_id);
-            match static_authorization {
-                Ok(authorization)
-                    if authorization.plan.context_id == plan.context_id
-                        && authorization.plan.plan_digest == plan.plan_digest =>
-                {
-                    authorization.plan
-                }
-                authorization => {
-                    if !registration
-                        .context_plan
-                        .as_ref()
-                        .is_some_and(|launch_plan| launch_plan.is_empty())
-                    {
-                        return match authorization {
-                            Err(error) => Err(error),
-                            Ok(_) => Err(managed_context_authorization_error(
-                                "managed context selection does not match the Cloud launch plan",
-                            )),
-                        };
-                    }
-                    let config = self.config_projection.snapshot();
-                    authorize_git_credential_enrollment(
-                        &config,
-                        registration,
-                        GitCredentialEnrollmentSource {
-                            subject: &identity.subject,
-                            subject_kind: identity.subject_kind,
-                            kernel_id: &source_kernel_id,
-                            key_thumbprint: &caller.key_thumbprint,
-                            owner_user_id: &caller.owner_user_id,
-                            realm_id: &caller.realm_id,
-                        },
-                        &plan.context_id,
-                        &plan.plan_digest,
-                    )
-                    .await?
-                }
+        } else if self.managed_kernel_registration.is_some() {
+            let authorization = managed_context_caller(self, &identity, &source_kernel_id)?;
+            if authorization.plan.context_id != plan.context_id
+                || authorization.plan.plan_digest != plan.plan_digest
+            {
+                return Err(managed_context_authorization_error(
+                    "managed context selection does not match the Cloud launch plan",
+                ));
             }
+            authorization.plan
         } else {
             crate::managed_context::package::validate_plan_binding(&plan)?;
             plan
@@ -422,11 +388,6 @@ impl CommandRouter {
         };
 
         let completion_plan = ready.plan.clone();
-        let is_git_credential_enrollment = completion_plan.is_git_credential_enrollment()
-            && registration
-                .as_ref()
-                .and_then(|registration| registration.context_plan.as_ref())
-                .is_some_and(|plan| plan.is_empty());
         let git_credential_target: Result<
             Option<ManagedContextGitCredentialImportTarget>,
             DaemonError,
@@ -472,8 +433,6 @@ impl CommandRouter {
                 &ready.target_kernel_id,
             )
             .err()
-        } else if is_git_credential_enrollment {
-            None
         } else if let Some(registration) = registration.as_ref() {
             validate_managed_context_completion_binding(
                 &completion_config,
@@ -596,17 +555,13 @@ impl CommandRouter {
                 return Err(error);
             }
         };
-        let launch_target = if is_git_credential_enrollment {
-            Ok(None)
-        } else {
-            store
-                .launch_target_for_import_receipt(&transfer_id, &receipt)
-                .and_then(|target| {
-                    self.runtime_state
-                        .ensure_managed_context_project(&target, &caller.owner_user_id)?;
-                    Ok(Some(target))
-                })
-        };
+        let launch_target = store
+            .launch_target_for_import_receipt(&transfer_id, &receipt)
+            .and_then(|target| {
+                self.runtime_state
+                    .ensure_managed_context_project(&target, &caller.owner_user_id)?;
+                Ok(target)
+            });
         let launch_target = match launch_target {
             Ok(target) => target,
             Err(publication_error) => {
@@ -642,16 +597,6 @@ impl CommandRouter {
         };
         let completion = if completion_plan.destination.is_some() {
             Ok(())
-        } else if is_git_credential_enrollment {
-            complete_git_credential_enrollment(
-                &completion_config,
-                registration
-                    .as_ref()
-                    .expect("Git credential enrollment requires a managed registration"),
-                &completion_plan,
-                &manifest_digest,
-            )
-            .await
         } else if let Some(registration) = registration.as_ref() {
             complete_managed_context_import(
                 &completion_config,
@@ -697,20 +642,18 @@ impl CommandRouter {
                         "roll back rejected managed context import: {rollback_error}"
                     )));
                 }
-                if let Some(launch_target) = &launch_target {
-                    if let Err(project_rollback_error) = self
-                        .runtime_state
-                        .remove_managed_context_project(launch_target, &caller.owner_user_id)
-                    {
-                        let _ = run_blocking(move || {
-                            failure_store.release_import(&failure_transfer_id)
-                        })
-                        .await;
-                        return Err(managed_context_unavailable(format!(
-                            "roll back rejected managed context Project: {project_rollback_error}"
-                        )));
-                    }
+                if let Err(project_rollback_error) = self
+                    .runtime_state
+                    .remove_managed_context_project(&launch_target, &caller.owner_user_id)
+                {
+                    let _ =
+                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
+                            .await;
+                    return Err(managed_context_unavailable(format!(
+                        "roll back rejected managed context Project: {project_rollback_error}"
+                    )));
                 }
+
                 return Err(retire_terminal_import(
                     store.clone(),
                     transfer_id.clone(),
@@ -723,19 +666,11 @@ impl CommandRouter {
         let commit_store = store.clone();
         let commit_transfer_id = transfer_id.clone();
         if let Err(commit_error) = run_blocking(move || {
-            if is_git_credential_enrollment {
-                commit_store.commit_credential_import(
-                    &commit_transfer_id,
-                    &receipt_json,
-                    crate::session::unix_epoch_ms(),
-                )
-            } else {
-                commit_store.commit_import(
-                    &commit_transfer_id,
-                    &receipt_json,
-                    crate::session::unix_epoch_ms(),
-                )
-            }
+            commit_store.commit_import(
+                &commit_transfer_id,
+                &receipt_json,
+                crate::session::unix_epoch_ms(),
+            )
         })
         .await
         {

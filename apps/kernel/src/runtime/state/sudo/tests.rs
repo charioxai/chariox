@@ -690,15 +690,11 @@ async fn sudo_cannot_pair_invite_or_read_or_replace_relay_identity() {
         serde_json::json!({"ApproveRemoteMachine":{"machine_ref":"fixture"}}),
         serde_json::json!({"CreateSessionInvite":{"session_id":"fixture"}}),
         serde_json::json!({"JoinSessionInvite":{"invite_token":"fixture","user_id":"fixture"}}),
-        serde_json::json!({"CreateCloudSessionInvite":{"session_id":"fixture"}}),
-        serde_json::json!({"AcceptCloudSessionInvite":{"invite_token":"fixture"}}),
         serde_json::json!({"ConfigureRelay":{"relay_url":"wss://fixture.invalid","relay_token":"fixture"}}),
         serde_json::json!({"CloudRelayStatus":null}),
         serde_json::json!({"StartCloudRelayLogin":{"api_url":"https://fixture.invalid"}}),
         serde_json::json!({"PollCloudRelayLogin":{"api_url":"https://fixture.invalid","device_code":"fixture"}}),
         serde_json::json!({"LogoutCloudRelay":{}}),
-        serde_json::json!({"PairCloudRelayClient":{"client_id":"fixture"}}),
-        serde_json::json!({"PairCloudRelayMachine":{"machine_id":"fixture"}}),
         serde_json::json!({"ConnectCloudRelay":null}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
@@ -2097,7 +2093,6 @@ fn sudo_review_auth_and_credential_enrollment_are_forbidden() {
         serde_json::json!({"ImportSliceProviderAuth":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
         serde_json::json!({"RequestCredentialEnrollmentInteraction":{"session_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1,"provider_authorization_url":"https://example.com"}}),
         serde_json::json!({"ArmDeploymentCredentialEnrollment":{"session_id":"fixture","attachment_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1}}),
-        serde_json::json!({"PrepareManagedEnvironmentGitCredentialEnrollment":{"environmentId":"fixture","sourceTargetId":"fixture","gitCredentials":{"kind":"none"}}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         assert!(

@@ -3,7 +3,7 @@ Description=Chariox Path-1 managed home kernel supervisor
 After=network-online.target chariox-rootless-docker.service
 Wants=network-online.target
 Requires=chariox-rootless-docker.service
-Conflicts=chariox-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
+Conflicts=chariox-managed-bootstrap.service
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
 StartLimitIntervalSec=0
 

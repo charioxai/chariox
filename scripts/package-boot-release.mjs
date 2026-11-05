@@ -8,7 +8,7 @@ import { bootArtifacts } from '../deploy/managed-kernel/boot-release.mjs'
 
 // Run on the release signer. Lane drills use an ephemeral TEST key only.
 const options = Object.fromEntries(process.argv.slice(2).reduce((pairs, arg, i, args) => i % 2 ? pairs : [...pairs, [arg, args[i + 1]]], []))
-for (const name of ['kernel', 'bootstrap', 'relay', 'signing-key', 'source', 'output']) {
+for (const name of ['kernel', 'bootstrap', 'worker', 'relay', 'signing-key', 'source', 'output']) {
   if (!options[`--${name}`]) throw new Error(`missing --${name}`)
 }
 const output = resolve(options['--output'])
@@ -25,13 +25,14 @@ const sourceTree = git(['rev-parse', 'HEAD^{tree}'])
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
 const kernel = await readFile(options['--kernel'])
 const bootstrap = await readFile(options['--bootstrap'])
+const worker = await readFile(options['--worker'])
 const relay = await readFile(options['--relay'])
 const attestation = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit, sourceTree, target: 'x86_64-unknown-linux-gnu', artifacts: [
   { name: 'chariox-kernel', sha256: sha(kernel) }, { name: 'chariox-managed-bootstrap', sha256: sha(bootstrap) }, { name: 'chariox-relay', sha256: sha(relay) },
 ] }) + '\n')
 const directory = dirname(fileURLToPath(import.meta.url))
 const contents = new Map([
-  ['chariox-kernel', kernel], ['chariox-managed-bootstrap', bootstrap],
+  ['chariox-kernel', kernel], ['chariox-managed-bootstrap', bootstrap], ['chariox-app-wasm-worker', worker],
   ['chariox-managed-bootstrap.service', await readFile(join(directory, '../deploy/managed-kernel/chariox-vm-bootstrap.service'))],
   ['chariox-build-attestation', attestation],
   ['chariox-build-attestation-signature', Buffer.from(sign(null, attestation, key).toString('base64') + '\n')],

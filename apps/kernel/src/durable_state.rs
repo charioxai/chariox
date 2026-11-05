@@ -73,8 +73,7 @@ pub(crate) mod workflow_notifications;
 pub(crate) mod workflow_queue_start;
 pub(crate) mod workflow_runtime;
 
-pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str =
-    "managed_kernel.auto_stop_quiescence.changed";
+pub(crate) const QUIESCENCE_STATE_SNAPSHOT_KIND: &str = "managed_kernel.quiescence.changed";
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {

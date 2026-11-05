@@ -18,7 +18,7 @@ test("control capability and mutation use the same live WebSocket", async t => {
       if (frame.request.RelayStatus === null) {
         admitted = true
         response = { RelayStatus: { status: { daemon_id: "home-1", machine_id: "machine-1",
-          capabilities: ["disposable_worker_control_v1"] } } }
+          capabilities: ["exact_prompt_cancellation_v499"] } } }
       } else response = { admitted }
       socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response, error: null }))
     })
@@ -29,7 +29,7 @@ test("control capability and mutation use the same live WebSocket", async t => {
     for (const socket of server.clients) socket.terminate()
     return new Promise<void>(resolve => server.close(() => resolve()))
   })
-  assert.deepEqual(await client.send({ ReleaseDisposableWorker: { homeKernelId: "home-1", allocationId: "allocation-1" } }), { admitted: true })
+  assert.deepEqual(await client.send({ CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "prompt-A" } }), { admitted: true })
   assert.equal(connections, 1)
 })
 
@@ -47,7 +47,7 @@ test("control mutation is not replayed onto an unadmitted replacement connection
       let response: unknown
       if (frame.request.RelayStatus === null) {
         response = { RelayStatus: { status: { daemon_id: "home-1", machine_id: "machine-1",
-          capabilities: generation === 1 ? ["disposable_worker_control_v1"] : [] } } }
+          capabilities: generation === 1 ? ["exact_prompt_cancellation_v499"] : [] } } }
       } else {
         mutations.push(generation)
         if (generation === 1) { socket.terminate(); return }
@@ -64,6 +64,6 @@ test("control mutation is not replayed onto an unadmitted replacement connection
     for (const socket of server.clients) socket.terminate()
     return new Promise<void>(resolve => server.close(() => resolve()))
   })
-  await assert.rejects(client.send({ ReleaseDisposableWorker: { homeKernelId: "home-1", allocationId: "allocation-1" } }))
+  await assert.rejects(client.send({ CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "prompt-A" } }))
   assert.deepEqual(mutations, [1])
 })

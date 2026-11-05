@@ -575,25 +575,6 @@ impl ManagedContextTransferStore {
         import_receipt_json: &str,
         now_ms: u64,
     ) -> Result<(), DaemonError> {
-        self.commit_import_with_publication(transfer_id, import_receipt_json, now_ms, true)
-    }
-
-    pub(crate) fn commit_credential_import(
-        &self,
-        transfer_id: &str,
-        import_receipt_json: &str,
-        now_ms: u64,
-    ) -> Result<(), DaemonError> {
-        self.commit_import_with_publication(transfer_id, import_receipt_json, now_ms, false)
-    }
-
-    fn commit_import_with_publication(
-        &self,
-        transfer_id: &str,
-        import_receipt_json: &str,
-        now_ms: u64,
-        publish_launch_target: bool,
-    ) -> Result<(), DaemonError> {
         if import_receipt_json.is_empty() || import_receipt_json.len() > MAX_IMPORT_RECEIPT_BYTES {
             return Err(transfer_error(
                 "managed context import receipt size is invalid",
@@ -611,14 +592,10 @@ impl ManagedContextTransferStore {
             .entries
             .get(transfer_id)
             .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
-        let launch_target = if publish_launch_target {
-            import_receipt
-                .as_ref()
-                .map(|receipt| launch_target_from_receipt(transfer_id, existing, receipt))
-                .transpose()?
-        } else {
-            None
-        };
+        let launch_target = import_receipt
+            .as_ref()
+            .map(|receipt| launch_target_from_receipt(transfer_id, existing, receipt))
+            .transpose()?;
         let owner_target = if existing.plan.destination.is_some() {
             self.owner_history(&existing.plan.context_id)?
                 .map(|record| record.target)

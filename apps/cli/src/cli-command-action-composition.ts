@@ -14,6 +14,7 @@ import type { AgentInstance, BootstrapState, RuntimeSession } from "./cli-types.
 import type { CharioxLogger } from "./logging.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { createInitialCloudClientTokenIssuer } from "./cloud-client-token-issuer.js"
+import { DEFAULT_CONTROL_PLANE_URL } from "@chariox/kernel-client/default-control-plane"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
@@ -156,8 +157,6 @@ import {
   getKernelCloudRelayProfile,
   getRelayStatus,
   logoutCloudRelay,
-  pairKernelCloudRelayClient,
-  pairKernelCloudRelayMachine,
   pollCloudRelayLogin,
   startCloudRelayLogin,
 } from "./relay-api.js"
@@ -659,7 +658,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setup: profile => startLocalKernelSetup(profile, appendCloudNotice),
       client: deps.cloudClient,
       isKernelConnected: () => deps.kernelConnected?.() ?? true,
-      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? "https://staging.chariox.com",
+      apiUrl: () => resolveConfiguredCloudRelayApiUrl(preferencesState()) ?? DEFAULT_CONTROL_PLANE_URL,
       notice: appendCloudNotice,
       saveProfile: async profile => { await saveRelayCloudProfile(profile); setPreferencesState((current: any) => mergeRelayCloudProfile(current, profile)) },
       refresh: refreshWaitingRoomData,
@@ -681,10 +680,6 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     pollCloudDeviceLogin: (apiUrl, deviceCode) => pollCloudRelayLogin(client, apiUrl, deviceCode),
     openExternalUrl,
     logoutCloudRelay: (_profile, options) => logoutCloudRelay(client, options),
-    pairCloudRelayClient: (_profile, clientId, alias) =>
-      pairKernelCloudRelayClient(client, clientId, alias),
-    pairCloudRelayMachine: (_profile, machineId, alias) =>
-      pairKernelCloudRelayMachine(client, machineId, alias),
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, options.clientId ?? "chariox-cli"),
     ...(deps.cloudClient ? {
       createCloudSessionInvite: (sessionId: string, inviteOptions: Parameters<CloudClient["collaboration"]["createSessionInvite"]>[1]) => deps.cloudClient!.collaboration.createSessionInvite(sessionId, inviteOptions),

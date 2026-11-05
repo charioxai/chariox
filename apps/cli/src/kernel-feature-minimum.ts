@@ -48,7 +48,6 @@ const features: Record<string, FeatureMinimum> = {
   StartRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   StopRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
   RetryRoomEnvironment: { feature: "Room environment lifecycle", minimum: requests.roomEnvironmentLifecycleMinimumProtocolVersion },
-  GetManagedEnvironmentReimagePreflight: { feature: "Managed environment reimage preflight", minimum: requests.managedEnvironmentReimagePreflightMinimumProtocolVersion },
   AdjustProjectEnvironment: { feature: "Project environment adjustment", minimum: projectEnvironmentAdjustmentMinimumProtocolVersion },
   ListEventConnectionEvents: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
   ReplayEventConnectionEvent: { feature: "Integration received events", minimum: requests.integrationReceivedEventsMinimumProtocolVersion },
@@ -71,10 +70,6 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }
   } else if (name === "KernelBrowser" && ["grant_leased_computer", "revoke_leased_computer"].includes(String(record(payload?.command)?.op))) {
     feature = { feature: "MP-08 leased Computer grant", minimum: requests.leasedComputerMinimumProtocolVersion }
-  } else if (requests.isGuardedKernelControl(request)) {
-    feature = name === "KeepManagedEnvironmentRunning"
-      ? { feature: "Managed environment keep running", minimum: requests.managedEnvironmentKeepRunningMinimumProtocolVersion }
-      : { feature: "Disposable worker control", minimum: requests.disposableWorkerControlMinimumProtocolVersion }
   } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
     feature = { feature: "App automation injection", minimum: 491 }
   } else if (name === "UpdateQueuedWorkflowPrompt" && payload?.retry_delivery === true) {
@@ -88,8 +83,6 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     const tab = record(payload?.action)?.kind === "tab"
     feature = { feature: tab ? "Room browser tab lifecycle" : "Room browser history", minimum: tab
       ? requests.roomEnvironmentBrowserTabActionsMinimumProtocolVersion : requests.roomEnvironmentBrowserHistoryMinimumProtocolVersion }
-  } else if (name === "CreateManagedEnvironment" && payload?.managedRepositoryRoot != null) {
-    feature = { feature: "Custom managed repository root", minimum: requests.managedEnvironmentCreateMinimumProtocolVersion }
   } else if (name === "StartManagedContextTransfer" && payload?.ownerManaged != null) {
     feature = { feature: "Owner context copy", minimum: OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION }
   } else if ((name === "StartSlice" || name === "StartManagedContextTransfer") && payload?.interactive === true) {

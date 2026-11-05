@@ -5,6 +5,7 @@ import { access, lstat, readFile, realpath } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, relative } from "node:path"
 import { createInterface } from "node:readline/promises"
+import { DEFAULT_CONTROL_PLANE_URL } from "@chariox/kernel-client/default-control-plane"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
 import { isKernelEndpointReachable } from "./kernel-endpoint.js"
 import type { RelayCloudProfile } from "./preferences.js"
@@ -56,7 +57,7 @@ async function setupCommand(profile: RelayCloudProfile): Promise<{ executable: s
     if (selection) args.push("--id", selection.installId, "--port", String(selection.port), "--repair")
     return { executable, args }
   }
-  throw new Error("Chariox Setup is missing. Download the signed Chariox Setup installer from chariox.com.")
+  throw new Error(`Chariox Setup is missing. Download the signed Chariox Setup installer from ${new URL(DEFAULT_CONTROL_PLANE_URL).host}.`)
 }
 // MP-07/MP-08: Cloud status renders each notice line as one table row.
 function setupNotice(text: string): string {

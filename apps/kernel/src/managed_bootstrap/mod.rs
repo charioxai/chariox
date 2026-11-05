@@ -34,9 +34,8 @@ use freshness::{
 use release::{verify_release, verify_release_evidence, VerifiedRelease};
 use state::{
     default_managed_bootstrap_receipt_path, remove_envelope, trusted_builder_public_key_path,
-    valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope, BootstrapReceipt,
-    BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
-    ManagedBootstrapGrantBinding,
+    valid_identifier, valid_secret, BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus,
+    ManagedBootstrapEnvelope, ManagedBootstrapGrantBinding,
 };
 
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -225,10 +224,7 @@ fn confirmed_managed_kernel_registration_with_receipt_fallback(
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
-    let Some(receipt) = BootstrapReceiptDocument::read(&config.receipt_path)? else {
-        return Ok(None);
-    };
-    let BootstrapReceiptDocument::ManagedEnvironment(receipt) = receipt else {
+    let Some(receipt) = BootstrapReceipt::read(&config.receipt_path)? else {
         return Ok(None);
     };
     if receipt.status != BootstrapReceiptStatus::Confirmed {
@@ -258,13 +254,8 @@ pub(crate) fn authoritative_managed_release_evidence_from_env(
         return Ok(None);
     }
     let config = BootstrapConfig::from_env()?;
-    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
-        Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)) => receipt,
-        Some(BootstrapReceiptDocument::DisposableWorker(_)) => {
-            return Err(bootstrap_error(
-                "managed resource telemetry cannot use a disposable-worker receipt",
-            ));
-        }
+    let receipt = match BootstrapReceipt::read(&config.receipt_path)? {
+        Some(receipt) => receipt,
         None => {
             return Err(bootstrap_error(
                 "managed bootstrap receipt disappeared during release verification",
@@ -307,18 +298,9 @@ fn prepare_managed_kernel(
     cloud: &impl BootstrapCloudClient,
     now: DateTime<Utc>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    // Legacy worker records are readable only for an explicit rejection. They
-    // must never create an ordinary machine identity or consume a Cloud grant.
-    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
-        Some(BootstrapReceiptDocument::ManagedEnvironment(value)) => Some(value),
-        Some(BootstrapReceiptDocument::DisposableWorker(_)) => return Err(legacy_worker_error()),
-        None => None,
-    };
+    let receipt = BootstrapReceipt::read(&config.receipt_path)?;
     let envelope = if config.envelope_path.exists() {
-        match BootstrapEnvelope::read(&config.envelope_path)? {
-            BootstrapEnvelope::ManagedEnvironment(value) => Some(value),
-            BootstrapEnvelope::DisposableWorker(_) => return Err(legacy_worker_error()),
-        }
+        Some(ManagedBootstrapEnvelope::read(&config.envelope_path)?)
     } else {
         None
     };
@@ -332,11 +314,6 @@ fn prepare_managed_kernel_with_documents(
     receipt: Option<BootstrapReceipt>,
     envelope: Option<ManagedBootstrapEnvelope>,
 ) -> Result<PreparedManagedKernel, DaemonError> {
-    if state::disposable_worker_release_override_path(&config.receipt_path)?.exists() {
-        return Err(bootstrap_error(
-            "disposable worker release override has no matching worker receipt",
-        ));
-    }
     let expected_digest = receipt
         .as_ref()
         .map(|value| value.runtime_release_digest.as_str())
@@ -416,7 +393,7 @@ fn reconcile_legacy_confirmed_grant_binding(
         })?;
     let repository_root = receipt.managed_repository_root()?;
     let response = cloud.reconcile_managed_bootstrap_grant(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &cloud::ReconcileManagedBootstrapGrantRequestV1 {
             protocol_version: 1,
             token: envelope.token.clone(),
@@ -505,10 +482,6 @@ fn validate_envelope_receipt_compatibility(
     Ok(())
 }
 
-fn legacy_worker_error() -> DaemonError {
-    bootstrap_error("legacy disposable worker bootstrap is unsupported; preserve the records and reprovision through the allocation-worker service")
-}
-
 fn begin_registration(
     config: &BootstrapConfig,
     cloud: &impl BootstrapCloudClient,
@@ -524,7 +497,7 @@ fn begin_registration(
     }
     persist_or_validate_grant_binding(config, envelope, identity)?;
     let exchanged = cloud.exchange(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &ExchangeRequest {
             token: envelope.token.clone(),
             environment_id: envelope.environment_id.clone(),
@@ -677,7 +650,7 @@ fn confirm_registration(
         None
     };
     let confirmed = cloud.confirm(
-        &normalized_api_url(&envelope.cloud_api_url),
+        &normalized_api_url(&envelope.control_plane_url),
         &ConfirmRequest {
             token: envelope.token.clone(),
             environment_id: receipt.environment_id.clone(),
@@ -774,13 +747,8 @@ pub(crate) fn observe_managed_environment_pre_reimage(
     observed_at: DateTime<Utc>,
 ) -> Result<PreReimageObservationAcknowledgement, DaemonError> {
     let config = BootstrapConfig::from_env()?;
-    let receipt = match BootstrapReceiptDocument::read(&config.receipt_path)? {
-        Some(BootstrapReceiptDocument::ManagedEnvironment(receipt)) => receipt,
-        Some(BootstrapReceiptDocument::DisposableWorker(_)) => {
-            return Err(bootstrap_error(
-                "managed pre-reimage observation cannot use a disposable-worker receipt",
-            ));
-        }
+    let receipt = match BootstrapReceipt::read(&config.receipt_path)? {
+        Some(receipt) => receipt,
         None => {
             return Err(bootstrap_error(
                 "managed pre-reimage observation requires a bootstrap receipt",
@@ -1014,7 +982,7 @@ fn validate_exchange_response(
         || response.runtime_release_digest != envelope.runtime_release_digest
         || response.cloud_relay.machine_id != identity.machine_id
         || normalized_api_url(&response.cloud_relay.api_url)
-            != normalized_api_url(&envelope.cloud_api_url)
+            != normalized_api_url(&envelope.control_plane_url)
         || !valid_identifier(&response.cloud_relay.account_id)
         || !valid_identifier(&response.cloud_relay.user_id)
         || !valid_identifier(&response.cloud_relay.account_slug)
@@ -1171,10 +1139,7 @@ fn remove_bound_envelope(
     if !config.envelope_path.exists() {
         return Ok(());
     }
-    let current = match BootstrapEnvelope::read(&config.envelope_path)? {
-        BootstrapEnvelope::ManagedEnvironment(value) => value,
-        BootstrapEnvelope::DisposableWorker(_) => return Err(legacy_worker_error()),
-    };
+    let current = ManagedBootstrapEnvelope::read(&config.envelope_path)?;
     if current.grant_binding_digest() != expected.grant_binding_digest() {
         return Err(bootstrap_error(
             "managed bootstrap envelope changed before its grant was removed",

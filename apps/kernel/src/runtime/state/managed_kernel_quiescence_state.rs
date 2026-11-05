@@ -962,7 +962,7 @@ fn persist_quiescence_state(
 
 fn quiescence_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
-        operation: "manage kernel auto-stop quiescence",
+        operation: "manage kernel quiescence",
         message: message.into(),
     }
 }

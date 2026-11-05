@@ -1,0 +1,399 @@
+[
+  {
+    "path": "/control-plane",
+    "callers": [
+      "apps/kernel/src/runtime/control_plane.rs"
+    ],
+    "why": "forwards ControlPlane requests to the owner's connected service",
+    "seam": "LocalDaemonRequest::ControlPlane"
+  },
+  {
+    "path": "/kernels/gateway-client",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_api_client/gateway_client.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/kernels/presence",
+    "callers": [
+      "apps/kernel/src/runtime/router/cloud_relay_bridge.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/kernels/unlink",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_relay_login_executor.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/managed-environments",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}/context-transfer",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}/lifecycle",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}/reimage",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}/reimage/preflight",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/{}/reimage/stop",
+    "callers": [
+      "apps/cli/src/managed-environment-reimage-stop.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/managed-environments/options",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/relay/targets",
+    "callers": [
+      "apps/cli/src/cloud-client.ts",
+      "apps/kernel/src/runtime/cloud_api_client/http.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/relay/token",
+    "callers": [
+      "apps/cli/src/cloud-client.ts",
+      "apps/kernel/src/runtime/cloud_api_client.rs"
+    ],
+    "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
+    "seam": "hosted relay account (cloud_api_client)"
+  },
+  {
+    "path": "/relay/usage",
+    "callers": [
+      "apps/relay/src/usage_report.rs"
+    ],
+    "why": "optional relay usage report to an env-configured control plane",
+    "seam": "CHARIOX_RELAY_* control-plane link"
+  },
+  {
+    "path": "/v1/actions",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/authorizations",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/browser",
+    "callers": [
+      "apps/kernel/src/transport/relay_client/local_browser.rs"
+    ],
+    "why": "kernel-local browser attach path on the relay peer, served by the kernel itself",
+    "seam": "kernel browser"
+  },
+  {
+    "path": "/v1/connections/inspect",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/connections/query",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/connections/reconnect",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/connections/refresh",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/connections/revoke",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/connections/test-event",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/event-generators",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/event-generators/{}",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/event-generators/{}/events",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/event-generators/{}/management-capability",
+    "callers": [
+      "apps/kernel/src/runtime/cloud_api_client.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/events/query",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/events/replay",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/kernel-enrollment-tickets",
+    "callers": [
+      "apps/kernel/src/runtime/ssh_machine_control.rs"
+    ],
+    "why": "own-machine enrollment tickets issued by the connected service",
+    "seam": "/machine add"
+  },
+  {
+    "path": "/v1/kernel-enrollment-tickets/{}",
+    "callers": [
+      "apps/kernel/src/runtime/ssh_machine_control.rs"
+    ],
+    "why": "own-machine enrollment tickets issued by the connected service",
+    "seam": "/machine add"
+  },
+  {
+    "path": "/v1/managed-kernels/activity",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_activity.rs"
+    ],
+    "why": "signed kernel activity report; rename in OSS-boundary item 8",
+    "seam": "KernelActivityReport"
+  },
+  {
+    "path": "/v1/managed-kernels/quiescence/ack",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
+    "path": "/v1/managed-kernels/quiescence/poll",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
+    "path": "/v1/managed-kernels/quiescence/release-ack",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
+    "path": "/v1/managed-kernels/bootstrap/confirm",
+    "callers": [
+      "apps/kernel/src/managed_bootstrap/cloud.rs"
+    ],
+    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
+    "seam": "worker kernel enrollment bootstrap"
+  },
+  {
+    "path": "/v1/managed-kernels/bootstrap/exchange",
+    "callers": [
+      "apps/kernel/src/managed_bootstrap/cloud.rs"
+    ],
+    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
+    "seam": "worker kernel enrollment bootstrap"
+  },
+  {
+    "path": "/v1/managed-kernels/bootstrap/reconcile",
+    "callers": [
+      "apps/kernel/src/managed_bootstrap/cloud.rs"
+    ],
+    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
+    "seam": "worker kernel enrollment bootstrap"
+  },
+  {
+    "path": "/v1/managed-kernels/context/complete",
+    "callers": [
+      "apps/kernel/src/managed_context/cloud_completion.rs"
+    ],
+    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/managed-kernels/context/ticket",
+    "callers": [
+      "apps/kernel/src/managed_context/outbound_service.rs",
+      "apps/kernel/src/managed_context/owner_authority.rs"
+    ],
+    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/managed-kernels/reimage/runtime-identity",
+    "callers": [
+      "apps/kernel/src/managed_bootstrap/cloud.rs"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): pre-reimage runtime identity",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/v1/managed-kernels/release-update/artifact",
+    "callers": [
+      "apps/kernel/src/runtime/managed_release_update.rs"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/v1/managed-kernels/release-update/poll",
+    "callers": [
+      "apps/kernel/src/runtime/managed_release_update.rs"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
+    "seam": "none; the path goes away"
+  },
+  {
+    "path": "/v1/owner-managed-context-tickets",
+    "callers": [
+      "apps/kernel/src/managed_context/owner_authority.rs"
+    ],
+    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/owner-managed-context-tickets/peers",
+    "callers": [
+      "apps/kernel/src/managed_context/owner_authority.rs"
+    ],
+    "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/resources/query",
+    "callers": [
+      "apps/kernel/src/runtime/event_catalog_control.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/subscriptions/reconcile",
+    "callers": [
+      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
+      "apps/kernel/src/transport/event_delivery_client.rs"
+    ],
+    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/web-bot-auth/keys",
+    "callers": [
+      "apps/kernel/src/runtime/state/web_bot_auth_runtime.rs"
+    ],
+    "why": "Web Bot Auth key issuance by the connected service; a local key is used when not enrolled",
+    "seam": "web_bot_auth_runtime"
+  }
+]

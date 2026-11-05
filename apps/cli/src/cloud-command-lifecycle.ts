@@ -1,3 +1,4 @@
+import { DEFAULT_CONTROL_PLANE_URL } from "@chariox/kernel-client/default-control-plane"
 import type { RelayCloudProfile } from "./preferences.js"
 import { TERMINAL_LINK_OPEN_HINT } from "./external-url.js"
 export { buildHostedCloudViewUrl } from "@chariox/kernel-client/slice-screen-viewer"
@@ -48,11 +49,6 @@ export type CloudCommandLifecycleDeps = {
     | { status: "approved"; profile: RelayCloudProfile }
   >
   openExternalUrl?: (url: string) => Promise<boolean>
-  pairCloudRelayMachine?: (
-    profile: RelayCloudProfile,
-    machineId: string,
-    alias?: string,
-  ) => Promise<RelayCloudProfile>
   issueCloudKernelRelayToken?: (
     profile: RelayCloudProfile,
     daemonId: string,
@@ -69,7 +65,6 @@ type HostedCloudRelayEnsureResult = {
   status: RelayStatus | null
 }
 
-const DEFAULT_HOSTED_CLOUD_API_URL = "https://staging.chariox.com"
 const HOSTED_CLOUD_RELAY_CONNECT_TIMEOUT_MS = 8_000
 const HOSTED_CLOUD_RELAY_CONNECT_POLL_MS = 500
 
@@ -181,7 +176,7 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
     return
   }
   const relayStatus = await deps.getRelayStatus()
-  const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_HOSTED_CLOUD_API_URL, {
+  const started = await deps.startCloudDeviceLogin(deps.cloudRelayApiUrl ?? DEFAULT_CONTROL_PLANE_URL, {
     machineId: relayStatus.machine_id,
     ...(relayStatus.machine_alias ? { machineAlias: relayStatus.machine_alias } : {}),
   })

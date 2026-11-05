@@ -243,3 +243,7 @@ for (const platform of ["linux-x64", "darwin-arm64"]) {
     } finally { process.env.PATH = oldPath }
   })
 }
+
+test("OSS boundary: Setup names no default connected service; the build supplies it", async () => {
+  await assert.rejects(installLocal({ version: "0.1.0", publicKeyHex: "a".repeat(64), platform: "linux-x64" }), /control plane URL is required/)
+})

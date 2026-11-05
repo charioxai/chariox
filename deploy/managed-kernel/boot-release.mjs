@@ -16,6 +16,8 @@ export const bootArtifacts = new Map([
   ['chariox-kernel', '/usr/local/bin/chariox-kernel'],
   ['chariox-managed-bootstrap', '/usr/local/bin/chariox-managed-bootstrap'],
   ['chariox-managed-bootstrap.service', '/etc/systemd/system/chariox-managed-bootstrap.service'],
+  // The kernel opens its WASM App worker beside its own executable (WasmRuntime::beside_kernel).
+  ['chariox-app-wasm-worker', '/usr/local/bin/chariox-app-wasm-worker'],
   ['chariox-build-attestation', '/usr/lib/chariox/build-attestation.json'],
   ['chariox-build-attestation-signature', '/usr/lib/chariox/build-attestation.sig'],
   ['chariox-builder-public-key', '/usr/lib/chariox/builder-public-key'],
@@ -63,7 +65,7 @@ function authenticate(bytes, signature, trusted, digest) {
         bootArtifacts.get(artifact.name) !== artifact.path || !/^sha256:[0-9a-f]{64}$/.test(artifact.sha256)) fail('invalid boot release artifact')
     seen.add(artifact.name)
   }
-  for (const name of [...bootArtifacts.keys()].slice(0, 3)) if (!seen.has(name)) fail('required boot artifact missing')
+  for (const name of bootArtifacts.keys()) if (!seen.has(name)) fail('required boot artifact missing')
   return manifest
 }
 async function realDirectories(path) {
@@ -115,7 +117,8 @@ export async function installBootRelease({ url, digest, root = '/', fetcher = fe
     for (const artifact of manifest.artifacts) {
       const path = join(staging, artifact.path)
       await downloadArtifact(fetcher, new URL(`artifacts/${artifact.name}`, base), path, artifact.sha256)
-      await chmod(path, artifact.path.startsWith('/usr/local/bin/') ? 0o755 : 0o644)
+      // The worker is read-only so WasmRuntime::open trusts it for a root or a service-user kernel.
+      await chmod(path, artifact.name === 'chariox-app-wasm-worker' ? 0o555 : artifact.path.startsWith('/usr/local/bin/') ? 0o755 : 0o644)
     }
     const metadata = join(staging, 'usr/lib/chariox')
     await realDirectories(metadata)

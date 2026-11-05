@@ -6229,6 +6229,37 @@ Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
 
+### OSS boundary: retired Cloud controls removed — local 967 / relay peer 416
+
+The 25 local requests that only forwarded to the connected service's account or rental API are gone, with
+their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSessionInvite`,
+`ShowCloudSessionInvite`, `AcceptCloudSessionInvite`, `RevokeCloudSessionInvite`,
+`ListCloudSessionMembers`, `ListCloudCollaborators`, `ListManagedEnvironmentCatalog`,
+`GetManagedEnvironment`, `GetManagedEnvironmentReimagePreflight`, `GetManagedEnvironmentReimageReceipt`,
+`CreateManagedEnvironment`, `RequestManagedEnvironmentLifecycle`, `RequestManagedEnvironmentReimage`,
+`RequestManagedEnvironmentReleaseUpdate`, `GetManagedEnvironmentReleaseUpdate`,
+`PrepareManagedEnvironmentContextTransfer`, `PrepareManagedEnvironmentGitCredentialEnrollment`,
+`KeepManagedEnvironmentRunning` and the five `*DisposableWorker*` requests. Since protocol 491 the kernel
+refused them with `client_cloud_authority_required`; it now answers an unknown variant like any other. Cloud
+account and rental actions belong to the connected service's own client API, and machine acquisition goes
+through the generic `ControlPlane` request. Relay peer 416 pairs the embedded local union with local 967.
+Clients carry no minimum: a kernel older than 967 still knows the names and refuses them. The
+managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
+and `node scripts/oss-boundary-guard.mjs`.
+
+No serialized shape changes with the disposable-worker removal that followed: `chariox-managed-bootstrap
+--disposable-worker`, its exchange and confirm calls, the `DisposableWorker` envelope and receipt variants of the
+managed bootstrap, and the managed-activity reporter's `/v1/disposable-workers/activity` mode are gone. The
+managed-activity HTTP contract (protocol 340) now has the single `/v1/managed-kernels/activity` endpoint. What
+remains of the worker is the receipt reader that gates managed-context import and project setup on a
+`RemoteLeaseWorker`; nothing in this repository writes that receipt.
+
+Two Kernel-to-Cloud wire names became neutral together with the matching Cloud change (no local or relay shape
+changes, so no protocol bump): the managed bootstrap envelope key `cloudApiUrl` is now `controlPlaneUrl`, and the
+quiescence routes lost `auto-stop`: `/v1/managed-kernels/quiescence/poll`, `/ack` and `/release-ack`, whose signed
+`action` values are `quiescence_poll`, `quiescence_ack` and `quiescence_release_ack`. A kernel and a Cloud API from
+before this change do not talk to each other on those routes.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and

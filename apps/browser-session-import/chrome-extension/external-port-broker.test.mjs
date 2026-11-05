@@ -3,26 +3,29 @@ import test from 'node:test';
 
 import {BrowserImportExternalPortBroker} from './external-port-broker.mjs';
 
-test('broker accepts only exact production origins and binds one connector session',() => {
-  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop'});
+test('broker accepts only the configured origin and binds one connector session',() => {
+  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop',webOrigins:['https://service.example']});
   const connector = port({url:'chrome-extension://abcdefghijklmnopabcdefghijklmnop/apps/browser-session-import/chrome-extension/connector.html',tabId:11,name:'browser-import-web-session-v1',id:'abcdefghijklmnopabcdefghijklmnop'});
   broker.connectConnector(connector);
   connector.emit({type:'browser_import.connector_ready.v1',connector_session_id:'c'.repeat(32),
     connector_sender_public_key:key(),source:{current_profile:true,hostname:'example.test',store_id:'0'}});
 
-  const evil = port({url:'https://lookalike.chariox.com/view',tabId:12});
+  const evil = port({url:'https://lookalike.service.example/view',tabId:12});
   broker.connectExternal(evil);
   assert.equal(evil.disconnected,true);
+  const formerlyListed = port({url:'https://chariox.com/view',tabId:12});
+  broker.connectExternal(formerlyListed);
+  assert.equal(formerlyListed.disconnected,true);
   for (const hostile of [
-    port({url:'https://chariox.com/view',origin:'https://staging.chariox.com',tabId:12}),
-    port({url:'https://chariox.com/view',tabId:12,id:'ponmlkjihgfedcbaponmlkjihgfedcba'}),
-    port({url:'https://chariox.com/view',tabId:12,incognito:true}),
+    port({url:'https://service.example/view',origin:'https://other.example',tabId:12}),
+    port({url:'https://service.example/view',tabId:12,id:'ponmlkjihgfedcbaponmlkjihgfedcba'}),
+    port({url:'https://service.example/view',tabId:12,incognito:true}),
   ]) {
     broker.connectExternal(hostile);
     assert.equal(hostile.disconnected,true);
   }
 
-  const web = port({url:'https://chariox.com/view',tabId:13});
+  const web = port({url:'https://service.example/view',tabId:13});
   broker.connectExternal(web);
   web.emit({type:'browser_import.discover.v1',request_id:'a'.repeat(32),
     operation_nonce:'b'.repeat(32),expected_connector_session_id:null});
@@ -30,20 +33,27 @@ test('broker accepts only exact production origins and binds one connector sessi
   assert.equal(web.sent[0].extension_id,'abcdefghijklmnopabcdefghijklmnop');
   assert.equal(web.sent[0].connector_session_id,'c'.repeat(32));
   web.disconnectExternally();
-  const operation = port({url:'https://chariox.com/view',tabId:14});
+  const operation = port({url:'https://service.example/view',tabId:14});
   broker.connectExternal(operation);
   operation.emit({type:'browser_import.discover.v1',request_id:'d'.repeat(32),
     operation_nonce:'e'.repeat(32),expected_connector_session_id:'c'.repeat(32)});
   assert.equal(operation.sent[0].type,'browser_import.discovery.v1');
 });
 
+test('broker refuses to start without a configured web origin',() => {
+  for (const webOrigins of [undefined,[]]) {
+    assert.throws(() => new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop',webOrigins}),
+      /web origin unavailable/);
+  }
+});
+
 test('broker forwards only bound messages and sends one cancel on disconnect',() => {
-  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop'});
+  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop',webOrigins:['https://service.example']});
   const connector = port({url:'chrome-extension://abcdefghijklmnopabcdefghijklmnop/apps/browser-session-import/chrome-extension/connector.html',tabId:11,name:'browser-import-web-session-v1',id:'abcdefghijklmnopabcdefghijklmnop'});
   broker.connectConnector(connector);
   connector.emit({type:'browser_import.connector_ready.v1',connector_session_id:'c'.repeat(32),
     connector_sender_public_key:key(),source:{current_profile:true,hostname:'example.test',store_id:'0'}});
-  const web = port({url:'https://staging.chariox.com/view',tabId:13});
+  const web = port({url:'https://service.example/view',tabId:13});
   broker.connectExternal(web);
   web.emit({type:'browser_import.discover.v1',request_id:'a'.repeat(32),
     operation_nonce:'b'.repeat(32),expected_connector_session_id:'c'.repeat(32)});
@@ -58,17 +68,17 @@ test('broker forwards only bound messages and sends one cancel on disconnect',()
 });
 
 test('broker rejects malformed discovery and emits fixed metadata-only failure on connector disconnect',() => {
-  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop'});
+  const broker = new BrowserImportExternalPortBroker({extensionId:'abcdefghijklmnopabcdefghijklmnop',webOrigins:['https://service.example']});
   const connector = port({url:'chrome-extension://abcdefghijklmnopabcdefghijklmnop/apps/browser-session-import/chrome-extension/connector.html',tabId:11,name:'browser-import-web-session-v1',id:'abcdefghijklmnopabcdefghijklmnop'});
   broker.connectConnector(connector);
   connector.emit({type:'browser_import.connector_ready.v1',connector_session_id:'c'.repeat(32),
     connector_sender_public_key:key(),source:{current_profile:true,hostname:'example.test',store_id:'0'}});
-  const malformed = port({url:'https://chariox.com/view',tabId:13});
+  const malformed = port({url:'https://service.example/view',tabId:13});
   broker.connectExternal(malformed);
   malformed.emit({type:'browser_import.discover.v1',request_id:'raw-secret',operation_nonce:'b'.repeat(32),expected_connector_session_id:null});
   assert.equal(malformed.disconnected,true);
 
-  const web = port({url:'https://chariox.com/view',tabId:14});
+  const web = port({url:'https://service.example/view',tabId:14});
   broker.connectExternal(web);
   web.emit({type:'browser_import.discover.v1',request_id:'a'.repeat(32),operation_nonce:'b'.repeat(32),expected_connector_session_id:null});
   connector.disconnectExternally();

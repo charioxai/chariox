@@ -6,8 +6,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 
 const sha = bytes => `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-const names = ['chariox-kernel', 'chariox-managed-bootstrap', 'chariox-managed-bootstrap.service', 'chariox-build-attestation', 'chariox-build-attestation-signature', 'chariox-builder-public-key']
-const paths = ['/usr/local/bin/chariox-kernel', '/usr/local/bin/chariox-managed-bootstrap', '/etc/systemd/system/chariox-managed-bootstrap.service', '/usr/lib/chariox/build-attestation.json', '/usr/lib/chariox/build-attestation.sig', '/usr/lib/chariox/builder-public-key']
+const names = ['chariox-kernel', 'chariox-managed-bootstrap', 'chariox-managed-bootstrap.service', 'chariox-app-wasm-worker', 'chariox-build-attestation', 'chariox-build-attestation-signature', 'chariox-builder-public-key']
+const paths = ['/usr/local/bin/chariox-kernel', '/usr/local/bin/chariox-managed-bootstrap', '/etc/systemd/system/chariox-managed-bootstrap.service', '/usr/local/bin/chariox-app-wasm-worker', '/usr/lib/chariox/build-attestation.json', '/usr/lib/chariox/build-attestation.sig', '/usr/lib/chariox/builder-public-key']
 const { privateKey, publicKey } = generateKeyPairSync('ed25519')
 const key = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64')
 async function fixture(t, alter = () => {}) {
@@ -34,6 +34,22 @@ test('authenticated release installs then activates only the common bootstrap un
   assert.equal((await stat(join(f.root, 'usr/lib/chariox/current'))).mode & 0o777, 0o755)
   await assert.rejects(installBootRelease(f.options), /already has a release/)
   assert.equal(f.activated(), 1)
+})
+test('the WASM worker installs read-only beside the kernel and a manifest without it is refused', async t => {
+  const { installBootRelease } = await import('./boot-release.mjs')
+  const f = await fixture(t)
+  await installBootRelease(f.options)
+  assert.equal((await stat(join(f.root, 'usr/lib/chariox/current/usr/local/bin/chariox-app-wasm-worker'))).mode & 0o777, 0o555)
+  assert.equal((await stat(join(f.root, 'usr/lib/chariox/current/usr/local/bin/chariox-kernel'))).mode & 0o777, 0o755)
+  const without = await fixture(t, files => {
+    const manifest = JSON.parse(files.get('release-manifest.json'))
+    manifest.artifacts = manifest.artifacts.filter(artifact => artifact.name !== 'chariox-app-wasm-worker')
+    const bytes = Buffer.from(JSON.stringify(manifest))
+    files.set('release-manifest.json', bytes)
+    files.set('release-manifest.sig', Buffer.from(sign(null, bytes, privateKey).toString('base64')))
+  })
+  await assert.rejects(installBootRelease({ ...without.options, digest: sha(without.files.get('release-manifest.json')) }), /unsupported boot release manifest/)
+  assert.equal(without.activated(), 0)
 })
 for (const target of ['release-manifest.json', 'release-manifest.sig', 'artifacts/chariox-kernel', 'artifacts/chariox-managed-bootstrap.service']) {
   test(`tampered ${target} cannot install or activate`, async t => {

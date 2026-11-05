@@ -387,9 +387,6 @@ pub(super) fn verify_managed_bootstrap_service_binding(
     if !service_text
         .lines()
         .any(|line| line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap")
-        || service_text.lines().any(|line| {
-            line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
-        })
     {
         return Err(release_error(
             "managed bootstrap service is not bound to the managed bootstrap binary",

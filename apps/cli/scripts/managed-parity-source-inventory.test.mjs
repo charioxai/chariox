@@ -633,12 +633,10 @@ test("native release artifact exporter is inventoried separately from release ac
 test("current Path-1 source keeps the slice lease in the kernel launch boundary", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
   const bootstrap = source("../../../apps/kernel/src/managed_bootstrap/mod.rs");
-  const worker = source("../../../apps/kernel/src/managed_bootstrap/worker.rs");
   const supervisor = source("../../../apps/kernel/src/managed_bootstrap/supervisor.rs");
   const broker = source("../../../apps/kernel/src/slice/local_docker/broker.rs");
   const provider = source("../../../apps/kernel/src/provider/managed_isolation.rs");
 
-  assert.match(worker, /super::supervisor::spawn_with_broker_lease\(&mut command,\s*topology\)/);
   const kernelBrokerEnvStart = bootstrap.indexOf("pub(crate) const PATH1_KERNEL_SLICE_BROKER_ENVS");
   const kernelBrokerEnvEnd = bootstrap.indexOf("];", kernelBrokerEnvStart);
   assert.ok(kernelBrokerEnvStart >= 0 && kernelBrokerEnvEnd > kernelBrokerEnvStart);
@@ -1163,7 +1161,7 @@ test("machine enrollment data shapes get explicit candidates without widening so
     assert.equal(candidate?.sourceClassification.status, "source_inspected");
     assert.equal(candidate?.sourceClassification.classification, "machine_bound_deployment_enrollment");
     assert.equal(candidate?.semanticDisposition.status, "unreviewed");
-    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 64)
+    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 52)
       .every((entry) => entry.sourceClassification === null));
   });
 });

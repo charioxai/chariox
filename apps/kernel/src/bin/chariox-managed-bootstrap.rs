@@ -5,11 +5,10 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     let _process_logs = chariox_kernel::logging::ProcessLogGuard;
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let command = args.first().and_then(|arg| arg.to_str());
-    let disposable_worker = match (command, args.len()) {
-        (None, 0) => false,
-        (Some("--disposable-worker"), 1) => true,
+    match (command, args.len()) {
+        (None, 0) => {}
         (Some("--help" | "-h"), 1) => {
-            println!("usage: chariox-managed-bootstrap [--disposable-worker | --help | --version]\n\nRun the managed home supervisor with no arguments, or bootstrap a disposable\nworker with --disposable-worker. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            println!("usage: chariox-managed-bootstrap [--help | --version]\n\nRun the managed home supervisor. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
             return Ok(());
         }
         (Some("--version"), 1) => {
@@ -20,7 +19,7 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             eprintln!("error: unknown or additional managed-bootstrap argument\nRun chariox-managed-bootstrap --help for usage.");
             std::process::exit(2);
         }
-    };
+    }
     if let Ok(log_path) = chariox_kernel::logging::init_process_logger("managed-bootstrap") {
         chariox_kernel::logging::info_with_fields(
             "managed_bootstrap.start",
@@ -28,9 +27,5 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             serde_json::json!({ "log_path": log_path.display().to_string() }),
         );
     }
-    if disposable_worker {
-        chariox_kernel::managed_bootstrap::worker::run_from_env()
-    } else {
-        chariox_kernel::managed_bootstrap::run_from_env()
-    }
+    chariox_kernel::managed_bootstrap::run_from_env()
 }

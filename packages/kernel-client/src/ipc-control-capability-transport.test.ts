@@ -20,7 +20,7 @@ test("bare Unix controls use websocket frames and fresh capabilities", async t =
     seen.push(frame.request)
     const response = "RelayStatus" in frame.request
       ? { RelayStatus: { status: { daemon_id: "home-1", machine_id: "machine-1", capabilities } } }
-      : { result: "sent", admitted: capabilities.includes("disposable_worker_control_v1") }
+      : { result: "sent", admitted: capabilities.includes("exact_prompt_cancellation_v499") }
     socket.send(JSON.stringify({ type: "response", request_id: frame.request_id, response, error: null }))
   }))
   t.after(async () => {
@@ -31,10 +31,10 @@ test("bare Unix controls use websocket frames and fresh capabilities", async t =
     await rm(scratch, { recursive: true, force: true })
   })
   await new Promise<void>(resolve => server.listen(endpoint, resolve))
-  const request = { ReleaseDisposableWorker: { homeKernelId: "home-1", allocationId: "allocation-1" } }
+  const request = { CancelActivePrompt: { session_id: "s", attachment_id: "a", expected_prompt_id: "prompt-A" } }
   await assert.rejects(client.send(request), /does not support/)
   assert.equal(seen.length, 1)
-  capabilities = ["disposable_worker_control_v1"]
+  capabilities = ["exact_prompt_cancellation_v499"]
   assert.deepEqual(await client.send(request), { result: "sent", admitted: true })
   capabilities = []
   await assert.rejects(client.send(request), /does not support/)

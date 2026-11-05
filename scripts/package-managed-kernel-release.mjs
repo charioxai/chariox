@@ -397,10 +397,6 @@ async function packageRelease(options) {
     rootfs,
     "etc/systemd/system/chariox-path1-managed-bootstrap.service",
   )
-  const workerServiceDestination = join(
-    rootfs,
-    "etc/systemd/system/chariox-disposable-worker-bootstrap.service",
-  )
   const rootlessDockerServiceDestination = join(
     rootfs,
     "etc/systemd/system/chariox-rootless-docker.service",
@@ -432,12 +428,6 @@ async function packageRelease(options) {
     sourceIdentity.commit,
     "deploy/managed-kernel/chariox-path1-managed-bootstrap.service",
     "Path-1 managed-home bootstrap service cannot be read from source commit",
-  )
-  const workerServiceBytes = gitBlob(
-    repositoryRoot,
-    sourceIdentity.commit,
-    "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service",
-    "disposable worker bootstrap service cannot be read from source commit",
   )
   const rootlessDockerServiceBytes = gitBlob(
     repositoryRoot,
@@ -472,7 +462,6 @@ async function packageRelease(options) {
   if (
     serviceBytes.length > 64 * 1024 ||
     path1ServiceBytes.length > 64 * 1024 ||
-    workerServiceBytes.length > 64 * 1024 ||
     rootlessDockerServiceBytes.length > 64 * 1024 ||
     dataVolumeAdmissionServiceBytes.length > 64 * 1024 ||
     rootlessDataVolumeDropInBytes.length > 64 * 1024 ||
@@ -488,7 +477,6 @@ async function packageRelease(options) {
   await installFile(options["app-wasm-worker"], appWasmWorkerDestination, 0o755)
   await installBytes(serviceBytes, serviceDestination, 0o644)
   await installBytes(path1ServiceBytes, path1ServiceDestination, 0o644)
-  await installBytes(workerServiceBytes, workerServiceDestination, 0o644)
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
   await installBytes(dataVolumeAdmissionServiceBytes, dataVolumeAdmissionServiceDestination, 0o644)
   await installBytes(rootlessDataVolumeDropInBytes, rootlessDataVolumeDropInDestination, 0o644)
@@ -538,10 +526,6 @@ async function packageRelease(options) {
   const packagedPath1ServiceDigest = await sha256File(path1ServiceDestination)
   if (`sha256:${createHash("sha256").update(path1ServiceBytes).digest("hex")}` !== packagedPath1ServiceDigest) {
     throw new Error("Path-1 managed-home bootstrap service changed while the release was packaged")
-  }
-  const packagedWorkerServiceDigest = await sha256File(workerServiceDestination)
-  if (`sha256:${createHash("sha256").update(workerServiceBytes).digest("hex")}` !== packagedWorkerServiceDigest) {
-    throw new Error("disposable worker bootstrap service changed while the release was packaged")
   }
   const packagedRootlessDockerServiceDigest = await sha256File(rootlessDockerServiceDestination)
   if (`sha256:${createHash("sha256").update(rootlessDockerServiceBytes).digest("hex")}` !== packagedRootlessDockerServiceDigest) {
@@ -635,11 +619,6 @@ async function packageRelease(options) {
           name: "chariox-path1-managed-bootstrap.service",
           path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service",
           sha256: packagedPath1ServiceDigest,
-        },
-        {
-          name: "chariox-disposable-worker-bootstrap.service",
-          path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
-          sha256: packagedWorkerServiceDigest,
         },
         {
           name: "chariox-rootless-docker.service",

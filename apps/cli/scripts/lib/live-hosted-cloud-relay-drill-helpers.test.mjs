@@ -89,6 +89,9 @@ test("MP-08 / MP-10 / MP-11: hosted multiuser scenario uses private CLIENT colla
   const stateRoot = await mkdtemp(path.join(tmpdir(), "chariox-hosted-multiuser-"))
   t.after(() => rm(stateRoot, {recursive: true, force: true}))
   const terminals = {}, requests = [], grantClients = [], loggedOut = []
+  const priorApiUrl = process.env.CHARIOX_CLOUD_HOSTED_API_URL
+  process.env.CHARIOX_CLOUD_HOSTED_API_URL = "http://127.0.0.1:44123"
+  t.after(() => { if (priorApiUrl === undefined) delete process.env.CHARIOX_CLOUD_HOSTED_API_URL; else process.env.CHARIOX_CLOUD_HOSTED_API_URL = priorApiUrl })
   for (const role of ["owner", "peer", "third"]) {
     const terminal = createCloudDrillClient(modules, stateRoot, role)
     t.after(() => terminal.client.stop())

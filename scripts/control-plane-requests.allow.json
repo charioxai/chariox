@@ -1,0 +1,50 @@
+[
+  {
+    "name": "LocalDaemonRequest::CloudRelayStatus",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::StartCloudRelayLogin",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::PollCloudRelayLogin",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::LogoutCloudRelay",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::ConnectCloudRelay",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::IssueCloudRelayClientToken",
+    "why": "generic seam: sign-in and relay connection to the owner's connected service (a self-hosted control plane serves the same calls)"
+  },
+  {
+    "name": "LocalDaemonRequest::StartManagedContextTransfer",
+    "why": "generic seam: kernel-to-kernel context transfer; Cloud only issues the transfer ticket"
+  },
+  {
+    "name": "LocalDaemonRequest::GetManagedContextTransferStatus",
+    "why": "generic seam: kernel-to-kernel context transfer; Cloud only issues the transfer ticket"
+  },
+  {
+    "name": "LocalDaemonRequest::GetManagedContextLaunchTarget",
+    "why": "generic seam: kernel-to-kernel context transfer; Cloud only issues the transfer ticket"
+  },
+  {
+    "name": "LocalDaemonRequest::ObserveManagedEnvironmentPreReimage",
+    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan: reimage)"
+  },
+  {
+    "name": "packages/kernel-client/src/ipc-managed-context-requests.ts",
+    "why": "generic seam: builders for kernel-to-kernel context transfer"
+  },
+  {
+    "name": "packages/kernel-client/src/ipc-managed-environment-requests.ts",
+    "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): only the response types and the pre-reimage observation builder remain"
+  }
+]

@@ -72,8 +72,6 @@ pub(crate) fn authorize_kernel_cloud_request(
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
-            | LocalDaemonRequest::PairCloudRelayClient(_)
-            | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
             // A private pivot reuses the kernel's own relay credential.

@@ -28,7 +28,6 @@ const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"
 const RELEASE_SOURCE_ARTIFACTS = new Map([
   ["chariox-managed-bootstrap.service", "deploy/managed-kernel/chariox-managed-bootstrap.service"],
   ["chariox-path1-managed-bootstrap.service", "deploy/managed-kernel/chariox-path1-managed-bootstrap.service"],
-  ["chariox-disposable-worker-bootstrap.service", "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service"],
   ["chariox-rootless-docker.service", "deploy/managed-kernel/chariox-rootless-docker.service"],
   ["chariox-slice-broker.service", "deploy/managed-kernel/chariox-slice-broker.service"],
   ["chariox-data-volume-admission.service", "apps/kernel/slice-linux-docker/chariox-data-volume-admission.service"],

@@ -1,0 +1,170 @@
+[
+  {
+    "path": "apps/cli/package.json",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/scripts/live-project-environment-setup-drill.mjs",
+    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
+  },
+  {
+    "path": "apps/cli/scripts/managed-parity-source-inventory.mjs",
+    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
+  },
+  {
+    "path": "apps/cli/scripts/path1-host-cloud-correlation.mjs",
+    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
+  },
+  {
+    "path": "apps/cli/scripts/path1-provider-cloud-correlation.mjs",
+    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
+  },
+  {
+    "path": "apps/cli/src/cli-app-root.tsx",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/cli-automation-snapshot.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/cli-command-action-composition.ts",
+    "removedBy": "OSS-boundary item 11 (neutral default-host source)"
+  },
+  {
+    "path": "apps/cli/src/cli-input-routing-composition.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/cli-primary-transcript-composition.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/cli-waiting-room-composition.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/deployed-workflow-command.ts",
+    "removedBy": "kept by Miguel 11-03, revisit (/cloud deployments stay in the TUI for now)"
+  },
+  {
+    "path": "apps/cli/src/deployed-workflow-types.ts",
+    "removedBy": "kept by Miguel 11-03, revisit (/cloud deployments stay in the TUI for now)"
+  },
+  {
+    "path": "apps/cli/src/managed-environment-api.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/managed-environment-reimage-stop.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/remote-machine-command-handlers.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-controller.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-focus-targets.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-kernel-client.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-launch-ownership.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-managed-environment-launch-controller.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-managed-environment-reimage-controller.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-managed-environments.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-start-rows.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-state.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-types.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/cli/src/waiting-room-value-cycling.ts",
+    "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
+  },
+  {
+    "path": "apps/kernel/src/local/api/types.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/local/api/types/managed_environment.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "apps/kernel/src/local/api/types/request.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/local/api/types/response.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/local/mod.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/managed_bootstrap/cloud.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "apps/kernel/src/managed_bootstrap/mod.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "apps/kernel/src/managed_bootstrap/supervisor.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/command/local_request_metadata.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/external_response.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/managed_bootstrap_observation_control.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/router/pre_lane_request.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/runtime/session_membership/scope.rs",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  },
+  {
+    "path": "apps/kernel/src/transport/relay_peer.rs",
+    "removedBy": "OSS-boundary items 3 to 8 (rental plan and neutral names)"
+  },
+  {
+    "path": "packages/kernel-client/src/ipc-managed-environment-requests.ts",
+    "removedBy": "OSS-boundary item 3 (rental plan: pre-reimage observation and reimage types)"
+  }
+]

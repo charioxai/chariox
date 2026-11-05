@@ -48,7 +48,7 @@ fn bootstrap_rejects_unknown_arguments_before_startup() {
     for args in [
         vec!["--unknown"],
         vec!["unexpected"],
-        vec!["--disposable-worker", "--unknown"],
+        vec!["--disposable-worker"],
         vec!["--version", "extra"],
         vec!["--help", "extra"],
     ] {

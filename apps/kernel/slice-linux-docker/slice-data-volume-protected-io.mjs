@@ -18,7 +18,6 @@ import { DATA_ROOT, MAX_VOLUME_SIZE_GB, MIN_VOLUME_SIZE_GB } from "./slice-data-
 
 export const PROTECTED_BOOTSTRAP_ROOT = "/etc/chariox/bootstrap"
 export const MANAGED_BOOTSTRAP_PATH = `${PROTECTED_BOOTSTRAP_ROOT}/managed-bootstrap.json`
-export const WORKER_BOOTSTRAP_PATH = `${PROTECTED_BOOTSTRAP_ROOT}/disposable-worker-bootstrap.json`
 export const BINDING_PATH = "/var/lib/chariox-data-volume/volume-binding.json"
 export const ADMISSION_OBSERVATION_PATH = "/run/chariox-data-volume-observation/observation.json"
 
@@ -113,7 +112,7 @@ function readProtectedInput(path, schemaVersion, expectedGid) {
   ) {
     fail("protected bootstrap data-volume identity or size is invalid")
   }
-  return { role: path === MANAGED_BOOTSTRAP_PATH ? "managed" : "worker", serial, sizeGb }
+  return { serial, sizeGb }
 }
 
 function parseBinding(value) {
@@ -213,10 +212,7 @@ function validateObservation(value) {
 export const systemIo = {
   readStorageInput() {
     const gid = charioxGroupId()
-    const managed = readProtectedInput(MANAGED_BOOTSTRAP_PATH, 3, gid)
-    const worker = readProtectedInput(WORKER_BOOTSTRAP_PATH, 2, gid)
-    if (managed && worker) fail("both protected managed and worker bootstrap inputs are present")
-    return managed ?? worker
+    return readProtectedInput(MANAGED_BOOTSTRAP_PATH, 3, gid)
   },
   readBinding() {
     validateBindingDirectory()

@@ -51,9 +51,10 @@ kernel; starting its systemd unit alone does not establish enrollment acceptance
 
 ## Release publication and trust
 
-`scripts/package-boot-release.mjs` packages independently built kernel and
-supervisor binaries, the signed common unit and builder attestation using the
-existing schema-2 runtime manifest. It accepts a clean source checkout and
+`scripts/package-boot-release.mjs` packages independently built kernel, WASM App
+worker and supervisor binaries, the signed common unit and builder attestation using the
+existing schema-2 runtime manifest. The worker is installed read-only
+beside the kernel, where the kernel opens it; a manifest without it is refused. It accepts a clean source checkout and
 requires explicit binaries and signing key. Run it on the release signer, never
 with a production private key on a lane builder. The production release service
 runs the same packaging/signing step with its established Ed25519 signing setup,

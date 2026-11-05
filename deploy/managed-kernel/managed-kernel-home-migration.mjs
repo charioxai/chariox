@@ -16,12 +16,9 @@ import { basename, dirname, relative, resolve } from "node:path"
 
 const SCHEMA_VERSION = 1
 const MAX_JOURNAL_BYTES = 64 * 1024
-const STATE_DIRECTORIES = ["managed-context", "managed-runtime-auth", "managed", "disposable-worker", "kernels"]
+const STATE_DIRECTORIES = ["managed-context", "managed-runtime-auth", "managed", "kernels"]
 const CONTROL_ENTRIES = [
   ["managed/bootstrap-receipt.json", "managed/bootstrap-receipt.json", "file", "managed bootstrap receipt"],
-  ["managed/release-override.json", "managed/release-override.json", "file", "managed release override"],
-  ["disposable-worker/bootstrap-receipt.json", "disposable-worker/bootstrap-receipt.json", "file", "disposable worker bootstrap receipt"],
-  ["disposable-worker/release-override.json", "disposable-worker/release-override.json", "file", "disposable worker release override"],
   ["kernels/active", "kernels/active", "directory", "managed kernel presence state"],
 ]
 

@@ -9,6 +9,7 @@
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
+    "./default-control-plane": "./dist/default-control-plane.js",
     "./ipc-managed-context-requests": "./dist/ipc-managed-context-requests.js",
     "./ipc-project-environment-setup-requests": "./dist/ipc-project-environment-setup-requests.js",
     "./project-environment-setup-orchestration": "./dist/project-environment-setup-orchestration.js",

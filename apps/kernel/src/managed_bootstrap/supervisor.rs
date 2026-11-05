@@ -563,19 +563,6 @@ pub(super) fn spawn_with_broker_lease(
 }
 
 #[cfg(all(test, unix))]
-pub(super) fn install_test_broker_lease(stream: UnixStream) -> io::Result<()> {
-    let reader = stream.try_clone()?;
-    let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
-    *lease
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BrokerLease {
-        reader: BufReader::new(reader),
-        writer: stream,
-    });
-    Ok(())
-}
-
-#[cfg(all(test, unix))]
 pub(super) fn clear_test_broker_lease() {
     let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
     *lease
@@ -1264,7 +1251,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     ) -> super::super::state::ManagedBootstrapEnvelope {
         super::super::state::ManagedBootstrapEnvelope {
             schema_version: 1,
-            cloud_api_url: "https://cloud.example.test".to_string(),
+            control_plane_url: "https://cloud.example.test".to_string(),
             environment_id: "environment-1".to_string(),
             token: format!("mkboot_{}", "b".repeat(40)),
             expires_at: "2026-09-23T00:00:00Z".to_string(),
@@ -1283,7 +1270,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     ) {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": envelope.schema_version,
-            "cloudApiUrl": &envelope.cloud_api_url,
+            "controlPlaneUrl": &envelope.control_plane_url,
             "environmentId": &envelope.environment_id,
             "token": &envelope.token,
             "expiresAt": &envelope.expires_at,

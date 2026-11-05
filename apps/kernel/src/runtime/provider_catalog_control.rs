@@ -286,46 +286,6 @@ pub(crate) fn execute_get_provider_command_catalogs_request(
     provider_command_catalogs_response()
 }
 
-pub(crate) async fn provider_catalog_json_value(
-    provider_catalog_projection: &ProviderCatalogProjectionStore,
-    config_projection: &DaemonConfigProjectionStore,
-    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
-) -> Option<serde_json::Value> {
-    if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
-        return serde_json::to_value(catalog).ok();
-    }
-    let _load_guard = provider_catalog_projection.lock_load("").await;
-    if let Some(catalog) = provider_catalog_projection.get(PROVIDER_CATALOG_CACHE_TTL) {
-        return serde_json::to_value(catalog).ok();
-    }
-    let config = config_projection.snapshot();
-    let registry = account_profiles.clone();
-    let load_started = Instant::now();
-    tokio::task::spawn_blocking(move || {
-        load_provider_catalog(
-            config,
-            registry,
-            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
-            crate::local::GetProviderCatalogRequest::default(),
-        )
-    })
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .and_then(|catalog| {
-        crate::logging::info_with_fields(
-            "daemon.startup",
-            "provider catalog loaded for health projection",
-            serde_json::json!({
-                "load_ms": load_started.elapsed().as_millis(),
-                "provider_count": catalog.all.len(),
-                "connected_provider_count": catalog.connected.len(),
-            }),
-        );
-        serde_json::to_value(catalog).ok()
-    })
-}
-
 pub(crate) fn provider_catalog_cache_key(
     owner_user_id: &str,
     request: &crate::local::GetProviderCatalogRequest,

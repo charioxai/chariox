@@ -44,7 +44,7 @@ export async function createFixture(dir, chosenKernelBytes) {
   const specs = [
     ["chariox-kernel", "/usr/local/bin/chariox-kernel", kernelBytes ?? bytes, 0o755],
     ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", bytes, 0o755],
-    ...["chariox-managed-bootstrap.service", "chariox-path1-managed-bootstrap.service", "chariox-disposable-worker-bootstrap.service", "chariox-rootless-docker.service", "chariox-slice-broker.service"].map(n => [n, `/etc/systemd/system/${n}`, new URL(`../../../deploy/managed-kernel/${n}`, import.meta.url)]),
+    ...["chariox-managed-bootstrap.service", "chariox-path1-managed-bootstrap.service", "chariox-rootless-docker.service", "chariox-slice-broker.service"].map(n => [n, `/etc/systemd/system/${n}`, new URL(`../../../deploy/managed-kernel/${n}`, import.meta.url)]),
     ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", new URL("../slice-linux-docker/chariox-data-volume-admission.service", import.meta.url)],
     ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", new URL("../slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf", import.meta.url)],
     ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", new URL("../slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf", import.meta.url)],
