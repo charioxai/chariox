@@ -1715,3 +1715,103 @@ fn structured_output_record_store_clear_removes_records_and_schedule() {
     assert_eq!(store.poll_due_at_ms("provider-run-1"), None);
     assert!(store.take("provider-run-1").is_empty());
 }
+
+#[test]
+fn claude_large_native_plan_survives_fanout_and_history() {
+    let (app, worktree, session_id, attachment_id, provider_run_id) =
+        structured_provider_test_app_for("claude", "claude");
+    let agent_id = app
+        .providers()
+        .get_run(&provider_run_id)
+        .unwrap()
+        .agent_instance_id()
+        .unwrap()
+        .to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        &session_id,
+        "claude",
+        "claude",
+        "default",
+        "sonnet",
+    )
+    .with_agent_id(&agent_id);
+    let run = crate::provider::RuntimeProviderRun::new(
+        &provider_run_id, &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "claude-large-plan-regression".into(),
+            pty_target: None,
+            pty_program: Some("/usr/bin/python3".into()),
+            pty_args: vec!["-c".into(), r#"
+import json, sys
+sys.stdin.readline()
+print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','id':'large-plan','name':'ExitPlanMode','input':{}}]}}), flush=True)
+print(json.dumps({'type':'user','message':{'content':[{'type':'tool_result','tool_use_id':'large-plan','content':'User has approved your plan.\n\n## Approved Plan:\n' + 'x' * (9 * 1024)}]}}), flush=True)
+print(json.dumps({'type':'result','subtype':'success','result':''}), flush=True)
+"#.into()],
+            pty_env: Default::default(), pty_env_remove: Vec::new(),
+            working_directory: Some(worktree.path().to_path_buf()),
+            structured_endpoint: Some("stdio://claude".into()),
+        },
+    );
+    app.providers_mut().insert_run_for_test(run.clone());
+    let mut binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+    crate::provider::submit_claude_prompt(
+        &run,
+        &mut binding.state,
+        &crate::prompt_assembly::PromptEnvelope::new(
+            "Make a plan",
+            "",
+            Vec::new(),
+            crate::prompt_assembly::PromptManifest::current(),
+        ),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut records = Vec::new();
+    loop {
+        let batch = crate::provider::drain_claude_events(&run, &mut binding.state).unwrap();
+        for chunk in batch.chunks {
+            records.push(ProviderOutputFanout::new(&app).fan_out(
+                &session_id,
+                &provider_run_id,
+                chunk.kind,
+                chunk.merge_key,
+                vec![attachment_id.clone()],
+                &chunk.bytes,
+            ));
+        }
+        if batch.prompt_completed {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "provider must finish");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let completed = records
+        .iter()
+        .find_map(|record| {
+            let value: serde_json::Value = serde_json::from_slice(&record.bytes).ok()?;
+            (value["status"] == "completed").then_some(value)
+        })
+        .expect("completed native tool must reach fanout");
+    let plan = completed["input"]["plan"]
+        .as_str()
+        .expect("the 9 KiB plan must survive terminal bounding");
+    assert_eq!(plan.len(), 9 * 1024);
+    assert!(plan.bytes().all(|byte| byte == b'x'));
+    let session = app.sessions.get_session(&session_id).unwrap();
+    let history = app
+        .load_session_history_entries(&session, Some(&agent_id))
+        .unwrap();
+    let retained = history
+        .iter()
+        .find_map(|entry| {
+            let value: serde_json::Value = serde_json::from_str(&entry.text).ok()?;
+            (value["status"] == "completed").then_some(value)
+        })
+        .expect("completed native tool must be retained in history");
+    assert!(
+        retained["input"]["plan"].as_str() == Some(plan),
+        "history must retain the complete plan"
+    );
+}

@@ -203,7 +203,13 @@ impl ClaudeToolTranscript {
                             }
                         }
                     }
-                    payload[if failed { "error" } else { "output" }] = json!(output);
+                    // A plan card consumes input.plan. Keeping the native result's
+                    // copy as well can exceed the terminal record's combined limit.
+                    let has_plan = pending.name == "ExitPlanMode"
+                        && payload["input"]["plan"].as_str().is_some_and(|plan| !plan.trim().is_empty());
+                    if failed || !has_plan {
+                        payload[if failed { "error" } else { "output" }] = json!(output);
+                    }
                     let (images, omitted) = bounded_result_images(block.get("content"));
                     if !images.is_empty() {
                         payload["images"] = json!(images);
