@@ -234,9 +234,9 @@ async function main() {
 
   const pairing = (await rpc(client, { CreateTerminalPairingLink: { terminal_type: 'cli', expires_in_ms: 300000 } })).TerminalPairingLinkCreated.pairing
   const identity = new RelayClientIdentity(createRelayKeypair().privateKey)
-  const remote = new LocalIpcClient(relayUrl, { transport: 'relay', relayAuthToken: token('catalog-client', 'client', ['client.connect', 'client.metadata.read', 'packet.route'], identity.publicKeyThumbprint), targetDaemonId: status.daemon_id, relayIdentity: identity, controlRequestRetryDeadlineMs: 1000 })
+  const remote = new LocalIpcClient(relayUrl, { transport: 'relay', relayAuthToken: token(pairing.terminal_id, 'client', ['client.connect', 'client.metadata.read', 'packet.route'], identity.publicKeyThumbprint), targetDaemonId: status.daemon_id, relayIdentity: identity, controlRequestRetryDeadlineMs: 1000 })
   clients.push(remote)
-  await bounded(rpc(remote, { JoinTerminalPairingLink: { pairing_link: pairing.pairing_link, terminal_id: 'catalog-client', terminal_type: 'cli', public_key_thumbprint: identity.publicKeyThumbprint } }), 'relay-client-pairing', 10000)
+  await bounded(rpc(remote, { JoinTerminalPairingLink: { pairing_link: pairing.pairing_link, terminal_id: pairing.terminal_id, terminal_type: 'cli', public_key_thumbprint: identity.publicKeyThumbprint } }), 'relay-client-pairing', 10000)
   const att = (await rpc(remote, { AttachToSession: { session_id: session.session.id, client_id: 'catalog-probe', capability_level: 'FullTerminal' } })).SessionAttached.attachment.id
   const targetKey = await targetPublicKey(relayUrl, status.daemon_id)
   const peer = await peerProbe(relayUrl, status.daemon_id, targetKey)
