@@ -177,3 +177,40 @@ product-linked Codex profile copy), `TCAP_GITEA`, `TCAP_ORIGIN` (an owned
 ## Agent-driven account rows
 
 `room-driver/` runs AU-03, AU-04, AU-08 and AU-16 with a real Room agent and a person for the steps only a person can do (see its README).
+
+## Verification cards and owner browser recovery (MP-08 / MP-09 / MP-10 / MP-11)
+
+`challenge-hosted-live.mjs` uses an owned loopback service that sends no email.
+Use Node24 (the hosted fixture requires argon2Sync) and run through the new
+hosted UI with an official linked Codex profile. Supply
+`VFLAG_ORIGIN`, `VFLAG_EVIDENCE`, `VFLAG_BIN`, `VFLAG_CODEX_PROFILE` and an external
+`TMPDIR`; use `VFLAG_ENCODING=json` and `urlencoded` in separate runs. Desktop
+DPR1 and DPR2 are the default cells. The drill keeps a second owner viewer open
+at the other density, requests one code in the popup, submits a wrong code,
+checks the rejection stays visible, then opens the same tab and submits the
+correct code. Both clients must remove the same card, and the agent must
+capture the temporary token, make an authenticated request, and remove its
+capture without Resume. Screenshots and status-only events stay under the
+evidence path. Temporary token fields are password fields in screenshots.
+
+The explicitly authorized `pr0-gmailprep` run accepts
+`VFLAG_EXISTING_KERNEL_ROOT=/root/.chariox/dev/vault-drill-kernel`. It connects to
+the running kernel through owner IPC, uses the normal owner sign-in form, and
+creates a separate disposable workspace/session. It never starts or stops that
+kernel, changes its Vault configuration, requests a real Vercel code or closes
+its other sessions. The Vault must already be unlocked through the owner UI.
+Use product hot reload for upgrades to preserve an existing unlock. This mode
+uses the existing linked profile (`VFLAG_PROFILE_ID`, default
+`vflag-r4-drill-owdpqv4h`) and registers a new workspace owned by the real kernel
+service account. A pending browser-access request uses
+`chariox.events.blocked` with `owner_action: "browser_access"`; its owner card
+allows browser access and continues the original task in one click. Ordinary
+blocked reasons cannot create that grant decision.
+
+Set `VFLAG_RECOVER_BROWSER=1` to revoke access after the first card, approve
+Allow browser in place, and require a fresh card on the same tab before the
+wrong-code/retry loop. `VFLAG_EXPECT=grant-red` records the old stuck path;
+`encoding-red` records the old accepted-but-still-waiting URLencoded path.
+Green checks include plain card text, no automatic card expiry, and at least an
+hour on an active person wait. This focused drill supplements AU-03; it does not
+claim a real Vercel token was created.
