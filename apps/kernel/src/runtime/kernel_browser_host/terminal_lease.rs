@@ -39,7 +39,7 @@ impl KernelBrowserHost {
             .cloned();
         if let Some(model) = model {
             let mut model = model.lock().unwrap_or_else(|error| error.into_inner());
-            model.reclaim_lapsed_takeovers(Instant::now());
+            model.reclaim_idle_takeovers(Instant::now());
             model.viewer_connected(EnvironmentActor::new(
                 actor,
                 EnvironmentActorKind::Human,
