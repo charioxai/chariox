@@ -707,7 +707,7 @@ async function main() {
       `2. request ${spawn(target, roomB.session.id, true)}`,
       `3. request ${spawn(null, roomA.session.id, true, true)}`,
       `4. request ${spawn(target, roomB.session.id, false, true)}`,
-      "Then call events_wait with timeout_seconds 90 and since 0, without events_subscribe. Keep waiting with since set to next_cursor until both subscribed delegates report value.outcome (at most 12 waits). Never subscribe. Ignore events for no_subscribe delegates.",
+      "Then call events_wait with timeout_seconds 90 and since 0, without events_subscribe. Keep a set of completed agent_id values. You MUST observe value.outcome for TWO DISTINCT agent_id values: the local single-local delegate from step 1 AND the remote batch delegate from step 2. ONE outcome is NOT enough. Call events_wait AGAIN after the first outcome, with since set to next_cursor. They may finish at different times. Do not end your turn before BOTH distinct subscribed delegates completed (at most 12 waits). Never subscribe. Ignore the no_subscribe delegates from steps 3 and 4.",
       "Then reply with the words ELEVATED and DONE joined by an underscore.",
     ].join("\n")
     // The normal owner /sudo flow approves this one turn; all creates and waits share its run.
@@ -731,12 +731,12 @@ async function main() {
       return created.length === 4
     }, "elevated delegates created", 150000)
     const delegates = []
-    for (const {index, agent} of created) {
+    await Promise.all(created.map(async ({index, agent}) => {
       const r = index % 2 === 0 ? a : b
-      const att = (await r.rpc({AttachToSession: {session_id: agent.session_id, client_id: "reach-delegate", capability_level: "FullTerminal"}})).SessionAttached.attachment.id
+      const att = (await r.rpc({AttachToSession: {session_id: agent.session_id, client_id: `reach-delegate-${agent.id}`, capability_level: "FullTerminal"}})).SessionAttached.attachment.id
       const turn = await agentTurn(r, agent.session_id, att, agent.id, "Reply with exactly DELEGATE_FINISHED.", "DELEGATE_FINISHED")
       delegates.push({index, model: agent.model, turn})
-    }
+    }))
     await executing
     const turn = await turnOf(a, roomA.session.id, agentA)
     const waits = turn.calls.filter(c => reachName(c) === "events_wait")
