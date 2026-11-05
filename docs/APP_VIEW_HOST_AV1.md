@@ -18,8 +18,8 @@ streamed renderer or Vault/observation behavior changes here.
 
 | Browser / conditions | Renderer | Required network boundary | Product support |
 | --- | --- | --- | --- |
-| Chrome 155.0.8059.39, Linux headless, fresh ordinary profiles, DPR 1/2 | Both reference Apps render | FAIL: speculative navigation / explicit preconnect TCP and DNS-prefetch | Not established |
-| Chrome for Testing 155.0.8059.79, same conditions | Both reference Apps render | Same FAIL | Not established |
+| Chrome 155.0.8059.39, Linux headless, fresh ordinary profiles | Both reference Apps render at DPR 1/2 | FAIL at DPR1: speculative navigation / explicit preconnect TCP and DNS-prefetch | Not established |
+| Chrome for Testing 155.0.8059.79, same conditions | Both reference Apps render at DPR 1/2 | Same FAIL at DPR1 | Not established |
 | Firefox, Safari/WebKit, Edge, macOS/Windows default browsers, native WebViews | NOT RUN | NOT RUN | Not established |
 
 The strict frame produces zero HTTP requests and zero WebRTC UDP packets at the
@@ -29,8 +29,15 @@ preconnect opens an accepted TCP socket with zero application bytes. Explicit
 DNS-prefetch produces DNS query events for the strict test name. The host has
 `X-DNS-Prefetch-Control: off`; both documents have the equivalent meta setting.
 These controls do not establish a network boundary in the tested engines.
-Moving the parent CSP from a meta policy to an HTTP response header also did
+The final packet captures also contain the strict DNS questions at the local
+resolver, independently of the browser NetLog. Moving the parent CSP from a
+meta policy to an HTTP response header also did
 not stop the navigation sockets (see `navigation-probe.json`).
+
+Network containment was tested at DPR1. The reference renderer/canvas checks
+ran at both DPRs. DPR2 network containment is not established; the existing
+DPR1 failure already blocks browser support. This evidence is not a live
+Web/TUI/relay or native accessibility acceptance matrix.
 
 Use **ordinary profiles** for this proof. Chromium private contexts suppress
 explicit preconnect and DNS-prefetch; the earlier private-context runs had no
