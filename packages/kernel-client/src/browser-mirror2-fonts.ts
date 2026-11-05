@@ -4,6 +4,18 @@ export function mirror2AbsentFont(): Blob {
   return new Blob([Uint8Array.from(atob('AAEAAAAKAIAAAwAgT1MvMkTfQ5sAAAEoAAAAYGNtYXAAPQCxAAABkAAAAFBnbHlmAAAAAAAAAegAAAABaGVhZFdhoeAAAACsAAAANmhoZWEDIf86AAAA5AAAACRobXR4AAAAAAAAAYgAAAAGbG9jYQAAAAAAAAHgAAAABm1heHAAAwACAAABCAAAACBuYW1lyF5UQAAAAewAAADYcG9zdG52ed4AAALEAAAALAABAAAAAQAA+Kk0lF8PPPUAAwPoAAAAAHwlsIAAAAAAfCWwgAAAAAAAAAAAAAAAAwACAAAAAAAAAAEAAAMg/zgAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAEAAAACAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAAAAAAwAAAZAABQAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAPz8/PwAA/////wMg/zgAAAMgAMgAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAAAAAAAAAAMAAAADAAAAHAADAAEAAAAcAAMACgAAADQABAAYAAAAAgACAAAAAP//AAD//wABAAAADAAAAAAAHAAAAAAAAAABABD//wAQ//8AAAABAAAAAAAAAAAAAAAAAAAACgB+AAEAAAAAAAEADAAAAAEAAAAAAAIABwAMAAEAAAAAAAMADAAAAAEAAAAAAAQADAAAAAEAAAAAAAYACwATAAMAAQQJAAEAGAAeAAMAAQQJAAIADgA2AAMAAQQJAAMAGAAeAAMAAQQJAAQAGAAeAAMAAQQJAAYAFgBETWlycm9yIEVtcHR5UmVndWxhck1pcnJvckVtcHR5AE0AaQByAHIAbwByACAARQBtAHAAdAB5AFIAZQBnAHUAbABhAHIATQBpAHIAcgBvAHIARQBtAHAAdAB5AAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAQIFZW1wdHk='), char => char.charCodeAt(0))], { type: 'font/ttf' })
 }
 
+// Missing font resources must stay failed until their bytes arrive, but a
+// zero-byte Blob URL produces noisy Chromium decode warnings. `local()` keeps
+// the face unavailable without pretending a required font has loaded.
+export function mirror2PendingFontSource(raw: string, offset: number, unavailableName: string): string | null {
+  const before = raw.slice(0, offset), lower = before.toLowerCase()
+  const face = lower.lastIndexOf('@font-face'), open = before.lastIndexOf('{'), close = before.lastIndexOf('}')
+  if (face < 0 || face <= close || face > open) return null
+  const declaration = Math.max(open, before.lastIndexOf(';'))
+  if (!/^\s*src\s*:/i.test(before.slice(declaration + 1))) return null
+  return `local(${JSON.stringify(unavailableName)})`
+}
+
 // MP-08/MP-10/MP-11: preserve font-face objects when unrelated image URLs hydrate.
 // CSSOM edits keep the source style node, cascade order and DOM selectors intact.
 type MutableRule = CSSRule & { style?: CSSStyleDeclaration; selectorText?: string }
