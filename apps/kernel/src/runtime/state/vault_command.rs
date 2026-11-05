@@ -45,7 +45,7 @@ pub(in crate::runtime::state) fn validate_capture_binding(
 }
 
 impl KernelRuntimeState {
-    fn recheck_vault_command_context(
+    pub(in crate::runtime::state) fn recheck_vault_command_context(
         &self,
         context: &VaultAgentContext,
     ) -> Result<(), DaemonError> {
@@ -64,8 +64,7 @@ async fn run_command(
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
         state.recheck_vault_command_context(&context)?;
-        let run = state.watched_process_run(context.run.id())?;
-        state.run_kernel_command(&run, command)
+        state.run_kernel_command(&context, command)
     })
     .await
     .map_err(|_| error("the command runner stopped unexpectedly"))?

@@ -530,3 +530,62 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: the user Stop path must settle Vault children.
+#[tokio::test]
+async fn r10_cancel_prompt_settles_vault_command_before_side_effect() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let started = workspace(&f).join("cancel-started");
+    let effect = workspace(&f).join("cancel-effect");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "touch '{}'; sleep 2; touch '{}'; printf '%s' '{SECRET}'",
+            started.display(),
+            effect.display()
+        )
+    ]);
+    let operation = capture(&f, "cancel-owned", argv, json!({"kind":"stdout"}));
+    let cancel = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: f.request.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            target_agent_id: Some(turn.agent_id.clone()),
+            expected_prompt_id: turn.prompt_id.clone(),
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "stop-vault",
+            None,
+            None,
+            &request,
+        );
+        f.router.dispatch(command, request).await.unwrap();
+    };
+    let (result, ()) = tokio::join!(operation, cancel);
+    let no_effect = !effect.exists();
+    let settled = f.state.owned.agent_wakes.processes.count() == 0;
+    f.state.shutdown_cleanup().await.unwrap();
+    assert!(
+        result.is_err(),
+        "cancelled prompt cannot complete a Vault command"
+    );
+    assert!(
+        no_effect,
+        "Stop must terminate the command before its delayed side effect"
+    );
+    assert!(
+        settled,
+        "Stop must physically settle the owned process group"
+    );
+}

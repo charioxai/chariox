@@ -69,9 +69,11 @@ impl KernelRuntimeState {
     /// the run and its authority; this owns launch, timeout and settlement.
     pub(in crate::runtime::state) fn run_kernel_command(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        context: &super::super::vault_use::VaultAgentContext,
         request: KernelCommand,
     ) -> Result<KernelCommandOutput, DaemonError> {
+        let run = &context.run;
+        self.recheck_vault_command_context(context)?;
         let failed = |e: &dyn std::fmt::Display| {
             crate::runtime::kernel_access::error(format!("command launch failed: {e}"))
         };
@@ -127,10 +129,19 @@ impl KernelRuntimeState {
             live.insert(id.clone(), owned.clone());
         }
         let deadline = Instant::now() + request.timeout;
-        let mut stopped = false;
+        let mut stopped_at = None;
+        let mut cancelled = None;
         let exit = loop {
+            let now = Instant::now();
+            if stopped_at.is_none() {
+                cancelled = self.recheck_vault_command_context(context).err();
+                if cancelled.is_some() || now >= deadline || processes.stopping() {
+                    stopped_at = Some(now);
+                    processes.terminate(&id);
+                }
+            }
             match owned.lock().map(|mut c| c.poll()) {
-                Ok(Ok(Some(status))) if !stopped => {
+                Ok(Ok(Some(status))) if stopped_at.is_none() => {
                     break KernelCommandExit::Exited(
                         status
                             .code()
@@ -143,12 +154,7 @@ impl KernelRuntimeState {
                 _ if owned.lock().map_or(true, |c| c.lost) => break KernelCommandExit::Lost,
                 _ => {}
             }
-            let now = Instant::now();
-            if !stopped && now >= deadline {
-                stopped = true;
-                processes.terminate(&id);
-            }
-            if stopped && now >= deadline + SETTLE_LIMIT {
+            if stopped_at.is_some_and(|stopped| Instant::now() >= stopped + SETTLE_LIMIT) {
                 break KernelCommandExit::Lost;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -168,6 +174,9 @@ impl KernelRuntimeState {
         let [stdout, stderr] = streams.map(|stream| {
             stream.map_or_else(|| (Zeroizing::new(Vec::new()), false), |(c, _)| taken(&c))
         });
+        if let Some(error) = cancelled {
+            return Err(error);
+        }
         Ok(KernelCommandOutput {
             exit,
             truncated: stdout.1 || stderr.1,
