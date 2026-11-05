@@ -39,11 +39,12 @@ type ProjectDraft = {
   typed: { script?: string; variables?: string }
   busy: boolean
   textSaveQueued: boolean
+  rowSaves: Array<() => void>
   message: string | null
 }
 
 function projectDraft(projectId: string): ProjectDraft {
-  return { projectId, environment: null, typed: {}, busy: false, textSaveQueued: false, message: null }
+  return { projectId, environment: null, typed: {}, busy: false, textSaveQueued: false, rowSaves: [], message: null }
 }
 
 export type ProjectEnvironmentControllerDeps = {
@@ -73,6 +74,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
   let pollingOperationId: string | null = null
+  let submittingLine: Input | null = null
 
   const script = (state = draft) => state.typed.script ?? state.environment?.setup.script ?? ""
   const variables = (state = draft) => state.typed.variables ?? state.environment?.variables ?? ""
@@ -114,7 +116,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       state.message = failureText(error)
     } finally {
       state.busy = false
-      if (state.textSaveQueued) { state.textSaveQueued = false; void saveTypedText(state) }
+      flushSaves(state)
       if (mine !== generation && open && state === draft && !state.busy) void refresh()
       deps.render()
     }
@@ -200,9 +202,28 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       state.message = failureText(error)
     } finally {
       state.busy = false
-      if (state.textSaveQueued) { state.textSaveQueued = false; void saveTypedText(state) }
+      flushSaves(state)
       deps.render()
     }
+  }
+
+  const flushSaves = (state: ProjectDraft) => {
+    if (state.busy) return
+    const next = state.rowSaves.shift()
+    if (next) next()
+    else if (state.textSaveQueued) { state.textSaveQueued = false; void saveTypedText(state) }
+  }
+
+  // Apply row edits to the acknowledged lists, after any pending save has returned its revision.
+  const saveRows = (change: (current: ProjectEnvironmentView) => { secretNames?: string[]; filePaths?: string[] }, onDispatch?: () => void) => {
+    const state = draft
+    return new Promise<void>((resolve) => {
+      state.rowSaves.push(() => {
+        onDispatch?.()
+        void save(change(state.environment!), state).then(resolve)
+      })
+      flushSaves(state)
+    })
   }
 
   const hasUnsavedText = (state = draft) => state.environment !== null && (script(state) !== state.environment.setup.script || variables(state) !== state.environment.variables)
@@ -254,24 +275,28 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const submitLine = () => {
-    if (input?.kind !== "line" || !draft.environment) return
+    if (input?.kind !== "line" || !draft.environment || input === submittingLine) return
     const mine = generation
-    const { target, buffer } = input
+    const submitted = input
+    const { target, buffer } = submitted
     const value = buffer.text.trim()
-    input = null
-    if (!value) return
-    if (target === "secretName") {
-      const existing = draft.environment.secrets.find((secret) => secret.name === value)
-      if (existing) { input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }; return }
-      void save({ secretNames: [...draft.environment.secrets.map((secret) => secret.name), value] }).then(() => {
-        if (open && mine === generation && draft.environment?.secrets.some((secret) => secret.name === value) && !input) {
-          input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
-          deps.render()
-        }
-      })
-    } else if (!draft.environment.files.some((file) => file.path === value)) {
-      void save({ filePaths: [...draft.environment.files.map((file) => file.path), value] })
+    if (!value) { input = null; return }
+    if (target === "secretName" && draft.environment.secrets.some((secret) => secret.name === value)) {
+      input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
+      return
     }
+    if (target === "filePath" && draft.environment.files.some((file) => file.path === value)) { input = null; return }
+    submittingLine = submitted
+    const dispatched = () => { if (input === submitted) input = null }
+    void saveRows((current) => target === "secretName"
+      ? { secretNames: [...new Set([...current.secrets.map((secret) => secret.name), value])] }
+      : { filePaths: [...new Set([...current.files.map((file) => file.path), value])] }, dispatched).then(() => {
+      if (submittingLine === submitted) submittingLine = null
+      if (target === "secretName" && open && mine === generation && draft.environment?.secrets.some((secret) => secret.name === value) && !input) {
+        input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
+        deps.render()
+      }
+    })
   }
 
   const submitSecretValue = () => {
@@ -285,11 +310,11 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const current = draft.environment
     if (!current) return
     if (focus.kind === "secret") {
-      const index = focus.index
-      void save({ secretNames: current.secrets.filter((_, at) => at !== index).map((secret) => secret.name) })
+      const name = current.secrets[focus.index]!.name
+      void saveRows((next) => ({ secretNames: next.secrets.filter((secret) => secret.name !== name).map((secret) => secret.name) }))
     } else if (focus.kind === "file") {
-      const index = focus.index
-      void save({ filePaths: current.files.filter((_, at) => at !== index).map((file) => file.path) })
+      const path = current.files[focus.index]!.path
+      void saveRows((next) => ({ filePaths: next.files.filter((file) => file.path !== path).map((file) => file.path) }))
     }
   }
 

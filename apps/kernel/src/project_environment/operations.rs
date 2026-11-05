@@ -26,6 +26,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct EnvironmentOperations {
     root: PathBuf,
     live: Mutex<HashMap<String, Arc<Live>>>,
+    managed: crate::room_terminal::managed_work::ManagedWork,
 }
 
 /// The running side of one operation: progress goes through it, and it tells whether Stop was pressed.
@@ -45,7 +46,25 @@ impl EnvironmentOperations {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
             live: Mutex::new(HashMap::new()),
+            managed: Default::default(),
         })
+    }
+
+    pub(crate) fn link_managed_kernel(
+        &self,
+        gate: Arc<crate::runtime::state::ManagedKernelQuiescenceGate>,
+        callback: std::sync::Weak<dyn Fn() + Send + Sync>,
+    ) {
+        self.managed.link(gate, callback);
+    }
+
+    pub(crate) fn has_running_work(&self) -> bool {
+        // Stop settles the view immediately; keep the work until the task finishes its cleanup.
+        !lock(&self.live).is_empty()
+    }
+
+    fn report_work(&self) {
+        self.managed.report(|| self.has_running_work());
     }
 
     fn path(&self, operation_id: &str) -> PathBuf {
@@ -110,6 +129,7 @@ impl EnvironmentOperations {
         self: &Arc<Self>,
         view: EnvironmentOperationView,
     ) -> Result<Begun, DaemonError> {
+        let _admission = self.managed.admission()?;
         let mut registry = lock(&self.live);
         if let Some(existing) = self.get_locked(&registry, &view.operation_id)? {
             if existing.project_id != view.project_id {
@@ -126,6 +146,8 @@ impl EnvironmentOperations {
             stop,
         });
         registry.insert(view.operation_id, live.clone());
+        drop(registry);
+        self.report_work();
         Ok(Begun::Started(OperationHandle {
             operations: self.clone(),
             live,
@@ -200,6 +222,7 @@ impl Drop for OperationHandle {
         );
         let id = lock(&self.live.view).operation_id.clone();
         lock(&self.operations.live).remove(&id);
+        self.operations.report_work();
     }
 }
 
