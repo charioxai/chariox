@@ -38,7 +38,7 @@ pub(super) fn capture_command(
     capture_command_with_limit(command, timeout, 64 * 1024 * 1024)
 }
 
-fn capture_command_with_limit(
+pub(crate) fn capture_command_with_limit(
     command: &mut Command,
     timeout: Duration,
     output_limit: usize,
