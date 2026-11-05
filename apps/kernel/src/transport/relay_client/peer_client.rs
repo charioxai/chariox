@@ -18,74 +18,7 @@ static TEMPORARY_PEER_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 /// envelope so remote prompt dispatch reports the authoritative worker result.
 pub const LEASED_PROMPT_SUBMIT_RESPONSE_TIMEOUT: Duration = Duration::from_secs(240);
 
-#[derive(Debug)]
-struct RelayPeerRequestTrace {
-    request_id: String,
-    target_daemon_id: Option<String>,
-    target_daemon_alias: Option<String>,
-    transport: &'static str,
-    started_at: Instant,
-    timeout_ms: u64,
-}
-
-impl RelayPeerRequestTrace {
-    fn new(
-        request_id: &str,
-        target: &ClientTarget,
-        transport: &'static str,
-        timeout_ms: u64,
-    ) -> Self {
-        Self {
-            request_id: request_id.to_string(),
-            target_daemon_id: target.daemon_id.clone(),
-            target_daemon_alias: target.daemon_alias.clone(),
-            transport,
-            started_at: Instant::now(),
-            timeout_ms,
-        }
-    }
-
-    fn fields(
-        &self,
-        status: &'static str,
-        error: Option<&str>,
-        from_daemon_id: Option<&str>,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "request_id": self.request_id,
-            "target_daemon_id": self.target_daemon_id,
-            "target_daemon_alias": self.target_daemon_alias,
-            "from_daemon_id": from_daemon_id,
-            "transport": self.transport,
-            "status": status,
-            "relay_rtt_ms": elapsed_ms_u64(self.started_at),
-            "timeout_ms": self.timeout_ms,
-            "error": error,
-        })
-    }
-
-    fn log_completed(
-        &self,
-        status: &'static str,
-        error: Option<&str>,
-        from_daemon_id: Option<&str>,
-    ) {
-        let fields = self.fields(status, error, from_daemon_id);
-        if error.is_some() {
-            crate::logging::warn_with_fields(
-                "daemon.relay_client",
-                "relay peer request completed",
-                fields,
-            );
-        } else {
-            crate::logging::info_with_fields(
-                "daemon.relay_client",
-                "relay peer request completed",
-                fields,
-            );
-        }
-    }
-}
+use super::peer_trace::RelayPeerRequestTrace;
 
 /// Removes a queued peer request from the pending map however its waiter ends, including
 /// a caller deadline that drops the waiter before the response deadline fires.
@@ -163,7 +96,7 @@ impl RelayPeerResponseWaiter {
     }
 }
 
-fn elapsed_ms_u64(started_at: Instant) -> u64 {
+pub(super) fn elapsed_ms_u64(started_at: Instant) -> u64 {
     let elapsed_ms = started_at.elapsed().as_millis();
     elapsed_ms.min(u128::from(u64::MAX)) as u64
 }
@@ -309,6 +242,7 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
     };
     let trace = RelayPeerRequestTrace::new(
         &request_id,
+        &request,
         &target,
         "persistent",
         response_timeout
@@ -961,7 +895,13 @@ async fn send_peer_request_via_temporary_connection_authorized_inner(
     let response_timeout_ms = response_timeout
         .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
         .unwrap_or(u64::MAX);
-    let trace = RelayPeerRequestTrace::new(&request_id, &target, "temporary", response_timeout_ms);
+    let trace = RelayPeerRequestTrace::new(
+        &request_id,
+        &request,
+        &target,
+        "temporary",
+        response_timeout_ms,
+    );
     if let Err(error) = authorize() {
         let _ = socket.close(None).await;
         return Err(error);
@@ -1536,6 +1476,9 @@ mod relay_rtt_tests {
     fn relay_peer_request_trace_fields_include_rtt_and_target() {
         let trace = RelayPeerRequestTrace::new(
             "request-1",
+            &RelayPeerRequest::Ping {
+                value: "private payload".into(),
+            },
             &ClientTarget {
                 daemon_id: Some("daemon-1".to_string()),
                 daemon_alias: Some("worker".to_string()),
@@ -1561,6 +1504,9 @@ mod relay_rtt_tests {
     fn relay_peer_request_trace_fields_include_errors() {
         let trace = RelayPeerRequestTrace::new(
             "request-2",
+            &RelayPeerRequest::Ping {
+                value: "private payload".into(),
+            },
             &ClientTarget {
                 daemon_id: None,
                 daemon_alias: Some("worker".to_string()),
@@ -1572,6 +1518,11 @@ mod relay_rtt_tests {
         let fields = trace.fields("timeout", Some("timed out"), None);
 
         assert_eq!(fields["status"], serde_json::json!("timeout"));
+        assert_eq!(fields["request_kind"], serde_json::json!("ping"));
+        assert_eq!(
+            fields["waiting_for"],
+            serde_json::json!("authenticated relay peer response")
+        );
         assert_eq!(fields["target_daemon_id"], serde_json::Value::Null);
         assert_eq!(fields["target_daemon_alias"], serde_json::json!("worker"));
         assert_eq!(fields["transport"], serde_json::json!("temporary"));

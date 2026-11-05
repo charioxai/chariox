@@ -53,6 +53,7 @@ mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
+mod peer_trace;
 mod remote_inventory;
 mod request_errors;
 mod request_timing;
