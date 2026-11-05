@@ -205,7 +205,7 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
-    /// Owned commands and Setup runs keep a managed kernel from stopping;
+    /// Owned commands and Environment operations keep a managed kernel from stopping;
     /// the same stop fence refuses new work.
     pub(super) fn link_work_to_managed_kernel(&mut self) {
         let Some(gate) = self.owned.managed_kernel_quiescence.clone() else {
@@ -224,6 +224,9 @@ impl KernelRuntimeState {
             .link_managed_kernel(gate.clone(), Arc::downgrade(callback));
         self.owned
             .project_environment_setups
+            .link_managed_kernel(gate.clone(), Arc::downgrade(callback));
+        self.owned
+            .environment_operations
             .link_managed_kernel(gate, Arc::downgrade(callback));
     }
 }
@@ -253,7 +256,8 @@ impl KernelRuntimeOwnedState {
         let any_work = work_in_flight(active_turn_count, &sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
             .max(u8::from(self.room_execs.has_running_work()))
-            .max(u8::from(self.project_environment_setups.has_running_work()));
+            .max(u8::from(self.project_environment_setups.has_running_work()))
+            .max(u8::from(self.environment_operations.has_running_work()));
 
         let mut in_flight: BTreeSet<(&str, &str)> = BTreeSet::new();
         for turn in active_turns.values() {

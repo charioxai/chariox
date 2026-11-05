@@ -1,8 +1,8 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: Setup shares managed work and stop admission.
+//! MP-08 / MP-09 / MP-10 / MP-11: Setup and Import share managed work and stop admission.
 use crate::error::DaemonError;
 use crate::local::{
-    EnvironmentOperationRequest, LocalDaemonResponse, ProjectEnvironmentSetupField,
-    RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
+    EnvironmentOperationRequest, ImportProjectEnvironmentEntriesRequest, LocalDaemonResponse,
+    ProjectEnvironmentSetupField, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
 };
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::runtime::router::CommandRouter;
@@ -24,7 +24,13 @@ struct Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // A failed assertion must also stop any real script before deleting its checkout.
-        for id in ["setup-work", "local-fenced", "peer-fenced"] {
+        for id in [
+            "setup-work",
+            "local-fenced",
+            "peer-fenced",
+            "import-work",
+            "import-fenced",
+        ] {
             let _ = self.runtime.cancel_environment_operation(
                 EnvironmentOperationRequest {
                     operation_id: id.into(),
@@ -229,4 +235,95 @@ async fn reserved_stop_refuses_setup_from_local_and_peer_entry_points() {
             "refused Setup must not publish an operation"
         );
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: Import is work from admission through cleanup.
+#[tokio::test]
+async fn admitted_import_blocks_stop_until_its_task_settles() {
+    let fixture = fixture("import-stop-work");
+    let before = fixture
+        .runtime
+        .managed_activity_record_call_count_for_test();
+    fixture
+        .runtime
+        .import_project_environment_entries(
+            ImportProjectEnvironmentEntriesRequest {
+                project_id: fixture.project_id.clone(),
+                operation_id: "import-work".into(),
+                source_kernel_id: "source-kernel".into(),
+                checkout_path: None,
+                entries: None,
+            },
+            &fixture.owner,
+        )
+        .unwrap();
+    // The current-thread executor has not polled the detached source request yet.
+    assert_eq!(
+        fixture.runtime.managed_working_agent_count(),
+        1,
+        "an admitted Import is already work while waiting for its source"
+    );
+    assert!(!fixture.reserve(), "Import must keep the machine running");
+    let during = fixture
+        .runtime
+        .managed_activity_record_call_count_for_test();
+    assert!(during > before, "admission publishes managed activity");
+    fixture
+        .runtime
+        .cancel_environment_operation(
+            EnvironmentOperationRequest {
+                operation_id: "import-work".into(),
+            },
+            &fixture.owner,
+        )
+        .unwrap();
+    assert_eq!(
+        fixture.runtime.managed_working_agent_count(),
+        1,
+        "Stop must not release work before cancellation cleanup"
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.runtime.managed_working_agent_count() != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(
+        fixture
+            .runtime
+            .managed_activity_record_call_count_for_test()
+            > during,
+        "task cleanup publishes idle"
+    );
+    assert!(fixture.reserve());
+}
+
+#[tokio::test]
+async fn reserved_stop_refuses_import_without_publishing_an_operation() {
+    let fixture = fixture("import-stop-fence");
+    assert!(fixture.reserve());
+    let result = fixture.runtime.import_project_environment_entries(
+        ImportProjectEnvironmentEntriesRequest {
+            project_id: fixture.project_id.clone(),
+            operation_id: "import-fenced".into(),
+            source_kernel_id: "source-kernel".into(),
+            checkout_path: None,
+            entries: None,
+        },
+        &fixture.owner,
+    );
+    assert!(result.is_err(), "Import must not cross the stop fence");
+    assert!(
+        fixture
+            .runtime
+            .get_environment_operation(
+                EnvironmentOperationRequest {
+                    operation_id: "import-fenced".into()
+                },
+                &fixture.owner,
+            )
+            .is_err(),
+        "a refused Import must not publish an operation"
+    );
 }

@@ -1,6 +1,6 @@
 //! Managed work shares one admission fence and reports its activity transitions.
-//! Terminal commands, execs and Project Setup runs keep the machine running
-//! until their processes settle, and cannot start behind a reserved stop.
+//! Terminal commands, execs and Project Environment operations keep the machine
+//! running until their tasks settle, and cannot start behind a reserved stop.
 
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
