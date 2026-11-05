@@ -950,7 +950,9 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(format!("ws://{address}"));
     config.relay_token = Some("idle-fixture".into());
-    config.relay_heartbeat_ms = 100;
+    // Keep production cadence: flooding heartbeats into a silent peer can
+    // otherwise fill the writer before the read-idle deadline is reached.
+    config.relay_heartbeat_ms = 30_000;
     let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
     let state = Arc::new(RwLock::new(RelayClientState::default()));
     let (stop, stopping) = watch::channel(false);
@@ -970,24 +972,23 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
     })
     .await
     .unwrap();
-    tokio::time::pause();
-    tokio::time::advance(RELAY_READ_IDLE_LIMIT + Duration::from_secs(1)).await;
-    // A fixed number of yields is not a barrier for the connector's runtime
-    // replies. Observe the idle transition before resuming the paused clock.
-    let observation_deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while state.read().await.connected() && std::time::Instant::now() < observation_deadline {
-        tokio::task::yield_now().await;
-    }
-    let disconnected_after_deadline = !state.read().await.connected();
-    tokio::time::resume();
-    let reconnected = timeout(Duration::from_secs(5), connections.recv()).await;
+    // This connector also awaits a router on an independent runtime. Use its
+    // real socket and real deadline instead of advancing only one runtime's
+    // clock; fixed yields never establish a cross-runtime timer barrier.
+    let waiting_started = std::time::Instant::now();
+    let reconnected = timeout(
+        RELAY_READ_IDLE_LIMIT + Duration::from_secs(10),
+        connections.recv(),
+    )
+    .await;
+    let waited = waiting_started.elapsed();
     let _ = stop.send(true);
     connector.await.unwrap();
     let _ = server_stop.send(());
     server.await.unwrap();
     assert!(
-        disconnected_after_deadline,
-        "silent socket did not reach its idle deadline"
+        waited >= RELAY_READ_IDLE_LIMIT - Duration::from_secs(5),
+        "socket replacement happened before the idle deadline"
     );
     assert!(
         matches!(reconnected, Ok(Some(()))),
