@@ -1346,9 +1346,9 @@ fn attaching_the_same_client_replaces_its_stale_attachment() {
     assert!(harness.with_app(|app| app.attachments().get_attachment(first.id()).is_err()));
 }
 
-// MP-08 / MP-10: Project authorization without a session, agent or provider run.
+// Project authorization without a session, agent or provider run.
 #[test]
-fn envp01_project_read_without_agents_denies_foreign_owner() {
+fn envp01_project_environment_follows_the_project_owner_and_is_removed_with_the_project() {
     let harness = LocalRouterTestHarness::new();
     let project = crate::session::RuntimeProject::new(
         "envp01-no-agent",
@@ -1358,24 +1358,50 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
         crate::session::RuntimeProjectKind::Named,
     );
     harness.with_app_mut(|app| app.sessions_mut().restore_projects(vec![project]));
-    let request =
+    let read =
         LocalDaemonRequest::GetProjectEnvironment(crate::local::GetProjectEnvironmentRequest {
             project_id: "envp01-no-agent".into(),
+            checkout_path: None,
         });
-    let response = harness.dispatch_as_user("local", request.clone()).unwrap();
-    match response {
+    match harness.dispatch_as_user("local", read.clone()).unwrap() {
         LocalDaemonResponse::ProjectEnvironment { environment } => {
-            assert_eq!(environment.local_project_id, "envp01-no-agent");
-            assert!(environment.observations.is_empty());
-            assert!(environment.operations.is_empty());
+            assert!(!environment.exists);
+            assert_eq!(environment.revision, 0);
+            assert_eq!(environment.checkout_path, "/plain/folder");
         }
         other => panic!("unexpected response: {other:?}"),
     }
     assert!(harness
-        .dispatch_as_user("foreign", request)
+        .dispatch_as_user("foreign", read)
         .unwrap_err()
         .to_string()
         .contains("does not own"));
+    let save = |expected_revision: u64, script: &str| {
+        LocalDaemonRequest::SaveProjectEnvironment(crate::local::SaveProjectEnvironmentRequest {
+            project_id: "envp01-no-agent".into(),
+            expected_revision,
+            setup: crate::local::ProjectEnvironmentSetupField {
+                script: script.into(),
+            },
+            variables: "LOG_LEVEL=debug".into(),
+            secrets: vec![],
+            files: vec![],
+        })
+    };
+    match harness.dispatch_as_user("local", save(0, "make")).unwrap() {
+        LocalDaemonResponse::ProjectEnvironmentSaved { environment } => {
+            assert_eq!(environment.revision, 1);
+            assert_eq!(environment.setup.script, "make");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+    match harness.dispatch_as_user("local", save(0, "stale")).unwrap() {
+        LocalDaemonResponse::ProjectEnvironmentConflict { environment } => {
+            assert_eq!(environment.revision, 1);
+            assert_eq!(environment.setup.script, "make");
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
     harness.with_app(|app| assert!(app.sessions().list_sessions().is_empty()));
     let root = harness.with_app(|app| app.config().private_runtime_state_root());
     harness
@@ -1387,7 +1413,7 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
         )
         .unwrap();
     assert!(!root
-        .join("project-environments")
+        .join("project-environment")
         .read_dir()
         .unwrap()
         .any(|entry| entry
@@ -1398,43 +1424,31 @@ fn envp01_project_read_without_agents_denies_foreign_owner() {
 }
 
 #[test]
-fn envp01_future_operations_are_known_but_unsupported_without_side_effects() {
-    let harness = LocalRouterTestHarness::new();
-    let target = serde_json::json!({"machine_id":"machine","target_instance_generation":"generation","slice_ref":null});
-    let draft = serde_json::json!({"project_requirements":[],"folders":[]});
-    let future = vec![
-        serde_json::json!({"DetectProjectEnvironment":{"projectId":"project","operationId":"op","folderIds":[],"target":target,"provider":"opencode","allowModelFolders":[]}}),
-        serde_json::json!({"PreviewEnvironmentDiff":{"projectId":"project","expectedRevision":0,"draft":draft}}),
-        serde_json::json!({"SaveProjectEnvironmentRevision":{"projectId":"project","expectedRevision":0,"expectedContentDigest":"digest","draft":draft,"acceptedProposalIds":[],"excludedProposalIds":[]}}),
-        serde_json::json!({"PlanProjectEnvironment":{"projectId":"project","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[]}}),
-        serde_json::json!({"ApplyProjectEnvironment":{"projectId":"project","operationId":"op","planId":"plan","expectedRevision":0,"revisionDigest":"digest","target":target,"selectedItems":[],"perItemOptIns":[]}}),
-        serde_json::json!({"CheckProjectEnvironment":{"projectId":"project","operationId":"op","revisionDigest":"digest","target":target,"selectedItems":[]}}),
-        serde_json::json!({"GetEnvironmentOperation":{"projectId":"project","operationId":"op"}}),
-        serde_json::json!({"CancelEnvironmentOperation":{"projectId":"project","operationId":"op"}}),
-        serde_json::json!({"RetryEnvironmentOperation":{"projectId":"project","operationId":"op","expectedAttempt":1}}),
-        serde_json::json!({"ExportProjectEnvironment":{"projectId":"project","operationId":"op","expectedRevision":0,"revisionDigest":"digest","selectedItems":[],"selectedFiles":[],"destination":{"kind":"file","path":"/should-never-be-written"}}}),
-        serde_json::json!({"PreviewEnvironmentImport":{"artifactId":"absent","artifactDigest":"digest","choice":{"kind":"new"},"folderMap":[]}}),
-        serde_json::json!({"CommitEnvironmentImport":{"operationId":"op","previewId":"absent","previewDigest":"digest","choice":{"kind":"new"}}}),
-    ];
-    for value in future {
-        let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
-        assert!(matches!(
-            harness.dispatch(request).unwrap(),
-            LocalDaemonResponse::EnvironmentUnsupportedFeature {
-                supported_schema: 1,
-                ..
-            }
-        ));
+fn envp01_removed_environment_requests_are_unknown_variants() {
+    for name in [
+        "DetectProjectEnvironment",
+        "PreviewEnvironmentDiff",
+        "SaveProjectEnvironmentRevision",
+        "PlanProjectEnvironment",
+        "ApplyProjectEnvironment",
+        "CheckProjectEnvironment",
+        "RetryEnvironmentOperation",
+        "ExportProjectEnvironment",
+        "PreviewEnvironmentImport",
+        "CommitEnvironmentImport",
+        "GetProjectEnvironmentManifest",
+        "AdjustProjectEnvironment",
+        "StartProjectEnvironmentSetup",
+        "GetProjectEnvironmentSetupStatus",
+        "CancelProjectEnvironmentSetup",
+        "RetryProjectEnvironmentSetup",
+    ] {
+        let request = serde_json::json!({ name: {} });
+        assert!(
+            serde_json::from_value::<LocalDaemonRequest>(request).is_err(),
+            "{name} must no longer exist"
+        );
     }
-    harness.with_app(|app| {
-        assert!(app.sessions().list_sessions().is_empty());
-        assert!(app.sessions().list_projects("local", true).is_empty());
-        assert!(!app
-            .config()
-            .private_runtime_state_root()
-            .join("project-environments")
-            .exists());
-    });
 }
 
 // MP-08 / MP-10 / MP-11: the real spawn admission seam returns a typed action.

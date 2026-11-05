@@ -1,5 +1,3 @@
-import { pollActiveProjectEnvironmentSetup } from "./project-environment-setup-projection.js"
-
 export type WaitingRoomRefreshIntervalControllerDeps<TimerHandle> = {
   intervalMs: number
   scheduleInterval: (callback: () => void, intervalMs: number) => TimerHandle
@@ -20,7 +18,6 @@ export function createWaitingRoomRefreshIntervalController<TimerHandle>(
 
   const tick = () => {
     void deps.refreshWaitingRoomData()
-    void pollActiveProjectEnvironmentSetup()
   }
 
   return {

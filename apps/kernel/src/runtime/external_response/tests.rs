@@ -275,7 +275,10 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         http_headers.insert("Authorization".into(), CANARY.into());
     }
     vec![
-        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
+        LocalDaemonResponse::AgentSpawned {
+            agent,
+            event_subscription_error: None,
+        },
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {
             credential: credential.clone(),
@@ -316,9 +319,6 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
                 user_code: Some(CANARY.into()),
             },
         },
-        serde_json::from_value(serde_json::json!({"EnvironmentProviderAuthorizationLink":{"link":{
-            "provider":"codex","linked_profile_ref":null,"authorization_url":CANARY,"expires_at_ms":1}}}))
-        .unwrap(),
     ]
 }
 

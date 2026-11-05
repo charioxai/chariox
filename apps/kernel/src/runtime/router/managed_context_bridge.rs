@@ -507,7 +507,7 @@ impl CommandRouter {
                 },
                 development_destination_root: ready.destination_root,
                 target_private_key,
-                project_environment_target: environment_target,
+                context_import_target: environment_target,
                 provider_account_target: Some(import_provider_account_target),
                 git_credential_target: import_git_credential_target,
             })

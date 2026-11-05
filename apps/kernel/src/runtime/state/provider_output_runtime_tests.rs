@@ -165,6 +165,7 @@ mod leased_output;
 mod mcp_catalog_reload;
 mod process_tool_settlement;
 #[cfg(unix)]
+mod project_environment_shell;
 mod project_queued_environment;
 mod prompt_cancellation;
 mod prompt_parking;

@@ -1,5 +1,6 @@
 export type ParsedShortcut = {
   name: string
+  sequence?: string
   ctrl?: boolean
   meta?: boolean
   shift?: boolean

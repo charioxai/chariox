@@ -127,16 +127,14 @@ pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod legacy_room_owner;
+mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
-mod project_environment_export;
-mod project_environment_files;
-mod project_environment_manifest;
-mod project_environment_placement;
-mod project_environment_remote;
-mod project_environment_review;
-mod project_environment_worker_export;
-mod project_environment_workspaces;
+mod project_environment;
+mod project_environment_check;
+mod project_environment_draft;
+mod project_environment_remote_setup;
+mod project_environment_transfer;
 mod project_prompt_promotion;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -399,8 +397,8 @@ struct KernelRuntimeOwnedState {
     agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
-    project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
-    project_environment_setups: project_environment_setup::ProjectEnvironmentSetupStore,
+    project_environment_setups: Arc<crate::project_environment::SetupRuns>,
+    environment_operations: Arc<crate::project_environment::EnvironmentOperations>,
 }
 
 #[derive(Debug, Clone)]
@@ -554,8 +552,6 @@ mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
-mod project_environment_setup;
-pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;
@@ -897,11 +893,16 @@ impl KernelRuntimeState {
                 .publication_control_state_root
                 .is_some(),
         ));
-        let project_environment_setups =
-            project_environment_setup::ProjectEnvironmentSetupStore::restore_from_durable_state(
-                &durable_state_store,
-            );
         let config = config_projection.snapshot();
+        if let Err(error) =
+            crate::project_environment::remove_schema_1_state(&config.private_runtime_state_root())
+        {
+            crate::logging::warn_with_fields(
+                "daemon.project_environment",
+                "removing the schema 1 Project environments failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
         let managed_activity_kernel_id = managed_kernel_registration
             .is_some()
             .then(|| config.daemon_id.clone());
@@ -1194,8 +1195,12 @@ impl KernelRuntimeState {
                 agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
-                project_environment_placements: Default::default(),
-                project_environment_setups,
+                project_environment_setups: crate::project_environment::SetupRuns::new(
+                    &config.private_runtime_state_root(),
+                ),
+                environment_operations: crate::project_environment::EnvironmentOperations::new(
+                    &config.private_runtime_state_root(),
+                ),
             },
         };
         runtime.link_room_terminals_to_managed_kernel();

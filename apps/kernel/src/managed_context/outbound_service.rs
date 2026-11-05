@@ -532,48 +532,6 @@ pub(crate) fn start_managed_context_outbound_operation(
                 return;
             }
         }
-        let environment = match (
-            &authoritative_ticket
-                .context_plan
-                .package_binding()
-                .development,
-            runtime.as_ref(),
-        ) {
-            (
-                ManagedContextDevelopmentSelection::SourceProject {
-                    project_id,
-                    repositories,
-                },
-                Some(runtime),
-            ) if !owner_copy => {
-                let result = match repositories
-                    .iter()
-                    .map(resolve_repository_selection)
-                    .collect::<Result<Vec<_>, _>>()
-                {
-                    Ok(selections) => runtime
-                        .prepare_project_environment_layer(
-                            project_id,
-                            &selections,
-                            &context_id,
-                            &authoritative_ticket.target.kernel_id,
-                            &authoritative_ticket.target.relay_public_key,
-                            interactive,
-                        )
-                        .await
-                        .map(Some),
-                    Err(error) => Err(error),
-                };
-                match result {
-                    Ok(layer) => layer,
-                    Err(error) => {
-                        store.update(&context_id, |status| fail_status(status, &error));
-                        return;
-                    }
-                }
-            }
-            _ => None,
-        };
         let task_store = store.clone();
         let task_context_id = context_id.clone();
         let task_config = config.clone();
@@ -581,12 +539,11 @@ pub(crate) fn start_managed_context_outbound_operation(
         let task_provider_account_profiles = provider_account_profiles.clone();
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
-            prepare_managed_context_package_with_environment(
+            prepare_managed_context_package_for_ticket(
                 &task_config,
                 &package_store,
                 &task_provider_account_profiles,
                 &task_ticket,
-                environment,
             )
         })
         .await
@@ -777,21 +734,14 @@ fn prepare_managed_context_package(
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
-    prepare_managed_context_package_with_environment(
-        config,
-        store,
-        provider_account_profiles,
-        ticket,
-        None,
-    )
+    prepare_managed_context_package_for_ticket(config, store, provider_account_profiles, ticket)
 }
 
-fn prepare_managed_context_package_with_environment(
+fn prepare_managed_context_package_for_ticket(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
-    environment: Option<super::development::DevelopmentProjectEnvironment>,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
     let artifact_parent = store.artifact_parent(config)?;
@@ -865,11 +815,6 @@ fn prepare_managed_context_package_with_environment(
                     project_id: project_id.clone(),
                     repositories: selections,
                     archive_path: artifact_root.join("development.tar.gz"),
-                },
-                if plan.destination.is_some() {
-                    None
-                } else {
-                    environment
                 },
                 Some(&vault),
             )?;

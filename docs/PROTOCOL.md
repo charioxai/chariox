@@ -6530,3 +6530,60 @@ Browser snapshot validation. Decoded data is capped at 32 MiB; compressed data
 is capped at that size plus 64 KiB for framing overhead. There is no legacy
 plain-snapshot decoding path and no change to the 15-second peer response bound.
 
+
+### Environments — local 973 / relay peer 422
+
+A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
+Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
+its own Vault under the Project scope, so presence differs per machine and is computed on every read.
+
+- `GetProjectEnvironment { projectId, checkoutPath? }` answers `ProjectEnvironment { environment }`:
+  the record, each Secret as `present`, `missing` or `locked` (Vault locked), each file as `present` with
+  its size or `missing`, the kernel's label and the Setup state of that checkout (`notRun`, `ok`, `failed`,
+  `cancelled`, `running`; a changed script makes any earlier run `notRun`).
+- `SaveProjectEnvironment` carries the revision the client read. A stale revision answers
+  `ProjectEnvironmentConflict` with the current record and writes nothing.
+- `SetProjectEnvironmentSecret` is owner-only like `OwnerVault`, is never cached or logged with its value
+  and writes the value to this kernel's Vault.
+- `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
+  Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
+  last 64 KiB of output with Secret values replaced by their names; `CancelEnvironmentOperation` ends the
+  process tree by its exact PID. A run cut off by a kernel restart reads as failed with that reason.
+  Setup never starts by itself.
+- Variables and the present Secrets are environment variables of every provider run, shell capability and
+  Room terminal the kernel starts for the Project. Files outside Git are copied into new worktrees of the
+  Project and travel with moves and slices through the ignore rules.
+- `ImportProjectEnvironmentEntries { projectId, operationId, sourceKernelId, entries?, checkoutPath? }`
+  (Import here and Update) asks another kernel of the same authenticated owner for the record (adopted when
+  its revision is newer), then for each Secret value and File this kernel lacks, one peer request each
+  (`ReadProjectEnvironment`, `PullProjectEnvironmentSecret`, `PullProjectEnvironmentFile`; refusals answer
+  `ProjectEnvironmentRefused`). Without `entries` it brings every missing one. The operation reads like a
+  Setup run with `kind: "import"`, `entries` (pending, importing, imported, failed with a reason such as
+  "Source offline" or "Not on <machine>") and `sourceLabel`; Stop keeps what landed. Values travel only inside
+  the peer channel's end-to-end encryption, are never logged and never appear in a view. A File is at most
+  64 MiB (128 MiB per operation), travels in 4 MiB slices (`PullProjectEnvironmentFile` carries the offset;
+  a message is encoded twice on the way and must stay under the relay's bound) into a private temporary file
+  that appears under its name only when complete, and lands with mode 0600.
+- `DraftProjectEnvironment { projectId, operationId }` runs an idle agent of the Project on this kernel
+  on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
+  files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
+  Environment. The operation reads with `kind: "draft"`.
+- `CheckProjectEnvironment { projectId, operationId }` (kind `check`) has an idle agent of the Project on this
+  kernel compare the Project's manifest files with the saved record on its provider with no tools, and
+  stores up to 20 proposals (`ProjectEnvironmentView.proposals`: field setup, variables, secret or file; add or
+  remove one line, name or path; evidence path and one line). A proposal the record cannot take is dropped.
+  `ResolveEnvironmentProposal { projectId, proposalId, accept }` accepts one as an ordinary Save of the next
+  revision (answering `ProjectEnvironmentSaved` or `ProjectEnvironmentConflict`) or dismisses it for good; a
+  dismissed proposal is not stored by a later check. Nothing changes until a proposal is accepted.
+- `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
+  another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
+  holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops
+  it there. The run, its output and its Stop belong to the target (peer requests
+  `RunProjectEnvironmentSetup`, `GetProjectEnvironmentOperation`, `CancelProjectEnvironmentOperation` answer
+  `ProjectEnvironmentOperation`); the sender keeps nothing.
+- Removed: Detect, PreviewEnvironmentDiff, SaveProjectEnvironmentRevision, Plan, Apply, Check, Retry,
+  Export, PreviewEnvironmentImport, CommitEnvironmentImport, GetProjectEnvironmentManifest,
+  AdjustProjectEnvironment and the four Start/Get/Cancel/Retry `ProjectEnvironmentSetup` requests, the
+  `ProjectEnvironmentSetup` agent utility, the Project's stored setup definition, the Move setup step and the
+  relay peer `*LeasedProjectEnvironment*` requests. Schema 1 Project environments are deleted at start.
+  The development layer of managed contexts and moves no longer carries a Project environment.

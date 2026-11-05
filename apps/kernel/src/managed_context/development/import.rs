@@ -2,8 +2,6 @@ use super::*;
 
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const DIRECTORY_RECEIPT_SCHEMA_VERSION: u32 = 3;
-const ENVIRONMENT_RECEIPT_SCHEMA_VERSION: u32 = 4;
-const ENVIRONMENT_COMPLETION_FILE: &str = ".chariox-project-environment-complete.json";
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 const MATERIALIZATION_TRANSACTION_FILE: &str = ".chariox-materialization-transaction.json";
 const MATERIALIZATION_OWNERSHIP_FILE_PREFIX: &str = ".chariox-materialization-ownership-";
@@ -72,10 +70,10 @@ pub(crate) fn import_development_context_with_publication(
     receipt.ok_or_else(|| context_error("development context publication receipt is missing"))
 }
 
-pub(crate) fn import_development_context_with_environment(
+pub(crate) fn import_development_context_with_authority(
     request: DevelopmentContextImportRequest,
     publication_id: String,
-    authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
+    authority: Option<&ContextImportAuthority>,
 ) -> Result<DevelopmentContextPublicationReceipt, DaemonError> {
     validate_publication_id(&publication_id)?;
     let (_, receipt) = import_development_context_with_options(
@@ -250,7 +248,6 @@ fn recover_pruned_development_context_publication_with_head_policy(
         if ![
             PUBLICATION_RECEIPT_SCHEMA_VERSION,
             DIRECTORY_RECEIPT_SCHEMA_VERSION,
-            ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
         ]
         .contains(&receipt.schema_version)
             || receipt.source_repository_binding_sha256s.len() != expected_repositories.len()
@@ -486,7 +483,7 @@ pub(super) fn import_development_context_with_options(
     maximum_project_checkout_bytes: u64,
     maximum_project_materialized_entries: u64,
     publication_id: Option<String>,
-    environment_authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
+    authority: Option<&ContextImportAuthority>,
 ) -> Result<
     (
         DevelopmentContextImportResult,
@@ -583,12 +580,8 @@ pub(super) fn import_development_context_with_options(
             }
         }
     }
-    let materialization_artifacts = vault_artifacts::restore(
-        &manifest,
-        &artifacts_root,
-        &project_root,
-        environment_authority,
-    )?;
+    let materialization_artifacts =
+        vault_artifacts::restore(&manifest, &artifacts_root, &project_root, authority)?;
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;
@@ -640,66 +633,6 @@ pub(super) fn import_development_context_with_options(
         fs::remove_dir_all(&materialization_artifacts)
             .map_err(|_| context_error("remove workspace Vault transfer artifacts"))?;
     }
-    let prepared_environment = match &manifest.project_environment {
-        Some(layer) => {
-            let authority = environment_authority.ok_or_else(|| {
-                context_error("Project environment import requires authenticated target authority")
-            })?;
-            if layer.sealed.manifest.project_id != request.expected_project_id
-                || layer.repository_workspaces.len() != manifest.repositories.len()
-            {
-                return Err(context_error(
-                    "Project environment repository binding mismatch",
-                ));
-            }
-            let mut roots = BTreeMap::new();
-            let mut mapping = BTreeMap::new();
-            for repository in &manifest.repositories {
-                let workspace = layer
-                    .repository_workspaces
-                    .get(&repository.repository_id)
-                    .ok_or_else(|| {
-                        context_error("Project environment repository mapping missing")
-                    })?;
-                if let Some(expected) = request.expected_source_repositories.as_ref() {
-                    if !expected.iter().any(|binding| {
-                        &binding.workspace_id == workspace
-                            && binding.role == repository.role
-                            && source_repository_binding_sha256(binding)
-                                == repository.source_binding_sha256
-                    }) {
-                        return Err(context_error(
-                            "Project environment source workspace is not authorized",
-                        ));
-                    }
-                }
-                if roots
-                    .insert(
-                        workspace.clone(),
-                        project_root.join(&repository.target_directory),
-                    )
-                    .is_some()
-                {
-                    return Err(context_error(
-                        "duplicate Project environment workspace mapping",
-                    ));
-                }
-                mapping.insert(
-                    workspace.clone(),
-                    materialization_root
-                        .join(&repository.target_directory)
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-            }
-            Some(
-                crate::project_environment::PreparedProjectEnvironmentImport::prepare(
-                    authority, layer, &roots, &mapping,
-                )?,
-            )
-        }
-        None => None,
-    };
     let primary_repository_id = imported
         .iter()
         .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
@@ -715,9 +648,7 @@ pub(super) fn import_development_context_with_options(
         publication_id
             .as_ref()
             .map(|publication_id| DevelopmentContextPublicationReceipt {
-                schema_version: if prepared_environment.is_some() {
-                    ENVIRONMENT_RECEIPT_SCHEMA_VERSION
-                } else if result
+                schema_version: if result
                     .repositories
                     .iter()
                     .any(|repository| !repository.workspace_kind.is_git())
@@ -853,30 +784,6 @@ pub(super) fn import_development_context_with_options(
     }
     if let Err(error) = sync_directory(&canonical_parent) {
         return Err(import_failure_with_rollback(error, &staging_root));
-    }
-    if let Some(environment) = prepared_environment {
-        if let Err(error) = environment.commit() {
-            return Err(import_failure_with_rollback(error, &staging_root));
-        }
-        let binding = environment.publication_binding(
-            publication_id
-                .as_deref()
-                .ok_or_else(|| context_error("environment publication ID missing"))?,
-            &request.expected_archive_sha256.to_ascii_lowercase(),
-        );
-        let completion = serde_json::to_vec(&binding)
-            .map_err(|_| context_error("environment completion encoding failed"))?;
-        if let Err(error) = write_private_file(
-            &control_destination_root.join(ENVIRONMENT_COMPLETION_FILE),
-            &completion,
-        ) {
-            environment.rollback()?;
-            return Err(import_failure_with_rollback(error, &staging_root));
-        }
-        if let Err(error) = sync_directory(&control_destination_root) {
-            environment.rollback()?;
-            return Err(import_failure_with_rollback(error, &staging_root));
-        }
     }
     cleanup.commit();
     drop(cleanup);
@@ -1740,14 +1647,10 @@ fn validate_publication_receipt(
     require_original_head: bool,
     require_repository_directories: bool,
 ) -> Result<(), DaemonError> {
-    if receipt.schema_version == ENVIRONMENT_RECEIPT_SCHEMA_VERSION {
-        read_environment_completion(receipt)?;
-    }
     let materialization_root = publication_materialization_root(receipt, canonical_destination)?;
     if ![
         PUBLICATION_RECEIPT_SCHEMA_VERSION,
         DIRECTORY_RECEIPT_SCHEMA_VERSION,
-        ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
     ]
     .contains(&receipt.schema_version)
         || receipt.publication_id != publication_id
@@ -1786,11 +1689,7 @@ fn validate_publication_receipt(
         super::export::validate_repository_basename(&repository.target_directory)?;
         if repository.workspace_kind.is_git() {
             validate_git_oid(&repository.head_sha)?;
-        } else if ![
-            DIRECTORY_RECEIPT_SCHEMA_VERSION,
-            ENVIRONMENT_RECEIPT_SCHEMA_VERSION,
-        ]
-        .contains(&receipt.schema_version)
+        } else if ![DIRECTORY_RECEIPT_SCHEMA_VERSION].contains(&receipt.schema_version)
             || !repository.head_sha.is_empty()
         {
             return Err(context_error(
@@ -1948,52 +1847,6 @@ impl Drop for ImportCleanup {
             }
         }
     }
-}
-
-// MP-08 / MP-10 / MP-11: Code publication alone is not a completed environment import.
-fn read_environment_completion(
-    receipt: &DevelopmentContextPublicationReceipt,
-) -> Result<crate::project_environment::ProjectEnvironmentPublicationBinding, DaemonError> {
-    let mut file = crate::project_environment::open_workspace_file(
-        &receipt.destination_root,
-        ENVIRONMENT_COMPLETION_FILE,
-    )?;
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(4097)
-        .read_to_end(&mut bytes)
-        .map_err(|_| context_error("environment completion unavailable"))?;
-    if bytes.len() > 4096 {
-        return Err(context_error("environment completion exceeds bounds"));
-    }
-    let binding: crate::project_environment::ProjectEnvironmentPublicationBinding =
-        serde_json::from_slice(&bytes)
-            .map_err(|_| context_error("invalid environment completion"))?;
-    if binding.publication_id != receipt.publication_id
-        || binding.archive_sha256 != receipt.archive_sha256
-        || binding.project_id != receipt.project_id
-    {
-        return Err(context_error(
-            "environment completion does not match publication",
-        ));
-    }
-    Ok(binding)
-}
-
-pub(crate) fn recover_development_context_publication_with_environment(
-    request: &DevelopmentContextImportRequest,
-    publication_id: &str,
-    authority: Option<&crate::project_environment::ProjectEnvironmentImportAuthority>,
-) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
-    let receipt = recover_development_context_publication(request, publication_id)?;
-    if let Some(receipt) = &receipt {
-        if receipt.schema_version == ENVIRONMENT_RECEIPT_SCHEMA_VERSION {
-            let authority = authority
-                .ok_or_else(|| context_error("environment recovery requires target authority"))?;
-            read_environment_completion(receipt)?.verify_target(authority)?;
-        }
-    }
-    Ok(receipt)
 }
 
 #[cfg(all(test, unix))]

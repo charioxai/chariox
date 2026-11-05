@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createProjectEnvironmentReadController } from "./project-environment-read-controller.js"
+import { createProjectEnvironmentController } from "./project-environment-controller.js"
 
 import {
   createCliStdinKeyController,
@@ -507,10 +507,10 @@ function keyEvent(name: string, options: {
   return event
 }
 
-// MP-08/MP-10: exercise the real stdin ordering with the mounted read controller.
+// Exercise the real stdin ordering with the mounted Environment controller.
 test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", async () => {
   for (const name of ["e", "c"]) for (const activeTurnWork of [false, true]) {
-    const panel = createProjectEnvironmentReadController({ send: async () => { throw new Error("read only") }, render() {}, pageSize: () => 10, textWidth: () => 72 })
+    const panel = createProjectEnvironmentController({ send: async () => { throw new Error("not available") }, render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0, pageSize: () => 10, textWidth: () => 72 })
     await panel.open("project")
     const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
     assert.equal(harness.controller.handleData("x"), true)

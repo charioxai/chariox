@@ -6,10 +6,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::development::{
-    import_development_context_with_environment,
-    recover_development_context_publication_with_environment, DevelopmentContextImportRequest,
-    DevelopmentContextPublicationReceipt, DevelopmentRepositoryRole,
-    DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
+    import_development_context_with_authority, recover_development_context_publication,
+    DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
+    DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
@@ -194,7 +193,7 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub expected_binding: ManagedContextPackageBinding,
     pub development_destination_root: PathBuf,
     pub target_private_key: String,
-    pub project_environment_target: Option<crate::config::DaemonConfig>,
+    pub context_import_target: Option<crate::config::DaemonConfig>,
     pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
     pub git_credential_target: Option<ManagedContextGitCredentialImportTarget>,
 }
@@ -774,8 +773,8 @@ pub(crate) fn apply_managed_context_package(
                     expected_source_repositories: Some(repositories.clone()),
                     destination_root: request.development_destination_root.clone(),
                 };
-                let environment_authority = request
-                    .project_environment_target
+                let import_authority = request
+                    .context_import_target
                     .as_ref()
                     .map(|config| {
                         let mut config = config.clone();
@@ -791,30 +790,27 @@ pub(crate) fn apply_managed_context_package(
                             config.user_config.credential_vault.path =
                                 vault_path.to_string_lossy().into_owned();
                         }
-                        Ok::<_, DaemonError>(
-                            crate::project_environment::ProjectEnvironmentImportAuthority {
-                                config,
-                                context_id: request.expected_binding.plan.context_id.clone(),
-                                source_kernel_id: request.expected_binding.source_kernel_id.clone(),
-                                source_key_thumbprint: request
-                                    .expected_binding
-                                    .source_key_thumbprint
-                                    .clone(),
-                                target_kernel_id: request.expected_binding.target_kernel_id.clone(),
-                            },
-                        )
+                        Ok::<_, DaemonError>(super::development::ContextImportAuthority {
+                            config,
+                            context_id: request.expected_binding.plan.context_id.clone(),
+                            source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+                            source_key_thumbprint: request
+                                .expected_binding
+                                .source_key_thumbprint
+                                .clone(),
+                            target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+                        })
                     })
                     .transpose()?;
-                let receipt = match recover_development_context_publication_with_environment(
+                let receipt = match recover_development_context_publication(
                     &development_request,
                     &request.transfer_id,
-                    environment_authority.as_ref(),
                 )? {
                     Some(receipt) => receipt,
-                    None => import_development_context_with_environment(
+                    None => import_development_context_with_authority(
                         development_request,
                         request.transfer_id.clone(),
-                        environment_authority.as_ref(),
+                        import_authority.as_ref(),
                     )?,
                 };
                 ManagedContextImportedDevelopment::FromSource {

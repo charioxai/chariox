@@ -11,7 +11,6 @@ import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
 import { importExternalProviderSession, listExternalProviderSessions } from "./external-provider-session-api.js"
 import type { SliceRecord } from "./cli-types.js"
-import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
 import { prepareWaitingRoomEnrolledLaunch, waitingRoomManagedEnvironmentKernelRef } from "./waiting-room-enrolled-launch.js"
 import {
   saveProviderPreferences,
@@ -19,7 +18,6 @@ import {
   mergeUiPreferences,
   relayCloudProfile,
 } from "./preferences.js"
-import { LocalIpcError } from "./ipc.js"
 import { loadLocalKernelPresences } from "./local-kernel-presence.js"
 import { browseWaitingRoomKernelWorkspace, createWaitingRoomKernelConnectionController } from "./waiting-room-kernel-client.js"
 import {
@@ -69,10 +67,6 @@ import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import {
-  createProjectEnvironmentSetupProjection,
-  setActiveProjectEnvironmentSetupProjection,
-} from "./project-environment-setup-projection.js"
-import {
   createWaitingRoomInventoryCache,
   waitingRoomInventoryCacheScopeKey,
 } from "./waiting-room-inventory-cache.js"
@@ -93,7 +87,6 @@ import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
 import { existingProjectSelectionId } from "./waiting-room-projects.js"
-import { waitingRoomProjectEnvironmentSetupInput } from "./waiting-room-project-setup.js"
 import {
   managedEnvironmentMachineRef,
   selectedManagedEnvironment,
@@ -228,7 +221,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     homeMachineId: () => homeMachineId,
     currentKernelId: () => deps.relayStatusState()?.daemon_id?.trim(),
     invalidateInventory: () => waitingRoomInventoryRefreshController.invalidate(),
-    clearProjectSetup: () => projectEnvironmentSetupProjection.clear(),
     connected: (label) => {
       deps.setKernelConnected(true)
       deps.setDaemonDisconnected(false)
@@ -326,20 +318,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
   const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
-
-  const projectEnvironmentSetupProjection = createProjectEnvironmentSetupProjection({
-    client: deps.client,
-    onStatusChanged: () => {
-      reconcileWaitingRoomProjection(deps.waitingRoomState())
-    },
-    onError: (operation, error) => {
-      deps.appLogger?.debug?.("project environment setup projection request failed", {
-        operation,
-        error: deps.formatError(error),
-      })
-    },
-  })
-  setActiveProjectEnvironmentSetupProjection(projectEnvironmentSetupProjection)
 
   const controlProfile = async () => {
     const profile = await getCloudClientControlProfile(deps.cloudClient, deps.kernelConnected() ? deps.client : undefined)
@@ -581,26 +559,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       contextId,
       planDigest,
     ),
-    ensureProjectSetup: (input, attempt) => projectEnvironmentSetupProjection.ensureReady(input, {
-      assertActive: attempt.assertActive,
-      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      nowMs: Date.now,
-      isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
-    }),
     createIdempotencyKey: randomUUID,
     environmentName: () => "Managed agent",
     delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     nowMs: Date.now,
   })
-
-  const prepareProjectEnvironment = async (session: RuntimeSession, assertActive?: () => void) => {
-    await projectEnvironmentSetupProjection.ensureReady(waitingRoomProjectEnvironmentSetupInput(session), {
-      ...(assertActive ? { assertActive } : {}),
-      delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-      nowMs: Date.now,
-      isRetryableTransportError: (error) => error instanceof LocalIpcError && error.retryable,
-    })
-  }
 
   const prepareManagedSessionLaunch = async (
     launch: WaitingRoomLaunchConfig,
@@ -653,7 +616,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     try {
       assertActive()
       if (prepared.kind === "enrolled") {
-        return prepareWaitingRoomEnrolledLaunch({ launch, prepared, assertActive, prepareProjectEnvironment })
+        return prepareWaitingRoomEnrolledLaunch({ launch, prepared, assertActive })
       }
       deps.setPendingWorkspaceTarget(prepared.workspacePath)
       deps.setPendingWorktreeTarget(prepared.worktreePath)
@@ -687,7 +650,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           projectSelection: prepared.projectSelection,
         },
         assertActive,
-        prepareProject: prepared.prepareProject,
+        verifyProjectBinding: prepared.verifyProjectBinding,
         commit: async () => {
           await prepared.commit()
         },
@@ -749,7 +712,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         permission_level: launch.permission_level,
       }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection)
     },
-    prepareProjectEnvironment,
     deleteCreatedSession: async (sessionId, workspacePath) => {
       await deleteSessionByRef(deps.client, sessionId, workspacePath)
     },
@@ -1112,7 +1074,6 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     promptUsageMeta: providerPromptProjectionController.promptUsageMeta,
     reconcileWaitingRoom,
     reconcileWaitingRoomProjection,
-    projectEnvironmentSetupProjection,
     refreshWaitingRoomData,
     loadWaitingRoomSessionHistory: waitingRoomInventoryRefreshController.loadSessionHistory,
     refreshWaitingRoomDataNow,

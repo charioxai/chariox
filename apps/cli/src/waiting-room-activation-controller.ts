@@ -38,7 +38,7 @@ export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
 export type WaitingRoomPreparedManagedLaunch = {
   launch: WaitingRoomLaunchConfig
   assertActive: () => void
-  prepareProject: (session: RuntimeSession) => Promise<void>
+  verifyProjectBinding: (session: RuntimeSession) => void
   commit: () => Promise<void>
   rollback: () => Promise<void>
 }
@@ -67,7 +67,6 @@ export type WaitingRoomActivationControllerDeps = {
     worktreePath: string,
     launch: WaitingRoomCreateSessionLaunch,
   ) => Promise<RuntimeSession>
-  prepareProjectEnvironment?: (session: RuntimeSession) => Promise<void>
   deleteCreatedSession: (sessionId: string, workspacePath: string) => Promise<void>
   importExternalProviderSession?: (
     externalSessionId: string,
@@ -286,7 +285,7 @@ export function createWaitingRoomActivationController(
       : {
           launch,
           assertActive: () => {},
-          prepareProject: async () => {},
+          verifyProjectBinding: () => {},
           commit: async () => {},
           rollback: async () => {},
         }
@@ -296,7 +295,7 @@ export function createWaitingRoomActivationController(
     let session: RuntimeSession | null = null
     let createdSliceRef: string | null = null
     let workspacePath = ""
-    let projectSetupRequired = false
+    let projectBindingChecked = false
     let attachAttempted = false
     try {
       const preparedLaunch = prepared.launch
@@ -334,20 +333,15 @@ export function createWaitingRoomActivationController(
       )
       prepared.assertActive()
       if (managedLaunch) {
-        projectSetupRequired = true
-        await prepared.prepareProject(session)
+        projectBindingChecked = true
+        prepared.verifyProjectBinding(session)
         prepared.assertActive()
       } else if (preparedLaunch.projectSelection) {
-        projectSetupRequired = true
+        projectBindingChecked = true
         if (preparedLaunch.projectSelection.kind === "existing"
           && session.project_id !== preparedLaunch.projectSelection.project_id) {
           throw new Error("The created session is attached to a different Project than the Waiting Room selection.")
         }
-        if (!deps.prepareProjectEnvironment) {
-          throw new Error("Waiting Room Project setup orchestration is unavailable in this build")
-        }
-        await deps.prepareProjectEnvironment(session)
-        prepared.assertActive()
       }
       attachAttempted = true
       await deps.attachBinding(session, true, preparedLaunch)
@@ -357,7 +351,7 @@ export function createWaitingRoomActivationController(
       return session
     } catch (error) {
       const cleanupErrors: string[] = []
-      if (session && (managedLaunch || projectSetupRequired)) {
+      if (session && (managedLaunch || projectBindingChecked)) {
         if (attachAttempted) {
           try {
             await deps.rollbackAttachedSession(session.id)

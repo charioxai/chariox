@@ -22,7 +22,6 @@ function harness(projectSelection?: WaitingRoomLaunchConfig["projectSelection"])
       environment: { runtimeMachineId: "enrolled-machine" } as ManagedEnvironmentSummary,
       commit: async () => { calls.push("commit") }, rollback: async () => { calls.push("rollback") } },
     assertActive,
-    prepareProjectEnvironment: async (_session, check) => { check(); calls.push("common-setup") },
   })
   return { launch, prepared, calls, cancel: () => { active = false } }
 }
@@ -31,30 +30,29 @@ test("MP-02/MP-08/MP-11 enrolled CLI launch preserves all ordinary configuration
   const h = harness({ kind: "new" })
   const { managedEnvironment: _managed, ...ordinary } = h.launch
   assert.deepEqual(h.prepared.launch, { ...ordinary, ownerMachineRef: "enrolled-machine", ownerKernelRef: "connected-kernel" })
-  await h.prepared.prepareProject({ project_id: "created-project" } as RuntimeSession)
+  h.prepared.verifyProjectBinding({ project_id: "created-project" } as RuntimeSession)
   await h.prepared.commit()
-  assert.deepEqual(h.calls, ["common-setup", "commit"])
+  assert.deepEqual(h.calls, ["commit"])
 })
 
 test("MP-02/MP-08/MP-11 enrolled CLI launch uses the selected Project binding", async () => {
   const h = harness({ kind: "existing", project_id: "selected-project" })
-  await assert.rejects(h.prepared.prepareProject({ project_id: "original-transfer-project" } as RuntimeSession), /different Project/)
+  assert.throws(() => h.prepared.verifyProjectBinding({ project_id: "original-transfer-project" } as RuntimeSession), /different Project/)
+  h.prepared.verifyProjectBinding({ project_id: "selected-project" } as RuntimeSession)
   assert.deepEqual(h.calls, [])
-  await h.prepared.prepareProject({ project_id: "selected-project" } as RuntimeSession)
-  assert.deepEqual(h.calls, ["common-setup"])
 })
 
 test("MP-08/MP-11 enrolled CLI launch keeps cancellation and rollback ownership", async () => {
   const h = harness({ kind: "new" })
   h.cancel()
-  await assert.rejects(h.prepared.prepareProject({} as RuntimeSession), /cancelled/)
+  assert.throws(() => h.prepared.verifyProjectBinding({} as RuntimeSession), /cancelled/)
   await h.prepared.rollback()
   assert.deepEqual(h.calls, ["rollback"])
 })
 
-test("MP-08/MP-11 enrolled CLI launch without Project selection avoids transfer setup", async () => {
+test("MP-08/MP-11 enrolled CLI launch without Project selection accepts any session", () => {
   const h = harness()
-  await h.prepared.prepareProject({} as RuntimeSession)
+  h.prepared.verifyProjectBinding({} as RuntimeSession)
   assert.deepEqual(h.calls, [])
 })
 
@@ -76,6 +74,6 @@ test("MP-02/MP-08/MP-11 enrolled adapter rejects a connection that replaced the 
     prepared: { kind: "enrolled", kernelId: "bootstrap-home-kernel",
       environment: { runtimeMachineId: "enrolled-machine" } as ManagedEnvironmentSummary,
       commit: async () => {}, rollback: async () => {} },
-    assertActive() {}, prepareProjectEnvironment: async () => {},
+    assertActive() {},
   }), /does not match the Waiting Room owner selection/)
 })

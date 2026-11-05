@@ -323,59 +323,6 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
-    pub(crate) fn update_run_preparation_environment(
-        &mut self,
-        run_id: &str,
-        home: impl Into<String>,
-        path: impl Into<String>,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let run = self.get_run_mut(run_id)?;
-        if run.state() != ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: run_id.to_string(),
-                state: run.state(),
-                operation: "bind prepared provider environment",
-            });
-        }
-        run.set_preparation_environment(home, path)?;
-        Ok(run.clone())
-    }
-
-    pub(crate) fn update_run_read_only_discovery(
-        &mut self,
-        run_id: &str,
-        enabled: bool,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let run = self.get_run_mut(run_id)?;
-        if run.state() != ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: run_id.to_string(),
-                state: run.state(),
-                operation: "update provider discovery isolation",
-            });
-        }
-        run.set_read_only_discovery(enabled);
-        Ok(run.clone())
-    }
-
-    pub(crate) fn restore_run_snapshot_after_restart_failure(
-        &mut self,
-        mut snapshot: RuntimeProviderRun,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        let current = self.get_run(snapshot.id())?;
-        if current.state() != ProviderRunState::Running {
-            return Err(DaemonError::InvalidProviderRunState {
-                provider_run_id: snapshot.id().to_string(),
-                state: current.state(),
-                operation: "restore provider after restart failure",
-            });
-        }
-        snapshot.advance_manifest_revision_after_snapshot_restore(&current);
-        self.runs
-            .insert(snapshot.id().to_string(), snapshot.clone());
-        Ok(snapshot)
-    }
-
     pub(crate) fn reconcile_run_liveness_provider_only(
         &mut self,
         session_id: &str,

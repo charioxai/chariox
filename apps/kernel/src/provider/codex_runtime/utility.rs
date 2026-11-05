@@ -216,7 +216,10 @@ mod tests {
     fn mp08_mp11_discovery_preserves_multiline_json() {
         let output = "\n{\n  \"definition\": null,\n  \"missing_user_inputs\": []\n}\n";
         assert_eq!(
-            codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            codex_utility_output(
+                output,
+                ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            ),
             output.trim()
         );
         assert_eq!(
@@ -313,7 +316,7 @@ mod tests {
             "Generate definition",
             "",
             Duration::from_secs(3),
-            ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
         );
         let methods = server.join().unwrap();
         assert_eq!(methods, ["initialize", "thread/start", "turn/start"]);

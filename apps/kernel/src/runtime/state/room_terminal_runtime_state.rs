@@ -137,6 +137,7 @@ impl KernelRuntimeState {
                 command,
             } => {
                 self.ensure_room_running(session_id)?;
+                let project_environment = self.project_environment_for_terminal(session_id)?;
                 let terminal = service.open(OpenRoomTerminal {
                     session_id: session_id.to_string(),
                     working_directory,
@@ -145,6 +146,7 @@ impl KernelRuntimeState {
                     title,
                     opened_by: actor,
                     command,
+                    project_environment,
                 })?;
                 // A Room that ended while this opened has already swept its
                 // terminals: ending is recorded before the sweep, so an open

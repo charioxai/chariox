@@ -1277,6 +1277,7 @@ fn open_terminal(f: &Fixture, command: &str) -> String {
         .owned
         .room_terminals
         .open(crate::room_terminal::OpenRoomTerminal {
+            project_environment: Default::default(),
             session_id: f.room.clone(),
             working_directory: f.runtime.room_project_directory(&f.room).unwrap(),
             cols: 100,

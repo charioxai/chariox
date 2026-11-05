@@ -160,6 +160,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
             }
         }),
         LocalDaemonRequest::OwnerVault(_) => serde_json::json!({ "OwnerVault": "[redacted]" }),
+        LocalDaemonRequest::SetProjectEnvironmentSecret(request) => serde_json::json!({
+            "SetProjectEnvironmentSecret": {
+                "project_id": request.project_id,
+                "name": request.name,
+                "value": "[redacted]"
+            }
+        }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
                 "session_id": request.session_id,

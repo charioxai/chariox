@@ -39,7 +39,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(crate) fn notification_peer_owner(
+    pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
@@ -64,6 +64,18 @@ impl KernelRuntimeState {
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.send_same_owner_peer_request(owner, kernel, request, TIMEOUT)
+            .await
+    }
+
+    /// One request to another kernel of the same authenticated owner, end-to-end encrypted.
+    pub(crate) async fn send_same_owner_peer_request(
+        &self,
+        owner: &str,
+        kernel: &str,
+        request: RelayPeerRequest,
+        timeout: Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
         self.ensure_notification_home_role()?;
         let config = self.owned.config_projection.snapshot();
         if config
@@ -81,7 +93,7 @@ impl KernelRuntimeState {
         // retains sender/response correlation and encryption key verification.
         let (_, kernels) = self.owned.notification_inventory_projection.snapshot();
         if let Some(peer) = kernels.iter().find(|p| p.kernel_id == kernel) {
-            return crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(&config,&self.owned.relay_state,target,&peer.public_key,request,TIMEOUT).await;
+            return crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(&config,&self.owned.relay_state,target,&peer.public_key,request,timeout).await;
         }
         // Existing peer discovery handles reconnect and targets not in the picker.
         crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -89,7 +101,7 @@ impl KernelRuntimeState {
             &self.owned.relay_state,
             target,
             request,
-            TIMEOUT,
+            timeout,
         )
         .await
     }
@@ -697,7 +709,7 @@ mod tests {
             user_id: Some("local".into()),
             public_key_thumbprint: None,
         };
-        assert!(runtime.notification_peer_owner(&identity).is_none());
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
     }
 
     #[test]
@@ -715,12 +727,12 @@ mod tests {
             public_key_thumbprint: None,
         };
         assert_eq!(
-            runtime.notification_peer_owner(&identity).as_deref(),
+            runtime.same_owner_peer_user_id(&identity).as_deref(),
             Some("local")
         );
         config.relay_url = Some("ws://operator-relay:49100".into());
         runtime.owned.config_projection.update(config);
-        assert!(runtime.notification_peer_owner(&identity).is_none());
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
     }
 
     #[test]
@@ -915,7 +927,7 @@ mod tests {
             user_id: Some("other-owner".into()),
             public_key_thumbprint: None,
         };
-        assert!(source_runtime.notification_peer_owner(&identity).is_none());
+        assert!(source_runtime.same_owner_peer_user_id(&identity).is_none());
         let mut bad = subscription.clone();
         bad.owner_user_id = "other-owner".into();
         assert!(target_runtime

@@ -51,7 +51,6 @@ impl AgentMoveStore {
         repositories: Vec<DevelopmentRepositorySelection>,
         checkpoint: Option<&ProviderNativeCheckpoint>,
         config: &crate::config::DaemonConfig,
-        environment: crate::managed_context::development::DevelopmentProjectEnvironment,
     ) -> Result<AgentMoveCapture, DaemonError> {
         if !source.stopped {
             return Err(error(
@@ -83,7 +82,7 @@ impl AgentMoveStore {
                 worktree_id: selection.worktree_id.clone(),
             })
             .collect();
-        let archive_project_id = environment.sealed.manifest.project_id.clone();
+        let archive_project_id = project_id.clone();
         let vault = crate::managed_context::development::vault_artifacts::ExportVault::new(
             config,
             &source.identity.operation_id,
@@ -97,7 +96,6 @@ impl AgentMoveStore {
                 repositories,
                 archive_path: workspace,
             },
-            Some(environment),
             Some(&vault),
         )?;
         let native = if let Some(checkpoint) = checkpoint {
@@ -385,17 +383,27 @@ impl AgentMoveStore {
             destination_root: target.destination_root.clone(),
         };
         let publication = format!("move-{:x}", Sha256::digest(operation.as_bytes()));
-        let authority = crate::project_environment::ProjectEnvironmentImportAuthority {
+        let authority = crate::managed_context::development::ContextImportAuthority {
             config: config.clone(),
             context_id: operation.into(),
             source_kernel_id: target.capture.identity.source_kernel_id.clone(),
             source_key_thumbprint: target.capture.identity.source_key_thumbprint.clone(),
             target_kernel_id: target.capture.identity.target_kernel_id.clone(),
         };
-        let receipt = match crate::managed_context::development::recover_development_context_publication_with_environment(&request, &publication, Some(&authority))? {
-            Some(receipt) => receipt,
-            None => crate::managed_context::development::import_development_context_with_environment(request, publication, Some(&authority))?,
-        };
+        let receipt =
+            match crate::managed_context::development::recover_development_context_publication(
+                &request,
+                &publication,
+            )? {
+                Some(receipt) => receipt,
+                None => {
+                    crate::managed_context::development::import_development_context_with_authority(
+                        request,
+                        publication,
+                        Some(&authority),
+                    )?
+                }
+            };
         let materialized = AgentMoveMaterialization {
             identity: target.capture.identity.clone(),
             archive_sha256: receipt.archive_sha256,

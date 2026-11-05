@@ -25,7 +25,6 @@ import type {
   WorkflowWatchdogDefinition,
   RoomWorkflowInventory,
 } from "./kernel-types-workflow.js"
-import type { ProjectEnvironmentDefinition } from "./kernel-types-project-environment.js"
 import type { SessionHistoryOutline } from "./kernel-types-history.js"
 
 /** MP-08 / MP-10: protocol 508 bundles existing, caller-scoped replies. */
@@ -119,7 +118,6 @@ export type RuntimeProject = {
   created_at_ms: number
   updated_at_ms: number
   archived_at_ms?: number | null
-  environment_definition?: ProjectEnvironmentDefinition | null
 }
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"

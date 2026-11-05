@@ -17,15 +17,12 @@ export * from "./ipc-kernel-control-requests.js"
 export * from "./ipc-managed-environment-requests.js"
 export * from "./ipc-control-capability.js"
 export * from "./ipc-managed-context-requests.js"
-export * from "./ipc-project-environment-setup-requests.js"
+export * from "./ipc-project-environment-requests.js"
 export * from "./ipc-config-requests.js"
 export * from "./ipc-own-machine-enrollment-requests.js"
 export * from "./ipc-room-terminal-requests.js"
 
 export { controlRoomWorkflowRunsRequest } from "./room-workflows.js"
-export { getProjectEnvironmentRequest, projectEnvironmentMinimumProtocolVersion } from "./project-environment-aggregate.js"
-
-export * from "./project-environment-aggregate-requests.js"
 export * from "./ipc-kernel-browser-requests.js"
 
 export * from "./notes.js"

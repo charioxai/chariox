@@ -13,10 +13,6 @@ import type {
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type {
-  ProjectEnvironmentSetupStartInput,
-} from "@chariox/kernel-client/project-environment-setup-orchestration"
-import type {
-  ProjectEnvironmentSetupStatus,
   RuntimeSession,
 } from "@chariox/kernel-client/kernel-types"
 import {
@@ -206,30 +202,6 @@ reimageTest("keeps destructive admission local and launches the exact replacemen
         assert.equal(selectedReplacement?.runtimeMachineId, "machine-new")
         assert.equal(selectedReplacement?.runtimeKernelId, "kernel-new")
         assert.equal(harness.client.currentClient().socketPath, REPLACEMENT_ENDPOINT)
-      } finally {
-        harness.cleanup()
-      }
-    })
-
-reimageTest("does not report cutover success when Project setup fails", async (router) => {
-      const harness = createHarness(router, {
-        contextPlan: sourcePlan(),
-        setupFailure: new Error("dependency validation failed"),
-      })
-      try {
-        await harness.initialize()
-        await harness.composition.reimageManagedEnvironment("environment-1", "prepare")
-        let result: Awaited<ReturnType<typeof harness.composition.reimageManagedEnvironment>> | undefined
-
-        await assert.rejects(async () => {
-          result = await harness.composition.reimageManagedEnvironment("environment-1", "confirm")
-        }, /dependency validation failed/)
-
-        assert.equal(result, undefined)
-        assert.equal(requestCount(harness.replacement, "StartProjectEnvironmentSetup"), 1)
-        assert.equal(requestCount(harness.replacement, "DeleteSession"), 1)
-        assert.equal(harness.attachments.length, 0)
-        assert.equal(harness.client.currentClient(), harness.local.client)
       } finally {
         harness.cleanup()
       }
@@ -623,7 +595,6 @@ function installLocalIpcClientTestRouter() {
 function createHarness(router: TestRouter, options: {
   observationFailure?: Error
   contextPlan?: ManagedEnvironmentContextPlan
-  setupFailure?: Error
   attachFailure?: Error
   portabilityFailure?: Error
   stoppedEnrolled?: boolean
@@ -686,10 +657,6 @@ function createHarness(router: TestRouter, options: {
         const payload = requestPayload(request, "CreateSession")
         return { SessionCreated: { session: { ...runtimeSession(contextPlan), id: "session-local",
           workspace_id: payload.workspace_id, worktree_id: payload.worktree_id } } }
-      }
-      case "StartProjectEnvironmentSetup": {
-        const input = requestPayload(request, "StartProjectEnvironmentSetup") as unknown as ProjectEnvironmentSetupStartInput
-        return { ProjectEnvironmentSetupStarted: { status: setupStatus(input) } }
       }
       case "GetProviderCatalog":
         return { ProviderCatalog: { catalog: fallbackProviderCatalog() } }
@@ -759,10 +726,6 @@ function createHarness(router: TestRouter, options: {
         return { ManagedEnvironmentCatalog: { catalog: { ...catalog, environments: options.targetOwnKernelAbsent ? [] : [oldEnvironment] } } }
       case "CreateSession":
         return { SessionCreated: { session: { ...runtimeSession(contextPlan), id: "session-ready" } } }
-      case "StartProjectEnvironmentSetup": {
-        const input = requestPayload(request, "StartProjectEnvironmentSetup") as unknown as ProjectEnvironmentSetupStartInput
-        return { ProjectEnvironmentSetupStarted: { status: setupStatus(input) } }
-      }
       case "ObserveManagedEnvironmentPreReimage":
         observedThroughEndpoint = mutableClient.currentClient().socketPath
         if (options.observationFailure) throw options.observationFailure
@@ -796,14 +759,6 @@ function createHarness(router: TestRouter, options: {
         return { ManagedContextLaunchTarget: { target: launchTarget(contextPlan) } }
       case "CreateSession":
         return { SessionCreated: { session } }
-      case "StartProjectEnvironmentSetup": {
-        const input = requestPayload(request, "StartProjectEnvironmentSetup") as unknown as ProjectEnvironmentSetupStartInput
-        return {
-          ProjectEnvironmentSetupStarted: {
-            status: setupStatus(input, options.setupFailure),
-          },
-        }
-      }
       case "DeleteSession":
         return { SessionDeleted: { session } }
       default:
@@ -1305,34 +1260,5 @@ function runtimeSession(plan: ManagedEnvironmentContextPlan): RuntimeSession {
     max_agents: 6,
     agents: [{ id: "agent-1" } as RuntimeSession["agents"][number]],
     config_state: { version: 1, values: {}, updated_by_attachment_id: null },
-  }
-}
-
-function setupStatus(
-  input: ProjectEnvironmentSetupStartInput,
-  failure?: Error,
-): ProjectEnvironmentSetupStatus {
-  return {
-    operation_id: input.operationId,
-    project_id: input.projectId,
-    session_id: input.sessionId,
-    agent_id: input.agentId,
-    worker_id: input.targetWorkerId || "kernel-new",
-    platform: input.targetPlatform || "linux",
-    phase: failure ? "failed" : "ready",
-    attempt: 1,
-    progress_percent: failure ? 60 : 100,
-    definition_digest: "sha256:definition",
-    validation: {
-      worker_id: input.targetWorkerId || "kernel-new",
-      platform: input.targetPlatform || "linux",
-      commands: [],
-    },
-    message: failure?.message ?? "ready",
-    failure_code: failure ? "validation_failed" : null,
-    failure_message: failure?.message ?? null,
-    retryable: false,
-    created_at_ms: 1,
-    updated_at_ms: 2,
   }
 }

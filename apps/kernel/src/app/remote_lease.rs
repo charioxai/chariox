@@ -16,7 +16,6 @@ mod leased_process;
 mod mcp_availability;
 mod native_provider;
 mod profile_update;
-mod project_environment;
 mod projection;
 mod projection_delivery;
 mod prompt_attachments;
@@ -967,29 +966,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.destroy_leased_agent(leased_agent_id)
     }
 
-    pub(crate) fn project_environment_setup_target(
-        &self,
-        leased_agent_id: &str,
-        home_session_id: &str,
-        home_agent_id: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
-        // MP-08 / MP-10 / MP-11: placement does not decide setup admission.
-        // Ordinary kernels and slices execute their own authenticated leases,
-        // with the same explicit remote-lease opt-in as lease creation.
-        if !self.app.config.accept_remote_leases {
-            return Err(DaemonError::RemoteLeasesDisabled {
-                machine_id: self.app.config.host_machine_id.clone(),
-            });
-        }
-        self.leased_project_target(
-            leased_agent_id,
-            home_session_id,
-            home_agent_id,
-            workspace_id,
-        )
-    }
-
     pub(crate) fn leased_project_target(
         &self,
         leased_agent_id: &str,
@@ -1435,7 +1411,6 @@ mod tests {
     use super::*;
     mod catalog_admission;
     mod profile_admission;
-    mod project_environment_setup;
 
     #[test]
     fn codex_leased_agent_creation_refuses_endpoint_capacity_before_mutation() {

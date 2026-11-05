@@ -99,8 +99,6 @@ const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
     include_str!("provider/semantic_recall_search_instructions.md");
-const UTILITY_PROJECT_ENVIRONMENT_SETUP: &str =
-    include_str!("provider/project_environment_setup_instructions.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -264,7 +262,11 @@ impl PromptTemplateRegistry {
                     && metadata.len() <= 64 * 1024 => {}
             _ => return Err(prompt_settings_error("invalid user rules", "user-rules.md")),
         }
-        let body = crate::project_environment::read_user_rules_file(&root)?;
+        let body = fs::read_to_string(&path)
+            .map_err(|_| prompt_settings_error("invalid user rules", "user-rules.md"))?;
+        if body.contains('\0') {
+            return Err(prompt_settings_error("invalid user rules", "user-rules.md"));
+        }
         Ok(Some(body))
     }
 
@@ -1143,10 +1145,6 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "utility/semantic-recall-search",
             UTILITY_SEMANTIC_RECALL_SEARCH,
         ),
-        BundledPromptTemplate::new(
-            "utility/project-environment-setup",
-            UTILITY_PROJECT_ENVIRONMENT_SETUP,
-        ),
     ]
 }
 
@@ -1202,7 +1200,6 @@ fn prompt_component_tag(template_id: &str) -> String {
         }
         "utility/workspace-commit-message" => "workspace-commit-message-instructions",
         "utility/semantic-recall-search" => "semantic-recall-search-instructions",
-        "utility/project-environment-setup" => "project-environment-setup-instructions",
         _ => return template_id.replace('/', "-"),
     }
     .to_string()

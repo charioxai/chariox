@@ -228,7 +228,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::process::Command;
-    use std::sync::Arc;
     use std::time::Duration;
 
     use chariox_relay::{RelayAction, RelayAuthVerifier, RelayTokenClaims, ScopedTokenVerifier};
@@ -239,7 +238,6 @@ mod tests {
     use crate::managed_bootstrap::{persisted_profile, ManagedKernelContextPlan};
     use crate::managed_context::outbound_service::ManagedContextTransferTicket;
     use crate::runtime::command::KernelCommand;
-    use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
     fn worker_cloud_relay(
         api_url: &str,
@@ -773,283 +771,40 @@ mod tests {
         fixture.cleanup();
     }
 
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn authenticated_peer_worker_setup_preserves_attempt_two_and_rejects_replays() {
-        crate::test_support::isolated_env_test!();
-        use crate::app::DaemonApp;
-        use crate::config::KernelRuntimeRole;
-        use crate::transport::relay_client::send_authenticated_peer_request_for_test;
+    struct EnrollmentCloud {
+        response: ExchangeResponse,
+        confirmations: std::sync::Mutex<Vec<ConfirmRequest>>,
+    }
 
-        let _env = crate::env_lock::lock();
-        let fixture = super::super::tests::Fixture::new("peer-attempt-two");
-        let task_root = fixture
-            .config
-            .chariox_home
-            .parent()
-            .expect("fixture home parent")
-            .to_path_buf();
-        let worker_root = task_root.join("worker-daemon");
-        let worker_worktree = task_root.join("worker-worktree");
-        fs::create_dir_all(&worker_worktree).expect("worker worktree should exist");
-
-        let previous_chariox_home = env::var_os("CHARIOX_HOME");
-        let previous_receipt = env::var_os(ACTIVITY_RECEIPT_ENV);
-        let previous_local_auth = env::var_os("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE");
-        let previous_started_marker = env::var_os("CHARIOX_KERNEL_STARTED_MARKER");
-        let worker_started_marker = fixture
-            .config
-            .chariox_home
-            .join("disposable-worker/kernel-started");
-        env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
-        env::set_var("CHARIOX_KERNEL_STARTED_MARKER", &worker_started_marker);
-
-        let mut worker_app_config = isolated_worker_test_config(
-            &worker_root,
-            "worker-kernel",
-            "worker-machine",
-            "disposable-worker",
-            43121,
-        );
-        let worker_private_key = worker_app_config.relay_private_key.clone();
-        let worker_public_key = worker_app_config.relay_public_key.clone();
-        init_worker_test_identity_with_key(
-            &fixture.config.chariox_home,
-            "worker-kernel",
-            "worker-machine",
-            &worker_private_key,
-            &worker_public_key,
-        );
-
-        let home_private_key = crate::transport::relay_crypto::generate_private_key_base64();
-        let home_public_key =
-            crate::transport::relay_crypto::public_key_from_private_key_base64(&home_private_key)
-                .expect("home public key should derive");
-        let worker_receipt_path = fixture
-            .config
-            .chariox_home
-            .join("disposable-worker/bootstrap-receipt.json");
-        let worker_cloud_relay =
-            worker_cloud_relay("https://cloud.example.test", "local", "default");
-        let receipt = confirmed_receipt(
-            &worker_receipt_path,
-            "allocation-peer-attempt-two",
-            &fixture.release_digest,
-            &worker_public_key,
-            CloudHomeCaller {
-                account_id: "account-1".to_string(),
-                user_id: "local".to_string(),
-                realm_id: "default".to_string(),
-                machine_id: "home-machine".to_string(),
-                kernel_id: "home-kernel".to_string(),
-                relay_public_key: home_public_key.clone(),
-            },
-        );
-
-        let local_auth_path = fixture.config.chariox_home.join("worker-local-auth-token");
-        write_private_file(&local_auth_path, b"test-local-auth")
-            .expect("write synthetic worker auth fixture");
-        env::set_var("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", &local_auth_path);
-
-        worker_app_config.kernel_runtime_role = KernelRuntimeRole::RemoteLeaseWorker;
-        worker_app_config.accept_remote_leases = true;
-        worker_app_config.remote_lease_capacity = Some(1);
-        worker_app_config.cloud_relay = Some(worker_cloud_relay.clone());
-        worker_app_config.lease_worker_home_caller = Some(receipt.home_caller.lease_binding());
-        env::set_var(ACTIVITY_RECEIPT_ENV, &worker_receipt_path);
-        env::set_var("CHARIOX_KERNEL_RUNTIME_ROLE", "remote_lease_worker");
-        env::set_var("CHARIOX_ACCEPT_REMOTE_LEASES", "1");
-        env::set_var("CHARIOX_REMOTE_LEASE_CAPACITY", "1");
-        env::set_var(
-            "CHARIOX_LEASE_WORKER_HOME_CALLER",
-            serde_json::to_string(&receipt.home_caller.lease_binding())
-                .expect("encode worker home caller"),
-        );
-        let worker_app = Arc::new(tokio::sync::Mutex::new(
-            DaemonApp::bootstrap(worker_app_config.clone()).expect("worker app should bootstrap"),
-        ));
-        let worker_router = Arc::new(
-            crate::runtime::router::CommandRouter::with_interactive_capacity(
-                Arc::clone(&worker_app),
-                1,
-            ),
-        );
-        let worker_state = worker_app.lock().await.relay_client_state();
-        let from_daemon_id = "home-kernel:peer-tmp:daemon-peer-tmp-4242-1767225600123-7";
-        let caller_identity = chariox_relay::protocol::RelayCallerIdentity {
-            realm_id: "default".to_string(),
-            subject: "home-machine".to_string(),
-            subject_kind: chariox_relay::auth::RelaySubjectKind::Machine,
-            expires_at_ms: u64::MAX,
-            token_id: Some("peer-token".to_string()),
-            user_id: Some("local".to_string()),
-            public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
-                &home_public_key,
-            )),
-        };
-
-        // Construct the large peer-dispatch future outside this test's poll
-        // frame. Keeping each request inline exhausts the default test stack
-        // when the authenticated peer handler is polled beneath it.
-        let send_peer_request = |request| {
-            Box::pin(send_authenticated_peer_request_for_test(
-                &worker_router,
-                &worker_state,
-                from_daemon_id,
-                caller_identity.clone(),
-                &home_private_key,
-                &worker_public_key,
-                request,
-            ))
-        };
-
-        let lease = match send_peer_request(RelayPeerRequest::CreateExecutionLease {
-            home_kernel_id: "home-kernel".to_string(),
-            home_session_id: "home-session".to_string(),
-            home_agent_id: "home-agent".to_string(),
-            home_agent_metaagent: false,
-            owner_user_id: "local".to_string(),
-        })
-        .await
-        .expect("authenticated home should create a worker lease")
-        {
-            RelayPeerResponse::ExecutionLeaseCreated { lease, .. } => lease,
-            other => panic!("unexpected lease response: {other:?}"),
-        };
-        let leased_agent_id = match send_peer_request(RelayPeerRequest::SpawnLeasedAgent {
-            lease_id: lease.id.clone(),
-            provider: "managed-dev-stub".to_string(),
-            account_profile: "default".to_string(),
-            model: Some("default".to_string()),
-            effort: None,
-            execution_mode: None,
-            permission_level: None,
-            workspace_live_sync_mode: None,
-            worktree_id: Some(worker_worktree.display().to_string()),
-            worktree_placement: None,
-        })
-        .await
-        .expect("authenticated home should spawn the worker agent")
-        {
-            RelayPeerResponse::LeasedAgentSpawned { leased_agent } => leased_agent.id,
-            other => panic!("unexpected leased-agent response: {other:?}"),
-        };
-        let target_platform = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
-        let operation_id = "peer-setup-attempt-two".to_string();
-        let start =
-            |attempt: u32, project_id: &str| RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
-                leased_agent_id: leased_agent_id.clone(),
-                operation_id: operation_id.clone(),
-                attempt,
-                project_id: project_id.to_string(),
-                home_session_id: "home-session".to_string(),
-                home_agent_id: "home-agent".to_string(),
-                workspace_id: worker_worktree.display().to_string(),
-                target_worker_id: "worker-machine".to_string(),
-                target_platform: target_platform.clone(),
-                definition: None,
-                validation_commands: Vec::new(),
-            };
-
-        let started = send_peer_request(start(2, "project-attempt-two"))
-            .await
-            .expect("worker peer handler should accept home attempt two");
-        let started_status = match started {
-            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup } => setup,
-            other => panic!("unexpected setup start response: {other:?}"),
-        };
-        assert_eq!(started_status.status.operation_id, operation_id);
-        assert_eq!(started_status.status.attempt, 2);
-
-        let observed =
-            send_peer_request(RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
-                leased_agent_id: leased_agent_id.clone(),
-                operation_id: operation_id.clone(),
-                home_session_id: "home-session".to_string(),
-                home_agent_id: "home-agent".to_string(),
-            })
-            .await
-            .expect("worker peer handler should return authenticated attempt two status");
-        match observed {
-            RelayPeerResponse::LeasedProjectEnvironmentSetupStatus { setup } => {
-                assert_eq!(setup.status.operation_id, operation_id);
-                assert_eq!(setup.status.attempt, 2);
-            }
-            other => panic!("unexpected setup status response: {other:?}"),
-        }
-
-        let legacy_definition = crate::local::ProjectEnvironmentDefinition {
-            schema_version: 1,
-            origin: crate::local::ProjectEnvironmentDefinitionOrigin::UserAuthored,
-            source: crate::local::ProjectEnvironmentDefinitionSource::Devcontainer,
-            target_platform: target_platform.clone(),
-            source_path: Some(".devcontainer/devcontainer.json".to_string()),
-            inputs: Vec::new(),
-            path_entries: Vec::new(),
-            setup_steps: vec![crate::local::ProjectEnvironmentSetupStep {
-                kind: crate::local::ProjectEnvironmentSetupStepKind::Command,
-                command: "command -v sh".to_string(),
-            }],
-            validation_commands: vec!["command -v sh".to_string()],
-        };
-        assert!(legacy_definition.is_unattested_file_backed());
-        let repaired_admission =
-            send_peer_request(RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
-                leased_agent_id: leased_agent_id.clone(),
-                operation_id: "peer-legacy-definition".to_string(),
-                attempt: 1,
-                project_id: "project-legacy-definition".to_string(),
-                home_session_id: "home-session".to_string(),
-                home_agent_id: "home-agent".to_string(),
-                workspace_id: worker_worktree.display().to_string(),
-                target_worker_id: "worker-machine".to_string(),
-                target_platform: target_platform.clone(),
-                definition: Some(legacy_definition),
-                validation_commands: Vec::new(),
-            })
-            .await
-            .expect("home setup with a repairable legacy definition should reach the worker");
-        match repaired_admission {
-            RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup } => {
-                assert_eq!(setup.status.operation_id, "peer-legacy-definition");
-                assert_eq!(setup.status.attempt, 1);
-            }
-            other => panic!("unexpected repairable setup response: {other:?}"),
-        }
-
-        for (label, request) in [
-            ("stale attempt", start(1, "project-attempt-two")),
-            ("zero attempt", start(0, "project-attempt-two")),
-            ("conflicting fingerprint", start(2, "different-project")),
-        ] {
-            let error = send_peer_request(request)
-                .await
-                .expect_err("invalid worker replay must be rejected");
+    impl WorkerCloudClient for EnrollmentCloud {
+        fn exchange(
+            &self,
+            _api_url: &str,
+            request: &ExchangeRequest,
+        ) -> Result<ExchangeResponse, DaemonError> {
+            assert_eq!(request.allocation_id, self.response.allocation_id);
             assert_eq!(
-                error.code,
-                crate::transport::relay_peer::PROJECT_ENVIRONMENT_SETUP_REJECTED_CODE,
-                "{label} must use the setup rejection boundary"
+                request.runtime_release_digest,
+                self.response.runtime_release_digest
             );
+            Ok(self.response.clone())
         }
 
-        let _ = send_peer_request(RelayPeerRequest::DestroyLeasedAgent {
-            leased_agent_id: leased_agent_id.clone(),
-        })
-        .await
-        .expect("worker agent cleanup should remain authenticated");
-        let _ = send_peer_request(RelayPeerRequest::DestroyExecutionLease { lease_id: lease.id })
-            .await
-            .expect("worker lease cleanup should remain authenticated");
-
-        restore_worker_test_env("CHARIOX_HOME", previous_chariox_home);
-        restore_worker_test_env(ACTIVITY_RECEIPT_ENV, previous_receipt);
-        restore_worker_test_env("CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE", previous_local_auth);
-        restore_worker_test_env("CHARIOX_KERNEL_STARTED_MARKER", previous_started_marker);
-        env::remove_var("CHARIOX_KERNEL_RUNTIME_ROLE");
-        env::remove_var("CHARIOX_ACCEPT_REMOTE_LEASES");
-        env::remove_var("CHARIOX_REMOTE_LEASE_CAPACITY");
-        env::remove_var("CHARIOX_LEASE_WORKER_HOME_CALLER");
-        fixture.cleanup();
+        fn confirm(
+            &self,
+            _api_url: &str,
+            request: &ConfirmRequest,
+        ) -> Result<ConfirmResponse, DaemonError> {
+            self.confirmations
+                .lock()
+                .expect("confirmation lock")
+                .push(request.clone());
+            Ok(ConfirmResponse {
+                confirmed: true,
+                observed_state: "ready".to_string(),
+                managed_repository_root: self.response.managed_repository_root.clone(),
+            })
+        }
     }
 
     struct TestCloudApi {

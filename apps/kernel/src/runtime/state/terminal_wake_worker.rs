@@ -221,6 +221,7 @@ mod tests {
             crate::room_terminal::RoomTerminalService::new(root.join("terminals")).unwrap();
         let terminal = service
             .open(crate::room_terminal::OpenRoomTerminal {
+                project_environment: Default::default(),
                 session_id: "room-1".into(),
                 working_directory: root.clone(),
                 cols: 100,

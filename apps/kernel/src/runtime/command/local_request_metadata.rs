@@ -172,27 +172,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
-        LocalDaemonRequest::AdjustProjectEnvironment(request) => {
-            LocalRequestMetadata::new("project.environment.adjust", Interactive)
-                .session(&request.session_id)
-                .agent(&request.agent_id)
-        }
-        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.start", Normal)
-                .session(&request.session_id)
-                .agent(&request.agent_id)
-        }
-        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
-            LocalRequestMetadata::new("project.environment_setup.status", Normal)
-        }
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.cancel", Normal)
-                .session(&request.session_id)
-        }
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.retry", Normal)
-                .session(&request.session_id)
-        }
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
@@ -228,6 +207,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
         }
         LocalDaemonRequest::OwnerVault(_) => LocalRequestMetadata::new("vault.owner", Normal),
+        LocalDaemonRequest::SetProjectEnvironmentSecret(_) => {
+            LocalRequestMetadata::new("project.environment.secret.set", Normal)
+        }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             LocalRequestMetadata::new("credential.secret.set", Normal)
                 .optional_session(request.session_id.as_deref())
@@ -715,58 +697,27 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
         LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
-        LocalDaemonRequest::DetectProjectEnvironment(_) => {
-            "project.environment.DetectProjectEnvironment"
-        }
-        LocalDaemonRequest::PreviewEnvironmentDiff(_) => {
-            "project.environment.PreviewEnvironmentDiff"
-        }
-        LocalDaemonRequest::SaveProjectEnvironmentRevision(_) => {
-            "project.environment.SaveProjectEnvironmentRevision"
-        }
-        LocalDaemonRequest::PlanProjectEnvironment(_) => {
-            "project.environment.PlanProjectEnvironment"
-        }
-        LocalDaemonRequest::ApplyProjectEnvironment(_) => {
-            "project.environment.ApplyProjectEnvironment"
-        }
-        LocalDaemonRequest::CheckProjectEnvironment(_) => {
-            "project.environment.CheckProjectEnvironment"
-        }
-        LocalDaemonRequest::GetEnvironmentOperation(_) => {
-            "project.environment.GetEnvironmentOperation"
-        }
-        LocalDaemonRequest::CancelEnvironmentOperation(_) => {
-            "project.environment.CancelEnvironmentOperation"
-        }
-        LocalDaemonRequest::RetryEnvironmentOperation(_) => {
-            "project.environment.RetryEnvironmentOperation"
-        }
-        LocalDaemonRequest::ExportProjectEnvironment(_) => {
-            "project.environment.ExportProjectEnvironment"
-        }
-        LocalDaemonRequest::PreviewEnvironmentImport(_) => {
-            "project.environment.PreviewEnvironmentImport"
-        }
-        LocalDaemonRequest::CommitEnvironmentImport(_) => {
-            "project.environment.CommitEnvironmentImport"
-        }
         LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
+        LocalDaemonRequest::SaveProjectEnvironment(_) => "project.environment.save",
+        LocalDaemonRequest::SetProjectEnvironmentSecret(_) => "project.environment.secret.set",
+        LocalDaemonRequest::RunProjectEnvironmentSetup(_) => "project.environment.setup.run",
+        LocalDaemonRequest::ImportProjectEnvironmentEntries(_) => "project.environment.import",
+        LocalDaemonRequest::DraftProjectEnvironment(_) => "project.environment.draft",
+        LocalDaemonRequest::CheckProjectEnvironment(_) => "project.environment.check",
+        LocalDaemonRequest::ResolveEnvironmentProposal(_) => "project.environment.proposal.resolve",
+        LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(_) => {
+            "project.environment.setup.run_remote"
+        }
+        LocalDaemonRequest::RemoteEnvironmentOperation(_) => "project.environment.operation.remote",
+        LocalDaemonRequest::GetEnvironmentOperation(_) => "project.environment.operation.get",
+        LocalDaemonRequest::CancelEnvironmentOperation(_) => "project.environment.operation.cancel",
         LocalDaemonRequest::ListProjects(_) => "project.list",
-        LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
-        LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
         LocalDaemonRequest::SetProjectPinned(_) => "project.pin",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
         LocalDaemonRequest::DeleteProject(_) => "project.delete",
         LocalDaemonRequest::RestoreProject(_) => "project.restore",
-        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
-        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
-            "project.environment_setup.status"
-        }
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
         LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
