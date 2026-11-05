@@ -5,16 +5,27 @@ import {randomUUID} from 'node:crypto';
 function bindVerificationInput(name, resolveAnchor) {
   const original=this;
   let sequence=0, field=null;
+  const delivered=new Map();
   const acknowledge=event=>{
     if (!event.isTrusted || event.target?.ownerDocument!==document || !event.target.isConnected) return;
     const anchor=resolveAnchor ? resolveAnchor() : original;
     if (!anchor?.isConnected || !event.composedPath().includes(anchor)) return;
     const target=event.target;
-    if (event.type==='input' && ['INPUT','TEXTAREA'].includes(target.nodeName) && !target.readOnly && !['checkbox','radio','hidden','button','submit'].includes(target.type)) field=target;
-    if (!field?.isConnected || field.ownerDocument!==document || !field.value || field.value.length>512) return;
+    if (event.type==='input' && ['INPUT','TEXTAREA'].includes(target.nodeName) && !target.readOnly && !['checkbox','radio','hidden','button','submit'].includes(target.type)) {
+      field=target;
+      if(target.value.length<=512)delivered.set(target,target.value);else delivered.delete(target);
+    }
+    for(const [input,value] of delivered)if(!input.isConnected || !anchor.contains(input) || input.value!==value)delivered.delete(input);
+    if(delivered.size>64) {delivered.clear();field=null;return}
+    if (!field?.isConnected || !delivered.has(field) || field.ownerDocument!==document || !field.value || field.value.length>512) return;
     // This private CDP binding is never an observation/event-journal result.
     // Keep the delivered value inside the helper, solely to correlate the POST.
-    globalThis[name](JSON.stringify({sequence:++sequence,value:field.value}));
+    // Segmented codes submit one aggregate in document order, even when the
+    // person edits the boxes out of order. Only include trusted delivered input.
+    const segments=[...delivered.keys()].filter(input=>input.form===field.form && input.value.length===1)
+      .sort((a,b)=>a.compareDocumentPosition(b)&Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1);
+    const aggregate=segments.length>1 ? segments.map(input=>delivered.get(input)).join('') : '';
+    globalThis[name](JSON.stringify({sequence:++sequence,value:field.value.length===1 && aggregate ? aggregate : field.value}));
   };
   const kinds=['input','click','keydown','submit'];
   for(const kind of kinds)document.addEventListener(kind,acknowledge,true);

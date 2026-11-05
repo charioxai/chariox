@@ -8,11 +8,11 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {KernelBrowserHost} from './kernel-browser-host.mjs';
 import {startChallengeService} from '../../../../scripts/e2e-stack/vault-autonomy/challenge-service.mjs';
 
-for (const [pendingPoll,requestEncoding] of [[false,'json'],[true,'json'],[true,'urlencoded']]) test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance, pending poll='+pendingPoll+', encoding='+requestEncoding,{timeout:120_000},async()=>{
+for (const [pendingPoll,requestEncoding,segmented] of [[false,'json',false],[true,'json',false],[true,'urlencoded',false],[true,'json',true],[true,'urlencoded',true]]) test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance, pending poll='+pendingPoll+', encoding='+requestEncoding+', segmented='+segmented,{timeout:120_000},async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'verification-chrome-')),service=await startChallengeService();
   const host=new KernelBrowserHost(root,{appStorageRoot:path.join(root,'apps')}),scope='agent:verification-chrome';
   try {
-    const challenge=service.create({requestEncoding}),opened=await host.request({op:'open',url:challenge.url,observed_by:scope});
+    const challenge=service.create({requestEncoding,segmented}),opened=await host.request({op:'open',url:challenge.url,observed_by:scope});
     const binding={tab_id:opened.tab_id,generation:opened.generation,observed_by:scope};
     const snapshot=(await host.request({op:'snapshot',...binding})).snapshot;
     const main=snapshot.dom_nodes.find(n=>n.node_name==='MAIN');assert.ok(main,'late AX-observed challenge anchor survives the DOM bound');
@@ -26,8 +26,14 @@ for (const [pendingPoll,requestEncoding] of [[false,'json'],[true,'json'],[true,
       await host.request({op:'input',...binding,document_id:snapshot.document_id,input:{kind:'click',x:Math.round(x+width/2),y:Math.round(y+height/2)}});
     };
     const input=async value=>host.request({op:'input',...binding,document_id:snapshot.document_id,input:value});
+    const enterCode=async code=>{
+      if(segmented) {
+        // Deliberately edit out of document order, then submit the DOM-ordered aggregate.
+        for(const i of [5,0,3,1,4,2]) {await click('code'+i);await input({kind:'key',key:'a',modifiers:2});await input({kind:'text',text:code[i]})}
+      } else {await click('code');await input({kind:'key',key:'a',modifiers:2});await input({kind:'text',text:code})}
+    };
     await click('issue');await delay(100);
-    await input({kind:'text',text:'000000'});
+    await enterCode('000000');
     const before=await host.request(command);
     const {rect,viewport_width,viewport_height}=before.region;
     const pending=pendingPoll ? host.request({...command,document_id:snapshot.document_id,after:{rect,viewport_width,viewport_height}}) : null;
@@ -42,7 +48,7 @@ for (const [pendingPoll,requestEncoding] of [[false,'json'],[true,'json'],[true,
     assert.notEqual(replacement.node_ref,main.node_ref,'the entire challenge anchor was replaced');
     rejected=await host.request({...command,document_id:snapshot.document_id});
     assert.ok(rejected.region.rect.y>first.region.rect.y,'the crop follows replacement geometry');
-    await click('code');await input({kind:'key',key:'a',modifiers:2});await input({kind:'text',text:'246810'});await input({kind:'key',key:'Enter'});
+    await enterCode('246810');await input({kind:'key',key:'Enter'});
     let accepted;
     for(let i=0;i<40;i++) {accepted=await host.request({...command,document_id:snapshot.document_id});if(accepted.state==='condition_met')break;await delay(100)}
     if(accepted.state!=='condition_met')console.log(JSON.stringify({receipt:accepted.region?.verification_result,events:(await(await fetch(challenge.url+'/status')).json()).events}));

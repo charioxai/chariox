@@ -22,6 +22,7 @@ const expected=process.env.VFLAG_EXPECT ?? 'green'
 assert.ok(['green','encoding-red','grant-red'].includes(expected))
 const recoverBrowser=process.env.VFLAG_RECOVER_BROWSER==='1'||expected==='grant-red'
 const requestEncoding=process.env.VFLAG_ENCODING ?? 'json'
+const segmented=process.env.VFLAG_SEGMENTED==='1'
 assert.ok(['json','urlencoded'].includes(requestEncoding))
 const cells=[{id:'desktop-dpr1',width:1440,height:900,dpr:1},{id:'desktop-dpr2',width:1440,height:900,dpr:2}].filter(c=>(process.env.VFLAG_CELLS ?? 'desktop-dpr1,desktop-dpr2').split(',').includes(c.id))
 await mkdir(evidence,{recursive:true})
@@ -29,7 +30,7 @@ const results=[],errors=[]
 let fixture,browser,page,context,viewerContext,sessionId,agentId,challengeUrl
 const service=await startChallengeService()
 const state=async()=>(await fixture.send({ListSessions:{}})).SessionsListed.sessions.find(session=>session.id===sessionId)
-const save=async()=>writeFile(path.join(evidence,'results.json'),JSON.stringify({MP:'MP-08 / MP-09 / MP-10 / MP-11',expected,requestEncoding,recoverBrowser,results,errors},null,2)+'\n')
+const save=async()=>writeFile(path.join(evidence,'results.json'),JSON.stringify({MP:'MP-08 / MP-09 / MP-10 / MP-11',expected,requestEncoding,segmented,recoverBrowser,results,errors},null,2)+'\n')
 async function closeFixture() {
   if(!fixture)return
   const closing=fixture.close()
@@ -73,7 +74,7 @@ try {
   const worktrees=(await fixture.send({ListWorkspaceWorktrees:{workspace_id:fixture.workspace}})).WorkspaceWorktreesListed.worktrees
   for(const cell of cells) {
     console.log('Stage: '+cell.id)
-    const challenge=service.create({requestEncoding});challengeUrl=challenge.url;const tag=cell.id+'-'+Date.now().toString(36)
+    const challenge=service.create({requestEncoding,segmented});challengeUrl=challenge.url;const tag=cell.id+'-'+Date.now().toString(36)
     const created=(await fixture.send({CreateSession:{workspace_id:fixture.workspace,worktree_id:worktrees[0].path,alias:'Verification '+cell.id,agent_defaults:{provider:'codex',model:'gpt-6-luna',effort:'low',account_profile:profile.profile_id}}})).SessionCreated
     sessionId=created.session.id;agentId=created.agent.id
     const row={cell:cell.id,challenge_id:challenge.id,session_id:sessionId,agent_id:agentId,status:'RUNNING'};results.push(row);await save()
@@ -176,8 +177,13 @@ try {
       row.concurrent_owner_viewer=true
     }
     await frame.locator('#issue').click()
-    await frame.locator('#code').waitFor({state:'visible'})
-    await frame.locator('#code').click();await frame.locator('#code').pressSequentially('000000',{delay:50});await frame.locator('#code').press('Enter')
+    const enterCode=async (target,code)=>{
+      if(segmented) {
+        for(const i of [5,0,3,1,4,2]) {const field=target.locator('#code'+i);await field.click();await field.press('ControlOrMeta+A');await field.pressSequentially(code[i],{delay:50})}
+        await target.locator('#code2').press('Enter')
+      } else {const field=target.locator('#code');await field.click();await field.press('ControlOrMeta+A');await field.pressSequentially(code,{delay:50});await field.press('Enter')}
+    }
+    await enterCode(frame,'000000')
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).events.some(e=>e.result==='rejected'),'server rejection')
     await page.waitForTimeout(2000)
     const afterRejected=await state()
@@ -187,7 +193,7 @@ try {
     await popup.waitFor()
     await frame.getByRole('alert').filter({hasText:'That code was not accepted'}).waitFor()
     let retryFrame=frame
-    if(expected==='green') {
+    if(expected==='green'&&!segmented) {
       await popup.getByRole('button',{name:'Open full tab',exact:true}).click()
       await popup.waitFor({state:'detached'})
       const sameTab=page.locator(`[data-room-browser] .kernel-browser-page-surface[data-browser-document='${live.view.browser_region.document_id}']`)
@@ -197,14 +203,14 @@ try {
       await page.screenshot({path:path.join(evidence,cell.id+'-same-full-tab-rejected.png')})
       row.full_tab_same_document=true
     }
-    await retryFrame.locator('#code').click();await retryFrame.locator('#code').press('ControlOrMeta+A');await retryFrame.locator('#code').pressSequentially('246810',{delay:50});await retryFrame.locator('#code').press('Enter')
+    await enterCode(retryFrame,'246810')
     assert.equal(await page.locator('[data-prompt-input]').inputValue(),'','typing stays in the browser instead of reaching the Room composer')
     row.typing_stayed_in_browser=true
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).accepted,'actual server acceptance')
     if(expected==='encoding-red') {
       await page.waitForTimeout(2000)
       row.acceptance_card_retained=((await state()).active_interactions??[]).some(c=>c.id===live.id)
-      assert.equal(row.acceptance_card_retained,true,'base cannot correlate a successful URL-encoded retry')
+      assert.equal(row.acceptance_card_retained,true,'base cannot correlate the successful submitted code')
       await page.screenshot({path:path.join(evidence,cell.id+'-accepted-stuck.png')})
       row.status='EXPECTED RED';await fixture.send({EndSession:{session_id:sessionId}});await save();break
     }
