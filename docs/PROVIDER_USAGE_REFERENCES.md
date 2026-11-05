@@ -35,23 +35,27 @@ balance. Missing windows or credits remain missing.
 
 ## Keeping meters current
 
-The kernel reads every signed-in Claude and Codex account's usage itself, so an
-idle account is not left with an old reading or none:
+The kernel reads signed-in Codex accounts through the official app-server
+without running a turn:
 
 - every 15 minutes, and every 5 minutes while an agent runs on the account;
 - when `ListProviderAccountProfiles` or `GetProviderUsageSnapshot` finds a reading
   older than 5 minutes, the kernel renews it first and waits a few seconds for the
   answer (a slower read finishes in the background);
-- one read per account at a time, spread by a per-account jitter so the reading is
-  never older than the interval, and a doubling wait after a failure (never shorter
-  than the provider's `Retry-After`, at most an hour).
+- one read per account at a time, spread by a per-account jitter, with a doubling
+  wait after a failure (capped at an hour unless the provider asks for longer).
+  The wait starts when the read finishes; a queued worker rechecks it before
+  claiming the next read.
 
-Sources are read-only and use the credentials the kernel already holds: Codex's
-`account/rateLimits/read` and `account/usage/read` from its app-server; for Claude,
-the OAuth usage read Claude Code makes for `/usage` (`GET /api/oauth/usage` with the
-enrolled token and the `oauth-2025-04-20` beta header) or, for a login the official
-CLI manages, its `get_usage` request. A failed read keeps the last reading with its
-observed time. A window whose reset time has passed is reported with state `unknown`
+Codex's `account/rateLimits/read` and `account/usage/read` are read-only app-server
+requests. A failed read keeps the last reading with its observed time. Claude
+windows come from official running-turn `rate_limit_event` and native status-line
+observations. The documented status-line windows appear after an API response;
+no supported idle usage read is established for enrolled setup tokens. The kernel
+does not poll Claude's HTTP API or spend a turn to refresh
+usage. Missing windows stay unavailable.
+
+A window whose reset time has passed is reported with state `unknown`
 and no percent ("not measured yet") until a new reading arrives; a stale percent is
 never shown and zero is never assumed. Every meter carries `observed_at_ms` and a
 `source` of `event` (provider output during a turn) or `refresh` (this read).

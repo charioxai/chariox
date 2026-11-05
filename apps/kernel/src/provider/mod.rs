@@ -79,8 +79,7 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    probe_claude_account_usage, read_claude_oauth_usage, verify_claude_account_credential,
-    verify_claude_setup_token, ClaudeCredentialCheckError,
+    verify_claude_account_credential, verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

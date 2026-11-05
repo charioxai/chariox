@@ -1036,7 +1036,6 @@ impl KernelRuntimeState {
                 provider_usage_refresher:
                     crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
                         provider_account_profiles.clone(),
-                        config_projection.clone(),
                         provider_store.clone(),
                     ),
                 app_control,

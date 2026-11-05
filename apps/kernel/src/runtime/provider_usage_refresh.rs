@@ -1,13 +1,10 @@
-//! Keeps every enrolled account's usage meters current without a running turn.
+//! Keeps Codex account usage current through its official app-server without a turn.
 //!
-//! Provider output during a turn only reaches an account that is working, so
-//! an idle account would show an old reading or none. This service reads each
-//! account itself: every 15 minutes, every 5 minutes while an agent runs on the
-//! account, and when somebody asks for a reading older than 5 minutes. A read is
-//! read-only, uses the credentials the kernel already holds for the account,
-//! runs on its own thread (never inside a turn), is single-flight per account
-//! and backs off after a failure. A failed read keeps the last reading with its
-//! observed time.
+//! Reads every 15 minutes, every 5 minutes while an agent runs on the account,
+//! and on request when a reading is older than 5 minutes. Reads run outside
+//! turns, are single-flight per account and back off after a failure, preserving
+//! the last observation. Claude windows come only from official turn output;
+//! its enrolled setup tokens have no supported idle usage read.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -116,7 +113,7 @@ impl ProviderUsageRefresher {
             .into_iter()
             .filter(|profile| {
                 owner_user_id.is_none_or(|owner| profile.owner_user_id == owner)
-                    && matches!(profile.provider.as_str(), "claude" | "codex")
+                    && profile.provider == "codex"
                     && provider.is_none_or(|provider| profile.provider == provider)
                     && match profile.auth_state {
                         ProviderAccountAuthState::Authenticated => true,

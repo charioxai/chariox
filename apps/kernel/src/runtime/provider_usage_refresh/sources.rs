@@ -1,21 +1,16 @@
-//! The kernel's real account usage sources: the official Codex app-server for
-//! Codex, and for Claude the OAuth usage read of an enrolled token or the
-//! official CLI's usage request for a login the CLI manages itself.
+//! Account usage reads through the official Codex app-server. Claude usage
+//! remains an observation from running turns, never a direct HTTP request.
 use std::sync::Arc;
 
 use crate::account_profile::{ProviderAccountProfileRegistry, ProviderAccountUsageSnapshot};
 use crate::provider::{
-    ensure_codex_account_endpoint, probe_claude_account_usage, read_claude_oauth_usage,
-    resolve_claude_executable, resolve_provider_account_credentials, CodexClient, ProviderRunState,
-    ProviderUsageReadError, CLAUDE_OAUTH_TOKEN_ENV,
+    ensure_codex_account_endpoint, CodexClient, ProviderRunState, ProviderUsageReadError,
 };
-use crate::runtime::projection::DaemonConfigProjectionStore;
 
 use super::{ProviderUsageReader, ProviderUsageRefresher, UsageAccountKey};
 
 struct KernelUsageSources {
     registry: ProviderAccountProfileRegistry,
-    config: DaemonConfigProjectionStore,
 }
 
 impl ProviderUsageReader for KernelUsageSources {
@@ -38,26 +33,6 @@ impl ProviderUsageReader for KernelUsageSources {
                 let client = CodexClient::new("provider-usage-refresh", endpoint)?;
                 Ok(client.usage_snapshot(&account.profile_id)?)
             }
-            Some("claude") => {
-                let credentials = resolve_provider_account_credentials(
-                    &self.config.snapshot(),
-                    &account.owner_user_id,
-                    &account.provider,
-                    &account.profile_id,
-                )?;
-                let token = credentials
-                    .iter()
-                    .find(|(name, _)| *name == CLAUDE_OAUTH_TOKEN_ENV)
-                    .map(|(_, token)| token);
-                match token {
-                    Some(token) => read_claude_oauth_usage(token, &account.profile_id),
-                    None => probe_claude_account_usage(
-                        &resolve_claude_executable()?,
-                        &account.profile_id,
-                        &environment,
-                    ),
-                }
-            }
             _ => Err(ProviderUsageReadError::new(
                 "this provider has no account usage source",
             )),
@@ -68,12 +43,10 @@ impl ProviderUsageReader for KernelUsageSources {
 impl ProviderUsageRefresher {
     pub(crate) fn for_kernel(
         registry: ProviderAccountProfileRegistry,
-        config: DaemonConfigProjectionStore,
         provider_store: crate::provider::ProviderProcessServiceStore,
     ) -> Arc<Self> {
         let reader = KernelUsageSources {
             registry: registry.clone(),
-            config,
         };
         Self::new(
             registry,

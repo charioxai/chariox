@@ -18,6 +18,7 @@ impl ProviderUsageReadError {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn retry_after(mut self, wait: Option<Duration>) -> Self {
         self.retry_after = wait;
         self

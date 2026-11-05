@@ -42,7 +42,7 @@ fn meter(
 fn snapshot(percent: f64, observed_at_ms: u64) -> ProviderAccountUsageSnapshot {
     ProviderAccountUsageSnapshot {
         profile_id: String::new(),
-        provider: "claude".to_string(),
+        provider: "codex".to_string(),
         availability: ProviderAccountUsageAvailability::Available,
         meters: vec![meter(
             "five_hour",
@@ -96,14 +96,18 @@ struct Fixture {
 
 impl Fixture {
     fn new(answers: Vec<Result<f64, ProviderUsageReadError>>) -> Self {
+        Self::for_provider("codex", answers)
+    }
+
+    fn for_provider(provider: &str, answers: Vec<Result<f64, ProviderUsageReadError>>) -> Self {
         let root = crate::test_support::TestWorktree::new("usage-refresh");
         let registry =
             ProviderAccountProfileRegistry::open(root.path().join("accounts.json")).unwrap();
-        let profile = registry.create_managed("local", "claude", "Work").unwrap();
+        let profile = registry.create_managed("local", provider, "Work").unwrap();
         registry
             .update_observation(
                 "local",
-                "claude",
+                provider,
                 &profile.profile_id,
                 ProviderAccountAuthState::Authenticated,
                 Some("work@example.test".into()),
@@ -136,7 +140,7 @@ impl Fixture {
             refresher,
             key: UsageAccountKey {
                 owner_user_id: "local".into(),
-                provider: "claude".into(),
+                provider: provider.into(),
                 profile_id: profile.profile_id,
             },
             registry,
@@ -157,7 +161,7 @@ impl Fixture {
 
     fn usage(&self) -> ProviderAccountUsageSnapshot {
         self.registry
-            .get("local", "claude", &self.key.profile_id)
+            .get("local", &self.key.provider, &self.key.profile_id)
             .unwrap()
             .usage
     }
@@ -223,12 +227,12 @@ fn a_request_renews_only_readings_older_than_five_minutes() {
         .is_empty());
     assert_eq!(
         f.refresher
-            .stale_accounts("local", Some("claude"), f.at(5.1)),
+            .stale_accounts("local", Some("codex"), f.at(5.1)),
         vec![f.key.clone()]
     );
     assert!(f
         .refresher
-        .stale_accounts("local", Some("codex"), f.at(5.1))
+        .stale_accounts("local", Some("claude"), f.at(5.1))
         .is_empty());
     assert!(f
         .refresher
@@ -285,8 +289,7 @@ fn a_failed_read_keeps_the_last_reading_and_backs_off_with_doubling_waits() {
 fn a_selected_candidate_cannot_bypass_a_retry_delay_installed_by_another_reader() {
     crate::test_support::isolated_env_test!();
     let f = Fixture::new(vec![
-        Err(ProviderUsageReadError::new("rate limited")
-            .retry_after(Some(Duration::from_secs(60)))),
+        Err(ProviderUsageReadError::new("rate limited").retry_after(Some(Duration::from_secs(60)))),
         Ok(7.0),
     ]);
     // Both callers select the account before either worker claims the read.
@@ -319,7 +322,7 @@ fn a_selected_candidate_cannot_bypass_a_retry_delay_installed_by_another_reader(
 fn a_slow_failure_starts_the_retry_delay_when_the_reader_finishes() {
     crate::test_support::isolated_env_test!();
     let f = Fixture::new(vec![Err(
-        ProviderUsageReadError::new("rate limited").retry_after(Some(Duration::from_secs(60))),
+        ProviderUsageReadError::new("rate limited").retry_after(Some(Duration::from_secs(60)))
     )]);
     f.read_delay_ms.store(10_000, Ordering::SeqCst);
 
@@ -338,7 +341,10 @@ fn a_slow_failure_starts_the_retry_delay_when_the_reader_finishes() {
         .refresher
         .stale_accounts("local", None, f.at(69.0 / 60.0))
         .is_empty());
-    assert_eq!(f.refresher.due_accounts(f.at(77.0 / 60.0)), vec![f.key.clone()]);
+    assert_eq!(
+        f.refresher.due_accounts(f.at(77.0 / 60.0)),
+        vec![f.key.clone()]
+    );
 }
 
 #[test]
@@ -414,7 +420,7 @@ fn accounts_that_are_not_signed_in_are_not_read() {
     f.registry
         .update_observation(
             "local",
-            "claude",
+            "codex",
             &f.key.profile_id,
             ProviderAccountAuthState::NotConfigured,
             None,
@@ -431,15 +437,55 @@ fn accounts_that_are_not_signed_in_are_not_read() {
         .is_empty());
 }
 
+#[tokio::test]
+async fn claude_accounts_keep_turn_observations_without_idle_reads() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![]);
+    assert_eq!(
+        f.usage().availability,
+        ProviderAccountUsageAvailability::Unavailable
+    );
+    assert!(f.refresher.due_accounts(f.at(0.0)).is_empty());
+    assert!(f
+        .refresher
+        .stale_accounts("local", Some("claude"), f.at(0.0))
+        .is_empty());
+    f.refresher.refresh_due().await;
+    f.refresher
+        .refresh_stale_for_request("local", Some("claude"))
+        .await;
+    assert_eq!(f.reads.load(Ordering::SeqCst), 0);
+
+    let observed_at = f.t0 - 6 * 60 * MINUTE_MS;
+    let mut usage = snapshot(63.0, observed_at).with_reading_source("event");
+    usage.provider = "claude".to_string();
+    f.registry
+        .update_usage("local", "claude", &f.key.profile_id, usage)
+        .unwrap();
+
+    assert!(f.refresher.due_accounts(f.at(0.0)).is_empty());
+    assert!(f
+        .refresher
+        .stale_accounts("local", None, f.at(0.0))
+        .is_empty());
+    let usage = f.usage();
+    assert_eq!(usage.observed_at_ms, Some(observed_at));
+    assert_eq!(usage.source, "event");
+    assert_eq!(usage.meters[0].used_percent, None);
+    assert_eq!(
+        usage.meters[0].state,
+        ProviderAccountUsageMeterState::Unknown
+    );
+    assert_eq!(usage.meters[0].observed_at_ms, observed_at);
+    assert_eq!(usage.meters[0].source, "event");
+}
+
 #[test]
 fn a_window_past_its_reset_reads_as_not_measured_yet_until_a_new_reading() {
     crate::test_support::isolated_env_test!();
     let f = Fixture::new(vec![Ok(63.0), Ok(2.0)]);
     f.refresher.refresh_account(&f.key, f.at(0.0));
-    let current = f
-        .registry
-        .get("local", "claude", &f.key.profile_id)
-        .unwrap();
+    let current = f.registry.get("local", "codex", &f.key.profile_id).unwrap();
     assert_eq!(current.usage.meters[0].used_percent, Some(63.0));
 
     // The last reading is six hours old: its 5-hour window reset an hour ago.
@@ -447,16 +493,13 @@ fn a_window_past_its_reset_reads_as_not_measured_yet_until_a_new_reading() {
     f.registry
         .update_usage(
             "local",
-            "claude",
+            "codex",
             &f.key.profile_id,
             snapshot(63.0, f.t0 - six_hours),
         )
         .unwrap();
 
-    let expired = f
-        .registry
-        .get("local", "claude", &f.key.profile_id)
-        .unwrap();
+    let expired = f.registry.get("local", "codex", &f.key.profile_id).unwrap();
     let meter = &expired.usage.meters[0];
     assert_eq!(
         meter.used_percent, None,
@@ -464,16 +507,13 @@ fn a_window_past_its_reset_reads_as_not_measured_yet_until_a_new_reading() {
     );
     assert_eq!(meter.state, ProviderAccountUsageMeterState::Unknown);
     assert_eq!(meter.observed_at_ms, f.t0 - six_hours);
-    let listed = f.registry.list("local", Some("claude")).unwrap();
+    let listed = f.registry.list("local", Some("codex")).unwrap();
     assert_eq!(listed[0].usage.meters[0].used_percent, None);
     let accounts = f.registry.usage_accounts("local", "machine").unwrap();
     assert_eq!(accounts[0].usage.meters[0].used_percent, None);
     assert_eq!(f.refresher.due_accounts(f.at(0.0)), vec![f.key.clone()]);
 
     f.refresher.refresh_account(&f.key, f.at(0.0));
-    let renewed = f
-        .registry
-        .get("local", "claude", &f.key.profile_id)
-        .unwrap();
+    let renewed = f.registry.get("local", "codex", &f.key.profile_id).unwrap();
     assert_eq!(renewed.usage.meters[0].used_percent, Some(2.0));
 }
