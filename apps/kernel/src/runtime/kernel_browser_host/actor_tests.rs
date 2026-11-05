@@ -1890,3 +1890,49 @@ fn mp10_same_terminal_lease_reconnect_keeps_takeover_past_the_orphan_deadline() 
         "terminal:viewer"
     );
 }
+
+#[test]
+fn mp10_replacement_viewer_lease_recovers_the_orphaned_takeover_for_its_lifetime() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-replacement"));
+    let input = |tab: &str| json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}});
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let first = host.lease_terminal("alice", "terminal:a");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(first);
+    let second = host.lease_terminal("alice", "terminal:b");
+    let ownership =
+        |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
+    // The first viewer's orphan deadline passes while the replacement only watches.
+    model.lock().unwrap().reclaim_lapsed_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    );
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(
+        model.lock().unwrap().begin(agent(), &input("a")).is_err(),
+        "the agent stays fenced while the person's replacement viewer is present"
+    );
+    // The replacement viewer's own absence starts a fresh orphan timeout.
+    drop(second);
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
+    model.lock().unwrap().reclaim_lapsed_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    );
+    assert!(host.actor_snapshot("alice").unwrap()["input_ownership"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}

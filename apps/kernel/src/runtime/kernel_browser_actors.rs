@@ -700,8 +700,17 @@ impl KernelBrowserActors {
         self.pointer_tabs.remove(actor_id);
     }
 
+    /// An authenticated viewer of the person connected, possibly under a new identity: it continues
+    /// the Tab takeovers whose viewer went away, and holds them for as long as it stays.
+    pub(crate) fn viewer_connected(&mut self, actor: EnvironmentActor) {
+        let actor_id = actor.actor_id.clone();
+        if self.register(actor).is_ok() {
+            self.adopt_orphaned_takeovers(&actor_id);
+        }
+    }
+
     /// A renewed authenticated connection no longer has an orphan deadline.
-    pub(crate) fn reconnect(&mut self, actor_id: &str) {
+    fn reconnect(&mut self, actor_id: &str) {
         self.orphaned_takeovers.remove(actor_id);
     }
 

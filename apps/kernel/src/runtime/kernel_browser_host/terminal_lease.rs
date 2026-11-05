@@ -1,5 +1,6 @@
 //! A connected terminal's hold on its browser actor, whichever transport carries it.
 use super::KernelBrowserHost;
+use crate::session::{EnvironmentActor, EnvironmentActorKind};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -39,7 +40,11 @@ impl KernelBrowserHost {
         if let Some(model) = model {
             let mut model = model.lock().unwrap_or_else(|error| error.into_inner());
             model.reclaim_lapsed_takeovers(Instant::now());
-            model.reconnect(actor);
+            model.viewer_connected(EnvironmentActor::new(
+                actor,
+                EnvironmentActorKind::Human,
+                "Human",
+            ));
         }
         TerminalLease {
             host: self.clone(),
