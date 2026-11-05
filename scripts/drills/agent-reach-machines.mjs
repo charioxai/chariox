@@ -269,11 +269,14 @@ async function main() {
     assert.equal(liveRun.provider, provider)
     assert.equal(liveRun.model, model)
     note("legacy-agent-run", {provider: liveRun.provider, model: liveRun.model, variant: liveRun.variant})
-    // Enrollment adopts resident rooms; ended rooms retain their stored member.
+    // Enrollment adopts resident rooms; reopening an older ended room retains its member.
+    await home.ownerRpc({AttachToSession: {session_id: home.legacy.session.id, client_id: "legacy-owner", capability_level: "FullTerminal"}})
     const legacyState = await state(home.legacy.session.id)
     assert.equal(legacyState.owner_user_id, "local")
-    assert.equal(legacyState.status, "Ended")
-    const legacyId = home.legacy.session.id, legacyAgent = home.legacy.agent.id
+    assert.notEqual(legacyState.status, "Ended")
+    const legacyId = home.legacy.session.id, legacyAgent = legacyState.agents.find(agent => agent.owner_user_id === "local")?.id
+    assert.ok(legacyAgent, "the reopened room has its local member's agent")
+    note("legacy-room-reopened", {room: legacyId, agent: legacyAgent, owner: legacyState.owner_user_id})
     const rows = await turn([
       "This is a regression drill. Use only chariox-reach MCP tools. No sudo. Call each request exactly once, including if an earlier call fails.",
       `1. request with ${request({GetSessionState: {session_id: legacyId}})}.`,
