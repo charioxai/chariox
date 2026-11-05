@@ -229,7 +229,7 @@ try {
     if(runId) {const run=(await fixture.send({GetProviderRun:{provider_run_id:runId}})).ProviderRun.provider_run;assert.equal(run.model,'gpt-6-luna');row.model=run.model;row.effort=run.variant}
     const replies=await page.locator('.pane-transcript-reply').allTextContents()
     await writeFile(path.join(evidence,cell.id+'-visible-replies.json'),JSON.stringify(replies,null,2)+'\n')
-    assert.ok(!replies.some(text=>/chariox\.|condition_met|user_domain_not_granted|asking_task_id|inbox sequence|provider reload|retained obligations/i.test(text)),'visible replies use plain words')
+    assert.ok(!replies.some(text=>/chariox\.|condition_met|user_domain_not_granted|asking_task_id|inbox sequence|provider reload|retained obligations|\bsnapshot\b|\btools\b.*\b(refresh|loading|load)\b/i.test(text)),'visible replies use plain words')
     row.plain_visible_replies=true
     await page.screenshot({path:path.join(evidence,cell.id+'-accepted.png')})
     await fixture.send({EndSession:{session_id:sessionId}})

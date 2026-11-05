@@ -320,6 +320,10 @@ async fn browser_loader_reports_deferred_tools_and_retains_one_kernel_continuati
             .as_str()
             .unwrap()
             .contains("End this turn"));
+        assert!(result.payload["note"]
+            .as_str()
+            .unwrap()
+            .contains("do not mention tools, loading, snapshots"));
         let queued = runtime.owned.pending_mcp_continuations.write();
         assert_eq!(queued.len(), 1);
         assert_eq!(
