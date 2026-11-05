@@ -428,6 +428,39 @@ async fn an_agent_creates_a_room_without_sudo_and_a_guests_agent_does_not() {
 }
 
 #[tokio::test]
+async fn reach_http_reports_unknown_variants_and_missing_fields() {
+    let reach = fixture();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(super::super::run_mcp_http_server_on_listener(
+        reach.router.clone(),
+        listener,
+    ));
+    for (request, diagnostic) in [
+        (
+            serde_json::json!({"CreateSesion": {}}),
+            "unknown variant `CreateSesion`",
+        ),
+        (
+            serde_json::json!({"CreateSession": {"workspace_id": "/room"}}),
+            "missing field `worktree_id`",
+        ),
+    ] {
+        let answer = http_rpc(
+            port,
+            &reach.owner_token,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": "request", "arguments": {"request": request}}
+            }),
+        )
+        .await;
+        assert!(answer.to_string().contains(diagnostic), "{answer}");
+    }
+    server.abort();
+}
+
+#[tokio::test]
 async fn acquiring_a_machine_asks_unless_the_owner_turned_the_setting_off() {
     let reach = fixture();
     let asked = {

@@ -33,8 +33,8 @@ fn tool_arguments<T: serde::de::DeserializeOwned>(
 }
 
 fn kernel_request(request: serde_json::Value) -> Result<LocalDaemonRequest, DaemonError> {
-    serde_json::from_value(request).map_err(|_| {
-        crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"ListSessions\":null}")
+    serde_json::from_value(request).map_err(|error| {
+        crate::runtime::kernel_access::error(format!("invalid kernel request: {error}; use externally tagged JSON in request, for example {{\"ListSessions\":null}}"))
     })
 }
 
