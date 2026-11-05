@@ -327,4 +327,5 @@ If the system messages you about disk space later, act on it.`
     report.least_free_mb = Math.round(least / 2 ** 20)
   }
   note("scenario-done", { scenario, passed: checks.filter(c => c.ok).length, failed: checks.filter(c => !c.ok).map(c => c.name) })
+  assert(checks.every(c => c.ok), `disk-cell checks failed: ${checks.filter(c => !c.ok).map(c => c.name).join("; ")}`)
 }
