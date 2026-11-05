@@ -122,7 +122,12 @@ function watchdogNotices(directory) {
     if (entry.isDirectory()) notices.push(...watchdogNotices(path))
     else if (entry.isFile()) {
       for (const line of readFileSync(path, 'utf8').split('\n')) {
-        if (line.includes('kernel.watchdog') && /"operation"\s*:\s*"(?:ensure|supervisor_reply)"/.test(line)) notices.push(line)
+        if (!line.trim()) continue
+        try {
+          const notice = JSON.parse(line)
+          if (notice.message === 'kernel operation stalled' && notice.component === 'codex.catalog'
+            && ['ensure', 'supervisor_reply'].includes(notice.operation)) notices.push(line)
+        } catch { /* A logger may still be appending the last line. */ }
       }
     }
   }
@@ -149,7 +154,7 @@ async function peerProbe(relayUrl, target, publicKey) {
   await new Promise((resolve, reject) => { socket.addEventListener('open', resolve, { once: true }); socket.addEventListener('error', reject, { once: true }) })
   socket.send(JSON.stringify({ kind: 'daemon_register', registration: {
     auth_token: token(id, 'kernel', ['daemon.register', 'daemon.heartbeat', 'packet.route', 'peer.request', 'peer.event'], identity.publicKeyThumbprint),
-    daemon_id: id, machine_id: id, public_key: identity.publicKeyBase64,
+    daemon_id: id, machine_id: id, public_key: identity.publicKeyBase64, capabilities: ['kernel_ws'],
   } }))
   await until(async () => {
     try { return await targetPublicKey(relayUrl, id) === identity.publicKeyBase64 } catch { return false }
@@ -208,6 +213,10 @@ async function main() {
   await bounded(rpc(client, { GetProviderAuthStatus: { provider: 'codex', account_profile: profile } }), 'real-provider-auth', 45000)
   const catalogRequest = getProviderCatalogRequest({ provider: 'codex', accountProfile: profile })
   await bounded(rpc(client, catalogRequest), 'real-provider-catalog', 45000)
+  const oldHelperPid = Number(readFileSync(join(root, 'catalog.pid'), 'utf8'))
+  assert(Number.isSafeInteger(oldHelperPid) && oldHelperPid > 1, 'catalog wrapper PID')
+  const oldHelperBirth = readFileSync(`/proc/${oldHelperPid}/stat`, 'utf8').split(') ').at(-1).split(' ')[19]
+  record('catalog-helper-observed', { pid: oldHelperPid, start_ticks: oldHelperBirth })
   const session = (await rpc(client, { CreateSession: { workspace_id: join(root, 'work'), worktree_id: join(root, 'work'), alias: 'catalog-stall', agent_defaults: { provider: 'codex', account_profile: profile, model: 'gpt-6-luna', effort: 'low', permission_level: 'yolo' } } })).SessionCreated
   const tuiSocket = join(root, 'tui.sock')
   // tmux supplies a real PTY and captures the screen produced by normal keys.
@@ -222,6 +231,8 @@ async function main() {
   await until(() => existsSync(tuiSocket), 'real TUI ready', 45000)
   await until(async () => (await automation(tuiSocket, { action: 'snapshot' })).attachmentId, 'TUI attached to Room')
   tmux('send-keys', '-t', 'drill', '-l', 'Reply exactly KERNEL_CATALOG_STALL_OK. Do not call tools.')
+  // Keep submit out of the terminal's bracketed-paste/input batch.
+  await delay(100)
   tmux('send-keys', '-t', 'drill', 'Enter')
   await until(async () => {
     const snapshot = await automation(tuiSocket, { action: 'snapshot' })
@@ -243,13 +254,17 @@ async function main() {
   const contender = (await rpc(client, { CreateSession: { workspace_id: join(root, 'work'), worktree_id: join(root, 'work'), alias: 'concurrent-provider-launch' } })).SessionCreated
   const launchClient = new LocalIpcClient(endpoint, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
   clients.push(launchClient)
-  const oldHelperPid = Number(readFileSync(join(root, 'catalog.pid'), 'utf8'))
   writeFileSync(join(root, 'stall-next'), '1')
   const refresh = bounded(rpc(client, { RefreshProviderAccountProfile: { provider: 'codex', account_profile: profile } }), 'catalog-refresh-completes', 45000)
   refresh.catch(() => {})
   await until(() => existsSync(join(root, 'stalled')), 'catalog helper fault armed')
-  assert(!existsSync(`/proc/${oldHelperPid}`), 'TERM-ignoring catalog wrapper must be reaped before replacement')
-  record('term-ignoring-helper-reaped', { pid: oldHelperPid })
+  let oldHelperState = 'gone'
+  if (existsSync(`/proc/${oldHelperPid}/stat`)) {
+    const fields = readFileSync(`/proc/${oldHelperPid}/stat`, 'utf8').split(') ').at(-1).split(' ')
+    oldHelperState = fields[19] === oldHelperBirth ? fields[0] : 'reused'
+  }
+  assert(['gone', 'reused', 'Z', 'X'].includes(oldHelperState), 'TERM-ignoring catalog wrapper must exit before replacement')
+  record('term-ignoring-helper-exited', { pid: oldHelperPid, state: oldHelperState })
   record('catalog-helper-held', { pid: Number(readFileSync(join(root, 'stalled'), 'utf8')) })
   // The incident's middle edge was another provider launch holding STORE while
   // waiting for the environment lock held by catalog startup.
@@ -265,7 +280,7 @@ async function main() {
   const leaseRequest = { kind: 'create_execution_lease', home_kernel_id: peer.id, home_session_id: session.session.id, home_agent_id: session.agent.id, home_agent_metaagent: false, owner_user_id: 'local' }
   const [, , , lease] = await Promise.all([
     bounded(rpc(remote, { CreateSession: { workspace_id: join(root, 'work'), worktree_id: join(root, 'work'), alias: 'during-catalog-stall' } }), 'CreateSession-during-stall'),
-    bounded(rpc(remote, { ListSessions: {} }), 'ListSessions-during-stall'),
+    bounded(rpc(remote, { ListSessions: null }), 'ListSessions-during-stall'),
     bounded(remote.subscribeToKernelEvents(session.session.id, att, { heartbeatIntervalMs: 500 }), 'Subscribe-during-stall'),
     bounded(peer.request(leaseRequest), 'CreateExecutionLease-during-stall'),
   ])
