@@ -16,7 +16,6 @@ struct FileGrowth {
     allocated: u64,
     at: u64,
     written: u64,
-    rate: u64,
 }
 
 impl WriteGrowth {
@@ -69,15 +68,17 @@ impl WriteGrowth {
                 }
                 let allocated = meta.blocks().saturating_mul(512);
                 let before = self.files.get(&key);
+                // Only this interval's growth can justify stopping a writer.
+                // Decay would retain another volume's earlier write activity.
                 let (written, rate) = match before {
                     Some(before) if at > before.at => {
                         let added = allocated.saturating_sub(before.allocated);
                         (
                             before.written.saturating_add(added),
-                            (added.saturating_mul(1000) / (at - before.at)).max(before.rate / 2),
+                            added.saturating_mul(1000) / (at - before.at),
                         )
                     }
-                    Some(before) => (before.written, before.rate),
+                    Some(before) => (before.written, 0),
                     None => (0, 0),
                 };
                 let (allocated, at) = before
@@ -89,7 +90,6 @@ impl WriteGrowth {
                         allocated,
                         at,
                         written,
-                        rate,
                     },
                 );
                 let volume = volumes.entry(key.0).or_insert_with(|| VolumeWrites {
@@ -159,6 +159,9 @@ mod tests {
                 .written,
             written
         );
+        let idle_volume = overwrite.iter().find(|volume| volume.id == id).unwrap();
+        assert_eq!(idle_volume.rate, 0, "past growth is not a current writer");
+        assert!(!idle_volume.files.contains(&inode));
         std::fs::remove_file(&path).unwrap();
         file.seek(std::io::SeekFrom::End(0)).unwrap();
         file.write_all(&vec![1u8; 2 * 1024 * 1024]).unwrap();

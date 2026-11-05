@@ -360,6 +360,8 @@ impl PreparedDomain {
                         if write_growth >= admission::GROWING {
                             let volumes = write_growth_cache.entry(pid).or_default().sample(&pids, sampled_at);
                             disk_writes.insert(pid, volumes);
+                        } else {
+                            write_growth_cache.remove(&pid);
                         }
                         pool::CommandUse {
                             pid,
