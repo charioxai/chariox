@@ -366,42 +366,14 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Projects that own `checkout`: it is one of their folders or a worktree of one of their sessions.
-    fn projects_owning_checkout(&self, checkout: &Path) -> Vec<crate::session::RuntimeProject> {
-        let by_session: std::collections::BTreeSet<String> = self
-            .owned
-            .session_store
-            .list_sessions()
-            .into_iter()
-            .filter(|session| Path::new(session.worktree_id()) == checkout)
-            .map(|session| session.project_id().to_string())
-            .collect();
-        self.owned
-            .session_store
-            .durable_projects()
-            .into_iter()
-            .filter(|project| {
-                by_session.contains(project.id())
-                    || project
-                        .workspace_ids()
-                        .iter()
-                        .any(|id| Path::new(id) == checkout)
-            })
-            .collect()
-    }
-
     /// A new worktree of a Project gets the Environment's Files outside Git copied in.
     pub(crate) fn copy_environment_files_into_worktree(
         &self,
         base: &Path,
         worktree: &Path,
     ) -> Result<(), DaemonError> {
-        for project in self.projects_owning_checkout(base) {
-            if let Some(record) = self.environment_store().load(project.id())? {
-                crate::project_environment::copy_environment_files(base, worktree, &record.files)?;
-            }
-        }
-        Ok(())
+        self.environment_store()
+            .copy_files_into_worktree(&self.owned.session_store, base, worktree)
     }
 
     /// Moves and slices export the listed files with the checkout, so the ignore rules must know them.

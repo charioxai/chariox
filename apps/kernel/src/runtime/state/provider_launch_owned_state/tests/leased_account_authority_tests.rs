@@ -549,16 +549,21 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
 // provider process, shell and Environment revision come from the owner's Project holding its folder.
 #[tokio::test]
 async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder() {
-    leased_project_inputs(false).await;
+    leased_project_inputs(false, false).await;
 }
 
 // MP-08/MP-10/MP-11: create the linked checkout through the leased-agent entry point.
 #[tokio::test]
 async fn leased_linked_worktree_launch_takes_project_inputs() {
-    leased_project_inputs(true).await;
+    leased_project_inputs(true, false).await;
 }
 
-async fn leased_project_inputs(linked_worktree: bool) {
+#[tokio::test]
+async fn leased_linked_worktree_copies_listed_ignored_environment_files() {
+    leased_project_inputs(true, true).await;
+}
+
+async fn leased_project_inputs(linked_worktree: bool, check_files: bool) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-project-inputs");
@@ -610,6 +615,9 @@ async fn leased_project_inputs(linked_worktree: bool) {
                 .unwrap();
             assert!(output.status.success(), "Git repository setup failed");
         }
+        std::fs::write(folder.join(".gitignore"), ".env.local\n.unlisted\n").unwrap();
+        std::fs::write(folder.join(".env.local"), "SYNTHETIC=listed-file\n").unwrap();
+        std::fs::write(folder.join(".unlisted"), "not-listed\n").unwrap();
     }
     let (project_session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
@@ -631,6 +639,7 @@ async fn leased_project_inputs(linked_worktree: bool) {
         crate::project_environment::ProjectEnvironmentRecord {
             schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
             variables: "LEASED_LABEL=from-the-project".into(),
+            files: vec![".env.local".into()],
             ..Default::default()
         },
     )
@@ -672,6 +681,30 @@ async fn leased_project_inputs(linked_worktree: bool) {
             checkout.join(".git").is_file(),
             "a real linked Git worktree"
         );
+    }
+    if check_files {
+        use std::os::unix::fs::PermissionsExt;
+        assert!(
+            checkout.join(".env.local").is_file(),
+            "the leased worktree must receive the listed ignored file before launch"
+        );
+        assert_eq!(
+            std::fs::read(checkout.join(".env.local")).unwrap(),
+            b"SYNTHETIC=listed-file\n"
+        );
+        assert_eq!(
+            std::fs::metadata(checkout.join(".env.local"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(
+            !checkout.join(".unlisted").exists(),
+            "unlisted files stay behind"
+        );
+        return;
     }
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;

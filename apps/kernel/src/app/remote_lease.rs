@@ -585,12 +585,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         self.ensure_leased_provider_capacity(provider, None)?;
         let worktree = if let Some(placement) = worktree_placement {
-            crate::git_worktree_placement::prepare_git_worktree(
+            let worktree = crate::git_worktree_placement::prepare_git_worktree(
                 &placement,
                 base_directory,
                 worktree_id.as_deref(),
                 "create remote git worktree",
-            )?
+            )?;
+            crate::project_environment::ProjectEnvironmentStore::new(
+                &self.app.config().private_runtime_state_root(),
+            )
+            .copy_files_into_worktree(
+                &self.app.sessions,
+                base_directory,
+                Path::new(&worktree),
+            )?;
+            worktree
         } else {
             match worktree_id {
                 Some(worktree) => worktree,

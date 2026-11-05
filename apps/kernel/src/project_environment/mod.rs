@@ -15,9 +15,7 @@ mod transfer;
 
 pub(crate) use detect::{declared_in, detect};
 pub(crate) use draft::{draft_facts, draft_prompt, parse_draft};
-pub(crate) use files::{
-    copy_environment_files, environment_file_rules, register_environment_files,
-};
+pub(crate) use files::{environment_file_rules, register_environment_files};
 pub(crate) use launch::{
     attach_project_provider_environment, project_launch_environment, project_mcp_environment,
 };
