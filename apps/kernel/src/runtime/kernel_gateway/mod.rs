@@ -18,9 +18,9 @@ mod link;
 mod names;
 pub(crate) mod origins;
 mod paired;
+mod requester_watch;
 mod self_hosted;
 mod subscription;
-mod requester_watch;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
