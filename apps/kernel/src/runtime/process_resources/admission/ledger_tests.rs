@@ -127,6 +127,10 @@ fn sample(memory: u64) -> ProcessSample {
         disk_io_bytes: None,
         sampled_at_ms: 0,
         age_ms: 0,
+
+        disk_written_bytes: None,
+        deleted_open_bytes: 0,
+        outlived: false,
     }
 }
 
@@ -146,6 +150,8 @@ fn reserved_binary(prediction: u64) -> (pool::Pool, Arc<Mutex<Observation>>) {
             Peak {
                 memory: 4 * GIB,
                 writes: 0,
+
+                ..Default::default()
             },
         );
         entry.admitted = true;

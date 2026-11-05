@@ -105,7 +105,7 @@ const unwrap = (reply, name) => {
 const safeClass = error => {
   const text = String(error).toLowerCase()
   if (/401|unauthori[sz]ed|expired|not authenticated/.test(text)) return 'provider_authentication_refused'
-  if (/quota|credit|fund|rate.?limit|billing/.test(text)) return 'provider_quota_refused'
+  if (/quota|credit|fund|rate.?limit/.test(text)) return 'provider_quota_refused'
   if (/model.*(unavailable|disabled|not found)|unknown model/.test(text)) return 'model_unavailable'
   if (/timed? ?out|timeout/.test(text)) return 'timeout'
   return 'kernel_or_provider_error'

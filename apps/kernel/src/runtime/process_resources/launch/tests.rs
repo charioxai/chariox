@@ -12,6 +12,10 @@ fn sample(memory: u64) -> ProcessSample {
         disk_io_bytes: None,
         sampled_at_ms: 0,
         age_ms: 0,
+
+        disk_written_bytes: None,
+        deleted_open_bytes: 0,
+        outlived: false,
     }
 }
 
@@ -19,7 +23,11 @@ fn learn(admission: &LaunchAdmission, argv: &[String], cwd: &Path, memory: u64) 
     let key = admission::seen_argv(0, argv, Some(cwd.to_path_buf())).key;
     admission.0.ledger.lock().unwrap().peaks.remember(
         &key,
-        admission::Peak { memory, writes: 0 },
+        admission::Peak {
+            memory,
+            writes: 0,
+            ..Default::default()
+        },
         admission::light(admission.0.ceiling),
     );
 }
@@ -172,6 +180,8 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
             write_growth: 0,
             effective: pid,
             root: false,
+
+            deleted_open: 0,
         }],
         admission: [(
             pid,
@@ -180,6 +190,8 @@ fn descendant(unit: &str, pid: u32, admitted: bool) -> Arc<Mutex<Observation>> {
                 admission::Peak {
                     memory: 4 * 1024 * MIB,
                     writes: 0,
+
+                    ..Default::default()
                 },
                 admitted,
                 Path::new("/"),
@@ -238,13 +250,14 @@ fn binary_descendant_prediction_is_reserved_once_during_enforcement() {
 fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
     use std::sync::atomic::AtomicU64;
     let floor = 10 * 1024 * MIB;
-    let free = Arc::new(AtomicU64::new(floor + 20 * MIB));
+    let free = Arc::new(AtomicU64::new(floor + 200 * MIB));
     let sampled = free.clone();
+    let volume_id = admission::statvfs(&std::env::temp_dir()).unwrap().id;
     let admission = LaunchAdmission(Arc::new(Pool::with_volume(
         1024 * MIB,
         Box::new(move |_| {
             Some(admission::Space {
-                id: 1,
+                id: volume_id,
                 free: sampled.load(Ordering::SeqCst),
                 total: 100 * 1024 * MIB,
             })
@@ -252,17 +265,24 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
     )));
     let dir = std::env::temp_dir().join(format!("binary-writes-{:016x}", rand::random::<u64>()));
     std::fs::create_dir_all(&dir).unwrap();
-    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import sys; f=open('output','wb'); f.write(b'x'*(10*1048576)); f.flush(); print('ready',flush=True); sys.stdin.readline()".into()];
+    let argv = vec!["/usr/bin/python3".into(), "-c".into(), "import sys; f=open('output','wb'); f.write(b'x'*(100*1048576)); f.flush(); print('ready',flush=True); sys.stdin.readline()".into()];
     let second = vec!["second-writer".into()];
     {
         let mut ledger = admission.0.ledger.lock().unwrap();
-        for (command, writes) in [(&argv, 12 * MIB), (&second, 8 * MIB)] {
+        for (command, writes) in [(&argv, 120 * MIB), (&second, 80 * MIB)] {
             let key = admission::seen_argv(0, command, Some(dir.clone())).key;
             ledger.peaks.remember(
                 &key,
                 admission::Peak {
                     memory: 64 * MIB,
                     writes,
+                    exact: admission::seen_argv(0, command, Some(dir.clone())).exact,
+                    volume: Some(admission::ReceivingVolume {
+                        path: dir.clone(),
+                        id: volume_id,
+                    }),
+                    volume_writes: writes,
+                    ..Default::default()
                 },
                 admission::light(admission.0.ceiling),
             );
@@ -287,7 +307,7 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
         .unwrap();
     assert_eq!(ready.trim(), "ready");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while first.peak.writes < 10 * MIB {
+    while first.peak.writes < 100 * MIB {
         assert!(
             std::time::Instant::now() < deadline,
             "writer was not sampled"
@@ -295,7 +315,7 @@ fn running_writer_consumes_disk_prediction_before_free_space_is_sampled() {
         std::thread::sleep(std::time::Duration::from_millis(25));
         first.observe();
     }
-    free.store(floor + 10 * MIB, Ordering::SeqCst);
+    free.store(floor + 100 * MIB, Ordering::SeqCst);
     let result = admission.reserve("second", &second, &dir, false);
     child.stdin.take().unwrap().write_all(b"done\n").unwrap();
     assert!(child.wait().unwrap().success());
@@ -315,7 +335,16 @@ fn writer_entry(unit: &str, pid: u32, writes: u64, admitted: bool) -> Arc<Mutex<
         pid,
         admission::Entry::predicted(
             pid,
-            admission::Peak { memory: 0, writes },
+            admission::Peak {
+                memory: 0,
+                writes,
+                volume: Some(admission::ReceivingVolume {
+                    path: "/".into(),
+                    id: 1,
+                }),
+                volume_writes: writes,
+                ..Default::default()
+            },
             admitted,
             Path::new("/"),
         ),
@@ -334,6 +363,14 @@ fn binary_disk_prediction_is_enforced_for_observed_commands() {
         admission::Peak {
             memory: 0,
             writes: 12 * 1024 * MIB,
+            exact: admission::seen_argv(0, &argv, Some(Path::new("/").into())).exact,
+            volume: Some(admission::ReceivingVolume {
+                path: "/".into(),
+                id: 1,
+            }),
+            volume_writes: 12 * 1024 * MIB,
+
+            ..Default::default()
         },
         512 * MIB,
     );
@@ -360,6 +397,14 @@ fn observed_disk_prediction_is_enforced_for_binary_launches() {
         admission::Peak {
             memory: 0,
             writes: 8 * 1024 * MIB,
+            exact: admission::seen_argv(0, &argv, Some(Path::new("/").into())).exact,
+            volume: Some(admission::ReceivingVolume {
+                path: "/".into(),
+                id: 1,
+            }),
+            volume_writes: 8 * 1024 * MIB,
+
+            ..Default::default()
         },
         512 * MIB,
     );
@@ -389,6 +434,8 @@ fn descendants_reserve_growth_beyond_a_smaller_binary_prediction() {
             admission::Peak {
                 memory: 8 * 1024 * MIB,
                 writes: 0,
+
+                ..Default::default()
             },
             true,
             Path::new("/"),
@@ -446,6 +493,8 @@ fn waiting_descendant_can_use_its_binary_disk_reservation() {
         admission::Peak {
             memory: 0,
             writes: 10 * 1024 * MIB,
+
+            ..Default::default()
         },
         512 * MIB,
     );

@@ -355,7 +355,10 @@ async fn au15_anonymous_vault_credential_works_and_retry_does_not_register_twice
             .as_deref(),
         Some("agent_auth")
     );
-    assert_eq!(credentials[0].allowed_hosts, [service.origin.clone()]);
+    assert_eq!(
+        credentials[0].allowed_hosts.as_slice(),
+        std::slice::from_ref(&service.origin)
+    );
     assert_eq!(
         credentials[0]
             .metadata

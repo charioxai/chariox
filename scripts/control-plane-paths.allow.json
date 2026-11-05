@@ -245,7 +245,7 @@
   {
     "path": "/v1/kernel-enrollment-tickets",
     "callers": [
-      "apps/kernel/src/runtime/ssh_machine_control.rs"
+      "apps/kernel/src/runtime/own_machine_enrollment.rs"
     ],
     "why": "own-machine enrollment tickets issued by the connected service",
     "seam": "/machine add"
@@ -253,7 +253,7 @@
   {
     "path": "/v1/kernel-enrollment-tickets/{}",
     "callers": [
-      "apps/kernel/src/runtime/ssh_machine_control.rs"
+      "apps/kernel/src/runtime/own_machine_enrollment.rs"
     ],
     "why": "own-machine enrollment tickets issued by the connected service",
     "seam": "/machine add"
@@ -300,14 +300,6 @@
   },
   {
     "path": "/v1/managed-kernels/bootstrap/exchange",
-    "callers": [
-      "apps/kernel/src/managed_bootstrap/cloud.rs"
-    ],
-    "why": "a freshly booted worker kernel redeems its enrollment token with its control plane; rename to enrollment bootstrap in OSS-boundary item 6",
-    "seam": "worker kernel enrollment bootstrap"
-  },
-  {
-    "path": "/v1/managed-kernels/bootstrap/reconcile",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
     ],

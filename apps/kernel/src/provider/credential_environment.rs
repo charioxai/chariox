@@ -87,6 +87,36 @@ fn provider_lifecycle_failure_injections(
 }
 
 #[cfg(test)]
+pub(crate) struct ProviderLifecycleFailureInjection {
+    provider_run_id: String,
+    stage: ProviderLifecycleFailureStage,
+}
+
+#[cfg(test)]
+impl ProviderLifecycleFailureInjection {
+    pub(crate) fn install(provider_run_id: &str, stage: ProviderLifecycleFailureStage) -> Self {
+        provider_lifecycle_failure_injections()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((provider_run_id.to_string(), stage));
+        Self {
+            provider_run_id: provider_run_id.to_string(),
+            stage,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for ProviderLifecycleFailureInjection {
+    fn drop(&mut self) {
+        provider_lifecycle_failure_injections()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&(self.provider_run_id.clone(), self.stage));
+    }
+}
+
+#[cfg(test)]
 fn provider_credential_delivery_probes(
 ) -> &'static std::sync::Mutex<BTreeMap<String, ProviderCredentialDeliveryProbeState>> {
     static PROBES: std::sync::OnceLock<

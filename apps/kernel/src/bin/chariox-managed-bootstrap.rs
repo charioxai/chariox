@@ -7,8 +7,11 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     let command = args.first().and_then(|arg| arg.to_str());
     match (command, args.len()) {
         (None, 0) => {}
+        (Some("--redeem-grant"), 1) => {
+            return chariox_kernel::managed_bootstrap::grant_redemption::run_from_env()
+        }
         (Some("--help" | "-h"), 1) => {
-            println!("usage: chariox-managed-bootstrap [--help | --version]\n\nRun the managed home supervisor. Configuration is supplied through the environment.\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
+            println!("usage: chariox-managed-bootstrap [--redeem-grant | --help | --version]\n\nRun the managed home supervisor. Configuration is supplied through the environment.\n  --redeem-grant  Redeem the confirmed managed grant\n  -h, --help  Print usage and exit\n  --version   Print the package version and exit");
             return Ok(());
         }
         (Some("--version"), 1) => {
@@ -28,10 +31,4 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         );
     }
     chariox_kernel::managed_bootstrap::run_from_env()
-}
-
-enum Step {
-    Supervise,
-    DisposableWorker,
-    RedeemGrant,
 }

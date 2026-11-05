@@ -1,7 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: the reconcile scans that run on a timer must not
 //! copy the Rooms they pass over. A kernel that keeps more Rooms resident does
 //! the same allocation work as one that keeps few, when none of them has a match.
-use super::*;
 use crate::test_support::allocation::{measured, runtime_with_rooms};
 
 /// What a scan may allocate on its own, whatever the number of Rooms.

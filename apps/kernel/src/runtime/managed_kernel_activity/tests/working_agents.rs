@@ -8,10 +8,6 @@ fn managed_working_agents_signed_report_carries_the_count() {
     let at = "1970-01-01T00:00:01.000Z";
     let payload = signed_activity_value(&binding(), 7, 3, at).unwrap();
     assert_eq!(payload["workingAgentCount"], 3);
-    let mut worker = binding();
-    worker.worker = true;
-    let payload = signed_activity_value(&worker, 7, 3, at).unwrap();
-    assert_eq!(payload["workingAgentCount"], 3);
 
     let signature =
         |working_agent_count| activity_signature(&binding(), 7, working_agent_count, at).unwrap();
@@ -41,7 +37,6 @@ fn managed_working_agents_change_alone_is_reported_again() {
     let waiting = crate::runtime::state::ManagedActivityObservation {
         working_agent_count: 1,
         changed_at_ms: 2_000,
-        ..idle
     };
     let second = cursor
         .next_report(waiting)

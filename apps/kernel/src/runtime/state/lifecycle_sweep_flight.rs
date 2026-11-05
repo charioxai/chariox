@@ -3,8 +3,9 @@
 //! runs only marks that it must run once more instead of starting another.
 use std::sync::{Arc, Mutex};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
+    #[default]
     Idle,
     Running,
     RunningAskedAgain,
@@ -15,12 +16,6 @@ pub(super) struct SweepFlight {
     phase: Arc<Mutex<Phase>>,
     #[cfg(test)]
     runs: Arc<std::sync::atomic::AtomicUsize>,
-}
-
-impl Default for Phase {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 impl SweepFlight {

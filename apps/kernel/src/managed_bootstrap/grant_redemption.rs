@@ -13,7 +13,7 @@ use crate::error::DaemonError;
 
 use super::state::{
     default_managed_bootstrap_receipt_path, read_bounded_json, validate_protected_bootstrap_file,
-    BootstrapEnvelope, BootstrapReceiptDocument, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
+    BootstrapReceipt, BootstrapReceiptStatus, ManagedBootstrapEnvelope,
     ManagedBootstrapGrantBinding, PROTECTED_MANAGED_BOOTSTRAP_PATH,
 };
 
@@ -60,28 +60,15 @@ pub(super) fn redeem_if_confirmed(
     envelope_path: &Path,
     receipt_path: &Path,
 ) -> Result<Redemption, DaemonError> {
-    let receipt = match BootstrapReceiptDocument::read(receipt_path)? {
-        Some(BootstrapReceiptDocument::ManagedEnvironment(receipt))
-            if receipt.status == BootstrapReceiptStatus::Confirmed =>
-        {
-            receipt
-        }
+    let receipt = match BootstrapReceipt::read(receipt_path)? {
+        Some(receipt) if receipt.status == BootstrapReceiptStatus::Confirmed => receipt,
         _ => return Ok(Redemption::Pending),
     };
     if envelope_path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH) {
         validate_protected_bootstrap_file(envelope_path, PROTECTED_MANAGED_BOOTSTRAP_PATH)?;
     }
-    let envelope = match read_bounded_json::<BootstrapEnvelope>(
-        envelope_path,
-        "managed bootstrap envelope",
-    )? {
-        BootstrapEnvelope::ManagedEnvironment(envelope) => envelope,
-        BootstrapEnvelope::DisposableWorker(_) => {
-            return Err(redemption_error(
-                "the protected envelope is not a managed grant",
-            ))
-        }
-    };
+    let envelope =
+        read_bounded_json::<ManagedBootstrapEnvelope>(envelope_path, "managed bootstrap envelope")?;
     envelope.validate(true)?;
     if envelope.is_redeemed() {
         return Ok(Redemption::Redeemed);

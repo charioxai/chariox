@@ -1163,7 +1163,7 @@ fn confirmed_path1_receipt_does_not_delete_a_same_claims_different_token_envelop
 fn redeemed_envelope_json(original: &ManagedBootstrapEnvelope) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": original.schema_version,
-        "cloudApiUrl": &original.cloud_api_url,
+        "controlPlaneUrl": &original.control_plane_url,
         "environmentId": &original.environment_id,
         "token": "",
         "redeemedGrantBindingDigest": original.grant_binding_digest(),
@@ -1282,7 +1282,7 @@ fn root_blanks_the_token_only_of_the_grant_bound_to_the_confirmed_receipt() {
     };
     let grant_json = serde_json::json!({
         "schemaVersion": original.schema_version,
-        "cloudApiUrl": &original.cloud_api_url,
+        "controlPlaneUrl": &original.control_plane_url,
         "environmentId": &original.environment_id,
         "token": &original.token,
         "expiresAt": &original.expires_at,

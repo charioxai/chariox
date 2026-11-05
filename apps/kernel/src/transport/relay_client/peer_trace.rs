@@ -146,24 +146,6 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::CompleteLeasedPrompt { .. } => "complete_leased_prompt",
         RelayPeerRequest::ObserveLeasedGitAfter { .. } => "observe_leased_git_after",
         RelayPeerRequest::CancelLeasedPrompt { .. } => "cancel_leased_prompt",
-        RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget { .. } => {
-            "resolve_leased_project_environment_setup_target"
-        }
-        RelayPeerRequest::StartLeasedProjectEnvironmentSetup { .. } => {
-            "start_leased_project_environment_setup"
-        }
-        RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition { .. } => {
-            "acknowledge_leased_project_environment_setup_definition"
-        }
-        RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus { .. } => {
-            "get_leased_project_environment_setup_status"
-        }
-        RelayPeerRequest::CancelLeasedProjectEnvironmentSetup { .. } => {
-            "cancel_leased_project_environment_setup"
-        }
-        RelayPeerRequest::RetryLeasedProjectEnvironmentSetup { .. } => {
-            "retry_leased_project_environment_setup"
-        }
         RelayPeerRequest::LeasedWatchedProcess { .. } => "leased_watched_process",
         RelayPeerRequest::ForwardWorkflowRuntimeTool { .. } => "forward_workflow_runtime_tool",
         RelayPeerRequest::ForwardWorkspaceLiveSyncRuntimeTool { .. } => {
@@ -190,16 +172,16 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::ApplyWorkspaceLiveSyncChange { .. } => "apply_workspace_live_sync_change",
         RelayPeerRequest::ForwardNativeTurnInteraction { .. } => "forward_native_turn_interaction",
         RelayPeerRequest::UpdateNativeInteraction { .. } => "update_native_interaction",
-        RelayPeerRequest::ExportLeasedProjectEnvironment { .. } => {
-            "export_leased_project_environment"
+        RelayPeerRequest::RunProjectEnvironmentSetup { .. } => "run_project_environment_setup",
+        RelayPeerRequest::GetProjectEnvironmentOperation { .. } => {
+            "get_project_environment_operation"
         }
-        RelayPeerRequest::FetchProjectPrivateFile { .. } => "fetch_project_private_file",
-        RelayPeerRequest::UseLeasedProjectEnvironment { .. } => "use_leased_project_environment",
-        RelayPeerRequest::ReadLeasedProjectPrivateFile { .. } => "read_leased_project_private_file",
-        RelayPeerRequest::ReadLeasedProjectEnvironment { .. } => "read_leased_project_environment",
-        RelayPeerRequest::InstallLeasedProjectEnvironment { .. } => {
-            "install_leased_project_environment"
+        RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => {
+            "cancel_project_environment_operation"
         }
+        RelayPeerRequest::ReadProjectEnvironment { .. } => "read_project_environment",
+        RelayPeerRequest::PullProjectEnvironmentSecret { .. } => "pull_project_environment_secret",
+        RelayPeerRequest::PullProjectEnvironmentFile { .. } => "pull_project_environment_file",
         RelayPeerRequest::EnsureRemoteSkillPackages { .. } => "ensure_remote_skill_packages",
         RelayPeerRequest::RequestProviderAccountCopy { .. } => "request_provider_account_copy",
         RelayPeerRequest::InstallProviderAccountCopy { .. } => "install_provider_account_copy",

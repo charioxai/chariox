@@ -57,6 +57,8 @@ export async function createFixture(dir, chosenKernelBytes) {
     await put(root, path, content, mode)
     artifacts.push({ name, path, sha256: sha(content) })
   }
+  await put(root, "usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz", bytes)
+  artifacts.push({ name: "chariox-slice-image", path: "/usr/lib/chariox/slice-image", sha256: await treeHash(join(root, "usr/lib/chariox/slice-image")) })
   artifacts.push({ name: "chariox-slice-build-context", path: `/${context}`, sha256: await treeHash(join(root, context)) })
   const manifest = Buffer.from(JSON.stringify({ schemaVersion: 3, managedUpdateEvidenceVersion: 1, sourceCommit, sourceTree, artifacts }))
   await put(root, "/usr/lib/chariox/release-manifest.json", manifest)

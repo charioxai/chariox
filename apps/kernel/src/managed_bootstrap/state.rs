@@ -39,7 +39,7 @@ pub(super) struct BootstrapConfig {
     pub(super) kernel_port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,

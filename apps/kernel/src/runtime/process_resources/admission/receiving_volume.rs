@@ -10,7 +10,7 @@ pub(in crate::runtime::process_resources) struct ReceivingVolume {
 }
 
 impl ReceivingVolume {
-    pub(super) fn capture(output: &VolumeWrites) -> Option<Self> {
+    pub(in crate::runtime::process_resources) fn capture(output: &VolumeWrites) -> Option<Self> {
         // A sampler path can be /proc/<pid>/fd/<n>. Only its resolved destination
         // survives that descriptor; another mount namespace may make it unknown.
         let target = std::fs::canonicalize(&output.path).ok()?;
@@ -22,7 +22,7 @@ impl ReceivingVolume {
         })
     }
 
-    pub(super) fn disk(&self, volume: &Volume) -> Option<Disk> {
+    pub(in crate::runtime::process_resources) fn disk(&self, volume: &Volume) -> Option<Disk> {
         // Removed build outputs can be measured through their nearest surviving
         // ancestor, but a removed mount or replaced destination is not that volume.
         self.path

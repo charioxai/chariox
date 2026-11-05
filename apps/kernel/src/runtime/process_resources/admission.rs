@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod receiving_volume;
-use receiving_volume::ReceivingVolume;
+pub(super) use receiving_volume::ReceivingVolume;
 
 /// Commands that stay under this never wait (OF-03); small pools scale it.
 const MAX_LIGHT: u64 = 512 * MIB;
@@ -79,7 +79,7 @@ pub(super) struct Seen {
     pid: u32,
     pub(super) key: String,
     /// The same command line without normalizing its numbers.
-    exact: u64,
+    pub(super) exact: u64,
     pub line: String,
     pub cwd: Option<PathBuf>,
 }
@@ -165,13 +165,17 @@ impl Entry {
     /// output goes is unknown until a run showed it, and then it is not
     /// held: a destructive disk stop requires observed growth anyway.
     fn disk(&self, room: &Room) -> Option<Disk> {
+        self.predicted_disk(room.volume)
+    }
+
+    pub(super) fn predicted_disk(&self, volume: &Volume) -> Option<Disk> {
         let expected = self.expected.as_ref()?;
         // Numeric output paths can share the memory key. Only the exact
         // command that wrote here tells us its receiving volume.
         if self.seen.as_ref()?.exact != expected.exact {
             return None;
         }
-        expected.volume.as_ref()?.disk(room.volume)
+        expected.volume.as_ref()?.disk(volume)
     }
 
     /// Writes it still has ahead toward its expected peak on that volume;
@@ -354,6 +358,7 @@ impl Ledger {
                 *reserved = reserved.saturating_add(
                     entry
                         .expected
+                        .as_ref()
                         .filter(|peak| peak.memory >= light)
                         .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
                 );
@@ -385,16 +390,13 @@ impl Ledger {
             {
                 let writes = entry
                     .expected
-                    .filter(|peak| peak.writes >= light)
-                    .map_or(0, |peak| peak.writes.saturating_sub(entry.writes));
+                    .as_ref()
+                    .filter(|peak| peak.volume_writes >= light)
+                    .map_or(0, |peak| peak.volume_writes.saturating_sub(entry.writes));
                 if writes == 0 {
                     continue;
                 }
-                if let Some(space) = entry
-                    .seen
-                    .as_ref()
-                    .and_then(|seen| volume(seen.cwd.as_deref()?))
-                {
+                if let Some(space) = entry.predicted_disk(volume) {
                     let total = units.entry((member.unit.clone(), space.id)).or_default();
                     *total = total.saturating_add(writes);
                 }
@@ -534,12 +536,7 @@ impl Ledger {
         // until one of them finishes. When nothing heavy runs any more, the
         // next in line continues anyway: one command always makes progress.
         if !room.tight || !state.heavy_running {
-            if let Some(owner) = self.resume(
-                members,
-                WaitReason::Memory,
-                &mut state,
-                room,
-            ) {
+            if let Some(owner) = self.resume(members, WaitReason::Memory, &mut state, room) {
                 changed.push(owner);
             }
         }
@@ -801,33 +798,33 @@ impl Ledger {
             return None;
         }
         for (member, pid) in line(members, reason, self.served.get(&(reason as u8))) {
-        let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
-        let unit = observation.unit.clone();
-        let entry = observation.admission.get_mut(&pid)?;
-        // Both resources must have room now: what it waited for, and the
-        // other one for the peak it is known to reach.
-        let (memory, disk) = match reason {
-            WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
-            WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
-        };
-        let volume = entry.disk(room);
-        let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
-            && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
-        if !fits {
-            continue;
-        }
-        state.reserve_memory(&unit, entry.memory_ahead(room), room);
-        if let Some(volume) = volume {
-            state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
-        }
-        entry.stop_waiting();
-        entry.admitted = true;
-        state.running(entry, room);
-        let unit = observation.unit.clone();
-        drop(observation);
-        self.served.insert(reason as u8, unit);
-        self.resumed_at.insert(reason as u8, Instant::now());
-        return Some(member);
+            let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let unit = observation.unit.clone();
+            let entry = observation.admission.get_mut(&pid)?;
+            // Both resources must have room now: what it waited for, and the
+            // other one for the peak it is known to reach.
+            let (memory, disk) = match reason {
+                WaitReason::Memory => (need(entry, reason, room), entry.writes_ahead(room)),
+                WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
+            };
+            let volume = entry.disk(room);
+            let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
+                && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
+            if !fits {
+                continue;
+            }
+            state.reserve_memory(&unit, entry.memory_ahead(room), room);
+            if let Some(volume) = volume {
+                state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
+            }
+            entry.stop_waiting();
+            entry.admitted = true;
+            state.running(entry, room);
+            let unit = observation.unit.clone();
+            drop(observation);
+            self.served.insert(reason as u8, unit);
+            self.resumed_at.insert(reason as u8, Instant::now());
+            return Some(member);
         }
         None
     }
@@ -1107,13 +1104,13 @@ pub(super) fn growth_room(ceiling: u64) -> u64 {
 
 /// A volume's free bytes against its floor.
 #[derive(Clone, Copy)]
-struct Disk {
-    id: u64,
+pub(super) struct Disk {
+    pub(super) id: u64,
     free: u64,
     floor: u64,
 }
 impl Disk {
-    fn above_floor(self) -> u64 {
+    pub(super) fn above_floor(self) -> u64 {
         self.free.saturating_sub(self.floor)
     }
 }

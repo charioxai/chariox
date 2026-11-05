@@ -207,7 +207,7 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
-    disk_volume_probe: Option<fn(&std::path::Path) -> Option<(u64, u64, u64)>>,
+    disk_volume_probe: Option<DiskVolumeProbe>,
     #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
@@ -500,7 +500,7 @@ mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
 mod structured_prompt_dispatch;
-pub(crate) use managed_activity_persistence::{ManagedActivityCounts, ManagedActivityObservation};
+pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
@@ -1549,3 +1549,9 @@ mod terminal_wake_worker;
 mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
+
+#[cfg(test)]
+type DiskVolumeProbe = fn(&std::path::Path) -> Option<(u64, u64, u64)>;
+
+#[cfg(test)]
+pub(crate) use managed_activity_persistence::ManagedActivityCounts;

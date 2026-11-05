@@ -1,7 +1,6 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: a provider launch holds the prompt owner's lock and then takes
 //! the session store's write lock, so the claim retry must not ask the owner while it holds the
 //! store's read guard. Before, the two waited for each other for ever at kernel start.
-use super::*;
 use crate::test_support::allocation::runtime_with_rooms;
 use std::sync::mpsc;
 use std::time::Duration;

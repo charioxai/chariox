@@ -1474,10 +1474,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             write_claude_permission_passthrough(context_file, request_id);
             return Ok(());
         };
-        let tool_name = event
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
         let interaction_id = format!("claude-native-permission-{provider_run_id}-{request_id}");
         write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
         write_claude_hook_permission_tombstone(context_file, event);

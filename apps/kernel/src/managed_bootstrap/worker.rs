@@ -771,42 +771,6 @@ mod tests {
         fixture.cleanup();
     }
 
-    struct EnrollmentCloud {
-        response: ExchangeResponse,
-        confirmations: std::sync::Mutex<Vec<ConfirmRequest>>,
-    }
-
-    impl WorkerCloudClient for EnrollmentCloud {
-        fn exchange(
-            &self,
-            _api_url: &str,
-            request: &ExchangeRequest,
-        ) -> Result<ExchangeResponse, DaemonError> {
-            assert_eq!(request.allocation_id, self.response.allocation_id);
-            assert_eq!(
-                request.runtime_release_digest,
-                self.response.runtime_release_digest
-            );
-            Ok(self.response.clone())
-        }
-
-        fn confirm(
-            &self,
-            _api_url: &str,
-            request: &ConfirmRequest,
-        ) -> Result<ConfirmResponse, DaemonError> {
-            self.confirmations
-                .lock()
-                .expect("confirmation lock")
-                .push(request.clone());
-            Ok(ConfirmResponse {
-                confirmed: true,
-                observed_state: "ready".to_string(),
-                managed_repository_root: self.response.managed_repository_root.clone(),
-            })
-        }
-    }
-
     struct TestCloudApi {
         url: String,
         ticket: std::sync::Arc<std::sync::Mutex<Option<ManagedContextTransferTicket>>>,

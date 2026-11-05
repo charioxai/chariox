@@ -257,23 +257,14 @@ async fn a_disk_pressure_unlock_does_not_stall_another_rooms_timer() {
     }
     use crate::project_environment::*;
     ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
-        .save(&StoredProjectEnvironment {
-            source: None,
-            manifest: ProjectEnvironmentManifest {
-                schema_version: 1,
-                project_id: rooms[0].0.project_id().into(),
-                evidence_digest: ProjectEnvironmentEvidence::default().digest(),
-                entries: vec![],
-                private_files: vec![],
-                toolchain_hints: vec![],
-                package_hints: vec![],
-                service_hints: vec![],
+        .save(
+            rooms[0].0.project_id(),
+            0,
+            ProjectEnvironmentRecord {
+                schema: PROJECT_ENVIRONMENT_SCHEMA,
+                ..Default::default()
             },
-            evidence: ProjectEnvironmentEvidence::default(),
-            reported_missing: Default::default(),
-            reviewed_manifest: None,
-            last_review: None,
-        })
+        )
         .unwrap();
     let mut state =
         super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);

@@ -4,10 +4,6 @@
     "removedBy": "OSS-boundary item 2 (delete TUI rental chooser and /machine reimage)"
   },
   {
-    "path": "apps/cli/scripts/live-project-environment-setup-drill.mjs",
-    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
-  },
-  {
     "path": "apps/cli/scripts/managed-parity-source-inventory.mjs",
     "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
   },
