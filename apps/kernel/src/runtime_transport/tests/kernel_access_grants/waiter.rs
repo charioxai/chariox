@@ -29,7 +29,7 @@ fn kernel_access_waiter_child() {
             let root = Path::new(&root);
             let (mut socket, _) = client_async(
                 "ws://localhost/kernel",
-                tokio::net::UnixStream::connect(root.join("run/k.sock"))
+                tokio::net::UnixStream::connect(kernel_access_socket(root))
                     .await
                     .unwrap(),
             )

@@ -859,15 +859,8 @@ async fn check_live_binding(check: LiveBindingCheck) {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src/runtime/state/app-view-actor.fixture.mjs");
     let controllers = BrowserControllerProcessStore::new(
-        "systemd-run",
+        "node",
         vec![
-            "--scope".into(),
-            "--quiet".into(),
-            "-p".into(),
-            "MemoryMax=4G".into(),
-            "-p".into(),
-            "MemorySwapMax=0".into(),
-            "node".into(),
             fixture.display().to_string(),
             directory.display().to_string(),
             rig.root.display().to_string(),

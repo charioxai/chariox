@@ -157,14 +157,6 @@ pub(super) fn run(context: Context, live: OwnedSemaphorePermit) {
     // A failed row can be visible before this thread publishes completion.
     // Starts must join this owner instead of treating its entry as live.
     context.control.retiring.store(true, Ordering::Release);
-    if let Ok(Err(LifecycleError::DiskSpace(space))) = &outcome {
-        disk_space::notify(
-            &context.store,
-            &context.owner,
-            &context.installation,
-            *space,
-        );
-    }
     let uncertain = matches!(&outcome, Ok(Err(LifecycleError::CommitUnknown)));
     if uncertain {
         // Native owner/peer already dropped and reaped during error unwinding.

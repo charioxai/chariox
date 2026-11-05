@@ -5,6 +5,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 mod control;
+#[cfg(test)]
+pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
 pub(crate) use control::{
     end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
@@ -399,6 +401,10 @@ impl PreparedDomain {
                         }
                         false
                     }
+                    // A signal ended `ps` (a hot reload ends the children the
+                    // kernel leaves behind while a sample runs): the tree
+                    // says nothing, so read again next tick.
+                    Err(sampling::SamplingError::Ended) => false,
                     Err(error) => {
                         crate::logging::error_with_fields(
                             "process_resources.monitor",
@@ -413,6 +419,11 @@ impl PreparedDomain {
                     break;
                 }
                 match stopped.recv_timeout(INTERVAL) {
+                    #[cfg(test)]
+                    Ok(WatchCommand::PauseSampling { reply, resume }) => {
+                        let _ = reply.send(Ok(Vec::new()));
+                        let _ = resume.recv();
+                    }
                     Ok(WatchCommand::Release) => released = true,
                     Ok(WatchCommand::MemoryStop {
                         pid,
