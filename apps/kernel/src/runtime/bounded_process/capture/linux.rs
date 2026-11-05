@@ -2,7 +2,10 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::path::PathBuf;
 
-pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
+pub(super) fn terminate(fds: &[RawFd], marker: Option<&[u8]>) -> io::Result<()> {
+    let Some(marker) = marker else {
+        return Ok(());
+    };
     let pipes = fds
         .iter()
         .map(|fd| std::fs::read_link(format!("/proc/self/fd/{fd}")))
@@ -18,7 +21,11 @@ pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
             else {
                 continue;
             };
-            if pid <= 1 || pid == std::process::id() || !owns_writer(pid, &pipes) {
+            if pid <= 1
+                || pid == std::process::id()
+                || !owns_writer(pid, &pipes)
+                || !has_marker(pid, marker)
+            {
                 continue;
             }
             let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -32,7 +39,7 @@ pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
             let process = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
             // Pin the process before the final ownership check. Sending to a
             // pidfd cannot signal a different process if the numeric PID changes.
-            if owns_writer(pid, &pipes) {
+            if owns_writer(pid, &pipes) && has_marker(pid, marker) {
                 let result = unsafe {
                     libc::syscall(
                         libc::SYS_pidfd_send_signal,
@@ -52,6 +59,11 @@ pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn has_marker(pid: u32, marker: &[u8]) -> bool {
+    std::fs::read(format!("/proc/{pid}/environ"))
+        .is_ok_and(|bytes| bytes.split(|byte| *byte == 0).any(|entry| entry == marker))
 }
 
 fn owns_writer(pid: u32, pipes: &[PathBuf]) -> bool {
@@ -82,6 +94,14 @@ fn owns_writer(pid: u32, pipes: &[PathBuf]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_kernel_sibling_inheriting_a_writer_is_not_a_probe_child() {
+        assert!(!has_marker(
+            std::process::id(),
+            b"CHARIOX_CAPTURE_OWNER=not-this-kernel"
+        ));
+    }
 
     #[test]
     fn inherited_read_ends_do_not_establish_probe_ownership() {

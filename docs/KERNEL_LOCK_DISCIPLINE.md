@@ -233,6 +233,13 @@ the previous STORE-held planning expression; domain output projection and the
 bounded Docker broker facade are explicitly distinguished from subprocess APIs.
 The gate is part of `pnpm lint`, and its tests are part of the existing script suite.
 
+General command capture also stamps each child environment with a private capture
+ownership marker. Linux inherited pipe writers must carry that marker before
+cleanup can signal them. A concurrent kernel fork may briefly inherit a writable
+pipe before exec closes it; pipe ownership alone cannot authorize killing that
+unrelated child. Successful commands with closed stdout/stderr skip descriptor
+scans entirely, keeping the sampler's cadence independent of host process count.
+
 ## Explicit bootstrap environment exception
 
 Production launch planning only reads stable process configuration and constructs

@@ -34,7 +34,7 @@ fn pipe_info(pid: i32, fd: RawFd) -> Option<PipeFdInfo> {
     (result == size).then(|| unsafe { info.assume_init() })
 }
 
-pub(super) fn terminate(fds: &[RawFd]) -> io::Result<()> {
+pub(super) fn terminate(fds: &[RawFd], _marker: Option<&[u8]>) -> io::Result<()> {
     let own_pid = std::process::id() as i32;
     let peers = fds
         .iter()
