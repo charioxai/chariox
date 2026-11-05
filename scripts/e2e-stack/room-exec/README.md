@@ -1,7 +1,7 @@
 # Binary Room exec drill (MP-08 / MP-09 / MP-10 / MP-11)
 
 Build the matching kernel, relay, native `chariox-cli`, kernel-client and CLI.
-The kernel must advertise `room_exec_v1` (local 632 / peer 235). Run with a
+The kernel must advertise `room_exec_v1` (local 995 / peer 434). Run with a
 memory bound and a finite timeout, using a new state directory outside the repo:
 
 ```sh
@@ -84,5 +84,8 @@ the marker immediately; the corrected kernel holds the original argv before
 spawn. The native CLI supplies binary input while queued. Cancel leaves no
 marker; Start now executes once and preserves every stdin/stdout byte, stderr
 and exit23; revoking the original grant prevents queued execution. This is a
-focused local-kernel regression, separate from selected-kernel placement,
-paid-VM placement, hosted Web DPR1/2 and remote recovery acceptance.
+focused pre-spawn regression. It also checks a second kernel selected through
+native `--kernel` before submission, peer cancellation, original grant revocation
+and target gateway revocation. It does not move a queued launch to another kernel.
+Post-hold placement, paid-VM placement, hosted Web DPR1/2 and durable remote claim
+recovery remain separate acceptance work.
