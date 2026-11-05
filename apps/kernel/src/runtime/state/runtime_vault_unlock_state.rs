@@ -23,6 +23,16 @@ impl VaultUnlockGuard {
         }
     }
 
+    fn for_existing_unlock(path: std::path::PathBuf) -> Result<Self, DaemonError> {
+        // A client "once" unlock belongs to the next operation, including an
+        // agent call resumed by another window's unlock notification.
+        if crate::secret::take_chariox_vault_single_use_unlock(&path)? {
+            Ok(Self::unlocked_for_operation(path))
+        } else {
+            Ok(Self::unlocked_until_expiry(path))
+        }
+    }
+
     fn not_required() -> Self {
         Self {
             path: None,
@@ -420,7 +430,7 @@ impl KernelRuntimeState {
     ) -> Result<VaultUnlockGuard, DaemonError> {
         if let Some(path) = self.client_single_use_unlock_path()? {
             // "Ask every time": the owner's client unlocked for this one operation.
-            return Ok(VaultUnlockGuard::unlocked_for_operation(path));
+            return VaultUnlockGuard::for_existing_unlock(path);
         }
         let Some((session_id, agent_id)) = self
             .preflight_vault_unlock_for_command_context(command, session_id, agent_id, operation)
@@ -533,7 +543,7 @@ impl KernelRuntimeState {
         }
         let vault_path = expand_vault_path(&vault_config.path);
         if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
+            return VaultUnlockGuard::for_existing_unlock(vault_path);
         }
         // The Room queue and passphrase retries share the provider tool's budget.
         // No card may outlive the call that is waiting for it.
@@ -547,7 +557,7 @@ impl KernelRuntimeState {
         };
         let mut unlocks = vault_unlock_notifications(&vault_path);
         if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-            return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
+            return VaultUnlockGuard::for_existing_unlock(vault_path);
         }
 
         let mut problem: Option<String> = None;
@@ -574,7 +584,7 @@ impl KernelRuntimeState {
                 )
                 .await?
             else {
-                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
+                return VaultUnlockGuard::for_existing_unlock(vault_path.clone());
             };
             let (passphrase, duration) = vault_unlock_answer(&interaction, resolution, operation)?;
             let lease = duration.lease(&vault_config, true);
@@ -583,7 +593,7 @@ impl KernelRuntimeState {
             let unlock_request_lock = vault_unlock_request_lock(&vault_path);
             let _mutation = unlock_request_lock.lock().await;
             if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
-                return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path.clone()));
+                return VaultUnlockGuard::for_existing_unlock(vault_path.clone());
             }
             let owner = self
                 .owned

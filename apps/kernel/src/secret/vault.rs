@@ -587,6 +587,21 @@ pub fn chariox_vault_single_use_unlocked(path: impl AsRef<Path>) -> Result<bool,
         .is_some_and(|vault| vault.single_use && !vault.is_expired(now_ms)))
 }
 
+/// Transfer relocking to the operation guard once. Nested Vault use within
+/// that operation must not close the Vault before the outer operation ends.
+pub(crate) fn take_chariox_vault_single_use_unlock(
+    path: impl AsRef<Path>,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let mut unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    Ok(unlocked
+        .get_mut(&path)
+        .is_some_and(|vault| !vault.is_expired(now_ms) && std::mem::take(&mut vault.single_use)))
+}
+
 pub fn chariox_encrypted_vault_status(
     path: impl AsRef<Path>,
 ) -> Result<CharioxVaultUnlockStatus, DaemonError> {

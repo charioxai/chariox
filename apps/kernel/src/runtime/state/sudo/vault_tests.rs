@@ -86,6 +86,156 @@ async fn generate(f: &Fixture, request_id: &str, origin: &str) -> Result<Value, 
     .await
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: owner-client "once" covers an agent operation too.
+async fn client_unlock_once(f: &Fixture) {
+    use crate::local::{
+        LocalDaemonRequest, UnlockCredentialVaultRequest, VaultPassphrase, VaultUnlockDuration,
+        VaultUnlockSurface,
+    };
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    let request = LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
+        passphrase: VaultPassphrase::new(PASSKEY),
+        duration: VaultUnlockDuration::Once,
+        surface: VaultUnlockSurface::VaultWindow,
+    });
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "owner-once",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    f.router.dispatch(command, request).await.unwrap();
+    assert!(crate::secret::chariox_vault_single_use_unlocked(vault_path(f)).unwrap());
+}
+
+fn assert_vault_locked(f: &Fixture) {
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(vault_path(f))
+            .unwrap()
+            .unlocked,
+        "the agent operation must consume the owner's single-use unlock",
+    );
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_is_consumed_by_agent_generation() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    client_unlock_once(&f).await;
+    assert_eq!(
+        generate(&f, "first-once", SITE).await.unwrap()["created"],
+        true
+    );
+    assert_vault_locked(&f);
+    // A new request must ask again; an idempotent retry is not another write.
+    let next = generate(&f, "second-once", SITE);
+    tokio::pin!(next);
+    tokio::select! {
+        result = &mut next => panic!("a second generation bypassed the unlock: {result:?}"),
+        () = async {
+            owner_unlocks(&f, &f.request.session_id, || {}).await;
+        } => {}
+    }
+    assert_eq!(next.await.unwrap()["created"], true);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_notification_is_consumed_by_waiting_agent_generation() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let generate = generate(&f, "notified-once", SITE);
+    let owner = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !f
+                    .state
+                    .owned
+                    .session_snapshot(&f.request.session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        client_unlock_once(&f).await;
+    };
+    let (created, ()) = tokio::join!(generate, owner);
+    assert_eq!(created.unwrap()["created"], true);
+    assert_vault_locked(&f);
+    assert!(f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_is_consumed_by_agent_browser_fill() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "fill-once", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for tool in [PASTE, FILL] {
+        crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+        client_unlock_once(f).await;
+        assert_eq!(
+            call(f, tool, paste_args(&handle)).await.unwrap(),
+            json!({"inserted": true})
+        );
+        assert!(inserted(&login).is_some());
+        assert_vault_locked(f);
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_covers_browser_fill_with_signing_key_preparation() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signed-fill-once", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut config = f.state.owned.config_projection.snapshot();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    config.user_config.web_bot_auth.projects = vec![session.project_id().to_owned()];
+    config.user_config.web_bot_auth.signature_agent = Some("https://signer.example.com".into());
+    f.state.owned.config_projection.update(config);
+    crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+    client_unlock_once(f).await;
+    assert_eq!(
+        call(f, PASTE, paste_args(&handle)).await.unwrap(),
+        json!({"inserted": true})
+    );
+    assert!(inserted(&login).is_some());
+    assert_vault_locked(f);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault creation needs no elevation.
 #[tokio::test]
 async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {

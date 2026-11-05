@@ -214,3 +214,26 @@ wrong-code/retry loop. `VFLAG_EXPECT=grant-red` records the old stuck path;
 Green checks include plain card text, no automatic card expiry, and at least an
 hour on an active person wait. This focused drill supplements AU-03; it does not
 claim a real Vercel token was created.
+
+## Single-use owner unlock (MP-08 / MP-09 / MP-10 / MP-11)
+
+`once-unlock-hosted-live.mjs` uses the real hosted Web/WSS path and an official
+Codex agent at DPR1 and DPR2. The owner selects "Just this once" in the Vault
+window, then the agent generates one credential for `https://github.com`.
+The Vault must close, and a new generation request ID must ask for another
+unlock. Unlocking from the Vault window while that request waits must resume
+it, withdraw its card, and close the Vault again after generation.
+Green also observes the real GitHub login page, then fills its password and
+plain username fields through the two agent fill tools without submitting.
+Each fill receives its own owner-window "once" unlock and must close the Vault.
+
+Use Node24 through the lane's bounded runner. Supply `VFLAG_ORIGIN` (an owned
+`pr<N>-vflag*` stack), `VFLAG_EVIDENCE`, `VFLAG_BIN` (private exact-source kernel
+and relay), `VFLAG_CODEX_PROFILE` (a product-linked profile), and an external
+`TMPDIR`. `VFLAG_CLOUD_ROOT` selects the Cloud checkout providing the existing
+hosted fixture helpers. `VFLAG_EXPECT=red` records the pre-fix bypass, including
+the second credential created without another unlock; green is the default.
+Keep binary hashes and source revisions beside the results. The drill closes
+its own clients, Room, kernel, relay and provider processes. It exercises the
+Vault operation rather than creating a GitHub account, and does not close the
+broader provider or ordinary/managed parity acceptance matrix.
