@@ -148,8 +148,13 @@ impl Entry {
     /// output goes is unknown until a run showed it, and then it is not
     /// held: a destructive disk stop requires observed growth anyway.
     fn disk(&self, room: &Room) -> Option<Disk> {
-        let volume = self.expected.as_ref()?.volume.as_ref()?;
-        volume.disk(room.volume)
+        let expected = self.expected.as_ref()?;
+        // Numeric output paths can share the memory key. Only the exact
+        // command that wrote here tells us its receiving volume.
+        if self.seen.as_ref()?.exact != expected.exact {
+            return None;
+        }
+        expected.volume.as_ref()?.disk(room.volume)
     }
 
     /// Writes it still has ahead toward its expected peak on that volume;

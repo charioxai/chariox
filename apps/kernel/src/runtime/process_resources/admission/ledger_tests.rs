@@ -1570,3 +1570,44 @@ fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
         "an unresolved descriptor is unknown"
     );
 }
+
+#[test]
+fn numeric_output_paths_do_not_reuse_another_commands_receiving_volume() {
+    // Normalization gives output-1 and output-2 the same memory peak key.
+    assert_eq!(normalize("/mnt/output-1"), normalize("/mnt/output-2"));
+    let volume: Box<Volume> = Box::new(|path| {
+        Some(Space {
+            id: if path.starts_with("/mnt/output-1") {
+                1
+            } else {
+                2
+            },
+            free: if path.starts_with("/mnt/output-1") {
+                GIB
+            } else {
+                40 * GIB
+            },
+            total: 100 * GIB,
+        })
+    });
+    let mut build = entry(1, scratch(6 * GIB));
+    build.expected.as_mut().unwrap().exact = 1;
+    build.expected.as_mut().unwrap().volume = Some(ReceivingVolume {
+        path: "/mnt/output-1".into(),
+        id: 1,
+    });
+    build.seen.as_mut().unwrap().exact = 2;
+    build.seen.as_mut().unwrap().line = "cargo build --target-dir /mnt/output-2".into();
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, build)]);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        None,
+        "a different exact command's output destination is unknown"
+    );
+}
