@@ -73,7 +73,7 @@ pub enum ControlPlaneResponse {
 pub struct MachineAllocationCapability {
     pub revision: String,
     pub actions: Vec<String>,
-    pub offer: MachineAcquisitionOffer,
+    pub offer: Option<MachineAcquisitionOffer>,
 }
 
 /// Display facts supplied by the connected service for this capability revision.

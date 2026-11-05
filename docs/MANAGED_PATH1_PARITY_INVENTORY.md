@@ -2174,7 +2174,7 @@ condition names an exact same-origin POST URL and a JSON pointer whose value
 must be boolean true in a successful HTTP response. Only requests started while
 that card watches the same frame and document count. A controller-isolated
 listener acknowledges trusted input inside that region. The helper requires
-the bound field value in the request JSON and a user gesture; the value stays
+the bound field value in the request JSON, URL-encoded form or multipart text field and a user gesture; the value stays
 in private helper memory and is never included in a receipt. The challenge ID
 is the card operation nonce, not a fabricated server-issued challenge ID. Responses from a different
 endpoint, document or older overlapping attempt cannot complete the card.
@@ -2183,12 +2183,27 @@ The kernel projects only request delivery, HTTP status and fixed result labels.
 No request body, response body, headers, code or token enters the receipt. The
 person sees and types in the existing live popup region; verification cards have
 only Cancel and use a durable nonblocking question. A rejection stays visible in
-the same card, including when a page framework replaces the crop anchor. A
+the same card, including when a page framework replaces the crop anchor during an outstanding geometry poll. A
 missing element or navigation is never positive verification. Capture the new
 credential through Vault and prove its declared authenticated use separately.
 
 The no-email owned-service rehearsal lives in
 `scripts/e2e-stack/vault-autonomy/challenge-hosted-live.mjs`. It covers request
 ordering, rejection and acceptance, page rerender, Vault capture and an
-authenticated API call at desktop DPR1/DPR2 and390x844. It is supplementary;
+authenticated API call at desktop DPR1/DPR2. It is supplementary;
 it does not establish real Vercel acceptance or close the full MP matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11: lifecycle discovery without a purchase offer (993/432)
+
+An enrolled kernel keeps its machine capability revision and lifecycle actions
+when the connected service cannot quote a new machine or has no placements.
+The capability's `offer` is null in that case, and acquisition requires a fresh
+non-null offer plus its advertised action. Enrollment revocation and resource
+revision checks continue to fence Stop, Release and saved-state deletion.
+The service's purchase outage must not strand an existing paid resource.
+
+Focused coverage: Cloud's production control-plane route discovers capabilities
+for the first time during catalogue, quote and empty-placement failures, then
+stops and releases an existing allocation. The OSS protocol snapshot round-trips
+the lifecycle-only descriptor and pins its hash. These checks cover this seam;
+they do not close the MP-10 ordinary/managed matrix or the MP-11 anchor review.

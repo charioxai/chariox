@@ -244,13 +244,14 @@ impl CommandRouter {
                 };
                 if capability.revision != *capability_revision
                     || !capability.actions.iter().any(|action| action == "acquire")
+                    || capability.offer.is_none()
                 {
                     return Ok(refused(
                         "acquisition_offer_changed",
                         "refresh machine capabilities before acquiring a machine",
                     ));
                 }
-                Some(capability.offer)
+                capability.offer
             } else {
                 None
             };
