@@ -1,6 +1,6 @@
-//! Tells a target kernel when the grant behind a forwarded sudo request ends.
+//! Tells a target kernel when the grant behind forwarded work ends.
 //!
-//! The window and the pending popup live on the target, bound to the requesting grant.
+//! Pending exec work, windows and popups share the target requester lease.
 //! That grant lives here, so this kernel reports its end: the target then ends the
 //! request through the same path a local grant's end takes.
 use std::collections::HashSet;
@@ -20,19 +20,19 @@ const REPORT_RETRY: Duration = Duration::from_secs(3);
 static REPORT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Default)]
-pub(super) struct SudoWatch {
+pub(super) struct RequesterWatch {
     watched: Mutex<HashSet<(String, String)>>,
 }
 
 impl KernelGateway {
     /// Starts reporting the end of `origin`'s grant to `target`, once per pair.
-    pub(crate) fn watch_sudo_grant(self: &Arc<Self>, target: &str, origin: &Origin) {
+    pub(crate) fn watch_requester_grant(self: &Arc<Self>, target: &str, origin: &Origin) {
         let pair = (target.to_string(), origin.grant_id.clone());
         if !self
-            .sudo_watch
+            .requester_watch
             .watched
             .lock()
-            .expect("sudo watch poisoned")
+            .expect("requester watch poisoned")
             .insert(pair.clone())
         {
             return;
@@ -86,7 +86,7 @@ impl KernelGateway {
             {
                 Ok(_) => break,
                 Err(error) if attempt == REPORT_ATTEMPTS => {
-                    tracing::warn!(code = error.code(), detail = %error.message(), target = %target, "could not tell the kernel a sudo requester's grant ended; its lease lapses without renewals");
+                    tracing::warn!(code = error.code(), detail = %error.message(), target = %target, "could not tell the kernel a requester's grant ended; its lease lapses without renewals");
                 }
                 Err(_) => tokio::time::sleep(REPORT_RETRY).await,
             }
@@ -114,10 +114,10 @@ impl KernelGateway {
     }
 
     fn unwatch(&self, target: &str, origin: &Origin) {
-        self.sudo_watch
+        self.requester_watch
             .watched
             .lock()
-            .expect("sudo watch poisoned")
+            .expect("requester watch poisoned")
             .remove(&(target.to_string(), origin.grant_id.clone()));
     }
 }

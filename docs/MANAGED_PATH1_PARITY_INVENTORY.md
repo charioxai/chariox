@@ -115,6 +115,59 @@ or trailing data. The existing snapshot validation still runs after decoding.
 Real signed A3 baseline timeouts and candidate transport/placement results are
 recorded separately; this source change does not close the MP parity matrix.
 
+## MP-08 / MP-09 / MP-10 / MP-11 binary pre-spawn admission (995/434)
+
+Ordinary and managed kernels use the same immutable binary launch intent and
+shared resource pool before a user program is spawned. A queued launch owns its
+existing stdin/output offsets and reader lease without a PID. Local Start now
+and cancel keep that exec identity. Dispatch rechecks the original authority
+and Room ownership. Gateway exec retains the existing renewable requester lease
+and a memory-only gateway admission generation. Original grant end, lease expiry
+and target revocation end queued authority; re-pairing cannot revive it. The
+changed admission anchors are `state/gateway_requester.rs`, gateway
+`requester_watch.rs` and `origins.rs`. Already-observed held/paused processes retain
+their current process controls. Queued work participates in the existing managed activity
+fence. No shutdown trigger, Cloud authority or provider launch path changes.
+
+A binary's reservation covers its entire process domain. For each resource,
+reserved growth is the prediction minus observed consumption, counted once per
+domain. The domain reserves the larger of the remaining binary prediction and
+its descendants' remaining predictions, independently for memory and each disk
+volume. Descendant growth beyond the binary prediction still counts. Admission,
+enforcement and resumption all let a descendant use its domain's unused
+reservation; learning and pressure controls stay active. Ordinary commands and
+binary launches account for each other's remaining predictions.
+
+Pressure is judged only on actual headroom; unused predictions gate admission.
+A paused descendant that fits its domain's reserved capacity resumes when
+actual pressure clears, even while its parent retains a near-capacity launch
+reservation and waits for that descendant. The enforcement regressions exercise
+both growing descendants and actual pressure followed by resumption.
+
+Memory admission and enforcement use the same observation snapshot; cgroup
+credit comes from that domain's charge and is bounded by the pool's sampled
+charge. Disk reservations decrease by observed cumulative writes, retaining the
+high-water mark when a writer exits. Write consumption is fixed before reading
+filesystem free space; reservation checking and insertion remain atomic.
+Completion saves observed binary peaks through the ordinary cache writer in the
+blocking cleanup task, before publishing the final outcome. Queue-only agent
+owners have no process-only Kill all menu; their queued commands retain Start
+now and Cancel.
+
+Focused regressions are `room_exec::queue_tests` and the real native-client drill
+`scripts/e2e-stack/room-exec/pre-spawn.mjs`. They do not close selected-kernel or
+paid-VM placement, verified context transfer, durable remote result recovery,
+hosted Web DPR1/2 or the broader MP parity matrix. Those requirements remain
+unfinished; no old direct-exec S3 result is relabeled as queue placement proof.
+`scripts/e2e-stack/room-exec/reservation-peaks.mjs` additionally checks native
+concurrent admission and actual binary learning, cache reload and automatic
+admission after reservation pressure clears. `reservation-domains.mjs` covers
+a learned parent and child alongside another native binary, plus actual output
+on an isolated filesystem while its writer remains alive. Focused regressions
+also cover ordinary/binary disk predictions in both admission directions.
+Its `--liveness` memory case requires two heavy growing descendants to finish
+under a near-capacity parent prediction without waiting for that parent to exit.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

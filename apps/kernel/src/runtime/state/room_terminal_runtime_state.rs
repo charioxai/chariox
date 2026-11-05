@@ -127,7 +127,7 @@ impl KernelRuntimeState {
         let service = &self.owned.room_terminals;
         Ok(match operation {
             operation if operation.is_exec() => {
-                self.run_room_exec_operation(session_id, &working_directory, operation)
+                self.run_room_exec_operation(session_id, &working_directory, actor, operation)
                     .await?
             }
             RoomTerminalOperation::Open {

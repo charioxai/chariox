@@ -21,6 +21,14 @@ pub(crate) fn hand_over_admission() -> Vec<HeldCommand> {
     pool::Pool::shared().held_commands()
 }
 mod admission;
+
+pub(crate) fn command_line(argv: &[String]) -> String {
+    admission::display(argv)
+}
+
+mod launch;
+pub use launch::LaunchWait;
+pub(crate) use launch::{LaunchAdmission, LaunchPermit};
 mod handover;
 mod pool;
 mod projection;

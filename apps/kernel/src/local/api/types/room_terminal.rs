@@ -28,6 +28,9 @@ pub enum RoomTerminalOperation {
     ExecOpen {
         command: Vec<String>,
     },
+    ExecStartNow {
+        exec_id: String,
+    },
     ExecWrite {
         exec_id: String,
         offset: u64,
@@ -164,6 +167,7 @@ impl RoomTerminalOperation {
             self,
             Self::ExecList
                 | Self::ExecOpen { .. }
+                | Self::ExecStartNow { .. }
                 | Self::ExecWrite { .. }
                 | Self::ExecStdinClose { .. }
                 | Self::ExecRead { .. }

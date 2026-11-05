@@ -79,7 +79,7 @@ try {
     assert.equal((await child.done).signal, 'SIGKILL')
     const listed = (await request({ operation: 'exec_list' })).execs
     assert.equal(listed.length, 1)
-    assert.equal(listed[0].state, 'running')
+    assert.equal(listed[0].state.kind, 'running')
     assert.ok(listed[0].age_ms >= 0 && listed[0].buffered_bytes >= 0)
     await request({ operation: 'exec_close', exec_id: listed[0].exec_id })
     await until(async () => !(await exists(pid)), 'reclaimed process reaped')

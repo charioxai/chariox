@@ -795,8 +795,8 @@ pub(super) fn serve_gateway(
                 if matches!(
                     *request,
                     crate::local::LocalDaemonRequest::RequestKernelSudo(_)
-                ) {
-                    gateway.watch_sudo_grant(&kernel, &origin);
+                ) || matches!(&*request, crate::local::LocalDaemonRequest::RoomTerminal(terminal) if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecOpen { .. })) {
+                    gateway.watch_requester_grant(&kernel, &origin);
                 }
                 let forwarded = gateway.forward(
                     &kernel,

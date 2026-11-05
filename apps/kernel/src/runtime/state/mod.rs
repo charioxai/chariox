@@ -205,6 +205,7 @@ pub(crate) struct KernelRuntimeState {
     interaction_answerer: Option<crate::runtime::command::KernelCaller>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
+    gateway_requester: Option<gateway_requester::GatewayRequester>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
@@ -507,6 +508,7 @@ mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
+mod gateway_requester;
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
@@ -1020,6 +1022,7 @@ impl KernelRuntimeState {
             interaction_answerer: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
+            gateway_requester: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
             #[cfg(test)]

@@ -133,8 +133,8 @@ pub(crate) struct AccessState {
     /// Holders whose `--no-wait` request the owner refused, let lapse or that was invalidated,
     /// so status says why instead of "not requested". Bounded, no secrets.
     pub(crate) request_outcomes: Vec<(ProcessIdentity, crate::local::KernelAccessStatusReason)>,
-    /// Requesters on other kernels that raised a sudo request here, by the grant id
-    /// their sudo entries carry. They live while their origin kernel keeps renewing the
+    /// Requesters on other kernels with queued exec or sudo work here, by the
+    /// origin grant id their retained authority carries. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
     pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
     /// Grants that ended in memory but whose durable end is not complete. They
