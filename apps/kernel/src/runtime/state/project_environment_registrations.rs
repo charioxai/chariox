@@ -64,9 +64,12 @@ impl KernelRuntimeState {
         let Ok(session) = self.owned.session_store.get_session(run.session_id()) else {
             return Default::default();
         };
+        let Some(project) = self.owned.session_store.environment_project(&session) else {
+            return Default::default();
+        };
         crate::project_environment::project_mcp_environment(
             &self.owned.config_projection.snapshot(),
-            session.project_id(),
+            project.id(),
             &mcp_key_names(server),
         )
     }

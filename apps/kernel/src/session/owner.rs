@@ -113,6 +113,23 @@ impl SessionStateStore {
         self.read().get_project(project_id)
     }
 
+    /// The Project whose Environment a session's processes use. A helper that another machine leases
+    /// here works in a hidden session with no Project, so its Project is its owner's one that holds
+    /// the helper's folder.
+    pub(crate) fn environment_project(&self, session: &RuntimeSession) -> Option<RuntimeProject> {
+        if !session.project_id().is_empty() {
+            return self.get_project(session.project_id()).ok();
+        }
+        self.list_projects(session.owner_user_id(), false)
+            .into_iter()
+            .find(|project| {
+                project
+                    .workspace_ids()
+                    .iter()
+                    .any(|id| id == session.worktree_id())
+            })
+    }
+
     pub(crate) fn sessions_in_project(
         &self,
         project_id: &str,

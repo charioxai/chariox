@@ -12,12 +12,15 @@ impl KernelRuntimeOwnedState {
             return true;
         }
         // A failed manifest read must defer rather than reuse stale inputs.
+        let Some(project) = self.session_store.environment_project(session) else {
+            return false;
+        };
         let config = self.config_projection.snapshot();
         !matches!(
             crate::project_environment::ProjectEnvironmentStore::new(
                 &config.private_runtime_state_root(),
             )
-            .load(session.project_id()),
+            .load(project.id()),
             Ok(None)
         )
     }

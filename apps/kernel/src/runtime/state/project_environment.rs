@@ -84,23 +84,20 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
-    /// The Project a room's Environment tool works on. A helper that another machine leases here works in a
-    /// hidden session with no Project, so its Project is the owner's one that holds the helper's folder.
+    /// The Project a room's Environment tool works on.
     pub(super) fn tool_project(
         &self,
         session: &crate::session::RuntimeSession,
         owner_user_id: &str,
     ) -> Result<crate::session::RuntimeProject, DaemonError> {
-        if !session.project_id().is_empty() {
-            return self.owned_project(session.project_id(), owner_user_id);
-        }
-        project_holding_folder(
-            self.owned.session_store.list_projects(owner_user_id, false),
-            session.worktree_id(),
-        )
-        .ok_or_else(|| {
-            environment_error("this folder belongs to no Project of yours on this machine")
-        })
+        let project = self
+            .owned
+            .session_store
+            .environment_project(session)
+            .ok_or_else(|| {
+                environment_error("this folder belongs to no Project of yours on this machine")
+            })?;
+        self.owned_project(project.id(), owner_user_id)
     }
 
     /// The Project's own folder, a git worktree of it or a worktree of one of its sessions: nothing else is a checkout.
@@ -531,12 +528,15 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
-        let Some(record) = self.environment_store().load(session.project_id())? else {
+        let Some(project) = self.owned.session_store.environment_project(&session) else {
+            return Ok(Default::default());
+        };
+        let Some(record) = self.environment_store().load(project.id())? else {
             return Ok(Default::default());
         };
         match crate::project_environment::project_launch_environment(
             &self.owned.config_projection.snapshot(),
-            session.project_id(),
+            project.id(),
             &record,
         ) {
             Ok(launch) => Ok(launch.environment),
@@ -551,33 +551,5 @@ impl KernelRuntimeState {
             }
             Err(error) => Err(error),
         }
-    }
-}
-
-fn project_holding_folder(
-    projects: Vec<crate::session::RuntimeProject>,
-    folder: &str,
-) -> Option<crate::session::RuntimeProject> {
-    projects
-        .into_iter()
-        .find(|project| project.workspace_ids().iter().any(|id| id == folder))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::session::{RuntimeProject, RuntimeProjectKind};
-
-    #[test]
-    fn a_folder_without_a_project_belongs_to_the_project_that_holds_it() {
-        let project = |id: &str, folder: &str| {
-            RuntimeProject::new(id, "owner", folder, id, RuntimeProjectKind::Named)
-        };
-        let projects = vec![project("a", "/work/a"), project("b", "/work/b")];
-        assert_eq!(
-            project_holding_folder(projects.clone(), "/work/b").map(|p| p.id().to_owned()),
-            Some("b".to_owned())
-        );
-        assert!(project_holding_folder(projects, "/work/elsewhere").is_none());
     }
 }

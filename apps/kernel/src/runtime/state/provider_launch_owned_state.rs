@@ -401,6 +401,7 @@ impl KernelRuntimeOwnedState {
             .and_then(|id| self.agent_store.get_agent(id).ok());
         crate::project_environment::attach_project_provider_environment(
             &self.config_projection.snapshot(),
+            &self.session_store,
             &session,
             agent.as_ref(),
             request,

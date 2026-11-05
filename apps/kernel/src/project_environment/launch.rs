@@ -109,6 +109,7 @@ pub(crate) fn project_environment_launch_revision(
 /// One resolver for ordinary prompt activation and runtime launches.
 pub(crate) fn attach_project_provider_environment(
     config: &DaemonConfig,
+    sessions: &crate::session::SessionStateStore,
     session: &crate::session::RuntimeSession,
     agent: Option<&crate::agent::AgentInstance>,
     mut request: crate::provider::LaunchProviderRequest,
@@ -123,12 +124,15 @@ pub(crate) fn attach_project_provider_environment(
     if directory != std::path::Path::new(session.worktree_id()) && !is_agent_worktree {
         return Ok(request);
     }
-    let Some(record) = ProjectEnvironmentStore::new(&config.private_runtime_state_root())
-        .load(session.project_id())?
+    let Some(project) = sessions.environment_project(session) else {
+        return Ok(request);
+    };
+    let Some(record) =
+        ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(project.id())?
     else {
         return Ok(request);
     };
-    let launch = project_launch_environment(config, session.project_id(), &record)?;
+    let launch = project_launch_environment(config, project.id(), &record)?;
     let previously_bound = request.project_environment_revision.is_some();
     request.project_environment_revision = Some(project_environment_launch_revision(
         &record,
