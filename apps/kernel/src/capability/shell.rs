@@ -432,8 +432,10 @@ mod tests {
             fn drop(&mut self) {
                 if let Ok(pid) = fs::read_to_string(self.0.join("producer.pid")) {
                     if let Ok(pid) = pid.trim().parse::<i32>() {
-                        unsafe {
-                            libc::kill(pid, libc::SIGKILL);
+                        if pid > 1 {
+                            unsafe {
+                                libc::kill(pid, libc::SIGKILL);
+                            }
                         }
                     }
                 }
@@ -441,6 +443,18 @@ mod tests {
             }
         }
         let fixture = Fixture(root.clone());
+        // Initialize the shared supervision threads before measuring the
+        // resources that must settle after each individual command.
+        ShellCommandService::new()
+            .run(RunShellCommandRequest::new(
+                "warmup",
+                "attachment",
+                "/bin/sh",
+                vec!["-c".into(), "true".into()],
+                root.clone(),
+                None,
+            ))
+            .expect("shell supervision should initialize");
         let count = |path| fs::read_dir(path).unwrap().count();
         let threads = count("/proc/self/task");
         let descriptors = count("/proc/self/fd");
