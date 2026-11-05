@@ -121,11 +121,12 @@ async fn scoped_app_listing_reaches_the_room_owner_through_router() {
     };
     assert_eq!(installations.len(), 1, "guest sees the bound owner App");
     assert_eq!(installations[0].events[0].name, "changed");
+    let outsider = list();
+    let mut command = KernelCommand::from_local_request("outsider-app-list", None, None, &outsider);
+    command.caller.user_id = Some("outsider".into());
     assert!(matches!(
-        request(&router, "outsider", list()).await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: AppRequestErrorCode::Unauthorized
-        }
+        router.dispatch(command, outsider).await,
+        Err(crate::error::DaemonError::SessionAccessDenied { .. })
     ));
 }
 
