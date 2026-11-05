@@ -1,5 +1,6 @@
 //! Kernel-owned workflow notification store on the existing single durable writer.
 //! Completion/outbox, ACK/inbox and queue/receipt each commit atomically.
+pub(super) mod agent_steer;
 mod completion;
 pub(crate) mod naming;
 #[cfg(test)]
@@ -484,10 +485,8 @@ fn apply(
             notification_prompt,
             active_prompt,
         } => {
-            tx.execute(
-                "UPDATE app_outbox SET invocation_json=json_set(invocation_json,'$.steered_into_prompt_id',?3) WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
-                params![session, notification_prompt, active_prompt],
-            ).map_err(sql)?;
+            agent_steer::bind_in(tx, &session, &notification_prompt, &active_prompt)
+                .map_err(sql)?;
             Ok(NotificationOutcome::SteerBound)
         }
         NotificationOperation::Granted { grant, attach } => {

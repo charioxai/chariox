@@ -78,6 +78,16 @@ impl Rig {
     }
 
     fn complete(&self, workflow: &str, run_id: &str, message: &str) {
+        self.complete_with_invocation(workflow, run_id, message, None);
+    }
+
+    fn complete_with_invocation(
+        &self,
+        workflow: &str,
+        run_id: &str,
+        message: &str,
+        invocation: Option<crate::session::WorkflowPublicationInvocationEnvelope>,
+    ) {
         let session = self
             .runtime
             .owned
@@ -100,7 +110,7 @@ impl Rig {
             "endpoint",
             "node",
             None,
-            None,
+            invocation,
             vec![WorkflowNodeRun::new(
                 &node_run,
                 exit,
@@ -1456,3 +1466,134 @@ async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_a
         }
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a worker may act before its Steer acknowledgement arrives.
+impl Rig {
+    fn remote_steer_intent(
+        &self,
+        prompt: &str,
+    ) -> (
+        super::prompt_queue_owned_state::RemoteQueuedPromptSteerPreparation,
+        u64,
+    ) {
+        let binding = crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "notification-worker".into(),
+            worker_machine_id: "notification-machine".into(),
+            execution_lease_id: "notification-lease".into(),
+            leased_agent_id: "notification-agent".into(),
+            active_worker_provider_run_id: Some("notification-run".into()),
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        };
+        self.runtime
+            .owned
+            .agent_store
+            .bind_remote_execution(&self.agent_id, binding.clone())
+            .unwrap();
+        let prepared = self
+            .runtime
+            .owned
+            .prepare_remote_queued_prompt_steer(
+                &self.session_id,
+                &self.agent_id,
+                &self.attachment_id,
+                prompt,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let reservation = self
+            .runtime
+            .owned
+            .reserve_remote_queued_prompt_steer(
+                &self.session_id,
+                &self.agent_id,
+                &self.attachment_id,
+                prompt,
+                &prepared,
+            )
+            .unwrap();
+        self.runtime
+            .owned
+            .mark_remote_queued_prompt_steer_uncertain(
+                &self.session_id,
+                &self.agent_id,
+                &prepared.prompt,
+                reservation,
+                prepared.target_active_prompt_id.clone(),
+                binding.active_worker_provider_run_id,
+                binding.worker_kernel_id,
+                binding.worker_machine_id,
+                binding.execution_lease_id,
+                binding.leased_agent_id,
+            )
+            .unwrap();
+        (prepared, reservation)
+    }
+}
+
+#[tokio::test]
+async fn r7_remote_notification_lineage_precedes_a_lost_steer_acknowledgement() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.complete(&workflow, "remote-first", "released");
+    rig.pass().await;
+    let room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let queued = rig
+        .runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&room, &rig.agent_id)
+        .1[0]
+        .id()
+        .to_owned();
+    let (prepared, reservation) = rig.remote_steer_intent(&queued);
+    // The worker accepted the send, but its acknowledgement is lost: do not call finish.
+    prepared.prompt.release_remote_steer(reservation);
+    assert!(prepared.prompt.remote_steer_outcome_uncertainty().is_some());
+    let invocation = rig
+        .runtime
+        .owned
+        .inherit_agent_notification_ancestry(Some(&rig.agent_id), "entry", None)
+        .unwrap()
+        .expect("the worker can invoke a workflow before its Steer acknowledgement");
+    let ancestry: Vec<String> =
+        serde_json::from_value(invocation.input["ancestry"].clone()).unwrap();
+    assert!(ancestry.contains(&format!("agent:{}", rig.agent_id)));
+    rig.complete_with_invocation(
+        &workflow,
+        "remote-loop",
+        "must be dropped",
+        Some(invocation),
+    );
+    rig.pass().await;
+    assert_eq!(
+        rig.queued_prompts().len(),
+        1,
+        "the causal loop cannot notify the same agent again"
+    );
+    assert_eq!(
+        rig.runtime
+            .owned
+            .durable_state_store
+            .agent_notification_ancestry(&rig.session_id, &prepared.target_active_prompt_id)
+            .unwrap()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
