@@ -1380,6 +1380,9 @@ export class KernelBrowserHost {
         if (Array.isArray(result?.tabs) && Number.isSafeInteger(result.generation)) {
           return { id: request.id, ok: true, result: redactBrowserState(result, this.protection.values) };
         }
+        // Card regions contain only the fixed protocol, observed origin and
+        // verification receipt. None of these fields are page text.
+        if (request.params?.op === 'popup_region') return { id: request.id, ok: true, result };
         if (!["screenshot", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }

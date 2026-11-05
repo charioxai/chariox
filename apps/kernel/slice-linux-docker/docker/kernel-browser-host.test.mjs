@@ -3089,3 +3089,14 @@ for (const word of ['Tabs', 'generation', 'ready', 'host-tab-protocol']) {
     }
   }));
 }
+
+for (const word of ['state', 'present', 'region', 'accepted', 'rejected', 'challenge_id', 'backend:42']) {
+  test(`MP-11 r10 popup_region keeps fixed schema when Vault contains ${word}`, () => using(async ({host}) => {
+    const region = {state:'present',region:{tab_id:'host-tab-1',ref:'backend:42',generation:1,document_id:'doc',origin:'https://example.com',rect:{x:1,y:2,width:30,height:40},viewport_width:800,viewport_height:600,verification:{challenge_id:'challenge_id',url:'https://example.com/verify',accepted_json_pointer:'/accepted'},verification_result:{challenge_id:'challenge_id',request_id:'r1',input_delivered:true,http_status:422,result:'rejected'}}};
+    await host.protect({unknown:false,values:[word],targets:[]});
+    host.request = async () => region;
+    const reply = await host.handle({id:1,method:'host.browser',params:{op:'popup_region'}});
+    assert.equal(reply.ok,true);
+    assert.deepEqual(reply.result,region);
+  }));
+}
