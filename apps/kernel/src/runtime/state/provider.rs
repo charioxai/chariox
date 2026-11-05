@@ -7,13 +7,10 @@ use super::owned::OwnedProviderRunExit;
 use super::*;
 
 impl KernelRuntimeOwnedState {
-    pub(super) fn reusable_native_tui_run_for_launch(
+    pub(super) fn reusable_provider_run_for_launch(
         &self,
         request: &crate::provider::LaunchProviderRequest,
     ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
-        if request.client_interface != crate::provider::ProviderClientInterface::NativeTui {
-            return Ok(None);
-        }
         let Some(agent_id) = request.agent_id.as_deref() else {
             return Ok(None);
         };
@@ -24,12 +21,11 @@ impl KernelRuntimeOwnedState {
             .filter(|run| {
                 run.session_id() == request.session_id
                     && run.agent_instance_id() == Some(agent_id)
-                    && run.client_interface() == crate::provider::ProviderClientInterface::NativeTui
-                    && matches!(
-                        run.state(),
-                        crate::provider::ProviderRunState::Starting
-                            | crate::provider::ProviderRunState::Running
-                    )
+                    && run.client_interface() == request.client_interface
+                    && (run.state() == crate::provider::ProviderRunState::Starting
+                        || (request.client_interface
+                            == crate::provider::ProviderClientInterface::NativeTui
+                            && run.state() == crate::provider::ProviderRunState::Running))
             })
             .max_by(|left, right| left.active_selection_cmp(right))
         else {
@@ -40,7 +36,13 @@ impl KernelRuntimeOwnedState {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: run.id().to_string(),
                 state: run.state(),
-                operation: "launch native TUI provider run with different parameters",
+                operation: if request.client_interface
+                    == crate::provider::ProviderClientInterface::NativeTui
+                {
+                    "launch native TUI provider run with different parameters"
+                } else {
+                    "replace starting provider run with different parameters"
+                },
             });
         }
 
@@ -148,6 +150,29 @@ impl KernelRuntimeOwnedState {
                     provider_credential_env,
                 })
             })
+    }
+
+    // A failed launch may have temporarily replaced another agent's pointer.
+    // A live predecessor needs its pointer restored, never a second resume.
+    pub(super) fn restore_provider_launch_predecessor(
+        &self,
+        failed: &crate::provider::RuntimeProviderRun,
+        previous_id: &str,
+    ) -> Result<Option<crate::provider::RuntimeProviderRun>, DaemonError> {
+        let (previous, _) = self.provider_run_for_activation(failed.session_id(), previous_id)?;
+        if previous.state() == crate::provider::ProviderRunState::Ended {
+            return Ok(None);
+        }
+        if previous.state() != crate::provider::ProviderRunState::Parked
+            || previous.agent_instance_id() != failed.agent_instance_id()
+        {
+            self.session_store
+                .set_active_provider_run(failed.session_id(), Some(previous.id().into()))?;
+            self.provider_run_projection.update(previous);
+            return Ok(None);
+        }
+        self.resume_provider_run_for_session(failed.session_id(), previous_id)
+            .map(Some)
     }
 
     pub(super) fn resume_provider_run_for_session(
