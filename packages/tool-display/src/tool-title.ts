@@ -10,7 +10,9 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
   const name = toolTitleCanonicalName(update.tool)
 
   if (patchFiles.length > 0) {
-    return `${verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
+    // A write shown as its diff still says it wrote the file: "Edited" read wrong for a file just created.
+    const wrote = TOOL_TITLE_WRITE.has(name)
+    return `${wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
   }
   const command = toolTitleCommand(input)
   if (command !== null || TOOL_TITLE_SHELL.has(name)) {
@@ -155,6 +157,8 @@ function toolTitleSimpleProgram(script: string) {
   const line = script.trim()
   return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
+
+const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact"])
 
 const TOOL_TITLE_SHELL = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand",

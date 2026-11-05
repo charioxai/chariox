@@ -130,7 +130,7 @@ test("formatToolDisplay unwraps live MCP envelopes for Chariox mutation output",
   })
   const patch = display.blocks.find((block) => block.kind === "patch")
 
-  assert.equal(display.title, "Edited src/app.ts (+1 −1)")
+  assert.equal(display.title, "Wrote src/app.ts (+1 −1)")
   assert.equal(display.summary, "Patched src/app.ts")
   assert.equal(patch?.kind, "patch")
   assert.deepEqual(patch?.files[0]?.previewLines, [
