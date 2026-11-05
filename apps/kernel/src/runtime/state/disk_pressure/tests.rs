@@ -103,3 +103,125 @@ fn just_under_the_floor_the_ask_does_not_say_ten_gigabytes_below_ten_gigabytes()
     let text = ask_text(&holding(), 10 * GIB - 40 * MIB, 10 * GIB);
     assert!(text.contains("10200 MB free, below the 10240 MB"), "{text}");
 }
+
+/// Retained launches share one agent's disk usage and must not consume the
+/// other holders' recipient slots. A later workspace selection is authoritative.
+#[tokio::test]
+async fn repeated_launches_do_not_duplicate_disk_pressure_recipients() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let state = crate::test_support::allocation::runtime_with_rooms(3);
+    let current = crate::test_support::TestWorktree::new("disk-pressure-current");
+    let old = crate::test_support::TestWorktree::new("disk-pressure-old");
+    let rooms = state.owned.session_store.list_all_sessions();
+    let mut agents = Vec::new();
+    for (index, room) in rooms.iter().enumerate() {
+        let agent = state
+            .owned
+            .agent_store
+            .get_session_agents(room.id())
+            .pop()
+            .unwrap();
+        state
+            .owned
+            .agent_store
+            .update_agent_config(
+                agent.id(),
+                None,
+                None,
+                None,
+                Some(Some(current.path().display().to_string())),
+            )
+            .unwrap();
+        let environment = crate::agent_temp::environment(room.id(), agent.id());
+        let temp = PathBuf::from(&environment[0].1);
+        let mut file = std::fs::File::create(temp.join("rebuildable")).unwrap();
+        use std::io::Write;
+        let chunk = vec![1; MIB as usize];
+        for _ in 0..(96 - index as u64 * 8) {
+            file.write_all(&chunk).unwrap();
+        }
+        // Three past launches for the biggest holder, one for each other holder.
+        for launch in 0..if index == 0 { 3 } else { 1 } {
+            let request = crate::provider::LaunchProviderRequest::new(
+                room.id(),
+                "codex",
+                "codex",
+                "default",
+                "test",
+            )
+            .with_agent_id(agent.id());
+            let mut run = crate::provider::RuntimeProviderRun::new(
+                format!("run-{index}-{launch}"),
+                &request,
+                crate::provider::ProviderLaunchResult {
+                    endpoint_mode: crate::provider::AgentEndpointMode::External,
+                    process_label: "retained-launch".into(),
+                    pty_target: None,
+                    pty_program: None,
+                    pty_args: Vec::new(),
+                    pty_env: Default::default(),
+                    pty_env_remove: Vec::new(),
+                    working_directory: Some(old.path().to_path_buf()),
+                    structured_endpoint: None,
+                },
+            );
+            run.mark_ended();
+            state.owned.provider_store.write().insert_run_for_test(run);
+        }
+        // Keep the cleanup turn queued, as for an agent doing other work.
+        let busy = crate::session::PromptQueueItem::new(
+            format!("busy-{index}"),
+            "test",
+            agent.id(),
+            "current work",
+            crate::session::PromptStatus::Running,
+        );
+        state
+            .owned
+            .prompt_state_owner
+            .submit_prepared_prompt(room, busy, false)
+            .unwrap();
+        agents.push(agent.id().to_string());
+    }
+    assert_eq!(state.owned.provider_store.list_runs().len(), 5);
+    // Only the volume measurement is simulated; recipients and disk scans use
+    // the real stores and bounded files, without filling the host's disk.
+    let pressured = state.pressured_agents(|_| Some((1, GIB, 10 * GIB)));
+    let recipients = pressured
+        .iter()
+        .map(|(holding, _, _)| holding.agent_id.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        recipients, agents,
+        "one cleanup turn per holder, in size order"
+    );
+    for (holding, _, _) in &pressured {
+        assert_eq!(holding.workspace.as_deref(), Some(current.path()));
+    }
+    let overlapping = state.pressured_agents(|_| Some((1, GIB, 10 * GIB)));
+    state.ask_pressured_agents(pressured).await;
+    state.ask_pressured_agents(overlapping).await;
+    assert!(state
+        .pressured_agents(|_| Some((1, GIB, 10 * GIB)))
+        .is_empty());
+    for room in &rooms {
+        let agent = state
+            .owned
+            .agent_store
+            .get_session_agents(room.id())
+            .pop()
+            .unwrap();
+        let session = state.owned.session_store.get_session(room.id()).unwrap();
+        let (_, queued) = state
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, agent.id());
+        assert_eq!(
+            queued.len(),
+            1,
+            "one cleanup turn per agent, including overlapping passes"
+        );
+    }
+}

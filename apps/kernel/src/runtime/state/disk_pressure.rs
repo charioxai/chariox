@@ -25,7 +25,7 @@ const FOLDERS_NAMED: usize = 5;
 struct Pace {
     checked: Option<Instant>,
     trimmed: Option<Instant>,
-    asked: BTreeMap<String, Instant>,
+    asked: BTreeMap<(String, String), Instant>,
 }
 
 static PACE: Mutex<Pace> = Mutex::new(Pace {
@@ -165,7 +165,10 @@ impl KernelRuntimeState {
             return;
         }
         let state = self.clone();
-        let Ok(pressured) = tokio::task::spawn_blocking(move || state.pressured_agents()).await
+        let Ok(pressured) = tokio::task::spawn_blocking(move || {
+            state.pressured_agents(process_resources::volume_floor)
+        })
+        .await
         else {
             return;
         };
@@ -177,11 +180,23 @@ impl KernelRuntimeState {
         if trimmed.is_ok_and(|trimmed| trimmed.bytes > 0) {
             return;
         }
+        self.ask_pressured_agents(pressured).await;
+    }
+
+    async fn ask_pressured_agents(&self, pressured: Vec<(Holding, u64, u64)>) {
         for (holding, free, floor) in pressured {
-            PACE.lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .asked
-                .insert(holding.agent_id.clone(), Instant::now());
+            {
+                let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
+                let key = (holding.session_id.clone(), holding.agent_id.clone());
+                if pace
+                    .asked
+                    .get(&key)
+                    .is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER)
+                {
+                    continue;
+                }
+                pace.asked.insert(key, Instant::now());
+            }
             let text = ask_text(&holding, free, floor);
             if let Err(error) = self
                 .ask_agent(&holding.session_id, &holding.agent_id, text)
@@ -202,52 +217,62 @@ impl KernelRuntimeState {
 
     /// The biggest holders on a volume below its floor that have not been
     /// asked lately, biggest first, with the volume's free bytes and floor.
-    fn pressured_agents(&self) -> Vec<(Holding, u64, u64)> {
+    fn pressured_agents(
+        &self,
+        volume_floor: impl Fn(&std::path::Path) -> Option<(u64, u64, u64)>,
+    ) -> Vec<(Holding, u64, u64)> {
         let mut found = Vec::new();
         let mut volumes = BTreeMap::<u64, (u64, u64)>::new();
         let mut sessions = BTreeMap::<String, Vec<SessionProcess>>::new();
-        for run in self.owned.provider_store.list_runs() {
-            let Some(agent) = run.agent_instance_id() else {
+        // Processes and scratch belong to the agent even after a run ends.
+        // Retained launches must not multiply that agent's holding.
+        for agent in self.owned.agent_store.list_agents() {
+            if agent.archived() || agent.remote_execution().is_some() {
+                continue;
+            }
+            let Ok(session) = self.owned.session_store.get_session(agent.session_id()) else {
                 continue;
             };
-            let temp = crate::agent_temp::dir(run.session_id(), agent);
-            let workspace = run.working_directory().cloned();
+            let temp = crate::agent_temp::dir(session.id(), agent.id());
+            let workspace = Some(PathBuf::from(
+                agent.worktree_id().unwrap_or(session.worktree_id()),
+            ));
             let pressure = [workspace.as_deref(), temp.as_deref()]
                 .into_iter()
                 .flatten()
-                .filter_map(process_resources::volume_floor)
+                .filter_map(&volume_floor)
                 .find(|(_, free, floor)| free < floor);
             let Some((volume, free, floor)) = pressure else {
                 continue;
             };
             volumes.insert(volume, (free, floor));
-            let processes = sessions
-                .entry(run.session_id().to_string())
-                .or_insert_with(|| {
-                    process_resources::for_session(
-                        run.session_id(),
-                        &self.owned.provider_store,
-                        &self.owned.room_terminals,
-                    )
-                });
+            let processes = sessions.entry(session.id().to_string()).or_insert_with(|| {
+                process_resources::for_session(
+                    session.id(),
+                    &self.owned.provider_store,
+                    &self.owned.room_terminals,
+                )
+            });
             let processes = processes
                 .iter()
-                .filter(|row| matches!(&row.owner, SessionProcessOwner::Agent(id) if id == agent))
+                .filter(
+                    |row| matches!(&row.owner, SessionProcessOwner::Agent(id) if id == agent.id()),
+                )
                 .cloned()
                 .collect();
             found.push((
                 volume,
-                run.session_id().to_string(),
-                agent.to_string(),
+                session.id().to_string(),
+                agent.id().to_string(),
                 processes,
                 temp,
                 workspace,
             ));
         }
         let pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
-        found.retain(|(_, _, agent, ..)| {
+        found.retain(|(_, session, agent, ..)| {
             pace.asked
-                .get(agent)
+                .get(&(session.clone(), agent.clone()))
                 .is_none_or(|at| at.elapsed() >= ASK_AGAIN_AFTER)
         });
         // Sizes first, for everyone on a full volume; the folder listings only for those asked.
