@@ -731,7 +731,7 @@ impl KernelBrowserHost {
         if method == "host.browser"
             && matches!(params["op"].as_str(), Some("dialog" | "cancel_download"))
         {
-            let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }

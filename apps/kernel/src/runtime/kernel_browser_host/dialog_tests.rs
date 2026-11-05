@@ -4,6 +4,133 @@ use serde_json::json;
 use std::time::Instant;
 
 #[test]
+fn mp10_dialog_answer_is_admitted_directly_after_orphaned_takeover_expires() {
+    assert_admitted_after_orphaned_takeover_expires(json!({
+        "op":"dialog", "dialog_id":"current-dialog", "action":"accept"
+    }));
+}
+
+#[test]
+fn mp10_download_cancellation_is_admitted_directly_after_orphaned_takeover_expires() {
+    assert_admitted_after_orphaned_takeover_expires(json!({
+        "op":"cancel_download", "download_id":"download-a"
+    }));
+}
+
+fn assert_admitted_after_orphaned_takeover_expires(mut params: Value) {
+    let root = crate::test_support::TestWorktree::new("mp10-dialog-orphan-expiry");
+    let script = root.path().join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+state='{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}'
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"method":"host.browser"'*)
+  printf '%s\n' "$request" >> "$root/requests"
+  printf '{"id":%s,"ok":true,"result":%s}\n' "$id" "$state" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.path().to_path_buf());
+    host.install_fixture_backend("alice", &script, root.path());
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    host.set_focus("alice", Some("agent"));
+    host.load("alice", "agent").unwrap();
+    let admission = host.admit("alice", "agent").unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::BrowserTab {
+            tab_id: "host-tab-a".into(),
+        },
+        false,
+    )
+    .unwrap();
+    let viewer = host.lease_terminal("alice", "terminal:human");
+    host.request_takeover(
+        "alice",
+        EnvironmentActor::new("terminal:human", EnvironmentActorKind::Human, "Human"),
+        "host-tab-a",
+        1,
+    )
+    .unwrap();
+    params["tab_id"] = "host-tab-a".into();
+    params["generation"] = 1.into();
+    params["document_id"] = "d".into();
+    let request = || {
+        host.protected_request_admitted(
+            "alice",
+            Some(&admission),
+            "host.browser",
+            params.clone(),
+            policy.clone(),
+        )
+    };
+    let requests_before = std::fs::read_to_string(root.path().join("requests")).unwrap();
+    let active = request();
+    drop(viewer);
+    let recent_orphan = request();
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("requests")).unwrap(),
+        requests_before,
+        "takeover refusals must not reach the controller"
+    );
+    // Advance only the deadline: no state read or reclamation before the request under test.
+    host.actor_model("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .elapse_orphaned_takeovers();
+    let expired = request();
+    let requests_after = std::fs::read_to_string(root.path().join("requests")).unwrap();
+    host.shutdown().unwrap();
+    for refused in [active, recent_orphan] {
+        assert!(
+            matches!(
+                refused,
+                Err(crate::error::HostFailure::Refused(
+                    crate::error::UserDomainRefusalReason::NotGranted
+                ))
+            ),
+            "live takeover or unexpired orphan must fence the agent: {refused:?}"
+        );
+    }
+    assert!(
+        expired.is_ok(),
+        "{} must reclaim the expired takeover before admission: {expired:?}",
+        params["op"]
+    );
+    let sent: Vec<Value> = requests_after
+        .lines()
+        .skip(requests_before.lines().count())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        sent.len(),
+        1,
+        "the operation must reach the controller directly"
+    );
+    assert_eq!(sent[0]["params"]["op"], params["op"]);
+}
+
+#[test]
 fn dialog_answer_does_not_wait_for_the_page_action_lane() {
     let root = crate::test_support::TestWorktree::new("browser-dialog-lane");
     let script = root.path().join("controller.sh");

@@ -266,7 +266,8 @@ impl KernelBrowserActors {
     }
     /// MP-08/MP-11: dialog answers cannot reserve the lane held by the action
     /// that opened them, but still honor both active and pending human takeover.
-    pub(crate) fn check_dialog_takeover(&self, host_tab: &str) -> Result<(), String> {
+    pub(crate) fn check_dialog_takeover(&mut self, host_tab: &str) -> Result<(), String> {
+        self.reclaim_lapsed_takeovers(Instant::now());
         let tab = InputTarget::BrowserTab(self.tab(host_tab)?);
         let targets = [tab, InputTarget::Desktop];
         if targets
@@ -757,6 +758,12 @@ impl KernelBrowserActors {
         for actor in lapsed {
             self.ledger.release_actor_input(&actor);
             self.forget_orphan(&actor);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn elapse_orphaned_takeovers(&mut self) {
+        for deadline in self.orphaned_takeovers.values_mut() {
+            *deadline = Instant::now();
         }
     }
     fn forget_orphan(&mut self, actor_id: &str) {
