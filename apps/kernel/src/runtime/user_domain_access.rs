@@ -233,6 +233,7 @@ impl UserDomainAccess {
     /// MP-08/MP-11: an owner-requested prompt grants the agent its own grant
     /// without focus. Nothing is claimed; only tabs it opens join the grant.
     /// An existing live grant keeps its cause, resources and expiry.
+    #[cfg(test)]
     pub(crate) fn request(
         &mut self,
         user: &str,
