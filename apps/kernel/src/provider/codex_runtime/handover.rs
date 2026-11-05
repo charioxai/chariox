@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::provider::codex_client::continue_codex_socket;
 use crate::provider::CodexNotification;
 
-use super::transcript::CodexTextTranscriptState;
+use super::transcript::{CodexTextTranscriptState, CodexToolTranscriptState};
 use super::turn::CodexTurnTracker;
 use super::CodexRuntimeState;
 
@@ -30,6 +30,9 @@ pub(crate) struct CodexHandover {
     // Notifications already read from the connection, not yet applied.
     buffered_notifications: Vec<CodexNotification>,
     text_items: BTreeMap<String, CodexTextTranscriptState>,
+    // Running tools keep their input, the output so far and an unfinished
+    // UTF-8 character: the next delta extends them instead of starting over.
+    tool_items: BTreeMap<String, CodexToolTranscriptState>,
     // The completion evidence already applied: a turn whose last item came
     // before the swap is settled from it when no `turn/completed` follows.
     turn_tracker: CodexTurnTracker,
@@ -78,6 +81,7 @@ pub(crate) fn hand_over_codex_turn(
     let next_request_id = state.next_request_id;
     let buffered_notifications = std::mem::take(&mut state.buffered_notifications);
     let text_items = std::mem::take(&mut state.text_items);
+    let tool_items = std::mem::take(&mut state.tool_items);
     let turn_tracker = std::mem::take(&mut state.turn_tracker);
     // This program's descriptor closes; the connection stays open in `tcp`.
     drop(state);
@@ -90,6 +94,7 @@ pub(crate) fn hand_over_codex_turn(
         next_request_id,
         buffered_notifications,
         text_items,
+        tool_items,
         turn_tracker,
     })
 }
@@ -100,6 +105,7 @@ pub(super) struct AdoptedTurn {
     turn_id: String,
     buffered_notifications: Vec<CodexNotification>,
     text_items: BTreeMap<String, CodexTextTranscriptState>,
+    tool_items: BTreeMap<String, CodexToolTranscriptState>,
     turn_tracker: CodexTurnTracker,
 }
 
@@ -116,6 +122,7 @@ pub(super) fn adopt(turn: CodexHandover) -> CodexRuntimeState {
         turn_id: turn.turn_id,
         buffered_notifications: turn.buffered_notifications,
         text_items: turn.text_items,
+        tool_items: turn.tool_items,
         turn_tracker: turn.turn_tracker,
     });
     state
@@ -128,6 +135,7 @@ pub(super) fn continue_turn(state: &mut CodexRuntimeState, turn: AdoptedTurn) {
     state.active_turn_id = Some(turn.turn_id);
     state.buffered_notifications = turn.buffered_notifications;
     state.text_items = turn.text_items;
+    state.tool_items = turn.tool_items;
     // Everything the turn streamed meanwhile waits in the connection: a turn
     // that ended during the swap must not settle before it is read. Only
     // completion evidence, handed over or new, asks the server again.
@@ -248,5 +256,108 @@ mod tests {
         );
         drop(adopted);
         server.join().unwrap();
+    }
+
+    /// A tool still running at the swap keeps its command, the output so far
+    /// and the half of a character it had read: the next delta extends them.
+    #[test]
+    fn a_running_tool_continues_its_transcript_after_the_swap() {
+        use base64::Engine as _;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = accept(stream).unwrap();
+            while socket.read().is_ok() {}
+        });
+        let (socket, ()) = test_codex_connect(&endpoint).unwrap();
+        let ProviderRuntimeBinding::Codex(binding) =
+            CodexRuntimeState::active_turn_binding_fixture(endpoint, socket)
+        else {
+            unreachable!("a Codex fixture")
+        };
+        let mut state = binding.state;
+        let exec_delta = |bytes: &[u8]| CodexNotification::ExecCommandOutputDelta {
+            call_id: "cmd-1".into(),
+            chunk: base64::engine::general_purpose::STANDARD.encode(bytes),
+        };
+        let mut chunks = Vec::new();
+        for notification in [
+            CodexNotification::ItemStarted {
+                item: serde_json::json!({
+                    "type": "commandExecution",
+                    "id": "cmd-1",
+                    "command": "ls -la",
+                    "status": "inProgress",
+                }),
+            },
+            CodexNotification::McpToolCallProgress {
+                item_id: "mcp-1".into(),
+                message: "step one".into(),
+            },
+            // "é" is 0xC3 0xA9: the swap falls between its bytes.
+            exec_delta(b"alpha \xc3"),
+        ] {
+            apply_to_state(&mut state, notification, &mut chunks);
+        }
+
+        let handover =
+            hand_over_codex_turn(state).unwrap_or_else(|_| panic!("a running turn is handed over"));
+        let handover: CodexHandover =
+            serde_json::from_slice(&serde_json::to_vec(&handover).unwrap()).unwrap();
+        let mut adopted = adopt(handover);
+        let turn = adopted.adopted_turn.take().unwrap();
+        continue_turn(&mut adopted, turn);
+
+        chunks.clear();
+        for notification in [
+            exec_delta(b"\xa9 beta\n"),
+            CodexNotification::McpToolCallProgress {
+                item_id: "mcp-1".into(),
+                message: "step two".into(),
+            },
+        ] {
+            apply_to_state(&mut adopted, notification, &mut chunks);
+        }
+
+        let snapshot = |key: &str| -> serde_json::Value {
+            let chunk = chunks
+                .iter()
+                .rev()
+                .find(|chunk| chunk.merge_key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("no update for {key}: {chunks:?}"));
+            serde_json::from_slice(&chunk.bytes).unwrap()
+        };
+        let command = snapshot("cmd-1");
+        assert_eq!(command["output"], "alpha \u{e9} beta");
+        assert_eq!(command["input"]["command"], "ls -la", "{command}");
+        let progress = snapshot("mcp-1").to_string();
+        assert!(
+            progress.contains("step one") && progress.contains("step two"),
+            "progress lost across the swap: {progress}"
+        );
+        drop(adopted);
+        server.join().unwrap();
+    }
+
+    fn apply_to_state(
+        state: &mut CodexRuntimeState,
+        notification: CodexNotification,
+        chunks: &mut Vec<super::super::CodexOutputChunk>,
+    ) {
+        super::super::events::apply_notification(
+            notification,
+            &mut state.active_turn_id,
+            &mut state.turn_tracker,
+            &mut state.text_items,
+            &mut state.tool_items,
+            chunks,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut None,
+        );
     }
 }
