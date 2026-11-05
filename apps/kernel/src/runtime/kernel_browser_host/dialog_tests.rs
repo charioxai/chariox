@@ -105,10 +105,8 @@ done
     for refused in [active, recent_orphan] {
         assert!(
             matches!(
-                refused,
-                Err(crate::error::HostFailure::Refused(
-                    crate::error::UserDomainRefusalReason::NotGranted
-                ))
+                &refused,
+                Err(crate::error::HostFailure::Other(reason)) if reason.contains("human_takeover")
             ),
             "live takeover or unexpired orphan must fence the agent: {refused:?}"
         );
