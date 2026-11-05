@@ -290,7 +290,9 @@ function toolTitleCalledName(update: ToolTranscriptUpdate) {
   const raw = typeof update.tool === "string" ? update.tool.trim() : ""
   const mcp = raw.match(/^mcp__(.+?)__(.+)$/)
   if (mcp) {
-    return `${toolTitleWords(mcp[1]!)}.${toolTitleWords(mcp[2]!)}`
+    // A server's tools often repeat its name ("mcp__chariox__chariox_request_popup"): the label names it once.
+    const tool = mcp[2]!.startsWith(`${mcp[1]!}_`) ? mcp[2]!.slice(mcp[1]!.length + 1) : mcp[2]!
+    return `${toolTitleWords(mcp[1]!)}.${toolTitleWords(tool)}`
   }
   // Codex MCP calls carry the server in `title`.
   const server = typeof update.title === "string" && /^[\w.-]+$/.test(update.title.trim()) ? update.title.trim() : null

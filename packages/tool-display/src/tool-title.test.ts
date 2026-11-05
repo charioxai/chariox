@@ -29,6 +29,7 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "c8", tool: "WebSearch", status: "completed", input: { query: "chariox" } }, "Searched the web for chariox"],
     [{ id: "c9", tool: "TodoWrite", status: "completed", input: { todos: [] } }, "Updated plan"],
     [{ id: "c10", tool: "mcp__github__create_pull_request", status: "completed", input: {} }, "Called github.create pull request"],
+    [{ id: "c11", tool: "mcp__chariox__chariox_request_popup", status: "completed", input: {} }, "Called chariox.request popup"],
     [{ id: "c11", tool: "Task", status: "running", input: { description: "Audit the pane", prompt: "..." } }, "Delegating Audit the pane"],
     // OpenCode
     [{ id: "o1", tool: "read", status: "completed", input: { filePath: "/w/README.md" } }, "Read /w/README.md"],
