@@ -414,13 +414,16 @@ impl ProcessTree {
         snapshot.started_at.saturating_duration_since(*since) >= NOTHING_LEFT_GRACE
     }
 
+    /// Stops the target and everything it owns, as the process table reads now:
+    /// the cached table can predate a fork. Membership is read again after each
+    /// signal round, and the stop stays unresolved when a fresh read fails.
     pub fn stop(
         &mut self,
         process_id: Option<&str>,
         before_root_stop: impl FnOnce(),
         force_domain: impl FnOnce(),
     ) -> Result<Vec<String>, String> {
-        let rows = process_rows()?;
+        let mut rows = fresh_rows()?;
         self.observe(&rows)?;
         let target = match process_id {
             None => self.root,
@@ -437,63 +440,59 @@ impl ProcessTree {
         if self.owned.is_empty() || (target != self.root && !self.owned.contains_key(&target)) {
             return Err("the process already ended; refresh Health".into());
         }
-        let mut selected = if target == self.root {
+        let mut selected: std::collections::BTreeSet<u32> = if target == self.root {
             self.owned.keys().copied().collect()
         } else {
             std::collections::BTreeSet::from([target])
         };
-        loop {
-            let before = selected.len();
-            for row in rows.iter() {
-                if selected.contains(&row.parent) && self.owned.contains_key(&row.pid) {
-                    selected.insert(row.pid);
-                }
-            }
-            if selected.len() == before {
-                break;
-            }
-        }
         if target == self.root {
             before_root_stop();
         }
-        let identities = selected
-            .iter()
-            .filter_map(|pid| self.owned.get(pid).map(|identity| (*pid, identity.clone())))
-            .collect::<Vec<_>>();
-        #[cfg(unix)]
-        for (pid, identity) in &identities {
-            if *pid > 1 && *pid <= i32::MAX as u32 && same_process(*pid, identity) {
-                let _ = unsafe { libc::kill(*pid as i32, libc::SIGTERM) };
+        let mut identities = BTreeMap::<u32, ProcessIdentity>::new();
+        let mut force_domain = Some(force_domain);
+        for signal in [libc::SIGTERM, libc::SIGKILL] {
+            if signal == libc::SIGKILL && target == self.root {
+                if let Some(force_domain) = force_domain.take() {
+                    force_domain();
+                }
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            let mut signalled = std::collections::BTreeSet::new();
+            loop {
+                self.select_descendants(&rows, &mut selected);
+                let fresh = self.signal_unsignalled(signal, &selected, &mut signalled);
+                identities.extend(fresh);
+                let running = identities.iter().any(|(pid, identity)| {
+                    same_process(*pid, identity) || (*pid == self.root && !root_waitable(*pid))
+                });
+                // A member signalled this round may have forked before it
+                // died; only a fresh read shows that child.
+                if std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                rows = fresh_rows()?;
+                self.observe(&rows)?;
+                if !running {
+                    let mut grown = selected.clone();
+                    self.select_descendants(&rows, &mut grown);
+                    if grown == selected {
+                        break;
+                    }
+                }
             }
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline
-            && identities
-                .iter()
-                .any(|(pid, identity)| same_process(*pid, identity))
-        {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        if target == self.root {
-            force_domain();
-        }
-        #[cfg(unix)]
-        for (pid, identity) in &identities {
-            if *pid > 1 && *pid <= i32::MAX as u32 && same_process(*pid, identity) {
-                let _ = unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
-            }
-        }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
-        while std::time::Instant::now() < deadline
-            && identities.iter().any(|(pid, identity)| {
-                same_process(*pid, identity) || (*pid == self.root && !root_waitable(*pid))
-            })
-        {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        if identities.iter().any(|(pid, identity)| {
+        rows = fresh_rows()?;
+        self.observe(&rows)?;
+        self.select_descendants(&rows, &mut selected);
+        let survivors = selected.iter().any(|pid| {
+            self.owned
+                .get(pid)
+                .is_some_and(|identity| same_process(*pid, identity))
+        }) || identities.iter().any(|(pid, identity)| {
             same_process(*pid, identity) || (*pid == self.root && !root_waitable(*pid))
-        }) {
+        });
+        if survivors {
             return Err(
                 "some owned processes did not exit after TERM and KILL; refresh Health and retry"
                     .into(),
@@ -503,6 +502,46 @@ impl ProcessTree {
             .iter()
             .filter_map(|pid| self.ids.get(pid).cloned())
             .collect())
+    }
+
+    /// Adds every owned process whose parent is already selected.
+    fn select_descendants(&self, rows: &[Row], selected: &mut std::collections::BTreeSet<u32>) {
+        loop {
+            let before = selected.len();
+            for row in rows {
+                if selected.contains(&row.parent) && self.owned.contains_key(&row.pid) {
+                    selected.insert(row.pid);
+                }
+            }
+            if selected.len() == before {
+                break;
+            }
+        }
+    }
+
+    /// Signals each selected process once per phase, only while it is still the
+    /// process this tree recorded. Returns the identities it signalled.
+    fn signal_unsignalled(
+        &self,
+        signal: i32,
+        selected: &std::collections::BTreeSet<u32>,
+        signalled: &mut std::collections::BTreeSet<u32>,
+    ) -> Vec<(u32, ProcessIdentity)> {
+        let mut sent = Vec::new();
+        for pid in selected {
+            let Some(identity) = self.owned.get(pid) else {
+                continue;
+            };
+            if !signalled.insert(*pid) {
+                continue;
+            }
+            #[cfg(unix)]
+            if *pid > 1 && *pid <= i32::MAX as u32 && same_process(*pid, identity) {
+                let _ = unsafe { libc::kill(*pid as i32, signal) };
+            }
+            sent.push((*pid, identity.clone()));
+        }
+        sent
     }
 
     /// Resident memory and processes per command: the root's own process, and
@@ -913,6 +952,15 @@ thread_local! {
     static TEST_SAMPLER: std::cell::RefCell<Option<Sampler>> = const { std::cell::RefCell::new(None) };
 }
 
+/// A process table read now, within `ps`'s own deadline, never the cached one.
+fn fresh_rows() -> Result<Vec<Row>, String> {
+    read_process_rows().map_err(|error| {
+        format!(
+            "the current processes could not be read ({error}); the process may still be running, retry"
+        )
+    })
+}
+
 pub(super) fn process_rows() -> Result<std::sync::Arc<Vec<Row>>, SamplingError> {
     #[cfg(test)]
     if let Some(errno) = ps_failure::injected() {
@@ -1278,5 +1326,101 @@ mod snapshot_stall_tests {
         drop(sampler);
         assert!(!crate::runtime::process_health::process_running(pid));
         assert!(timed_out, "stalled ps did not hit its process deadline");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod stop_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+    use crate::runtime::bounded_process::BoundedChildExt as _;
+    use std::io::{BufRead, Write};
+
+    /// A shell that forks `sleep` only after it is told to, so a process table
+    /// read before that cannot contain the child.
+    fn spawn_forking_shell() -> (
+        std::process::Child,
+        std::process::ChildStdin,
+        std::io::BufReader<std::process::ChildStdout>,
+    ) {
+        let mut shell = std::process::Command::new("/bin/sh")
+            .args(["-c", "read go; sleep 300 & echo $!; wait"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = shell.stdin.take().unwrap();
+        let output = std::io::BufReader::new(shell.stdout.take().unwrap());
+        (shell, input, output)
+    }
+
+    fn fork_child(input: &mut std::process::ChildStdin, output: &mut impl BufRead) -> u32 {
+        input.write_all(b"go\n").unwrap();
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        line.trim().parse().unwrap()
+    }
+
+    fn kill_if_still_there(pid: u32, identity: &ProcessIdentity) {
+        if pid > 1 && pid <= i32::MAX as u32 && same_process(pid, identity) {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+    }
+
+    #[test]
+    fn stop_ends_a_child_forked_after_the_cached_table() {
+        let (mut shell, mut input, mut output) = spawn_forking_shell();
+        let mut tree = ProcessTree::new(shell.id());
+        // The sampler's retained table predates the fork and stays that way.
+        let stale = read_process_rows().unwrap();
+        let mut stale = Some(stale);
+        let sampler = Sampler::new(move || match stale.take() {
+            Some(rows) => Ok(rows),
+            None => Err(SamplingError::Short(libc::EAGAIN)),
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sampler.rows().is_err() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        TEST_SAMPLER.with(|slot| *slot.borrow_mut() = Some(sampler));
+        let child = fork_child(&mut input, &mut output);
+        let identity = inspect(child).unwrap().0;
+        assert!(
+            !process_rows().unwrap().iter().any(|row| row.pid == child),
+            "the cached table must not know the child"
+        );
+        let stopped = tree.stop(None, || {}, || {});
+        let survived = same_process(child, &identity);
+        kill_if_still_there(child, &identity);
+        TEST_SAMPLER.with(|slot| slot.borrow_mut().take());
+        let _ = shell.kill();
+        let _ = shell.bounded_wait();
+        assert!(stopped.is_ok(), "{stopped:?}");
+        assert!(!survived, "Stop must end the child the cached table missed");
+    }
+
+    #[test]
+    fn stop_stays_unresolved_when_the_current_processes_cannot_be_read() {
+        let (mut shell, mut input, mut output) = spawn_forking_shell();
+        let mut tree = ProcessTree::new(shell.id());
+        let child = fork_child(&mut input, &mut output);
+        let identity = inspect(child).unwrap().0;
+        tree.observe(&read_process_rows().unwrap()).unwrap();
+        ps_failure::set(Some(libc::EMFILE));
+        let stopped = tree.stop(None, || {}, || {});
+        ps_failure::set(None);
+        let still_running = same_process(child, &identity) && shell.try_wait().unwrap().is_none();
+        kill_if_still_there(child, &identity);
+        let _ = shell.kill();
+        let _ = shell.bounded_wait();
+        let error = stopped.expect_err("an unobservable tree is not stopped");
+        assert!(error.contains("may still be running"), "{error}");
+        assert!(
+            still_running,
+            "nothing is signalled without a current table"
+        );
     }
 }
