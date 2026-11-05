@@ -1645,6 +1645,33 @@ source/local evidence only.
 | Malicious page | pointer overlay, tool references, downloads, and clipboard remain bounded |
 | Room access and capability grants | Room agents receive Browser and Computer tools by membership; a foreign Room is denied; vault and file tools retain their separate grants |
 
+### MP-08 / MP-09 / MP-10 / MP-11 relay renewal and early events
+
+Run a real kernel, relay and built Web/TUI clients with the issuer's short
+runtime-token lifetime. Keep Room requests and event subscriptions active across
+at least three renewals. Record client request gaps, socket generations and
+renewal times; normal renewal must preserve the socket and Room event delivery.
+Force an expired or rejected registration, then verify automatic renewal and
+reconnect with bounded backoff. Separately stall a socket write: queued
+reauthentication is not proof of delivery, and the writer must release the
+connector so it can recover. Retain a fail-first run on the base source.
+
+Delay subscription registration until after two encrypted events arrive, then
+register and immediately send a third. All three must reach the owner in order,
+including when they precede the subscribe acknowledgement. Retired subscription
+traffic must not produce console warnings; waits for unknown ids must have a
+bounded duration and capacity. Repeat Room opening in the real built Web client
+at DPR 1 and 2 and retain screenshots and sanitized console captures.
+
+Repeat with two independent browser clients and reload, then stop the kernel
+immediately after a fresh Cloud presence heartbeat. Start another kernel against
+the same hosted stack and repeat both clients and reload. The stopped kernel
+must be OFFLINE before shutdown completes, receive no browser bootstrap or
+socket admission, and leave no console warning/error or bootstrap HTTP failure.
+The final presence intent must drain behind any in-flight publish, with a bounded
+shutdown deadline. When switching relays, connection status must belong to the
+selected relay rather than a previous socket.
+
 ### Resiliency and failure injection
 
 Resiliency is a release gate, not an incidental result of happy-path tests.

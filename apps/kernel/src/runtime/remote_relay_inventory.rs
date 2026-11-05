@@ -132,7 +132,13 @@ pub(crate) async fn projected_relay_status(
     config_projection: DaemonConfigProjectionStore,
 ) -> RelayStatus {
     let config = config_projection.snapshot();
-    let connected = relay_state.read().await.connected();
+    // A configuration switch does not move the existing socket to the new relay.
+    let connected = {
+        let state = relay_state.read().await;
+        state.connected()
+            && config.relay_url.is_some()
+            && state.connected_relay_url() == config.relay_url
+    };
     RelayStatus {
         local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         runtime_process_identity: crate::runtime::kernel_process_identity::current(),
@@ -194,6 +200,35 @@ async fn request_remote_relay_inventory_projection_refresh(
 mod tests {
     use super::*;
     use crate::config::DaemonConfig;
+
+    #[tokio::test]
+    async fn relay_status_does_not_admit_the_previous_relay_after_a_switch() {
+        let previous_url = "wss://previous-relay.example";
+        let selected_url = "wss://selected-relay.example";
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(selected_url.into());
+        config.relay_token = Some("selected-relay-token".into());
+        let mut state = RelayClientState::default();
+        let (outgoing, _priority, _events) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        state.test_set_connected_sender(outgoing.clone(), previous_url);
+        let state = Arc::new(RwLock::new(state));
+        let projection = DaemonConfigProjectionStore::new(config);
+
+        let pending = projected_relay_status(state.clone(), projection.clone()).await;
+        assert_eq!(pending.relay_url.as_deref(), Some(selected_url));
+        assert!(pending.configured);
+        assert!(
+            !pending.connected,
+            "the previous relay cannot admit a browser to the selected relay"
+        );
+
+        state
+            .write()
+            .await
+            .test_set_connected_sender(outgoing, selected_url);
+        assert!(projected_relay_status(state, projection).await.connected);
+    }
 
     #[tokio::test]
     async fn relay_status_projects_config_and_connection_state() {
