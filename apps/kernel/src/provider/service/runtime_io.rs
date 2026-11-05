@@ -27,6 +27,17 @@ pub(crate) enum ProviderRuntimeBinding {
 }
 
 impl ProviderProcessService {
+    pub(crate) fn publish_claude_plan(
+        &self,
+        run: RuntimeProviderRun,
+        prompt_id: String,
+        tool_use_id: Option<String>,
+        plan: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
+        self.run_actor_mailbox
+            .publish_claude_plan(run, prompt_id, tool_use_id, plan)
+    }
+
     pub(crate) fn structured_submit_epoch(&self) -> u64 {
         self.run_actor_mailbox.submit_epoch
     }
@@ -504,6 +515,7 @@ impl ProviderProcessService {
     ) {
         self.run_actor_mailbox
             .push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
+                prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
                 provider_run_id,
                 result,
                 settlement_retry_attempt: 0,

@@ -151,17 +151,6 @@ fn append_claude_execution_config_args(
         }
         (AgentExecutionMode::Build, AgentPermissionLevel::Required) => {
             args.extend(["--permission-mode".to_string(), "default".to_string()]);
-            // Print mode cannot show Claude's own approval prompt. Route it
-            // to the kernel-owned runtime interaction instead, and pre-allow
-            // Chariox runtime tools as the native TUI launch does.
-            if has_runtime_mcp {
-                args.extend([
-                    "--permission-prompt-tool".to_string(),
-                    CLAUDE_PERMISSION_PROMPT_TOOL.to_string(),
-                    "--allowedTools".to_string(),
-                    CLAUDE_RUNTIME_TOOLS_PATTERN.to_string(),
-                ]);
-            }
         }
         (AgentExecutionMode::Build, AgentPermissionLevel::Yolo) => {
             args.extend([
@@ -170,6 +159,19 @@ fn append_claude_execution_config_args(
                 "--allow-dangerously-skip-permissions".to_string(),
             ]);
         }
+    }
+    // Print mode disables interactive tools, including ExitPlanMode, without
+    // an approval surface. Plan mode needs it even when Build mode uses YOLO.
+    if has_runtime_mcp
+        && (execution_mode == AgentExecutionMode::Plan
+            || permission_level == AgentPermissionLevel::Required)
+    {
+        args.extend([
+            "--permission-prompt-tool".to_string(),
+            CLAUDE_PERMISSION_PROMPT_TOOL.to_string(),
+            "--allowedTools".to_string(),
+            CLAUDE_RUNTIME_TOOLS_PATTERN.to_string(),
+        ]);
     }
 }
 
@@ -209,7 +211,28 @@ mod tests {
     }
 
     #[test]
-    fn permission_prompt_tool_is_only_passed_for_build_required_with_runtime_mcp() {
+    fn plan_launch_keeps_the_native_permission_surface_for_both_permission_levels() {
+        for permission in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+            let plan = args(AgentExecutionMode::Plan, permission, true);
+            assert!(has_pair(&plan, "--permission-mode", "plan"));
+            assert!(has_pair(
+                &plan,
+                "--permission-prompt-tool",
+                CLAUDE_PERMISSION_PROMPT_TOOL
+            ));
+            assert!(has_pair(
+                &plan,
+                "--allowedTools",
+                CLAUDE_RUNTIME_TOOLS_PATTERN
+            ));
+            assert!(!plan
+                .iter()
+                .any(|arg| arg == "--allow-dangerously-skip-permissions"));
+        }
+    }
+
+    #[test]
+    fn builds_only_bridge_required_permissions_with_runtime_mcp() {
         let required = args(
             AgentExecutionMode::Build,
             AgentPermissionLevel::Required,
@@ -233,12 +256,25 @@ mod tests {
             args(
                 AgentExecutionMode::Plan,
                 AgentPermissionLevel::Required,
-                true,
+                false,
             ),
-            args(AgentExecutionMode::Plan, AgentPermissionLevel::Yolo, true),
+            args(AgentExecutionMode::Plan, AgentPermissionLevel::Yolo, false),
         ] {
             assert!(!args.iter().any(|arg| arg == "--permission-prompt-tool"));
             assert!(!args.iter().any(|arg| arg == "--allowedTools"));
+        }
+    }
+
+    #[test]
+    fn execution_config_switches_replace_plan_configuration() {
+        for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+            let original = args(AgentExecutionMode::Build, level, true);
+            let plan =
+                claude_args_with_execution_config(&original, AgentExecutionMode::Plan, level, true);
+            assert_eq!(plan, args(AgentExecutionMode::Plan, level, true));
+            let build =
+                claude_args_with_execution_config(&plan, AgentExecutionMode::Build, level, true);
+            assert_eq!(build, original);
         }
     }
 

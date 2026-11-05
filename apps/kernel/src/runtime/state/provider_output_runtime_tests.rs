@@ -151,6 +151,7 @@ mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;
+mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;
 mod detached_jobs_teardown;

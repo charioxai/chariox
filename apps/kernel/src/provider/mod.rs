@@ -171,7 +171,7 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
 };
 pub(crate) use runtime_run::{
@@ -301,15 +301,15 @@ pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
 }
 
-/// Claude `-p` runs in Build mode with the `Required` level route tool
-/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// Claude `-p` runs in Plan mode, or Build mode with the `Required` level, route tool
+/// permission decisions through the runtime MCP `chariox.permission_prompt` tool, as
 /// their launch flags say; native TUI runs use the hook instead. Other runs
 /// neither list nor answer it.
 pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
         && provider_run_uses_structured_prompt_io(run)
-        && run.execution_mode() == AgentExecutionMode::Build
-        && run.permission_level() == AgentPermissionLevel::Required
+        && (run.execution_mode() == AgentExecutionMode::Plan
+            || run.permission_level() == AgentPermissionLevel::Required)
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {

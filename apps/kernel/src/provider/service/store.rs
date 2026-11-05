@@ -699,6 +699,17 @@ impl ProviderProcessServiceStore {
             .enqueue_structured_prompt_abort(session_id, provider_run_id, prompt_id)
     }
 
+    pub(crate) fn publish_claude_plan(
+        &self,
+        run: RuntimeProviderRun,
+        prompt_id: String,
+        tool_use_id: Option<String>,
+        plan: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
+        self.read()
+            .publish_claude_plan(run, prompt_id, tool_use_id, plan)
+    }
+
     pub(crate) fn structured_submit_epoch(&self) -> u64 {
         self.read().structured_submit_epoch()
     }

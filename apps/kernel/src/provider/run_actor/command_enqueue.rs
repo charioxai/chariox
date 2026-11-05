@@ -6,6 +6,30 @@ const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(
 const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_millis(50);
 
 impl ProviderRunActorMailbox {
+    pub(crate) fn publish_claude_plan(
+        &self,
+        run: RuntimeProviderRun,
+        prompt_id: String,
+        tool_use_id: Option<String>,
+        plan: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
+        let run_id = run.id().to_string();
+        let (response, receipt) = tokio::sync::oneshot::channel();
+        self.worker_for_run(&run_id)
+            .try_send(ProviderRunActorCommand::PublishClaudePlan {
+                run,
+                prompt_id,
+                tool_use_id,
+                plan,
+                response,
+            })
+            .map_err(|error| {
+                provider_actor_enqueue_error("publish Claude plan", &run_id, error.to_string())
+            })?;
+        self.operation_lanes.record_command_enqueued();
+        Ok(receipt)
+    }
+
     pub(crate) fn spawn_submit(
         &self,
         session_id: String,
@@ -547,6 +571,7 @@ mod tests {
         let sequence = signal.sequence();
 
         mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
+            prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
             provider_run_id: "run-1".to_string(),
             result: Ok(None),
             settlement_retry_attempt: 0,

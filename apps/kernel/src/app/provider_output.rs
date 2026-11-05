@@ -473,9 +473,15 @@ impl<'a> ProviderOutputPumpContext<'a> {
         {
             let settlement_retry_attempt = finished.settlement_retry_attempt;
             let provider_run_id = finished.provider_run_id.clone();
-            let polled_prompt_id = self
-                .pending_structured_output_records
-                .take_in_flight_prompt_id(&provider_run_id);
+            let prompt_identity = finished.prompt_identity;
+            let polled_prompt_id = match &prompt_identity {
+                crate::provider::ProviderOutputPromptIdentity::InFlightPoll => self
+                    .pending_structured_output_records
+                    .take_in_flight_prompt_id(&provider_run_id),
+                crate::provider::ProviderOutputPromptIdentity::Captured(prompt_id) => {
+                    Some(prompt_id.clone())
+                }
+            };
             let is_requested_run = provider_run_id == requested_provider_run_id;
             let now_ms = crate::session::unix_epoch_ms();
             let poll_result = match finished.result {
@@ -720,11 +726,17 @@ impl<'a> ProviderOutputPumpContext<'a> {
             ) {
                 Ok(poll_result) => poll_result,
                 Err(error) if crate::durable_state::is_retryable_durable_write_error(&error) => {
-                    self.pending_structured_output_records
-                        .mark_poll_enqueued(&provider_run_id, polled_prompt_id.clone());
+                    if matches!(
+                        prompt_identity,
+                        crate::provider::ProviderOutputPromptIdentity::InFlightPoll
+                    ) {
+                        self.pending_structured_output_records
+                            .mark_poll_enqueued(&provider_run_id, polled_prompt_id.clone());
+                    }
                     self.provider_store
                         .schedule_finished_structured_output_poll_retry(
                             crate::provider::FinishedProviderOutputPollJob {
+                                prompt_identity,
                                 provider_run_id: provider_run_id.clone(),
                                 result: Ok(Some(retry_poll_result)),
                                 settlement_retry_attempt,

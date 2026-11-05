@@ -399,7 +399,7 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         CLAUDE_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
     );
-    // Print runs in Plan mode or at the Yolo level have no prompt tool flag.
+    // Build/YOLO has no prompt tool; Plan keeps the native approval surface.
     for (run_id, token, execution_mode, permission_level) in [
         (
             "provider-run-claude-plan",
@@ -458,13 +458,14 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         })
     };
 
-    for token in [PLAN_TOKEN, YOLO_TOKEN] {
-        assert!(!tool_names(&router, token)
-            .await
-            .contains(&"chariox.permission_prompt".to_string()));
-        let response = rpc(&router, token, "tools/call", call("toolu_other_mode")).await;
-        assert_eq!(response["result"]["isError"], true, "{response:#}");
-    }
+    assert!(tool_names(&router, PLAN_TOKEN)
+        .await
+        .contains(&"chariox.permission_prompt".to_string()));
+    assert!(!tool_names(&router, YOLO_TOKEN)
+        .await
+        .contains(&"chariox.permission_prompt".to_string()));
+    let response = rpc(&router, YOLO_TOKEN, "tools/call", call("toolu_other_mode")).await;
+    assert_eq!(response["result"]["isError"], true, "{response:#}");
     // Without `input` the call is invalid, and Claude Code denies the tool.
     let missing = rpc(
         &router,
@@ -763,6 +764,22 @@ fn claude_print_fixture_with_app() -> (
     std::path::PathBuf,
     Arc<Mutex<DaemonApp>>,
 ) {
+    claude_print_fixture_in_mode(
+        crate::provider::AgentExecutionMode::Build,
+        crate::provider::AgentPermissionLevel::Required,
+    )
+}
+
+fn claude_print_fixture_in_mode(
+    execution_mode: crate::provider::AgentExecutionMode,
+    permission_level: crate::provider::AgentPermissionLevel,
+) -> (
+    Arc<CommandRouter>,
+    crate::session::RuntimeSession,
+    String,
+    std::path::PathBuf,
+    Arc<Mutex<DaemonApp>>,
+) {
     let root = std::env::temp_dir().join(format!(
         "chariox-permission-prompt-session-{}-{}",
         std::process::id(),
@@ -774,8 +791,8 @@ fn claude_print_fixture_with_app() -> (
         .create_session(
             CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
                 .with_agent_defaults(crate::session::SessionAgentDefaults {
-                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
-                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    execution_mode: Some(execution_mode),
+                    permission_level: Some(permission_level),
                     ..Default::default()
                 }),
         )
@@ -784,13 +801,15 @@ fn claude_print_fixture_with_app() -> (
     app.agents_mut()
         .update_agent_config(agent.id(), Some(None), Some(None), None, None)
         .expect("the fixture agent should inherit session defaults");
-    insert_claude_run(
+    insert_claude_run_in_mode(
         &mut app,
         session.id(),
         agent.id(),
         "provider-run-claude-print",
         CLAUDE_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
+        execution_mode,
+        permission_level,
     );
     app.active_turn_store()
         .start(crate::app::ActiveTurnState::new(
@@ -802,6 +821,229 @@ fn claude_print_fixture_with_app() -> (
     let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 8));
     (router, session, agent.id().to_string(), root, app)
+}
+
+// The child models a native tool which is already allowed in Claude's settings.
+// No output pump runs while the permission callback is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_plan_exit_blocks_process_side_effects_when_output_draining_is_delayed() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+        let (router, session, agent_id, root, app) =
+            claude_print_fixture_in_mode(AgentExecutionMode::Plan, level);
+        let ready = root.join("ready");
+        let reply = root.join("reply.json");
+        let side_effect = root.join("implemented.txt");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(&agent_id)
+        .with_execution_mode(AgentExecutionMode::Plan)
+        .with_permission_level(level)
+        .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+            "http://127.0.0.1:1/mcp",
+            CLAUDE_TOKEN,
+        ));
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-claude-print", &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude-plan-boundary-regression".into(),
+                pty_target: None,
+                pty_program: Some("/usr/bin/python3".into()),
+                pty_args: vec!["-c".into(), r#"
+import json, os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+sys.stdin.readline()
+print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','id':'toolu_plan_proposal','name':'ExitPlanMode','input':{'plan':'Create implemented.txt only after Implement.'}}]}}), flush=True)
+(root / 'ready').write_text(str(os.getpid()))
+while not (root / 'reply.json').exists(): time.sleep(.005)
+if json.loads((root / 'reply.json').read_text()).get('behavior') == 'allow':
+    (root / 'implemented.txt').write_text('EXECUTED BEFORE IMPLEMENT')
+while True: time.sleep(1)
+"#.into(), root.display().to_string()],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(root.clone()),
+                structured_endpoint: Some("stdio://claude".into()),
+            },
+        );
+        run.mark_running();
+        let mut binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        crate::provider::submit_claude_prompt(
+            &run,
+            &mut binding.state,
+            &crate::prompt_assembly::PromptEnvelope::new(
+                "Make a plan",
+                "",
+                Vec::new(),
+                crate::prompt_assembly::PromptManifest::current(),
+            ),
+        )
+        .unwrap();
+        {
+            let app = app.lock().await;
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers()
+                .apply_runtime_binding(
+                    run.id(),
+                    crate::provider::ProviderRuntimeBinding::Claude(binding),
+                )
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("provider must reach the native permission boundary");
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rpc(&router, CLAUDE_TOKEN, "tools/call", serde_json::json!({
+                "name":"chariox.permission_prompt", "arguments": {
+                    "tool_name":"ExitPlanMode",
+                    "input":{"plan":"Create implemented.txt only after Implement."},
+                    "tool_use_id": (level == AgentPermissionLevel::Required).then_some("toolu_plan_proposal")
+                }
+            })),
+        ).await.expect("publishing a proposal must settle without another approval");
+        let original_pid: u32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+        let stopped_before_reply =
+            crate::runtime::kernel_access::process::inspect(original_pid).is_err();
+        std::fs::write(&reply, serde_json::to_vec(&decision(&response)).unwrap()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let executed = side_effect.exists();
+        let jobs = {
+            let app = app.lock().await;
+            let jobs = app.providers().drain_finished_structured_output_poll_jobs();
+            app.providers().clear_runtime(run.id());
+            jobs
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!executed, "native plan exit must never authorize execution before Implement, even without output draining");
+        assert!(
+            stopped_before_reply,
+            "the provider must be physically stopped before answering its callback"
+        );
+        assert_eq!(decision(&response)["behavior"], "deny");
+        assert!(active_interactions(&router, session.id()).is_empty());
+        let batch = jobs
+            .into_iter()
+            .find_map(|job| job.result.unwrap())
+            .expect("proposal must reach output settlement");
+        assert!(batch.prompt_completed);
+        assert_eq!(batch.completions.len(), 1);
+        assert!(batch.chunks.iter().any(|chunk| {
+            let value: Value = serde_json::from_slice(&chunk.bytes).unwrap_or_default();
+            value["tool"] == "ExitPlanMode"
+                && value["status"] == "completed"
+                && value["input"]["plan"] == "Create implemented.txt only after Implement."
+        }));
+    }
+}
+
+#[tokio::test]
+async fn claude_plan_exit_rejects_missing_plan_and_ended_turns_without_an_approval() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+        let (router, session, _agent_id, root, app) =
+            claude_print_fixture_in_mode(AgentExecutionMode::Plan, level);
+        let call = || {
+            serde_json::json!({
+                "name":"chariox.permission_prompt", "arguments": {
+                    "tool_name":"ExitPlanMode", "input":{}, "tool_use_id":"toolu_plan_proposal"
+                }
+            })
+        };
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rpc(&router, CLAUDE_TOKEN, "tools/call", call()),
+        )
+        .await
+        .expect("presenting a plan must not wait for a second approval");
+        assert_eq!(decision(&response)["behavior"], "deny");
+        assert!(decision(&response)["message"]
+            .as_str()
+            .unwrap()
+            .contains("nonempty plan"));
+        assert!(active_interactions(&router, session.id()).is_empty());
+        app.lock()
+            .await
+            .active_turn_store()
+            .clear("provider-run-claude-print");
+        let late = rpc(&router, CLAUDE_TOKEN, "tools/call", call()).await;
+        assert_eq!(decision(&late)["behavior"], "deny");
+        assert!(active_interactions(&router, session.id()).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[tokio::test]
+async fn claude_build_exit_still_requires_the_persons_decision() {
+    let (router, session, _agent_id, root, _app) = claude_print_fixture_with_app();
+    let (call, interaction) = start_tool_prompt(
+        &router,
+        CLAUDE_TOKEN,
+        session.id(),
+        "toolu_build_exit",
+        "ExitPlanMode",
+        serde_json::json!({}),
+    )
+    .await;
+    router
+        .runtime_state()
+        .resolve_runtime_interaction(session.id(), interaction.id(), "deny", None)
+        .await
+        .expect("build native approval should resolve");
+    assert_eq!(
+        decision(&call.await.expect("build prompt should join"))["behavior"],
+        "deny"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[tokio::test]
+async fn claude_plan_permission_bridge_still_asks_for_other_tools() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+        let (router, session, agent_id, root, _app) =
+            claude_print_fixture_in_mode(AgentExecutionMode::Plan, level);
+        assert!(tool_names(&router, CLAUDE_TOKEN)
+            .await
+            .contains(&"chariox.permission_prompt".to_string()));
+        for (id, choice, expected) in [
+            ("toolu_plan_allow", "allow_once", "allow"),
+            ("toolu_plan_deny", "deny", "deny"),
+        ] {
+            let (call, interaction) = start_tool_prompt(
+                &router,
+                CLAUDE_TOKEN,
+                session.id(),
+                id,
+                "Bash",
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(interaction.agent_id(), Some(agent_id.as_str()));
+            router
+                .runtime_state()
+                .resolve_runtime_interaction(session.id(), interaction.id(), choice, None)
+                .await
+                .expect("plan exit decision should resolve");
+            let response = decision(&call.await.expect("plan exit prompt should join"));
+            assert_eq!(response["behavior"], expected);
+            if expected == "allow" {
+                assert_eq!(response["updatedInput"], serde_json::json!({}));
+            }
+            assert!(active_interactions(&router, session.id()).is_empty());
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[tokio::test]
@@ -1348,7 +1590,7 @@ async fn session_defaults_change_allows_unaffected_active_claude_turn() {
 }
 
 /// A person who changes what the agent may do has ended what they granted, even when they change
-/// it back: Plan and Yolo runs never ask Claude about a tool, so only the change itself shows it.
+/// it back: a mode or permission change invalidates the earlier grant.
 #[tokio::test]
 async fn an_allow_for_session_grant_ends_when_the_agent_config_changes_and_changes_back() {
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
