@@ -718,6 +718,8 @@ export class KernelBrowserHost {
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
     const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
     const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    // A newer observation (Show tab, a navigation commit, a later reconcile) owns the active identity from here on.
+    if (observation < this.observed) return this.tabState();
     // MP-08/MP-10: a Tab the page opened after the human input (window.open, target=_blank) is what Chromium now shows;
     // the opener's input selection must not pull the foreground back over it.
     const openedByInput = intent?.known && nativeActive && !intent.known.has(nativeActive) && [...this.tabs.values()].some(tab => tab.target_id === nativeActive);
@@ -739,6 +741,7 @@ export class KernelBrowserHost {
       // The saved selection cannot return (App uninstalled, Tab closed): the live native selection wins.
       this.pendingActive = null;
     }
+    if (observation < this.observed) return this.tabState();
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const activeId = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;

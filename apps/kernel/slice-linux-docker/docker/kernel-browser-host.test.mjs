@@ -3178,6 +3178,27 @@ test('show_tab activates through the scheduled host path while another Tab\'s re
   } finally { input.end(); await running; lines.close(); output.end(); }
 }));
 
+// Review #1264: a reconciliation whose native active read began before Show tab confirmed the Tab must not publish the older identity.
+test('an older reconciliation still reading Chrome\'s active Tab cannot undo a confirmed Show tab', { timeout: 8000 }, () => using(async ({ host }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const tab = first.tabs[0], previous = second.tabs.find(other => other.tab_id !== tab.tab_id);
+  const previousTarget = host.tabs.get(previous.tab_id).target_id, shownTarget = host.tabs.get(tab.tab_id).target_id;
+  const held = Promise.withResolvers();
+  let reads = 0;
+  host.tabGroups = { personSelection: async () => {}, close() {}, active: () => (reads++ === 0 ? held.promise : Promise.resolve(shownTarget)) };
+  host.activeTarget = previousTarget;
+  const older = host.reconcile();
+  while (reads === 0) await new Promise(resolve => setTimeout(resolve, 5));
+  const shown = await host.request({ op: 'show_tab', tab_id: tab.tab_id, generation: second.generation });
+  assert.equal(shown.active_tab_id, tab.tab_id);
+  held.resolve(previousTarget);
+  const late = await older;
+  assert.equal(late.active_tab_id, tab.tab_id, 'the older reconciliation answers with the confirmed Tab');
+  assert.equal(host.activeTarget, shownTarget, 'the confirmed Tab stays the retained active identity');
+  assert.equal(host.tabState().active_tab_id, tab.tab_id);
+}));
+
 test('a group whose Tab a card asks the person to act in says so, over the dot and the spinner', () => using(async ({ host }) => {
   const sent = [];
   const opened = await host.request({ op: 'open', url: 'https://example.com/', focused_agent: true });
