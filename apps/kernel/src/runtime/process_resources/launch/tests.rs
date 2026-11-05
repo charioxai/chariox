@@ -511,3 +511,77 @@ fn waiting_descendant_can_use_its_binary_disk_reservation() {
     );
     assert!(admission.reserve("third", &argv, cwd, false).is_err());
 }
+
+#[test]
+fn binary_prediction_waits_for_its_receiving_volume_instead_of_its_working_directory() {
+    let floor = 10 * 1024 * MIB;
+    let admission = LaunchAdmission(Arc::new(Pool::with_volume(
+        10 * 1024 * MIB,
+        Box::new(move |path| {
+            Some(admission::Space {
+                id: if path.starts_with("/output") { 2 } else { 1 },
+                free: if path.starts_with("/output") {
+                    floor + 1024 * MIB
+                } else {
+                    100 * 1024 * MIB
+                },
+                total: 100 * 1024 * MIB,
+            })
+        }),
+    )));
+    let argv = vec!["writer".into(), "--output=/output/result".into()];
+    let seen = admission::seen_argv(0, &argv, Some("/workspace".into()));
+    admission.0.ledger.lock().unwrap().peaks.remember(
+        &seen.key,
+        admission::Peak {
+            writes: 2 * 1024 * MIB,
+            volume_writes: 2 * 1024 * MIB,
+            volume: Some(admission::ReceivingVolume {
+                path: "/output".into(),
+                id: 2,
+            }),
+            exact: seen.exact,
+            ..Default::default()
+        },
+        512 * MIB,
+    );
+    let wait = admission
+        .reserve("writer", &argv, Path::new("/workspace"), false)
+        .err()
+        .expect("the output volume cannot fit the remembered writes");
+    assert_eq!(wait.reason, admission::WaitReason::Disk);
+    assert_eq!(wait.need_bytes, 2 * 1024 * MIB);
+    assert_eq!(wait.free_bytes, 1024 * MIB);
+}
+
+#[test]
+fn a_different_exact_binary_command_has_no_known_output_volume() {
+    let admission = LaunchAdmission::limited(10 * 1024 * MIB, 0);
+    let first = vec!["writer".into(), "--output=/output-1".into()];
+    let next = vec!["writer".into(), "--output=/output-2".into()];
+    let seen = admission::seen_argv(0, &first, Some("/workspace".into()));
+    assert_eq!(
+        seen.key,
+        admission::seen_argv(0, &next, Some("/workspace".into())).key
+    );
+    admission.0.ledger.lock().unwrap().peaks.remember(
+        &seen.key,
+        admission::Peak {
+            writes: 2 * 1024 * MIB,
+            volume_writes: 2 * 1024 * MIB,
+            volume: Some(admission::ReceivingVolume {
+                path: "/output-1".into(),
+                id: 1,
+            }),
+            exact: seen.exact,
+            ..Default::default()
+        },
+        512 * MIB,
+    );
+    assert!(
+        admission
+            .reserve("next", &next, Path::new("/workspace"), false)
+            .is_ok(),
+        "a normalized command key cannot identify the next command's output volume"
+    );
+}
