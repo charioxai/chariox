@@ -3,6 +3,7 @@ use chariox_app_runtime::app_outbox::{AutomationStatus, AutomationTarget, MAX_AU
 
 fn target(queue: &str) -> AutomationTarget {
     AutomationTarget {
+        kind: chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow,
         session_id: "session".into(),
         publication_id: "publication".into(),
         endpoint_id: "endpoint".into(),
