@@ -694,12 +694,41 @@ async function main() {
   if (scenarios.has("newrooms")) {
     note("scenario", { which: "newrooms" })
     // Creating a Room is room-level: no /sudo, on the agent's own kernel and on another one.
-    const create = (kernelArg, r, alias) => call(kernelArg, { CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias, slice_ref: null } })
+    const create = (kernelArg, r, alias, no_subscribe = false) => call(kernelArg, { CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias, slice_ref: null, no_subscribe } })
     const aliasesOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.alias)
     const since = startedAt, skip = reachAnswers(since).length
-    await sendPrompt(drillPrompt([`1. Call \`request\` with exactly: ${create(null, a, "made-at-home")}`, `2. Call \`request\` with exactly: ${create(target, b, "made-on-the-other-kernel")}`, "Then reply with the words NEWROOMS and DONE joined by an underscore."]), "NEWROOMS_DONE")
+    await sendPrompt(drillPrompt([`1. Call \`request\` with exactly: ${create(null, a, "made-at-home")}`, `2. Call \`request\` with exactly: ${create(target, b, "made-on-the-other-kernel")}`, `3. Call \`request\` with exactly: ${create(null, a, "unfollowed-created-room", true)}`, "Then reply with the words NEWROOMS and DONE joined by an underscore."]), "NEWROOMS_DONE")
     const codes = codesOf(since, skip)
-    check("the agent created a Room on its own kernel and on another one without /sudo", codes.join() === "ok,ok" && (await aliasesOf(a)).includes("made-at-home") && (await aliasesOf(b)).includes("made-on-the-other-kernel"), { codes })
+    check("the agent created a Room on its own kernel and on another one without /sudo", codes.join() === "ok,ok,ok" && (await aliasesOf(a)).includes("made-at-home") && (await aliasesOf(b)).includes("made-on-the-other-kernel"), { codes })
+    const created = []
+    for (const [r, alias] of [[a, "made-at-home"], [b, "made-on-the-other-kernel"], [a, "unfollowed-created-room"]]) {
+      const session = (await r.rpc({ListSessions: null})).SessionsListed.sessions.find(session => session.alias === alias)
+      assert.ok(session, `reach created ${alias}`)
+      created.push(session.id)
+      await r.rpc({EndSession: {session_id: session.id}})
+    }
+    await sendPrompt([
+      "Use only chariox-reach events_wait, without events_subscribe: the Rooms you created should already be followed.",
+      `Wait with timeout_seconds 20, since 0. Continue with since set to next_cursor until the ended session events for BOTH ${created[0]} and ${created[1]} arrive (at most 3 waits).`,
+      "Then reply with the words CREATEDWAIT and DONE joined by an underscore. Do not subscribe or use any other tools.",
+    ].join("\n"), "CREATEDWAIT_DONE")
+    const waited = await turnOf(a, roomA.session.id, agentA)
+    const waitCalls = waited.calls.filter(call => reachName(call) === "events_wait")
+    const outputs = waitCalls.map(call => String(call.output ?? "")).join("\n")
+    check("a wait receives the end of each automatically followed local and remote created Room", waitCalls.length > 0 && created.slice(0, 2).every(id => outputs.includes(id)) && /"state"\s*:\s*"ended"/.test(outputs), { sessions: created.slice(0, 2), waits: waitCalls.length })
+    check("no_subscribe keeps the third created Room out of the inbox", !outputs.includes(created[2]))
+    writeFileSync(join(evidence, "created-room-waits.json"), JSON.stringify({sessions: created, calls: waitCalls}, null, 2))
+
+    await sendPrompt([
+      "Use only chariox-reach request. Send these two malformed requests exactly once each; do not repair or retry them:",
+      '{"request":{"CreateSesion":{}}}',
+      '{"request":{"CreateSession":{"workspace_id":"/room"}}}',
+      "Then reply with the words PARSER and DONE joined by an underscore.",
+    ].join("\n"), "PARSER_DONE")
+    const malformed = await turnOf(a, roomA.session.id, agentA)
+    const diagnostics = malformed.calls.filter(call => reachName(call) === "request").map(call => String(call.output ?? call.error ?? "")).join("\n")
+    check("reach parser errors tell the real agent the unknown variant and missing required field", diagnostics.includes("unknown variant `CreateSesion`") && diagnostics.includes("missing field `worktree_id`"))
+    writeFileSync(join(evidence, "parser-diagnostics.json"), JSON.stringify({calls: malformed.calls}, null, 2))
   }
 
   // The text of every base64 chunk an agent's answers carried since `since` (room terminal output), decoded.

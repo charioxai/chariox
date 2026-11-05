@@ -428,6 +428,84 @@ async fn an_agent_creates_a_room_without_sudo_and_a_guests_agent_does_not() {
 }
 
 #[tokio::test]
+async fn reach_created_rooms_join_the_inbox_unless_no_subscribe_is_requested() {
+    for existing_inbox in [false, true] {
+        let reach = fixture();
+        if existing_inbox {
+            let (ok, payload) = tool(
+                &reach,
+                "events_subscribe",
+                serde_json::json!({
+                    "kernel": "local", "session_id": reach.other_session_id
+                }),
+            )
+            .await;
+            assert!(ok, "{payload}");
+        }
+        for no_subscribe in [true, false] {
+            let room = crate::test_support::TestWorktree::new("reach-follow-created");
+            let path = room.path().display().to_string();
+            let (ok, payload) = call(
+                &reach,
+                &reach.owner_token,
+                None,
+                serde_json::json!({
+                    "CreateSession": {"workspace_id": path, "worktree_id": path,
+                        "no_subscribe": no_subscribe}
+                }),
+            )
+            .await;
+            assert!(ok, "{payload}");
+            let created = &payload["SessionCreated"];
+            assert!(created["event_subscription_error"].is_null(), "{payload}");
+            let session = created["session"]["id"].as_str().unwrap();
+            let agent = created["agent"]["id"].as_str().unwrap();
+            let state = reach.router.runtime_state();
+            let caller = state.reach_for_auth_token(&reach.owner_token).unwrap();
+            let part = state.outside_store().outside_part(&caller.id).unwrap();
+            let followed = part.as_ref().is_some_and(|part| {
+                part.targets
+                    .iter()
+                    .any(|target| target.session_id == session)
+            });
+            assert_eq!(followed, !no_subscribe, "existing inbox: {existing_inbox}");
+            if existing_inbox {
+                assert!(part
+                    .unwrap()
+                    .targets
+                    .iter()
+                    .any(|target| target.session_id == reach.other_session_id));
+            }
+            if !no_subscribe {
+                // A real activity producer must wake the caller without an explicit subscribe.
+                state.start_active_turn_with_trace_id(
+                    session,
+                    agent,
+                    "created-prompt",
+                    "created-run",
+                    "created-trace",
+                );
+                let (ok, batch) = tool(
+                    &reach,
+                    "events_wait",
+                    serde_json::json!({"timeout_seconds": 1}),
+                )
+                .await;
+                assert!(ok, "{batch}");
+                assert!(
+                    batch["EventsListed"]["events"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|event| event["session_id"] == session),
+                    "{batch}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn reach_http_reports_unknown_variants_and_missing_fields() {
     let reach = fixture();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

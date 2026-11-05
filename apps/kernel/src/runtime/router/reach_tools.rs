@@ -298,10 +298,26 @@ impl CommandRouter {
         command.provider_run_id = Some(caller.run_id.clone());
         command.caller.caller_id = caller.id.clone();
         command.caller.user_id = Some(caller.owner_user_id.clone());
-        let response = match Box::pin(self.dispatch(command, request)).await {
+        let mut response = match Box::pin(self.dispatch(command, request.clone())).await {
             Ok(response) => response,
             Err(error) => return Ok(refused("request_failed", error.to_string())),
         };
+        let origin = Origin {
+            grant_id: caller.id.clone(),
+            harness: caller.harness.clone(),
+        };
+        if self
+            .kernel_gateway()
+            .follow_created(
+                &origin,
+                &self.config_projection.snapshot().daemon_id,
+                &request,
+                &response,
+            )
+            .is_err()
+        {
+            response.record_event_subscription_failure();
+        }
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::to_value(response).map_err(|_| {
