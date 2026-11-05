@@ -120,12 +120,13 @@ impl SessionStateStore {
         if !session.project_id().is_empty() {
             return self.get_project(session.project_id()).ok();
         }
-        self.list_projects(session.owner_user_id(), false)
-            .into_iter()
-            .find(|project| {
-                self.project_has_checkout(project, session.worktree_id())
-                    .unwrap_or(false)
-            })
+        self.projects_owning_checkout(
+            self.list_projects(session.owner_user_id(), false),
+            session.worktree_id(),
+        )
+        .ok()?
+        .into_iter()
+        .next()
     }
 
     /// Workspace roots, Project sessions and linked Git checkouts share one Environment.
@@ -134,35 +135,64 @@ impl SessionStateStore {
         project: &RuntimeProject,
         checkout: &str,
     ) -> Result<bool, DaemonError> {
+        Ok(!self
+            .projects_owning_checkout(vec![project.clone()], checkout)?
+            .is_empty())
+    }
+
+    /// Workspace roots take precedence over session worktrees, then Git membership.
+    pub(crate) fn projects_owning_checkout(
+        &self,
+        projects: Vec<RuntimeProject>,
+        checkout: &str,
+    ) -> Result<Vec<RuntimeProject>, DaemonError> {
         use crate::runtime::workspace_git_common::same_fs_path;
-        if project
-            .workspace_ids()
+        let workspaces: Vec<_> = projects
             .iter()
-            .any(|root| same_fs_path(root, checkout))
-        {
-            return Ok(true);
+            .filter(|project| {
+                project
+                    .workspace_ids()
+                    .iter()
+                    .any(|path| same_fs_path(path, checkout))
+            })
+            .cloned()
+            .collect();
+        if !workspaces.is_empty() {
+            return Ok(workspaces);
         }
-        let sessions = self.sessions_in_project(project.id())?;
-        if sessions
-            .iter()
-            .any(|session| same_fs_path(session.worktree_id(), checkout))
-        {
-            return Ok(true);
+        let mut candidates = Vec::new();
+        for project in projects {
+            let mut paths = project.workspace_ids().to_vec();
+            paths.extend(
+                self.sessions_in_project(project.id())?
+                    .into_iter()
+                    .map(|session| session.worktree_id().to_string()),
+            );
+            candidates.push((project, paths));
         }
-        Ok(project
-            .workspace_ids()
-            .iter()
-            .map(String::as_str)
-            .chain(sessions.iter().map(|session| session.worktree_id()))
-            .any(|root| {
-                crate::runtime::workspace_worktrees::list_workspace_worktrees(root, None).is_ok_and(
-                    |worktrees| {
-                        worktrees
-                            .iter()
-                            .any(|worktree| same_fs_path(&worktree.path, checkout))
-                    },
-                )
-            }))
+        let directly_owns =
+            |paths: &[String]| paths.iter().any(|path| same_fs_path(path, checkout));
+        if candidates.iter().any(|(_, paths)| directly_owns(paths)) {
+            return Ok(candidates
+                .into_iter()
+                .filter(|(_, paths)| directly_owns(paths))
+                .map(|(project, _)| project)
+                .collect());
+        }
+        Ok(candidates
+            .into_iter()
+            .filter(|(_, paths)| {
+                paths.iter().any(|root| {
+                    crate::runtime::workspace_worktrees::list_workspace_worktrees(root, None)
+                        .is_ok_and(|worktrees| {
+                            worktrees
+                                .iter()
+                                .any(|worktree| same_fs_path(&worktree.path, checkout))
+                        })
+                })
+            })
+            .map(|(project, _)| project)
+            .collect())
     }
 
     pub(crate) fn sessions_in_project(
@@ -803,6 +833,143 @@ impl SessionStateOwner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn linked_project_fixture() -> (
+        crate::test_support::TestWorktree,
+        SessionStateStore,
+        std::path::PathBuf,
+    ) {
+        let root = crate::test_support::TestWorktree::new("explicit-linked-project");
+        let main = root.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        ] {
+            assert!(crate::process_spawn::command("git")
+                .args(args)
+                .current_dir(&main)
+                .output()
+                .unwrap()
+                .status
+                .success());
+        }
+        let linked = root.path().join("linked");
+        crate::git_worktree_placement::prepare_git_worktree(
+            &crate::agent::GitWorktreePlacement {
+                target_directory: Some(linked.display().to_string()),
+                branch: Some("linked".into()),
+                from_ref: Some("HEAD".into()),
+            },
+            &main,
+            None,
+            "test linked Project",
+        )
+        .unwrap();
+        let store = SessionStateStore::new(SessionService::new(&crate::DaemonConfig::for_tests()));
+        store.restore_projects(vec![
+            RuntimeProject::new(
+                "a-main",
+                "owner",
+                main.display().to_string(),
+                "Main",
+                crate::session::RuntimeProjectKind::Named,
+            ),
+            RuntimeProject::new(
+                "z-linked",
+                "owner",
+                linked.display().to_string(),
+                "Linked",
+                crate::session::RuntimeProjectKind::Named,
+            ),
+        ]);
+        (root, store, linked)
+    }
+
+    // MP-08/MP-10/MP-11: Git membership cannot override a checkout's registered Project.
+    #[test]
+    fn environment_explicit_project_owns_its_linked_checkout() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let (root, store, linked) = linked_project_fixture();
+        store
+            .create_session(
+                CreateSessionRequest::new(
+                    root.path().join("main").display().to_string(),
+                    linked.display().to_string(),
+                )
+                .with_owner_user_id("owner")
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::Existing {
+                        project_id: "a-main".into(),
+                    },
+                ),
+            )
+            .unwrap();
+        let hidden = store
+            .create_session(
+                CreateSessionRequest::new("remote-lease:test", linked.display().to_string())
+                    .with_owner_user_id("owner")
+                    .with_hidden(true),
+            )
+            .unwrap();
+        assert_eq!(store.environment_project(&hidden).unwrap().id(), "z-linked");
+    }
+
+    #[test]
+    fn environment_file_copy_uses_only_the_registered_checkout_project() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let (root, store, linked) = linked_project_fixture();
+        let environment =
+            crate::project_environment::ProjectEnvironmentStore::new(&root.path().join("state"));
+        for (project, file) in [
+            ("a-main", "main-only.local"),
+            ("z-linked", "linked-only.local"),
+        ] {
+            environment
+                .save(
+                    project,
+                    0,
+                    crate::project_environment::ProjectEnvironmentRecord {
+                        schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
+                        files: vec![file.into()],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            std::fs::write(linked.join(file), "fixture").unwrap();
+        }
+        let target = root.path().join("next-linked");
+        crate::git_worktree_placement::prepare_git_worktree(
+            &crate::agent::GitWorktreePlacement {
+                target_directory: Some(target.display().to_string()),
+                branch: Some("next-linked".into()),
+                from_ref: Some("HEAD".into()),
+            },
+            &linked,
+            None,
+            "test Project file copy",
+        )
+        .unwrap();
+        environment
+            .copy_files_into_worktree(&store, &linked, &target)
+            .unwrap();
+        assert!(target.join("linked-only.local").is_file());
+        assert!(
+            !target.join("main-only.local").exists(),
+            "the Project rooted in this checkout decides which files travel"
+        );
+    }
 
     #[test]
     fn independent_session_reads_can_hold_the_store_concurrently() {

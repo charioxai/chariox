@@ -44,11 +44,11 @@ impl super::ProjectEnvironmentStore {
         base: &Path,
         worktree: &Path,
     ) -> Result<(), DaemonError> {
-        for project in sessions.durable_projects() {
-            if sessions.project_has_checkout(&project, &base.to_string_lossy())? {
-                if let Some(record) = self.load(project.id())? {
-                    copy_environment_files(base, worktree, &record.files)?;
-                }
+        for project in sessions
+            .projects_owning_checkout(sessions.durable_projects(), &base.to_string_lossy())?
+        {
+            if let Some(record) = self.load(project.id())? {
+                copy_environment_files(base, worktree, &record.files)?;
             }
         }
         Ok(())
