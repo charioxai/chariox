@@ -64,8 +64,9 @@ fn completed_binary_peak_survives_cache_reload_and_holds_the_same_command() {
     ];
     let mut permit = admission.reserve("learn", &argv, &dir, false).unwrap();
     let prepared = permit.prepare().unwrap();
-    let mut child = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
+    let (program, args) = prepared.command(argv[0].clone(), argv[1..].to_vec());
+    let mut child = std::process::Command::new(program)
+        .args(args)
         .current_dir(&dir)
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -109,4 +110,50 @@ fn completed_binary_peak_survives_cache_reload_and_holds_the_same_command() {
         "unknown command would have fitted"
     );
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn running_binary_consumes_the_unit_charge_shared_by_its_process_leaf() {
+    let admission = LaunchAdmission::limited(512 * MIB, u64::MAX);
+    let argv = vec![
+        "python3".into(),
+        "-c".into(),
+        "import time; b=bytearray(128*1048576); print('ready', flush=True); time.sleep(1)".into(),
+    ];
+    let cwd = Path::new("/");
+    learn(&admission, &argv, cwd, 200 * MIB);
+    let mut first = admission.reserve("first", &argv, cwd, false).unwrap();
+    let prepared = first.prepare().unwrap();
+    let (program, args) = prepared.command(argv[0].clone(), argv[1..].to_vec());
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let domain = prepared.start(child.id()).unwrap();
+    domain.bind_key(first.id());
+    use std::io::BufRead;
+    let mut ready = String::new();
+    std::io::BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready.trim(), "ready");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while first.peak.memory < 128 * MIB {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "binary peak was not sampled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        first.observe();
+    }
+    let second = admission.reserve("second", &argv, cwd, false);
+    assert!(child.wait().unwrap().success());
+    drop(domain);
+    assert!(
+        second.is_ok(),
+        "the process leaf did not credit its unit's charge: {:?}",
+        second.err()
+    );
 }

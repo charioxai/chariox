@@ -226,10 +226,16 @@ impl Pool {
                 let resident = member.resident();
                 if member.in_cgroup {
                     #[cfg(target_os = "linux")]
-                    if let Some(charged) = member.cgroup.as_deref().and_then(cgroup::unreclaimable)
+                    // Leaves share their unit's controller; only the unit has counters.
+                    if let Some(charged) = member
+                        .cgroup
+                        .as_deref()
+                        .and_then(std::path::Path::parent)
+                        .and_then(cgroup::unreclaimable)
                     {
-                        let memory = cgroup_observed.entry(member.unit.clone()).or_default();
-                        *memory = memory.saturating_add(charged);
+                        cgroup_observed
+                            .entry(member.unit.clone())
+                            .or_insert(charged);
                     }
                 } else {
                     let memory = observed.entry(member.unit.clone()).or_default();
