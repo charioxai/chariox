@@ -271,9 +271,10 @@ usage() {
 Usage: $(basename "$0") [build-source-image|build-image|provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
-build-source-image constructs runtime layers on the release builder. Runtime
+build-source-image constructs runtime layers on the release builder. Managed
 build-image/provision verifies and loads the signed image; it never builds
-missing image layers from the network.
+missing image layers from the network. Ordinary installations build locally
+when their bundle does not ship an image.
 
 CHARIOX_SLICE_DOCKER_PIDS_LIMIT caps container processes and threads (default:
 1024). Set a positive integer to tune it for the workload. Reused containers
@@ -859,7 +860,9 @@ build_standard_runtime_image() {
     load_released_image "$1"
     return
   fi
-  [[ "${SLICE_EXPLICIT_SOURCE_BUILD:-0}" == 1 ]] || fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+  if [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" && "${SLICE_EXPLICIT_SOURCE_BUILD:-0}" != 1 ]]; then
+    fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+  fi
 
   local image="$1"
   local target_arch

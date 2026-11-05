@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
+import { assemble, exportSliceBuildContext, SLICE_CONTEXT } from "../../../scripts/release-bundle.mjs"
 
 const sliceDirectory = dirname(fileURLToPath(import.meta.url))
 const revision = `sha256:${"a".repeat(64)}`
@@ -45,7 +46,13 @@ if (args[0] === "load") {
 }
 if (args[0] === "tag") { state.tags[args[2]] = state.tags[args[1]]; save(); process.exit(0); }
 if (args[0] === "rmi") { delete state.tags[args[1]]; save(); process.exit(0); }
-if (args[0] === "buildx" || args[0] === "build") { appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, "BUILD\\n"); process.exit(1); }
+if (args[0] === "buildx" || args[0] === "build") {
+  if (process.env.CHARIOX_TEST_BUILD_SUCCESS === "1" && args[1] === "version") process.exit(0);
+  appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, "BUILD\\n");
+  if (process.env.CHARIOX_TEST_BUILD_SUCCESS !== "1") process.exit(1);
+  state.tags[args[args.indexOf("-t") + 1]] = { layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
+  save(); process.exit(0);
+}
 console.error("unexpected Docker operation " + JSON.stringify(args)); process.exit(2);
 `
 
@@ -54,6 +61,8 @@ async function install(root, { descriptor = {}, archive = archiveBytes, withImag
   const provisionerDirectory = join(context, "apps/kernel/slice-linux-docker")
   await mkdir(dirname(provisionerDirectory), { recursive: true })
   await cp(sliceDirectory, provisionerDirectory, { recursive: true, filter: source => !source.includes("/node_modules") })
+  await mkdir(join(provisionerDirectory, "prebuilt"), { recursive: true })
+  await writeFile(join(provisionerDirectory, "prebuilt/.managed-release"), "builder-attested\n")
   await mkdir(join(context, "apps/kernel/src/transport"), { recursive: true })
   await writeFile(join(context, "apps/kernel/src/transport/relay_peer.rs"), "pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 128;\n")
   if (withImage) {
@@ -71,7 +80,7 @@ async function install(root, { descriptor = {}, archive = archiveBytes, withImag
   return join(provisionerDirectory, "provision-linux-docker-slice.sh")
 }
 
-function run(root, provisioner, { loadedLayers = layers, action = "build-image" } = {}) {
+function run(root, provisioner, { loadedLayers = layers, action = "build-image", buildSuccess = false } = {}) {
   const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("CHARIOX_SLICE_")))
   return spawnSync("bash", [provisioner, action], {
     encoding: "utf8", timeout: 60_000,
@@ -79,6 +88,7 @@ function run(root, provisioner, { loadedLayers = layers, action = "build-image" 
       ...environment, PATH: `${root}:${environment.PATH}`, TMPDIR: root,
       CHARIOX_TEST_DOCKER_LOG: join(root, "docker.log"), CHARIOX_TEST_DOCKER_STATE: join(root, "docker.json"),
       CHARIOX_TEST_IMAGE_REVISION: revision, CHARIOX_TEST_LOADED_LAYERS: JSON.stringify(loadedLayers),
+      CHARIOX_TEST_BUILD_SUCCESS: buildSuccess ? "1" : "0",
       CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: revision, CHARIOX_SLICE_NAME: "chariox-released-image-fixture",
     },
   })
@@ -164,4 +174,23 @@ test("only the explicit release-builder action can construct image layers", () =
   const result = run(root, await install(root, {withImage: false}), {action: "build-source-image"})
   assert.notEqual(result.status, 0)
   assert.ok((await dockerCalls(root)).includes("BUILD"))
+}))
+
+test("a normal assembled Linux bundle can build its first Room image on an empty engine", () => withRoot(async root => {
+  const repository = join(sliceDirectory, "../../..")
+  const context = join(root, "normal-context")
+  const commit = spawnSync("git", ["-C", repository, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim()
+  await exportSliceBuildContext(repository, commit, context)
+  // Exercise the working provisioner, including an uncommitted regression fix.
+  await cp(join(sliceDirectory, "provision-linux-docker-slice.sh"), join(context, "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"))
+  const executables = join(root, "executables")
+  await mkdir(join(executables, "bin"), { recursive: true })
+  for (const name of ["chariox", "chariox-kernel", "chariox-relay", "chariox-app-package", "chariox-app-wasm-worker"])
+    await writeFile(join(executables, "bin", name), "#!/bin/sh\nexit 0\n", { mode: 0o755 })
+  const output = join(root, "normal-bundle")
+  await assemble({ platform: "linux-x64", version: "0.1.0", sourceCommit: commit, executables, sliceBuildContext: context, output })
+  await writeFile(join(root, "docker"), dockerStub, { mode: 0o700 })
+  const result = run(root, join(output, SLICE_CONTEXT, "apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"), { buildSuccess: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.ok((await dockerCalls(root)).includes("BUILD"), "an ordinary bundle without a shipped image retains its local build path")
 }))
