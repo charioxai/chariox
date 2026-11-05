@@ -1064,67 +1064,82 @@ async fn app_agent_receipts_settle_on_completion_and_cancellation_and_are_pruned
 
 #[tokio::test]
 async fn disabled_app_subscriber_does_not_starve_a_live_subscriber() {
-    let rig = rig().await;
-    let store = &rig.runtime.owned.durable_state_store;
-    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
-    let disabled = rig.app_trigger(&catalog).await;
-    let live = rig.app_trigger(&catalog).await;
-    let mut deferred = Vec::new();
-    for n in 0..8 {
-        deferred.push(rig.emit_app(catalog.clone(), &disabled, &format!("disabled-{n}")));
-    }
-    let live_receipt = rig.emit_app(catalog.clone(), &live, "live-subscriber");
-    rig.runtime
-        .update_agent_trigger(
-            UpdateAgentTriggerRequest {
-                session_id: rig.session_id.clone(),
-                trigger_id: disabled.id().into(),
-                busy_policy: None,
-                prompt: None,
-                enabled: Some(false),
-            },
-            "local",
-        )
-        .await
-        .unwrap();
-    rig.runtime
-        .route_app_agent_installation("local", catalog.clone())
-        .await
-        .unwrap();
-    // Fairness must survive a slow pump too, after the deferred page becomes due again.
-    let pending = store
-        .pending_app_events_for_target(
-            "local",
-            &catalog,
-            crate::session::unix_epoch_ms().saturating_add(5_000),
-            8,
-            chariox_app_runtime::app_outbox::AutomationTargetKind::Agent,
-        )
-        .unwrap();
-    assert_eq!(
-        pending[0].receipt_id, live_receipt.receipt_id,
-        "deferred rows rotate behind eligible live work even on a slow pass"
-    );
-    rig.runtime
-        .route_app_agent_installation("local", catalog.clone())
-        .await
-        .unwrap();
-    assert_eq!(
-        rig.queued_prompts().len(),
-        1,
-        "the next bounded pass must reach the enabled subscriber"
-    );
-    assert!(rig.queued_prompts()[0].contains("live-subscriber"));
-    for original in deferred {
-        let current = store
-            .app_event_candidate("local", catalog.clone(), &original.receipt_id)
+    for removed in [false, true] {
+        let rig = rig().await;
+        let store = &rig.runtime.owned.durable_state_store;
+        let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+        let disabled = rig.app_trigger(&catalog).await;
+        let live = rig.app_trigger(&catalog).await;
+        let mut deferred = Vec::new();
+        for n in 0..8 {
+            deferred.push(rig.emit_app(catalog.clone(), &disabled, &format!("disabled-{n}")));
+        }
+        let live_receipt = rig.emit_app(catalog.clone(), &live, "live-subscriber");
+        if removed {
+            rig.runtime
+                .delete_agent_trigger(
+                    DeleteAgentTriggerRequest {
+                        session_id: rig.session_id.clone(),
+                        trigger_id: disabled.id().into(),
+                    },
+                    "local",
+                )
+                .await
+                .unwrap();
+        } else {
+            rig.runtime
+                .update_agent_trigger(
+                    UpdateAgentTriggerRequest {
+                        session_id: rig.session_id.clone(),
+                        trigger_id: disabled.id().into(),
+                        busy_policy: None,
+                        prompt: None,
+                        enabled: Some(false),
+                    },
+                    "local",
+                )
+                .await
+                .unwrap();
+        }
+        rig.runtime
+            .route_app_agent_installation("local", catalog.clone())
+            .await
             .unwrap();
-        assert_eq!(current.receipt().expires_at_ms, original.expires_at_ms);
+        // Fairness must survive a slow pump too, after the deferred page becomes due again.
+        let pending = store
+            .pending_app_events_for_target(
+                "local",
+                &catalog,
+                crate::session::unix_epoch_ms().saturating_add(5_000),
+                8,
+                chariox_app_runtime::app_outbox::AutomationTargetKind::Agent,
+            )
+            .unwrap();
         assert_eq!(
-            current.receipt().attempts,
-            0,
-            "deferral is not a failed delivery attempt"
+            pending[0].receipt_id, live_receipt.receipt_id,
+            "deferred rows rotate behind eligible live work even on a slow pass"
         );
+        rig.runtime
+            .route_app_agent_installation("local", catalog.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            rig.queued_prompts().len(),
+            1,
+            "the next bounded pass must reach the enabled subscriber"
+        );
+        assert!(rig.queued_prompts()[0].contains("live-subscriber"));
+        for original in deferred {
+            let current = store
+                .app_event_candidate("local", catalog.clone(), &original.receipt_id)
+                .unwrap();
+            assert_eq!(current.receipt().expires_at_ms, original.expires_at_ms);
+            assert_eq!(
+                current.receipt().attempts,
+                0,
+                "deferral is not a failed delivery attempt"
+            );
+        }
     }
 }
 

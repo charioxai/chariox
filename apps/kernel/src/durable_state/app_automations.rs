@@ -24,6 +24,10 @@ pub(crate) enum AppAutomationMutation {
         scheduled: bool,
         previous_target: Option<WorkflowAutomationTarget>,
     },
+    AgentDeferred {
+        receipt: chariox_app_runtime::app_outbox::Receipt,
+        retry_at_ms: u64,
+    },
     AgentQueued {
         receipt: chariox_app_runtime::app_outbox::Receipt,
         prompt_id: String,
@@ -40,6 +44,7 @@ pub(crate) enum AppAutomationOutcome {
     Configured(AutomationConfiguration),
     Listed(Vec<AutomationConfiguration>),
     Queued,
+    Deferred,
 }
 pub(super) struct AppAutomationRequest {
     owner: String,
@@ -178,6 +183,30 @@ fn apply(
             expected_revision,
             status,
         )?),
+        AppAutomationMutation::AgentDeferred {
+            receipt,
+            retry_at_ms,
+        } => {
+            let retry_at_ms = i64::try_from(retry_at_ms.min(receipt.expires_at_ms))
+                .map_err(|_| OutboxError::Invalid)?;
+            let revision = i64::try_from(receipt.revision).map_err(|_| OutboxError::Invalid)?;
+            let changed = tx.execute(
+                "UPDATE app_outbox SET next_attempt_at_ms=?1,revision=revision+1
+                 WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5
+                 AND state IN ('accepted','retryable')",
+                rusqlite::params![
+                    retry_at_ms,
+                    owner,
+                    catalog.installation_id(),
+                    receipt.receipt_id,
+                    revision
+                ],
+            )?;
+            if changed != 1 {
+                return Err(OutboxError::Conflict.into());
+            }
+            AppAutomationOutcome::Deferred
+        }
         AppAutomationMutation::AgentQueued { receipt, prompt_id } => {
             let automation = chariox_app_runtime::app_outbox::VerifiedAutomation::load_in(
                 &tx,

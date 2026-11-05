@@ -454,6 +454,7 @@ impl KernelRuntimeState {
                 || config.status != AutomationStatus::Active
                 || config.revision != receipt.automation_revision
             {
+                self.defer_app_agent_receipt(owner, catalog.clone(), receipt, now)?;
                 continue;
             }
             let payload: serde_json::Value = serde_json::from_str(
@@ -481,9 +482,33 @@ impl KernelRuntimeState {
                         budget(),
                     )
                     .map_err(app_error)?;
+            } else {
+                self.defer_app_agent_receipt(owner, catalog.clone(), receipt, now)?;
             }
         }
         Ok(())
+    }
+
+    fn defer_app_agent_receipt(
+        &self,
+        owner: &str,
+        catalog: Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        receipt: chariox_app_runtime::app_outbox::Receipt,
+        now: u64,
+    ) -> Result<(), DaemonError> {
+        self.owned
+            .durable_state_store
+            .mutate_app_automation(
+                owner,
+                catalog,
+                AppAutomationMutation::AgentDeferred {
+                    receipt,
+                    retry_at_ms: now.saturating_add(1_000),
+                },
+                budget(),
+            )
+            .map(|_| ())
+            .map_err(app_error)
     }
 
     fn app_agent_notification_live(

@@ -312,7 +312,7 @@ pub(super) fn pending(
           AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.status='paused')
         AND (?5 IS NULL OR EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
           AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.target_kind=?5))
-        ORDER BY sequence LIMIT ?4"))?;
+        ORDER BY CASE WHEN ?5='agent' THEN next_attempt_at_ms ELSE 0 END,sequence LIMIT ?4"))?;
     let rows = statement.query_map(
         params![
             owner,
