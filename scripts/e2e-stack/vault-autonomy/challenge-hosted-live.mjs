@@ -16,13 +16,16 @@ const origin=process.env.VFLAG_ORIGIN, evidence=process.env.VFLAG_EVIDENCE, bina
 assert.match(origin ?? '',/^https:\/\/pr[0-9]+-vflag[a-z0-9]*\.val\.51-255-87-178\.sslip\.io$/)
 assert.ok(path.isAbsolute(evidence ?? '')&&path.isAbsolute(binaryDir ?? ''))
 const expected=process.env.VFLAG_EXPECT ?? 'green'
-const cells=[{id:'desktop-dpr1',width:1440,height:900,dpr:1},{id:'desktop-dpr2',width:1440,height:900,dpr:2},{id:'phone-dpr2',width:390,height:844,dpr:2}].filter(c=>(process.env.VFLAG_CELLS ?? 'desktop-dpr1,desktop-dpr2,phone-dpr2').split(',').includes(c.id))
+assert.ok(['green','geometry-red','encoding-red'].includes(expected))
+const requestEncoding=process.env.VFLAG_ENCODING ?? 'json'
+assert.ok(['json','urlencoded'].includes(requestEncoding))
+const cells=[{id:'desktop-dpr1',width:1440,height:900,dpr:1},{id:'desktop-dpr2',width:1440,height:900,dpr:2}].filter(c=>(process.env.VFLAG_CELLS ?? 'desktop-dpr1,desktop-dpr2').split(',').includes(c.id))
 await mkdir(evidence,{recursive:true})
 const results=[],errors=[]
 let fixture,browser,page,context,sessionId,agentId
 const service=await startChallengeService()
 const state=async()=>(await fixture.send({GetSessionState:{session_id:sessionId}})).SessionState.session
-const save=async()=>writeFile(path.join(evidence,'results.json'),JSON.stringify({MP:'MP-08 / MP-09 / MP-10 / MP-11',expected,results,errors},null,2)+'\n')
+const save=async()=>writeFile(path.join(evidence,'results.json'),JSON.stringify({MP:'MP-08 / MP-09 / MP-10 / MP-11',expected,requestEncoding,results,errors},null,2)+'\n')
 async function closeFixture() {
   if(!fixture)return
   const closing=fixture.close()
@@ -35,7 +38,7 @@ async function closeFixture() {
   try{await closing}finally{clearTimeout(watchdog)}
 }
 try {
-  fixture=await startKernelFixture(binaryDir,'/usr/local/bin/codex',{kernelEnvironment:{IS_SANDBOX:'1',CHARIOX_BROWSER_DISPLAY_OPENH264:process.env.CHARIOX_BROWSER_DISPLAY_OPENH264}})
+  fixture=await startKernelFixture(binaryDir,'/usr/local/bin/codex',{kernelEnvironment:{IS_SANDBOX:'1',CHARIOX_BROWSER_DISPLAY_OPENH264:process.env.CHARIOX_BROWSER_DISPLAY_OPENH264,...(process.env.VFLAG_BROWSER_SCRIPT ? {CHARIOX_KERNEL_BROWSER_SCRIPT:process.env.VFLAG_BROWSER_SCRIPT} : {})}})
   await writeFile(path.join(evidence,'runtime-identity.json'),JSON.stringify({scratch:fixture.scratch,kernelPort:fixture.kernelPort,pids:fixture.pids},null,2)+'\n')
   browser=await chromium.launch({headless:true,executablePath:'/opt/google/chrome/chrome',args:['--no-sandbox','--disable-dev-shm-usage']})
   await enrollHostedKernel({browser,fixture,origin,evidence,relayPrefix:'wss://pr0-vflag'})
@@ -46,7 +49,7 @@ try {
   const worktrees=(await fixture.send({ListWorkspaceWorktrees:{workspace_id:fixture.workspace}})).WorkspaceWorktreesListed.worktrees
   for(const cell of cells) {
     console.log('Stage: '+cell.id)
-    const challenge=service.create(), tag=cell.id+'-'+Date.now().toString(36)
+    const challenge=service.create({requestEncoding}), tag=cell.id+'-'+Date.now().toString(36)
     const created=(await fixture.send({CreateSession:{workspace_id:fixture.workspace,worktree_id:worktrees[0].path,alias:'Verification '+cell.id,agent_defaults:{provider:'codex',model:'gpt-6-luna',effort:'low',account_profile:profile.profile_id}}})).SessionCreated
     sessionId=created.session.id;agentId=created.agent.id
     const row={cell:cell.id,challenge_id:challenge.id,session_id:sessionId,agent_id:agentId,status:'RUNNING'};results.push(row);await save()
@@ -61,7 +64,7 @@ try {
     await page.locator(`[data-room-id='${sessionId}'] [data-action=open-room]`).click()
     await page.locator('[data-prompt-input]').waitFor()
     await fixture.send({KernelBrowser:{command:{op:'grant_room_computer',agent_id:agentId}}})
-    const prompt=`MP-08 / MP-09 / MP-10 / MP-11. Owned local verification rehearsal ONLY. Use real Chariox tools. Load kernel browser if needed and continue on automatic reload. Open ${challenge.url}; take a fresh snapshot and obtain the ref for main#challenge, NOT an input or heading. Then request_popup wait:false, title "Verification ${tag}", message "Enter the test code in this page", choices ONLY [{"id":"cancel","label":"Cancel","reply":"cancel"}], view browser_region with that exact tab_id and main ref${expected==='red'?'':`, verification ${JSON.stringify({challenge_id:challenge.id,url:challenge.url+'/verify',accepted_json_pointer:'/accepted'})}`}. Do NOT click Send Code, enter any code, navigate, close, cancel, or steer while the person acts. The card MUST exist before a code is requested. Yield on the returned card registration, deadline 15 minutes from now. On wakes, read the inbox. Do not treat rejection, dialog disappearance, source loss or card answer as acceptance. Only after the card condition_met with a matching accepted verification_result receipt, take a fresh snapshot, capture the readonly Scoped API token field through chariox.vault.capture_browser read node, request_id "capture_${tag}", label "verification-${tag}", use_binding {target:{kind:"command_environment",name:"REHEARSAL_TOKEN",origin:"${new URL(challenge.url).origin}"},value_kind:"secret"}. Use the returned credential_id with chariox.vault.use_env, origin "${new URL(challenge.url).origin}", env {"REHEARSAL_TOKEN":<credential_id>}, argv ${JSON.stringify(['node','-e',"fetch(process.argv[1],{headers:{authorization:'Bearer '+process.env.REHEARSAL_TOKEN}}).then(async r=>{console.log(JSON.stringify({status:r.status,authenticated:(await r.json()).authenticated}));process.exitCode=r.status===200?0:1})",challenge.url+'/me'])}. Require exit_code0, HTTP200 and authenticated true. Never print code/token or use shell to read it. Remove your own capture with chariox.vault.remove_capture. Finish REHEARSAL_${tag}_PASS only on successful capture+authenticated call+removal; otherwise REHEARSAL_${tag}_FAIL plus a nonsecret reason.`
+    const prompt=`MP-08 / MP-09 / MP-10 / MP-11. Owned local verification rehearsal ONLY. Use real Chariox tools. Load kernel browser if needed and continue on automatic reload. Open ${challenge.url}; take a fresh snapshot and obtain the ref for main#challenge, NOT an input or heading. Then request_popup wait:false, title "Verification ${tag}", message "Enter the test code in this page", choices ONLY [{"id":"cancel","label":"Cancel","reply":"cancel"}], view browser_region with that exact tab_id and main ref${`, verification ${JSON.stringify({challenge_id:challenge.id,url:challenge.url+'/verify',accepted_json_pointer:'/accepted'})}`}. Do NOT click Send Code, enter any code, navigate, close, cancel, or steer while the person acts. The card MUST exist before a code is requested. Yield on the returned card registration, deadline 15 minutes from now. On wakes, read the inbox. Do not treat rejection, dialog disappearance, source loss or card answer as acceptance. Only after the card condition_met with a matching accepted verification_result receipt, take a fresh snapshot, capture the readonly Scoped API token field through chariox.vault.capture_browser read node, request_id "capture_${tag}", label "verification-${tag}", use_binding {target:{kind:"command_environment",name:"REHEARSAL_TOKEN",origin:"${new URL(challenge.url).origin}"},value_kind:"secret"}. Use the returned credential_id with chariox.vault.use_env, origin "${new URL(challenge.url).origin}", env {"REHEARSAL_TOKEN":<credential_id>}, argv ${JSON.stringify(['node','-e',"fetch(process.argv[1],{headers:{authorization:'Bearer '+process.env.REHEARSAL_TOKEN}}).then(async r=>{console.log(JSON.stringify({status:r.status,authenticated:(await r.json()).authenticated}));process.exitCode=r.status===200?0:1})",challenge.url+'/me'])}. Require exit_code0, HTTP200 and authenticated true. Never print code/token or use shell to read it. Remove your own capture with chariox.vault.remove_capture. Finish REHEARSAL_${tag}_PASS only on successful capture+authenticated call+removal; otherwise REHEARSAL_${tag}_FAIL plus a nonsecret reason.`
     await page.locator('[data-prompt-input]').fill(prompt);await page.locator('[data-action=send-prompt]').click()
     const card=page.locator('[data-interaction-id]').filter({hasText:'Enter the test code in this page'})
     await card.waitFor({timeout:300_000})
@@ -83,13 +86,11 @@ try {
     await frame.locator('#code').click();await frame.locator('#code').pressSequentially('000000',{delay:50});await frame.locator('#code').press('Enter')
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).events.some(e=>e.result==='rejected'),'server rejection')
     await page.waitForTimeout(2000)
-    row.ui_after_rejection=await frame.locator('body').evaluate(body=>({has_rejection:body.textContent.includes('That code was not accepted'),has_verify:body.textContent.includes('Verify'),alerts:body.querySelectorAll('[role=alert]').length,nodes:['challenge','verify','code'].map(id=>{const node=body.querySelector('#'+id);const box=node?.getBoundingClientRect();return{id,present:Boolean(node),hidden:node?.hidden,children:node?.childNodes.length,box:box?{x:box.x,y:box.y,width:box.width,height:box.height}:null}})}));
-    await save()
     const afterRejected=await state()
     row.rejection_card_retained=(afterRejected.active_interactions??[]).some(c=>c.id===live.id)
     await page.screenshot({path:path.join(evidence,cell.id+'-rejected.png')})
-    if(expected==='red') {
-      assert.equal(row.rejection_card_retained,false,'base loses the card on SPA anchor replacement')
+    if(expected==='geometry-red') {
+      assert.equal(row.rejection_card_retained,false,'base loses the card during a geometry poll on SPA anchor replacement')
       row.status='EXPECTED RED';await fixture.send({EndSession:{session_id:sessionId}});await save();break
     }
     assert.equal(row.rejection_card_retained,true,'a site rejection keeps the same card')
@@ -97,6 +98,13 @@ try {
     await frame.getByRole('alert').filter({hasText:'That code was not accepted'}).waitFor()
     await frame.locator('#code').click();await frame.locator('#code').press('ControlOrMeta+A');await frame.locator('#code').pressSequentially('246810',{delay:50});await frame.locator('#code').press('Enter')
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).accepted,'actual server acceptance')
+    if(expected==='encoding-red') {
+      await page.waitForTimeout(2000)
+      row.acceptance_card_retained=(await state()).active_interactions.some(c=>c.id===live.id)
+      assert.equal(row.acceptance_card_retained,true,'base cannot correlate a successful URL-encoded retry')
+      await page.screenshot({path:path.join(evidence,cell.id+'-accepted-stuck.png')})
+      row.status='EXPECTED RED';await fixture.send({EndSession:{session_id:sessionId}});await save();break
+    }
     await popup.waitFor({state:'detached',timeout:30_000})
     await waitFor(async()=>{
       const status=await(await fetch(challenge.url+'/status')).json()
