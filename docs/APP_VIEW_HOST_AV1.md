@@ -24,7 +24,7 @@ browser launch, and a zero-network capture covering the whole browser tree.
 | --- | --- | --- | --- |
 | Chrome 155.0.8059.39, Linux headless, unrestricted fresh ordinary profile | Both Apps at DPR1/2 | FAIL: frame-triggered TCP speculation and DNS | None |
 | Chrome for Testing 155.0.8059.79, unrestricted profile | Both Apps at DPR1/2 | Same FAIL | None |
-| Chrome155.39, dedicated restricted launch/profile | Both Apps at DPR1/2 with data/blob stylesheet CSP | Frame controls improved; whole-tree gate remains FAIL on the IPv6 route socket; full matrix recorded below | None |
+| Chrome155.39 and 155.79, dedicated restricted launch/profile | Both Apps at DPR1/2 with data/blob stylesheet CSP | 72/72 frame checks and controls per engine pass; whole-tree gate FAIL on the IPv6 route socket | None |
 | Firefox, Safari/WebKit, Edge, macOS/Windows default browsers, native WebViews | NOT RUN | NOT RUN | None |
 
 The original captures did not record PIDs; historical PIDs cannot be recovered
@@ -266,6 +266,26 @@ binding/signature contexts as well, with native renderer PID marks and explicit
 parent URLs for all captured frames. Both are honest nonzero gate runs.
 The earlier `enforce-{probe,launch-probe,prefs-probe}/` captures isolate the
 original attribution, flags-only result and additional prediction preference.
+The final OSS runtime/test head is `e6e204fc6a364256ed4e744d11d7ccd1325bdb75`;
+Cloud is `8d6c93365fff491fe7c8713abb476e41ab11c121`. On each engine the
+complete result is 72/72 frame/response-policy checks, 72/72 positive controls,
+4/4 reference renders and passing auxiliary checks. All 81 strict browser
+captures have zero DNS/unknown/incomplete/unidentified operations; only the
+specified browser route socket remains. Both browser commands exit 1 solely
+for `whole-browser-tree-zero-network`. No narrower gate is accepted.
+`ENFORCEMENT_IDENTITY.json` records exact source/artifact hashes and results.
+`ATTRIBUTION.md` maps the seven baseline classes to actual renderer/PID/TID and
+destinations. `enforce-complete-15579/` repeats the frozen assets on the newer
+engine. `all-write-idle/` additionally traces write/writev/sendfile/splice in an
+idle browser without App content, to cross-check the route probe's lack of data.
+
+Receiver identity and test phase are separate. The independent CSP-removal
+positive control deliberately uses the same receiver as its strict pair.
+Consequently `strictReceived` includes its one `/launch-frame-csp-control` hit;
+this is labeled as a control phase. Every actual strict phase has zero receiver
+traffic. Per-case rows and `launch` results preserve that distinction; the gate
+does not silently ignore a strict request.
+
 Each final run has:
 
 | Check | Evidence |
@@ -277,7 +297,7 @@ Each final run has:
 | Independent resolver/direct-IP and frame-CSP controls; idle browser with no App | `results.json` → `launch`, `process-tree/launch-*` |
 | Capture parser rejects DNS, unknown senders, descriptor reuse, batched destinations and incomplete captures | `verifier.log`; root `enforce-gate-before.log`, `enforce-gate-after.log`, `enforce-completeness-before.log`, `enforce-all-unit.log` |
 | Data/blob-only enforced response policy, old unsafe-inline policy fails first | Root `enforce-policy-before.log`, `enforce-policy-after.log` |
-| Separate HTTP/TCP/UDP receivers; zero-byte strict sockets; only this drill's DNS names captured | `receiver.pcap`, `receiver-ports.json`, `capture-filter.txt`, `results.json` → `receiver`, `tcpdump.log`, `capture-process.json` |
+| Separate HTTP/TCP/UDP receivers and per-phase connections; only this drill's DNS names captured | `receiver.pcap`, `receiver-ports.json`, `capture-filter.txt`, `results.json` → `receiver`, `tcpdump.log`, `capture-process.json` |
 | Cookie/local/session/database/cache/service-worker revisit controls | `results.json` → `isolation.persistence` |
 | Native clipboard/file input, wasm versus eval, bootstrap immutability | `results.json` → `isolation` |
 | Exact parent/source binding; signed sibling control; invalid signature never mounts | `results.json` → `sourceBinding`, `rejectedBeforeExecution` |
