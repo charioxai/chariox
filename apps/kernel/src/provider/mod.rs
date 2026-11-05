@@ -82,8 +82,6 @@ pub(crate) use claude::{
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
-#[cfg(test)]
-pub(crate) use claude_runtime::initialize_claude_runtime;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 pub(crate) use claude_runtime::{bounded_result, bounded_result_images};
