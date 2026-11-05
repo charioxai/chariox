@@ -44,11 +44,30 @@ test("MP-08/MP-10/MP-11 same-tab image of an App Tab laid out beside its panel",
   assert.equal(capture.geometry.clientWidth, 6);
 });
 
-function fixture(scenario, width = 8) {
+for (const dpr of [1, 2]) {
+  test(`MP-08/MP-10 Browser image matches the observed scrolled content at DPR${dpr}`, async () => {
+    const width = dpr === 1 ? 7 : 7.5;
+    const { browser, connection, request } = fixture("unprotected", width, 4, dpr);
+    const geometry = { pageX: 17, pageY: 29, clientWidth: width, clientHeight: 4, scale: 1 };
+    const send = connection.send.bind(connection);
+    connection.send = async (method, params, sessionId) => method === "Page.getLayoutMetrics"
+      ? { cssVisualViewport: geometry } : send(method, params, sessionId);
+    const capture = await browser.captureArtifact(request);
+    const image = Buffer.from(capture.data_base64, "base64");
+    assert.equal(image.readUInt32BE(16), geometry.clientWidth * dpr);
+    assert.equal(image.readUInt32BE(20), geometry.clientHeight * dpr);
+    assert.deepEqual(capture.geometry, geometry);
+    assert.deepEqual(capture.viewport, request.viewport, "desktop identity remains canonical");
+    assert.deepEqual(connection.calls.find(call => call.method === "Page.captureScreenshot").params.clip,
+      { x: 17, y: 29, width, height: 4, scale: 1 });
+  });
+}
+
+function fixture(scenario, width = 8, height = 6, dpr = 1) {
   let captured = false;
   const calls = [];
   // A distinct synthetic CDP image lets the test prove exact source vs mask bytes.
-  const source = Buffer.concat([blackPng(width, 6), Buffer.from("synthetic-CDP-source")]);
+  const source = Buffer.concat([blackPng(width * dpr, height * dpr), Buffer.from("synthetic-CDP-source")]);
   const frame = (id, parentId, loaderId = `doc-${id}`, childFrames = []) => ({ frame: { id, parentId, loaderId }, childFrames });
   const connection = {
     browserInstanceId: "test-browser", calls,
@@ -58,7 +77,7 @@ function fixture(scenario, width = 8) {
         if (sessionId === "root") return { frameTree: frame("root", undefined, "doc-root", [frame("local", "root", captured && scenario === "local_navigation" ? "changed" : "doc-local"), ...(captured && scenario === "new_child" ? [frame("new", "root")] : [])]) };
         return { frameTree: frame(sessionId, captured && scenario === "reparented" && sessionId === "child" ? "foreign-root" : ({ child: "root", nested: "child", foreign: "foreign-root" })[sessionId], captured && scenario === "child_navigation" && sessionId === "child" ? "changed" : `doc-${sessionId}`) };
       }
-      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: width, clientHeight: 6, scale: 1 } };
+      if (method === "Page.getLayoutMetrics") return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: width, clientHeight: height, scale: 1 } };
       if (method === "Target.getTargets") return { targetInfos: [["child", "root"], ["nested", "child"], ["foreign", "foreign-root"]].map(([targetId, parentFrameId]) => ({ type: "iframe", targetId, parentFrameId })) };
       if (method === "Target.attachToTarget") return { sessionId: params.targetId };
       if (method === "DOMSnapshot.captureSnapshot") {
@@ -75,6 +94,7 @@ function fixture(scenario, width = 8) {
   const browser = new BrowserCdpClient();
   browser.connection = connection; browser.browserGeneration = 1;
   browser.resolvePageTarget = async () => ({ connection, sessionId: "root" });
-  browser.viewportByTarget.set("tab", { key: JSON.stringify({ width: 8, height: 6, deviceScaleFactor: 1, mobile: false, screenWidth: 8, screenHeight: 6 }) });
-  return { browser, connection, source, request: { target_id: "tab", document_id: "doc-root", browser_generation: 1, viewport, kind: "image" } };
+  const canonical = { ...viewport, device_scale_factor: dpr, desktop_pixel_width: 8 * dpr, desktop_pixel_height: 6 * dpr };
+  browser.viewportByTarget.set("tab", { key: JSON.stringify(browser.targetMetrics("tab", canonical)) });
+  return { browser, connection, source, request: { target_id: "tab", document_id: "doc-root", browser_generation: 1, viewport: canonical, kind: "image" } };
 }

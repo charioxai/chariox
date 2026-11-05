@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { launchChromium } from './browser-protection-fixture.mjs';
 import { measureBrowserProtection } from './browser-protection-regions.mjs';
 import { captureProtectedPage, decodePng } from './kernel-browser-pixels.mjs';
+import { captureProtectedBrowserImage } from './browser-controller-image.mjs';
 
 const secret = 'sk_test_51VaudCapbrowserRevealValue';
 const hash = (value) => createHash('sha256').update(value).digest('hex');
@@ -107,5 +108,24 @@ for (const dpr of [1, 2]) {
     const reveal = await ref('#reveal');
     await assert.rejects(browser.performAction({ target_id: targetId, document_id: documentId, node_ref: reveal,
       action: { kind: 'fill', text: secret, expected_document_url: url, plain_target: true }, timeout_ms: 500 }), /not become actionable|editable text field/);
+  }));
+}
+
+for (const dpr of [1, 2]) {
+  test(`MP-08/MP-11 DPR${dpr}: scrolled Browser artifact keeps the filled field masked`, () => setup(dpr, async ({ browser, evaluate, ref, policy, protect, targetId, documentId }) => {
+    await evaluate("document.body.style.height='2600px';document.querySelector('#env').style.top='1500px';document.querySelector('#env').value=" + JSON.stringify(secret) + ";scrollTo(0,1300)");
+    protect(await ref('#env'), secret);
+    const { connection, sessionId } = await browser.resolvePageTarget(targetId);
+    const visual = (await connection.send('Page.getLayoutMetrics', {}, sessionId)).cssVisualViewport;
+    const geometry = Object.fromEntries(['pageX','pageY','clientWidth','clientHeight','scale'].map(key => [key,visual[key]]));
+    assert(geometry.pageY > 0, 'exercise a real scrolled document');
+    const viewport = { css_width:1280, css_height:800, device_scale_factor:dpr, desktop_pixel_width:1280*dpr, desktop_pixel_height:800*dpr };
+    const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, geometry, protectedValues:new Set(policy.values), fillTargets:policy.targets });
+    const image = decodePng(captured.bytes.toString('base64'), dpr, {width:geometry.clientWidth*dpr,height:geometry.clientHeight*dpr});
+    const rect = await evaluate("(()=>{const r=document.querySelector('#env').getBoundingClientRect();return {x:r.x,y:r.y}})()");
+    const offset = (Math.round((rect.y+10)*dpr)*image.width+Math.round((rect.x+10)*dpr))*4;
+    assert.deepEqual([...image.pixels.subarray(offset,offset+3)],[0,0,0], 'the viewport-relative filled field is masked after a document-coordinate clip');
+    assert.deepEqual([...image.pixels.subarray(0,3)],[255,255,255], 'a precise field mask preserves the rest of the captured page');
+    assert.equal(captured.redaction,'fill_targets');
   }));
 }

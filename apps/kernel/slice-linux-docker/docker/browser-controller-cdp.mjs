@@ -1424,7 +1424,7 @@ export class BrowserCdpClient {
       if (request.kind === "identity") {
         artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
       } else if (request.kind === "image") {
-        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, geometry, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
         artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
         redaction = captured.redaction;
       } else if (request.kind === "network") {
