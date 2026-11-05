@@ -360,9 +360,30 @@ impl KernelRuntimeState {
         operation: &'static str,
         interaction_name: &'static str,
     ) -> Result<super::PendingInteractionResolution, DaemonError> {
+        let deadline = interaction
+            .timeout_sec()
+            .map(|seconds| tokio::time::Instant::now() + std::time::Duration::from_secs(seconds));
+        self.await_vault_interaction_until(
+            session_id,
+            interaction,
+            operation,
+            interaction_name,
+            deadline,
+        )
+        .await
+    }
+
+    pub(super) async fn await_vault_interaction_until(
+        &self,
+        session_id: &str,
+        interaction: crate::session::RuntimeInteraction,
+        operation: &'static str,
+        interaction_name: &'static str,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<super::PendingInteractionResolution, DaemonError> {
         let interaction_id = interaction.id().to_string();
-        let timeout_sec = interaction.timeout_sec();
-        let resolution_rx = self.create_terminal_credential_interaction(session_id, interaction)?;
+        let mut resolution_rx =
+            self.create_terminal_credential_interaction(session_id, interaction)?;
         // A cancelled waiter closes its popup instead of leaving it open to
         // silently discard a passphrase.
         let _close = CloseInteractionOnDrop {
@@ -370,25 +391,24 @@ impl KernelRuntimeState {
             session_id: session_id.to_string(),
             interaction_id: interaction_id.clone(),
         };
-        if let Some(timeout_sec) = timeout_sec {
-            let state = self.clone();
-            let timeout_session_id = session_id.to_string();
-            let timeout_interaction_id = interaction_id;
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(timeout_sec)).await;
-                let _ = state
-                    .timeout_runtime_interaction(&timeout_session_id, &timeout_interaction_id)
-                    .await;
-            });
-        }
-        resolution_rx
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation,
-                message: format!(
-                    "{interaction_name} interaction dropped before resolution: {error}"
-                ),
-            })
+        let resolution = match deadline {
+            Some(deadline) => tokio::select! {
+                biased;
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.timeout_runtime_interaction(session_id, &interaction_id).await?;
+                    // A queued late answer cannot extend an expired operation.
+                    Ok(super::PendingInteractionResolution {
+                        status: "timed_out", choice_id: None, reply: None,
+                    })
+                }
+                result = &mut resolution_rx => result,
+            },
+            None => resolution_rx.await,
+        };
+        resolution.map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!("{interaction_name} interaction dropped before resolution: {error}"),
+        })
     }
 
     pub(crate) async fn ensure_vault_unlocked_for_command_context(
@@ -522,14 +542,19 @@ impl KernelRuntimeState {
             return Ok(VaultUnlockGuard::unlocked_until_expiry(vault_path));
         }
 
-        // A wrong passphrase asks again, in a card that says so, instead of failing the agent's operation.
+        // Retries share the provider tool's original budget; a replacement card
+        // must not outlive the call that is waiting for it.
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(vault_unlock_card_seconds(operation));
         let mut problem: Option<String> = None;
         let (status, lock_after_operation) = loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
             let mut interaction = vault_passphrase_interaction(
                 &self.vault_requester(session_id, agent_id),
                 agent_id,
                 &vault_config,
-                vault_unlock_card_seconds(operation),
+                seconds.max(1),
             );
             if let Some(problem) = problem.as_deref() {
                 interaction = interaction.noting_problem(problem);
@@ -541,7 +566,7 @@ impl KernelRuntimeState {
                     operation,
                     &vault_path,
                     &mut unlocks,
-                    true,
+                    deadline,
                 )
                 .await?
             else {
@@ -1241,8 +1266,78 @@ mod tests {
     }
 
     // PCD-04: a wrong passphrase asks again in a card that says so; the agent's operation waits and then goes on.
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_wrong_passphrase_asks_again_instead_of_failing_the_agents_operation() {
+        wrong_passphrase_retry(false).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wrong_passphrase_keeps_the_original_tool_deadline() {
+        wrong_passphrase_retry(true).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_vault_wait_ignores_a_queued_answer() {
+        let workspace = crate::test_support::TestWorktree::new("vault-queued-answer");
+        let mut app =
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let config = state
+            .owned
+            .config_projection
+            .snapshot()
+            .user_config
+            .credential_vault;
+        let interaction = vault_passphrase_interaction(
+            &state.vault_requester(session.id(), agent.id()),
+            agent.id(),
+            &config,
+            60,
+        );
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        let waiting = state.await_vault_interaction_until(
+            session.id(),
+            interaction.clone(),
+            "runtime_tool_test",
+            "vault unlock",
+            Some(deadline),
+        );
+        tokio::pin!(waiting);
+        tokio::select! {
+            result = &mut waiting => panic!("must await a reply: {result:?}"),
+            () = async {
+                loop {
+                    if state.owned.session_store.get_session(session.id()).unwrap()
+                        .active_interaction_for_agent(agent.id()).is_some() { break }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+            } => {}
+        }
+        // Hold the waiter unpolled while the owner reply is queued after its budget.
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        state
+            .resolve_terminal_runtime_interaction(
+                session.id(),
+                interaction.id(),
+                "passphrase",
+                Some("fixture reply"),
+                Some(crate::session::DEFAULT_LOCAL_USER_ID),
+            )
+            .await
+            .unwrap();
+        let resolution = waiting.await.unwrap();
+        assert_eq!(resolution.status, "timed_out");
+        assert!(
+            resolution.reply.is_none(),
+            "an expired waiter must discard the queued passphrase"
+        );
+    }
+
+    async fn wrong_passphrase_retry(expire: bool) {
         let workspace = crate::test_support::TestWorktree::new("vault-wrong-passphrase");
         let private_state = crate::test_support::TestWorktree::new("vault-wrong-passphrase-state");
         let path = private_state.path().join("vault.json");
@@ -1259,12 +1354,13 @@ mod tests {
         let state =
             super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
         let (session_id, agent_id) = (session.id().to_owned(), agent.id().to_owned());
+        let started = tokio::time::Instant::now();
         let asking = {
             let (state, session_id, agent_id) =
                 (state.clone(), session_id.clone(), agent_id.clone());
             tokio::spawn(async move {
                 state
-                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "test")
+                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "runtime_tool_test")
                     .await
                     .map(|_| ())
             })
@@ -1319,6 +1415,7 @@ mod tests {
             }
         };
         let first = next_card(None).await;
+        tokio::time::advance(std::time::Duration::from_secs(200)).await;
         answer(&first, "not the passphrase").await;
         let again = next_card(Some(first.id().to_owned())).await;
         assert!(
@@ -1329,6 +1426,51 @@ mod tests {
             again.message()
         );
         assert!(!asking.is_finished(), "the agent's operation still waits");
+        if expire {
+            assert!(
+                again.timeout_sec().unwrap() <= 80,
+                "the replacement gets only the original budget's remainder"
+            );
+            let result =
+                tokio::time::timeout_at(started + std::time::Duration::from_secs(281), asking)
+                    .await
+                    .expect("the operation settles before its provider tool deadline")
+                    .unwrap();
+            assert!(matches!(
+                result,
+                Err(DaemonError::VaultUnlock {
+                    code: "vault_unlock_timed_out",
+                    ..
+                })
+            ));
+            assert!(state
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .unwrap()
+                .active_interaction_for_agent(&agent_id)
+                .is_none());
+            assert!(
+                !crate::secret::chariox_encrypted_vault_status(&path)
+                    .unwrap()
+                    .unlocked
+            );
+            assert!(
+                state
+                    .resolve_terminal_runtime_interaction(
+                        &session_id,
+                        again.id(),
+                        "unlock_kernel",
+                        Some("test passphrase"),
+                        Some(crate::session::DEFAULT_LOCAL_USER_ID)
+                    )
+                    .await
+                    .is_err(),
+                "a late answer cannot resume the expired operation"
+            );
+            std::fs::remove_file(&path).unwrap();
+            return;
+        }
         answer(&again, "test passphrase").await;
         asking
             .await

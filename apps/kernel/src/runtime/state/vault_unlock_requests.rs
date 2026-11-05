@@ -70,7 +70,7 @@ impl KernelRuntimeState {
         operation: &'static str,
         vault_path: &Path,
         unlocks: &mut watch::Receiver<Option<VaultUnlockSurface>>,
-        accept_shared_unlock: bool,
+        deadline: tokio::time::Instant,
     ) -> Result<Option<PendingInteractionResolution>, DaemonError> {
         let id = interaction.id().to_owned();
         let agent_id = interaction.agent_id().map(str::to_owned);
@@ -78,12 +78,19 @@ impl KernelRuntimeState {
             .as_deref()
             .map(|agent| self.begin_vault_wait(session_id, agent))
             .unwrap_or_default();
-        let wait = self.await_vault_interaction(session_id, interaction, operation, "vault unlock");
+        let wait = self.await_vault_interaction_until(
+            session_id,
+            interaction,
+            operation,
+            "vault unlock",
+            Some(deadline),
+        );
         tokio::pin!(wait);
         let result = loop {
             tokio::select! {
+                biased;
                 result = &mut wait => break result.map(Some),
-                Ok(()) = unlocks.changed(), if accept_shared_unlock => {
+                Ok(()) = unlocks.changed() => {
                     let surface = (*unlocks.borrow_and_update()).unwrap_or(VaultUnlockSurface::Card);
                     match crate::secret::chariox_encrypted_vault_status(vault_path) {
                         Ok(status) if status.unlocked => {
