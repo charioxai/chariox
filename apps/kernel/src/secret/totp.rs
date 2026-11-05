@@ -265,11 +265,17 @@ fn segment_candidates(groups: &[&str], valid: &impl Fn(&str) -> bool) -> Vec<Str
     keys
 }
 
-/// The element shows nothing but groups. One case means any valid shorter run of the same groups
-/// could be the key with label words stuck to it ("SEED ABCD … CODE"), so only the unique run
-/// counts. Several cases mean a mixed-case key shown in a regular pattern: equal-size case blocks.
+/// The element shows nothing but groups. A standard secret size (16 or 32 characters) is the key
+/// as shown, in any case: a service shows 128- and 160-bit secrets that way. The one accepted
+/// ambiguity is a 32-character element that is a 16-character key plus same-case label words of the
+/// same group size. Other sizes: one case means any valid shorter run of the same groups could be
+/// the key with label words stuck to it ("SEED ABCD … CODE"), so only the unique run counts.
+/// Several cases mean a mixed-case key shown in a regular pattern: equal-size case blocks.
 fn bare_key(groups: &[&str], valid: &impl Fn(&str) -> bool) -> Option<String> {
     let whole = window_key(groups, 0..groups.len(), valid)?;
+    if matches!(whole.len(), 16 | 32) {
+        return Some(whole);
+    }
     let segments = case_segments(groups);
     if segments.len() > 1 {
         let regular = segments
@@ -420,6 +426,48 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_key_of_a_standard_size_is_captured_whole_in_any_case() {
+        let config = TotpConfig {
+            digits: 8,
+            ..TotpConfig::default()
+        };
+        // 160-bit RFC 6238 key as eight groups; the first sixteen characters are a valid key too.
+        for shown in [
+            "abcd efgh ijkl mnop qrst uvwx yz23 4567",
+            "GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ",
+            "GEZD GNBV GY3T QOJQ GEZD gnbv gy3t qojq",
+            "GEZD gnbv GY3T qojq gezd GNBV gy3t QOJQ",
+            "gezd-gnbv-gy3t-qojq-gezd-gnbv-gy3t-qojq",
+            "GEZD\nGNBV\nGY3T\nQOJQ\nGEZD\nGNBV\nGY3T\nQOJQ",
+            // 80-bit key as four groups.
+            "jbsw y3dp ehpk 3pxp",
+            "JBSW Y3DP EHPK 3PXP",
+        ] {
+            let located = locate(shown).unwrap_or_else(|| panic!("no key in {shown:?}"));
+            let (stored, _) = normalize(&located, &config).unwrap();
+            let expected = shown
+                .chars()
+                .filter(char::is_ascii_alphanumeric)
+                .collect::<String>()
+                .to_ascii_uppercase();
+            assert!(stored.as_str() == expected, "{shown:?} stored another seed");
+        }
+        // Inside prose, or at a size without a standard meaning, nothing is guessed.
+        for text in [
+            "SEED abcd efgh ijkl mnop qrst uvwx yz23 4567 CODE",
+            "Key: abcd efgh ijkl mnop qrst uvwx yz23 4567.",
+        ] {
+            if let Some(located) = locate(text) {
+                let (stored, _) = normalize(&located, &config).unwrap();
+                assert!(
+                    stored.as_str() == "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+                    "{text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn capture_stores_the_key_as_shown_or_nothing() {
         let keys: [&[u8]; 4] = [
             b"1234567890",
@@ -506,18 +554,36 @@ mod tests {
                         let bare = before.is_empty() && after.is_empty();
                         let must_capture = unambiguous
                             && shown_len % 8 == 0
-                            && (!mixed_case || (bare && name == "mixed halves"))
+                            && (!mixed_case
+                                || (bare
+                                    && (name == "mixed halves"
+                                        || shown_len == 32
+                                        || shown_len == 16)))
                             && !(bare
                                 && !mixed_case
                                 && shown_len > 16
+                                && shown_len != 32
                                 && !(name.contains("padded") && padded.contains('=')));
                         assert!(!must_capture, "{name} {before:?}/{after:?} refused");
                         continue;
                     };
                     captured += 1;
                     let (stored, _) = normalize(&located, &TotpConfig::default()).unwrap();
+                    // The documented limit: a bare element of 16 or 32 characters is the key as
+                    // shown, even if it is a shorter key plus same-case label words.
+                    let bare_text = text.chars().all(|c| {
+                        c.is_ascii_alphanumeric() || c == '=' || c == '-' || c.is_whitespace()
+                    });
+                    let with_labels = format!(
+                        "{}{plain}{}",
+                        before.trim().to_ascii_uppercase(),
+                        after.trim().to_ascii_uppercase()
+                    );
+                    let standard_size_limit = bare_text
+                        && matches!(stored.len(), 16 | 32)
+                        && stored.as_str() == with_labels;
                     assert!(
-                        stored.as_str() == plain,
+                        stored.as_str() == plain || standard_size_limit,
                         "{name} {before:?}/{after:?} stored a different seed"
                     );
                 }
