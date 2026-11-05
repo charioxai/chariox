@@ -125,6 +125,8 @@ for (const drag of [false, true]) for (const paste of [false, true]) {
     const pane = new ScrollBoxRenderable(harness.renderer, { width: 40, height: 1, focusable: true })
     const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2 })
     pane.add(text); harness.renderer.root.add(pane); harness.renderer.root.add(prompt)
+    // This regression owns focus routing; the real clipboard path is covered separately.
+    harness.renderer.copyToClipboardOSC52 = () => false
     const ref = createPromptInputRefController<TextareaRenderable>()
     ref.assignInput(prompt); ref.focus()
     const noop = () => {}, off = () => false, empty = () => []
@@ -156,6 +158,7 @@ for (const drag of [false, true]) for (const paste of [false, true]) {
       const edit = paste ? "\x1b[200~z\x1b[201~" : "z"
       harness.renderer.stdin.emit("data", `\x1b[<0;1;1M${move}\x1b[<0;9;1m${edit}`)
       assert.equal(prompt.plainText, "z", "a release followed by an edit cannot wait for deferred focus")
+      await new Promise(resolve => setTimeout(resolve, 10))
     } finally { dispose(); harness.renderer.destroy() }
   })
 }
