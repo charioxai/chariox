@@ -302,7 +302,7 @@ pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -
 }
 
 /// Claude `-p` runs in Plan mode, or Build mode with the `Required` level, route tool
-/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// permission decisions through the runtime MCP `chariox.permission_prompt` tool, as
 /// their launch flags say; native TUI runs use the hook instead. Other runs
 /// neither list nor answer it.
 pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {

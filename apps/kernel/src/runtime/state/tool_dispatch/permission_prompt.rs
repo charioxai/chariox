@@ -6,7 +6,8 @@
 //! Claude expects: `{"behavior":"allow","updatedInput":...}` or
 //! `{"behavior":"deny","message":...}`. "Allow for this session" also answers with
 //! session-scoped rules, so Claude stops asking for the same kind of call in that
-//! run.
+//! run. Plan-mode ExitPlanMode only publishes a proposal: the provider runtime
+//! settles it before Build can start, leaving approval on the existing Implement action.
 
 use super::*;
 use crate::provider::{ProviderNativeInteractionResolution, RuntimeProviderRun};
@@ -60,6 +61,31 @@ impl KernelRuntimeState {
                     operation: OPERATION,
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
+        if provider_run.execution_mode() == crate::provider::AgentExecutionMode::Plan
+            && args.tool_name == "ExitPlanMode"
+        {
+            // Native exit only publishes the proposed plan. The runtime settles
+            // that turn and restarts in Plan; the existing Implement action is
+            // the person's approval to begin a Build turn.
+            let live = provider_run.state() == crate::provider::ProviderRunState::Running
+                && self
+                    .owned
+                    .active_turns
+                    .get(provider_run.id())
+                    .is_some_and(|turn| {
+                        turn.session_id == provider_run.session_id()
+                            && turn.agent_id == agent_id
+                            && !turn.settlement_requested
+                    });
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: if live {
+                    serde_json::json!({"behavior": "allow", "updatedInput": args.input})
+                } else {
+                    deny("This plan exit belongs to an ended turn.")
+                },
+            });
+        }
         let working_directory = provider_run.working_directory().map(PathBuf::as_path);
         let grant = session_grant(&args.tool_name, &args.input, working_directory);
         let scope = GrantScope {
