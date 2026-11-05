@@ -343,6 +343,9 @@ fn claude_assistant_transcript_chunks(
 
 /// Claude closes a call that a stopped session left open with a result of its own on resume.
 const CLAUDE_RESUME_REPAIR_RESULT_PREFIX: &str = "[Tool call interrupted:";
+/// Claude's result for a call the person stopped (or declined): the call was cancelled, not failed.
+const CLAUDE_STOPPED_CALL_RESULT_PREFIX: &str =
+    "The user doesn't want to proceed with this tool use.";
 
 fn claude_tool_result_transcript_chunks(
     value: &Value,
@@ -376,12 +379,19 @@ fn claude_tool_result_transcript_chunks(
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            let status = if !is_error {
+                "completed"
+            } else if content.starts_with(CLAUDE_STOPPED_CALL_RESULT_PREFIX) {
+                "cancelled"
+            } else {
+                "failed"
+            };
             // The result replaces the call's history entry, so it carries the call's name and input.
             let call = pending_tool_calls.remove(tool_use_id);
             let mut payload = serde_json::json!({
                 "id": tool_use_id,
                 "tool": call.as_ref().map_or("tool_result", |call| call.tool.as_str()),
-                "status": if is_error { "failed" } else { "completed" },
+                "status": status,
                 "output": content,
             });
             if !images.is_empty() {
