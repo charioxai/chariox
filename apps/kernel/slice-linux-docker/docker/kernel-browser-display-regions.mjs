@@ -22,7 +22,12 @@ function checkedTarget(target) {
  return target;
 }
 export function subscribeRegion(host,command,scope,signal,options={}) {
- return reserveDisplay(host,()=>subscribeReservedRegion(host,command,scope,signal,options));
+ return reserveDisplay(host,()=>subscribeReservedRegion(host,command,scope,signal,options)).catch(error=>{
+  // The private resolver can lose an issued node/epoch during measurement or capture startup.
+  // Translate only those reference refusals; malformed requests and ownership errors stay loud.
+  if(['region_epoch','region_target','region_identity','region_retired'].includes(error?.mirrorReason))refuse();
+  throw error;
+ });
 }
 async function subscribeReservedRegion(host,command,scope,signal,{Capture=NativeWindowRegionCapture}={}) {
  assertNotCancelled(signal);

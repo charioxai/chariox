@@ -352,3 +352,22 @@ test('MP-08/MP-10 a retired native window invalidates startup even while mirror 
  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
  assert.equal(f.host.displays.size,0);assert.equal(f.calls.filter(c=>c==='close').length,1);
 });
+
+for(const reason of ['region_epoch','region_target','region_identity','region_retired'])test(`MP-08/MP-10 private ${reason} during subscription is a stale public reference`,async()=>{
+ for(const stage of ['resolve','start']){
+  const f=fixture(),failure=Object.assign(Error(`MP-11: ${reason}`),{mirrorReason:reason});
+  class Capture extends f.Capture {async start(){throw failure;}}
+  if(stage==='resolve')f.host.mirror.v2.regions.resolve=async()=>{throw failure;};
+  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:stage==='start'?Capture:f.Capture}),{code:'user_domain_stale_reference'});
+  assert.equal(f.host.displays.size,0);
+  assert.equal(f.calls.filter(c=>c==='close').length,stage==='start'?1:0);
+ }
+});
+
+test('MP-11 subscription keeps malformed, capacity, geometry and foreign-owner failures loud',async()=>{
+ for(const reason of ['region_request','region_limit','region_geometry','region_input','region_display',undefined]){
+  const f=fixture(),failure=Object.assign(Error('MP-11: rejected'),reason?{mirrorReason:reason}:{});
+  f.host.mirror.v2.regions.resolve=async()=>{throw failure;};
+  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}),error=>error===failure);
+ }
+});
