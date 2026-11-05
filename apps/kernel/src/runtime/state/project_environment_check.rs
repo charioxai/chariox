@@ -63,6 +63,7 @@ impl KernelRuntimeState {
         let runtime = self.clone();
         let project_id = project.id().to_string();
         tokio::spawn(async move {
+            let stop = crate::provider::UtilityStop::default();
             let work = async {
                 // What the files declare is compared by the kernel itself; the agent adds its own judgement.
                 let with_agent = agent.is_some();
@@ -84,6 +85,7 @@ impl KernelRuntimeState {
                             &agent_id,
                             check_prompt(&facts, &record),
                             |answer| parse_proposals(answer, &record),
+                            &stop,
                         )
                         .await?;
                     for proposal in asked {
@@ -92,11 +94,14 @@ impl KernelRuntimeState {
                         }
                     }
                 }
+                // Work that ends after Stop leaves the proposals as they were.
+                if stop.is_stopped() {
+                    return Err(environment_error("Stopped"));
+                }
                 runtime.proposal_store().replace(&project_id, proposals)
             };
-            let outcome = tokio::select! {
-                outcome = work => outcome,
-                _ = handle.stopped() => return,
+            let Some(outcome) = handle.run_until_stopped(work, &stop).await else {
+                return;
             };
             match outcome {
                 Ok(()) => handle.finish(EnvironmentOperationState::Succeeded, None),

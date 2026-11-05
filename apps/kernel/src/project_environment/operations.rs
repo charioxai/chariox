@@ -176,6 +176,25 @@ impl OperationHandle {
         *self.live.stop.borrow()
     }
 
+    /// Runs `work` to its end and answers its result, or None after Stop. Stop asks the work to end
+    /// through `stop` and still waits for it: the operation stays live until its work has ended,
+    /// and dropping this handle afterwards is the point where that work is over.
+    pub(crate) async fn run_until_stopped<T>(
+        &self,
+        work: impl std::future::Future<Output = T>,
+        stop: &crate::provider::UtilityStop,
+    ) -> Option<T> {
+        tokio::pin!(work);
+        let done = tokio::select! {
+            done = &mut work => done,
+            _ = self.stopped() => {
+                stop.stop();
+                work.await
+            }
+        };
+        (!self.is_stopped()).then_some(done)
+    }
+
     /// Completes when Stop is pressed, so a long wait can be abandoned.
     pub(crate) async fn stopped(&self) {
         let mut stop = self.live.stop.subscribe();
@@ -270,6 +289,50 @@ mod tests {
         let after = operations.get("a").unwrap().unwrap();
         assert_eq!(after.state, EnvironmentOperationState::Cancelled);
         assert_eq!(after.source_label.as_deref(), Some("A"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn stop_keeps_the_operation_live_until_its_work_has_ended() {
+        let root = scratch();
+        let operations = EnvironmentOperations::new(&root, OperationChanges::new());
+        let Begun::Started(handle) = operations.begin(view("a")).unwrap() else {
+            panic!("new operation");
+        };
+        let stop = crate::provider::UtilityStop::default();
+        let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+        // Blocking work like a provider utility: it sees Stop only through `stop`, and ends later.
+        let work = {
+            let stop = stop.clone();
+            tokio::task::spawn_blocking(move || {
+                // Bounded, so a handle that never signals Stop fails the test instead of hanging it.
+                let give_up = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while !stop.is_stopped() && std::time::Instant::now() < give_up {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                ended_tx.send(()).unwrap();
+            })
+        };
+        let task = tokio::spawn(async move {
+            let answered = handle.run_until_stopped(work, &stop).await;
+            assert!(answered.is_none(), "Stop answers no result");
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        operations.cancel("a").unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(ended_rx.try_recv().is_err(), "the work is still running");
+        assert!(
+            lock(&operations.live).contains_key("a"),
+            "the operation was released while its work still ran"
+        );
+        task.await.unwrap();
+        assert!(ended_rx.try_recv().is_ok());
+        assert!(!lock(&operations.live).contains_key("a"));
+        assert_eq!(
+            operations.get("a").unwrap().unwrap().state,
+            EnvironmentOperationState::Cancelled
+        );
         let _ = fs::remove_dir_all(root);
     }
 

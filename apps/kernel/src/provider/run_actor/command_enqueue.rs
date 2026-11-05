@@ -60,6 +60,7 @@ impl ProviderRunActorMailbox {
         timeout: std::time::Duration,
         policy: ProviderUtilityExecutionPolicy,
         admission: Option<crate::provider::ProviderUtilityAdmission>,
+        stop: Option<crate::provider::UtilityStop>,
     ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
@@ -73,7 +74,7 @@ impl ProviderRunActorMailbox {
             admission,
             cancellation: policy
                 .is_metadata_only()
-                .then(|| self.utility_cancellations.for_run(&provider_run_id)),
+                .then(|| self.utility_cancellations.for_run(&provider_run_id, stop)),
             response: response_tx,
         }) {
             Ok(()) => self.operation_lanes.record_command_enqueued(),

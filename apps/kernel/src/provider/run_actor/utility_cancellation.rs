@@ -12,10 +12,16 @@ pub(super) struct MetadataUtilityCancellations(Arc<Mutex<BTreeMap<String, Arc<At
 pub(super) struct MetadataUtilityCancellation {
     epoch: Arc<AtomicU64>,
     admitted_epoch: u64,
+    /// The Stop of the one request this utility answers.
+    request: Option<crate::provider::UtilityStop>,
 }
 
 impl MetadataUtilityCancellations {
-    pub(super) fn for_run(&self, run_id: &str) -> MetadataUtilityCancellation {
+    pub(super) fn for_run(
+        &self,
+        run_id: &str,
+        request: Option<crate::provider::UtilityStop>,
+    ) -> MetadataUtilityCancellation {
         let epoch = self
             .0
             .lock()
@@ -27,6 +33,7 @@ impl MetadataUtilityCancellations {
         MetadataUtilityCancellation {
             epoch,
             admitted_epoch,
+            request,
         }
     }
 
@@ -56,6 +63,7 @@ impl MetadataUtilityCancellations {
 impl MetadataUtilityCancellation {
     pub(super) fn is_cancelled(&self) -> bool {
         self.epoch.load(Ordering::Acquire) != self.admitted_epoch
+            || self.request.as_ref().is_some_and(|stop| stop.is_stopped())
     }
 }
 
@@ -65,17 +73,17 @@ mod tests {
     #[test]
     fn abort_cancels_prior_utilities_only_for_its_run() {
         let store = MetadataUtilityCancellations::default();
-        let prior = store.for_run("one");
-        let queued = store.for_run("one");
-        let other = store.for_run("two");
+        let prior = store.for_run("one", None);
+        let queued = store.for_run("one", None);
+        let other = store.for_run("two", None);
         store.cancel("one");
         assert!(prior.is_cancelled() && queued.is_cancelled());
         assert!(!other.is_cancelled());
-        let subsequent = store.for_run("one");
+        let subsequent = store.for_run("one", None);
         assert!(!subsequent.is_cancelled());
         store.cancel_and_forget("one");
         assert!(subsequent.is_cancelled());
-        assert!(!store.for_run("one").is_cancelled());
+        assert!(!store.for_run("one", None).is_cancelled());
         assert!(!other.is_cancelled());
     }
 }

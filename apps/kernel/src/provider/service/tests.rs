@@ -900,6 +900,78 @@ fn abort_interrupts_fresh_metadata_utility_before_its_deadline() {
 }
 
 #[test]
+fn a_stop_after_submission_ends_that_fresh_utility_child_and_leaves_the_run_usable() {
+    use std::time::{Duration, Instant};
+    let root = std::env::temp_dir().join(format!("utility-stop-{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let marker = root.join("utility-pid");
+    let request = LaunchProviderRequest::new("s", "claude", "claude", "default", "sonnet");
+    let program = format!(
+        "import sys,time,pathlib,json,os\nfor line in sys.stdin:\n pathlib.Path({:?}).write_text(str(os.getpid()))\n time.sleep(1 if 'again' in line else 30)\n print(json.dumps({{'type':'assistant','message':{{'content':[{{'type':'text','text':'brief'}}]}}}}),flush=True)\n print(json.dumps({{'type':'result','subtype':'success'}}),flush=True)",
+        marker.to_string_lossy(),
+    );
+    let mut run = RuntimeProviderRun::new(
+        "utility-stop",
+        &request,
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "utility-stop-regression".into(),
+            pty_target: None,
+            pty_program: Some("/usr/bin/python3".into()),
+            pty_args: vec!["-u".into(), "-c".into(), program],
+            pty_env: Default::default(),
+            pty_env_remove: vec![],
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.set_execution_config(
+        crate::provider::AgentExecutionMode::Plan,
+        crate::provider::AgentPermissionLevel::Required,
+    );
+    run.mark_running();
+    let store = crate::provider::ProviderProcessServiceStore::new(ProviderProcessService::new());
+    store.write().insert_run_for_test(run.clone());
+    store.initialize_runtime(&run).unwrap();
+    let stop = crate::provider::UtilityStop::default();
+    let utility = |prompt: &'static str, stop: Option<crate::provider::UtilityStop>| {
+        let (store, run) = (store.clone(), run.clone());
+        std::thread::spawn(move || {
+            store.run_structured_utility_prompt_with_admission(
+                &run,
+                prompt,
+                "",
+                Duration::from_secs(40),
+                crate::provider::ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+                None,
+                stop,
+            )
+        })
+    };
+    let worker = utility("brief", Some(stop.clone()));
+    let started = Instant::now();
+    while !marker.exists() && started.elapsed() < Duration::from_secs(5) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let pid: u32 = std::fs::read_to_string(&marker).unwrap().parse().unwrap();
+    std::fs::remove_file(&marker).unwrap();
+    let stopped = Instant::now();
+    stop.stop();
+    let result = worker.join().unwrap();
+    assert!(result.is_err(), "a stopped utility answered");
+    assert!(stopped.elapsed() < Duration::from_secs(5));
+    assert!(
+        !crate::runtime::process_health::process_running(pid),
+        "the utility's own provider child kept running after Stop returned"
+    );
+    // The borrowed run was not aborted: its next utility runs to an answer.
+    let next = utility("again", None).join().unwrap();
+    drop(store);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(next.unwrap(), "brief");
+}
+
+#[test]
 fn a_long_utility_does_not_lock_other_provider_runs() {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};

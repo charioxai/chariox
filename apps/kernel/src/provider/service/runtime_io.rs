@@ -310,6 +310,7 @@ impl ProviderProcessService {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
         admission: Option<crate::provider::ProviderUtilityAdmission>,
+        stop: Option<crate::provider::UtilityStop>,
     ) -> Result<std::sync::mpsc::Receiver<Result<String, DaemonError>>, DaemonError> {
         if !self.run_uses_structured_prompt_io(run) {
             return Err(DaemonError::LocalTransport {
@@ -343,6 +344,7 @@ impl ProviderProcessService {
             timeout,
             policy,
             admission,
+            stop,
         )
     }
 

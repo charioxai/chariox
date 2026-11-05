@@ -25,7 +25,6 @@ pub use state::{
     CodexAssistantCompletion, CodexOutputChunk, CodexPollResult, CodexRuntimeBinding,
     CodexRuntimeState,
 };
-pub use utility::run_codex_utility_prompt;
 pub(crate) use utility::run_codex_utility_prompt_with_admission;
 
 #[cfg(test)]

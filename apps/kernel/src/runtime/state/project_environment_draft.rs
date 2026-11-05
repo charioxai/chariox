@@ -10,9 +10,10 @@ use crate::project_environment::{
     detect, draft_prompt, environment_error, parse_draft, register_environment_files, Begun,
     OperationHandle, ProjectEnvironmentRecord, ProjectRegistrations, SaveOutcome,
 };
+use crate::provider::UtilityStop;
 use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy};
 use crate::runtime::agent_utility_executor::{
-    run_provider_utility_prompt, AgentUtilityPromptParts,
+    run_provider_utility_prompt_until_stopped, AgentUtilityPromptParts,
 };
 use std::path::PathBuf;
 
@@ -61,11 +62,17 @@ impl KernelRuntimeState {
         let project_id = project.id().to_string();
         let checkouts: Vec<PathBuf> = project.workspace_ids().iter().map(PathBuf::from).collect();
         tokio::spawn(async move {
-            let drafted = tokio::select! {
-                drafted = runtime.draft_environment_fields(&session_id, &agent_id, checkout, registered) => drafted,
-                _ = handle.stopped() => return,
-            };
-            runtime.save_draft(&handle, &project_id, &checkouts, drafted);
+            let stop = UtilityStop::default();
+            let work = runtime.draft_environment_fields(
+                &session_id,
+                &agent_id,
+                checkout,
+                registered,
+                &stop,
+            );
+            if let Some(drafted) = handle.run_until_stopped(work, &stop).await {
+                runtime.save_draft(&handle, &project_id, &checkouts, drafted);
+            }
         });
         Ok(LocalDaemonResponse::EnvironmentOperation { operation: view })
     }
@@ -121,13 +128,14 @@ impl KernelRuntimeState {
         agent_id: &str,
         checkout: PathBuf,
         registered: ProjectRegistrations,
+        stop: &UtilityStop,
     ) -> Result<ProjectEnvironmentRecord, DaemonError> {
         let (prompt, declared) =
             tokio::task::spawn_blocking(move || (draft_prompt(&checkout), detect(&checkout)))
                 .await
                 .map_err(|_| environment_error("reading the Project failed"))?;
         let mut record = self
-            .environment_agent_answer(session_id, agent_id, prompt, parse_draft)
+            .environment_agent_answer(session_id, agent_id, prompt, parse_draft, stop)
             .await?;
         // The files name their MCPs and skills; the kernel reads them, so the agent cannot get one wrong.
         record.mcps = declared.mcps;
@@ -162,12 +170,13 @@ impl KernelRuntimeState {
         agent_id: &str,
         prompt: String,
         parse: impl Fn(&str) -> Result<T, String>,
+        stop: &UtilityStop,
     ) -> Result<T, DaemonError> {
         let mut asked = prompt.clone();
         let mut refusal = String::new();
         for attempt in 1..=ANSWER_ATTEMPTS {
             let answer = self
-                .environment_utility_answer(session_id, agent_id, asked.clone())
+                .environment_utility_answer(session_id, agent_id, asked.clone(), stop)
                 .await?;
             match parse(&answer) {
                 Ok(parsed) => return Ok(parsed),
@@ -188,9 +197,13 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         visible_user_prompt: String,
+        stop: &UtilityStop,
     ) -> Result<String, DaemonError> {
         let started = tokio::time::Instant::now();
         let mut run = loop {
+            if stop.is_stopped() {
+                return Err(environment_error("Stopped"));
+            }
             let (_, run) = self
                 .agent_utility_provider_run(session_id, agent_id, OPERATION)
                 .await?;
@@ -214,7 +227,7 @@ impl KernelRuntimeState {
                 .private_runtime_state_root(),
         )?;
         run.set_metadata_only_discovery(scratch.0.clone());
-        let output = run_provider_utility_prompt(
+        let output = run_provider_utility_prompt_until_stopped(
             self,
             run,
             AgentUtilityPromptParts {
@@ -224,6 +237,7 @@ impl KernelRuntimeState {
             OPERATION,
             ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
             DRAFT_TIMEOUT,
+            stop.clone(),
         )
         .await?;
         Ok(output)
