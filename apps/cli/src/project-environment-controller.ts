@@ -61,6 +61,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let operation: EnvironmentOperationView | null = null
   let message: string | null = null
   let busy = false
+  let textSaveQueued = false
   let pollingOperationId: string | null = null
 
   const script = () => typed.script ?? environment?.setup.script ?? ""
@@ -100,7 +101,11 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (mine !== generation) return
       message = failureText(error)
     } finally {
-      if (mine === generation) { busy = false; deps.render() }
+      if (mine === generation) {
+        busy = false
+        if (textSaveQueued) { textSaveQueued = false; void saveTypedText() }
+        deps.render()
+      }
     }
   }
 
@@ -162,19 +167,23 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const save = async (patch: { secretNames?: string[]; filePaths?: string[] }) => {
     const current = environment
     if (!current || busy) return
+    const savedScript = script()
+    const savedVariables = variables()
     await guarded(
       async () => projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
         projectId,
         expectedRevision: current.revision,
-        script: script(),
-        variables: variables(),
+        script: savedScript,
+        variables: savedVariables,
         secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
         filePaths: patch.filePaths ?? current.files.map((file) => file.path),
       }))),
       (outcome) => {
         setEnvironment(outcome.environment)
-        if (outcome.kind === "saved") typed = {}
-        else message = "Changed elsewhere"
+        if (outcome.kind === "saved") {
+          if (typed.script === savedScript) delete typed.script
+          if (typed.variables === savedVariables) delete typed.variables
+        } else message = "Changed elsewhere"
       },
     )
   }
@@ -182,6 +191,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const hasUnsavedText = () => environment !== null && (script() !== environment.setup.script || variables() !== environment.variables)
 
   const saveTypedText = async () => {
+    // Even a return to the loaded value may need saving after the pending request.
+    if (busy) { textSaveQueued = true; return }
     if (hasUnsavedText()) await save({})
   }
 
@@ -295,6 +306,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       generation++
       input = null
       pollingOperationId = null
+      textSaveQueued = false
       deps.render()
     },
     /** Esc: leaves the active input first, closes the dialog when none is active. */
@@ -315,6 +327,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       operation = null
       message = null
       busy = false
+      textSaveQueued = false
       pollingOperationId = null
       deps.render()
       try {
