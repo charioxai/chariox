@@ -2085,3 +2085,47 @@ async fn vault_tools_and_resource_register_do_not_depend_on_the_sudo_window() {
     assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+#[tokio::test]
+async fn vflag_capture_cursor_and_resize_schema_preserves_outer_runtime_results() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER.replace(
+        r#"  *'"op":"stop"'*)"#,
+        r#"  *'"op":"pointer_cursor"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"cursor":"pointer"}}\n' "$id" ;;
+  *'"op":"resize"'*) printf '{"id":%s,"ok":true,"result":{"width":1280,"height":800}}\n' "$id" ;;
+  *'"op":"stop"'*)"#,
+    );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    for (index, label) in ["generation", "cursor", "pointer", "width", "height"]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(login.root.path().join("value"), label).unwrap();
+        call(
+            f,
+            CAPTURE,
+            capture_args(&format!("cursor-resize-schema-{index}")),
+        )
+        .await
+        .unwrap();
+    }
+    for (command, expected) in [
+        (
+            json!({"op":"pointer_cursor","tab_id":"host-tab-new","generation":1,"x":10,"y":10}),
+            json!({"generation":1,"cursor":"pointer"}),
+        ),
+        (
+            json!({"op":"resize","tab_id":"host-tab-new","generation":1,"width":1280,"height":800}),
+            json!({"width":1280,"height":800}),
+        ),
+    ] {
+        let operation = command["op"].as_str().unwrap().to_string();
+        let result = call(f, "chariox.kernel_browser", json!({"command":command}))
+            .await
+            .unwrap();
+        assert_eq!(result, expected, "{operation} preserves fixed metadata");
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}

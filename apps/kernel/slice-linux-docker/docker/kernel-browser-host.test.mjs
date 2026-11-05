@@ -3100,3 +3100,25 @@ for (const word of ['state', 'present', 'region', 'accepted', 'rejected', 'chall
     assert.deepEqual(reply.result,region);
   }));
 }
+
+
+// MP-08 / MP-09 / MP-10 / MP-11: cursor keywords and viewport sizes are fixed protocol.
+for (const word of ['generation', 'cursor', 'pointer', 'width', 'height']) {
+  test(`MP-11 captured ${word} preserves pointer_cursor and resize schema`, () => using(async ({ host, connection }) => {
+    const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+    host.browser.pointerCursor = async () => 'pointer';
+    const send = connection.send;
+    connection.send = async (method, params, session) => method === 'Browser.getWindowForTarget'
+      ? {windowId: 1, bounds: {windowState: 'normal', width: 1280, height: 800}}
+      : send(method, params, session);
+    await host.protect({ unknown: false, values: [word], targets: [] });
+    for (const [command, expected] of [
+      [{op:'pointer_cursor',tab_id:opened.tab_id,generation:opened.generation,x:10,y:10}, {generation:opened.generation,cursor:'pointer'}],
+      [{op:'resize',tab_id:opened.tab_id,generation:opened.generation,width:1280,height:800}, {width:1280,height:800}],
+    ]) {
+      const reply = await host.handle({ id: 889, method: 'host.browser', params: command });
+      assert.equal(reply.ok, true, command.op + ': ' + JSON.stringify(reply.error));
+      assert.deepEqual(reply.result, expected, command.op + ' keeps fixed metadata');
+    }
+  }));
+}

@@ -149,6 +149,7 @@ impl KernelRuntimeState {
                         | "close"
                         | "navigate"
                         | "resize"
+                        | "pointer_cursor"
                         | "input"
                         | "dialog"
                         | "cancel_download"

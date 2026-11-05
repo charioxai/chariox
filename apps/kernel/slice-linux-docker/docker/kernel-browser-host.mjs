@@ -1377,7 +1377,8 @@ export class KernelBrowserHost {
         if (request.params?.op === "snapshot") {
           return { id: request.id, ok: true, result: { ...result, snapshot: redactSnapshot(result.snapshot, this.protection.values) } };
         }
-        if (Array.isArray(result?.tabs) && Number.isSafeInteger(result.generation)) {
+        if (Array.isArray(result?.tabs) && Number.isSafeInteger(result.generation)
+            || ["pointer_cursor", "resize"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactBrowserState(result, this.protection.values) };
         }
         // Card regions contain only the fixed protocol, observed origin and
