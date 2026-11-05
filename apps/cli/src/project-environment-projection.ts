@@ -36,7 +36,7 @@ export type EnvironmentSourceKernel = { readonly id: string; readonly label: str
 
 export type EnvironmentDialogModel = {
   readonly loading: boolean
-  /** Other kernels of this user; empty when there is none, which hides Update and Import here. */
+  /** Other kernels of this user; empty when there is none, which hides new Update and Import here actions. */
   readonly sources: readonly EnvironmentSourceKernel[]
   readonly sourceIndex: number
   /** The last Import this dialog started (Import here or Update). */
@@ -78,11 +78,11 @@ export function focusKey(focus: EnvironmentFocus): string {
 }
 
 /** Every row the keyboard can select, in screen order. */
-export function environmentFocusables(environment: ProjectEnvironmentView | null, hasSources = false): EnvironmentFocus[] {
+export function environmentFocusables(environment: ProjectEnvironmentView | null, showUpdate = false): EnvironmentFocus[] {
   if (!environment) return []
   return [
     { kind: "run" },
-    ...(hasSources ? [{ kind: "update" } as const] : []),
+    ...(showUpdate ? [{ kind: "update" } as const] : []),
     { kind: "script" },
     ...(environment.exists ? [{ kind: "check" } as const] : [{ kind: "draft" } as const]),
     { kind: "variables" },
@@ -272,7 +272,7 @@ export function environmentDialogView(model: EnvironmentDialogModel, width: numb
   }
 
   // One line for Update: it names where the entries would come from, and while it runs it shows the progress and Stop.
-  if (model.sources.length > 0) {
+  if (model.sources.length > 0 || updating) {
     const failed = model.transfer?.kind === "import" && model.transfer.state === "failed" && model.transfer.entries.length === 0 ? model.transfer.reason : null
     const label = updating ?? failed ?? `Update from ${chosen ?? model.sources[0]!.label}`
     rows.push(row(twoColumns(label, updating ? "Stop" : "Update", width), failed ? "warning" : "text", focused("update"), true))

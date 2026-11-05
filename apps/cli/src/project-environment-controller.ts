@@ -113,7 +113,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     loading, environment: editor.environment, sources, sourceIndex, transfer: editor.transfer, draft: editor.draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
   })
 
-  const focusables = () => environmentFocusables(editor.environment, sources.length > 0)
+  const focusables = () => environmentFocusables(editor.environment, sources.length > 0 || editor.transfer?.state === "running")
 
   // Each kind of operation keeps its own slot, so a Draft's answer never replaces the Setup output.
   const setOperation = (next: EnvironmentOperationView, target = editor) => {
@@ -276,7 +276,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const toggleSetup = async () => {
-    const current = editor.environment
+    const target = editor
+    const mine = generation
+    const current = target.environment
     if (!current || editor.busy) return
     if (current.setupState.state === "running") {
       const operationId = current.setupState.operationId
@@ -287,9 +289,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       return
     }
     if (editor.transfer?.state === "running") return
-    if (hasUnsaved()) {
-      await saveUnsaved()
-      if (hasUnsaved()) return
+    if (hasUnsaved(target)) {
+      await saveUnsaved(target)
+      // Closing the initiating dialog abandons this continuation, including a reopen of the same Project.
+      if (mine !== generation || hasUnsaved(target)) return
     }
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(runProjectEnvironmentSetupRequest(projectId, deps.newOperationId()))),

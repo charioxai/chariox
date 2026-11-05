@@ -36,7 +36,7 @@ function operation(patch: Partial<EnvironmentOperationView> = {}): EnvironmentOp
 
 type Reply = unknown | Error | (() => unknown)
 
-function harness(initial: ProjectEnvironmentView = environment(), kernels: readonly { id: string; label: string }[] = []) {
+function harness(initial: ProjectEnvironmentView = environment(), kernels: readonly { id: string; label: string }[] | (() => Promise<readonly { id: string; label: string }[]>) = []) {
   const requests: Record<string, any>[] = []
   const replies: Reply[] = []
   // Reads the kernel holds until the operation changes: they answer when the test calls `release`.
@@ -45,7 +45,7 @@ function harness(initial: ProjectEnvironmentView = environment(), kernels: reado
   let renders = 0
   let operationIds = 0
   const controller = createProjectEnvironmentController({
-    otherKernels: async () => kernels,
+    otherKernels: async () => typeof kernels === "function" ? kernels() : kernels,
     send: async (request) => {
       requests.push(request as Record<string, any>)
       if ((request as any).GetEnvironmentOperation?.waitAfterUpdates !== undefined) return new Promise((resolve) => held.push(resolve))
@@ -997,3 +997,45 @@ for (const kind of ["import", "draft", "check"] as const) {
     assert.equal(h.requests.filter(r => r.ImportProjectEnvironmentEntries || r.DraftProjectEnvironment || r.CheckProjectEnvironment).length, 1)
   })
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a save continuation cannot use another dialog's Project.
+for (const sameProject of [false, true]) test(`Setup awaiting Save is abandoned after reopening ${sameProject ? "the same" : "another"} Project`, async () => {
+  const h = harness()
+  await h.open()
+  h.focusOn("make setup"); h.key("return"); h.type("!")
+  h.replies.push(new Error("Save failed"))
+  h.controller.dismiss(); await h.settle()
+  let release!: (value: unknown) => void
+  h.replies.push(() => new Promise(resolve => { release = resolve }))
+  h.focusOn("Run setup"); h.key("return"); await h.settle()
+  h.controller.close()
+  const projectId = sameProject ? "project-1" : "project-2"
+  h.replies.push({ ProjectEnvironment: { environment: environment({ projectId }) } })
+  await h.controller.open(projectId)
+  release({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup!" } }) } })
+  await h.settle()
+  assert.equal(h.requests.filter(request => request.RunProjectEnvironmentSetup).length, 0, "closing the originating dialog abandons its pending Setup continuation")
+  assert.doesNotMatch(h.text(), /Stop/)
+})
+
+for (const inventory of ["empty", "failed"] as const) test(`a retained Import keeps its progress and keyboard Stop with ${inventory} source discovery`, async () => {
+  let calls = 0
+  const h = harness(environment(), async () => {
+    if (++calls === 1) return MAC
+    if (inventory === "failed") throw Error("Directory unavailable")
+    return []
+  })
+  await h.open()
+  const running = importOperation()
+  h.replies.push({ EnvironmentOperation: { operation: running } })
+  h.focusOn("Update from"); h.key("return"); await h.settle()
+  h.controller.close()
+  await h.open({ EnvironmentOperation: { operation: running } }); await h.settle()
+  assert.match(h.text(), /Updating from .*Stop/)
+  h.focusOn("Updating from")
+  assert.ok(h.controller.view().rows.some(row => row.focused && row.text.includes("Updating from")), "the retained Import is keyboard selectable")
+  h.replies.push({ EnvironmentOperation: { operation: { ...running, state: "cancelled", updates: 2, endedAtMs: NOW + 1 } } }, { ProjectEnvironment: { environment: environment() } })
+  h.key("return"); await h.settle()
+  assert.deepEqual(h.requests.find(request => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+  assert.equal(h.requests.filter(request => request.ImportProjectEnvironmentEntries).length, 1)
+})
