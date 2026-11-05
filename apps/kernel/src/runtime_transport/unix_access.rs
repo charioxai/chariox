@@ -781,6 +781,7 @@ pub(super) fn serve_gateway(
                 crate::runtime::kernel_gateway::forward_audited(
                     &router,
                     &origin,
+                    &origin,
                     &command_id,
                     &kernel,
                     &request,

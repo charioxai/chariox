@@ -195,66 +195,73 @@ impl CommandRouter {
         turn: crate::local::KernelSudoTurn,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let request: crate::local::LocalDaemonRequest =
+            serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
+                crate::runtime::kernel_access::error("kernel_request needs request")
+            })?)
+            .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
+        let response = self.dispatch_sudo_request(turn, request).await?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::to_value(response).map_err(|_| {
+                crate::runtime::kernel_access::error("kernel response serialization failed")
+            })?,
+        })
+    }
+
+    pub(super) async fn dispatch_sudo_request(
+        &self,
+        turn: crate::local::KernelSudoTurn,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, DaemonError> {
+        self.runtime_state
+            .authorize_sudo_request(&turn.entry_id, &request)?;
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            format!("{}:{}", turn.entry_id, rand::random::<u64>()),
+            turn.prompt_id.clone(),
+            Some(turn.entry_id.clone()),
+            &request,
+        );
+        command.caller = crate::runtime::command::KernelCaller::for_source(
+            &crate::runtime::command::KernelCommandSource::LocalIpc,
+        )
+        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+        command.provider_run_id = turn.provider_run_id.clone();
+        command.caller.caller_id = turn.entry_id.clone();
+        command.caller.user_id = Some(turn.owner_user_id.clone());
+        // MP-08/MP-10/MP-11: preserve creator attribution for agent and
+        // workflow mutations even under a freshly authorized host scope.
+        if command.command_type.starts_with("agent.")
+            || crate::runtime::workflow_actor::is_workflow_command(&request)
         {
-            let request: crate::local::LocalDaemonRequest =
-                serde_json::from_value(arguments.get("request").cloned().ok_or_else(|| {
-                    crate::runtime::kernel_access::error("kernel_request needs request")
-                })?)
-                .map_err(|_| crate::runtime::kernel_access::error("invalid kernel request: use externally tagged JSON in request, for example {\"AliasSession\":{\"session_id\":\"SESSION_ID\",\"alias\":\"new-name\"}}; do not use method/params or type fields"))?;
-            self.runtime_state
-                .authorize_sudo_request(&turn.entry_id, &request)?;
-            let mut command = crate::runtime::command::KernelCommand::from_local_request(
-                format!("{}:{}", turn.entry_id, rand::random::<u64>()),
-                turn.prompt_id.clone(),
-                Some(turn.entry_id.clone()),
-                &request,
-            );
-            command.caller = crate::runtime::command::KernelCaller::for_source(
-                &crate::runtime::command::KernelCommandSource::LocalIpc,
-            )
-            .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
-            command.provider_run_id = turn.provider_run_id.clone();
-            command.caller.caller_id = turn.entry_id.clone();
-            command.caller.user_id = Some(turn.owner_user_id.clone());
-            // MP-08/MP-10/MP-11: preserve creator attribution for agent and
-            // workflow mutations even under a freshly authorized host scope.
-            if command.command_type.starts_with("agent.")
-                || crate::runtime::workflow_actor::is_workflow_command(&request)
-            {
-                command.caller.metaagent_id = Some(turn.agent_id.clone());
-            }
-            let ssh_host = match &request {
-                crate::local::LocalDaemonRequest::AddSshMachine(r) => Some(r.host.clone()),
-                _ => None,
-            };
-            let ssh_removal = matches!(
-                &request,
-                crate::local::LocalDaemonRequest::RemoveSshMachine(_)
-            );
-            let response = Box::pin(self.dispatch(command, request)).await?;
-            if let (Some(host), crate::local::LocalDaemonResponse::SshMachine { machine }) =
-                (ssh_host, &response)
-            {
-                if machine.status == "ready" {
-                    self.runtime_state
-                        .record_ssh_resource(&turn, &host, &machine.install_id)?;
-                }
-            }
-            if ssh_removal {
-                if let crate::local::LocalDaemonResponse::SshMachine { machine } = &response {
-                    if machine.status == "removed" {
-                        self.runtime_state
-                            .record_ssh_removal(&turn, &machine.install_id)?;
-                    }
-                }
-            }
-            Ok(crate::transport::runtime_tools::RuntimeToolResult {
-                ok: true,
-                payload: serde_json::to_value(response).map_err(|_| {
-                    crate::runtime::kernel_access::error("kernel response serialization failed")
-                })?,
-            })
+            command.caller.metaagent_id = Some(turn.agent_id.clone());
         }
+        let ssh_host = match &request {
+            crate::local::LocalDaemonRequest::AddSshMachine(r) => Some(r.host.clone()),
+            _ => None,
+        };
+        let ssh_removal = matches!(
+            &request,
+            crate::local::LocalDaemonRequest::RemoveSshMachine(_)
+        );
+        let response = Box::pin(self.dispatch(command, request)).await?;
+        if let (Some(host), crate::local::LocalDaemonResponse::SshMachine { machine }) =
+            (ssh_host, &response)
+        {
+            if machine.status == "ready" {
+                self.runtime_state
+                    .record_ssh_resource(&turn, &host, &machine.install_id)?;
+            }
+        }
+        if ssh_removal {
+            if let crate::local::LocalDaemonResponse::SshMachine { machine } = &response {
+                if machine.status == "removed" {
+                    self.runtime_state
+                        .record_ssh_removal(&turn, &machine.install_id)?;
+                }
+            }
+        }
+        Ok(response)
     }
 
     pub(crate) fn runtime_tool_specs_for_auth_token(

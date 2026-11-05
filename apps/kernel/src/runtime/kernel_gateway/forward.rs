@@ -8,6 +8,7 @@ use serde_json::Value;
 pub(crate) async fn forward_audited(
     router: &CommandRouter,
     origin: &Origin,
+    follow_origin: &Origin,
     command_id: &str,
     kernel: &str,
     request: &LocalDaemonRequest,
@@ -41,10 +42,11 @@ pub(crate) async fn forward_audited(
     } else {
         forwarded.await
     };
+    // Authorization and audit keep the sudo identity; reach events belong to its live run.
     if let Ok(response) = &mut answered {
         gateway.note_forwarded(kernel, origin, request, response);
         gateway
-            .follow_forwarded(origin, kernel, request, response)
+            .follow_forwarded(follow_origin, kernel, request, response)
             .await;
     }
     if !ledger::is_repeatable(request) {

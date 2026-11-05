@@ -20,6 +20,8 @@ mod login_recovery;
 mod operation;
 mod policy;
 mod process;
+#[cfg(test)]
+mod reach_tests;
 mod receipts;
 mod scope;
 mod window;

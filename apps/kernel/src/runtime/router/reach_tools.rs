@@ -206,13 +206,11 @@ impl CommandRouter {
         }
         let command_id = format!("{}:{}", caller.id, rand::random::<u64>());
         let Some(kernel) = kernel else {
-            return match sudo {
-                Some(turn) => {
-                    self.dispatch_sudo_kernel_request(turn, serde_json::json!({"request": request}))
-                        .await
-                }
-                None => self.reach_local(caller, command_id, request).await,
-            };
+            return self.reach_local(caller, command_id, request, sudo).await;
+        };
+        let follow_origin = Origin {
+            grant_id: caller.id.clone(),
+            harness: caller.harness.clone(),
         };
         let origin = match &sudo {
             Some(turn) => Origin {
@@ -229,10 +227,16 @@ impl CommandRouter {
         }
         Ok(
             match forward_reach(command_id, |id| {
-                let (origin, kernel, request) = (&origin, &kernel, &request);
+                let (origin, follow_origin, kernel, request) =
+                    (&origin, &follow_origin, &kernel, &request);
                 async move {
                     crate::runtime::kernel_gateway::forward_audited(
-                        self, origin, &id, kernel, request,
+                        self,
+                        origin,
+                        follow_origin,
+                        &id,
+                        kernel,
+                        request,
                     )
                     .await
                 }
@@ -284,21 +288,28 @@ impl CommandRouter {
         caller: &ReachCaller,
         command_id: String,
         request: LocalDaemonRequest,
+        sudo: Option<crate::local::KernelSudoTurn>,
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let mut command = crate::runtime::command::KernelCommand::from_local_request(
-            command_id,
-            None,
-            Some(caller.id.clone()),
-            &request,
-        );
-        command.caller = crate::runtime::command::KernelCaller::for_source(
-            &crate::runtime::command::KernelCommandSource::LocalIpc,
-        )
-        .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
-        command.provider_run_id = Some(caller.run_id.clone());
-        command.caller.caller_id = caller.id.clone();
-        command.caller.user_id = Some(caller.owner_user_id.clone());
-        let mut response = match Box::pin(self.dispatch(command, request.clone())).await {
+        let dispatched = match sudo {
+            Some(turn) => Ok(self.dispatch_sudo_request(turn, request.clone()).await?),
+            None => {
+                let mut command = crate::runtime::command::KernelCommand::from_local_request(
+                    command_id,
+                    None,
+                    Some(caller.id.clone()),
+                    &request,
+                );
+                command.caller = crate::runtime::command::KernelCaller::for_source(
+                    &crate::runtime::command::KernelCommandSource::LocalIpc,
+                )
+                .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
+                command.provider_run_id = Some(caller.run_id.clone());
+                command.caller.caller_id = caller.id.clone();
+                command.caller.user_id = Some(caller.owner_user_id.clone());
+                Box::pin(self.dispatch(command, request.clone())).await
+            }
+        };
+        let mut response = match dispatched {
             Ok(response) => response,
             Err(error) => return Ok(refused("request_failed", error.to_string())),
         };

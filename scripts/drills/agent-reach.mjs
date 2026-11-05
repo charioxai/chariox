@@ -5,6 +5,8 @@
 // in evidence. Red on a base kernel without `chariox-reach`: the agent has no tool, so the B-side checks fail.
 // The `tools` scenario runs with a real Claude, Codex or OpenCode agent (`--provider`): the agent calls every
 // `chariox-reach` tool and a room tool given another kernel, and B's audit names it.
+// The `elevated-spawns` scenario creates local and remote delegates under /sudo, then waits
+// in that same provider turn without explicitly subscribing, checking completions and no_subscribe.
 // The `events`, `driver` and `history` scenarios (S3) run with the same real agents on both kernels: X in a room on A
 // follows Y in a room on B and is woken without polling when Y finishes a turn, and when Y raises a decision
 // (AT-40) X reads it and answers it; X reads Y's room history with no approval.
@@ -44,8 +46,8 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 // A Codex scope the product linked for drills, and the OpenCode login to copy into a lane-owned scope.
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
-const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,acquisition-sudo,response-loss,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
-assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history", "newrooms"].includes(name)), "only the tools, view, events, multiwait, driver, history and newrooms scenarios run with Codex or OpenCode")
+const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,acquisition-sudo,response-loss,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,elevated-spawns,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
+assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history", "newrooms", "elevated-spawns"].includes(name)), "only tools, view, events, multiwait, driver, history, newrooms and elevated-spawns run with Codex or OpenCode")
 const agentScenarios = ["events", "multiwait", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
@@ -216,11 +218,11 @@ async function main() {
   }
   const accountProfile = await provision(a)
   // The Claude scenarios and the S3 scenarios run an agent on kernel B too; for the tools scenario B is a passive target.
-  const accountProfileB = provider === "claude" || agentScenarios ? await provision(b) : accountProfile
+  const accountProfileB = provider === "claude" || agentScenarios || scenarios.has("elevated-spawns") ? await provision(b) : accountProfile
   const agentDefaults = { provider, account_profile: accountProfile, model, effort: providers[provider].variant, permission_level: "yolo" }
   const agentDefaultsB = { ...agentDefaults, account_profile: accountProfileB }
   // Kernel B: the room another room's agent will message, and the room the agent must not rename without /sudo.
-  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: provider === "claude" || agentScenarios ? agentDefaultsB : undefined } })).SessionCreated
+  const roomB = (await b.rpc({ CreateSession: { workspace_id: join(b.dir, "work"), worktree_id: join(b.dir, "work"), alias: "target-room", agent_defaults: provider === "claude" || agentScenarios || scenarios.has("elevated-spawns") ? agentDefaultsB : undefined } })).SessionCreated
   const roomA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "home-room", agent_defaults: agentDefaults } })).SessionCreated
   const siblingA = (await a.rpc({ CreateSession: { workspace_id: join(a.dir, "work"), worktree_id: join(a.dir, "work"), alias: "sibling-room", agent_defaults: agentDefaults } })).SessionCreated
   const attached = (await a.rpc({ AttachToSession: { session_id: roomA.session.id, client_id: "reach-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
@@ -228,7 +230,7 @@ async function main() {
   await a.rpc({ LaunchProviderRun: { session_id: roomA.session.id, agent_id: agentA, adapter_key: provider, provider, account_profile: accountProfile, model, variant: providers[provider].variant, native_tui: false } })
   const startedAt = Date.now()
   if (flags.has("--hold-start")) { note("holding", {}); await delay(Number(flags.get("--hold-start")) * 1000) }
-  saveToolLog = () => writeFileSync(join(evidence, "agent-tool-log.json"), stripped(JSON.stringify(toolLog(claudeTranscript(a.dir + "/chariox", startedAt)), null, 1)), { mode: 0o600 })
+  saveToolLog = async () => writeFileSync(join(evidence, "agent-tool-log.json"), stripped(JSON.stringify(provider === "claude" ? toolLog(claudeTranscript(a.dir + "/chariox", startedAt)) : await turnOf(a, roomA.session.id, agentA), null, 1)), { mode: 0o600 })
 
   async function idle(timeout = 240000) {
     await until(async () => {
@@ -244,8 +246,8 @@ async function main() {
     // A turn that never reaches its marker is reported by the checks that follow, not by a thrown timeout.
     await until(async () => {
       await a.rpc({ PumpTerminalOutput: { session_id: roomA.session.id, attachment_id: attached } }).catch(() => {})
-      return claudeTranscript(a.dir + "/chariox", since).includes(marker)
-    }, `agent turn (${marker})`, 150000).catch(error => note("turn-timeout", { message: error.message }))
+      return provider === "claude" ? claudeTranscript(a.dir + "/chariox", since).includes(marker) : (await turnOf(a, roomA.session.id, agentA)).answer.includes(marker)
+    }, `agent turn (${marker})`, scenarios.has("elevated-spawns") ? 600000 : 150000).catch(error => note("turn-timeout", { message: error.message }))
     await idle()
   }
   async function sendPrompt(text, marker) {
@@ -392,6 +394,21 @@ async function main() {
   }
 
 
+  // One real turn of another agent, to its end.
+  async function agentTurn(r, session, attachment, agent, prompt, marker) {
+    const before = (await turnOf(r, session, agent)).id
+    await r.rpc(submitPromptRequest(session, attachment, agent, prompt, []))
+    let turn
+    const end = Date.now() + 240000
+    for (;;) {
+      turn = await turnOf(r, session, agent)
+      if (turn.id !== before && turn.done && turn.answer.includes(marker)) break
+      if (Date.now() > end) throw new Error(`timeout: turn of ${agent} (${marker})`)
+      await delay(1000)
+    }
+    return turn
+  }
+
   if (agentScenarios) {
     // Agent X (room 1 on A) follows agent Y (room 2 on B). Rooms Z1 (on A) and Z2 (on B) are never followed.
     const attachB = (await b.rpc({ AttachToSession: { session_id: roomB.session.id, client_id: "reach-owner-b", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
@@ -404,20 +421,6 @@ async function main() {
     const yAgent = roomB.agent.id
     // The drill reads the kernels' history while it waits; a slow read keeps that load low so it does not slow what is timed (the kernels' own log is the clock).
     const sleepMs = 1000
-    // One real turn of another agent, to its end.
-    async function agentTurn(r, session, attachment, agent, prompt, marker) {
-      const before = (await turnOf(r, session, agent)).id
-      await r.rpc(submitPromptRequest(session, attachment, agent, prompt, []))
-      let turn
-      const end = Date.now() + 240000
-      for (;;) {
-        turn = await turnOf(r, session, agent)
-        if (turn.id !== before && turn.done && turn.answer.includes(marker)) break
-        if (Date.now() > end) throw new Error(`timeout: turn of ${agent} (${marker})`)
-        await delay(sleepMs)
-      }
-      return turn
-    }
     // X's turn: the prompt is submitted, `during` runs beside it (the drill's triggers), and every reach call is stamped the first time it is seen completed.
     async function xTurn(prompt, marker, during) {
       const before = (await turnOf(a, roomA.session.id, agentA)).id
@@ -690,6 +693,62 @@ async function main() {
     const sudoCodes = codesOf(since, sudoSkip)
     check("inside a /sudo window deleting a room stays excluded and a rename works", sudoCodes.join() === "excluded_for_agents,ok" && (await bState()).agents.some(x => x.id === roomB.agent.id && x.alias === "renamed-in-sudo"), { sudoCodes })
     check("no room is gone", (await roomsOf(b)).includes(roomB.session.id) && (await roomsOf(a)).includes(siblingA.session.id) && (await roomsOf(a)).includes(roomA.session.id))
+  }
+
+  if (scenarios.has("elevated-spawns")) {
+    note("scenario", { which: "elevated-spawns", provider, model })
+    // MP-08 / MP-09 / MP-10 / MP-11: elevated authorization must not own the inbox.
+    const spawn = (kernel, session, batch, no_subscribe = false) => call(kernel, batch
+      ? { SpawnAgents: { session_id: session, agents: [{ ...(kernel ? agentDefaultsB : agentDefaults), alias: `batch-${kernel ?? "local"}` }], no_subscribe } }
+      : { SpawnAgent: { ...(kernel ? agentDefaultsB : agentDefaults), session_id: session, alias: `single-${kernel ?? "local"}`, no_subscribe } })
+    const prompt = [
+      "Use only chariox-reach tools. Make these requests exactly once in order:",
+      `1. request ${spawn(null, roomA.session.id, false)}`,
+      `2. request ${spawn(target, roomB.session.id, true)}`,
+      `3. request ${spawn(null, roomA.session.id, true, true)}`,
+      `4. request ${spawn(target, roomB.session.id, false, true)}`,
+      "Then call events_wait with timeout_seconds 90 and since 0, without events_subscribe. Keep waiting with since set to next_cursor until both subscribed delegates report value.outcome (at most 12 waits). Never subscribe. Ignore events for no_subscribe delegates.",
+      "Then reply with the words ELEVATED and DONE joined by an underscore.",
+    ].join("\n")
+    // The normal owner /sudo flow approves this one turn; all creates and waits share its run.
+    if (provider !== "claude") await unlock(a, roomA.session.id, agentA)
+    const executing = sudoPrompt(prompt, "ELEVATED_DONE")
+    executing.catch(() => {})
+    const created = []
+    await until(async () => {
+      await a.rpc({PumpTerminalOutput: {session_id: roomA.session.id, attachment_id: attached}})
+      const turn = await turnOf(a, roomA.session.id, agentA)
+      const calls = turn.calls.filter(c => reachName(c) === "request")
+      writeFileSync(join(evidence, "elevated-spawns-progress.json"), JSON.stringify(turn, null, 2))
+      for (const [index, c] of calls.entries()) {
+        if (created.some(x => x.index === index)) continue
+        const answer = json(String(c.output ?? ""))
+        const agent = answer?.AgentSpawned?.agent ?? answer?.AgentsSpawned?.agents?.[0]
+        if (agent) created.push({index, agent, response: answer})
+        else if (c.status === "error") throw new Error(`elevated create ${index}: ${c.error ?? answer?.message ?? "request refused"}`)
+        else if (answer?.code) throw new Error(`elevated create ${index}: ${answer.code}: ${answer.message}`)
+      }
+      return created.length === 4
+    }, "elevated delegates created", 150000)
+    const delegates = []
+    for (const {index, agent} of created) {
+      const r = index % 2 === 0 ? a : b
+      const att = (await r.rpc({AttachToSession: {session_id: agent.session_id, client_id: "reach-delegate", capability_level: "FullTerminal"}})).SessionAttached.attachment.id
+      const turn = await agentTurn(r, agent.session_id, att, agent.id, "Reply with exactly DELEGATE_FINISHED.", "DELEGATE_FINISHED")
+      delegates.push({index, model: agent.model, turn})
+    }
+    await executing
+    const turn = await turnOf(a, roomA.session.id, agentA)
+    const waits = turn.calls.filter(c => reachName(c) === "events_wait")
+    const events = waits.flatMap(c => json(String(c.output ?? ""))?.EventsListed?.events ?? [])
+    for (const index of [0, 1]) {
+      const agent = created.find(x => x.index === index).agent
+      check(`elevated ${index === 0 ? "local single" : "remote batch"} spawn completes in reach events_wait without subscribing`, events.some(e => e.agent_id === agent.id && e.value?.outcome), {agent: agent.id, waits: waits.length})
+    }
+    check("elevated no_subscribe local batch and remote single stay out of the inbox", created.filter(x => x.index >= 2).every(x => !events.some(e => e.agent_id === x.agent.id)))
+    check("elevated creates never report a subscription failure", created.every(x => !(x.response.AgentSpawned ?? x.response.AgentsSpawned).event_subscription_error))
+    check("the real agent never explicitly subscribed", !turn.calls.some(c => reachName(c) === "events_subscribe"))
+    writeFileSync(join(evidence, "elevated-spawns.json"), JSON.stringify({created, delegates, turn}, null, 2))
   }
 
   if (scenarios.has("newrooms")) {
