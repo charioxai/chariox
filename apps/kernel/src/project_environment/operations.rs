@@ -81,7 +81,17 @@ impl EnvironmentOperations {
         &self,
         operation_id: &str,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        if let Some(live) = lock(&self.live).get(operation_id) {
+        self.get_locked(&lock(&self.live), operation_id)
+    }
+
+    /// The `live` lock is the admission lock: a record that is saved but not yet registered is
+    /// only visible while it is held, so reading it as orphaned from a run needs it too.
+    fn get_locked(
+        &self,
+        live: &HashMap<String, Arc<Live>>,
+        operation_id: &str,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        if let Some(live) = live.get(operation_id) {
             return Ok(Some(lock(&live.view).clone()));
         }
         let Some(mut view) = self.load(operation_id)? else {
@@ -100,7 +110,8 @@ impl EnvironmentOperations {
         self: &Arc<Self>,
         view: EnvironmentOperationView,
     ) -> Result<Begun, DaemonError> {
-        if let Some(existing) = self.get(&view.operation_id)? {
+        let mut registry = lock(&self.live);
+        if let Some(existing) = self.get_locked(&registry, &view.operation_id)? {
             if existing.project_id != view.project_id {
                 return Err(environment_error(
                     "this operation id belongs to another Project",
@@ -114,7 +125,7 @@ impl EnvironmentOperations {
             view: Mutex::new(view.clone()),
             stop,
         });
-        lock(&self.live).insert(view.operation_id, live.clone());
+        registry.insert(view.operation_id, live.clone());
         Ok(Begun::Started(OperationHandle {
             operations: self.clone(),
             live,
@@ -276,5 +287,72 @@ mod tests {
         let view = operations.get("a").unwrap().unwrap();
         assert_eq!(view.state, EnvironmentOperationState::Failed);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_requests_with_one_id_start_one_task_that_stop_still_reaches() {
+        for round in 0..40 {
+            let root = scratch();
+            let operations = EnvironmentOperations::new(&root);
+            let gate = Arc::new(std::sync::Barrier::new(8));
+            let id = format!("same-{round}");
+            let outcomes: Vec<_> = (0..8)
+                .map(|_| {
+                    let (operations, gate, id) = (operations.clone(), gate.clone(), id.clone());
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        operations.begin(view(&id)).unwrap()
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let mut started = outcomes
+                .into_iter()
+                .filter_map(|begun| match begun {
+                    Begun::Started(handle) => Some(handle),
+                    Begun::Existing(_) => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(started.len(), 1, "round {round}");
+            let handle = started.pop().unwrap();
+            operations.cancel(&id).unwrap();
+            assert!(handle.is_stopped(), "Stop reaches the one running task");
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn polling_while_an_operation_is_published_never_settles_it_as_restarted() {
+        for round in 0..40 {
+            let root = scratch();
+            let operations = EnvironmentOperations::new(&root);
+            let id = format!("poll-{round}");
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let poller = {
+                let (operations, id, done) = (operations.clone(), id.clone(), done.clone());
+                std::thread::spawn(move || {
+                    let mut seen = Vec::new();
+                    while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Some(view) = operations.get(&id).unwrap() {
+                            seen.push(view.state);
+                        }
+                    }
+                    seen
+                })
+            };
+            let Begun::Started(handle) = operations.begin(view(&id)).unwrap() else {
+                panic!("new operation");
+            };
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+            let seen = poller.join().unwrap();
+            assert!(
+                seen.iter().all(|state| *state == EnvironmentOperationState::Running),
+                "round {round}: a poll saw {seen:?}"
+            );
+            drop(handle);
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }
