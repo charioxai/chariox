@@ -68,10 +68,12 @@ is treated as proof that a service stopped.
 **The whole-tree zero-non-loopback-socket gate remains FAIL.** A diagnostic
 report proposes only the exact Network Service UDP-connect route probe as an
 exception, with no send operation, no DNS and no other destination/process.
-It never applies that exception to acceptance. The lane coordination request
-recommends retaining the original failing gate until the probe is eliminated
-or the owner explicitly accepts that precise narrower gate. AV1 is not accepted
-under either gate in this round.
+It never applies that exception to acceptance. At 16:50Z on 2026-11-05 the
+coordinator decided to keep the original gate and record AV1 as NOT accepted.
+The next round must try to remove the probe at the OS level (a browser-tree
+network namespace with IPv6 disabled or no default route), or find a Chromium
+switch that skips IPv6 reachability probing. These are untested next steps,
+not an implemented fix. No narrower acceptance is authorized.
 
 Use fresh **ordinary** profiles: private profiles suppress preconnect/DNS
 controls. Every strict network case runs at actual DPR1 and DPR2. `strace -ff`
@@ -316,7 +318,7 @@ proof, not backend commit/reconnect/update durability or provider acceptance.
 
 | Slice / surface | Missing real-path requirement |
 | --- | --- |
-| AV1 Web boundary | Eliminate the exact browser IPv6 route socket or obtain an explicit owner decision on that precise exception; zero-network gate remains FAIL |
+| AV1 Web boundary | Remove the IPv6 route socket using OS containment or a verified Chromium switch, then rerun the original full gate; coordinator retained FAIL at 16:50Z |
 | AV2 assets/admission | Kernel-authenticated descriptor, trusted key projection, release lease, inventory/chunk delivery, cancellation/revocation and cache rules |
 | AV3 backend/state | Generation-fenced operation/state port and receipts, declared actions, committed state and bounded streams; no live UI-adapter authority |
 | AV4 Web | Enforceable dedicated browser launch; actual App-open routing into host alongside the real conversation, gestures/clipboard/files and reconnect/update behavior on the existing WSS connection |
