@@ -11,9 +11,9 @@ pub(crate) const VAULT_CAPTURE_COMMAND: &str = "chariox.vault.capture_command";
 pub(super) const CAPTURED_KIND: &str = "vault_capture";
 const VALUE_LIMIT: usize = 16 * 1024;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(in crate::runtime::state) struct CaptureClaims(
-    std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    Arc<std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
 );
 
 impl CaptureClaims {
