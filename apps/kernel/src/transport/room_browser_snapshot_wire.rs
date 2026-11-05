@@ -1,9 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: lossless, bounded peer snapshot encoding.
 
-use std::io::{Read, Write};
+use std::io::Write;
 
 use base64::Engine;
-use flate2::{bufread::ZlibDecoder, write::ZlibEncoder, Compression};
+use flate2::{write::ZlibEncoder, Compression, Decompress, FlushDecompress, Status};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
@@ -91,16 +91,18 @@ fn decode(wire: SnapshotWire) -> Result<BrowserControllerStructuredSnapshot, Str
     if compressed.len() > MAX_COMPRESSED_BYTES {
         return Err("browser snapshot compressed data exceeds its byte limit".into());
     }
-    let mut decoder = ZlibDecoder::new(compressed.as_slice());
-    let mut bytes = Vec::new();
-    decoder
-        .by_ref()
-        .take(wire.decoded_bytes as u64 + 1)
-        .read_to_end(&mut bytes)
+    let mut decoder = Decompress::new(true);
+    let mut bytes = vec![0; wire.decoded_bytes + 1];
+    let status = decoder
+        .decompress(&compressed, &mut bytes, FlushDecompress::Finish)
         .map_err(|_| "browser snapshot has invalid zlib data")?;
-    if bytes.len() != wire.decoded_bytes || !decoder.get_ref().is_empty() {
+    if status != Status::StreamEnd
+        || decoder.total_in() != compressed.len() as u64
+        || decoder.total_out() != wire.decoded_bytes as u64
+    {
         return Err("browser snapshot decoded byte count does not match its data".into());
     }
+    bytes.truncate(wire.decoded_bytes);
     serde_json::from_slice(&bytes).map_err(|_| "browser snapshot has invalid JSON".into())
 }
 
@@ -242,6 +244,17 @@ mod tests {
         let mut compressed = base64::engine::general_purpose::STANDARD
             .decode(wire.zlib_base64)
             .unwrap();
+        for removed in 1..=4 {
+            assert!(
+                decode(SnapshotWire {
+                    decoded_bytes: bytes.len(),
+                    zlib_base64: base64::engine::general_purpose::STANDARD
+                        .encode(&compressed[..compressed.len() - removed]),
+                })
+                .is_err(),
+                "truncated zlib checksum must not count as a complete snapshot"
+            );
+        }
         compressed.push(0);
         assert!(decode(SnapshotWire {
             decoded_bytes: bytes.len(),
