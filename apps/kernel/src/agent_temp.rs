@@ -261,6 +261,17 @@ fn in_use(item: &Path, held: &BTreeSet<PathBuf>) -> bool {
 /// Room ends: a process may first use its inherited TMPDIR much later.
 pub(crate) fn trim(root: &Path, now: SystemTime, idle: Duration, held: &HeldPaths) -> Trimmed {
     let mut trimmed = Trimmed::default();
+    let Ok(root) = root.canonicalize() else {
+        return trimmed;
+    };
+    // /proc resolves cwd and fd paths, while socket names can retain aliases.
+    // Resolve both sides, but never resolve individual scratch entries: a
+    // symlink entry is itself disposable, independently of its target.
+    let held_paths = held
+        .paths
+        .iter()
+        .map(|path| path.canonicalize().unwrap_or_else(|_| path.clone()))
+        .collect();
     let directories = |path: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(path)
             .into_iter()
@@ -270,7 +281,7 @@ pub(crate) fn trim(root: &Path, now: SystemTime, idle: Duration, held: &HeldPath
             .map(|entry| entry.path())
             .collect()
     };
-    for room in directories(root) {
+    for room in directories(&root) {
         for agent in directories(&room) {
             let Ok(items) = std::fs::read_dir(&agent) else {
                 continue;
@@ -281,7 +292,7 @@ pub(crate) fn trim(root: &Path, now: SystemTime, idle: Duration, held: &HeldPath
                     continue;
                 };
                 let idle_for = now.duration_since(written).unwrap_or_default();
-                if idle_for < idle || in_use(&item, &held.paths) {
+                if idle_for < idle || in_use(&item, &held_paths) {
                     continue;
                 }
                 let mut sizing = SCAN_LIMIT;

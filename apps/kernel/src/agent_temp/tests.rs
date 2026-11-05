@@ -187,6 +187,58 @@ fn an_item_a_process_has_open_or_works_in_is_never_removed() {
     assert!(!folder.join("stale.txt").exists());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn an_open_file_survives_a_sweep_through_a_symlinked_home_or_ancestor() {
+    let scratch = Scratch::new("aliased-home");
+    let home = scratch.0.join("real/home");
+    fs::create_dir_all(&home).unwrap();
+    std::os::unix::fs::symlink(&home, scratch.0.join("home-link")).unwrap();
+    std::os::unix::fs::symlink(scratch.0.join("real"), scratch.0.join("parent-link")).unwrap();
+    for alias in [
+        scratch.0.join("home-link"),
+        scratch.0.join("parent-link/home"),
+    ] {
+        let root = alias.join("t");
+        let folder = dir_in(&root, "room0001", "agent-001");
+        fs::create_dir_all(&folder).unwrap();
+        let open = folder.join("open.txt");
+        fs::write(&open, b"keep").unwrap();
+        let file = fs::File::open(&open).unwrap();
+        fs::write(folder.join("stale.txt"), b"disposable").unwrap();
+        let held = held_paths().expect("Linux can inspect the real open file");
+        let trimmed = trim(&root, later(2 * HOUR), HOUR, &held);
+        assert!(
+            open.exists(),
+            "a sweep through {alias:?} removed an open file"
+        );
+        assert!(!folder.join("stale.txt").exists());
+        assert_eq!(trimmed.items, 1, "only the idle sibling is disposable");
+        drop(file);
+        trim(&root, later(2 * HOUR), HOUR, &held_paths().unwrap());
+        assert!(!open.exists(), "the closed file becomes disposable");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn an_aliased_held_path_preserves_its_real_scratch_item() {
+    let scratch = Scratch::new("aliased-holder");
+    let folder = agent_folder(&scratch);
+    std::os::unix::fs::symlink(&folder, scratch.0.join("alias")).unwrap();
+    fs::write(folder.join("held.txt"), b"keep").unwrap();
+    fs::write(folder.join("stale.txt"), b"disposable").unwrap();
+    // Absolute Unix socket names can retain the alias used at bind time.
+    let held = HeldPaths {
+        paths: BTreeSet::from([scratch.0.join("alias/held.txt")]),
+        ..HeldPaths::default()
+    };
+    let trimmed = trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
+    assert!(folder.join("held.txt").exists());
+    assert!(!folder.join("stale.txt").exists());
+    assert_eq!(trimmed.items, 1);
+}
+
 #[test]
 fn a_symlink_is_removed_but_never_followed() {
     let scratch = Scratch::new("link");
@@ -200,8 +252,13 @@ fn a_symlink_is_removed_but_never_followed() {
         &scratch.0.join("t"),
         later(2 * HOUR),
         HOUR,
-        &HeldPaths::default(),
+        &HeldPaths {
+            paths: BTreeSet::from([outside.join("keep.rs")]),
+            ..HeldPaths::default()
+        },
     );
+    #[cfg(unix)]
+    assert!(!folder.join("to-workspace").is_symlink());
     assert!(
         outside.join("keep.rs").exists(),
         "the trim followed a link out of the temp folder"
