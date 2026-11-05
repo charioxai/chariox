@@ -6,6 +6,7 @@ use crate::local::EnvironmentEntryKind;
 use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig, CharioxMcpTransportConfig};
 use crate::skill::{materialize_skill_package, CharioxSkillPackage, CharioxSkillRegistry};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// A skill travels in one peer message, so it stays small: text and a few assets.
 const MAX_SKILL_BYTES: usize = 3 * 1024 * 1024;
@@ -130,11 +131,32 @@ fn variable_name(name: &str) -> String {
         .collect()
 }
 
+// Project Secret names allow 128 bytes; leave room for any usize collision suffix.
+fn key_variable(name: &str) -> String {
+    const BASE_BYTES: usize = 100;
+    let mut variable = variable_name(name);
+    if variable.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+        variable.insert(0, '_');
+    }
+    if variable.len() > BASE_BYTES {
+        // Retain distinct long names instead of collapsing their shared prefixes.
+        let hash: String = Sha256::digest(variable.as_bytes())
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        variable.truncate(BASE_BYTES - 17);
+        variable.push('_');
+        variable.push_str(&hash);
+    }
+    variable
+}
+
 /// A registration whose keys come from the environment of the process that runs it, which on every kernel carries the
 /// Project's Secrets: a credential handle exists on one kernel only, an environment variable name travels.
 pub(crate) fn portable_mcp(mut config: CharioxMcpServerConfig) -> CharioxMcpServerConfig {
     let prefix = variable_name(&config.name);
-    let token = format!("{prefix}_TOKEN");
+    let token = key_variable(&format!("{prefix}_TOKEN"));
     match &mut config.transport {
         CharioxMcpTransportConfig::Stdio {
             credential_env,
@@ -167,7 +189,7 @@ pub(crate) fn portable_mcp(mut config: CharioxMcpServerConfig) -> CharioxMcpServ
                 if env_http_headers.contains_key(&header) {
                     continue;
                 }
-                let base = format!("{prefix}_HEADER_{}", variable_name(&header));
+                let base = key_variable(&format!("{prefix}_HEADER_{}", variable_name(&header)));
                 let mut variable = base.clone();
                 let mut suffix = 2;
                 while !names.insert(variable.clone()) {
@@ -269,5 +291,43 @@ mod tests {
             panic!("HTTP registration");
         }
         assert_eq!(mcp_key_names(&portable).len(), 3);
+    }
+    #[test]
+    fn generated_http_key_names_fit_the_project_secret_contract() {
+        for name in ["9-api".to_string(), "a".repeat(128)] {
+            let mut config =
+                CharioxMcpServerConfig::streamable_http(name, "https://example.invalid/mcp");
+            if let CharioxMcpTransportConfig::StreamableHttp {
+                bearer_token_credential,
+                credential_http_headers,
+                ..
+            } = &mut config.transport
+            {
+                *bearer_token_credential = Some("source-token".into());
+                for header in [
+                    "X-Api-Key".to_string(),
+                    format!("X-{}-One", "A".repeat(200)),
+                    format!("X-{}-Two", "A".repeat(200)),
+                ] {
+                    credential_http_headers.insert(
+                        header,
+                        CharioxMcpCredentialBinding {
+                            credential: "source-header".into(),
+                        },
+                    );
+                }
+            }
+            let names = mcp_key_names(&config);
+            assert_eq!(names.len(), 4, "each credential keeps its own binding");
+            for variable in &names {
+                assert!(
+                    super::super::record::environment_variable_name(variable),
+                    "generated Secret name is invalid: {variable}"
+                );
+            }
+            let portable = portable_mcp(config);
+            assert_eq!(mcp_key_names(&portable), names);
+            assert_eq!(portable_mcp(portable.clone()), portable);
+        }
     }
 }
