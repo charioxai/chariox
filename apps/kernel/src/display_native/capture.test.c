@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: supplementary readback-state regression. The X replies
  * below provide geometry only; real capture/relay/client gates run separately.
  * Compile with the native-display X headers/libs; output stays outside source. */
