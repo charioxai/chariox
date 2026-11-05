@@ -932,7 +932,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             &account_owner_user_id,
             provider_run.provider(),
             provider_run.account_profile(),
-            snapshot,
+            snapshot.with_reading_source("event"),
         )?;
         Ok(())
     }

@@ -448,24 +448,12 @@ fn refresh_provider_account_profile_observation(
                 &environment,
                 config,
             )?;
-            let usage = if status.auth_state == "authenticated"
-                && !crate::provider::provider_account_credential_registered(
-                    owner_user_id,
-                    provider,
-                    &profile.profile_id,
-                )? {
-                let executable = resolve_claude_executable()?;
-                crate::provider::probe_claude_account_usage(
-                    &executable,
-                    &profile.profile_id,
-                    &environment,
-                )?
-            } else {
-                profile
-                    .usage
-                    .clone()
-                    .reconciled_freshness(crate::session::unix_epoch_ms())
-            };
+            // The kernel's usage refresher owns Claude's plan windows; a status
+            // check never reads them.
+            let usage = profile
+                .usage
+                .clone()
+                .reconciled_freshness(crate::session::unix_epoch_ms());
             (status, usage)
         }
         Some("opencode") => (

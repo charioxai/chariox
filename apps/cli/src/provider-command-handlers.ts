@@ -504,7 +504,8 @@ export async function resolveProviderAccountAlias(
 
 function formatProviderAccountUsage(profile: ProviderAccountProfile): string {
   const meters = profile.usage.meters ?? []
-  if (meters.some((meter) => meter.used_percent != null || meter.remaining != null || meter.used != null)) {
+  // A window past its reset keeps its reset time and no value: the kernel has not measured the new one yet.
+  if (meters.some((meter) => meter.used_percent != null || meter.remaining != null || meter.used != null || (meter.state === "unknown" && meter.resets_at_ms != null))) {
     return meters.map((meter) => formatUsageMeter(meter, meters.length > 1)).join(" | ")
   }
   const reason = providerUsageSourceReason(profile.usage.source)
@@ -524,7 +525,7 @@ function formatUsageMeter(
   if (meter.used_percent != null) return `${labelPrefix}${Math.round(meter.used_percent)}% used${meterState}${reset}`
   if (meter.remaining != null) return `${labelPrefix}${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining${meterState}${reset}`
   if (meter.used != null) return `${labelPrefix}${meter.used}${meter.unit ? ` ${meter.unit}` : ""} used${meterState}${reset}`
-  return `${labelPrefix}no reported value`.trim()
+  return `${labelPrefix}${meter.state === "unknown" && meter.resets_at_ms != null ? "not measured yet" : "no reported value"}`.trim()
 }
 
 function providerUsageSourceReason(source: string): string {

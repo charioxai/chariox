@@ -25,6 +25,23 @@ pub(crate) async fn execute_provider_account_request(
             | LocalDaemonRequest::GetProviderUsageSnapshot(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
     );
+    // A reading older than five minutes is renewed before the answer, so
+    // callers that pick accounts from it never act on a stale meter.
+    match &request {
+        LocalDaemonRequest::ListProviderAccountProfiles(listed) => {
+            runtime_state
+                .provider_usage_refresher()
+                .refresh_stale_for_request(&owner_user_id, listed.provider.as_deref())
+                .await;
+        }
+        LocalDaemonRequest::GetProviderUsageSnapshot(_) => {
+            runtime_state
+                .provider_usage_refresher()
+                .refresh_stale_for_request(&owner_user_id, None)
+                .await;
+        }
+        _ => {}
+    }
     let registry = runtime_state.provider_account_profile_registry().clone();
     let config = runtime_state.config_snapshot().await;
     let runtime_for_checks = runtime_state.clone();
