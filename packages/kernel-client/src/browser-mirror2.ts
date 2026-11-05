@@ -1,4 +1,4 @@
-import { Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -67,6 +67,7 @@ export class BrowserMirror2Renderer {
   private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
   private empty: string
+  private absentFont: string
   sequence = 0
   documentId = ''
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
@@ -100,6 +101,7 @@ export class BrowserMirror2Renderer {
   onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     this.empty = URL.createObjectURL(new Blob([]))
+    this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
     owner.addEventListener('pointerup', this.releasePointer, true)
@@ -418,8 +420,8 @@ export class BrowserMirror2Renderer {
       if (view) this.adopt(root, raw.map(text => { const sheet = new view.CSSStyleSheet(); sheet.replaceSync(this.substitute(text)); return sheet }))
     }
   }
-  // Author sheets of a document, led by its font shadow: for each stack name the native machine lacks, a face that covers no
-  // character and is never fetched (a failed face would hand the name back to the system fonts), so the stack falls
+  // Author sheets of a document, led by its font shadow: for each stack name the native machine lacks, a valid empty face that covers no
+  // character used by the page (a failed face would hand the name back to the system fonts), so the stack falls
   // through to the next family here as it did natively.
   private shadows = new WeakMap<Document, CSSStyleSheet>()
   private adopt(root: Document | ShadowRoot, sheets: CSSStyleSheet[]): void {
@@ -431,7 +433,7 @@ export class BrowserMirror2Renderer {
     this.shadows.delete(doc)
     if (names.length && view?.CSSStyleSheet) {
       const sheet = new view.CSSStyleSheet()
-      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:local(${JSON.stringify(this.empty)});unicode-range:U+10FFFF}`).join(''))
+      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:url(${JSON.stringify(this.absentFont)});unicode-range:U+10FFFF}`).join(''))
       this.shadows.set(doc, sheet)
     }
     this.adopt(doc, doc.adoptedStyleSheets.filter(sheet => sheet !== held))
@@ -945,7 +947,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 

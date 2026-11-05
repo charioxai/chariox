@@ -1429,11 +1429,11 @@ test('MP-08/MP-10/MP-11 an absent-font shadow never decodes the empty-page senti
   const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n2',kind:'element',tag:'body',attrs:{style:'font-family:MissingMirror,monospace'}},{id:'n5',parent:'n4',kind:'text',text:'\u{10ffff}'}];
   await apply(page,{...snapshot(nodes),ops:[{op:'fonts',id:'n1',required:[],absent:['MissingMirror']}]});
   await page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px MissingMirror','\u{10ffff}').catch(()=>{});await d.fonts.ready});
-  const state=await page.evaluate(()=>{const d=window.r.frame.contentDocument,face=[...d.fonts].find(value=>value.family==='MissingMirror');return{family:getComputedStyle(d.body).fontFamily,range:face?.unicodeRange,source:d.adoptedStyleSheets.flatMap(sheet=>Array.from(sheet.cssRules,rule=>rule.cssText)).join('')}});
+  const state=await page.evaluate(()=>{const d=window.r.frame.contentDocument,face=[...d.fonts].find(value=>value.family==='MissingMirror');return{family:getComputedStyle(d.body).fontFamily,range:face?.unicodeRange,status:face?.status}});
   assert.equal(state.family,'MissingMirror, monospace','the absent family remains in the source stack');
   assert.equal(state.range,'U+10FFFF','the shadow still covers no ordinary glyph');
   assert.deepEqual(warnings.filter(value=>value.includes('Failed to decode downloaded font')),[],'forcing U+10FFFF through the sentinel must not decode an empty font');
-  assert.match(state.source,/local\(/,'the sentinel is a local lookup, not the empty Blob');
+  assert.equal(state.status,'loaded','the shadow remains a valid font even when its noncharacter is requested');
  }finally{await page.close()}
 });
 
