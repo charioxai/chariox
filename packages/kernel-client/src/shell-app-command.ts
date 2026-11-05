@@ -291,8 +291,6 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
 
 function workerFailureHint(worker: AppWorkerSummary): string {
   switch (worker.failure) {
-    case "app_lifecycle_disk_space":
-      return `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
     case "app_wasm_containment":
       return ": this computer cannot isolate the App worker, so the App was not started; your App data is retained. "
         + "On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact"

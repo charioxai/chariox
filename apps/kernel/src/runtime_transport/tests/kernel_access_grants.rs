@@ -780,7 +780,10 @@ impl Kernel {
     }
     async fn control(&self, action: &str) {
         let _ = std::fs::remove_file(self.root.join("ack"));
-        std::fs::write(self.root.join("command"), action).unwrap();
+        // Renamed into place: the kernel polls this file, and one that read it
+        // between creation and the write took an empty command and dropped it.
+        std::fs::write(self.root.join("command.tmp"), action).unwrap();
+        std::fs::rename(self.root.join("command.tmp"), self.root.join("command")).unwrap();
         timeout(Duration::from_secs(15), async {
             loop {
                 if std::fs::read_to_string(self.root.join("ack")).is_ok_and(|a| a == action) {
@@ -790,7 +793,7 @@ impl Kernel {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| panic!("the kernel did not acknowledge `{action}` within 15 s"));
     }
 }
 impl Drop for Kernel {

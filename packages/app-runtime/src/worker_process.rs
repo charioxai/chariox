@@ -7,10 +7,8 @@
 //! on its bounded blocking service, never drop it on an async coordinator. A
 //! cancellation clone is nonblocking; cancellation does not release admission.
 
-mod host_disk;
 mod monitor;
 mod private_data;
-pub use host_disk::{HostDiskSpace, HOST_RESERVE_BYTES};
 pub use private_data::{
     PreparedDataReplace, PrivateData, PrivateDataError, TreeCopy, TreeFile, TreeLimits,
     DATA_QUOTA_BYTES,
@@ -143,9 +141,6 @@ pub enum WorkerError {
     /// (e.g. `app_storage_capacity`) is stable and names no App path.
     #[error("app_worker_storage:{0}")]
     Storage(&'static str),
-    /// App storage would leave less than the host's reserve free.
-    #[error("app_worker_host_disk_space")]
-    HostDiskSpace(HostDiskSpace),
     #[error("app_worker_spawn")]
     Spawn,
     #[error("app_worker_startup_timeout")]

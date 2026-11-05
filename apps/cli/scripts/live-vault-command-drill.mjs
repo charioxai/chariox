@@ -25,8 +25,8 @@ const WRITE_FILE = /tool\\*"\s*:\s*\\*"(?:mcp__chariox__chariox_vault_write_file
 
 function usage() {
   return `usage: CHARIOX_KERNEL_BINARY=<kernel> live-vault-command-drill.mjs --root <dir> --evidence <dir>
-  [--providers codex,claude] [--codex-home <dir>] [--claude-token-file <file>]
-  [--expect-missing] [--timeout-ms 300000]`
+  [--providers codex,claude] [--codex-home <dir>] [--codex-profile <id>] [--claude-token-file <file>]
+  [--expect-missing] [--lifecycle] [--timeout-ms 300000]`
 }
 
 function parseArgs(argv) {
@@ -42,9 +42,11 @@ function parseArgs(argv) {
     else if (flag === '--root') options.root = path.resolve(value())
     else if (flag === '--evidence') options.evidence = path.resolve(value())
     else if (flag === '--codex-home') options.codexHome = path.resolve(value())
+    else if (flag === '--codex-profile') options.codexProfile = value()
     else if (flag === '--claude-token-file') options.claudeTokenFile = path.resolve(value())
     else if (flag === '--timeout-ms') options.timeoutMs = Number(value())
     else if (flag === '--expect-missing') options.expectMissing = true
+    else if (flag === '--lifecycle') options.lifecycle = true
     else throw new Error(`unknown argument ${flag}\n${usage()}`)
   }
   if (!process.env.CHARIOX_KERNEL_BINARY || !options.root || !options.evidence) throw new Error(usage())
@@ -165,6 +167,7 @@ async function filesContaining(roots, needles, sinceMs) {
 
 async function linkProvider(client, requests, provider, options) {
   if (provider === 'codex') {
+    if (options.codexProfile) return options.codexProfile
     return unwrap(await client.send(requests.linkProviderAccountProfileRequest('codex', 'S2 drill Codex', options.codexHome)),
       'ProviderAccountProfile').profile.profile_id
   }
@@ -186,6 +189,71 @@ function prompt(provider, service, node, workspace) {
     `4. Call the chariox.vault.write_file tool with path ".env.${provider}", template "SVC_API_KEY={{KEY}}\\n" and values {"KEY": "<the second credential_id>"}.`,
     '5. Reply with the whoami stdout the tool returned, exactly. Do not run svc.mjs any other way, do not read files, and never try to see the key.',
   ].join('\n')
+}
+
+// MCP errors must come from the tool record; model narration cannot prove overlap.
+function captureInProgress(transcriptText) {
+  const visit = (value) => {
+    if (typeof value === 'string') {
+      try { return visit(JSON.parse(value)) } catch { return false }
+    }
+    if (!value || typeof value !== 'object') return false
+    if (typeof value.tool === 'string' && /(?:chariox\.vault\.capture_command|chariox_vault_capture_command)$/.test(value.tool) &&
+      JSON.stringify({ error: value.error, output: value.output }).includes('already running')) return true
+    return Object.values(value).some(visit)
+  }
+  return transcriptText.split('\n').some(visit)
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 F1/F2: real provider MCP calls on a private kernel.
+// Codex needs a drill-only CHARIOX_CODEX_BIN wrapper appending the official CLI
+// override -c 'mcp_servers.chariox.supports_parallel_tool_calls=true'.
+async function commandLifecycle({ client, requests, session, attachment, agentId, provider, workspace, url, env, options }) {
+  const runs = path.join(workspace, `capture-runs-${provider}`)
+  const started = path.join(workspace, `use-started-${provider}`)
+  const marker = path.join(workspace, `must-not-write-${provider}`)
+  const argv = [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(runs)}, 'run\\n'); setTimeout(() => console.log(require('crypto').randomBytes(24).toString('hex')), 8000)`]
+  const origin = 'https://api.example.com'
+  const args = { request_id: 'overlapping-live-capture', argv, host: 'api.example.com',
+    use_binding: { target: { kind: 'command_environment', name: 'KEY', origin } } }
+  const submit = async (text) => {
+    const connection = new (await import('../../../packages/kernel-client/dist/ipc.js')).LocalIpcClient(url, { localAuthEnvironment: env })
+    try { await connection.send(requests.submitPromptRequest(session.id, attachment.id, agentId, text, [])) }
+    finally { await connection.close().catch(() => {}) }
+  }
+  step(`${provider} F2 overlapping capture`)
+  await submit([
+    'Run exactly two concurrent calls of chariox.vault.capture_command with the identical arguments below.',
+    'Issue both in the same parallel tool batch; do not wait for the first before issuing the second. The first sleeps for 8 seconds.',
+    JSON.stringify(args),
+    'An already-running error for one call is expected. Then retry the same request once after the successful result.',
+    'Do not run other tools, read files, or try to see the secret. Reply only with the credential_id.',
+  ].join('\n'))
+  await idle(client, requests, session.id, attachment.id, agentId, options.timeoutMs)
+  const seen = await transcript(client, requests, session.id, agentId)
+  const credentials = unwrap(await client.send(requests.listCredentialsRequest()), 'CredentialsListed').credentials ?? []
+  const captured = credentials.filter(c => c.metadata?.created_by_id === agentId && c.metadata?.created_by_kind === 'vault_capture')
+  const count = (await readFile(runs, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean).length
+  const row = { provider, model: MODELS[provider], capture_runs: count, captured_credentials: captured.length,
+    overlap_refused: captureInProgress(seen), capture_seen: CAPTURE.test(seen) }
+  await writeFile(path.join(options.evidence, `lifecycle-capture-${provider}.json`), seen)
+  if (count !== 1 || captured.length !== 1 || !row.overlap_refused || !row.capture_seen)
+    throw Error(`F2 did not prove overlapping admission: ${JSON.stringify(row)}`)
+  step(`${provider} F1 cancel delayed child write`)
+  const use = { argv: ['/bin/sh', '-c', `touch '${started}'; (sleep 8; touch '${marker}') & wait`],
+    origin, env: { KEY: captured[0].id } }
+  await submit(`Call chariox.vault.use_env exactly once with ${JSON.stringify(use)}. Do not run other tools. Wait for its result.`)
+  await waitFor('the delayed Vault command to launch', options.timeoutMs, async () => stat(started).then(() => true).catch(() => false))
+  await client.send(requests.cancelActivePromptRequest(session.id, attachment.id, agentId))
+  await idle(client, requests, session.id, attachment.id, agentId, options.timeoutMs)
+  await sleep(9000)
+  row.cancelled_write_absent = !(await stat(marker).then(() => true).catch(() => false))
+  const after = await transcript(client, requests, session.id, agentId)
+  await writeFile(path.join(options.evidence, `lifecycle-cancel-${provider}.json`), after)
+  row.use_env_seen = USE_ENV.test(after)
+  row.pass = row.cancelled_write_absent && row.use_env_seen
+  if (!row.pass) throw Error(`F1 delayed write survived cancellation: ${JSON.stringify(row)}`)
+  return row
 }
 
 async function main() {
@@ -282,6 +350,10 @@ async function main() {
         (await sessionState(client, requests, session.id)).active_provider_run_id === run.id)
       step(`${provider} run active`)
       row.resolved_model = run.model ?? null
+      if (options.lifecycle) {
+        Object.assign(row, await commandLifecycle({ client, requests, session, attachment, agentId, provider, workspace, url, env, options }))
+        continue
+      }
       const since = Date.now()
       const keysBefore = new Set(service.keys)
       const submitter = new LocalIpcClient(url, { localAuthEnvironment: env })
