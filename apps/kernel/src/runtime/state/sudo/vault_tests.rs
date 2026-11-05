@@ -243,7 +243,7 @@ async fn a06_a_generated_handle_never_takes_a_slot_that_holds_a_value() {
 
 /// Answers the Vault unlock interactions as the owner, after `during` runs.
 /// Returns early when `during` already withdrew the prompt.
-async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
+pub(super) async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
     let pending = |prefix: &str| {
         f.state
             .owned

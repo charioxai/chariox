@@ -136,7 +136,36 @@ impl KernelRuntimeState {
                     args.path
                 ))
             })?);
-            let replaced = current.replace(secret.as_str(), &format!("${{chariox:{handle}}}"));
+            let replacement = format!("${{chariox:{handle}}}");
+            let replaced = match &args.extract {
+                Extract::Json { pointer } => {
+                    let mut json: serde_json::Value = serde_json::from_str(&current).map_err(|_| {
+                        error(format!("stored as {handle}, but the file is no longer JSON; capture the current file with a new request_id"))
+                    })?;
+                    let selected = json.pointer_mut(pointer).ok_or_else(|| {
+                        error(format!("stored as {handle}, but the selected JSON value is missing; capture the current file with a new request_id"))
+                    })?;
+                    let unchanged = match selected {
+                        serde_json::Value::String(value) => value.trim() == secret.as_str(),
+                        serde_json::Value::Number(value) => value.to_string() == secret.as_str(),
+                        _ => false,
+                    };
+                    if !unchanged {
+                        return Err(error(format!("stored as {handle}, but the selected JSON value changed; capture the current file with a new request_id")));
+                    }
+                    *selected = serde_json::Value::String(replacement);
+                    Zeroizing::new(serde_json::to_string(&json).map_err(|_| {
+                        error(format!(
+                            "stored as {handle}, but cannot encode the replacement JSON"
+                        ))
+                    })?)
+                }
+                _ => Zeroizing::new(current.replace(secret.as_str(), &replacement)),
+            };
+            if replaced.as_bytes() == current.as_bytes() {
+                result.payload["replaced_with_handle"] = serde_json::json!(false);
+                return Ok(result);
+            }
             let mode = std::fs::metadata(&path)
                 .map(|m| m.permissions().mode() & 0o777)
                 .unwrap_or(0o600);

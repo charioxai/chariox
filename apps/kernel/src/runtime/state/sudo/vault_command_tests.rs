@@ -2,7 +2,7 @@
 //! use as env/stdin through the real MCP router and real child processes.
 //! Live provider acceptance is the separate drill.
 use super::tests::{fixture, Fixture};
-use super::vault_tests::{call, elevated, names, unlock};
+use super::vault_tests::{call, elevated, names, owner_unlocks, unlock};
 use super::*;
 use serde_json::{json, Value};
 
@@ -372,6 +372,79 @@ async fn s2_use_env_refuses_credentials_not_made_for_commands() {
     .to_string();
     assert!(refused.contains("no declared use"), "{refused}");
     assert!(!marker.exists());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: downloaded JSON keys must be replaced as JSON values.
+#[tokio::test]
+async fn capture_file_replaces_only_the_selected_json_value() {
+    crate::test_support::isolated_env_test!();
+    for value in [
+        json!("line1\nline2"),
+        json!(123456),
+        json!("quoted \"key\" and \\ path"),
+    ] {
+        let f = fixture();
+        elevated(&f);
+        unlock(&f);
+        let source = workspace(&f).join("downloaded-key.json");
+        let original = json!({"keys":[{"private_key":value,"unselected":value}],"version":1});
+        std::fs::write(&source, serde_json::to_vec(&original).unwrap()).unwrap();
+        let captured = call(&f, CAPTURE_FILE, json!({
+            "request_id":"downloaded-json", "path":"downloaded-key.json", "host":"api.example.com",
+            "use_binding":{"target":{"kind":"file","path":workspace(&f).join("key.pem")}},
+            "extract":{"kind":"json","pointer":"/keys/0/private_key"}, "replace_with_handle":true
+        })).await.unwrap();
+        let handle = captured["credential_id"].as_str().unwrap();
+        let rewritten: Value = serde_json::from_slice(&std::fs::read(&source).unwrap()).unwrap();
+        assert_eq!(captured["replaced_with_handle"], true);
+        assert_eq!(
+            rewritten["keys"][0]["private_key"],
+            format!("${{chariox:{handle}}}")
+        );
+        assert_eq!(
+            rewritten["keys"][0]["unselected"], value,
+            "only the selected pointer is rewritten"
+        );
+        assert_eq!(rewritten["version"], 1);
+        let expected = match &value {
+            Value::String(value) => value.clone(),
+            _ => value.to_string(),
+        };
+        assert_eq!(stored(&f, handle).as_str(), expected);
+        assert!(!captured.to_string().contains(&expected));
+    }
+}
+
+#[tokio::test]
+async fn capture_file_reports_replacement_only_after_a_real_change() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    let source = workspace(&f).join("pulled.env");
+    std::fs::write(&source, SECRET).unwrap();
+    let captured = call(
+        &f,
+        CAPTURE_FILE,
+        json!({
+            "request_id":"changed-source", "path":"pulled.env", "host":"api.example.com",
+            "use_binding":{"target":{"kind":"file","path":workspace(&f).join("output.env")}},
+            "replace_with_handle":true
+        }),
+    );
+    let owner = owner_unlocks(&f, &f.request.session_id, || {
+        std::fs::write(&source, "owner changed this file while unlocking").unwrap();
+    });
+    let (result, ()) = tokio::join!(captured, owner);
+    let result = result.unwrap();
+    assert_eq!(result["replaced_with_handle"], false);
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "owner changed this file while unlocking"
+    );
+    assert_eq!(
+        stored(&f, result["credential_id"].as_str().unwrap()).as_str(),
+        SECRET
+    );
 }
 
 #[tokio::test]
