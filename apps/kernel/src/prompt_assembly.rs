@@ -1444,6 +1444,7 @@ mod tests {
             "renders Markdown inline",
             "`![alt](path)`",
             "write it to a PNG file",
+            "about 800 px wide with text at least 14 px high",
         ] {
             assert!(
                 envelope.hidden_system_context.contains(expected),
