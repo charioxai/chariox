@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn restoring_a_gateway_cannot_revive_a_queued_admission_witness() {
         let path = file();
-        admit(&path, "gateway-key", Some(mac(Some("Machine/Kernel"))), 10).unwrap();
+        admit(&path, "gateway-key", mac(Some("Machine/Kernel")), 10).unwrap();
         let original = admission_generation(&path, "gateway-key").unwrap().unwrap();
         let client = entries(&path).unwrap()[0].client_id();
         revoke(&path, &client).unwrap();
