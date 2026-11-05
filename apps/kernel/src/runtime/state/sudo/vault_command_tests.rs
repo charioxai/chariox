@@ -530,3 +530,205 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+async fn wait_for_command_marker(path: &std::path::Path) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !path.exists() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("command did not launch");
+}
+
+#[tokio::test]
+async fn capture_claims_request_before_overlapping_commands_launch() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let runs = workspace(&f).join("overlapping-runs");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
+            runs.display()
+        )
+    ]);
+    let first = capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"}));
+    let retry = async {
+        wait_for_command_marker(&runs).await;
+        capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"})).await
+    };
+    let (first, retry) = tokio::join!(first, retry);
+    let first = first.unwrap();
+    if let Ok(retry) = retry {
+        assert_eq!(retry["credential_id"], first["credential_id"]);
+    } else {
+        assert!(retry.unwrap_err().to_string().contains("already running"));
+    }
+    let committed = capture(&f, "overlap", argv, json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    assert_eq!(committed["credential_id"], first["credential_id"]);
+    assert_eq!(committed["created"], false);
+    assert_eq!(std::fs::read_to_string(&runs).unwrap(), "run\n");
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn use_env_stops_its_process_group_when_submitting_prompt_is_cancelled() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let captured = capture(&f, "cancel", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let started = workspace(&f).join("cancel-started");
+    let marker = workspace(&f).join("cancel-must-not-write");
+    let pending = call(
+        &f,
+        USE_ENV,
+        json!({"origin":"https://api.example.com",
+        "argv":["/bin/sh", "-c", format!("touch '{}'; (sleep 2; touch '{}') & wait", started.display(), marker.display())],
+        "env":{"KEY":captured["credential_id"]}}),
+    );
+    let cancel = async {
+        wait_for_command_marker(&started).await;
+        let session = f
+            .state
+            .owned
+            .session_store
+            .get_session(&turn.session_id)
+            .unwrap();
+        let prompts = &f.state.owned.prompt_state_owner;
+        let active = prompts
+            .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
+            .unwrap();
+        let mut cancelled = active.clone();
+        cancelled.set_status(crate::session::PromptStatus::Cancelling);
+        assert!(prompts.replace_active_prompt_if_matches(
+            &session,
+            &turn.agent_id,
+            &active,
+            cancelled
+        ));
+    };
+    let (result, ()) = tokio::join!(pending, cancel);
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+    assert!(
+        !marker.exists(),
+        "cancelled Vault command must not write after cancellation"
+    );
+    assert!(
+        result.is_err(),
+        "ended authority must return an explicit failure"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn use_env_stops_when_its_external_grant_expires_or_is_revoked() {
+    crate::test_support::isolated_env_test!();
+    for expire in [false, true] {
+        let f = fixture();
+        let turn = elevated(&f);
+        unlock(&f);
+        let captured = capture(&f, "grant", printing(SECRET), json!({"kind":"stdout"}))
+            .await
+            .unwrap();
+        let request =
+            LocalDaemonRequest::ControlPlane(crate::local::ControlPlaneRequest::Capabilities {});
+        let state = f
+            .state
+            .with_external_command_authority(Some((&turn.entry_id, &request)));
+        state.authorize_current_external_command().unwrap();
+        let started = workspace(&f).join("grant-started");
+        let marker = workspace(&f).join("grant-must-not-write");
+        let pending = state.vault_use_env("sudo-fixture-bearer", json!({"origin":"https://api.example.com",
+            "argv":["/bin/sh", "-c", format!("touch '{}'; sleep 2; touch '{}'", started.display(), marker.display())],
+            "env":{"KEY":captured["credential_id"]}}));
+        let end = async {
+            wait_for_command_marker(&started).await;
+            if expire {
+                f.state
+                    .owned
+                    .sudo_turns
+                    .lock()
+                    .unwrap()
+                    .get_mut(&turn.entry_id)
+                    .unwrap()
+                    .deadline = Some(Instant::now());
+            } else {
+                f.state
+                    .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+                    .unwrap();
+            }
+        };
+        let (result, ()) = tokio::join!(pending, end);
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+        assert!(
+            !marker.exists(),
+            "Vault command outlived its external grant (expire={expire})"
+        );
+        assert!(result.is_err());
+        f.state.shutdown_cleanup().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn failed_capture_releases_its_request_claim_for_retry() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    assert!(capture(
+        &f,
+        "failure-retry",
+        json!(["/bin/sh", "-c", "exit 3"]),
+        json!({"kind":"stdout"})
+    )
+    .await
+    .is_err());
+    let created = capture(
+        &f,
+        "failure-retry",
+        printing(SECRET),
+        json!({"kind":"stdout"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(created["created"], true);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn dropped_capture_future_keeps_claim_until_command_settles() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let runs = workspace(&f).join("dropped-capture-runs");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
+            runs.display()
+        )
+    ]);
+    let mut first = Box::pin(capture(
+        &f,
+        "dropped",
+        argv.clone(),
+        json!({"kind":"stdout"}),
+    ));
+    tokio::select! {
+        _ = &mut first => panic!("capture finished before its marker was observed"),
+        () = wait_for_command_marker(&runs) => {}
+    }
+    drop(first);
+    let result = capture(&f, "dropped", argv, json!({"kind":"stdout"})).await;
+    assert!(result.unwrap_err().to_string().contains("already running"));
+    assert_eq!(std::fs::read_to_string(&runs).unwrap(), "run\n");
+    f.state.shutdown_cleanup().await.unwrap();
+}
