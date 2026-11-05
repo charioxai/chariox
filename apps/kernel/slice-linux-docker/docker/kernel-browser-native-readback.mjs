@@ -6,19 +6,21 @@ import {fileURLToPath} from 'node:url';
 import {SharedRasterPool} from './kernel-browser-shared-raster.mjs';
 import {NativePipe,NativeRaster} from './kernel-browser-native-pipe.mjs';
 import {NativeWorkerControl,nativeWorkerResource} from './kernel-browser-native-worker.mjs';
+import {prepareNativeCodecEnvironment} from './kernel-browser-native-codec.mjs';
 import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 // MP-08/MP-10/MP-11: keep the worker's private fixed stage until the public error classifier.
 export function nativeReadbackFailure(capture,message){
  return Object.assign(Error(message),{nativeStage:capture.helperStage});
 }
-export function startNativeReadback(capture,config){
+export async function startNativeReadback(capture,config){
  if(!ownsDisplay(capture.display)||!capture.valid()||!Number.isSafeInteger(capture.pid)||capture.pid<=1)
   throw Error('MP-11: native readback source not owned');
  if(config.window_region&&!nativeWorkerResource())
   throw Error('MP-08: cropped native worker unavailable');
  config=Object.freeze({...config,...(config.window_region?{window_region:Object.freeze({...config.window_region})}:{})});
-   capture.phase='readback';const executable=nativeWorkerResource()?.executable;
-   const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:{...process.env,...capture.display.environment},stdio:executable?['pipe','pipe','pipe','pipe']:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
+   const executable=nativeWorkerResource()?.executable,environment={...process.env,...capture.display.environment};
+   if(executable){capture.phase='codec';Object.assign(environment,await prepareNativeCodecEnvironment({worker:executable,environment}));}
+   capture.phase='readback';const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:environment,stdio:executable?['pipe','pipe','pipe','pipe']:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
    const fail=()=>{if(!capture.closed)capture.timing?.(`native_readback_ended ${capture.surface??'page'}`,performance.timeOrigin+performance.now());capture.fence()};child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
    let stderr='';child.stderr.on('data',b=>{stderr+=b.toString();const lines=stderr.split('\n');stderr=lines.pop();if(stderr.length>8192)stderr='';for(const line of lines){

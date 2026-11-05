@@ -127,6 +127,18 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-readback.mjs"),
     ),
     (
+        "kernel-browser-native-codec.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-codec.mjs"),
+    ),
+    (
+        "install-display-codec.py",
+        include_bytes!("../../slice-linux-docker/docker/install-display-codec.py"),
+    ),
+    (
+        "display-codec-pin.json",
+        include_bytes!("../../slice-linux-docker/docker/display-codec-pin.json"),
+    ),
+    (
         "kernel-browser-visible-page.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-visible-page.mjs"),
     ),
