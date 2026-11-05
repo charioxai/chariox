@@ -36,6 +36,9 @@ function docker(args) {
 /** Reads what the provisioner compares against: the labels, architecture and layers of a built image. */
 function inspectImage(image) {
   const [inspected] = JSON.parse(docker(['image', 'inspect', image]));
+  if (!/^sha256:[a-f0-9]{64}$/.test(inspected.Id ?? '') || !Array.isArray(inspected.RootFS?.Layers)
+      || !inspected.RootFS.Layers.length || inspected.RootFS.Layers.some(layer => !/^sha256:[a-f0-9]{64}$/.test(layer)))
+    fail(`${image} has no complete image identity and layer list`);
   const labels = inspected.Config?.Labels ?? {};
   const revision = labels['io.chariox.runtime-source-revision'];
   const protocol = labels['io.chariox.relay-peer-protocol-version'];
@@ -50,11 +53,10 @@ export async function exportSliceImage(image, output) {
   const { imageId, revision, protocol, architecture, layers } = inspectImage(image ?? fail('--image is required'));
   const tag = `chariox-slice-release:${revision.replace(/^sha256:/, '')}`;
   if (!RELEASE_TAG.test(tag)) fail(`runtime source revision ${revision} cannot name a release tag`);
-  docker(['tag', image, tag]);
   await mkdir(target, { mode: 0o755 });
   const hash = createHash('sha256');
   let size = 0;
-  const save = spawnOwned('docker', ['save', tag], { stdio: ['ignore', 'pipe', 'inherit'] });
+  const save = spawnOwned('docker', ['save', imageId], { stdio: ['ignore', 'pipe', 'inherit'] });
   const exited = new Promise((done, failed) => {
     save.on('error', failed);
     save.on('close', code => (code === 0 ? done() : failed(new Error(`docker save exited with ${code}`))));

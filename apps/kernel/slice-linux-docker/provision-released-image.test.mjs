@@ -38,7 +38,7 @@ if (args[0] === "load") {
   process.stdin.on("end", () => {
     const bytes = Buffer.concat(chunks);
     appendFileSync(process.env.CHARIOX_TEST_DOCKER_LOG, JSON.stringify({ loadedBytes: bytes.length }) + "\\n");
-    state.tags["chariox-slice-release:fixture"] = { layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
+    state.tags["sha256:" + "c".repeat(64)] = { layers: JSON.parse(process.env.CHARIOX_TEST_LOADED_LAYERS) };
     save(); process.exit(0);
   });
   return;
@@ -96,7 +96,7 @@ test("a release install loads its verified image and never builds", () => withRo
   const calls = await dockerCalls(root)
   assert.ok(!calls.includes("BUILD"), "a release install must not build the image")
   assert.ok(calls.includes(JSON.stringify({ loadedBytes: archiveBytes.length })), "docker load receives the archive bytes")
-  assert.ok(calls.includes(JSON.stringify(["tag", "chariox-slice-release:fixture", "chariox-slice-linux:0.1.0"])))
+  assert.ok(calls.includes(JSON.stringify(["tag", "sha256:" + "c".repeat(64), "chariox-slice-linux:0.1.0"])))
   const mb = archiveBytes.length >> 20
   assert.match(result.stderr, new RegExp(`progress: Verifying the runtime image \\d+ MB of ${mb} MB \\(100%\\)`))
   assert.match(result.stderr, new RegExp(`progress: Loading the runtime image ${mb} MB of ${mb} MB \\(100%\\)`))
@@ -126,7 +126,7 @@ test("a loaded image with other layers is removed and refused", () => withRoot(a
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /does not match the signed release; it was removed/)
   const calls = await dockerCalls(root)
-  assert.ok(calls.includes(JSON.stringify(["rmi", "chariox-slice-release:fixture"])))
+  assert.ok(calls.includes(JSON.stringify(["rmi", "sha256:" + "c".repeat(64)])))
   assert.ok(!calls.includes("BUILD"))
 }))
 

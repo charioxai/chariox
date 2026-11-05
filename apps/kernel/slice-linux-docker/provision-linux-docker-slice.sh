@@ -268,11 +268,12 @@ run_with_file_stdin_timeout() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [build-source-image|build-image|provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
-This Docker path is a provider/runtime validation fallback for Mac hosts when
-the Lume Ubuntu prebuilt image is unavailable.
+build-source-image constructs runtime layers on the release builder. Runtime
+build-image/provision verifies and loads the signed image; it never builds
+missing image layers from the network.
 
 CHARIOX_SLICE_DOCKER_PIDS_LIMIT caps container processes and threads (default:
 1024). Set a positive integer to tune it for the workload. Reused containers
@@ -832,7 +833,7 @@ load_released_image() {
     "$SLICE_RUNTIME_SOURCE_REVISION" "$SLICE_RELAY_PEER_PROTOCOL_VERSION" "$(docker_target_arch)")" || exit 1
   IFS=$'\t' read -r tag archive size sha256 layers image_id <<<"$description"
   python3 "$SCRIPT_DIR/released-slice-image.py" verify "$archive" "$size" "$sha256" || exit 1
-  if released_image_loaded "$tag" "$layers" "$image_id"; then
+  if released_image_loaded "$image_id" "$layers" "$image_id"; then
     log "release runtime image $tag is already loaded"
   else
     log "loading the signed release's runtime image ($size bytes); no build is needed"
@@ -840,12 +841,13 @@ load_released_image() {
       | run_guarded_command unbounded -- docker load -q; }; then
       fail "docker load of the release runtime image failed. Free disk space for Docker (about $((size * 3 / 1000000000 + 1)) GB) and start the slice again."
     fi
-    if ! released_image_loaded "$tag" "$layers" "$image_id"; then
-      docker rmi "$tag" >/dev/null 2>&1 || true
+    if ! released_image_loaded "$image_id" "$layers" "$image_id"; then
+      docker rmi "$image_id" >/dev/null 2>&1 || true
       fail "the loaded release runtime image does not match the signed release; it was removed. Reinstall the Chariox release bundle."
     fi
   fi
-  docker tag "$tag" "$image"
+  docker tag "$image_id" "$tag"
+  docker tag "$image_id" "$image"
   if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
     node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
   fi
