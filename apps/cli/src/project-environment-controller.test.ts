@@ -417,3 +417,41 @@ test("a reopened dialog shows the output of the last finished run once", async (
   assert.match(h.text(), /pnpm install failed/)
   assert.equal(h.scheduled.length, 0, "a finished run is not polled")
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: row edits wait for the acknowledged revision.
+for (const section of ["secret", "file"] as const) {
+  for (const edit of ["add", "remove"] as const) {
+    test(`a pending text save retains a ${section} row ${edit}`, async () => {
+      const h = harness()
+      await h.open()
+      let firstReply!: (value: unknown) => void
+      h.replies.push(new Promise(resolve => { firstReply = resolve }))
+      h.key("down")
+      h.key("return")
+      h.type(" && make test")
+      h.key("escape")
+      assert.equal(h.requests.length, 2)
+      const value = section === "secret" ? "NEW_KEY" : "config/local.json"
+      if (edit === "add") {
+        h.focusOn(section === "secret" ? "+ Add secret" : "+ Add file")
+        h.key("return")
+        h.type(value)
+        h.key("return")
+        assert(h.text().includes(value), "the entered name stays visible while its save is queued")
+      } else {
+        h.focusOn(section === "secret" ? "DB_URL" : ".env.local")
+        h.key("x")
+      }
+      assert.equal(h.requests.length, 2, "row saves wait for the first revision")
+      const secrets = edit === "add" ? [...environment().secrets, { name: value, presence: "missing" as const }] : environment().secrets.slice(0, 1)
+      const files = edit === "add" ? [...environment().files, { path: value, presence: "missing" as const, sizeBytes: null }] : environment().files.slice(1)
+      h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, ...(section === "secret" ? { secrets } : { files }) }) } })
+      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+      await h.settle()
+      assert.equal(h.requests.length, 3, "the queued row edit is submitted")
+      assert.equal(h.requests.at(-1)!.SaveProjectEnvironment.expectedRevision, 3)
+      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment[section === "secret" ? "secrets" : "files"], section === "secret" ? secrets.map(({ name }) => ({ name })) : files.map(({ path }) => ({ path })))
+      if (section === "secret" && edit === "add") assert.match(h.text(), /NEW_KEY\s+Value ▏/)
+    })
+  }
+}
