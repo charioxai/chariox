@@ -1926,11 +1926,34 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
     // A client reload reconnects to the same authoritative kernel; it does not
     // construct another scheduler with empty in-memory output deadlines.
     let reloaded = router.clone().runtime_state();
-    assert_eq!(
-        mixed_client_state(&router.clone(), &session_id, "mixed-reconnect").await,
-        first_client_state,
-        "client reload must preserve the authoritative session, activity, and revision"
-    );
+    let reconnected_client_state =
+        mixed_client_state(&router, &session_id, "mixed-reconnect").await;
+    match (first_client_state, reconnected_client_state) {
+        (
+            crate::local::LocalDaemonResponse::SessionState {
+                session: before_session,
+                agent_activity: before_activity,
+                agent_activity_revision: before_revision,
+                room_workflows: before_workflows,
+                ..
+            },
+            crate::local::LocalDaemonResponse::SessionState {
+                session,
+                agent_activity,
+                agent_activity_revision,
+                room_workflows,
+                ..
+            },
+        ) => {
+            // Process samples and disk usage can change between reads, even
+            // while the authoritative Room state remains unchanged.
+            assert_eq!(session, before_session);
+            assert_eq!(agent_activity, before_activity);
+            assert_eq!(agent_activity_revision, before_revision);
+            assert_eq!(room_workflows, before_workflows);
+        }
+        _ => unreachable!("mixed_client_state checks the response variant"),
+    }
     let reloaded_revision = reloaded.session_projection_session_change_sequence(&session_id);
     assert_eq!(reloaded_revision, first_reconciled_revision);
     let reloaded_projection = reloaded
