@@ -34,10 +34,6 @@ chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.strin
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
-chrome.tabs.query?.({ active: true })?.then?.(tabs => { for (const tab of tabs) if (!shown.has(tab.windowId)) shown.set(tab.windowId, tab.id); })?.catch?.(() => {});
-const keepShown = (tab, previous) => {
-  if (tab.active && tab.openerTabId !== undefined && previous !== undefined && previous !== tab.id && tab.openerTabId !== previous) chrome.tabs.update(previous, { active: true }).catch(() => {});
-};
 // MP-08/MP-10: page popups and second windows stay inside the shared browser.
 // The kernel identifies its internal keepalive before popup folding is enabled.
 let keepaliveTab = null;
@@ -52,7 +48,6 @@ const fold = async (id, tries = 100) => {
   // that existing page instead of leaving a popup without a tabbed window.
   if (!main) { await chrome.windows.create({ tabId: id, type: "normal", focused: true }); return; }
   if (tab.windowId === main.id) return;
-  const previous = shown.get(main.id), watched = tab.openerTabId !== undefined && tab.openerTabId === previous;
   try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
   catch (error) {
     if (!tries || !/dragging/.test(error?.message)) throw error;
@@ -105,7 +100,7 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 6,
+  revision: 5,
   favicon,
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
@@ -180,7 +175,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 6",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 5",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
