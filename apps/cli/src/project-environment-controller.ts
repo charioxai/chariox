@@ -41,7 +41,8 @@ type Input =
 type EnvironmentLists = { secretNames: string[]; filePaths: string[]; mcps: EnvironmentExtension[]; skills: EnvironmentExtension[] }
 /** A change to the lists, applied to the latest saved ones when it is sent. */
 type ListEdit = (lists: EnvironmentLists) => Partial<EnvironmentLists>
-type QueuedEdit = { edit: ListEdit; saved: () => void }
+/** A completed list edit stays a draft until a save carrying it is acknowledged; `settled` ends once a request carrying it has ended, whatever its outcome. */
+type ListDraft = { edit: ListEdit; settled: () => void }
 
 const listsOf = (environment: ProjectEnvironmentView): EnvironmentLists => ({
   secretNames: environment.secrets.map((secret) => secret.name),
@@ -78,12 +79,13 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     environment: ProjectEnvironmentView | null
     typed: { script?: string; variables?: string }
     busy: boolean
-    saveTextPending: boolean
-    // List edits completed while a request was pending; they save together at the next revision.
-    queuedEdits: QueuedEdit[]
+    // A save was asked for while a request was pending; it runs when that request ends, unless it conflicted.
+    saveRequested: boolean
+    // Completed list edits not yet acknowledged by the kernel. Every save carries all of them; a conflict or failure keeps them for the next explicit save.
+    listDrafts: ListDraft[]
   }
   const editors = new Map<string, Editor>()
-  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveTextPending: false, queuedEdits: [] })
+  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [] })
   let editor: Editor = newEditor("")
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
@@ -142,7 +144,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     } finally {
       target.busy = false
       if (mine === generation) deps.render()
-      flushQueued(target)
+      if (target.saveRequested) { target.saveRequested = false; void saveUnsaved(target) }
     }
   }
 
@@ -206,22 +208,27 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     void follow(known)
   }
 
-  /** Saves the lists with `edit` applied; while a request is pending the edit waits for the next save. Resolves once the edit was sent. */
-  const save = async (edit: ListEdit, target = editor): Promise<void> => {
-    if (target.busy) {
-      await new Promise<void>((saved) => { target.queuedEdits.push({ edit, saved }) })
-      return
-    }
-    await send(edit, target)
+  /** Keeps `edit` as a draft and saves; resolves once a request carrying it has ended. */
+  const save = (edit: ListEdit, target = editor): Promise<void> => new Promise<void>((settled) => {
+    target.listDrafts.push({ edit, settled })
+    void requestSave(target)
+  })
+
+  // While a request is pending the save waits for it to end; the typed text and the drafts are read when it is sent.
+  const requestSave = async (target: Editor) => {
+    if (target.busy) { target.saveRequested = true; return }
+    await send(target)
   }
 
-  const send = async (edit: ListEdit, target: Editor, settled: readonly QueuedEdit[] = []) => {
+  const send = async (target: Editor) => {
     const current = target.environment
-    if (!current) { settled.forEach(({ saved }) => saved()); return }
+    const batch = target.listDrafts.slice()
+    if (!current) { batch.forEach(({ settled }) => settled()); return }
     const submitted = { script: script(target), variables: variables(target) }
+    let acknowledged = false
     target.busy = true
     try {
-      const lists = { ...listsOf(current), ...edit(listsOf(current)) }
+      const lists = batch.reduce((latest, { edit }) => ({ ...latest, ...edit(latest) }), listsOf(current))
       const outcome = projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
         projectId: target.projectId,
         expectedRevision: current.revision,
@@ -230,12 +237,11 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       })))
       target.environment = outcome.environment
       if (outcome.kind === "saved") {
+        acknowledged = true
+        // Only what this request carried is done; edits drafted while it was pending stay.
+        target.listDrafts.splice(0, batch.length)
         if (target.typed.script === submitted.script) delete target.typed.script
         if (target.typed.variables === submitted.variables) delete target.typed.variables
-      } else {
-        // A later edit may retry; edits already queued must not overwrite this revision.
-        target.saveTextPending = false
-        target.queuedEdits.splice(0).forEach(({ saved }) => saved())
       }
       if (target === editor) {
         setEnvironment(outcome.environment)
@@ -245,29 +251,21 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (target === editor) message = failureText(error)
     } finally {
       target.busy = false
-      settled.forEach(({ saved }) => saved())
+      batch.forEach(({ settled }) => settled())
       if (target === editor && open) deps.render()
-      flushQueued(target)
+      // After a conflict or failure the drafts wait for an explicit save instead of overwriting the revision again.
+      const retry = acknowledged && target.saveRequested
+      target.saveRequested = false
+      if (retry) void saveUnsaved(target)
     }
   }
 
-  // One save carries every list edit and the text that waited for the request that just ended.
-  const flushQueued = (target: Editor) => {
-    const edits = target.queuedEdits
-    target.queuedEdits = []
-    const textPending = target.saveTextPending
-    target.saveTextPending = false
-    if (edits.length > 0) {
-      void send((lists) => edits.reduce((latest, { edit }) => ({ ...latest, ...edit({ ...lists, ...latest }) }), {}), target, edits)
-    } else if (textPending) void saveTypedText(target)
-  }
+  const hasUnsaved = (target = editor) => target.environment !== null && (target.listDrafts.length > 0 || script(target) !== target.environment.setup.script || variables(target) !== target.environment.variables)
 
-  const hasUnsavedText = (target = editor) => target.environment !== null && (script(target) !== target.environment.setup.script || variables(target) !== target.environment.variables)
-
-  const saveTypedText = async (target = editor) => {
-    if (target.busy) { target.saveTextPending = true; return }
-    if (!hasUnsavedText(target)) return
-    await save(() => ({}), target)
+  // While a request is pending the text may yet differ from what that request acknowledges, so only an idle editor can tell nothing is unsaved.
+  const saveUnsaved = async (target = editor) => {
+    if (!target.busy && !hasUnsaved(target)) return
+    await requestSave(target)
   }
 
   const sendSecret = async (name: string, value: string) => {
@@ -289,9 +287,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       return
     }
     if (transfer?.state === "running") return
-    if (hasUnsavedText()) {
-      await saveTypedText()
-      if (hasUnsavedText()) return
+    if (hasUnsaved()) {
+      await saveUnsaved()
+      if (hasUnsaved()) return
     }
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(runProjectEnvironmentSetupRequest(projectId, deps.newOperationId()))),
@@ -362,7 +360,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const { field, buffer } = input
     input = null
     editor.typed = field === "script" ? { ...editor.typed, script: buffer.text } : { ...editor.typed, variables: buffer.text }
-    void saveTypedText()
+    void saveUnsaved()
   }
 
   const submitLine = () => {
