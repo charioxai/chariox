@@ -88,15 +88,16 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     return buckets.map(values => values ? (({ n, p50_ms, p99_ms }) => ({ n, p50_ms, p99_ms }))(distribution([...values])) : null)
   }
 
+  // Keep the native CLI alive across Ctrl-C; the MCP fixture exits on SIGINT and measures relaunch churn.
   // Lanes: a session, an attachment and a dev-stub provider run per lane.
   for (let i = 0; i < o.lanes; i++) {
     const made = (await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: `lane-${i}`,
-      agent_defaults: { provider: 'dev-stub', model: 'runtime-mcp-fixture', account_profile: 'default' } } })).SessionCreated
+      agent_defaults: { provider: 'dev-stub', model: 'native-tui-idle', account_profile: 'default' } } })).SessionCreated
     const lane = { session_id: made.session.id, agent_id: made.agent?.id }
     lane.attachment_id = (await rpc({ AttachToSession: { session_id: lane.session_id, client_id: `lane-${i}`, capability_level: 'FullTerminal' } })).SessionAttached.attachment.id
     try {
       const launched = await rpc({ LaunchProviderRun: { session_id: lane.session_id, agent_id: lane.agent_id, adapter_key: 'dev-stub', provider: 'dev-stub',
-        account_profile: 'default', model: 'runtime-mcp-fixture', variant: null, native_tui: false } })
+        account_profile: 'default', model: 'native-tui-idle', variant: null, native_tui: false } })
       lane.launch = Object.keys(launched)[0]
     } catch (error) { lane.launch_error = String(error.message) }
     out.lanes.push(lane)
