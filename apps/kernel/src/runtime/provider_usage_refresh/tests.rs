@@ -128,10 +128,17 @@ impl Fixture {
             read_delay_ms: Arc::clone(&read_delay_ms),
         };
         let running_flag = Arc::clone(&running);
+        let running_key = (provider.to_string(), profile.profile_id.clone());
         let mut refresher = ProviderUsageRefresher::new(
             registry.clone(),
             Box::new(reader),
-            Box::new(move |_| running_flag.load(Ordering::SeqCst)),
+            Box::new(move || {
+                if running_flag.load(Ordering::SeqCst) {
+                    HashSet::from([running_key.clone()])
+                } else {
+                    HashSet::new()
+                }
+            }),
         );
         let refresh_clock = Arc::clone(&clock);
         Arc::get_mut(&mut refresher).unwrap().now_ms =
@@ -209,6 +216,63 @@ fn an_account_with_a_running_agent_is_read_every_five_minutes() {
     assert_eq!(f.refresher.due_accounts(f.at(4.7)), vec![f.key.clone()]);
     f.running.store(false, Ordering::SeqCst);
     assert!(f.refresher.due_accounts(f.at(4.7)).is_empty());
+}
+
+#[test]
+fn running_account_projection_is_read_before_the_schedule_lock() {
+    crate::test_support::isolated_env_test!();
+    let mut f = Fixture::new(vec![]);
+    let target = Arc::new(Mutex::new(None::<std::sync::Weak<ProviderUsageRefresher>>));
+    let source_target = Arc::clone(&target);
+    Arc::get_mut(&mut f.refresher).unwrap().running_accounts = Box::new(move || {
+        let refresher = source_target
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .upgrade()
+            .unwrap();
+        assert!(
+            refresher.schedules.try_lock().is_ok(),
+            "running-account projection must be read outside the schedule lock"
+        );
+        HashSet::new()
+    });
+    *target.lock().unwrap() = Some(Arc::downgrade(&f.refresher));
+
+    assert_eq!(f.refresher.due_accounts(f.t0), vec![f.key.clone()]);
+}
+
+#[test]
+fn kernel_running_account_projection_preserves_cadence_across_runtime_owners() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::new(vec![Ok(5.0)]);
+    f.refresher.refresh_account(&f.key, f.at(0.0));
+    let runs = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let refresher = ProviderUsageRefresher::for_kernel(f.registry.clone(), runs.clone());
+    let now = f.at(4.7);
+    assert!(refresher.due_accounts(now).is_empty());
+
+    let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "running-account",
+        "room".into(),
+        Some("agent".into()),
+        "codex".into(),
+    );
+    let mut value = serde_json::to_value(run).unwrap();
+    value["account_profile"] = serde_json::json!(f.key.profile_id);
+    value["owner_user_id"] = serde_json::json!("other-owner");
+    // The runtime owner can be a Cloud principal while the account belongs
+    // to the local authority. Cadence follows the selected provider/profile.
+    let mut run: crate::provider::RuntimeProviderRun = serde_json::from_value(value).unwrap();
+    runs.update(run.clone());
+    assert_eq!(refresher.due_accounts(now), vec![f.key.clone()]);
+    run.mark_running();
+    runs.update(run.clone());
+    assert_eq!(refresher.due_accounts(now), vec![f.key.clone()]);
+    run.mark_ended();
+    runs.update(run);
+    assert!(refresher.due_accounts(now).is_empty());
 }
 
 #[test]
@@ -392,7 +456,7 @@ fn only_one_read_runs_per_account_at_a_time() {
             release: Mutex::new(release_rx),
             reads: Arc::clone(&reads),
         }),
-        Box::new(|_| false),
+        Box::new(HashSet::new),
     );
     let key = f.key.clone();
     let first = {

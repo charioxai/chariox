@@ -43,7 +43,7 @@ impl ProviderUsageReader for KernelUsageSources {
 impl ProviderUsageRefresher {
     pub(crate) fn for_kernel(
         registry: ProviderAccountProfileRegistry,
-        provider_store: crate::provider::ProviderProcessServiceStore,
+        runs: crate::runtime::projection::ProviderRunProjectionStore,
     ) -> Arc<Self> {
         let reader = KernelUsageSources {
             registry: registry.clone(),
@@ -51,15 +51,24 @@ impl ProviderUsageRefresher {
         Self::new(
             registry,
             Box::new(reader),
-            Box::new(move |account| {
-                provider_store.list_runs().iter().any(|run| {
-                    matches!(
-                        run.state(),
-                        ProviderRunState::Starting | ProviderRunState::Running
-                    ) && run.account_profile() == account.profile_id
-                        && crate::provider::canonical_provider_family(run.provider())
-                            == Some(account.provider.as_str())
-                })
+            Box::new(move || {
+                // Scheduling uses the published projection, never the provider
+                // authority mutex held during launch and other operations.
+                runs.list()
+                    .into_iter()
+                    .filter(|run| {
+                        matches!(
+                            run.state(),
+                            ProviderRunState::Starting | ProviderRunState::Running
+                        )
+                    })
+                    .filter_map(|run| {
+                        Some((
+                            crate::provider::canonical_provider_family(run.provider())?.to_string(),
+                            run.account_profile().to_string(),
+                        ))
+                    })
+                    .collect()
             }),
         )
     }

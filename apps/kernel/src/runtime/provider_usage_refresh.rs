@@ -5,7 +5,7 @@
 //! turns, are single-flight per account and back off after a failure, preserving
 //! the last observation. Claude windows come only from official turn output;
 //! its enrolled setup tokens have no supported idle usage read.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
@@ -77,7 +77,7 @@ impl Default for AccountSchedule {
 pub(crate) struct ProviderUsageRefresher {
     registry: ProviderAccountProfileRegistry,
     reader: Box<dyn ProviderUsageReader>,
-    has_running_agent: Box<dyn Fn(&UsageAccountKey) -> bool + Send + Sync>,
+    running_accounts: Box<dyn Fn() -> HashSet<(String, String)> + Send + Sync>,
     now_ms: Box<dyn Fn() -> u64 + Send + Sync>,
     schedules: Mutex<HashMap<UsageAccountKey, AccountSchedule>>,
     finished: Notify,
@@ -87,12 +87,12 @@ impl ProviderUsageRefresher {
     pub(crate) fn new(
         registry: ProviderAccountProfileRegistry,
         reader: Box<dyn ProviderUsageReader>,
-        has_running_agent: Box<dyn Fn(&UsageAccountKey) -> bool + Send + Sync>,
+        running_accounts: Box<dyn Fn() -> HashSet<(String, String)> + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Self {
             registry,
             reader,
-            has_running_agent,
+            running_accounts,
             now_ms: Box::new(crate::session::unix_epoch_ms),
             schedules: Mutex::new(HashMap::new()),
             finished: Notify::new(),
@@ -136,17 +136,21 @@ impl ProviderUsageRefresher {
     /// Accounts whose reading has reached the interval of their state.
     pub(crate) fn due_accounts(&self, now_ms: u64) -> Vec<UsageAccountKey> {
         let enrolled = self.enrolled(None, None);
+        // Read external projections before locking refresh bookkeeping so a
+        // contended source cannot delay account requests waiting on this lock.
+        let running_accounts = (self.running_accounts)();
         let mut schedules = self.lock();
         enrolled
             .into_iter()
             .filter_map(|profile| {
                 let key = key_of(&profile);
                 let schedule = schedules.entry(key.clone()).or_default();
-                let interval = if (self.has_running_agent)(&key) {
-                    RUNNING_USAGE_REFRESH_INTERVAL
-                } else {
-                    USAGE_REFRESH_INTERVAL
-                };
+                let interval =
+                    if running_accounts.contains(&(key.provider.clone(), key.profile_id.clone())) {
+                        RUNNING_USAGE_REFRESH_INTERVAL
+                    } else {
+                        USAGE_REFRESH_INTERVAL
+                    };
                 let wait_ms = interval.mul_f64(1.0 - schedule.early_start).as_millis() as u64;
                 let due = reading_age_ms(&profile.usage, now_ms).is_none_or(|age| age >= wait_ms);
                 (due && !schedule.in_flight && now_ms >= schedule.no_read_before_ms).then_some(key)
