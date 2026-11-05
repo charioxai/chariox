@@ -73,25 +73,25 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let generation = 0
   let projectId = ""
   let loading = false
-  // Completed edits and their saves belong to the Project, even while its dialog is closed.
+  // Edits, saves and operations belong to the Project, even while its dialog is closed.
   type Editor = {
     projectId: string
     environment: ProjectEnvironmentView | null
     typed: { script?: string; variables?: string }
     busy: boolean
+    transfer: EnvironmentOperationView | null
+    draft: EnvironmentOperationView | null
     // A save was asked for while a request was pending; it runs when that request ends, unless it conflicted.
     saveRequested: boolean
     // Completed list edits not yet acknowledged by the kernel. Every save carries all of them; a conflict or failure keeps them for the next explicit save.
     listDrafts: ListDraft[]
   }
   const editors = new Map<string, Editor>()
-  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [] })
+  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [], transfer: null, draft: null })
   let editor: Editor = newEditor("")
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
-  let transfer: EnvironmentOperationView | null = null
-  let draft: EnvironmentOperationView | null = null
   let sources: readonly EnvironmentSourceKernel[] = []
   let sourceIndex = 0
   let message: string | null = null
@@ -110,16 +110,16 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   const model = (): EnvironmentDialogModel => ({
-    loading, environment: editor.environment, sources, sourceIndex, transfer, draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
+    loading, environment: editor.environment, sources, sourceIndex, transfer: editor.transfer, draft: editor.draft, script: script(), variables: variables(), focus, input: inputView(), operation, message, nowMs: deps.now(),
   })
 
   const focusables = () => environmentFocusables(editor.environment, sources.length > 0)
 
   // Each kind of operation keeps its own slot, so a Draft's answer never replaces the Setup output.
-  const setOperation = (next: EnvironmentOperationView) => {
-    if (next.kind === "import") transfer = next
-    else if (next.kind === "draft" || next.kind === "check") draft = next
-    else operation = next
+  const setOperation = (next: EnvironmentOperationView, target = editor) => {
+    if (next.kind === "import") target.transfer = next
+    else if (next.kind === "draft" || next.kind === "check") target.draft = next
+    else if (target === editor && open) operation = next
   }
 
   const setEnvironment = (next: ProjectEnvironmentView) => {
@@ -128,22 +128,22 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (!keys.includes(focusKey(focus))) focus = focusables().at(-1) ?? { kind: "run" }
   }
 
-  /** Runs one request for the current dialog; a closed or reopened dialog drops the result. */
-  const guarded = async <T>(work: () => Promise<T>, apply: (result: T) => void): Promise<void> => {
+  /** Ordinary requests apply to the current dialog; operation replies also survive closing it. */
+  const guarded = async <T>(work: () => Promise<T>, apply: (result: T, target: Editor) => void, retainOperation = false): Promise<void> => {
     const mine = generation
     const target = editor
     target.busy = true
     try {
       const result = await work()
-      if (mine !== generation) return
-      message = null
-      apply(result)
+      if (mine !== generation && !retainOperation) return
+      if (mine === generation) message = null
+      apply(result, target)
     } catch (error) {
       if (mine !== generation) return
       message = failureText(error)
     } finally {
       target.busy = false
-      if (mine === generation) deps.render()
+      if (target === editor && open) deps.render()
       if (target.saveRequested) { target.saveRequested = false; void saveUnsaved(target) }
     }
   }
@@ -286,7 +286,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       )
       return
     }
-    if (transfer?.state === "running") return
+    if (editor.transfer?.state === "running") return
     if (hasUnsaved()) {
       await saveUnsaved()
       if (hasUnsaved()) return
@@ -302,10 +302,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   /** Brings entries this machine lacks from the chosen kernel; no `entries` brings every missing one (Update). */
   const importFromSource = async (entries?: readonly EnvironmentEntryRef[]) => {
     const from = source()
-    if (!from || editor.busy || transfer?.state === "running") return
+    if (!from || editor.busy || editor.transfer?.state === "running") return
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(importProjectEnvironmentEntriesRequest({ projectId, operationId: deps.newOperationId(), sourceKernelId: from.id, ...(entries ? { entries } : {}) }))),
-      (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
+      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(next.operationId, next.updates) }, true,
     )
   }
 
@@ -314,19 +314,19 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (!running || running.state !== "running" || editor.busy) return
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(running.operationId))),
-      (next) => { setOperation(next); pollingOperations.delete(running.operationId); void refresh() },
+      (next, target) => { setOperation(next, target); if (open && target === editor) { pollingOperations.delete(running.operationId); void refresh() } }, true,
     )
   }
 
-  const toggleUpdate = async () => { if (transfer?.state === "running") await stopOperation(transfer); else await importFromSource() }
+  const toggleUpdate = async () => { if (editor.transfer?.state === "running") await stopOperation(editor.transfer); else await importFromSource() }
 
   /** Draft needs an agent; Check compares the project's files itself and adds an agent's judgement when `withAgent`. */
   const runAgent = async (kind: "draft" | "check", withAgent = true) => {
     if (editor.busy) return
-    if (draft?.state === "running") { await stopOperation(draft); return }
+    if (editor.draft?.state === "running") { await stopOperation(editor.draft); return }
     await guarded(
       async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId(), withAgent))),
-      (next) => { setOperation(next); if (next.state === "running") poll(next.operationId, next.updates) },
+      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(next.operationId, next.updates) }, true,
     )
   }
 
@@ -462,8 +462,6 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       focus = { kind: "run" }
       input = null
       operation = null
-      transfer = null
-      draft = null
       sources = []
       sourceIndex = 0
       message = null
@@ -475,6 +473,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
         if (mine !== generation) return
         if (next.projectId !== project) throw new Error("Environment unavailable for this Project")
         if (!editor.environment || next.revision >= editor.environment.revision) setEnvironment(next)
+        for (const running of [editor.transfer, editor.draft]) {
+          if (running?.state === "running") poll(running.operationId)
+        }
         if (next.setupState.state === "running") poll(next.setupState.operationId)
         else await showLastRun(next.setupState, mine)
       } catch (error) {

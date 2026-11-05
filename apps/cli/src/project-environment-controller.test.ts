@@ -936,3 +936,64 @@ test("C checks the Project against its own files without an agent, and proposals
   await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
   assert.match(h.text(), /− github\s+Proposed · \.mcp\.json/)
 })
+
+for (const kind of ["import", "draft", "check"] as const) {
+  for (const stop of [false, true]) {
+    test(`${kind} survives closing and reopening, then ${stop ? "stops the original operation" : "receives its completion"}`, async () => {
+      const initial = environment({ exists: kind !== "draft" })
+      const h = harness(initial, MAC)
+      await h.open()
+      const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+      h.replies.push({ EnvironmentOperation: { operation: running } })
+      if (kind === "check") h.key("c")
+      else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+      await h.settle()
+      const oldRead = h.held.shift()!
+      h.key("escape")
+      assert.equal(h.controller.isOpen(), false)
+      await h.open({ EnvironmentOperation: { operation: running } })
+      await h.settle()
+      assert.match(h.text(), /Stop/, "the original operation retains its Stop action")
+      assert.equal(h.requests.filter(r => r.GetEnvironmentOperation?.operationId === running.operationId && r.GetEnvironmentOperation.waitAfterUpdates === undefined).length, 1, "reopen reads the original operation's current state")
+      const finished = { ...running, state: stop ? "cancelled" : "succeeded", updates: 2, endedAtMs: NOW + 1 }
+      h.replies.push({ ProjectEnvironment: { environment: initial } })
+      if (stop) {
+        h.replies.unshift({ EnvironmentOperation: { operation: finished } })
+        h.focusOn(kind === "import" ? "Stop" : kind === "draft" ? "Drafting" : "Checking")
+        h.key("return")
+        await h.settle()
+        assert.deepEqual(h.requests.find(r => r.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+      } else await h.release({ EnvironmentOperation: { operation: finished } })
+      oldRead({ EnvironmentOperation: { operation: running } })
+      await h.settle()
+      assert.doesNotMatch(h.text(), /Stop/, "a stale read cannot restore the running state")
+      assert.equal(h.requests.filter(r => r.ImportProjectEnvironmentEntries || r.DraftProjectEnvironment || r.CheckProjectEnvironment).length, 1, "no replacement operation starts")
+    })
+  }
+}
+
+for (const kind of ["import", "draft", "check"] as const) {
+  test(`${kind}'s first reply is retained after closing and opening another Project`, async () => {
+    const initial = environment({ exists: kind !== "draft" })
+    const h = harness(initial, MAC)
+    await h.open()
+    let reply!: (value: unknown) => void
+    const pending = new Promise(resolve => { reply = resolve })
+    h.replies.push(() => pending)
+    if (kind === "check") h.key("c")
+    else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+    await h.settle()
+    h.key("escape")
+    h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2" }) } })
+    await h.controller.open("project-2")
+    const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+    reply({ EnvironmentOperation: { operation: running } })
+    await h.settle()
+    assert.doesNotMatch(h.text(), /Stop/, "the other Project never adopts the operation")
+    h.key("escape")
+    await h.open({ EnvironmentOperation: { operation: running } })
+    await h.settle()
+    assert.match(h.text(), /Stop/, "the first reply belongs to the original Project")
+    assert.equal(h.requests.filter(r => r.ImportProjectEnvironmentEntries || r.DraftProjectEnvironment || r.CheckProjectEnvironment).length, 1)
+  })
+}
