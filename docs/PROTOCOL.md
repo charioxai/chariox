@@ -5891,7 +5891,7 @@ requests and responses, using its existing bounded framing and flow control.
   durable remote claim/results remain separate unfinished work; this protocol
   change does not advertise them.
 - `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
-  has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
+  has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.
 - `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
   next stdin byte offset; `exec_input { next_offset }` acknowledges admission to
