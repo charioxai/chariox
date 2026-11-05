@@ -62,6 +62,15 @@ impl CommandRouter {
             None,
             &request,
         );
+        // Approval may race prompt cancellation after the pending card resolved.
+        if !card.is_live() {
+            return Ok(RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "interaction_id": interaction_id, "status": "withdrawn", "ran": false,
+                }),
+            });
+        }
         let payload = match Box::pin(self.dispatch(command, request)).await {
             Ok(response) => serde_json::json!({
                 "interaction_id": interaction_id,

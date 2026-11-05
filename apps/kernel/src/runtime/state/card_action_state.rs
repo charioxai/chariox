@@ -11,10 +11,15 @@ pub(crate) struct ActionCard {
     pub(crate) owner_user_id: String,
     session_id: String,
     owned: KernelRuntimeOwnedState,
+    lifetime: super::PendingInteraction,
     decided: Option<tokio::sync::oneshot::Receiver<PendingInteractionResolution>>,
 }
 
 impl ActionCard {
+    pub(in crate::runtime) fn is_live(&self) -> bool {
+        self.owned.agent_interaction_is_live(&self.lifetime)
+    }
+
     pub(in crate::runtime) async fn decision(
         &mut self,
     ) -> Result<PendingInteractionResolution, DaemonError> {
@@ -97,6 +102,15 @@ impl KernelRuntimeState {
                 ),
             ],
         )
+        .with_related_agent_id(agent_id.to_owned())
+        .with_native_origin(Some(
+            self.capture_native_interaction_origin(run.session_id(), agent_id, run.id())
+                .unwrap_or_else(
+                    || crate::session::NativeInteractionOrigin::ProviderStartup {
+                        provider_run_id: run.id().into(),
+                    },
+                ),
+        ))
         .with_timeout_sec(timeout_sec.unwrap_or(300));
         let receiver = self
             .create_kernel_operation_interaction(
@@ -105,6 +119,13 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
+        let lifetime = self
+            .owned
+            .pending_interactions
+            .write()
+            .get(&interaction_id)
+            .cloned()
+            .ok_or_else(|| refused("asking prompt ended before the action card was registered"))?;
         if let Some(seconds) = timeout_sec.or(Some(300)) {
             let state = self.clone();
             let (session, id) = (run.session_id().to_owned(), interaction_id.clone());
@@ -118,6 +139,7 @@ impl KernelRuntimeState {
             owner_user_id: agent.owner_user_id().to_owned(),
             session_id: run.session_id().to_owned(),
             owned: self.owned.clone(),
+            lifetime,
             decided: Some(receiver),
         })
     }

@@ -85,10 +85,17 @@ impl KernelRuntimeOwnedState {
                 ));
             }
         }
+        // Kernel action cards keep their human authority and also belong to
+        // the requesting agent's exact prompt/run.
+        let lifetime_agent = interaction.agent_id().or_else(|| {
+            interaction
+                .native_origin()
+                .and(interaction.related_agent_id())
+        });
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
-        if let Some(agent_id) = interaction.agent_id() {
+        if let Some(agent_id) = lifetime_agent {
             let agent = self.agent_store.get_agent(agent_id)?;
             remote_binding = agent.remote_execution().cloned();
             if agent.session_id() != session_id {
@@ -253,7 +260,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
-        let agent_lifetime = interaction.agent_id().map(|agent_id| {
+        let agent_lifetime = lifetime_agent.map(|agent_id| {
             if interaction.asking_task_id().is_some() {
                 return super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),

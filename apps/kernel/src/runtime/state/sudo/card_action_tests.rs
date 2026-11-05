@@ -173,3 +173,93 @@ async fn an_agent_that_stops_waiting_withdraws_its_card() {
     .await
     .expect("the abandoned card is withdrawn");
 }
+
+#[tokio::test]
+async fn reviewer_cancel_active_prompt_withdraws_its_action_card() {
+    let f = fixture_with_options(None, true);
+    let before = alias(&f);
+    start_asking_prompt(&f);
+    let call = raise(&f, "Rename", rename(&f));
+    let prompt = card(&f).await;
+    cancel_asking_prompt(&f).await;
+    let late = answer(&f, &prompt, "approve", Some(PASSKEY)).await;
+    assert!(
+        late.is_err(),
+        "a cancelled prompt must not retain an approvable action"
+    );
+    let result = call.await.unwrap().unwrap();
+    assert_eq!(result["ran"], false);
+    assert_eq!(alias(&f), before);
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+}
+
+fn start_asking_prompt(f: &Fixture) {
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let prompts = &f.state.owned.prompt_state_owner;
+    prompts
+        .submit_prepared_prompt_with_queue_policy(
+            &session,
+            crate::session::PromptQueueItem::new(
+                "action-asking-prompt",
+                &f.request.attachment_id,
+                agent,
+                "Rename after approval",
+                crate::session::PromptStatus::Queued,
+            ),
+            false,
+            false,
+        )
+        .unwrap();
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, agent)
+        .unwrap();
+    let mut started = active.clone();
+    started.set_status(crate::session::PromptStatus::Running);
+    assert!(prompts.replace_active_prompt_if_matches(&session, agent, &active, started));
+}
+
+async fn cancel_asking_prompt(f: &Fixture) {
+    let request = crate::local::LocalDaemonRequest::CancelActivePrompt(
+        crate::local::CancelActivePromptRequest {
+            session_id: f.request.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            target_agent_id: f.request.target_agent_id.clone(),
+            expected_prompt_id: Some("action-asking-prompt".into()),
+        },
+    );
+    let command = crate::runtime::command::KernelCommand::from_local_request(
+        "cancel-card-prompt",
+        None,
+        None,
+        &request,
+    );
+    f.router.dispatch(command, request).await.unwrap();
+}
+
+#[tokio::test]
+async fn reviewer_approved_action_rechecks_the_cancelled_asking_prompt() {
+    let f = fixture_with_options(None, true);
+    start_asking_prompt(&f);
+    let request = serde_json::from_value(rename(&f)).unwrap();
+    let mut action = f
+        .state
+        .raise_action_card(&f.run, &request, None)
+        .await
+        .unwrap();
+    let prompt = card(&f).await;
+    assert!(action.is_live());
+    answer(&f, &prompt, "approve", Some(PASSKEY)).await.unwrap();
+    assert_eq!(action.decision().await.unwrap().status, "answered");
+    cancel_asking_prompt(&f).await;
+    assert!(
+        !action.is_live(),
+        "resolved approval must not survive its asking prompt"
+    );
+    assert_ne!(alias(&f).as_deref(), Some("renamed-by-card"));
+}
