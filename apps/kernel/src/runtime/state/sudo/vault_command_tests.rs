@@ -589,3 +589,91 @@ async fn r10_cancel_prompt_settles_vault_command_before_side_effect() {
         "Stop must physically settle the owned process group"
     );
 }
+
+#[tokio::test]
+async fn r10_overlapping_capture_retries_run_command_once() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let started = workspace(&f).join("retry-started");
+    let runs = workspace(&f).join("overlapping-runs");
+    let release = workspace(&f).join("retry-release");
+    let argv = json!(["/bin/sh", "-c", format!(
+        "echo run >> '{}'; touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+        runs.display(), started.display(), release.display()
+    )]);
+    let first = capture(&f, "overlapping", argv.clone(), json!({"kind":"stdout"}));
+    let retry = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        capture(&f, "overlapping", argv, json!({"kind":"stdout"})).await
+    };
+    let finish = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&release, "go").unwrap();
+    };
+    let (first, retry, ()) = tokio::join!(first, retry, finish);
+    let runs = std::fs::read_to_string(runs).unwrap();
+    f.state.shutdown_cleanup().await.unwrap();
+    let first = first.unwrap();
+    let retry = retry.unwrap();
+    assert_eq!(first["credential_id"], retry["credential_id"]);
+    assert_eq!(retry["created"], false);
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "overlapping retry must wait for the original command settlement"
+    );
+}
+
+#[tokio::test]
+async fn r10_dropped_capture_waiter_keeps_claim_until_commit() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let started = workspace(&f).join("dropped-started");
+    let runs = workspace(&f).join("dropped-runs");
+    let release = workspace(&f).join("dropped-release");
+    let argv = json!(["/bin/sh", "-c", format!(
+        "echo run >> '{}'; touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+        runs.display(), started.display(), release.display()
+    )]);
+    let mut first = Box::pin(capture(
+        &f,
+        "dropped",
+        argv.clone(),
+        json!({"kind":"stdout"}),
+    ));
+    tokio::select! {
+        result = &mut first => panic!("capture finished before release: {result:?}"),
+        () = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !started.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
+        } => {}
+    }
+    drop(first);
+    let retry = capture(&f, "dropped", argv, json!({"kind":"stdout"}));
+    let finish = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&release, "go").unwrap();
+    };
+    let (retry, ()) = tokio::join!(retry, finish);
+    let runs = std::fs::read_to_string(runs).unwrap();
+    f.state.shutdown_cleanup().await.unwrap();
+    assert_eq!(
+        retry.unwrap()["created"],
+        false,
+        "the detached original must commit its result"
+    );
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "dropping an MCP waiter must not release the running capture claim"
+    );
+}

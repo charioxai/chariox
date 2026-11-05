@@ -10,6 +10,7 @@ mod files;
 mod remove;
 mod use_env;
 
+pub(in crate::runtime::state) use capture::CaptureClaims;
 pub(in crate::runtime::state) use capture::{
     capture_binding_schema, committed as committed_capture, service_host, Captured,
 };

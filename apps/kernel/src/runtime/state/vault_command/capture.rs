@@ -11,6 +11,34 @@ pub(crate) const VAULT_CAPTURE_COMMAND: &str = "chariox.vault.capture_command";
 pub(super) const CAPTURED_KIND: &str = "vault_capture";
 const VALUE_LIMIT: usize = 16 * 1024;
 
+#[derive(Default)]
+pub(in crate::runtime::state) struct CaptureClaims(
+    std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+);
+
+impl CaptureClaims {
+    pub(super) async fn claim(
+        &self,
+        handle: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, DaemonError> {
+        let claim = {
+            let mut claims = self
+                .0
+                .lock()
+                .map_err(|_| error("Vault capture claims unavailable"))?;
+            claims.retain(|_, claim| claim.strong_count() > 0);
+            if let Some(claim) = claims.get(handle).and_then(std::sync::Weak::upgrade) {
+                claim
+            } else {
+                let claim = Arc::new(tokio::sync::Mutex::new(()));
+                claims.insert(handle.to_owned(), Arc::downgrade(&claim));
+                claim
+            }
+        };
+        Ok(claim.lock_owned().await)
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureArgs {
@@ -100,6 +128,18 @@ impl KernelRuntimeState {
         if args.label.as_ref().is_some_and(|label| label.len() > 200) {
             return Err(error("label must be at most 200 characters"));
         }
+        // The kernel owns settlement and commit even if the MCP waiter goes away.
+        let state = self.clone();
+        tokio::spawn(async move { state.capture_command_once(context, args).await })
+            .await
+            .map_err(|_| error("the capture runner stopped unexpectedly"))?
+    }
+
+    async fn capture_command_once(
+        &self,
+        context: VaultAgentContext,
+        args: CaptureArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
@@ -107,6 +147,8 @@ impl KernelRuntimeState {
         let timeout = command_timeout(args.timeout_seconds)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
+        let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
+        self.recheck_vault_command_context(&context)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host, &args.use_binding);
