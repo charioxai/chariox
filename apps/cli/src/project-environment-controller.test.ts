@@ -138,46 +138,70 @@ test("leaving a field without a change sends nothing", async () => {
   assert.equal(h.requests.length, 1)
 })
 
-for (const nextEdit of ["variables", "same script", "original script"]) {
-  test(`autosave keeps a pending ${nextEdit} edit and saves it after the first reply`, async () => {
-    const h = harness()
-    await h.open()
-    let firstReply!: (value: unknown) => void
-    let secondReply!: (value: unknown) => void
-    h.replies.push(new Promise((resolve) => { firstReply = resolve }))
-    h.key("down")
-    h.key("return")
-    h.type(" && make test")
-    h.key("escape")
-    assert.equal(h.requests.length, 2)
+for (const dialog of ["open", "closed", "reopened", "another Project"]) {
+  for (const nextEdit of ["variables", "same script", "original script"]) {
+    test(`autosave keeps a pending ${nextEdit} edit with the dialog ${dialog}`, async () => {
+      const h = harness()
+      await h.open()
+      let firstReply!: (value: unknown) => void
+      let secondReply!: (value: unknown) => void
+      h.replies.push(new Promise((resolve) => { firstReply = resolve }))
+      h.key("down")
+      h.key("return")
+      h.type(" && make test")
+      h.key("escape")
+      assert.equal(h.requests.length, 2)
 
-    if (nextEdit === "variables") h.key("down")
-    h.key("return")
-    if (nextEdit === "original script") {
-      for (let i = 0; i < " && make test".length; i++) h.key("backspace")
-    } else h.type(nextEdit === "variables" ? "&DEBUG=1" : " && make lint")
-    h.key("escape")
-    assert.equal(h.requests.length, 2, "the second save waits for the first revision")
+      if (nextEdit === "variables") h.key("down")
+      h.key("return")
+      if (nextEdit === "original script") {
+        for (let i = 0; i < " && make test".length; i++) h.key("backspace")
+      } else h.type(nextEdit === "variables" ? "&DEBUG=1" : " && make lint")
+      h.key("escape")
+      assert.equal(h.requests.length, 2, "the second save waits for the first revision")
 
-    const expectedScript = nextEdit === "variables" ? "make setup && make test"
-      : nextEdit === "same script" ? "make setup && make test && make lint" : "make setup"
-    const expectedVariables = nextEdit === "variables" ? "PORT=3000&DEBUG=1" : "PORT=3000"
-    h.replies.push(new Promise((resolve) => { secondReply = resolve }))
-    firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
-    await h.settle()
-    assert(h.text().includes(expectedScript), "the first reply keeps newer script text")
-    assert(h.text().includes(expectedVariables), "the first reply keeps newer variables")
-    assert.equal(h.requests.length, 3, "a follow-up save sends the retained edit")
-    assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment, {
-      projectId: "project-1", expectedRevision: 3, setup: { script: expectedScript }, variables: expectedVariables,
-      secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
+      if (dialog !== "open") {
+        h.key("escape")
+        assert.equal(h.controller.isOpen(), false)
+        if (dialog === "reopened") await h.controller.open("project-1")
+        else if (dialog === "another Project") {
+          h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", setup: { script: "other setup" } }) } })
+          await h.controller.open("project-2")
+        }
+      }
+
+      const expectedScript = nextEdit === "variables" ? "make setup && make test"
+        : nextEdit === "same script" ? "make setup && make test && make lint" : "make setup"
+      const expectedVariables = nextEdit === "variables" ? "PORT=3000&DEBUG=1" : "PORT=3000"
+      h.replies.push(new Promise((resolve) => { secondReply = resolve }))
+      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+      await h.settle()
+      if (dialog !== "another Project") {
+        assert(h.text().includes(expectedScript), "the first reply keeps newer script text")
+        assert(h.text().includes(expectedVariables), "the first reply keeps newer variables")
+      } else assert(h.text().includes("other setup"), "the first Project cannot overwrite the second")
+      const expectedRequests = dialog === "another Project" ? 4 : 3
+      assert.equal(h.requests.length, expectedRequests, "a follow-up save sends the retained edit")
+      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment, {
+        projectId: "project-1", expectedRevision: 3, setup: { script: expectedScript }, variables: expectedVariables,
+        secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
+      })
+      if (dialog !== "another Project") assert(h.text().includes("Unsaved"), "the newer edit waits for its own acknowledgement")
+      secondReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables }) } })
+      await h.settle()
+      assert(!h.text().includes("Unsaved"))
+      assert.equal(h.requests.length, expectedRequests)
+      const saved = environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables })
+      if (dialog !== "open") {
+        h.controller.close()
+        h.replies.push({ ProjectEnvironment: { environment: saved } })
+        await h.controller.open("project-1")
+        assert(h.text().includes(expectedScript))
+        assert(h.text().includes(expectedVariables))
+        assert(!h.text().includes("Unsaved"))
+      }
     })
-    assert(h.text().includes("Unsaved"), "the newer edit waits for its own acknowledgement")
-    secondReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables }) } })
-    await h.settle()
-    assert(!h.text().includes("Unsaved"))
-    assert.equal(h.requests.length, 3)
-  })
+  }
 }
 
 test("a stale revision reloads the record and keeps the typed text for another save", async () => {
