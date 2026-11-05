@@ -250,6 +250,19 @@ impl UserDomainAccess {
         lifetime: Duration,
     ) -> bool {
         if self.grant(user, agent).is_ok() {
+            if matches!(cause, GrantCause::OwnerDecision { .. }) {
+                let lifetime = lifetime.min(MAX_GRANT_LIFETIME);
+                let grant = self
+                    .grants
+                    .get_mut(&(user.into(), agent.into()))
+                    .expect("live grant");
+                grant.cause = cause;
+                grant.expires_at = Some(Instant::now() + lifetime);
+                grant.expires_at_ms = Some(
+                    crate::session::unix_epoch_ms().saturating_add(lifetime.as_millis() as u64),
+                );
+                self.changed(user);
+            }
             return false;
         }
         if self.grants.contains_key(&(user.into(), agent.into())) {
@@ -545,6 +558,34 @@ mod tests {
         assert!(access
             .claim("owner", "agent", tab("sensitive"), true)
             .is_err());
+    }
+
+    #[test]
+    fn owner_browser_approval_promotes_a_live_prompt_grant() {
+        let mut access = UserDomainAccess::default();
+        access.request("owner", "agent", "prompt", Duration::from_secs(30));
+        access.opened_tab("owner", "agent", "owned").unwrap();
+        let epoch = access.grant("owner", "agent").unwrap().epoch.clone();
+        let cause = GrantCause::OwnerDecision {
+            task_id: "task".into(),
+            revision: 2,
+        };
+        access.request_with_cause("owner", "agent", cause.clone(), DEFAULT_GRANT_LIFETIME);
+        let grant = access.grant("owner", "agent").unwrap();
+        assert_eq!(
+            grant.cause, cause,
+            "owner approval replaces the earlier prompt's authority"
+        );
+        assert!(
+            Arc::ptr_eq(&epoch, &grant.epoch),
+            "existing tab leases stay live"
+        );
+        assert!(grant.resources.contains(&tab("owned")));
+        assert!(grant.expires_at.unwrap() > Instant::now() + Duration::from_secs(3600));
+        access
+            .claim("owner", "agent", tab("restored"), false)
+            .unwrap();
+        assert_eq!(access.focused("owner"), None);
     }
 
     /// MP-08/MP-11 (#922 round 3): owner focus supersedes a timed cause

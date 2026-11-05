@@ -161,35 +161,39 @@ impl KernelRuntimeState {
             Ok(_) => unreachable!(),
         };
         let result = async {
-        if let Some((user, fence)) = &browser_grant {
-            if !self.browser_resume_is_current(&next)? { return Err(crate::durable_state::agent_lifecycle::error("This task changed. Open its latest decision.")); }
-            self.owned.kernel_browser_host.request_task_grant(&user, &task.agent_id, &task.task_id,
-                task.blocked_revision, *fence, &task.room_id).map_err(super::kernel_browser_runtime::host_error)?;
-            if !self.browser_resume_is_current(&next)? {
-                self.owned.kernel_browser_host.revoke_task_grant(user, &task.agent_id, &task.task_id, task.blocked_revision).map_err(super::kernel_browser_runtime::host_error)?;
-                return Err(crate::durable_state::agent_lifecycle::error("This task changed. Open its latest decision."));
+            if let Some((user, fence)) = &browser_grant {
+                if !self.browser_resume_is_current(&next)? {
+                    return Err(crate::durable_state::agent_lifecycle::error(
+                        "This task changed. Open its latest decision.",
+                    ));
+                }
+                self.owned.kernel_browser_host.request_task_grant(user, &task.agent_id, &task.task_id,
+                    task.blocked_revision, *fence, &task.room_id).map_err(super::kernel_browser_runtime::host_error)?;
+                if !self.browser_resume_is_current(&next)? {
+                    self.owned.kernel_browser_host.revoke_task_grant(user, &task.agent_id, &task.task_id, task.blocked_revision).map_err(super::kernel_browser_runtime::host_error)?;
+                    return Err(crate::durable_state::agent_lifecycle::error("This task changed. Open its latest decision."));
+                }
+                let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
+                if crate::provider::provider_runtime_catalog_requires_reload(agent.provider()) {
+                    self.remember_pending_provider_catalog_reload(&task.room_id, &task.agent_id);
+                }
             }
-            let agent = self.owned.agent_store.get_agent(&task.agent_id)?;
-            if crate::provider::provider_runtime_catalog_requires_reload(agent.provider()) {
-                self.remember_pending_provider_catalog_reload(&task.room_id, &task.agent_id);
+            if resume
+                && next.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+            {
+                Box::pin(self.deliver_agent_inbox(&next.room_id, &next.agent_id)).await
+            } else if resume {
+                async {
+                    let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
+                    let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
+                    let mut context = self.owned.goal_continuation_context(&next)?.unwrap_or_else(||
+                        "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into());
+                    if browser_grant.is_some() { context.push_str(" Browser access has been approved. Take a fresh snapshot of the original tab and replace any retired verification card. Write the card's steps directly to the person; do not show tool names, scheduling instructions, or task bookkeeping."); }
+                    Box::pin(self.dispatch_task_continuation(&next, &attachment, context)).await
+                }.await
+            } else {
+                Box::pin(self.cancel_agent_task_resources(&next)).await
             }
-        }
-        if resume
-            && next.state == crate::durable_state::agent_lifecycle::ExecutionState::Waiting
-        {
-            Box::pin(self.deliver_agent_inbox(&next.room_id, &next.agent_id)).await
-        } else if resume {
-            async {
-                let agent = self.owned.agent_store.get_agent(&next.agent_id)?;
-                let attachment = self.ensure_agent_message_attachment(&next.room_id, &agent)?;
-                let mut context = self.owned.goal_continuation_context(&next)?.unwrap_or_else(||
-                    "The owner has allowed this task to continue. Browser access, if requested, has been restored. Check the current page and continue the original task. If a previous verification card ended, take a fresh snapshot and raise a new card. Write card instructions for the person, and keep tool names and internal task bookkeeping out of your visible replies.".into());
-                if browser_grant.is_some() { context.push_str(" Browser access has been approved. Take a fresh snapshot of the original tab and replace any retired verification card. Write the card's steps directly to the person; do not show tool names, scheduling instructions, or task bookkeeping."); }
-                Box::pin(self.dispatch_task_continuation(&next, &attachment, context)).await
-            }.await
-        } else {
-            Box::pin(self.cancel_agent_task_resources(&next)).await
-        }
         }.await;
         if let Err(error) = result {
             self.record_agent_task_owner_failure(&next, &error);
