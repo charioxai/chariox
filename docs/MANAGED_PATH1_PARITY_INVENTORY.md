@@ -37,6 +37,23 @@ managed activity lease or shutdown-policy change. Real ordinary/managed
 Room/backend/provider/Web/TUI/relay opens require AV2–AV5 and remain deferred;
 AV1 does not close the wider MP parity matrix.
 
+## MP-08 / MP-09 / MP-10 / MP-11 signed App asset transport (AV2 first slice)
+
+Local999 / peer438 adds owner-scoped descriptor, bounded entry chunks and a
+60second immutable-release delivery lease. The production Web adapter verifies
+signed controls and file hashes and uses a scoped256MiB memory cache; every cache
+hit still needs a fresh authorized descriptor. Ordinary and managed placements
+share this service; idle delivery registrations hold no managed activity fence.
+
+The first real hosted WSS exit passes signed Excalidraw asset delivery at DPR1/2:
+7,788,348 bytes in119 chunks per cold read,64KiB maximum, fresh cache admission
+and rejected reads after Close. The base rejects the request at both DPRs and
+fails the normal workflow at feature admission. This is a transport slice only:
+reference execution, normal App-open/Room UI, live-page revocation/update staging,
+TUI, managed parity, performance and soaks remain unproven. The test page's normal
+waiting-room shell remains Connecting. See `APP_VIEW_DELIVERY_AV2.md` and the r7
+identity/cleanup receipts. No broader MP item or full AV2 acceptance is closed.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

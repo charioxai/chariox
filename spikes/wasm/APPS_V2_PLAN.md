@@ -1,7 +1,10 @@
 # Apps v2: one plan, two testable stages
 
 For Miguel · updated 2026-11-05 · Apps product cutover stays **PAUSED**;
-the AV1 feasibility candidate and its failed network gate are recorded in §2.1.2.
+the AV1 feasibility result and its owner-authorized route-probe exception are
+recorded in [the AV1 receipt](../../docs/APP_VIEW_HOST_AV1.md). The first AV2
+signed-asset transport slice is recorded in [its scoped receipt](../../docs/APP_VIEW_DELIVERY_AV2.md);
+reference execution and the App-open cutover remain deferred.
 
 ## 1. Summary
 

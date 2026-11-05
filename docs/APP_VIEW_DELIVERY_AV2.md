@@ -55,3 +55,29 @@ entry hash,64KiB bounds, fresh authorized cache hits and rejection after Close.
 The helper serves only test entry code, never App release bytes or kernel keys;
 all owned processes/routes are closed in finally. This is an asset-transport
 exit, not reference rendering, pairing-UI or full App-open acceptance.
+
+## Round7 validation receipt
+
+The final real-kernel run delivered the signed Excalidraw entry at DPR1 and2:
+7,788,348 bytes,119 chunks per cold load, each <=65,536 raw bytes. Both rows
+verified signature and file hash, obtained a fresh authorized descriptor without
+extra chunks on a cache hit, and rejected reads after Close. The exact base
+rejects the new request over the same hosted WSS at both DPRs; the normal signed
+installation/delivery workflow on that base also fails at the new feature gate.
+The final candidate's helper route, browser, kernel and owned process scope all
+close cleanly. Evidence: `appview/r7/av2-live-green4/results.json`, base4 and
+base-standard receipts, and `AV2_IDENTITY.json` under
+`/root/.codex/evidence/browser-resume-20260930/`.
+
+The built waiting-room page hosts the production Web transport adapter in this
+drill. Its normal shell remains Connecting; it does not demonstrate a connected
+Room, normal App-open UI or reference execution. Pairing setup uses the normal
+public approval POST because the pinned validation API predates the current
+consent-details UI route. That API image and the exact current Web assets are
+recorded separately. These limits do not turn this transport-only exit into
+App-open or ordinary/managed usability acceptance.
+
+Validation includes72 host tests (including30 route-probe tests),34 package v2
+tests,5 kernel delivery tests,322 protocol shape tests,4 client conformance tests,
+Web build/lint, shared-source pins and focused Clippy on changed Rust lines.
+Runtime source is pinned at d9ff1ac758; subsequent Rust changes are test-only.
