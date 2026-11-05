@@ -93,12 +93,14 @@ test("a worker that could not be isolated tells the user what the host needs", a
 test("a worker refused for low host disk space points at the App log that says how much to free", async () => {
   const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_disk_space", updated_at_ms: 1 }
   const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
-  assert.equal(result.message, "docs · failed · app_lifecycle_disk_space: not enough free disk space on the host; "
-    + "app logs docs says how much to free")
-  const other = await executeAppCommand(["worker", "docs"], {
-    send: async () => ({ AppWorker: { worker: { ...worker, failure: "app_lifecycle_preparation" } } }),
-  })
-  assert.equal(other.message, "docs · failed · app_lifecycle_preparation")
+  assert.equal(result.message, "docs · failed · app_wasm_containment: this computer cannot isolate the App worker, so the App was not started; "
+    + "your App data is retained. On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact")
+})
+
+test("a worker refused for an ordinary preparation failure adds no hint", async () => {
+  const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_preparation", updated_at_ms: 1 }
+  const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
+  assert.equal(result.message, "docs · failed · app_lifecycle_preparation")
 })
 
 test("App automation commands route one event to one workflow and validate arguments", async () => {

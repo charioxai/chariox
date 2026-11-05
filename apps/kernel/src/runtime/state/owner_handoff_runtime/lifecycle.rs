@@ -110,6 +110,8 @@ impl KernelRuntimeState {
                     if let Ok(mut latest) = sessions.get_session(session.id()) {
                         if latest.remove_active_interaction(handoff_id).is_some() {
                             sessions.restore_session(latest);
+                            // The count reads the Room store: record it after this write lock is released.
+                            drop(sessions);
                             mutation.record();
                         }
                     }
@@ -147,6 +149,7 @@ impl KernelRuntimeState {
             if let Ok(mut latest) = sessions.get_session(session.id()) {
                 if latest.remove_active_interaction(handoff_id).is_some() {
                     sessions.restore_session(latest);
+                    drop(sessions);
                     mutation.record();
                 }
             }

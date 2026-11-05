@@ -755,6 +755,8 @@ fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
     (child, domain, key)
 }
 
+/// A hot reload ends the children the kernel leaves behind; a sample running
+/// then must not stop the tree it watches, which the new program adopts.
 #[cfg(unix)]
 #[test]
 fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
