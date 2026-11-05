@@ -1,6 +1,6 @@
 //! Each provider's supervisor owns all account helper children. Request threads
 //! send commands and await bounded replies without retaining a shared guard.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::process::Child;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::{Duration, Instant};
@@ -12,7 +12,7 @@ pub(super) struct ManagedAccountEndpoint {
     pub endpoint: String,
     pub child: Child,
     #[cfg(target_os = "linux")]
-    processes: Option<crate::runtime::owned_process_signals::OwnedProcessHandles>,
+    processes: crate::runtime::owned_process_signals::OwnedProcessHandles,
     #[cfg(target_os = "linux")]
     witnesses: Option<crate::runtime::owned_process_signals::OwnedProcessSignals>,
     #[cfg(target_os = "linux")]
@@ -38,7 +38,7 @@ impl ManagedAccountEndpoint {
             endpoint,
             child,
             #[cfg(target_os = "linux")]
-            processes: None,
+            processes: Default::default(),
             #[cfg(target_os = "linux")]
             witnesses,
             #[cfg(target_os = "linux")]
@@ -52,7 +52,7 @@ impl ManagedAccountEndpoint {
             // Keep birth witnesses and the previous pidfds if a later snapshot
             // or pin fails. Missing pidfds never imply that descendants exited.
             self.pin_failed = true;
-            let pinned = (|| {
+            (|| {
                 if self.witnesses.is_none() {
                     self.witnesses = Some(
                         crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(
@@ -63,31 +63,31 @@ impl ManagedAccountEndpoint {
                 self.witnesses
                     .as_mut()
                     .expect("captured startup ownership")
-                    .pin_owned_processes()
+                    .pin_owned_processes_into(&mut self.processes)
             })()
             .map_err(|error: std::io::Error| DaemonError::LocalTransport {
                 operation: "pin_account_helper",
                 message: format!("cannot retain account helper process ownership: {error}"),
             })?;
-            self.processes = Some(pinned);
             self.pin_failed = false;
         }
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    fn tree_exited(&self) -> bool {
+        self.processes.all_exited()
+            && (!self.pin_failed
+                || self
+                    .witnesses
+                    .as_ref()
+                    .is_some_and(|witnesses| witnesses.all_exited().unwrap_or(false)))
+    }
+
     fn all_exited(&mut self) -> bool {
         let reaped = matches!(self.child.try_wait(), Ok(Some(_)));
         #[cfg(target_os = "linux")]
-        return reaped
-            && if self.pin_failed {
-                self.witnesses
-                    .as_ref()
-                    .is_some_and(|witnesses| witnesses.all_exited().unwrap_or(false))
-            } else {
-                self.processes
-                    .as_ref()
-                    .is_some_and(|processes| processes.all_exited())
-            };
+        return reaped && self.tree_exited();
         #[cfg(not(target_os = "linux"))]
         reaped
     }
@@ -194,10 +194,18 @@ impl AccountEndpoints {
 
 fn supervise(name: &'static str, receiver: Receiver<Command>) {
     let mut endpoints = BTreeMap::<String, ManagedAccountEndpoint>::new();
-    let mut unreaped = Vec::<ManagedAccountEndpoint>::new();
+    let mut unreaped = VecDeque::<ManagedAccountEndpoint>::new();
     loop {
-        // An uninterruptible child never pins a request thread or the owner.
-        unreaped.retain_mut(|endpoint| !endpoint.all_exited());
+        // Retry one retained tree per iteration, so transient inspection or FD
+        // failures recover without an unbounded sweep ahead of new commands.
+        if let Some(mut endpoint) = unreaped.pop_front() {
+            if !endpoint.all_exited() {
+                if let Err(error) = endpoint.pin_processes() {
+                    report(name, "retry_helper_ownership", &error.to_string());
+                }
+                let _ = stop(name, endpoint, &mut unreaped);
+            }
+        }
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(Command::Ensure {
                 key,
@@ -250,7 +258,9 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
                 for (_, endpoint) in endpoints {
                     let _ = stop(name, endpoint, &mut unreaped);
                 }
-                return;
+                if unreaped.is_empty() {
+                    return;
+                }
             }
         }
     }
@@ -259,7 +269,7 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
 fn ensure(
     name: &'static str,
     endpoints: &mut BTreeMap<String, ManagedAccountEndpoint>,
-    unreaped: &mut Vec<ManagedAccountEndpoint>,
+    unreaped: &mut VecDeque<ManagedAccountEndpoint>,
     key: String,
     healthy: fn(&str) -> bool,
     timeout: Duration,
@@ -320,18 +330,25 @@ fn ensure(
 fn stop(
     name: &'static str,
     mut endpoint: ManagedAccountEndpoint,
-    unreaped: &mut Vec<ManagedAccountEndpoint>,
+    unreaped: &mut VecDeque<ManagedAccountEndpoint>,
 ) -> Result<(), DaemonError> {
     #[cfg(target_os = "linux")]
-    if let Some(processes) = &endpoint.processes {
-        if let Err(error) = processes.signal(libc::SIGTERM) {
+    {
+        if let Err(error) = endpoint.processes.signal(libc::SIGTERM) {
             report(name, "signal_helper_tree", &error.to_string());
         }
+        if endpoint.pin_failed {
+            if let Some(witnesses) = endpoint.witnesses.as_mut() {
+                if let Err(error) = witnesses.signal_owned_processes(libc::SIGTERM) {
+                    report(name, "signal_unpinned_helper_tree", &error.to_string());
+                }
+            }
+        }
         let deadline = Instant::now() + Duration::from_millis(250);
-        while !processes.all_exited() && Instant::now() < deadline {
+        while !endpoint.tree_exited() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        if let Err(error) = processes.signal(libc::SIGKILL) {
+        if let Err(error) = endpoint.processes.signal(libc::SIGKILL) {
             report(name, "kill_helper_tree", &error.to_string());
         }
     }
@@ -378,7 +395,7 @@ fn stop(
                     endpoint.child.id()
                 ),
             );
-            unreaped.push(endpoint);
+            unreaped.push_back(endpoint);
             Err(DaemonError::LocalTransport {
                 operation: "stop_account_endpoint",
                 message: format!("{name}: {error}"),
@@ -449,7 +466,7 @@ mod tests {
 
     #[test]
     fn failed_readiness_settles_term_ignoring_descendant() {
-        let (_root, child, pid, mut cleanup) = startup_fixture();
+        let (_root, child, _pid, mut cleanup) = startup_fixture();
         let owner = AccountEndpoints::new("failed-startup-fixture");
         let result = owner.ensure(
             "failed-readiness".into(),
@@ -457,7 +474,7 @@ mod tests {
             Duration::from_millis(150),
             move || Ok(ManagedAccountEndpoint::new("unused".into(), child)),
         );
-        let descendant_survived = crate::runtime::process_health::process_running(pid);
+        let descendant_survived = !cleanup.all_exited().unwrap();
         // The fail-first run must clean its exact observed tree as well.
         cleanup.kill_owned_processes().unwrap();
         assert!(result.is_err(), "readiness must fail");
@@ -491,7 +508,7 @@ mod tests {
     #[test]
     #[ignore = "subprocess-only: changes its own descriptor limit"]
     fn pidfd_failure_helper() {
-        let (_root, child, pid, mut cleanup) = startup_fixture();
+        let (_root, child, _pid, mut cleanup) = startup_fixture();
         let mut endpoint = ManagedAccountEndpoint::new("unused".into(), child);
         let mut original = std::mem::MaybeUninit::<libc::rlimit>::uninit();
         assert_eq!(
@@ -509,9 +526,9 @@ mod tests {
             unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &original) },
             0
         );
-        let mut unreaped = Vec::new();
+        let mut unreaped = VecDeque::new();
         let stopped = stop("pin-failure-fixture", endpoint, &mut unreaped);
-        let descendant_survived = crate::runtime::process_health::process_running(pid);
+        let descendant_survived = !cleanup.all_exited().unwrap();
         cleanup.kill_owned_processes().unwrap();
         assert!(
             failed_pin.is_err(),

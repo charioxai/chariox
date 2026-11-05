@@ -10,6 +10,8 @@ struct ProcessIdentity {
     group: u32,
     session: u32,
     start: String,
+    #[cfg(target_os = "linux")]
+    exited: bool,
 }
 
 pub(crate) struct OwnedProcessSignals {
@@ -140,6 +142,11 @@ impl OwnedProcessSignals {
         self.kill_owned_with(snapshot, send_signal)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn signal_owned_processes(&mut self, signal: i32) -> io::Result<()> {
+        self.kill_owned_with(snapshot, |pid| send_signal_with(pid, signal))
+    }
+
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
@@ -159,19 +166,41 @@ impl OwnedProcessSignals {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn all_exited(&self) -> io::Result<bool> {
-        // A reparented zombie has exited even if its new parent has not reaped
-        // it yet. Only retained birth identities participate in this check.
-        Ok(!snapshot()?.iter().any(|row| {
-            self.matches(row) && crate::runtime::process_health::process_running(row.pid)
-        }))
+        for (pid, start) in &self.owned {
+            let row = witnessed_row(*pid)?;
+            if !witnessed_exit(start, row)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn pin_owned_processes(&mut self) -> io::Result<OwnedProcessHandles> {
+        let mut handles = OwnedProcessHandles::default();
+        self.pin_owned_processes_into(&mut handles)?;
+        Ok(handles)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn pin_owned_processes_into(
+        &mut self,
+        handles: &mut OwnedProcessHandles,
+    ) -> io::Result<()> {
         let rows = snapshot()?;
         self.refresh_from(&rows);
-        let mut handles = Vec::new();
-        for row in rows.iter().filter(|row| self.matches(row)) {
+        for row in &rows {
+            if row.start.is_empty()
+                && self.owned.contains_key(&row.pid)
+                && !handles.0.contains_key(&row.pid)
+            {
+                return Err(io::Error::other(
+                    "owned process identity is unreadable before pinning",
+                ));
+            }
+            if !self.matches(row) || handles.0.contains_key(&row.pid) {
+                continue;
+            }
             if row.pid <= 1 || row.pid > i32::MAX as u32 {
                 return Err(io::Error::other("invalid child PID"));
             }
@@ -189,10 +218,17 @@ impl OwnedProcessSignals {
                 .iter()
                 .any(|current| current.pid == row.pid && self.matches(current))
             {
-                handles.push((row.pid, handle));
+                // Publish each verified handle immediately. A subsequent pin
+                // failure must retain both old and newly acquired ownership.
+                handles.0.insert(row.pid, handle);
             }
         }
-        Ok(OwnedProcessHandles(handles))
+        for (pid, start) in &self.owned {
+            if !handles.0.contains_key(pid) && !witnessed_exit(start, witnessed_row(*pid)?)? {
+                return Err(io::Error::other("live owned process could not be pinned"));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn kill_child(&mut self) -> io::Result<bool> {
@@ -209,7 +245,8 @@ impl OwnedProcessSignals {
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) struct OwnedProcessHandles(Vec<(u32, std::os::fd::OwnedFd)>);
+#[derive(Default)]
+pub(crate) struct OwnedProcessHandles(BTreeMap<u32, std::os::fd::OwnedFd>);
 
 #[cfg(target_os = "linux")]
 impl OwnedProcessHandles {
@@ -240,7 +277,7 @@ impl OwnedProcessHandles {
 
     pub(crate) fn all_exited(&self) -> bool {
         use std::os::fd::AsRawFd;
-        self.0.iter().all(|(_, handle)| {
+        self.0.values().all(|handle| {
             let mut fd = libc::pollfd {
                 fd: handle.as_raw_fd(),
                 events: libc::POLLIN,
@@ -253,6 +290,11 @@ impl OwnedProcessHandles {
 
 #[cfg(unix)]
 fn send_signal(pid: i32) -> io::Result<()> {
+    send_signal_with(pid, libc::SIGKILL)
+}
+
+#[cfg(unix)]
+fn send_signal_with(pid: i32, signal: i32) -> io::Result<()> {
     // MP-11: reject system-wide targets even if a future caller loses its witness.
     if pid == i32::MIN || (-1..=1).contains(&pid) {
         return Err(io::Error::other("invalid process signal target"));
@@ -261,7 +303,7 @@ fn send_signal(pid: i32) -> io::Result<()> {
     if matches!(pid, -1..=1) {
         return Err(io::Error::other("reserved signal target"));
     }
-    if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+    if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
@@ -328,7 +370,28 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
         group,
         session,
         start: fields[19].into(),
+        exited: matches!(fields[0], "Z" | "X"),
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
+    match std::fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => linux_row(pid, Ok(bytes)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_exit(start: &str, row: Option<ProcessIdentity>) -> io::Result<bool> {
+    match row {
+        None => Ok(true),
+        Some(row) if row.start.is_empty() => {
+            Err(io::Error::other("owned process identity is unreadable"))
+        }
+        Some(row) => Ok(row.start != start || row.exited),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -341,6 +404,7 @@ fn unreadable_row(pid: u32) -> Option<ProcessIdentity> {
         group: group as u32,
         session: session as u32,
         start: String::new(),
+        exited: false,
     })
 }
 #[cfg(target_os = "macos")]
@@ -456,8 +520,49 @@ mod tests {
             group,
             session: 0,
             start: start.into(),
+            #[cfg(target_os = "linux")]
+            exited: false,
         }
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn witnessed_exit_distinguishes_zombies_reuse_and_unknown_identity() {
+        assert!(!witnessed_exit("birth", Some(row(42, 1, 42, "birth"))).unwrap());
+        let mut zombie = row(42, 1, 42, "birth");
+        zombie.exited = true;
+        assert!(witnessed_exit("birth", Some(zombie)).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, "new-birth"))).unwrap());
+        assert!(witnessed_exit("birth", None).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, ""))).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn repeated_pins_retain_the_same_process_handles() {
+        use std::os::fd::AsRawFd;
+        let mut child = crate::process_spawn::command("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut owner = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut handles = owner.pin_owned_processes().unwrap();
+        let before: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        let repinned = owner.pin_owned_processes_into(&mut handles);
+        let after: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        crate::runtime::child_shutdown::stop(&mut child, "repin_fixture").unwrap();
+        assert!(repinned.is_ok());
+        assert!(!before.is_empty());
+        assert_eq!(before, after);
+    }
+
     /// A process can only rename itself, so a shell does it and then waits.
     #[cfg(target_os = "linux")]
     fn spawn_shell_named_invalidly() -> std::process::Child {

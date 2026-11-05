@@ -151,7 +151,9 @@ async function peerProbe(relayUrl, target, publicKey) {
     auth_token: token(id, 'kernel', ['daemon.register', 'daemon.heartbeat', 'packet.route', 'peer.request', 'peer.event'], identity.publicKeyThumbprint),
     daemon_id: id, machine_id: id, public_key: identity.publicKeyBase64,
   } }))
-  await delay(100)
+  await until(async () => {
+    try { return await targetPublicKey(relayUrl, id) === identity.publicKeyBase64 } catch { return false }
+  }, 'peer probe relay registration')
   return { id, request: request => new Promise((resolve, reject) => {
     const request_id = randomUUID()
     pending.set(request_id, { resolve, reject })

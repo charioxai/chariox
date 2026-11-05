@@ -303,8 +303,8 @@ Retain binary hashes, TUI captures, request durations, watchdog notices and
 cleanup records. The transport probe creates only a lease, not a provider run.
 
 The startup owner now retains birth witnesses from creation through readiness
-polls and failed-startup cleanup. Successful pin sets replace previous pidfds;
-a failed pin preserves previous handles and witnesses. Unpinned cleanup checks
+polls and failed-startup cleanup. Successful polls add only newly observed pidfds and retain existing handles;
+a failed pin preserves both previous and newly acquired handles and witnesses. Unpinned cleanup checks
 each observed birth before signalling; missing or unreadable ownership remains
 unresolved rather than being counted as complete. This covers observed startup
 descendants, not a proof that arbitrary later forks or every platform are covered.
