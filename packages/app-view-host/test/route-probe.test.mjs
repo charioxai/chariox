@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { processNetwork } from './process-network.mjs';
 import { assessResults } from './drill-result.mjs';
+import { networkCases } from './network-cases.mjs';
 
 const socket = '1.0 socket(AF_INET6, SOCK_DGRAM|SOCK_CLOEXEC, IPPROTO_IP) = 19<UDPv6:[993178997]>';
 const connect = '2.0 connect(19<UDPv6:[993178997]>, {sa_family=AF_INET6, sin6_port=htons(443), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "2001:4860:4860::8888", &sin6_addr), sin6_scope_id=0}, 28) = 0';
@@ -18,8 +19,10 @@ async function assess({ lines = [socket, connect], type = 'network.mojom.Network
     const network = await processNetwork(directory);
     const results = {
       isolationNetwork: network,
-      attacks: [{ name: 'fetch', blocked: true, redCapable: true, framePolicyPresent: true,
-        runs: [{ processNetwork: network }, { processNetwork: network }] }],
+      attacks: [1, 2].flatMap(dpr => networkCases('http://localhost').map(([name]) => ({
+        name, dpr, blocked: true, redCapable: true, framePolicyPresent: true,
+        runs: [{ processNetwork: network }, { processNetwork: network }],
+      }))),
       references: Array.from({ length: 4 }, () => ({ rendered: true, processNetwork: network })),
       launch: { passed: true, rows: [{ kind: 'idle', control: false, network }, { kind: 'literal', control: true, network }] },
       isolation: { passed: true }, sourceBinding: { passed: true }, rejectedBeforeExecution: true,
