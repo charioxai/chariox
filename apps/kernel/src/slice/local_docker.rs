@@ -429,10 +429,24 @@ pub fn run_local_docker_slice_action(
                 })?;
             output.status
         } else {
+            // The provisioner owns action deadlines and cancellation, including
+            // unbounded image builds. Only shutdown uses the short reap limit.
             command
                 .stdout(Stdio::from(log_file))
                 .stderr(Stdio::from(stderr_log))
-                .bounded_status()
+                .spawn()
+                .and_then(|mut child| {
+                    match crate::runtime::bounded_process::supervise(&mut child) {
+                        Ok(status) => Ok(status),
+                        Err(error) => {
+                            crate::runtime::child_shutdown::stop(
+                                &mut child,
+                                "direct_slice_provisioner",
+                            )?;
+                            Err(error)
+                        }
+                    }
+                })
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "slice.local_docker",
                     message: format!(

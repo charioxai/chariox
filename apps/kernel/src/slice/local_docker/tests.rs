@@ -314,6 +314,44 @@ fn managed_broker_slice_does_not_require_docker_in_the_kernel_namespace() {
 
 #[cfg(unix)]
 #[test]
+fn direct_image_build_survives_the_generic_command_deadline() {
+    crate::test_support::isolated_env_test!();
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = crate::test_support::TestWorktree::new("direct-build-lifetime");
+    let bin = root.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let provisioner = root.path().join("provision.sh");
+    for (path, script) in [
+        (bin.join("docker"), "#!/bin/sh\nexit 0\n"),
+        (provisioner.clone(), "#!/bin/sh\n/bin/sleep 61\nexit 0\n"),
+    ] {
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let mut path = bin.into_os_string();
+    path.push(":");
+    path.push(std::env::var_os("PATH").unwrap_or_default());
+    std::env::set_var("PATH", path);
+    std::env::set_var("CHARIOX_SLICE_DOCKER_PROVISIONER", provisioner);
+    std::env::remove_var("CHARIOX_SLICE_DOCKER_BROKER_REQUIRED");
+    let mut options = test_options();
+    options.root = root.path().join("slices");
+    let started = std::time::Instant::now();
+    run_local_docker_slice_action(
+        &test_record(),
+        LocalDockerSliceAction::BuildImage,
+        None,
+        None,
+        None,
+        &options,
+    )
+    .expect("active direct image build must survive the generic command deadline");
+    assert!(started.elapsed() >= Duration::from_secs(61));
+}
+
+#[cfg(unix)]
+#[test]
 fn image_build_starts_a_stopped_docker_engine_before_building() {
     crate::test_support::isolated_env_test!();
     use std::os::unix::fs::PermissionsExt;
