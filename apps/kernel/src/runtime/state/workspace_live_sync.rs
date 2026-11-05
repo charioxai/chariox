@@ -5,28 +5,8 @@
 
 use super::*;
 
-pub(super) fn workspace_live_sync_read_payload(
-    read: crate::io::ArtifactReadResult,
-) -> serde_json::Value {
-    let mut payload = serde_json::json!({
-        "artifact_id": read.artifact_id.as_str(),
-        "path": read.path.to_string_lossy(),
-        "domain": workspace_live_sync_domain_name(read.domain),
-        "version": read.version.value(),
-        "snapshot_id": read.snapshot_id.as_str(),
-    });
-    match read.content {
-        crate::io::ArtifactContent::Text(text) => {
-            payload["content_text"] = serde_json::Value::String(text);
-        }
-        crate::io::ArtifactContent::Bytes(bytes) => {
-            payload["byte_count"] = serde_json::json!(bytes.len());
-            payload["content_base64"] =
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(bytes));
-        }
-    }
-    payload
-}
+mod read_payload;
+pub(super) use read_payload::*;
 
 mod remote_state;
 pub(super) use remote_state::*;

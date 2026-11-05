@@ -423,8 +423,12 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     ));
     std::fs::create_dir_all(&root).expect("test root should be created");
     std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
-    std::fs::write(root.join("large.txt"), "snapshot-node\n".repeat(200_000))
+    let large_text = format!("{}END-OF-LARGE-TEXT", "\0é\n\"\\".repeat(16_000));
+    std::fs::write(root.join("large.txt"), &large_text)
         .expect("large test artifact should be written");
+    let opaque_bytes: Vec<u8> = (0..100_000).map(|index| (index % 256) as u8).collect();
+    std::fs::write(root.join("large.bin"), &opaque_bytes)
+        .expect("opaque test artifact should be written");
 
     let mut config = DaemonConfig::for_tests();
     config.user_config.providers.workspace_live_sync.mode =
@@ -521,48 +525,149 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
         read_value["result"]["structuredContent"]["workspace"]["identity_changed"],
         false
     );
-    let large_read_response = handle_json_rpc_value(
+    // Follow only the continuation returned by MCP, through the real tool entry
+    // point. JSON escaping and UTF-8 boundaries must not lose any file bytes.
+    for (path, domain, expected) in [
+        ("large.txt", "text", large_text.as_bytes()),
+        ("large.txt", "structured", large_text.as_bytes()),
+        ("large.bin", "opaque", opaque_bytes.as_slice()),
+    ] {
+        let mut offset = 0;
+        let mut reconstructed = Vec::new();
+        let mut version = None;
+        loop {
+            let mut arguments = serde_json::json!({"path": path, "domain": domain});
+            if offset > 0 {
+                arguments["offset_bytes"] = serde_json::json!(offset);
+                arguments["max_bytes"] = serde_json::json!(8191);
+            }
+            let response = handle_json_rpc_value(
+                router.clone(),
+                &auth_token,
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                    "params": {"name": "chariox.read_artifact", "arguments": arguments}
+                }),
+            )
+            .await
+            .expect("paged read request should succeed");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("read body")
+                .to_bytes();
+            let value: Value = serde_json::from_slice(&body).expect("read json");
+            assert_eq!(value["result"]["isError"], false);
+            let page = &value["result"]["structuredContent"];
+            assert_eq!(
+                page["offset_bytes"], offset,
+                "MCP must expose the requested page"
+            );
+            assert_eq!(page["total_bytes"], expected.len());
+            assert_ne!(
+                page["chariox_truncated"], true,
+                "pages must survive MCP bounding"
+            );
+            let encoded = value["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text block");
+            assert!(encoded.len() <= 64 * 1024);
+            assert_eq!(
+                serde_json::from_str::<Value>(encoded).expect("text json"),
+                *page
+            );
+            assert!(serde_json::to_vec(page).expect("structured json").len() <= 64 * 1024);
+            if let Some(version) = &version {
+                assert_eq!(&page["version"], version);
+            } else {
+                version = Some(page["version"].clone());
+            }
+            let bytes = if domain == "opaque" {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(page["content_base64"].as_str().expect("base64 page"))
+                    .expect("valid base64")
+            } else {
+                page["content_text"]
+                    .as_str()
+                    .expect("text page")
+                    .as_bytes()
+                    .to_vec()
+            };
+            assert!(!bytes.is_empty());
+            assert!(bytes.len() <= 8192);
+            reconstructed.extend_from_slice(&bytes);
+            match page["next_offset_bytes"].as_u64() {
+                Some(next) => {
+                    assert_eq!(next as usize, reconstructed.len());
+                    assert!(next as usize > offset);
+                    offset = next as usize;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(reconstructed.len(), expected.len());
+        assert!(
+            reconstructed == expected,
+            "MCP pages must reproduce the entire artifact"
+        );
+    }
+    let eof_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
         serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 9,
-            "method": "tools/call",
-            "params": {
-                "name": "chariox.read_artifact",
-                "arguments": {"path": "large.txt"}
-            }
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": {"name": "chariox.read_artifact", "arguments": {
+                "path": "large.txt", "offset_bytes": large_text.len(), "max_bytes": 4
+            }}
         }),
     )
     .await
-    .expect("large read request should succeed");
-    assert_eq!(large_read_response.status(), StatusCode::OK);
-    let large_read_body = large_read_response
+    .expect("EOF page should succeed");
+    let eof_body = eof_response
         .into_body()
         .collect()
         .await
-        .expect("large read body should collect")
+        .expect("EOF body")
         .to_bytes();
-    let large_read_value: Value =
-        serde_json::from_slice(&large_read_body).expect("large read body should be json");
-    assert_eq!(large_read_value["result"]["isError"], false);
-    assert!(
-        large_read_value["result"]["content"][0]["text"]
+    let eof_value: Value = serde_json::from_slice(&eof_body).expect("EOF json");
+    assert_eq!(eof_value["result"]["isError"], false);
+    assert_eq!(eof_value["result"]["structuredContent"]["content_text"], "");
+    assert!(eof_value["result"]["structuredContent"]["next_offset_bytes"].is_null());
+    for arguments in [
+        serde_json::json!({"path": "large.txt", "offset_bytes": 2}), // inside é
+        serde_json::json!({"path": "large.txt", "offset_bytes": large_text.len() + 1}),
+        serde_json::json!({"path": "large.txt", "max_bytes": 0}),
+        serde_json::json!({"path": "large.txt", "max_bytes": 8193}),
+    ] {
+        let response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": {"name": "chariox.read_artifact", "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("invalid page should produce a response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("error body")
+            .to_bytes();
+        let value: Value = serde_json::from_slice(&body).expect("error json");
+        assert_eq!(
+            value["error"]["code"], -32000,
+            "invalid page must fail clearly"
+        );
+        let message = value["error"]["message"]
             .as_str()
-            .expect("large read should return text content")
-            .len()
-            <= 64 * 1024
-    );
-    assert_eq!(
-        large_read_value["result"]["structuredContent"]["chariox_truncated"],
-        true
-    );
-    assert!(
-        serde_json::to_vec(&large_read_value["result"]["structuredContent"])
-            .expect("bounded structured content should serialize")
-            .len()
-            <= 64 * 1024
-    );
+            .expect("actionable range error");
+        assert!(message.contains("offset_bytes") || message.contains("max_bytes"));
+    }
     let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
         .as_str()
         .expect("snapshot id should be present")

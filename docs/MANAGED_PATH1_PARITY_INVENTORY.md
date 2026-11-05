@@ -16,6 +16,15 @@ and reconciliation requests explicitly select the latest 100 messages through
 its native session API. Its HTTP reader rejects bodies over 32 MiB, including
 aggregate chunked bodies, without retrying or replacing the saved session.
 
+Local993 / peer432 keeps oversized workspace artifacts retrievable through
+`chariox.read_artifact`. Ordinary and forwarded reads share bounded pages:
+`offset_bytes` selects the next page, `max_bytes` defaults to 8192 (range
+4–8192), and `next_offset_bytes` is null at EOF. Text and structured pages keep
+UTF-8 boundaries; opaque pages carry independently decodable base64. Every page
+retains its artifact version and snapshot metadata. Restart at offset 0 if the
+version changes between pages. This preserves the shared MCP history bound
+without discarding the remainder of a file.
+
 Local987 adds owner cancellation of an exact retained task or timer. The
 ordinary Stop route also resolves parked work when no prompt is active. Task
 cancellation retains its reason, settles owned sources and informs the agent
@@ -29,6 +38,7 @@ Required regression scenarios for this seam are:
 
 | Acceptance ID | Required evidence |
 | --- | --- |
+| `apps-agent-model/ARTIFACT-PAGING` | A real Codex agent, prompted through the built TUI on the real kernel, retrieves text and opaque pages near the end of the project protocol document. The same drill fails on the pre-fix kernel because range arguments return truncated prefixes. MCP entry-point regressions reconstruct entire oversized text, structured and opaque artifacts under the response limit, including escaped control characters and UTF-8 boundaries. |
 | `apps-agent-model/RESUME-64MIB` | A real Codex agent accumulates more than 64 MiB of native tool history on the base, fails to resume after restart, then completes a turn through the built CLI on the fixed kernel with the same agent and native thread. MCP regressions prove large output is bounded before native persistence and startup failures settle. Audit Claude and OpenCode and run their native restart paths. A provider usage limit must settle definitively and preserve its reason for the person; an exhausted account blocks that provider's restart leg. |
 | `apps-agent-model/PARKED-OWNER-CANCEL` | The built CLI cancels parked tasks and independent timers without an active prompt. A real provider receives the cancellation reason on its next wake. Entry-point regressions cover unrelated active work, stale revisions, foreign owners, removed completion subscriptions, idempotency and acknowledgement. |
 

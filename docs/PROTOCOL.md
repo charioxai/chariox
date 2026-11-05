@@ -7,6 +7,19 @@ current release and the previous release (636 and 629), plus the new target
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
+### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
+
+`chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
+`max_bytes` (default 8192, range 4–8192). Local and forwarded workspace reads
+return `offset_bytes`, `total_bytes`, and `next_offset_bytes` (null at EOF), plus
+the existing artifact, version and snapshot metadata. Continue with the returned
+offset and the same path/domain; restart if the artifact version changes.
+`content_text` pages preserve UTF-8 boundaries. `content_base64` pages encode
+only the returned source bytes and decode independently; `byte_count` remains
+the total opaque artifact size. An offset past EOF or inside a UTF-8 character
+fails with an actionable error. The page cap leaves room for JSON escaping and
+metadata under the shared 64 KiB MCP text bound.
+
 ### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
 
 `UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`

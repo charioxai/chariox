@@ -14,14 +14,16 @@ import { isolatedKernelConfigToml } from './lib/drill-kernel-storage.mjs'
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const options = Object.fromEntries(process.argv.slice(2).map(arg => { const [k, ...v] = arg.replace(/^--/, '').split('='); return [k, v.length ? v.join('=') : true] }))
 if (options.help || options.h) {
-  console.log('Usage: node apps/cli/scripts/live-agent-resume-drill.mjs --scenario=resume|cancel --binary=KERNEL --root=STATE_PARENT --workspace=NEW_WORKSPACE --profile=PRODUCT_CODEX_HOME [--restart-binary=FIXED_KERNEL] [--cli-entry=BUILT_CLI] [--cancel-mode=task|timer|stop]')
+  console.log('Usage: node apps/cli/scripts/live-agent-resume-drill.mjs --scenario=resume|cancel|artifact --binary=KERNEL --root=STATE_PARENT --workspace=NEW_WORKSPACE --profile=PRODUCT_CODEX_HOME [--restart-binary=FIXED_KERNEL] [--cli-entry=BUILT_CLI] [--cancel-mode=task|timer|stop]')
   console.log('Resume: seed on the base binary and restart with the fixed binary. Cancel: start directly on the fixed binary. Each binary requires a full commit hash in its adjacent .head file. Logs/results remain under STATE_PARENT; successful runs remove state and workspace, failures preserve them.')
   process.exit(0)
 }
 for (const key of ['binary', 'root', 'workspace', 'profile'])
   assert.equal(typeof options[key], 'string', `--${key}=... is required`)
 options['cancel-mode'] ??= 'task'
-assert.ok(['resume', 'cancel'].includes(options.scenario), '--scenario=resume or --scenario=cancel is required')
+assert.ok(['resume', 'cancel', 'artifact'].includes(options.scenario), '--scenario=resume, cancel or artifact is required')
+if (options.scenario === 'artifact')
+  assert.equal(typeof options['cli-entry'], 'string', 'artifact retrieval requires the real built CLI')
 assert.ok(['task', 'timer', 'stop'].includes(options['cancel-mode']), '--cancel-mode must be task, timer or stop')
 if (options['cancel-mode'] !== 'task')
   assert.equal(typeof options['cli-entry'], 'string', `--cancel-mode=${options['cancel-mode']} requires --cli-entry`)
@@ -405,10 +407,11 @@ try {
     profile = unwrap(await client.send(api.linkProviderAccountProfileRequest('codex', 'resume-drill', options.profile)), 'ProviderAccountProfile').profile
   await client.send(api.refreshProviderAccountProfileRequest('codex', profile.profile_id))
   stage = 'session'
-  const created = await send(api.createSessionRequest(workspace, workspace, 'resume-live', { provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: profile.profile_id, execution_mode: 'build', permission_level: 'yolo' }), 'SessionCreated')
+  const created = await send(api.createSessionRequest(workspace, workspace, 'resume-live', { provider: 'codex', model: 'gpt-6-luna', effort: 'low', account_profile: profile.profile_id, execution_mode: 'build', permission_level: 'yolo' }, undefined, options.scenario === 'artifact' ? 'tracked' : undefined), 'SessionCreated')
   room = created.session.id
   agent = created.agent.id
-  cancelAgent = unwrap(await client.send(api.spawnAgentRequest(room, 'codex', 'cancel-check', 'gpt-6-luna', workspace, 'low', 'build', 'yolo', undefined, undefined, undefined, profile.profile_id)), 'AgentSpawned').agent.id
+  if (options.scenario !== 'artifact')
+    cancelAgent = unwrap(await client.send(api.spawnAgentRequest(room, 'codex', 'cancel-check', 'gpt-6-luna', workspace, 'low', 'build', 'yolo', undefined, undefined, undefined, profile.profile_id)), 'AgentSpawned').agent.id
   attachment = (await send(api.attachToSessionRequest(room, 'resume-live'), 'SessionAttached')).attachment.id
   await startCli()
   const marker = `RESUME_${Date.now()}`
@@ -422,7 +425,7 @@ try {
     const state = await snapshot()
     providerRunId ??= state.active_provider_run_id ?? state.agents.find(x => x.id === targetAgent)?.active_provider_run_id
   }
-  if (options.scenario !== 'cancel') {
+  if (options.scenario === 'resume') {
     stage = 'warmup'
     await sendWithVault(api.submitPromptRequest(room, attachment, agent, `Remember ${marker}. Reply only READY.`, []))
     await waitFor('warm provider turn', async () => { await pump(); const state = await snapshot(); return out.includes('READY') && !state.prompt_states?.[agent]?.active_prompt })
@@ -434,7 +437,7 @@ try {
     run = await send(api.getProviderRunRequest(providerRunId), 'ProviderRun')
     assert.ok(run.provider_run?.structured_endpoint, 'live Codex app-server endpoint not published for provider run')
   }
-  if (options.scenario !== 'resume') {
+  if (options.scenario === 'cancel') {
     try {
       stage = 'cancel-timer'
       let cancelTask
@@ -523,7 +526,55 @@ try {
       records.cancellation_reason = String(error?.message ?? error).replace(/[A-Za-z0-9_+/=.:@-]{32,}/g, '<redacted>').slice(0, 250)
     }
   }
-  if (options.scenario !== 'cancel') {
+  if (options.scenario === 'artifact') {
+    stage = 'artifact-retrieval'
+    // Use the real project protocol document, with the tail unknown to the
+    // provider until it retrieves a page. Exercise both text and opaque reads.
+    const document = await readFile(path.join(repo, 'docs/PROTOCOL.md'))
+    assert.ok(document.length > 64 * 1024, 'drill needs a real oversized source file')
+    await writeFile(path.join(workspace, 'PROTOCOL.md'), document)
+    let offset = document.length - 128
+    while ((document[offset] & 0xc0) === 0x80) offset++
+    const tail = document.subarray(offset)
+    const expectedText = tail.toString('utf8').trim()
+    const expectedBase64 = tail.toString('base64')
+    const prompt = `Use only chariox.read_artifact (no shell or other tools). Read PROTOCOL.md with default arguments once. Then read the same file with offset_bytes=${offset}, max_bytes=128, domain=text and report that page's exact content_text. Finally read the same offset and limit with domain=opaque and report that page's exact content_base64. Make exactly these three tool calls. If a tool cannot return a page, report ARTIFACT_UNAVAILABLE without using another tool. Do not guess.`
+    await automation.send('workspace_shell_exec', { command: `/agent focus ${agent}` })
+    assert.equal((await automation.send('snapshot')).session?.focusedAgentId, agent, 'CLI must focus the artifact agent')
+    await automation.send('switch_screen', { screen: 'agents' })
+    const before = await snapshot()
+    const previous = before.agent_activity?.[agent]?.last_completed_turn?.prompt_id ?? null
+    await automation.send('submit_prompt', { prompt })
+    let entries = []
+    let transcript = ''
+    await waitFor('artifact retrieval turn completion', async () => {
+      await pump()
+      entries = cliTranscriptEntries(await automation.send('snapshot'), agent)
+      const promptIndex = entries.findIndex(entry => (entry.text ?? '').includes(prompt))
+      transcript = promptIndex >= 0 ? entries.slice(promptIndex + 1).map(entry => entry.text ?? '').join('\n') : ''
+      const state = await snapshot()
+      const completed = state.agent_activity?.[agent]?.last_completed_turn?.prompt_id ?? null
+      return completed && completed !== previous && !state.prompt_states?.[agent]?.active_prompt && transcript.length > 0
+    }, 240000)
+    await writeFile(path.join(runRoot, 'artifact-transcript.json'), JSON.stringify(entries, null, 2) + '\n', { mode: 0o600 })
+    const tools = entries.filter(entry => entry.role === 'tool')
+    assert.equal(tools.length, 3, 'artifact drill must use exactly three MCP reads')
+    assert.ok(tools.every(entry => entry.blobTitle?.startsWith('Read PROTOCOL.md')), 'artifact drill used an unexpected tool')
+    const artifactRun = await send(api.getProviderRunRequest(providerRunId), 'ProviderRun')
+    assert.equal(artifactRun.provider_run.model, 'gpt-6-luna', 'drill must use the validation model')
+    records.artifact = {
+      provider_model: artifactRun.provider_run.model,
+      cli_sha256: createHash('sha256').update(await readFile(options['cli-entry'])).digest('hex'),
+      mcp_read_count: tools.length,
+      path: 'PROTOCOL.md', total_bytes: document.length, offset_bytes: offset,
+      text_tail_retrieved: transcript.includes(expectedText), opaque_tail_retrieved: transcript.includes(expectedBase64),
+      source_sha256: createHash('sha256').update(document).digest('hex'),
+    }
+    assert.ok(records.artifact.text_tail_retrieved, 'real agent could not retrieve oversized text tail through MCP')
+    assert.ok(records.artifact.opaque_tail_retrieved, 'real agent could not retrieve oversized opaque tail through MCP')
+    records.checks.push('real CLI prompt + official Codex retrieved text and opaque pages near end of oversized project document')
+  }
+  if (options.scenario === 'resume') {
     stage = 'seed-history'
     const artifactName = 'resume-history-seed.txt'
     const artifactPath = path.join(workspace, artifactName)
