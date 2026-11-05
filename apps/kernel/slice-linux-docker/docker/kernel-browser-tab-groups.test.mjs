@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 8').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 9').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 8')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 9')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -159,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 8')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 9')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -276,7 +276,7 @@ test('a group is found by its Tabs, so a changing title never makes a second gro
       tabGroups: { query: async () => { throw Error('looked up by title'); }, update: async (id, spec) => calls.push([id, spec.title]) } };
     new Function('chrome', 'setInterval', 'globalThis', source)(chrome, () => {}, state);
     await state.charioxTabs.sync([{ target_ids: ['target-a'], title: '⠋ Agent', color: 'blue' }]);
-    assert.deepEqual(calls, [{ tabIds: [7], groupId: 42 }, [42, '⠋ Agent']]);
+    assert.deepEqual(calls, [[42, '⠋ Agent']], 'a Tab already in its group is not regrouped');
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -387,4 +387,21 @@ test('BTAB-01 a watched popup does not take the view back from a person selectio
   release();
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]]);
+});
+
+test('a group the person collapsed stays collapsed while an agent spinner advances', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-group-collapsed-'));
+  try {
+    const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8'), state = {}, groups = new Map([[42, { collapsed: false }], [43, { collapsed: false }]]);
+    const chrome = { runtime: { getPlatformInfo() {} }, windows: {}, debugger: { getTargets: async () => [{ id: 'target-a', tabId: 7 }, { id: 'target-b', tabId: 8 }] },
+      tabs: { onCreated: { addListener() {} }, onAttached: { addListener() {} }, get: async id => ({ id, windowId: 10, groupId: id === 7 ? 42 : 43 }), query: async () => [{ id: 7, windowId: 10, groupId: 42 }, { id: 8, windowId: 10, groupId: 43 }],
+        group: async spec => spec.groupId, ungroup: async () => {} },
+      tabGroups: { update: async (id, spec) => { Object.assign(groups.get(id), spec); } } };
+    new Function('chrome', 'setInterval', 'globalThis', source)(chrome, () => {}, state);
+    const sync = frame => state.charioxTabs.sync([{ target_ids: ['target-a'], title: '● Idle', color: 'blue' }, { target_ids: ['target-b'], title: `${frame} Busy`, color: 'red' }]);
+    await sync('◐');
+    groups.get(42).collapsed = true;
+    await sync('◓'); await sync('◑');
+    assert.equal(groups.get(42).collapsed, true, 'the idle agent\'s group the person collapsed is not expanded again');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

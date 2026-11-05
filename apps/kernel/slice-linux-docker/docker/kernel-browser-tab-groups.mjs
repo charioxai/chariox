@@ -109,7 +109,7 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 8,
+  revision: 9,
   favicon,
   // Physical Chrome input and show_tab announce the person's choice before dispatch.
   personSelection() { selectionEpoch++; for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
@@ -135,11 +135,13 @@ globalThis.charioxTabs = {
     for (const { target_ids, title, color } of groups) {
       const tabIds = target_ids.map(id => ids.get(id)).filter(id => id !== undefined);
       if (!tabIds.length) continue;
-      const windowId = (await chrome.tabs.get(tabIds[0])).windowId;
+      const members = await Promise.all(tabIds.map(id => chrome.tabs.get(id))), windowId = members[0].windowId;
       // The title carries the agent's live mark, so the group is found by the Tabs it already holds.
-      const held = (await Promise.all(tabIds.map(id => chrome.tabs.get(id)))).find(tab => Number.isInteger(tab.groupId) && tab.groupId !== -1 && tab.windowId === windowId);
-      const groupId = await chrome.tabs.group({ tabIds, ...(held ? { groupId: held.groupId } : { createProperties: { windowId } }) });
-      await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
+      const held = members.find(tab => Number.isInteger(tab.groupId) && tab.groupId !== -1 && tab.windowId === windowId);
+      // A title change (the spinner) must not regroup Tabs or touch how the person laid the strip out: a collapsed group stays collapsed.
+      const complete = held && members.every(tab => tab.groupId === held.groupId);
+      const groupId = complete ? held.groupId : await chrome.tabs.group({ tabIds, ...(held ? { groupId: held.groupId } : { createProperties: { windowId } }) });
+      await chrome.tabGroups.update(groupId, { title, color });
       tabIds.forEach(id => grouped.add(id));
     }
     const loose = (await chrome.tabs.query({})).filter(tab => tab.groupId !== -1 && !grouped.has(tab.id)).map(tab => tab.id);
@@ -194,7 +196,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 8",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 9",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
