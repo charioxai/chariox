@@ -1772,6 +1772,29 @@ async fn capture_browser_stores_a_page_totp_key_or_qr_as_a_site_bound_seed() {
     );
 }
 
+#[tokio::test]
+async fn reviewer_capture_browser_accepts_standalone_lowercase_and_padded_totp_keys() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    for (id, seed) in [
+        ("lowercase-key", "abcdefghijklmnop".to_string()),
+        ("padded-key", data_encoding::BASE32.encode(b"abcdefghijk")),
+    ] {
+        std::fs::write(login.root.path().join("value"), &seed).unwrap();
+        let mut args = capture_args(id);
+        args["totp"] = json!(true);
+        args["read"] = json!("node");
+        let captured = call(f, CAPTURE, args).await.unwrap();
+        assert_eq!(captured["totp"], true);
+        assert_eq!(captured["created"], true);
+        assert!(!captured.to_string().contains(&seed));
+        let handle = captured["credential_id"].as_str().unwrap();
+        assert_eq!(stored(f, handle).len(), 6);
+    }
+}
+
 /// The injected code is the RFC 6238 code of the fictional page seed (SHA-1, as the fixture URI says).
 fn assert_code(f: &Fixture, handle: &str, digits: u32, period: u64) {
     use hmac::{Hmac, Mac};

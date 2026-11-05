@@ -90,12 +90,18 @@ fn decode_seed(seed: &str) -> Result<Zeroizing<Vec<u8>>, DaemonError> {
 /// A page shows its setup key inside a sentence ("Or enter the secret: ABCD EFGH …"), so a
 /// captured element is not always the bare key. Finds the key in such text: an `otpauth://`
 /// URI, one long token, or four or more equal-size groups (`ABCD-EFGH-…`). The whole text never
-/// counts as a key, because lenient base32 would accept a plain sentence.
+/// counts as a key unless it is one standalone token; whitespace-separated prose stays excluded.
 /// Sentences of unequal words never form a key. Returns what to store, not yet normalized.
 pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
     let defaults = TotpConfig::default();
     let valid = |candidate: &str| normalize(candidate, &defaults).is_ok();
     let found = |candidate: &str| Some(Zeroizing::new(candidate.to_string()));
+    // A standalone manual key has no prose to disambiguate. The normalizer
+    // accepts lowercase and valid padding; keep that contract here too.
+    let standalone = text.trim();
+    if !standalone.chars().any(char::is_whitespace) && valid(standalone) {
+        return found(standalone);
+    }
     if let Some(start) = text.find("otpauth://") {
         let end = text[start..]
             .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
