@@ -1,18 +1,24 @@
 {
-  "local_protocol": 959,
-  "peer_protocol": 408,
+  "local_protocol": 966,
+  "peer_protocol": 415,
   "tool_with_image": {
     "tool": "Read",
     "status": "completed",
-    "input": { "file_path": "/work/chart.png" },
+    "input": {
+      "file_path": "/work/chart.png"
+    },
     "id": "toolu_chart",
     "output": "chart.png",
-    "images": ["data:image/png;base64,iVBORw0KGgo="]
+    "images": [
+      "data:image/png;base64,iVBORw0KGgo="
+    ]
   },
   "tool_with_omitted_image": {
     "tool": "Read",
     "status": "completed",
-    "input": { "file_path": "/work/huge.png" },
+    "input": {
+      "file_path": "/work/huge.png"
+    },
     "id": "toolu_huge",
     "output": "huge.png",
     "images_omitted": 1

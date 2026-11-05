@@ -18,7 +18,14 @@ fn identity(value: &str) -> Result<()> {
     }
 }
 fn budget(value: &AppOperationBudget) -> Result<()> {
-    value.check().map_err(|_| LifecycleStoreError::Stopped)
+    value.check().map_err(|stopped| match stopped {
+        crate::runtime::app_operation_budget::AppOperationStopped::Cancelled => {
+            LifecycleStoreError::Stopped
+        }
+        crate::runtime::app_operation_budget::AppOperationStopped::Deadline => {
+            LifecycleStoreError::Deadline
+        }
+    })
 }
 pub(super) fn first_committed(
     tx: &rusqlite::Transaction<'_>,

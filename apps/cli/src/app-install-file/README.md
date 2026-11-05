@@ -56,39 +56,36 @@ local-only path history. They do not start a kernel, relay, provider or native A
 ## Developer loop
 
 ```
-/app dev ./my-app [--key PRIVATE]
+/app dev ./my-app
 /app dev stop
+/app register ./my-app [--key PRIVATE]
 ```
 
-`/app dev` takes an App source directory as created by `chariox app create`
-(`app.json` and `bundle/`). Each cycle runs the same `app pack` helper command
-(which verifies the archive with the installer's verifier) into a private
-temporary directory, never inside the App directory, then finds the owner's
-active installation of the manifest's App ID (`ListAppInstallations`, all pages).
-The first cycle installs when none exists; otherwise it updates that installation
-through this same transfer and operation, then follows the operation to its
-result: `Packed ID VERSION (sha256:…)`, then `Installed`/`Updated ... to
-generation N` or the failure (for example, an older data schema fails with
-`app_update_schema_downgrade`). App data is kept across updates; a newer data
-schema runs the release's migrations during the update. A release that
-declares the same capabilities is approved by kernel policy without a prompt;
-changed capabilities wait for the owner in the approval panel, like install.
-The loop never opens views: open one with `/app open INSTALLATION`, and reopen it
-after each update because views stay on the generation they were opened on.
+MP-08 / MP-10 / MP-11: `/app dev` uploads an unsigned completed bundle from
+`app.json` and `bundle/`. The kernel signs it with a kernel-scoped key in its
+Vault. Unlock that Vault before use. The dev principal is never enrolled as a
+publisher and its signature is refused by release installation.
 
-The signing key defaults to `~/.chariox/keys/app-publisher/private`, the location
-used by the `chariox app keygen` example in `packages/app-package/README.md`;
-`--key` selects another. Keep the key directory at `0700` and the private file at
-`0600`. Existing keys stay at their original location; select them with `--key`
-(including keys created under the former `~/.chariox/dev/app-publisher/private`
-default). Migration requires explicit authorization, the same public fingerprint,
-and preserved backup history. A missing key fails with guidance to select an
-existing key or create a first publisher identity in protected storage; it never
-generates, moves, substitutes or rotates a key. Before first use, verify the
-public fingerprint against the approved inventory and prove restoration from a
-separately protected backup by signing and verifying a synthetic challenge.
-The publisher must be enrolled in the kernel (`/app publisher enroll`) before
-the first install succeeds.
+The dev copy has its own installation ID, data and `dev` channel, scoped to the
+current Room. Registered copies and other Rooms keep their release bindings.
+Only agents in the developer Room get automatic dev bindings. Saves use the
+normal staged update, migrations, health check and atomic generation commit;
+open views reload in the same Tab. Every completed cycle reports its measured
+save → running time and generation. Dev saves do not need version bumps.
+
+`/app register` packs that source revision with the real publisher key and
+installs or updates the `release` copy. Its data stays on that installation;
+registration never imports dev data or uploads to a Library. The publisher is
+enrolled explicitly using `/app publisher enroll`. Its key defaults to
+`~/.chariox/keys/app-publisher/private`; `--key` selects an existing key elsewhere.
+Registering different content at an already registered version requires a
+version bump. The local dev key cannot be used for registration.
+
+First install asks for capabilities once. Updates reuse the durable approval
+when normalized capabilities and protected authority do not expand. Changed
+action names, descriptions and schemas alone do not prompt. An expansion uses
+one shared RuntimeInteraction; declining keeps the prior generation and data.
+The writer rechecks the authority and signer at commit.
 
 The directory is watched recursively (`fs.watch`), ignoring dotfiles and
 `node_modules`, with a 500 ms debounce. Cycles never overlap: changes during a

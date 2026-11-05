@@ -60,6 +60,8 @@ int main(int argc, char** argv) {
   int64_t deadline = cx_monotonic_ms() + 5000;
   int result = cx_read_record(&record, deadline);
   if (result) return result;
+  /* A worker that cannot enter OS containment refuses instead of readying. */
+  if (!strcmp(argv[1], "uncontained")) return send_all(CX_APP_CONTROL_FD, "CXAWC001", 8) ? 87 : 1;
   const char* installation = !strcmp(argv[1], "sdk_other_installation") ? "other_installed" :
       fixture_sdk_mode(argv[1]) ? "installed" : "installation_1";
   const int installation_matches = fixture_sdk_mode(argv[1]) && strcmp(argv[1], "sdk_other_installation") ?

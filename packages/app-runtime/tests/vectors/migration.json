@@ -1,0 +1,131 @@
+{
+  "cases": [
+    {
+      "expected": {
+        "acceptance": "forward",
+        "steps": [
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "input": {
+        "dataVersion": 0,
+        "kind": "accept",
+        "releaseTarget": 3
+      },
+      "name": "clean-data-runs-the-whole-chain"
+    },
+    {
+      "expected": {
+        "acceptance": "forward",
+        "steps": [
+          [
+            2,
+            3
+          ]
+        ]
+      },
+      "input": {
+        "dataVersion": 2,
+        "kind": "accept",
+        "releaseTarget": 3
+      },
+      "name": "data-resumes-at-its-version"
+    },
+    {
+      "expected": {
+        "acceptance": "already_current"
+      },
+      "input": {
+        "dataVersion": 3,
+        "kind": "accept",
+        "releaseTarget": 3
+      },
+      "name": "current-data-needs-nothing"
+    },
+    {
+      "expected": {
+        "acceptance": "already_current"
+      },
+      "input": {
+        "dataVersion": 0,
+        "kind": "accept",
+        "releaseTarget": 0
+      },
+      "name": "no-migrations-and-clean-data"
+    },
+    {
+      "expected": {
+        "acceptance": "downgrade",
+        "data_version": 3,
+        "release_target": 2
+      },
+      "input": {
+        "dataVersion": 3,
+        "kind": "accept",
+        "releaseTarget": 2
+      },
+      "name": "newer-data-refuses-the-older-release"
+    },
+    {
+      "expected": {
+        "acceptance": "downgrade",
+        "data_version": 1,
+        "release_target": 0
+      },
+      "input": {
+        "dataVersion": 1,
+        "kind": "accept",
+        "releaseTarget": 0
+      },
+      "name": "release-without-migrations-refuses-versioned-data"
+    },
+    {
+      "expected": "restore_prior_release",
+      "input": {
+        "compatibleMigration": false,
+        "kind": "recovery",
+        "stage": "before_commit"
+      },
+      "name": "failure-before-commit-restores"
+    },
+    {
+      "expected": "restore_prior_release",
+      "input": {
+        "compatibleMigration": true,
+        "kind": "recovery",
+        "stage": "before_commit"
+      },
+      "name": "failure-before-commit-restores-even-with-a-migration"
+    },
+    {
+      "expected": "compatible_migration",
+      "input": {
+        "compatibleMigration": true,
+        "kind": "recovery",
+        "stage": "after_commit"
+      },
+      "name": "failure-after-commit-migrates-forward-or-back"
+    },
+    {
+      "expected": "blocked_preserving_data",
+      "input": {
+        "compatibleMigration": false,
+        "kind": "recovery",
+        "stage": "after_commit"
+      },
+      "name": "failure-after-commit-blocks-and-preserves"
+    }
+  ],
+  "contract": "docs/APPS_V2_CONTRACTS.md §7: migration acceptance and recovery; accepted writes are never discarded"
+}

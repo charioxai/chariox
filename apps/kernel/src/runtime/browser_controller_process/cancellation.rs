@@ -399,7 +399,7 @@ impl BrowserControllerProcessStore {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Preserve the existing perform_cancellable_browser_action operation signature and explicit context arguments"
+        reason = "Bind the caller, document, mutation identity and cancellation in one admission"
     )]
     pub(crate) fn perform_cancellable_browser_action(
         &self,
@@ -409,10 +409,18 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         node_ref: &str,
         action: &BrowserLocatorAction,
+        agent_id: Option<&str>,
         timeout_ms: u64,
     ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, String>
     {
-        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
+        let fingerprint = action_fingerprint(
+            target_id,
+            document_id,
+            node_ref,
+            action,
+            agent_id,
+            timeout_ms,
+        )?;
         let Some(ownership) = &self.ownership else {
             return Ok(Response::Action { result: None });
         };
@@ -438,6 +446,7 @@ impl BrowserControllerProcessStore {
                 document_id,
                 node_ref,
                 action,
+                agent_id,
                 timeout_ms,
                 &active.signal,
             )?;
@@ -670,7 +679,7 @@ impl BrowserControllerProcessStore {
 
     #[allow(
         clippy::too_many_arguments,
-        reason = "Preserve the existing recover_cancellable_browser_action operation signature and explicit context arguments"
+        reason = "Recover the exact caller, document and mutation identity"
     )]
     pub(crate) fn recover_cancellable_browser_action(
         &self,
@@ -680,9 +689,17 @@ impl BrowserControllerProcessStore {
         document_id: &str,
         node_ref: &str,
         action: &BrowserLocatorAction,
+        agent_id: Option<&str>,
         timeout_ms: u64,
     ) -> Result<Response, String> {
-        let fingerprint = action_fingerprint(target_id, document_id, node_ref, action, timeout_ms)?;
+        let fingerprint = action_fingerprint(
+            target_id,
+            document_id,
+            node_ref,
+            action,
+            agent_id,
+            timeout_ms,
+        )?;
         self.recover_cancellable_operation(session_id, execution_id, fingerprint)
     }
 
@@ -731,10 +748,18 @@ fn action_fingerprint(
     document_id: &str,
     node_ref: &str,
     action: &BrowserLocatorAction,
+    agent_id: Option<&str>,
     timeout_ms: u64,
 ) -> Result<[u8; 32], String> {
-    let request = serde_json::to_vec(&(target_id, document_id, node_ref, action, timeout_ms))
-        .map_err(|error| format!("failed to fingerprint browser action: {error}"))?;
+    let request = serde_json::to_vec(&(
+        target_id,
+        document_id,
+        node_ref,
+        action,
+        agent_id,
+        timeout_ms,
+    ))
+    .map_err(|error| format!("failed to fingerprint browser action: {error}"))?;
     Ok(Sha256::digest(request).into())
 }
 
@@ -802,6 +827,43 @@ mod tests {
         let waiter = std::thread::spawn(move || waiting.wait());
         assert_eq!(active.finish(completed()), completed());
         assert_eq!(waiter.join().unwrap(), completed());
+    }
+
+    #[test]
+    fn action_receipt_cannot_be_reused_by_a_different_caller() {
+        let fingerprint = |agent| {
+            action_fingerprint(
+                "target",
+                "document",
+                "backend:1",
+                &BrowserLocatorAction::Click,
+                agent,
+                500,
+            )
+            .unwrap()
+        };
+        assert_ne!(fingerprint(None), fingerprint(Some("agent-1")));
+        let executions = BrowserActionExecutions::default();
+        let ExecutionAdmission::Start(active) = executions
+            .register(
+                "room",
+                "11111111111111111111111111111111",
+                fingerprint(Some("agent-1")),
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("new execution must start");
+        };
+        active.finish(completed()).unwrap();
+        assert!(executions
+            .register(
+                "room",
+                "11111111111111111111111111111111",
+                fingerprint(Some("agent-2")),
+                false
+            )
+            .is_err());
     }
 
     #[test]

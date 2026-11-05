@@ -238,13 +238,15 @@ impl ProviderRunWorkerDeps {
                     &run,
                     output_poll_delay,
                 );
-                self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                 let finished = FinishedProviderOutputPollJob {
                     provider_run_id: provider_run_id.clone(),
                     result,
                     settlement_retry_attempt: 0,
                 };
+                // The result is there to apply before the poll stops counting
+                // as in flight: a kernel stopping waits for the latter.
                 push_finished_output_poll(&self.finished_output_polls, finished);
+                self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                 self.completion_signal.record_completion(&provider_run_id);
             }
             ProviderRunActorCommand::Stop => return true,

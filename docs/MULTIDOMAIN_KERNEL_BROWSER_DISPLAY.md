@@ -28,6 +28,36 @@ resize and window inventory run through its worker. Without the runtime display
 libraries those operations are unavailable; ordinary kernel and DOM browser
 operations remain available. Featureless builds refuse every native resize.
 
+MP-08 / MP-09 / MP-10 / MP-11: a Linux kernel running as root lazily creates
+and validates the locked system account `chariox-browser` using `useradd`.
+Chromium, Xvfb, the desktop buses and graphical applications run as that user,
+with supplementary groups cleared and Chromium's sandbox enabled. The kernel
+keeps control, Vault handling and capture workers under its own identity. CDP
+uses inherited private pipes; it never opens a debugging TCP port.
+Root desktop helpers disable Python user-site loading because their shared
+browser home is writable by the unprivileged account.
+
+The privileged mount-construction workspace stays in the kernel's private
+profile-state directory, mode 0700 owned by root. It is never constructed under
+the browser-owned display runtime; that runtime is only bound as `/tmp` after
+the private root and policy mount are ready. Stop removes the construction
+workspace after the owned process tree settles.
+
+Root browser files live under `/var/lib/chariox-browser/<profile-root-hash>/`;
+the profile and browser home are private to that account. The root kernel's home
+and Vault remain private. Uploads expose only validated workspace copies through
+read-only group access; the quota ledger stays root-only. Chromium writes to an
+owned incoming download directory, and the controller moves completed files to
+the kernel user's existing browser-downloads path. Stop retires incoming files,
+upload leases and the owned desktop; the browser profile persists. Non-root
+Linux kernels and macOS retain their existing paths and identities.
+
+The root path requires `getent`, `useradd`, `setpriv` and usable private mount
+namespaces. A host that cannot provision or use the account returns
+`browser_user_unavailable` with recovery instructions. Setup's pinned Chromium
+and AppArmor profiles remain required on hosts restricting unprivileged user
+namespaces; disabling Chromium's sandbox is never a recovery step.
+
 OpenH264, x264 and libavcodec/libavutil are also loaded at runtime. The codec uses
 public `AVCodecContext`, `AVFrame`, `AVPacket` and `AVHWFramesContext` fields:
 FFmpeg majors 58, 59, 60 and 61 do **not** share those struct layouts. Only the
@@ -48,7 +78,7 @@ that archive); `CHARIOX_NATIVE_DISPLAY_INCLUDE` and `CHARIOX_NATIVE_DISPLAY_LIB`
 are build-only search paths.
 
 A kernel whose latency, bytes or idle traffic is measured is built with the
-repository's pinned Rust toolchain (`rustc 1.88.0`) and with both search paths set:
+repository's pinned Rust toolchain (`rustc 1.99.1`) and with both search paths set:
 `CHARIOX_NATIVE_DISPLAY_INCLUDE` to the FFmpeg 60 headers plus the sysroot headers
 and `CHARIOX_NATIVE_DISPLAY_LIB` to the sysroot holding the static libyuv, libwebp
 and SharpYUV archives. A plain `cargo build --features native-display` on a host
@@ -141,6 +171,15 @@ switch; the kernel passes the resolved value to the browser host. The
 normal host browser still requires a non-root Unix user and sandbox-capable
 Chromium. Its existing per-user profile, focused runtime MCP tools, tab registry,
 input cancellation and Vault observation barrier remain authoritative.
+
+MP-08/MP-10/MP-11 browser regression tests require the software codecs, including
+OpenH264. Install `apps/kernel/slice-linux-docker/docker/browser-test-requirements.txt`
+in a disposable virtual environment and set `CHARIOX_BROWSER_DISPLAY_PYTHON` to
+its absolute `bin/python` path when running the Node browser suites. PyAV 16.1.0
+wheels omit `libopenh264`; those cannot validate the explicitly selected backend.
+The encoder must report refusal rather than silently substitute x264.
+The installed-controller regression resolves Chromium through the product's
+executable discovery, including `CHARIOX_KERNEL_BROWSER_EXECUTABLE` overrides.
 
 The experimental software video adapter needs Python 3 and operator-installed
 PyAV with `libvpx-vp9`. `CHARIOX_BROWSER_DISPLAY_PYTHON` may select an absolute
@@ -780,7 +819,7 @@ Required focused scenarios (acceptance area `multidomain-base`):
 - `BROWSER08`: host stop waits for both helpers to be reaped; their 500 ms grace
   periods overlap (combined teardown below 1.8 seconds). Exercise the final
   deadline and failure reporting without skipping Chromium cleanup.
-- `BROWSER09`: on measured before/after kernels, record DPR1 unsubscribe answer
+- `BROWSER10`: on measured before/after kernels, record DPR1 unsubscribe answer
   p50/p95 across 20 real display subscriptions, then exercise Browser view
   close/reopen through the real hosted client and check owned process cleanup
   after kernel stop. Keep kernel hashes, source heads and evidence outside git.

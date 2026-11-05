@@ -10,6 +10,7 @@ pub use api::{
     WorkflowNotificationSource, WorkflowNotificationSourceSummary, WorkflowNotificationStatus,
     WorkflowNotificationSubscription, WorkflowNotificationTargetKind,
 };
+pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;
 pub use api::{
     AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,
@@ -151,11 +152,11 @@ pub use api::{
     ManagedEnvironmentRepositorySelection, ManagedEnvironmentResult, ManagedEnvironmentSummary,
     MaterializeWorkflowPublicationRequest, MoveAgentToLocalRequest, MoveAgentToRemoteRequest,
     NativeProviderInteractionResolution, ObserveEventConnectionAuthorizationRequest,
-    ObserveManagedEnvironmentPreReimageRequest, PairCloudRelayClientRequest,
-    PairCloudRelayMachineRequest, PairedClientRecord, PairingInviteIntent, PairingInviteRecord,
-    PairingJoinRecord, PauseMetaagentTaskRequest, PauseWorkflowRunRequest,
-    PollCloudRelayLoginRequest, PollRuntimeNoticesRequest,
-    PrepareManagedEnvironmentContextTransferRequest,
+    ObserveManagedEnvironmentPreReimageRequest, OwnerVaultActivity, OwnerVaultRequest,
+    OwnerVaultResult, PairCloudRelayClientRequest, PairCloudRelayMachineRequest,
+    PairedClientRecord, PairingInviteIntent, PairingInviteRecord, PairingJoinRecord,
+    PauseMetaagentTaskRequest, PauseWorkflowRunRequest, PollCloudRelayLoginRequest,
+    PollRuntimeNoticesRequest, PrepareManagedEnvironmentContextTransferRequest,
     PrepareManagedEnvironmentGitCredentialEnrollmentRequest, PreviewPromptSettingRequest,
     PreviewWorkflowScheduleRequest, ProjectEnvironmentCommandResult, ProjectEnvironmentDefinition,
     ProjectEnvironmentDefinitionOrigin, ProjectEnvironmentDefinitionSource,
@@ -271,17 +272,19 @@ pub use api::{
     CallUserAppViewRequest, ConfigureAppAutomationRequest, ControlAppWorkerRequest,
     CreateAppInboxRouteRequest, DeploymentAppsConsent, DeploymentAppsConsentStatus,
     DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest, GrantAppConnectionRequest,
-    GrantAppFileRequest, ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
-    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
-    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
-    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
-    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
-    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
+    GrantAppFileRequest, InspectAppViewRequest, ListAppInstallationsRequest,
+    ListUserAppViewsRequest, OpenAppViewRequest, OpenUserAppViewRequest,
+    PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest,
+    RevokeAppConnectionRequest, RevokeAppFileGrantsRequest, SaveAppFileExportRequest,
+    SetAppViewPanelRequest, SubscribeUserAppViewsRequest, TestAppInboxRouteRequest,
+    UninstallAppRequest, UserAppView, UserAppViewBrowser, UserAppViewHost, UserAppViewRequest,
+    APP_SET_SCHEMA,
 };
 pub use api::{
-    AppInstallOperationPhase, AppInstallOperationRequest, AppInstallOperationSummary,
-    AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest, AppPublisherEnrollmentSummary,
-    BeginAppInstallRequest, BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
+    AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,
+    AppInstallOperationSummary, AppPublisherEnrollmentPhase, AppPublisherEnrollmentRequest,
+    AppPublisherEnrollmentSummary, BeginAppDevPushRequest, BeginAppInstallRequest,
+    BeginAppPublisherEnrollmentRequest, BeginAppUpdateRequest,
 };
 pub use api::{
     ApproveBrowserImportRequest, BrowserImportConsentStatus, BrowserImportSelection,
@@ -296,9 +299,10 @@ pub use api::{
 pub use api::{
     CoverKernelAccessProcessRequest, CoveredProcess, ExtendKernelSudoRequest,
     ForgetGatewayKernelRequest, GatewayAttachmentRef, GatewayKernel, GatewayKernelStatus,
-    GatewayKernelVia, GetVaultSecretStatusRequest, HeartbeatAttachmentsRequest,
-    JoinKernelLinkRequest, KernelAccessGrant, KernelDirectoryEntry, KernelFileKind, KernelFileStat,
-    KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
+    GatewayKernelVia, GetKernelAccessStatusRequest, GetVaultSecretStatusRequest,
+    HeartbeatAttachmentsRequest, JoinKernelLinkRequest, KernelAccessGrant, KernelAccessHolderState,
+    KernelAccessStatus, KernelAccessStatusReason, KernelDirectoryEntry, KernelFileKind,
+    KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
     ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest,
     RequestKernelAccessRequest, RequestKernelSudoRequest, RequestVaultSecretRequest,
     RevokeKernelAccessGrantRequest, StatKernelFileRequest, VaultSecretStatus,
@@ -333,13 +337,6 @@ pub use api::{
 pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainWindowAccess};
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
-
-/// MP-08 / MP-10 / MP-11: native provider ancestor, or the unknown-program fallback.
-#[cfg(unix)]
-pub fn default_access_holder_pid() -> std::io::Result<u32> {
-    let (peer, _) = crate::runtime::kernel_access::process::inspect(std::process::id())?;
-    crate::runtime::kernel_access::requester::default_holder(&peer).map(|holder| holder.pid)
-}
 
 pub use api::{AddSshMachineRequest, RemoveSshMachineRequest, SshMachineResult};
 pub use api::{

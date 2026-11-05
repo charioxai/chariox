@@ -21,12 +21,17 @@ reader/writer operation. Their tasks are joined during cleanup.
 `reserve(timeout)` mints a single-use request ID, absolute wire deadline,
 monotonic local deadline and transport admission permit. The caller can use the
 ID/deadline to prepare an `AppCatalog` call under the existing kernel writer,
-then send that exact message through the slot. A different ID, generation or
+then send that exact message through the slot. The default admits 64 executing
+calls and 16 additional FIFO waiters; the next reservation returns
+`app_peer_busy`. Waiting consumes the original deadline. A different ID, generation or
 deadline is rejected. No database lock is held while awaiting IPC. A dropped
 unsent slot sends nothing; dropping a sent call's future causes a Cancel within
 the actor's 10 ms maintenance interval. Queued calls cancelled before their
-first write are skipped. Started writes finish within the framing budget before
-the cancellation frame follows, preserving framing.
+first write are skipped. Waiting calls that cancel or expire never enter the
+worker. Started writes finish within the framing budget before
+the cancellation frame follows, preserving framing. A sent cancellation retains
+its execution slot and admission permit until the worker's terminal response;
+replacement work cannot overflow the component's 64-call limit while it cleans up.
 
 The SDK answers every call it holds with one terminal response, even when the
 App's handler ignores the cancellation. A call that expired or was cancelled and
@@ -42,7 +47,11 @@ local call settles; it is not a lease proving the App or an external effect has
 stopped. The kernel worker supervisor and each effect broker own those leases,
 revocation checks, ambiguous outcomes and any required human-validation receipt.
 
-Incoming absolute deadlines are converted once to local monotonic deadlines and
+Incoming imports admit 64 kernel callbacks and a FIFO queue of 16 requests,
+then return a retryable `BUSY`. Queued imports retain the kernel's caller/method
+snapshot taken at arrival. Cancellation, deadline and teardown discard queued
+work through `request_not_dispatched`, without running its effects. Callback
+capacity includes responses awaiting guarded publication. Incoming absolute deadlines are converted once to local monotonic deadlines and
 capped at 30 seconds (or the lower configured budget). Deadline/cancellation
 sends one terminal response and signals the callback. Its capacity slot stays
 occupied until the callback actually returns. Duplicate active request IDs close
@@ -52,7 +61,8 @@ brokers must implement bounded completion/cleanup. `PeerTask::join` can remain
 pending if a trusted callback ignores that contract, while the rest of the Tokio
 runtime and the supervisor's worker termination remain available.
 
-The default limits are 64 pending outbound calls, 16 broker callbacks and four
+The default limits are 64 executing outbound calls, 64 broker callbacks, 16
+additional waiters in each direction and four
 frames in each transport/control mailbox. The actor's outbound backlog is capped
 at `pending_calls + 2 * broker_handlers + queued_frames`; this permits a normal
 admitted burst to wait for the writer without spawning writer tasks. Continued
@@ -73,4 +83,9 @@ transport correlation, concurrent broker/tool traffic, queue admission,
 cancellation/deadline handling and framing cleanup. They do not launch Node,
 exercise sandbox policy, publish tools into a provider, or validate external
 effects. Production worker admission and the kernel broker dispatcher remain
-separate integration requirements.
+separate integration requirements. The R2 drills in
+`packages/app-wasm-worker/tests/process/broker.rs` also run this exact peer
+against R3's real subprocess and source component, checking 64 shared-instance
+calls, the 16-call queue, overflow, cancellation/resource release, neighbour
+responsiveness, trap attribution and one manifest-controlled replay. They do not
+replace kernel/client installation and hosted acceptance.

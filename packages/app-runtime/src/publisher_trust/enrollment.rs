@@ -21,6 +21,9 @@ pub fn enroll_in(
     now_ms: u64,
 ) -> Result<TrustDecisionReceipt> {
     valid_owner(owner)?;
+    if publisher.publisher_id == chariox_app_package::v2::DEV_PUBLISHER_ID {
+        return Err(PublisherTrustError::Invalid);
+    }
     valid_identifier(&publisher.publisher_id)?;
     valid_identifier(&publisher.key_id)?;
     valid_text(&decision.decision_id, 128)?;

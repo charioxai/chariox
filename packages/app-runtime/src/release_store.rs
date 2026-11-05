@@ -3,6 +3,8 @@
 //! a check-then-open pathname. The original signed archive remains available for
 //! policy/signature reverification after restart.
 
+pub mod aot_cache;
+pub mod aot_key;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod lease;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -37,7 +39,7 @@ mod unix {
     use crate::private_fs::{
         check, entry_metadata, publish, remove_contents_preserving, same_entry, Dir, FsError,
     };
-    use chariox_app_package::VerifiedPackage;
+    use chariox_app_package::VerifiedApp;
     use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, BTreeSet};
     use std::ffi::{OsStr, OsString};
@@ -166,7 +168,7 @@ mod unix {
 
         pub fn stage(
             &self,
-            package: &VerifiedPackage<'_>,
+            package: &impl VerifiedApp,
             archive: &[u8],
             budget: StageBudget,
         ) -> Result<StagedRelease> {
@@ -177,7 +179,7 @@ mod unix {
         /// worker preparation. This performs no extraction or App execution.
         pub fn lease_verified(
             &self,
-            package: &VerifiedPackage<'_>,
+            package: &impl VerifiedApp,
             archive: &[u8],
         ) -> Result<super::VerifiedReleaseLease> {
             super::lease::verified(&self.root, package, archive)
@@ -197,7 +199,7 @@ mod unix {
         /// allocation units and per-entry metadata headroom.
         pub fn required_reservation(
             &self,
-            package: &VerifiedPackage<'_>,
+            package: &impl VerifiedApp,
             archive: &[u8],
         ) -> Result<u64> {
             if package.package_digest() != format!("sha256:{:x}", Sha256::digest(archive)) {
@@ -213,7 +215,7 @@ mod unix {
         /// interruption drills. They execute no App code.
         pub fn stage_with_checkpoint(
             &self,
-            package: &VerifiedPackage<'_>,
+            package: &impl VerifiedApp,
             archive: &[u8],
             budget: StageBudget,
             mut checkpoint: impl FnMut(StageCheckpoint) -> Result<()>,
@@ -421,7 +423,9 @@ mod unix {
             {
                 return Err(ReleaseStoreError::Busy);
             }
-            self.finish(name, digest, &dir, tree, true, checkpoint)
+            let staged = self.finish(name, digest, &dir, tree, true, checkpoint);
+            dir.unlock();
+            staged
         }
 
         fn finish(
@@ -500,7 +504,7 @@ mod unix {
 
     impl<'a> ExpectedTree<'a> {
         pub(super) fn new(
-            package: &'a VerifiedPackage<'_>,
+            package: &'a impl VerifiedApp,
             archive: &'a [u8],
             marker: &'a [u8],
         ) -> Result<Self> {
@@ -569,9 +573,14 @@ mod unix {
     }
     impl Drop for Temporary<'_> {
         fn drop(&mut self) {
-            if self.published {
-                return;
+            if !self.published {
+                self.remove_unpublished();
             }
+            self.dir.unlock();
+        }
+    }
+    impl Temporary<'_> {
+        fn remove_unpublished(&self) {
             // Do not remove a replacement that no longer names this stage.
             if same_entry(self.root, &self.name, &self.dir).unwrap_or(false) {
                 let mut remaining = MAX_TREE_ENTRIES;

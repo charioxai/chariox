@@ -45,6 +45,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::InspectAppView(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -663,6 +666,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetVaultSecretStatus(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -684,6 +688,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
         | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppDevPush(_)
+        | LocalDaemonRequest::GetAppDevPush(_)
         | LocalDaemonRequest::BeginAppUpdate(_)
         | LocalDaemonRequest::GetAppInstallOperation(_)
         | LocalDaemonRequest::CancelAppInstallOperation(_)
@@ -812,6 +818,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SetUserConfigValue(_)
         | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
         | LocalDaemonRequest::UnsetUserConfigValue(_)
+        | LocalDaemonRequest::OwnerVault(_)
         | LocalDaemonRequest::SetCredentialSecret(_)
         | LocalDaemonRequest::DeleteCredentialSecret(_)
         | LocalDaemonRequest::GetCredentialVaultStatus(_)

@@ -624,3 +624,49 @@ fn guarded_publisher_decisions_roll_back_when_admission_stops_before_commit() {
         .unwrap();
     assert_eq!(receipts, 1);
 }
+
+// MP-11: a dev principal can verify locally without becoming an enrolled publisher.
+#[test]
+fn dev_trust_is_owner_scoped_immutable_and_never_enrolled() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    let mut registry = Registry::new(&mut connection);
+    registry.initialize().unwrap();
+    let key = SigningKey::from_bytes(&[31; 32]);
+    let receipt = registry
+        .bind_dev_identity("alice", key.verifying_key().to_bytes())
+        .unwrap();
+    assert!(!receipt.enrolled);
+    registry
+        .bind_dev_identity("alice", key.verifying_key().to_bytes())
+        .unwrap();
+    assert!(registry.list("alice").unwrap().is_empty());
+    let trust = registry
+        .trusted_publisher("alice", "local_dev", "kernel-dev")
+        .unwrap();
+    assert!(registry
+        .trusted_publisher("bob", "local_dev", "kernel-dev")
+        .is_err());
+    assert!(registry
+        .bind_dev_identity(
+            "alice",
+            SigningKey::from_bytes(&[32; 32]).verifying_key().to_bytes()
+        )
+        .is_err());
+    assert!(registry
+        .enroll(
+            "alice",
+            trust.publisher(),
+            0,
+            &TrustDecision {
+                decision_id: "enroll-dev".into(),
+                authority_ref: "owner".into()
+            },
+            1
+        )
+        .is_err());
+    let tx = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    trust.require_current(&tx, "alice").unwrap();
+    assert!(trust.require_current(&tx, "bob").is_err());
+}

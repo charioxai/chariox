@@ -130,6 +130,9 @@ pub(crate) struct AccessState {
     /// request from them reads "access ended: <reason>" rather than "never covered".
     /// Bounded, no secrets.
     pub(crate) ended: Vec<(ProcessIdentity, Refusal)>,
+    /// Holders whose `--no-wait` request the owner refused, let lapse or that was invalidated,
+    /// so status says why instead of "not requested". Bounded, no secrets.
+    pub(crate) request_outcomes: Vec<(ProcessIdentity, crate::local::KernelAccessStatusReason)>,
     /// Requesters on other kernels that raised a sudo request here, by the grant id
     /// their sudo entries carry. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
@@ -191,6 +194,18 @@ impl AccessState {
         let excess = self.ended.len().saturating_sub(ENDED_PROCESSES);
         self.ended.drain(..excess);
     }
+
+    pub(crate) fn remember_request_outcome(
+        &mut self,
+        holder: &ProcessIdentity,
+        reason: crate::local::KernelAccessStatusReason,
+    ) {
+        self.request_outcomes
+            .retain(|(known, _)| !known.gone() && known != holder);
+        self.request_outcomes.push((holder.clone(), reason));
+        let excess = self.request_outcomes.len().saturating_sub(ENDED_PROCESSES);
+        self.request_outcomes.drain(..excess);
+    }
 }
 
 pub(crate) type AccessStore = Arc<Mutex<AccessState>>;
@@ -237,10 +252,12 @@ pub(crate) enum Refusal {
     CoverOutside,
     /// The grant already covers as many processes by name as it may.
     CoverLimit,
+    /// A status request named a pid that is neither the caller nor one of its OS ancestors.
+    HolderOutside,
 }
 
 impl Refusal {
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::HumanOnly,
         Self::NotCovered,
         Self::Ended,
@@ -256,6 +273,7 @@ impl Refusal {
         Self::CoverKernelProcess,
         Self::CoverOutside,
         Self::CoverLimit,
+        Self::HolderOutside,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -275,6 +293,8 @@ impl Refusal {
             Self::CoverKernelProcess => "kernel_access_cover_kernel_process",
             Self::CoverOutside => "kernel_access_cover_outside",
             Self::CoverLimit => "kernel_access_cover_limit",
+            // Same answer as for an uncovered caller: nothing about another process leaks.
+            Self::HolderOutside => "kernel_access_not_covered",
         }
     }
 
@@ -295,6 +315,7 @@ impl Refusal {
             Self::CoverKernelProcess => "The kernel and the programs it starts can't be covered.",
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
+            Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
         }
     }
 

@@ -99,6 +99,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
             )
         }
+        LocalDaemonRequest::BeginAppDevPush(request) => {
+            LocalRequestMetadata::new("app.dev.push", Interactive).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
+        LocalDaemonRequest::GetAppDevPush(request) => {
+            LocalRequestMetadata::new("app.dev.status", Normal).optional_session(
+                (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
+            )
+        }
         LocalDaemonRequest::BeginAppUpdate(request) => {
             LocalRequestMetadata::new("app.update.begin", Interactive).optional_session(
                 (request.session_id.len() <= 128).then_some(request.session_id.as_str()),
@@ -217,6 +227,7 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
             LocalRequestMetadata::new("workspace_live_sync.mode", Normal)
                 .session(&request.session_id)
         }
+        LocalDaemonRequest::OwnerVault(_) => LocalRequestMetadata::new("vault.owner", Normal),
         LocalDaemonRequest::SetCredentialSecret(request) => {
             LocalRequestMetadata::new("credential.secret.set", Normal)
                 .optional_session(request.session_id.as_deref())
@@ -669,6 +680,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
         LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
+        LocalDaemonRequest::GetKernelAccessStatus(_) => "kernel_access.status",
         LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
         LocalDaemonRequest::RequestKernelSudo(_) => "kernel_access.sudo_request",
         LocalDaemonRequest::RequestVaultSecret(_) => "kernel_access.vault_secret_request",
@@ -700,6 +712,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CancelAppPublisherEnrollment(_) => "app.publisher.cancel",
         LocalDaemonRequest::ListAppInstallations(_) => "app.list",
         LocalDaemonRequest::BeginAppInstall(_) => "app.install.begin",
+        LocalDaemonRequest::BeginAppDevPush(_) => "app.dev.push",
+        LocalDaemonRequest::GetAppDevPush(_) => "app.dev.status",
         LocalDaemonRequest::BeginAppUpdate(_) => "app.update.begin",
         LocalDaemonRequest::GetAppInstallOperation(_) => "app.install.status",
         LocalDaemonRequest::CancelAppInstallOperation(_) => "app.install.cancel",
@@ -714,6 +728,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListAppAutomations(_) => "app.automation.list",
         LocalDaemonRequest::ConfigureAppAutomation(_) => "app.automation.configure",
         LocalDaemonRequest::DisableAppAutomation(_) => "app.automation.disable",
+        LocalDaemonRequest::InspectAppView(_) => "app.view.inspect",
         LocalDaemonRequest::OpenAppView(_) => "app.view.open",
         LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
         LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",
@@ -924,6 +939,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResetAllPromptSettings(_) => "prompt_settings.reset_all",
         LocalDaemonRequest::SetUserConfigValue(_) => "config.set",
         LocalDaemonRequest::UnsetUserConfigValue(_) => "config.unset",
+        LocalDaemonRequest::OwnerVault(_) => "vault.owner",
         LocalDaemonRequest::SetCredentialSecret(_) => "credential.secret.set",
         LocalDaemonRequest::DeleteCredentialSecret(_) => "credential.secret.delete",
         LocalDaemonRequest::SetProviderAccountCredential(_) => "provider_account.credential.set",

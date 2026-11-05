@@ -390,6 +390,10 @@ export type CharioxUserConfig = {
     default_ttl_minutes?: number
     max_ttl_minutes?: number
   }
+  web_bot_auth?: {
+    projects?: string[]
+    signature_agent?: string
+  }
 }
 
 export type CharioxUserConfigPayload = {
@@ -536,6 +540,16 @@ export type KernelAccessGrant = {
 export type KernelCoveredProcess = { pid: number; start: number; executable: string }
 export type KernelAccessCoveredResponse = { KernelAccessCovered: { grant_id: string; process: KernelCoveredProcess } }
 export type KernelAccessGrantedResponse = { KernelAccessGranted: { grant: KernelAccessGrant } }
+/** Protocol 938: one holder identity's access, as the kernel resolves it; never another process's. */
+export type KernelAccessStatus = {
+  state: "granted" | "pending" | "ended" | "not_requested"
+  holder_pid: number
+  holder_executable: string
+  holder_harness?: "codex" | "claude" | "opencode"
+  grant?: KernelAccessGrant
+  reason?: { code: string; message: string }
+}
+export type KernelAccessStatusResponse = { KernelAccessStatus: { status: KernelAccessStatus } }
 export type KernelAccessGrantsListedResponse = { KernelAccessGrantsListed: { grants: KernelAccessGrant[]; sudo_turns: KernelSudoTurn[] } }
 export type KernelAccessDecisionRespondedResponse = { KernelAccessDecisionResponded: { interaction_id: string } }
 export type KernelAccessRevokedResponse = { KernelAccessRevoked: { revoked: number } }

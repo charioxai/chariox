@@ -11,6 +11,7 @@ pub struct ManageCredentialVaultArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCredentialConfigInput {
+    pub use_binding: crate::config::VaultUseBinding,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -44,6 +45,23 @@ pub struct RequestCredentialSecretPromptArgs {
     pub max_length: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_sec: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpRequestArgs {
+    pub url: String,
+    #[serde(default = "default_http_method")]
+    pub method: String,
+    #[serde(default)]
+    pub headers: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub body_text: Option<String>,
+    #[serde(default)]
+    pub body_json: Option<serde_json::Value>,
+    #[serde(default = "default_http_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_http_max_response_bytes")]
+    pub max_response_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,7 +408,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle. The typed secret is never returned to the model.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -416,7 +434,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: HTTP_REQUEST_WITH_CREDENTIAL_TOOL.to_string(),
-            description: "Perform an HTTP request using a Chariox credential handle. Chariox resolves and injects/signs the secret outside the model context, enforces the handle policy, and returns only the HTTP status/body.".to_string(),
+            description: "Perform an HTTP request using a Chariox credential handle. Chariox resolves and injects/signs the secret outside the model context, enforces the exact use binding (payment cards ask the owner once), and returns only the HTTP status/body.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id", "url"],
@@ -555,6 +573,20 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
             }),
         },
     ];
+    let mut canonical = canonical;
+    let mut plain = canonical
+        .iter()
+        .find(|spec| spec.name == HTTP_REQUEST_WITH_CREDENTIAL_TOOL)
+        .expect("credential HTTP tool is registered")
+        .clone();
+    plain.name = HTTP_REQUEST_TOOL.to_string();
+    plain.description = "Perform a kernel HTTP request. Projects opted into Web Bot Auth identify their operator with a fresh HTTP Message Signature. Returns the status and bounded response body; redirects must be requested explicitly.".to_string();
+    plain.input_schema["required"] = serde_json::json!(["url"]);
+    plain.input_schema["properties"]
+        .as_object_mut()
+        .expect("HTTP schema properties")
+        .remove("credential_id");
+    canonical.push(plain);
     let aliases = canonical
         .iter()
         .filter_map(credential_alias_spec)
@@ -567,8 +599,16 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 fn credential_creation_schema() -> Value {
     serde_json::json!({
         "type": "object",
-        "required": ["id", "injection"],
+        "required": ["id", "injection", "use_binding"],
         "properties": {
+            "use_binding": {
+                "type":"object", "required":["target"], "additionalProperties":false,
+                "properties":{
+                    "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
+                    "target":{"type":"object","required":["kind","origin"],"additionalProperties":false,
+                        "properties":{"kind":{"type":"string","enum":["site"]},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}}
+                }
+            },
             "id": {"type": "string"},
             "description": {"type": "string"},
             "source": {
@@ -588,7 +628,7 @@ fn credential_creation_schema() -> Value {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["http", "pty", "connector", "browser", "computer", "mcp"]
+                    "enum": ["http", "pty", "env", "file", "connector", "browser", "computer", "mcp"]
                 }
             },
             "injection": {
@@ -597,13 +637,16 @@ fn credential_creation_schema() -> Value {
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["header", "query", "basic", "hmac", "pty", "browser", "computer"]
+                        "enum": ["header", "query", "basic", "hmac", "pty", "env", "file", "browser", "computer", "totp", "backup_codes"]
                     },
                     "name": {"type": "string"},
                     "value": {"type": "string"},
                     "username": {"type": "string"},
                     "timestamp_header": {"type": "string"},
-                    "signature_header": {"type": "string"}
+                    "signature_header": {"type": "string"},
+                    "algorithm": {"type":"string", "enum":["sha1","sha256","sha512"], "default":"sha1"},
+                    "digits": {"type":"integer", "enum":[6,8], "default":6},
+                    "period_s": {"type":"integer", "minimum":1, "maximum":3600, "default":30}
                 },
                 "additionalProperties": false
             }
@@ -617,6 +660,7 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
         LIST_CREDENTIAL_HANDLES_TOOL => LIST_CREDENTIAL_HANDLES_TOOL_ALIAS,
         REQUEST_CREDENTIAL_SECRET_TOOL => REQUEST_CREDENTIAL_SECRET_TOOL_ALIAS,
         HTTP_REQUEST_WITH_CREDENTIAL_TOOL => HTTP_REQUEST_WITH_CREDENTIAL_TOOL_ALIAS,
+        HTTP_REQUEST_TOOL => HTTP_REQUEST_TOOL_ALIAS,
         SEND_SECRET_TO_TERMINAL_TOOL => SEND_SECRET_TO_TERMINAL_TOOL_ALIAS,
         PASTE_SECRET_TO_SLICE_TOOL => PASTE_SECRET_TO_SLICE_TOOL_ALIAS,
         PASTE_SECRET_TO_COMPUTER_TOOL => PASTE_SECRET_TO_COMPUTER_TOOL_ALIAS,
@@ -632,6 +676,11 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
 
 pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
+        HTTP_REQUEST_TOOL
+        | HTTP_REQUEST_TOOL_ALIAS
+        | "chariox_http_request"
+        | "mcp__chariox__http_request"
+        | "mcp__chariox__chariox_http_request" => Some(HTTP_REQUEST_TOOL),
         LIST_CREDENTIAL_HANDLES_TOOL
         | LIST_CREDENTIAL_HANDLES_TOOL_ALIAS
         | "chariox_list_credential_handles"

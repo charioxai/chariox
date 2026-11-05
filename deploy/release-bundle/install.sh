@@ -7,12 +7,8 @@
 # --release-key is the release's Ed25519 public key as published by Chariox (64
 # hexadecimal characters), never read from this directory.
 #
-# 1. Copies the bundle into a private root-owned directory and checks that copy:
-#    manifest.sig against --release-key, then every file's size and SHA-256,
-#    that no file was added, and the App runtime's inventory signature against
-#    the runtime key the signed manifest names. --check stops here and needs no root.
-# 2. Runs deploy/local-linux/install-root.sh for --user with the App runtime key
-#    and inventory digest from the signed manifest.
+# 1. Verify the release signature, every declared file and absence of additions.
+# 2. Install browser dependencies and ordinary-user setup with install-root.sh.
 # 3. Installs the slice build context the kernel provisions slices from into
 #    /usr/lib/chariox/slice-build-context, and chariox (the CLI/TUI) and
 #    chariox-app-package into /usr/local/bin.
@@ -88,20 +84,12 @@ for directory, subdirectories, names in os.walk(root):
             fail(f"{relative} does not match the signed manifest")
 if listed:
     fail("the bundle is missing " + ", ".join(sorted(listed)))
-# The App runtime's own inventory signature, as root enrollment will check it.
-runtime = manifest["runtime"]
-inventory = open(os.path.join(root, "runtime", "runtime-inventory.json"), "rb").read()
-if hashlib.sha256(inventory).hexdigest() != runtime["inventorySha256"]:
-    fail("runtime/runtime-inventory.json is not the inventory the signed manifest names")
-inventory_signature = open(os.path.join(root, "runtime", "runtime-inventory.sig"), "rb").read().decode("ascii", "replace")
-if not verify(bytes.fromhex(runtime["publicKeyHex"]), inventory, inventory_signature, "runtime/runtime-inventory.sig"):
-    fail("runtime/runtime-inventory.sig does not verify with the runtime key in the signed manifest")
-print(runtime["publicKeyHex"], runtime["inventorySha256"], manifest["version"])
+print(manifest["version"])
 PY
 }
 
 if (( check )); then
-  read -r _ _ version < <(check_bundle "$here") || exit 1
+  read -r version < <(check_bundle "$here") || exit 1
   say "bundle $here is Chariox $version, signed by the release key"
   exit 0
 fi
@@ -113,13 +101,12 @@ chmod 0700 "$stage"
 cp -R -- "$here/." "$stage/"
 chown -R 0:0 "$stage"
 chmod -R go-w "$stage"
-read -r runtime_key runtime_digest version < <(check_bundle "$stage") || exit 1
+read -r version < <(check_bundle "$stage") || exit 1
 say "bundle is Chariox $version, signed by the release key"
 
 args=(install)
 for user in "${users[@]}"; do args+=(--user "$user"); done
-"$stage/deploy/local-linux/install-root.sh" "${args[@]}" --bin "$stage/libexec" --runtime "$stage/runtime" \
-  --runtime-key "$runtime_key" --runtime-digest "$runtime_digest" "${dry_run[@]}"
+"$stage/deploy/local-linux/install-root.sh" "${args[@]}" "${dry_run[@]}"
 
 # A release kernel looks for its slice provisioner in the context beside its bin/, then
 # in this system-wide one (apps/kernel/src/slice/local_docker.rs). install-user.sh

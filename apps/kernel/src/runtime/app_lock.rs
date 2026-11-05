@@ -142,7 +142,7 @@ pub(crate) fn app_lock_health_snapshot() -> AppLockHealthSnapshot {
             holds_over_500ms: stats.holds_over_500ms,
         })
         .collect::<Vec<_>>();
-    sites.sort_by(|a, b| b.total_hold_us.cmp(&a.total_hold_us));
+    sites.sort_by_key(|site| std::cmp::Reverse(site.total_hold_us));
     AppLockHealthSnapshot { sites }
 }
 

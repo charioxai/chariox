@@ -481,6 +481,11 @@ test("App pages get a narrower viewport; the panel takes the rest", async () => 
   await browser.reconcile(viewport, { appPanelCssWidth: 380 });
   const last = connection.calls.filter((call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a").at(-1).params;
   assert.deepEqual([last.width, last.height], [1280, 460]);
+  const applied = connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length;
+  await browser.setLayout("target-a", { width: 640, height: 360 });
+  await browser.setLayout("target-a", null);
+  assert.equal(connection.calls.filter(call => call.method === "Emulation.setDeviceMetricsOverride").length, applied,
+    "viewer layout changes must preserve the Room App panel size");
   // A size larger than the viewport is ignored.
   browser.appTabs.apps.get("session-a").page = { width: 5000, height: 460 };
   await browser.reconcile(viewport, { appPanelCssWidth: 380 });
@@ -1976,4 +1981,16 @@ test('MP-08/MP-10 whenDocumentMoves resolves at the main-frame commit of another
  const stale=browser.whenDocumentMoves('target-a','doc-a');let at=false;stale.promise.then(()=>{at=true});await new Promise(resolve=>setImmediate(resolve));assert.equal(at,true,'an already moved document resolves at once');
  const cancelled=browser.whenDocumentMoves('target-a','doc-b');cancelled.cancel();assert.equal(browser.commitWaiters.size,0);
  watch.cancel();await browser.close();
+});
+
+test("MP-08/MP-10 A3: unprojected App targets keep their session but stay out of the Room tabs", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  browser.appTabs = { apps: new Map([["session-a", { targetId: "target-a", background: true }]]) };
+  const hidden = await browser.reconcile(viewport);
+  assert.equal(hidden.tabs.some(tab => tab.target_id === "target-a"), false);
+  browser.appTabs.apps.get("session-a").background = false;
+  const shown = await browser.reconcile(viewport);
+  assert.equal(shown.tabs.some(tab => tab.target_id === "target-a"), true);
+  await browser.close();
 });

@@ -2,7 +2,7 @@
 //! A publisher declaration is insufficient by itself: require_current must run
 //! on the existing writer before an admitted request can write to its socket.
 use super::{HttpError, Result};
-use chariox_app_package::{HttpMethod, VerifiedPackage};
+use chariox_app_package::{HttpMethod, VerifiedApp};
 use chariox_app_runtime::app_catalog::AppCatalog;
 use hyper::{
     header::{HeaderName, HeaderValue},
@@ -40,7 +40,7 @@ pub(super) struct ApprovedTarget {
     body: Option<bytes::Bytes>,
 }
 impl AppHttpPolicy {
-    pub(super) fn compile(package: &VerifiedPackage<'_>, catalog: Arc<AppCatalog>) -> Result<Self> {
+    pub(super) fn compile(package: &impl VerifiedApp, catalog: Arc<AppCatalog>) -> Result<Self> {
         if package.package_digest() != catalog.package_digest() {
             return Err(HttpError::Provenance);
         }

@@ -161,6 +161,10 @@ impl ProviderProcessService {
         crate::provider::provider_run_uses_structured_prompt_io(run)
     }
 
+    pub(crate) fn any_output_poll_in_flight(&self) -> bool {
+        self.run_actor_mailbox.any_output_poll_in_flight()
+    }
+
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.run_actor_mailbox
             .structured_prompt_io_in_flight(provider_run_id)

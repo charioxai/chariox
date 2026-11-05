@@ -1,5 +1,5 @@
-//! The `access request --no-wait` waiter outlives the shell that started it. The owner's
-//! approval can come minutes after that shell's chain is gone, and still admits the grant.
+//! A blocking test requester can outlive its parent shell. The owner's approval
+//! still binds to the live holder after that shell's chain is gone.
 use super::*;
 
 /// The requester: connects, asks for access for `CHARIOX_ACCESS_TEST_HOLDER` (a pid, or
@@ -29,7 +29,7 @@ fn kernel_access_waiter_child() {
             let root = Path::new(&root);
             let (mut socket, _) = client_async(
                 "ws://localhost/kernel",
-                tokio::net::UnixStream::connect(root.join("run/k.sock"))
+                tokio::net::UnixStream::connect(kernel_access_socket(root))
                     .await
                     .unwrap(),
             )
@@ -47,7 +47,7 @@ fn kernel_access_waiter_child() {
                 .unwrap();
             std::fs::write(
                 root.join("waiter-sent"),
-                format!("{} {holder_pid}", std::process::id()),
+                serde_json::json!([std::process::id(), holder_pid]).to_string(),
             )
             .unwrap();
             let reply = timeout(Duration::from_secs(60), async {
@@ -76,8 +76,8 @@ fn kernel_access_waiter_child() {
 }
 
 /// `sh` is the requester's parent: it runs the waiter in the background and waits for it,
-/// the way a shell runs the detached `chariox access request`. Killing the shell re-parents
-/// the waiter to init, as the CLI's `--no-wait` process exiting does.
+/// the way a shell waits for a blocking `chariox access request`. Killing the shell
+/// re-parents the still-pending requester to init before the owner decides.
 pub(super) fn shell_with_waiter(root: &Path, holder: &str) -> Child {
     shell_with_waiter_term(root, holder, serde_json::json!("until_holder_exits"))
 }
@@ -103,21 +103,22 @@ pub(super) fn shell_with_waiter_term(root: &Path, holder: &str, term: Value) -> 
 pub(super) async fn file_text(path: PathBuf) -> String {
     timeout(Duration::from_secs(15), async {
         loop {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                break text;
+            match std::fs::read_to_string(&path) {
+                Ok(text) if serde_json::from_str::<Value>(&text).is_ok() => break text,
+                _ => {}
             }
             sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("{} never appeared", path.display()))
+    .unwrap_or_else(|_| panic!("{} never contained complete JSON", path.display()))
 }
 
 /// Starts the waiter under `shell`, waits for its popup, then ends the shell so the waiter
 /// is no longer anything's descendant. Returns the popup id.
 async fn orphaned_waiter(kernel: &mut Kernel, shell: &mut Child) -> String {
     let sent = file_text(kernel.root.join("waiter-sent")).await;
-    let waiter: u32 = sent.split(' ').next().unwrap().parse().unwrap();
+    let [waiter, _holder]: [u32; 2] = serde_json::from_str(&sent).unwrap();
     let id = kernel.access_prompt("-grant").await;
     shell.kill().unwrap();
     shell.wait().unwrap();
@@ -214,4 +215,24 @@ async fn a_requester_outside_the_holder_is_refused_at_request_time() {
     shell.wait().unwrap();
     other.kill().unwrap();
     other.wait().unwrap();
+}
+
+#[tokio::test]
+async fn file_text_waits_for_complete_json() {
+    let dir = RuntimeTransportTempDir::new("waiter-json");
+    let path = dir.path().join("waiter-result");
+    let complete = r#"{"response":{"KernelAccessGranted":{"holder_pid":42}}}"#;
+    for partial in ["", "{", r#"{"response":{"KernelAccessGranted":"#] {
+        std::fs::write(&path, partial).unwrap();
+        let reading = file_text(path.clone());
+        tokio::pin!(reading);
+        assert!(
+            timeout(Duration::from_millis(60), &mut reading)
+                .await
+                .is_err(),
+            "the reader returned an incomplete result: {partial:?}"
+        );
+        std::fs::write(&path, complete).unwrap();
+        assert_eq!(reading.await, complete);
+    }
 }

@@ -331,24 +331,16 @@ impl KernelRuntimeState {
         termination: crate::provider::ProviderRunTermination,
         terminal_diagnostic: Option<&str>,
     ) -> Result<crate::app::ProviderRunExitSessionSummary, DaemonError> {
-        let mut termination = termination;
-        // The failed turn's transcript entry renders the settled failure, so the
-        // provider's own terminal output has to be part of it.
-        if let (Some(diagnostic), Some(failure)) = (
-            terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty()),
-            termination
-                .failure
-                .as_mut()
-                .filter(|failure| failure.is_error()),
-        ) {
-            *failure = crate::provider::TurnOutcome::new(
-                failure.kind,
-                failure.retryable,
-                &format!(
-                    "{}. Provider terminal diagnostic: {}",
-                    failure.reason,
-                    crate::provider::sanitize_provider_diagnostic(diagnostic)
-                ),
+        if let Some(diagnostic) =
+            terminal_diagnostic.filter(|diagnostic| !diagnostic.trim().is_empty())
+        {
+            crate::logging::info_with_fields(
+                "daemon.provider",
+                "provider terminal diagnostic",
+                serde_json::json!({
+                    "provider_run_id": provider_run_id,
+                    "diagnostic": crate::secret_redaction::redact_secrets(diagnostic),
+                }),
             );
         }
         let provider_run = self

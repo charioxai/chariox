@@ -38,6 +38,7 @@ impl KernelRuntimeState {
         };
         let value = host
             .command(BrowserAppViewRequest::Open {
+                projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
                 origin_label: super::app_view_runtime::origin_label(owner, &view.installation_id),
                 installation_id: view.installation_id.clone(),
                 instance_id: Some(view.view_id.clone()),
@@ -116,6 +117,7 @@ impl KernelRuntimeState {
                 generation: Some(browser.generation),
             }
             .command(BrowserAppViewRequest::Open {
+                projection: crate::runtime::browser_controller_app_view::AppViewProjection::Human,
                 origin_label: super::app_view_runtime::origin_label(owner, &view.installation_id),
                 installation_id: view.installation_id.clone(),
                 instance_id: Some(view.view_id.clone()),

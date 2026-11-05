@@ -11,7 +11,7 @@ import { locateBrowserRegions } from './browser-observation-regions.mjs';
 import { assertCurrentDocument,assertNotCancelled } from './browser-controller-actions.mjs';
 import { captureRegionMasks } from './kernel-browser-region-protection.mjs';
 import { decodePng,maskPixels } from './kernel-browser-pixels.mjs';
-import { Mirror2,MirrorInputEpochRefusal } from './kernel-browser-mirror2.mjs';
+import { Mirror2,MirrorInputEpochRefusal,maskPolicy } from './kernel-browser-mirror2.mjs';
 export { MirrorInputEpochRefusal };
 
 const lifetime=60000,maxWire=4*1024*1024,refineQuietMs=1000;
@@ -63,6 +63,9 @@ export class MirrorService {
     if(command.font_absent!==undefined&&(command.font_absent!==true||command.font_requirements!==true))throw new Error('MP-11: mirror font negotiation');
     if(command.viewport_first!==undefined&&(command.viewport_first!==true||command.wire!==2))throw new Error('MP-08: mirror viewport-first negotiation');
     if(command.visited_links!==undefined&&(command.visited_links!==true||command.wire!==2))throw new Error('MP-08: mirror visited-links negotiation');
+    // VAUDIT S3 / AU-03: only the kernel names the owner (typed client commands cannot carry it), as for the desktop.
+    if(command.audience!==undefined&&command.audience!=='owner')throw new Error('MP-11: mirror audience is kernel-owned');
+    const audience=command.audience==='owner'?'owner':'masked';
     this.expire();if(this.streams.size>=8||![1,2].includes(command.device_scale_factor)||![undefined,1,2].includes(command.wire))throw new Error('MP-11: mirror negotiation bounds');
     // MP-08/MP-10: a v2 viewer reads only its own Tab's live document; a full all-tab reconcile
     // waits for busy (loading) pages and delayed every new Tab's and Tab switch's first paint.
@@ -83,12 +86,12 @@ export class MirrorService {
       const current=()=>this.host.browser.documentIdsByTarget?.get(tab.target_id)===tab.document_id?null:assertCurrentDocument(connection,sessionId,tab.target_id,tab.document_id);
       await current();
       const releaseRender=await this.host.browser.inputCapture.hold(connection,sessionId);
-      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
+      try{await current();this.streams.set(subscription_id,this.v2.stream({id:subscription_id,scope,audience,tab_id:tab.tab_id,expires:Date.now()+lifetime,policy:null,releaseRender,initialDocument:tab.document_id,fontRequirements:command.font_requirements===true,fontAbsent:command.font_absent===true,viewportFirst:command.viewport_first===true,visitedLinks:command.visited_links===true,navigationPreview:command.navigation_preview===true&&featureOn('CHARIOX_KERNEL_BROWSER_DISPLAY')}));}
 
       catch(error){await releaseRender().catch(()=>{});throw error;}
       this.v2.begin(this.streams.get(subscription_id),scope,this.host.generation);
       return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale,wire:2,...(command.font_requirements===true?{font_requirements:true}:{}),...(command.font_absent===true?{font_absent:true}:{}),...(command.viewport_first===true?{viewport_first:true}:{}),...(command.visited_links===true?{visited_links:true}:{})};}
-    this.streams.set(subscription_id,{scope,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
+    this.streams.set(subscription_id,{scope,audience,tab_id:tab.tab_id,sequence:0,epochs:[],previous:null,resources:new Map(),cache:new Map(),hasher:new MirrorTreeHasher(),fallback:new Set(),expires:Date.now()+lifetime,policy:null});
     return {subscription_id,generation:this.host.generation,tab_id:tab.tab_id,device_scale_factor:scale};
     } catch(error) {await this.host.releaseLayout?.(tab.tab_id,subscription_id);throw error;}
   }
@@ -104,7 +107,7 @@ export class MirrorService {
     const mark=name=>{this.host.timing?.(`mirror_${name}`,stage);stage=timestamp();};
     const stream=this.require(command.subscription_id,scope,command.generation),tab=await this.host.displayTarget({tab_id:stream.tab_id,generation:command.generation});
     mark('target');
-    assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection;
+    assertNotCancelled(signal);const world=await this.world(tab),policy=this.host.protection,masks=maskPolicy(stream,policy);
     mark('world');
     if(stream.document_id!==tab.document_id) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();stream.fallback.clear();}
     if(stream.policy!==policy) {stream.previous=null;stream.observed=null;stream.epochs=[];stream.refinePending=false;stream.resources.clear();stream.cache.clear();}
@@ -112,9 +115,9 @@ export class MirrorService {
     for(const id of command.drift_nodes)stream.fallback.add(id);
     // MP-08/MP-11: use the screenshot collector's live field identity/type check.
     // Bind nodes in the mirror world rather than comparing different coordinate spaces.
-    const targets=policy.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
+    const targets=masks.targets.filter(t=>t.kind==='browser'&&t.target_id===tab.target_id);
     await this.evaluate(world,'globalThis.__charioxMirror.resetFillTargets()');
-    if(targets.length||this.host.browser.fillTargets?.size)await locateBrowserRegions(targets,this.host.browser,policy.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
+    if(stream.audience!=='owner'&&(targets.length||this.host.browser.fillTargets?.size))await locateBrowserRegions(targets,this.host.browser,masks.values,{contentTarget:tab.target_id,contentScale:this.host.scales.get(tab.tab_id)??1,onPlainField:async field=>{
       // Foreign renderer descendants are compositor tiles, not mirrored nodes.
       if(field.sessionId!==world.sessionId)return;
       const {object}=await world.connection.send('DOM.resolveNode',{backendNodeId:field.backendNodeId,executionContextId:world.contextId},world.sessionId);
@@ -157,7 +160,7 @@ export class MirrorService {
     source={...source,nodes:source.nodes.map(n=>({...n,children:[...n.children],...(n.style?{style:cloneStyle(n.style)}:{})}))};
     mark('snapshot');
     // Observer supplies only sanitized content; original resource URLs remain private.
-    const material=await materializeMirrorResources(world.connection,world.sessionId,source.resources,policy.values,stream.cache);
+    const material=await materializeMirrorResources(world.connection,world.sessionId,source.resources,masks.values,stream.cache);
     mark('resources');
     for(const node of source.nodes) {
       if(node.resource) {node.resource=material.mapped.get(node.resource)??undefined;if(!node.resource){node.kind='tile';node.tag='img';node.reason='resource_unavailable';}}
@@ -171,7 +174,7 @@ export class MirrorService {
     source.fonts=source.fonts.flatMap(f=>{const resource=material.mapped.get(f.resource);return resource?[{...f,resource}]:[];});
     const sourceRevision=source.revision??0;
     delete source.resources;delete source.revision;source.selection??=null;
-    if(sanitizeMirrorTree(source,policy.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
+    if(sanitizeMirrorTree(source,masks.values)){stream.fullFallback=true;source=videoSnapshot();delete source.resources;}
     const compositingNodes=new Map(source.nodes.map(n=>[n.id,n]));
     const unsupportedTile=source.nodes.some(n=>{if(n.kind!=='tile')return false;for(let e=n;e;e=compositingNodes.get(e.parent)){const style=e.style??{};if(['transform','filter','backdrop-filter','perspective'].some(key=>style[key]&&style[key]!=='none')||style.opacity&&style.opacity!=='1')return true;}return false;});
     if(unsupportedTile){stream.fullFallback=true;source=videoSnapshot();delete source.resources;fallbackReason='tile_under_transform';}

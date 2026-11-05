@@ -46,8 +46,7 @@ const ARTIFACTS = [
 // helpers and their service in the same order as package-managed-kernel-release.
 const APP_ARTIFACTS = [
   ["chariox-app-package", "/usr/local/bin/chariox-app-package", "file", 0o755],
-  ["chariox-app-storage", "/usr/libexec/chariox-app-storage", "file", 0o755],
-  ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", "file", 0o644],
+  ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", "file", 0o755],
 ]
 const DATA_VOLUME_ARTIFACTS = [
   ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", "file", 0o644],

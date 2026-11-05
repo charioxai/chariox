@@ -8,6 +8,8 @@ use crate::transport::relay_crypto;
 use serde::{Deserialize, Serialize};
 
 mod credentials;
+pub(crate) mod vault_use;
+pub use vault_use::{VaultUseBinding, VaultUseTarget, VaultValueKind};
 mod env_loader;
 mod identity;
 mod kernel_access;
@@ -27,15 +29,16 @@ mod socket_path;
 mod storage;
 pub(crate) use paths::default_state_dir;
 pub(crate) use socket_path::validate_local_socket_path;
+mod totp;
 mod user_config_mutation;
 mod user_config_schema;
 mod validation;
+pub use totp::{TotpAlgorithm, TotpConfig};
 
 pub use credentials::{
-    validate_credentials, CredentialVaultAgentManagementPolicy, CredentialVaultBackend,
-    CredentialVaultUnlockPolicy, UserCredentialConfig, UserCredentialInjectionConfig,
-    UserCredentialMetadataConfig, UserCredentialSourceConfig, UserCredentialUse,
-    UserCredentialVaultConfig,
+    validate_credentials, CredentialVaultBackend, CredentialVaultUnlockPolicy,
+    UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
+    UserCredentialSourceConfig, UserCredentialUse, UserCredentialVaultConfig,
 };
 pub use identity::prepare_protected_slice_identity;
 #[cfg(test)]
@@ -530,6 +533,8 @@ pub struct CharioxUserConfig {
     pub workflow: UserWorkflowConfig,
     #[serde(default)]
     pub credential_vault: UserCredentialVaultConfig,
+    #[serde(default)]
+    pub web_bot_auth: UserWebBotAuthConfig,
 }
 
 impl Default for CharioxUserConfig {
@@ -548,7 +553,37 @@ impl Default for CharioxUserConfig {
             secret_link: UserSecretLinkConfig::default(),
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
+            web_bot_auth: UserWebBotAuthConfig::default(),
         }
+    }
+}
+
+/// Explicit project opt-in to operator identification on agent HTTP traffic.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserWebBotAuthConfig {
+    #[serde(default)]
+    pub projects: Vec<String>,
+    /// Self-hosted public HTTPS origin; enrolled kernels use their Cloud issuer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_agent: Option<String>,
+}
+
+impl UserWebBotAuthConfig {
+    pub(crate) fn validate(&self) -> Result<(), DaemonError> {
+        if self
+            .projects
+            .iter()
+            .any(|project| project.trim().is_empty())
+        {
+            return Err(DaemonError::InvalidConfig {
+                field: "web_bot_auth.projects",
+                message: "project ids must not be empty",
+            });
+        }
+        if let Some(origin) = &self.signature_agent {
+            crate::web_bot_auth::validate_origin(origin)?;
+        }
+        Ok(())
     }
 }
 

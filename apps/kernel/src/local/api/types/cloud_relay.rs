@@ -259,6 +259,8 @@ pub struct CloudCollaborator {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayStatus {
+    /// The answering kernel's protocol, independent of control-plane heartbeat freshness.
+    pub local_daemon_protocol_version: u32,
     /// Native Linux process identity for independent signed-artifact observation.
     /// Legacy and non-Linux kernels provide no implied process proof.
     #[serde(default, skip_serializing_if = "Option::is_none")]

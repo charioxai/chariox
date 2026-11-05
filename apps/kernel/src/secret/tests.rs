@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+mod web_bot_auth;
 
 #[derive(Debug, Default)]
 struct MemoryVaultStore {
@@ -116,6 +117,7 @@ fn credential_handles_do_not_include_internal_vault_metadata() {
         allowed_uses: vec![UserCredentialUse::Browser],
         injection: UserCredentialInjectionConfig::Browser,
         metadata: Some(UserCredentialMetadataConfig {
+            use_binding: None,
             created_by_kind: Some("agent".to_string()),
             created_by_id: Some("agent-1".to_string()),
             session_id: Some("session-1".to_string()),
@@ -652,6 +654,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         crate::session::unix_epoch_ms()
     );
     let writer = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: Vec::new(),
         vault_service: service_name.clone(),
         vault_backend: CredentialVaultBackend::ProcessMemory,
@@ -664,6 +667,7 @@ fn vault_process_cache_is_scoped_by_backend_path_service_and_key() {
         .expect("writer should warm its scoped cache");
 
     let reader = RuntimeSecretService {
+        vault_use_approval: None,
         credentials: vec![UserCredentialConfig {
             id: "shared-key".to_string(),
             description: None,
@@ -1224,6 +1228,43 @@ fn mp11_vault_rollback_failure_is_explicit_and_does_not_keep_replacement_cached(
     );
 }
 
+// MP-11: dev identity creation is internal, stable, scoped to the kernel, and never rotates on a read error.
+#[test]
+fn app_dev_key_stays_in_the_vault_and_invalid_storage_is_not_replaced() {
+    let vault = Arc::new(MemoryVaultStore::default());
+    let service = RuntimeSecretService::with_vault_store(Vec::new(), "app-dev-test", vault.clone());
+    let first = service
+        .app_dev_signing_key("kernel-a")
+        .unwrap()
+        .verifying_key();
+    assert_eq!(
+        service
+            .app_dev_signing_key("kernel-a")
+            .unwrap()
+            .verifying_key(),
+        first
+    );
+    assert_ne!(
+        service
+            .app_dev_signing_key("kernel-b")
+            .unwrap()
+            .verifying_key(),
+        first
+    );
+    assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+    for value in vault.secrets.lock().unwrap().values_mut() {
+        *value = "invalid-test-value".into();
+    }
+    assert!(service.app_dev_signing_key("kernel-a").is_err());
+    assert_eq!(vault.secrets.lock().unwrap().len(), 2);
+    assert!(vault
+        .secrets
+        .lock()
+        .unwrap()
+        .values()
+        .all(|value| value == "invalid-test-value"));
+}
+
 #[test]
 fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
     let service = |hosts: &[&str]| {
@@ -1281,3 +1322,32 @@ fn a_host_port_entry_matches_the_scheme_default_port_and_only_that_port() {
         "https://evil.example.net/v1"
     ));
 }
+
+#[test]
+fn totp_inputs_compute_codes_instead_of_returning_the_seed() {
+    let seed = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let credential: UserCredentialConfig = serde_json::from_value(serde_json::json!({
+        "id":"totp-test", "source":{"type":"vault","key":"totp-test"},
+        "allowed_hosts":["example.com"], "allowed_uses":["browser","pty"],
+        "injection":{"kind":"totp","algorithm":"sha1","digits":8,"period_s":30}
+    }))
+    .expect("TOTP is a supported credential kind");
+    let store = Arc::new(MemoryVaultStore::default());
+    store.set_secret("totp-test", "totp-test", seed).unwrap();
+    let service = RuntimeSecretService::with_vault_store(vec![credential], "totp-test", store);
+    let browser = service
+        .browser_secret_input_for_target_url("totp-test", "https://example.com/login")
+        .unwrap();
+    assert!(
+        browser.len() == 8 && browser.bytes().all(|c| c.is_ascii_digit()),
+        "browser receives only a computed code"
+    );
+    assert!(service.terminal_secret_input("totp-test").unwrap().len() == 8);
+    assert!(service
+        .browser_secret_input_for_target_url("totp-test", "https://other.example/login")
+        .is_err());
+    let handles = serde_json::to_string(&service.list_handles()).unwrap();
+    assert!(!handles.contains(seed) && !handles.contains(&browser));
+}
+
+mod factors;

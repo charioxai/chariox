@@ -1,6 +1,6 @@
 // MP-07 / MP-08 / MP-10 / MP-11: supplementary packaging regression checks.
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -51,5 +51,18 @@ test('preflight rejects missing files, unmatched globs, ignored inputs and links
     await writeFile(join(root, path), 'assets/file.txt');
     await assert.rejects(validateSliceBuildContext(root), /unsupported ignore file/);
     await rm(join(root, path));
+  }
+});
+
+// MP-08/MP-10/MP-11: Cargo reads every member even for a single-package build.
+test('slice Rust builder includes every workspace member manifest', async () => {
+  const root = new URL('../', import.meta.url);
+  const manifest = await readFile(new URL('Cargo.toml', root), 'utf8');
+  const dockerfile = await readFile(new URL(SLICE_DOCKERFILE, root), 'utf8');
+  const builder = dockerfile.slice(dockerfile.indexOf(' AS rust-builder'), dockerfile.indexOf('FROM scratch AS managed-release-artifacts'));
+  const inputs = sliceDockerfileInputs(builder);
+  const members = manifest.match(/members = \[([\s\S]*?)\]/)[1].matchAll(/"([^"]+)"/g);
+  for (const [, member] of members) {
+    assert.ok(inputs.some(input => input === member || member.startsWith(`${input}/`)), `missing workspace member ${member}/Cargo.toml`);
   }
 });

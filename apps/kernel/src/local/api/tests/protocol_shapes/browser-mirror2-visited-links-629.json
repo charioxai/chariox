@@ -3,8 +3,8 @@
     "MP-08",
     "MP-10"
   ],
-  "local_protocol": 959,
-  "peer_protocol": 408,
+  "local_protocol": 966,
+  "peer_protocol": 415,
   "allocation": "coordinator-allocated local 593, relay peer unchanged: additive visited_links (empty href for a link visited from the page's origin)",
   "subscribe": {
     "KernelBrowser": {
@@ -30,7 +30,12 @@
     "wire": 2,
     "sequence": 2,
     "ops": [
-      {"op": "attr", "id": "n7", "name": "href", "value": ""}
+      {
+        "op": "attr",
+        "id": "n7",
+        "name": "href",
+        "value": ""
+      }
     ]
   }
 }

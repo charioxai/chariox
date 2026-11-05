@@ -425,6 +425,7 @@ fn codex_error_info_code(error: &Value) -> Option<String> {
         "http_connection_failed"
             | "response_stream_connection_failed"
             | "response_stream_disconnected"
+            | "response_too_many_failed_attempts"
     ) {
         let code = match http_status {
             Some(401) => "unauthorized",
@@ -439,10 +440,12 @@ fn codex_error_info_code(error: &Value) -> Option<String> {
 }
 
 pub(super) fn rpc_error_message(message: &JsonRpcMessage) -> Option<String> {
-    message
-        .error
-        .as_ref()
-        .and_then(|error| error.message.clone())
+    message.error.as_ref().and_then(|error| {
+        error
+            .message
+            .as_deref()
+            .map(|message| codex_error_text(&error.data, message))
+    })
 }
 
 fn optional_codex_turn_id(turn: Option<&Value>) -> Option<String> {

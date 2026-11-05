@@ -221,6 +221,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
         // Approvals belong to the user, including for elevated agents.
         | LocalDaemonRequest::RespondToInteraction(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
             | LocalDaemonRequest::ListKernelAccessGrants(_)
             | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -231,6 +232,7 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::WaitEvents(_)
             | LocalDaemonRequest::AckEvents(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
+            | LocalDaemonRequest::OwnerVault(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
@@ -396,4 +398,12 @@ mod registry_tests {
             )
         ));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn owner_vault_is_not_a_sudo_operation() {
+    assert!(sudo_request_forbidden(&LocalDaemonRequest::OwnerVault(
+        crate::local::OwnerVaultRequest::Reveal { id: "entry".into() }
+    )));
 }

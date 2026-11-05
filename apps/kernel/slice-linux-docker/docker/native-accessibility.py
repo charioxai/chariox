@@ -27,11 +27,18 @@ class NativeInputDenied(ValueError):
     pass
 
 
+def owned_uids():
+    # Only the root controller can add its dedicated graphical uid. Process
+    # ancestry/start identity remains required for every admitted application.
+    uid = os.environ.get('CHARIOX_OWNED_DESKTOP_UID', '')
+    return {0, int(uid)} if os.getuid() == 0 and uid.isdecimal() and int(uid) > 0 else {os.getuid()}
+
+
 def alive(process):
     try:
         stat=open('/proc/'+str(process['pid'])+'/stat').read()
         return (stat[stat.rfind(')')+2:].split()[19]==process['started'] and
-                os.stat('/proc/'+str(process['pid'])).st_uid==os.getuid())
+                os.stat('/proc/'+str(process['pid'])).st_uid in owned_uids())
     except (OSError,KeyError,IndexError):return False
 
 

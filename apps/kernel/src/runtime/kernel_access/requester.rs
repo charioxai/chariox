@@ -15,16 +15,37 @@ pub(crate) fn project(holder: &ProcessIdentity) -> KernelAccessRequester {
 
 pub(crate) fn default_holder(peer: &ProcessIdentity) -> std::io::Result<ProcessIdentity> {
     let chain = super::process::ancestry(peer)?;
+    let nested = |process: &ProcessIdentity| {
+        super::process::in_nested_pid_namespace(process.pid).unwrap_or(true)
+    };
     // MP-08 / MP-10 / MP-11: npm launchers and shell exec optimizations change
     // depth. Select only an installed harness in this exact OS-verified chain,
-    // never a sibling, descendant, or a process found by its basename.
+    // never a sibling, descendant, or a process found by its basename. A provider
+    // sandbox runs each tool command in its own PID namespace, whose processes end
+    // with that command, so only processes in the kernel's namespace can hold.
+    if let Some(mut at) = chain.iter().enumerate().skip(1).find_map(|(at, ancestor)| {
+        (ancestor.uid == peer.uid
+            && provider_harness(&ancestor.executable).is_some()
+            && !nested(ancestor))
+        .then_some(at)
+    }) {
+        // A harness that starts itself again for one command (Codex's sandbox helper)
+        // is still that harness: the holder is the outermost of the run.
+        while chain.get(at + 1).is_some_and(|parent| {
+            parent.uid == peer.uid && parent.executable == chain[at].executable
+        }) {
+            at += 1;
+        }
+        return Ok(chain[at].clone());
+    }
+    if nested(peer) {
+        return Err(std::io::Error::other(
+            "no installed Codex, Claude Code or OpenCode runs this sandbox; \
+             pass --holder-pid with the host pid of the program that holds the grant",
+        ));
+    }
     chain
-        .iter()
-        .skip(1)
-        .find(|ancestor| {
-            ancestor.uid == peer.uid && provider_harness(&ancestor.executable).is_some()
-        })
-        .or_else(|| chain.get(2))
+        .get(2)
         .cloned()
         .ok_or_else(|| std::io::Error::other("holder ancestor unavailable"))
 }
@@ -376,6 +397,44 @@ mod launcher_tests {
         );
     }
 
+    // EXT-21: Codex runs each sandboxed tool command under a helper that is the Codex
+    // executable again; the helper ends with the command, the session holds the grant.
+    #[test]
+    fn default_holder_is_the_outermost_run_of_one_harness() {
+        crate::test_support::isolated_env_test!();
+        let install = Install::new();
+        let native = install.native("bin/codex");
+        let shell = "\"$@\"; exit $?";
+        let status = crate::process_spawn::command(&native)
+            .args(["-c", shell, "session"])
+            .arg(&native)
+            .args(["-c", shell, "helper", "/bin/bash", "-c", shell, "tool"])
+            .arg(std::env::current_exe().unwrap())
+            .args(["--exact", PROBE, "--ignored", "--nocapture"])
+            .env("CHARIOX_CODEX_BIN", &native)
+            .env("KA_EXPECT_EXECUTABLE", &native)
+            .env("KA_EXPECT_HARNESS", "codex")
+            .env("KA_EXPECT_OUTERMOST", "1")
+            .status()
+            .unwrap();
+        assert!(
+            status.success(),
+            "a per-command helper of the harness must not hold the grant"
+        );
+    }
+
+    #[test]
+    fn this_process_is_in_the_kernels_pid_namespace() {
+        assert!(!super::super::process::in_nested_pid_namespace(std::process::id()).unwrap());
+    }
+
+    fn default_holder_pid() -> u32 {
+        let peer = super::super::process::inspect(std::process::id())
+            .unwrap()
+            .0;
+        default_holder(&peer).unwrap().pid
+    }
+
     #[test]
     #[ignore = "subprocess entry point exercised by launcher parent regressions"]
     fn launcher_probe() {
@@ -385,7 +444,7 @@ mod launcher_tests {
                 .0;
             let (_, parent) = super::super::process::inspect(peer.pid).unwrap();
             let (_, grandparent) = super::super::process::inspect(parent).unwrap();
-            let selected = crate::local::default_access_holder_pid().unwrap();
+            let selected = default_holder_pid();
             assert_eq!(selected, grandparent);
             assert_eq!(
                 project(&super::super::process::inspect(selected).unwrap().0).provider_harness,
@@ -396,7 +455,7 @@ mod launcher_tests {
             return;
         }
         let expected = std::env::var("KA_EXPECT_EXECUTABLE").unwrap();
-        let pid = crate::local::default_access_holder_pid().unwrap();
+        let pid = default_holder_pid();
         let peer = super::super::process::inspect(std::process::id())
             .unwrap()
             .0;
@@ -412,6 +471,18 @@ mod launcher_tests {
             _ => panic!("invalid fixture provider"),
         };
         assert_eq!(project(&selected).provider_harness, Some(harness));
+        if std::env::var_os("KA_EXPECT_OUTERMOST").is_some() {
+            let (_, parent) = super::super::process::inspect(selected.pid).unwrap();
+            let parent = super::super::process::inspect(parent).unwrap().0;
+            assert_ne!(parent.executable, selected.executable);
+            let chain = super::super::process::ancestry(&peer).unwrap();
+            assert!(
+                chain
+                    .iter()
+                    .any(|p| p.executable == selected.executable && p.pid != selected.pid),
+                "the fixture runs the harness twice"
+            );
+        }
         let mut reused = selected.clone();
         reused.start += 1;
         assert!(!reused.alive());

@@ -96,6 +96,12 @@ pub(crate) struct CompletedGitTurnSnapshot {
     pub duration_ms: Option<u64>,
     #[serde(default)]
     pub undone: bool,
+    /// Whether the turn left the dirty files as it found them. The file
+    /// contents are not kept: a turn's `change` holds what undo needs.
+    #[serde(default)]
+    pub files_unchanged: bool,
+    #[serde(default)]
+    pub artifact_receipt: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,15 +377,30 @@ fn completed_turn_projection_is_newer(
 }
 
 impl CompletedGitTurnSnapshot {
+    /// Twenty completed turns per agent stay in memory, so each keeps digests
+    /// of the dirty files' contents, not the contents (every dirty file was
+    /// copied twice per turn, and the copies grew with the workspace).
     pub(crate) fn new(
-        before: GitTurnSnapshot,
-        after: GitTurnSnapshot,
+        mut before: GitTurnSnapshot,
+        mut after: GitTurnSnapshot,
         change: Option<WorkspaceLiveSyncChange>,
         completed_at_ms: u64,
     ) -> Self {
+        use sha2::{Digest, Sha256};
         let duration_ms = before
             .started_at_ms
             .map(|started_at_ms| completed_at_ms.saturating_sub(started_at_ms));
+        let files_unchanged =
+            before.workspace_live_sync_file_snapshots == after.workspace_live_sync_file_snapshots;
+        let normalized = serde_json::to_vec(&(
+            &after.head_sha,
+            &after.status_fingerprint,
+            &after.workspace_live_sync_file_snapshots,
+        ))
+        .unwrap_or_default();
+        let artifact_receipt = format!("git-artifact:{:x}", Sha256::digest(normalized));
+        before.workspace_live_sync_file_snapshots = BTreeMap::new();
+        after.workspace_live_sync_file_snapshots = BTreeMap::new();
         Self {
             before,
             after,
@@ -387,6 +408,8 @@ impl CompletedGitTurnSnapshot {
             completed_at_ms,
             duration_ms,
             undone: false,
+            files_unchanged,
+            artifact_receipt,
         }
     }
 

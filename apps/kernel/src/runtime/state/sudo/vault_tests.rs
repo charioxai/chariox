@@ -1,4 +1,4 @@
-//! MP-08/MP-10/MP-11 A06: elevated Vault generation and protected login through
+//! MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault generation and protected login through
 //! the real MCP router. The browser is a fixture controller that records what
 //! the kernel physically inserted; live Chromium/provider acceptance is separate.
 use super::tests::{fixture, running, Fixture, PASSKEY};
@@ -12,7 +12,7 @@ const TOKEN: &str = "sudo-fixture-bearer";
 const PASTE: &str = "chariox.kernel_browser_paste_secret";
 const SITE: &str = "http://127.0.0.1:8123";
 
-fn names(f: &Fixture) -> Vec<String> {
+pub(super) fn names(f: &Fixture) -> Vec<String> {
     f.router
         .runtime_tool_specs_for_auth_token(TOKEN)
         .into_iter()
@@ -20,7 +20,7 @@ fn names(f: &Fixture) -> Vec<String> {
         .collect()
 }
 
-async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Value, DaemonError> {
+pub(super) async fn call(f: &Fixture, tool: &str, arguments: Value) -> Result<Value, DaemonError> {
     Box::pin(
         f.router
             .dispatch_authenticated_runtime_tool_call(TOKEN, tool, arguments),
@@ -39,7 +39,7 @@ fn vault_path(f: &Fixture) -> String {
         .path
 }
 
-fn unlock(f: &Fixture) {
+pub(super) fn unlock(f: &Fixture) {
     crate::secret::unlock_chariox_encrypted_vault(
         vault_path(f),
         PASSKEY,
@@ -59,7 +59,7 @@ fn stored(f: &Fixture, handle: &str) -> zeroize::Zeroizing<String> {
 }
 
 /// A live sudo window whose turn is actually running, as during provider work.
-fn elevated(f: &Fixture) -> KernelSudoTurn {
+pub(super) fn elevated(f: &Fixture) -> KernelSudoTurn {
     let turn = running(f);
     let prompts = &f.state.owned.prompt_state_owner;
     let session = f
@@ -86,56 +86,61 @@ async fn generate(f: &Fixture, request_id: &str, origin: &str) -> Result<Value, 
     .await
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault creation needs no elevation.
 #[tokio::test]
-async fn a06_ordinary_agents_cannot_generate_credentials() {
+async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     unlock(&f);
-    let catalog = names(&f);
-    // MP-08/MP-10/MP-11: stable discovery is not a Vault generation grant.
-    assert!(catalog.iter().any(|name| name == VAULT_GENERATE));
-    assert!(
-        !catalog
-            .iter()
-            .any(|name| name.contains("generated_credential")),
-        "A06: generation is not an ordinary agent tool"
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    let created = generate(&f, "ordinary-signup", SITE).await.unwrap();
+    let handle = created["credential_id"].as_str().unwrap();
+    assert_eq!(created["origin"], SITE);
+    assert_eq!(created["created"], true);
+    let value = stored(&f, handle);
+    assert!(!created.to_string().contains(value.as_str()));
+    assert_eq!(
+        generate(&f, "ordinary-signup", SITE).await.unwrap()["credential_id"],
+        handle
     );
-    assert!(generate(&f, "signup", SITE).await.is_err());
+    assert!(generate(&f, "ordinary-signup", "https://example.com")
+        .await
+        .is_err());
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input_for_target_url(handle, "http://127.0.0.1:9999/login")
+        .is_err());
+    let snapshot = f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap();
+    assert!(snapshot.active_interactions().is_empty());
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     assert!(call(
         &f,
-        "chariox.create_generated_credential",
-        json!({"credential":{"id":"ordinary","allowed_hosts":["127.0.0.1:8123"],
-            "allowed_uses":["browser"],"injection":{"kind":"browser"}}}),
+        "chariox_kernel_request",
+        json!({"request":{"ListSessions":null}})
     )
     .await
     .is_err());
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
 }
 
 #[tokio::test]
-async fn a06_an_enrolled_kernel_owner_generates_and_other_users_cannot() {
+async fn vopen_an_enrolled_kernel_owner_generates_and_other_users_cannot() {
     crate::test_support::isolated_env_test!();
-    let f = fixture();
-    let turn = elevated(&f);
+    let f = super::tests::fixture_for_owner(None, false, "claude", "claude", None, "cloud-owner");
     unlock(&f);
-    // A Cloud-enrolled kernel's local owner is its Cloud user.
+    assert!(generate(&f, "before-enrollment", SITE).await.is_err());
     let mut config = f.state.owned.config_projection.snapshot();
     config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
         user_id: "cloud-owner".into(),
         ..Default::default()
     });
     f.state.owned.config_projection.update(config);
-    let set_owner = |owner: &str| {
-        let mut turns = f.state.owned.sudo_turns.lock().unwrap();
-        turns.get_mut(&turn.entry_id).unwrap().owner_user_id = owner.into();
-    };
-    set_owner("collaborator");
-    assert!(generate(&f, "other", SITE).await.is_err());
-    set_owner("cloud-owner");
-    let created = generate(&f, "signup", SITE).await.unwrap();
-    assert_eq!(created["created"], true);
+    assert_eq!(generate(&f, "signup", SITE).await.unwrap()["created"], true);
 }
 
 #[tokio::test]
@@ -198,7 +203,10 @@ async fn a06_elevated_generation_commits_one_handle_and_never_returns_the_value(
         .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
         .unwrap();
     assert!(names(&f).iter().any(|name| name == VAULT_GENERATE));
-    assert!(generate(&f, "after-revoke", SITE).await.is_err());
+    assert!(
+        generate(&f, "after-revoke", SITE).await.is_err(),
+        "revoking sudo cancels its originating prompt through the normal lifecycle"
+    );
 }
 
 #[tokio::test]
@@ -207,7 +215,12 @@ async fn a06_a_generated_handle_never_takes_a_slot_that_holds_a_value() {
     let f = fixture();
     let turn = elevated(&f);
     unlock(&f);
-    let handle = super::vault::generated_handle(&turn, "signup");
+    let handle = super::super::vault_generate::generated_handle(
+        &turn.owner_user_id,
+        &turn.session_id,
+        &turn.agent_id,
+        "signup",
+    );
     f.state
         .home_runtime_secret_service()
         .unwrap()
@@ -252,7 +265,7 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
     .await
     .unwrap();
     during();
-    // Ending the window withdraws the prompt itself; nothing is left to answer.
+    // A caller may withdraw its own unlock request.
     if f.state
         .owned
         .pending_interactions
@@ -275,24 +288,27 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
 }
 
 #[tokio::test]
-async fn a06_generation_refuses_when_the_window_ends_during_the_vault_wait() {
+async fn vopen_generation_survives_sudo_expiry_during_vault_unlock() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     let turn = elevated(&f);
     let pending = generate(&f, "signup", SITE);
     let unlock = owner_unlocks(&f, &turn.session_id, || {
         f.state
-            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-            .unwrap();
+            .owned
+            .sudo_turns
+            .lock()
+            .unwrap()
+            .get_mut(&turn.entry_id)
+            .unwrap()
+            .deadline = Some(std::time::Instant::now());
     });
     let (result, ()) = tokio::join!(pending, unlock);
     assert!(
-        result.is_err(),
-        "A06: no value may be minted after the window ends"
+        result.is_ok(),
+        "sudo expiry does not gate ordinary Vault generation: {result:?}"
     );
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
+    assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
 }
 
 const LOGIN_CONTROLLER: &str = r#"set -eu
@@ -302,7 +318,8 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
   *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
@@ -394,6 +411,10 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
                 allowed_uses: vec![crate::config::UserCredentialUse::Browser],
                 injection: crate::config::UserCredentialInjectionConfig::Browser,
                 metadata: generated_in.map(|session| UserCredentialMetadataConfig {
+                    use_binding: Some(crate::config::VaultUseBinding {
+                        target: crate::config::VaultUseTarget::site(hosts[0]).unwrap(),
+                        value_kind: crate::config::VaultValueKind::Secret,
+                    }),
                     created_by_kind: Some("vault_generate".into()),
                     created_by_id: Some("other-agent".into()),
                     session_id: Some(session.into()),
@@ -411,7 +432,7 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
 }
 
 #[tokio::test]
-async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused() {
+async fn vopen_ordinary_agent_fills_only_the_bound_origin_without_a_prompt() {
     crate::test_support::isolated_env_test!();
     let login = login_room().await;
     let f = &login.f;
@@ -419,7 +440,6 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     // An unfocused holder of the grant is not refused for lack of focus.
     let ordinary = call(f, PASTE, paste_args("gen-unknown")).await.unwrap_err();
     assert!(!needs_focus(ordinary));
-    let turn = elevated(f);
     let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
         .as_str()
         .unwrap()
@@ -430,25 +450,17 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
         .as_str()
         .unwrap()
         .to_string();
-    owner_credential(
-        f,
-        "foreign-generated",
-        &["127.0.0.1:8123"],
-        Some("other-session"),
-    );
     owner_credential(f, "unbound-owner", &[], None);
-    for (refused, reason) in [
-        (elsewhere.as_str(), "another site"),
-        ("foreign-generated", "another session"),
-    ] {
-        assert!(
-            call(f, PASTE, paste_args(refused)).await.is_err(),
-            "A06: {reason} must be refused"
-        );
-        assert_eq!(inserted(&login), None, "A06: {reason} reached the page");
-    }
+    assert!(call(f, PASTE, paste_args(&elsewhere)).await.is_err());
+    assert_eq!(inserted(&login), None, "another origin reached the page");
     // P3-1: a credential without a site binding fills like it does for a focused agent.
     assert!(call(f, PASTE, paste_args("unbound-owner")).await.is_ok());
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("factor_input"))
+            .unwrap()
+            .trim(),
+        "false"
+    );
     let _ = std::fs::remove_file(login.root.path().join("echo"));
     let mut stale = paste_args(&handle);
     stale["document_id"] = json!("doc-replaced");
@@ -489,9 +501,6 @@ async fn a06_sudo_window_fills_a_retained_target_and_ordinary_agents_are_refused
     assert!(!observed.contains(secret.as_str()));
     assert!(observed.contains("[redacted]"));
     std::fs::remove_file(login.root.path().join("echo")).unwrap();
-    f.state
-        .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-        .unwrap();
     // The fill rides the browser grant, not the sudo window: it still types after sudo ended.
     assert_eq!(
         call(f, PASTE, paste_args(&handle)).await.unwrap(),
@@ -676,12 +685,11 @@ async fn a06_generation_retry_refuses_scheme_and_port_rebinding() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
-// Poll the real generation future into its contended storage wait before ending sudo.
-async fn queued_generation_loses_authority(expire: bool) {
+// MP-08 / MP-09 / MP-10 / MP-11: sudo expiry/revocation never gates ordinary storage.
+async fn queued_generation_ignores_sudo_end(expire: bool) {
     let f = fixture();
     let turn = elevated(&f);
     unlock(&f);
-    let before = std::fs::read(vault_path(&f)).unwrap();
     let guard = f.state.vault_observation_mutation_guard().await;
     let pending = generate(&f, "queued-write", SITE);
     tokio::pin!(pending);
@@ -705,31 +713,646 @@ async fn queued_generation_loses_authority(expire: bool) {
             .unwrap();
     }
     drop(guard);
-    let error = pending
-        .await
-        .expect_err("generation committed after original sudo authority ended");
-    assert!(
-        error.to_string().contains("sudo"),
-        "storage must reject the ended sudo authority"
-    );
-    assert!(crate::credential::load_user_credentials()
-        .unwrap()
-        .is_empty());
-    assert!(
-        std::fs::read(vault_path(&f)).unwrap() == before,
-        "Vault storage changed after authority ended"
-    );
+    let result = pending.await;
+    if expire {
+        assert_eq!(result.unwrap()["created"], true);
+        assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
+    } else {
+        assert!(
+            result.is_err(),
+            "a cancelled prompt cannot commit a delayed write"
+        );
+        assert!(crate::credential::load_user_credentials()
+            .unwrap()
+            .is_empty());
+    }
     f.state.shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
-async fn a06_generation_storage_wait_rechecks_revoked_window() {
+async fn vopen_generation_storage_wait_rejects_cancelled_prompt() {
     crate::test_support::isolated_env_test!();
-    queued_generation_loses_authority(false).await;
+    queued_generation_ignores_sudo_end(false).await;
 }
 
 #[tokio::test]
-async fn a06_generation_storage_wait_rechecks_expired_window() {
+async fn vopen_generation_storage_wait_survives_expired_window() {
     crate::test_support::isolated_env_test!();
-    queued_generation_loses_authority(true).await;
+    queued_generation_ignores_sudo_end(true).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: cards ask once per actual fill, even under sudo.
+#[tokio::test]
+async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let _sudo = elevated(f);
+    let binding = crate::config::VaultUseBinding {
+        target: crate::config::VaultUseTarget::site(SITE).unwrap(),
+        value_kind: crate::config::VaultValueKind::PaymentCard,
+    };
+    let credential: UserCredentialConfig = serde_json::from_value(json!({
+        "id":"test-card", "source":{"type":"vault","key":"test-card"},
+        "allowed_hosts":[SITE], "allowed_uses":["browser"], "injection":{"kind":"browser"},
+        "metadata":{"use_binding":binding}
+    }))
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential,
+            "card-fixture-value",
+            false,
+        )
+        .unwrap();
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input_for_target_url("test-card", SITE)
+        .is_err());
+    for allow in [true, false, true] {
+        let answer = async {
+            let id = tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let id = f
+                        .state
+                        .owned
+                        .pending_interactions
+                        .write()
+                        .values()
+                        .filter_map(|pending| pending.user_domain_interaction.as_ref())
+                        .find(|interaction| interaction.id().starts_with("vault-card-"))
+                        .map(|interaction| interaction.id().to_owned());
+                    if let Some(id) = id {
+                        break id;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            f.state
+                .resolve_terminal_runtime_interaction(
+                    "",
+                    &id,
+                    if allow { "allow" } else { "cancel" },
+                    None,
+                    Some("local"),
+                )
+                .await
+                .unwrap();
+        };
+        let fill = call(f, PASTE, paste_args("test-card"));
+        let (result, ()) = tokio::join!(fill, answer);
+        assert_eq!(result.is_ok(), allow);
+        assert_eq!(inserted(&login).is_some(), allow);
+        let _ = std::fs::remove_file(login.root.path().join("echo"));
+    }
+}
+
+#[tokio::test]
+async fn vopen_overwrite_and_alias_cannot_rebind_or_downgrade_an_entry() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let handle = generate(&f, "bound-entry", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let original = registry.get(&handle).unwrap().unwrap();
+    let mut changed = original.clone();
+    changed
+        .metadata
+        .as_mut()
+        .unwrap()
+        .use_binding
+        .as_mut()
+        .unwrap()
+        .target = crate::config::VaultUseTarget::site("https://example.com").unwrap();
+    assert!(registry.upsert(changed).is_err());
+    let mut alias = original.clone();
+    alias.id = "alias".into();
+    alias.metadata = None;
+    assert!(registry.upsert(alias).is_err());
+    let mut stripped = original.clone();
+    stripped.metadata = None;
+    assert!(registry.upsert(stripped).is_err());
+    assert_eq!(registry.get(&handle).unwrap().unwrap(), original);
+    assert!(f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .browser_secret_input(&handle)
+        .is_err());
+}
+
+#[tokio::test]
+async fn vopen_agent_is_rechecked_after_the_final_storage_barrier() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let guard = f.state.vault_observation_mutation_guard().await;
+    let pending = generate(&f, "delayed-write", SITE);
+    tokio::pin!(pending);
+    tokio::select! {
+        result = &mut pending => panic!("generation passed its held storage barrier: {result:?}"),
+        _ = tokio::time::sleep(Duration::from_millis(30)) => {}
+    }
+    f.state
+        .owned
+        .provider_store
+        .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
+        .unwrap();
+    drop(guard);
+    assert!(pending.await.is_err());
+    assert!(crate::credential::load_user_credentials()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
+    use tokio::io::AsyncWriteExt;
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let credential: UserCredentialConfig = serde_json::from_value(json!({
+        "id":"http-card", "source":{"type":"vault","key":"http-card"},
+        "allowed_hosts":[origin], "allowed_uses":["http"],
+        "injection":{"kind":"header","name":"Authorization","value":"Bearer ${secret}"},
+        "metadata":{"use_binding": {
+            "target":{"kind":"site", "origin":origin}, "value_kind":"payment_card"
+        }}
+    }))
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(&registry, credential, "fixture-card", false)
+        .unwrap();
+    let answer = async {
+        let id = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let id = f
+                    .state
+                    .owned
+                    .pending_interactions
+                    .write()
+                    .values()
+                    .filter_map(|pending| pending.user_domain_interaction.as_ref())
+                    .find(|interaction| interaction.id().starts_with("vault-card-"))
+                    .map(|interaction| interaction.id().to_owned());
+                if let Some(id) = id {
+                    break id;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        f.state
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
+            .unwrap();
+        f.state
+            .resolve_terminal_runtime_interaction("", &id, "allow", None, Some("local"))
+            .await
+            .unwrap();
+    };
+    let receive = async {
+        match tokio::time::timeout(Duration::from_secs(2), listener.accept()).await {
+            Ok(Ok((mut stream, _))) => {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                true
+            }
+            _ => false,
+        }
+    };
+    let request = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id":"http-card", "url":origin}),
+    );
+    let (result, (), sent) = tokio::join!(request, answer, receive);
+    assert!(
+        !sent,
+        "ended provider run sent a credential-authenticated HTTP request"
+    );
+    assert!(result.is_err());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: owner New secret and ordinary agent use share the actual routers.
+#[tokio::test]
+async fn vrec_owner_created_entry_fills_and_audits_refusal_without_sudo() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let owner = |request| {
+        let request = LocalDaemonRequest::OwnerVault(request);
+        let mut command = crate::runtime::command::KernelCommand::from_local_request(
+            "owner-new-secret",
+            None,
+            None,
+            &request,
+        );
+        command.caller.connection_class = Some(KernelConnectionClass::Terminal);
+        f.router.dispatch(command, request)
+    };
+    let created = owner(crate::local::OwnerVaultRequest::Create {
+        name: "Owner login".into(),
+        kind: "Password".into(),
+        use_binding: crate::config::VaultUseBinding {
+            target: crate::config::VaultUseTarget::site(SITE).unwrap(),
+            value_kind: Default::default(),
+        },
+        value: crate::local::VaultPassphrase::new("vrec-owner-only-value"),
+    })
+    .await
+    .unwrap();
+    let crate::local::LocalDaemonResponse::OwnerVault {
+        result: crate::local::OwnerVaultResult::Saved { id },
+    } = created
+    else {
+        panic!("owner creation failed")
+    };
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    assert_eq!(
+        call(f, PASTE, paste_args(&id)).await.unwrap(),
+        json!({"inserted":true})
+    );
+    assert!(inserted(&login).as_deref() == Some("vrec-owner-only-value"));
+    let _ = std::fs::remove_file(login.root.path().join("echo"));
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut elsewhere = registry.get(&id).unwrap().unwrap();
+    // A second entry, never a rebind of the first, exercises exact-origin refusal at the MCP boundary.
+    elsewhere.id = "owner-other-site".into();
+    elsewhere.source = crate::config::UserCredentialSourceConfig::Vault {
+        key: elsewhere.id.clone(),
+    };
+    elsewhere
+        .metadata
+        .as_mut()
+        .unwrap()
+        .use_binding
+        .as_mut()
+        .unwrap()
+        .target = crate::config::VaultUseTarget::site("https://other.example").unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            elsewhere,
+            "other-owner-only-value",
+            false,
+        )
+        .unwrap();
+    assert!(call(f, PASTE, paste_args("owner-other-site"))
+        .await
+        .is_err());
+    assert!(inserted(&login).is_none());
+    let refused = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity("owner-other-site")
+        .unwrap();
+    assert!(refused.iter().any(|event| event
+        .event
+        .starts_with("Use refused for http://127.0.0.1:8123 by ")));
+    owner(crate::local::OwnerVaultRequest::Reveal { id: id.clone() })
+        .await
+        .unwrap();
+    let events = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity(&id)
+        .unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.event.contains("Used in browser by")));
+    assert!(events.iter().any(|event| event.event == "Viewed by owner"));
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("vrec-owner-only-value"));
+    let request = LocalDaemonRequest::OwnerVault(crate::local::OwnerVaultRequest::Reveal { id });
+    let mut agent = crate::runtime::command::KernelCommand::from_local_request(
+        "agent-reveal",
+        None,
+        None,
+        &request,
+    );
+    agent.caller.connection_class = Some(KernelConnectionClass::KernelAgent);
+    assert!(f.router.dispatch(agent, request).await.is_err());
+    assert!(f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+fn owner_factor(f: &Fixture) {
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &crate::credential::CharioxCredentialRegistry::user().unwrap(),
+            UserCredentialConfig {
+                id: "service-totp".into(),
+                description: None,
+                source: crate::config::UserCredentialSourceConfig::Vault {
+                    key: "service-totp".into(),
+                },
+                allowed_hosts: vec!["127.0.0.1:8123".into()],
+                allowed_uses: vec![crate::config::UserCredentialUse::Browser],
+                injection: crate::config::UserCredentialInjectionConfig::Totp(
+                    crate::config::TotpConfig::default(),
+                ),
+                metadata: None,
+            },
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            false,
+        )
+        .unwrap();
+}
+
+#[tokio::test]
+async fn ordinary_totp_browser_fill_masks_the_computed_code() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    owner_factor(f);
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    let result = call(f, PASTE, paste_args("service-totp")).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("factor_input"))
+            .unwrap()
+            .trim(),
+        "true"
+    );
+    let code = zeroize::Zeroizing::new(inserted(&login).unwrap());
+    assert!(code.len() == 6 && code.bytes().all(|c| c.is_ascii_digit()));
+    assert!(!result.to_string().contains(code.as_str()));
+    let snapshot = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"snapshot","tab_id":"host-tab-new","generation":1}}),
+    )
+    .await
+    .unwrap();
+    assert!(!snapshot.to_string().contains(code.as_str()));
+    assert!(!snapshot
+        .to_string()
+        .contains("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"));
+    assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn totp_browser_fill_rechecks_prompt_lifetime_after_vault_unlock() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    owner_factor(f);
+    crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+    let turn = elevated(f);
+    let fill = call(f, PASTE, paste_args("service-totp"));
+    let unlock = owner_unlocks(f, &turn.session_id, || {
+        f.state
+            .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
+            .unwrap();
+    });
+    let (result, ()) = tokio::join!(fill, unlock);
+    assert!(result.is_err());
+    assert!(inserted(&login).is_none());
+}
+
+#[tokio::test]
+async fn terminal_secret_rechecks_credential_kind_after_vault_unlock() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut credential = UserCredentialConfig {
+        id: "changing-factor".into(),
+        description: None,
+        source: crate::config::UserCredentialSourceConfig::Vault {
+            key: "changing-factor".into(),
+        },
+        allowed_hosts: vec![],
+        allowed_uses: vec![crate::config::UserCredentialUse::Pty],
+        injection: crate::config::UserCredentialInjectionConfig::Pty,
+        metadata: None,
+    };
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential.clone(),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+            false,
+        )
+        .unwrap();
+    crate::secret::lock_chariox_encrypted_vault(vault_path(&f)).unwrap();
+    let send = call(
+        &f,
+        "chariox.send_secret_to_terminal",
+        json!({"credential_id":"changing-factor","append_newline":false}),
+    );
+    let unlock = owner_unlocks(&f, &f.request.session_id, || {
+        credential.injection = crate::config::UserCredentialInjectionConfig::Browser;
+        registry.upsert(credential).unwrap();
+    });
+    let (result, ()) = tokio::join!(send, unlock);
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::LocalTransport {
+                operation: "credential_policy",
+                ..
+            })
+        ),
+        "the current credential definition must be validated before terminal delivery"
+    );
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+const CAPTURE: &str = "chariox.vault.capture_browser";
+const FILL: &str = "chariox.vault.fill_field";
+const CAPTURED: &str = "vaudit-captured-fixture-value";
+
+fn capture_args(request_id: &str) -> Value {
+    json!({"request_id": request_id, "tab_id": "host-tab-new", "generation": 1,
+        "document_id": "doc-login", "node_ref": "backend:7", "reveal_node_ref": "backend:7",
+        "label": "Stripe secret key"})
+}
+
+// VAUDIT S3: the kernel reveals, reads and protects a page value; the model gets a handle.
+#[tokio::test]
+async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    assert!(
+        names(f).iter().any(|name| name == CAPTURE) && names(f).iter().any(|name| name == FILL)
+    );
+    // An authenticated ordinary agent captures without a sudo window.
+    let result = call(f, CAPTURE, capture_args("sk")).await.unwrap();
+    assert!(
+        !result.to_string().contains(CAPTURED),
+        "the model never gets the value"
+    );
+    let handle = result["credential_id"].as_str().unwrap().to_string();
+    assert!(handle.starts_with("cap-"));
+    assert_eq!(result["label"], "Stripe secret key");
+    assert_eq!(result["use_on"], json!([SITE]));
+    let mut multiple = capture_args("multiple-sites");
+    multiple["use_on"] = json!([SITE, "https://other.example.com"]);
+    assert!(call(f, CAPTURE, multiple).await.is_err());
+
+    let request = std::fs::read_to_string(login.root.path().join("capture")).unwrap();
+    for field in [
+        r#""reveal_node_ref":"backend:7""#,
+        r#""read":"node""#,
+        r#""expected_document_url":"http://127.0.0.1:8123/login""#,
+    ] {
+        assert!(request.contains(field), "capture request lacks {field}");
+    }
+    assert_eq!(stored(f, &handle).as_str(), CAPTURED);
+    let credential = crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .get(&handle)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        credential
+            .metadata
+            .as_ref()
+            .unwrap()
+            .use_binding
+            .as_ref()
+            .unwrap()
+            .target,
+        crate::config::VaultUseTarget::Site {
+            origin: SITE.into()
+        }
+    );
+    assert_eq!(
+        credential.metadata.unwrap().created_by_kind.as_deref(),
+        Some("vault_capture")
+    );
+    // Registered for masking before the barrier opened: value and page node.
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let protection = &f.state.owned.kernel_browser_secret_observations;
+    let policy: Value = serde_json::from_str(&protection.capture_policy(&scope).unwrap()).unwrap();
+    assert!(policy["targets"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|target| target["node_ref"] == "backend:7"
+            && target["value_hash"]
+                == format!(
+                    "{:x}",
+                    <sha2::Sha256 as sha2::Digest>::digest(CAPTURED.as_bytes())
+                )));
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, &format!("key {CAPTURED}")),
+        "key [redacted]"
+    );
+    // A retry returns the same handle without a second read.
+    std::fs::remove_file(login.root.path().join("capture")).unwrap();
+    let again = call(f, CAPTURE, capture_args("sk")).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+    assert!(!login.root.path().join("capture").exists());
+}
+
+// VAUDIT S3: fill_field puts a captured value into a plain field on an allowed origin only.
+#[tokio::test]
+async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    elevated(f);
+    let handle = call(f, CAPTURE, capture_args("sk")).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut https = capture_args("https-only");
+    https["use_on"] = json!(["https://127.0.0.1:8123"]);
+    let https = call(f, CAPTURE, https).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        call(f, FILL, paste_args(&https)).await.is_err(),
+        "a scheme downgrade is refused"
+    );
+    assert_eq!(inserted(&login), None);
+    assert_eq!(
+        call(f, FILL, paste_args(&handle)).await.unwrap(),
+        json!({"inserted": true})
+    );
+    assert_eq!(inserted(&login).as_deref(), Some(CAPTURED));
+    assert_eq!(
+        std::fs::read_to_string(login.root.path().join("plain"))
+            .unwrap()
+            .trim(),
+        r#""plain_target":true"#
+    );
+    // The ordinary paste keeps its password-only host contract.
+    std::fs::remove_file(login.root.path().join("plain")).unwrap();
+    call(f, PASTE, paste_args(&handle)).await.unwrap();
+    assert!(std::fs::read_to_string(login.root.path().join("plain"))
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn vault_tools_and_resource_register_do_not_depend_on_the_sudo_window() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let turn = elevated(&f);
+    f.state
+        .owned
+        .sudo_turns
+        .lock()
+        .unwrap()
+        .remove(&turn.entry_id);
+    generate(&f, "ordinary-after-revoke", SITE).await.unwrap();
+    call(
+        &f,
+        crate::runtime::state::resource_register::LIST,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
+    f.state.shutdown_cleanup().await.unwrap();
 }

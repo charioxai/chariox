@@ -33,17 +33,16 @@ const ARTIFACTS = [
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file"],
   ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", "file"],
   ["chariox-app-package", "/usr/local/bin/chariox-app-package", "file"],
-  ["chariox-app-storage", "/usr/libexec/chariox-app-storage", "file"],
-  ["chariox-app-storage.service", "/etc/systemd/system/chariox-app-storage.service", "file"],
+  ["chariox-app-wasm-worker", "/usr/local/bin/chariox-app-wasm-worker", "file"],
 ]
 const KERNEL = Buffer.from("kernel artifact")
 const BOOTSTRAP = Buffer.from("bootstrap artifact")
 const RELAY = Buffer.from("relay artifact")
 const APP_PACKAGE = Buffer.from("app package artifact")
 const APP_STORAGE = Buffer.from("app storage artifact")
-const APP_STORAGE_SERVICE = await readFile(new URL("./chariox-app-storage.service", import.meta.url))
+const APP_WASM_WORKER = Buffer.from("app wasm worker artifact")
 // Releases built before Apps carry none of these.
-const APP_ARTIFACT_NAMES = new Set(["chariox-app-package", "chariox-app-storage", "chariox-app-storage.service"])
+const APP_ARTIFACT_NAMES = new Set(["chariox-app-package", "chariox-app-wasm-worker"])
 const DATA_VOLUME_ARTIFACT_NAMES = new Set(PATH1_DATA_VOLUME_ARTIFACTS.map(({ name }) => name))
 const PATH1_SERVICE_ARTIFACT_NAMES = new Set([
   "chariox-path1-managed-bootstrap.service",
@@ -162,7 +161,7 @@ async function createReleaseFixture(context, {
       { name: "chariox-relay", sha256: sha256(RELAY) },
       ...(appArtifactNames.length > 0 ? [
         { name: "chariox-app-package", sha256: sha256(APP_PACKAGE) },
-        { name: "chariox-app-storage", sha256: sha256(APP_STORAGE) },
+        { name: "chariox-app-wasm-worker", sha256: sha256(APP_WASM_WORKER) },
       ] : []),
     ],
   }
@@ -177,8 +176,7 @@ async function createReleaseFixture(context, {
   contentByName.set("chariox-build-attestation-signature", attestationSignature)
   contentByName.set("chariox-builder-public-key", embeddedBuilderKey)
   contentByName.set("chariox-app-package", APP_PACKAGE)
-  contentByName.set("chariox-app-storage", APP_STORAGE)
-  contentByName.set("chariox-app-storage.service", APP_STORAGE_SERVICE)
+  contentByName.set("chariox-app-wasm-worker", APP_WASM_WORKER)
   const requestedDataVolumeArtifacts = new Set(dataVolumeArtifactNames)
   const requestedAppArtifacts = new Set(appArtifactNames)
   const fixtureArtifacts = ARTIFACTS.filter(([name]) => {
@@ -395,8 +393,9 @@ for (const [field, mutateAttestation] of [
   ["bootstrap hash", (attestation) => { attestation.artifacts[1].sha256 = `sha256:${"f".repeat(64)}` }],
   ["relay hash", (attestation) => { attestation.artifacts[2].sha256 = `sha256:${"1".repeat(64)}` }],
   ["App package hash", (attestation) => { attestation.artifacts[3].sha256 = `sha256:${"2".repeat(64)}` }],
-  ["App storage hash", (attestation) => { attestation.artifacts[4].sha256 = `sha256:${"3".repeat(64)}` }],
+  ["App WASM worker hash", (attestation) => { attestation.artifacts[4].sha256 = `sha256:${"4".repeat(64)}` }],
   ["App binary set", (attestation) => { attestation.artifacts.splice(3) }],
+  ["App WASM worker missing from the attested list", (attestation) => { attestation.artifacts.splice(4) }],
 ]) {
   test(`Path-1 verification rejects an attestation with a mismatched ${field}`, async (context) => {
     const fixture = await createReleaseFixture(context, { mutateAttestation })
@@ -430,11 +429,19 @@ test("release verification rejects a partial or undeclared App artifact set", as
   assert.notEqual(partialResult.status, 0)
   assert.match(partialResult.stderr, /release contains an incomplete App artifact set/)
 
+  // The WASM worker is what lets a managed kernel run portable Apps: a release without it must not install.
+  const withoutWorker = await createReleaseFixture(context, {
+    appArtifactNames: ["chariox-app-package"],
+  })
+  const withoutWorkerResult = runVerifier(withoutWorker, "path1", withoutWorker.trustedBuilderKey)
+  assert.notEqual(withoutWorkerResult.status, 0)
+  assert.match(withoutWorkerResult.stderr, /release contains an incomplete App artifact set/)
+
   const undeclared = await createReleaseFixture(context, { appArtifactNames: [] })
-  await put(undeclared.rootfs, "/usr/libexec/chariox-app-storage", APP_STORAGE, 0o755)
+  await put(undeclared.rootfs, "/usr/local/bin/chariox-app-wasm-worker", APP_WASM_WORKER, 0o755)
   const undeclaredResult = runVerifier(undeclared, "path1", undeclared.trustedBuilderKey)
   assert.notEqual(undeclaredResult.status, 0)
-  assert.match(undeclaredResult.stderr, /release contains an undeclared App artifact: chariox-app-storage/)
+  assert.match(undeclaredResult.stderr, /release contains an undeclared App artifact: chariox-app-wasm-worker/)
 })
 
 // MP-01/MP-07/MP-11: valid signatures must not admit unreviewed service restrictions.

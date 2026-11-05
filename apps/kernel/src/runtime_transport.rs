@@ -65,7 +65,7 @@ use subscriptions::{
 pub(crate) const WATCH_INTERVAL_MS: u64 = 100;
 pub(crate) const WAITING_ROOM_ROW_COALESCE_MS: u64 = 500;
 const PUMP_INTERVAL_MS: u64 = 500;
-const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROVIDER_OUTPUT_PUMP_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const IDLE_PUMP_INTERVAL_MS: u64 = 5_000;
 pub(crate) const SESSION_SNAPSHOT_RECONCILIATION_INTERVAL_TICKS: u64 = 20;
 const HEARTBEAT_INTERVAL_TICKS: u64 = 50;

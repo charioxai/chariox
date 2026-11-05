@@ -61,7 +61,11 @@ impl CharioxCredentialRegistry {
         &self,
         credential: UserCredentialConfig,
     ) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
-        validate_credential_registration(&credential)?;
+        self.validate_upsert(&credential)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "credential.upsert",
+                message: error.to_string(),
+            })?;
         ensure_private_dir(&self.root, "credential.upsert")?;
         let path = self.path_for(&credential.id)?;
         let payload =
@@ -74,6 +78,51 @@ impl CharioxCredentialRegistry {
             })?;
         atomic_write_private(&path, payload.as_bytes(), "credential.upsert")?;
         Ok((credential, path))
+    }
+
+    /// Preflight before changing either metadata or its Vault slot.
+    pub(crate) fn validate_upsert(
+        &self,
+        credential: &UserCredentialConfig,
+    ) -> Result<(), DaemonError> {
+        validate_credential_registration(credential)?;
+        if let Some(previous) = self.get(&credential.id)? {
+            let binding = previous
+                .metadata
+                .as_ref()
+                .and_then(|m| m.use_binding.as_ref());
+            if binding.is_some()
+                && binding
+                    != credential
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.use_binding.as_ref())
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "credential.upsert",
+                    message: "a Vault entry's declared use and value kind cannot change; create a separate entry".into(),
+                });
+            }
+        }
+        if let UserCredentialSourceConfig::Vault { key } = &credential.source {
+            if let Some(holder) = self.other_handle_using_vault_key(key, &credential.id)? {
+                let Some(other) = self.get(&holder)? else {
+                    return Ok(());
+                };
+                let old = other.metadata.as_ref().and_then(|m| m.use_binding.as_ref());
+                let new = credential
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.use_binding.as_ref());
+                if old != new && (old.is_some() || new.is_some()) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "credential.upsert",
+                        message: "this Vault slot already belongs to an entry with a different use; create a separate entry and value".into(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn remove(&self, id: &str) -> Result<(UserCredentialConfig, PathBuf), DaemonError> {
@@ -157,18 +206,27 @@ pub(crate) fn validate_credential_registration(
     credential: &UserCredentialConfig,
 ) -> Result<(), DaemonError> {
     validate_credentials(std::slice::from_ref(credential))?;
+    if let Some(binding) = credential
+        .metadata
+        .as_ref()
+        .and_then(|m| m.use_binding.as_ref())
+    {
+        binding.target.validate()?;
+    }
     if credential
         .allowed_uses
         .contains(&crate::config::UserCredentialUse::Browser)
         && !matches!(
             credential.injection,
             crate::config::UserCredentialInjectionConfig::Browser
+                | crate::config::UserCredentialInjectionConfig::Totp(_)
+                | crate::config::UserCredentialInjectionConfig::BackupCodes
         )
     {
         return Err(DaemonError::LocalTransport {
             operation: "credential.register",
             message: format!(
-                "credential `{}` allows browser use but requires injection.kind=browser; basic is HTTP Basic authentication",
+                "credential `{}` allows browser use but requires injection.kind=browser, totp or backup_codes; basic is HTTP Basic authentication",
                 credential.id,
             ),
         });

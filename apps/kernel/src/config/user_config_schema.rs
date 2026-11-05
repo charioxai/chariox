@@ -44,6 +44,8 @@ fn entry(
 
 pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
     vec![
+        entry("web_bot_auth.projects", "string", &[], true, true, "runtime_config", "live", "JSON array of project ids whose agent HTTP and browser requests identify this operator using Web Bot Auth."),
+        entry("web_bot_auth.signature_agent", "string", &[], true, true, "runtime_config", "live", "Self-hosted public HTTPS origin serving the kernel's Web Bot Auth key directory. Cloud-enrolled kernels use their enrolled issuer."),
         entry(
             "providers.workspace_live_sync",
             "enum",
@@ -136,7 +138,6 @@ pub(super) fn entries() -> Vec<UserConfigSchemaEntry> {
         entry("credential_vault.unlock_policy", "enum", &["kernel_init", "ttl", "always"], true, true, "none", "live", "When the kernel should request Chariox vault unlock."),
         entry("credential_vault.default_ttl_minutes", "u64", &[], true, true, "none", "live", "Default Chariox vault unlock duration for ttl policy."),
         entry("credential_vault.max_ttl_minutes", "u64", &[], true, true, "none", "live", "Maximum Chariox vault unlock duration offered by the kernel."),
-        entry("credential_vault.agent_management", "enum", &["allow", "deny"], true, true, "none", "live", "Whether runtime agents may create or update user vault-backed credential handles."),
         entry("version", "u32", &[], true, false, "none", "internal", "User config schema version; migration-owned and not recommended for manual edits."),
     ]
 }

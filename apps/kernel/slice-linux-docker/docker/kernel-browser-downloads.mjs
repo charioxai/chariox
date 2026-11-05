@@ -1,5 +1,5 @@
 // MP-08/MP-10/MP-11: one CDP download spool, with completed files owned by a Room.
-import { mkdir, lstat, rename, rm } from 'node:fs/promises';
+import { mkdir, lstat, rename, rm, copyFile, unlink, chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { userInfo } from 'node:os';
@@ -29,8 +29,8 @@ export class HostDownloads {
     // A replacement controller retires the stopped browser's transient artifacts too.
     await rm(this.root, {recursive:true,force:true});
     await mkdir(this.root, {recursive:true,mode:0o700});
-    this.spool = path.join(this.root, 'incoming');
-    await mkdir(this.spool, {mode:0o700});
+    this.spool = connection.browserUser ? await connection.browserUser.directory('incoming') : path.join(this.root, 'incoming');
+    await mkdir(this.spool, {mode:0o700,recursive:true});
     await assertBrowserDownloadHeadroom({downloadDirectory:this.spool});
     this.connection = connection;
     this.browser = browser;
@@ -101,7 +101,11 @@ export class HostDownloads {
         const directory = path.join(this.root,sessionKey(record.session));
         await mkdir(directory,{recursive:true,mode:0o700});
         const destination = path.join(directory,record.download_id);
-        await rename(source,destination);
+        try {await rename(source,destination);} catch(error) {
+          if(error.code!=='EXDEV')throw error;
+          await copyFile(source,destination,1); await unlink(source);
+        }
+        await chmod(destination,0o600);
         record.path = destination;
         record.state = 'done';
       } else {
@@ -142,6 +146,7 @@ export class HostDownloads {
   async close() {
     this.off?.(); this.off = null;
     await this.settle();
+    if (this.spool && this.spool !== path.join(this.root ?? '', 'incoming')) await rm(this.spool,{recursive:true,force:true});
     if (this.root) await rm(this.root,{recursive:true,force:true});
     this.root = null; this.records.clear(); this.bindings.clear(); this.endedSessions.clear(); this.rejection = null;
   }

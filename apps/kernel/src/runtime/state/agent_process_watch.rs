@@ -11,6 +11,9 @@ use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, Stdio};
 
+mod run;
+pub(super) use run::{KernelCommand, KernelCommandExit, KernelCommandOutput};
+
 const ENV_ALLOW: &[&str] = &[
     "PATH",
     "HOME",
@@ -262,7 +265,11 @@ fn spawn(
     removed: &[String],
     resources: &crate::runtime::process_resources::PreparedDomain,
 ) -> std::io::Result<Child> {
-    let mut command = command(wake, argv, cwd, env, removed, resources)?;
+    spawn_owned_session(command(wake, argv, cwd, env, removed, resources)?)
+}
+
+/// The child leads its own session, so the kernel owns its whole group.
+fn spawn_owned_session(mut command: Command) -> std::io::Result<Child> {
     use std::os::unix::process::CommandExt;
     #[cfg(target_os = "linux")]
     // SAFETY: prctl is async-signal-safe; the child dies with the kernel.
@@ -275,6 +282,45 @@ fn spawn(
         });
     }
     crate::process_spawn::spawn_command(command)
+}
+
+/// argv of a kernel-launched command: no shell, bounded, no control characters.
+pub(super) fn command_argv(value: &serde_json::Value) -> Result<Vec<String>, DaemonError> {
+    serde_json::from_value(value.clone())
+        .ok()
+        .filter(|a: &Vec<String>| {
+            !a.is_empty()
+                && a.len() <= 64
+                && !a[0].is_empty()
+                && a.iter()
+                    .all(|s| s.len() <= 4_096 && !s.chars().any(char::is_control))
+        })
+        .ok_or_else(|| {
+            crate::durable_state::agent_lifecycle::error(
+                "argv of 1-64 arguments required (no shell; control characters are refused)",
+            )
+        })
+}
+
+/// The run's workspace, or a directory inside it named relative to it.
+pub(super) fn workspace_cwd(
+    run: &crate::provider::RuntimeProviderRun,
+    relative: Option<&str>,
+) -> Result<PathBuf, DaemonError> {
+    let error = crate::durable_state::agent_lifecycle::error;
+    let root = run
+        .working_directory()
+        .and_then(|p| p.canonicalize().ok())
+        .ok_or_else(|| error("agent workspace unavailable"))?;
+    match relative.filter(|c| !c.is_empty()) {
+        None => Ok(root),
+        Some(relative) => root
+            .join(relative)
+            .canonicalize()
+            .ok()
+            .filter(|p| p.starts_with(&root) && p.is_dir())
+            .ok_or_else(|| error("cwd must be a directory inside the agent workspace")),
+    }
 }
 
 impl KernelRuntimeState {

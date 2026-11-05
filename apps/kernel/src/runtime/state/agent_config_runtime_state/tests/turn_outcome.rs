@@ -148,7 +148,7 @@ async fn a_failed_turn_carries_the_same_outcome_in_event_history_and_state() {
     let expected = json!({
         "kind": "overloaded",
         "retryable": true,
-        "reason": "Selected model is at capacity. Please try a different model."
+        "reason": "The provider is at capacity."
     });
     let events = followed_agent_events(&turn);
     let last = events.last().expect("the follower hears the turn end");
@@ -177,7 +177,7 @@ async fn a_credential_in_the_provider_error_never_reaches_the_outcome_reason() {
     let events = followed_agent_events(&turn);
     let outcome = &events.last().expect("the turn ends")["outcome"];
     let reason = outcome["reason"].as_str().expect("a reason for people");
-    assert!(reason.starts_with("API Error: 500"), "{reason}");
+    assert_eq!(reason, "The provider could not complete this request.");
     assert!(!reason.contains("abcdefghijklmnop"), "{reason}");
     for stored in [history_outcome(&turn), state_outcome(&turn)] {
         assert!(!stored.to_string().contains("abcdefghijklmnop"), "{stored}");

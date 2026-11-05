@@ -17,6 +17,10 @@ use super::input_backlog::PtyInputBacklog;
 use crate::error::DaemonError;
 use crate::provider::RuntimeProviderRun;
 
+#[cfg(all(test, unix))]
+#[path = "spawn_failure_tests.rs"]
+mod spawn_failure_tests;
+
 const PTY_OUTPUT_QUEUE_LIMIT: usize = 1024;
 const PTY_INPUT_QUEUE_LIMIT: usize = 64;
 const PTY_DIAGNOSTIC_TAIL_LIMIT: usize = 8 * 1024;
@@ -167,19 +171,93 @@ fn discard_unread_input(_terminal: Option<&std::fs::File>) -> std::io::Result<()
     Err(std::io::Error::other("PTY input flush is unavailable"))
 }
 
-/// A spawn that failed because the kernel has no file descriptors left says so
-/// in plain words: the descriptor numbers and run ids of the failure are internal.
+type MasterEndpoints = (
+    Option<std::fs::File>,
+    PtyOutputSource,
+    Box<dyn Write + Send>,
+);
+
+/// The descriptors a running PTY keeps beside its master: the input terminal
+/// and the reader and writer ends. Running out of descriptors here is refused
+/// like any other spawn step.
+fn open_master_endpoints(
+    master: &dyn MasterPty,
+    provider_run_id: &str,
+) -> Result<MasterEndpoints, DaemonError> {
+    let input_terminal =
+        clone_input_terminal(master).map_err(|error| spawn_failed(provider_run_id, &error))?;
+    let reader =
+        PtyOutputSource::new(master).map_err(|error| spawn_failed(provider_run_id, &error))?;
+    let writer = master
+        .take_writer()
+        .map_err(|error| spawn_failed(provider_run_id, &*error))?;
+    Ok((input_terminal, reader, writer))
+}
+
+/// Resource refusals name the recovery; descriptor numbers and run ids stay in logs.
 fn spawn_failed(provider_run_id: &str, error: &(dyn std::error::Error + 'static)) -> DaemonError {
-    let out_of_files = std::iter::successors(Some(error), |error| error.source())
+    let shortage = std::iter::successors(Some(error), |error| error.source())
         .filter_map(|error| error.downcast_ref::<std::io::Error>())
         .filter_map(std::io::Error::raw_os_error)
-        .any(is_out_of_files);
-    if out_of_files {
+        .find_map(|errno| resource_refusal(errno).map(|refusal| (errno, refusal)))
+        .or_else(|| {
+            // portable-pty 0.8.1 formats openpty's IO error instead of retaining
+            // its source. Decode only that allocation error at this boundary.
+            let detail = error.to_string();
+            let errno = detail
+                .strip_prefix("failed to openpty: Os { code: ")?
+                .split_once(',')?
+                .0
+                .parse()
+                .ok()?;
+            resource_refusal(errno).map(|refusal| (errno, refusal))
+        });
+    if let Some((errno, refusal)) = shortage {
+        crate::logging::warn_with_fields(
+            "pty.spawn",
+            "terminal creation refused because kernel resources are unavailable",
+            serde_json::json!({"provider_run_id": provider_run_id, "errno": errno, "error": error.to_string()}),
+        );
+        return refusal;
+    }
+    if is_out_of_files_error(error) {
         return DaemonError::TooManyOpenFiles;
     }
     DaemonError::PtySpawn {
         provider_run_id: provider_run_id.to_string(),
         message: error.to_string(),
+    }
+}
+
+/// Whether `error`, or anything it wraps, is EMFILE or ENFILE. portable-pty
+/// turns some failures (opening the PTY) into text that only names the errno,
+/// so the messages are matched too.
+fn is_out_of_files_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |error| error.source()).any(|error| {
+        let io_error = error.downcast_ref::<std::io::Error>();
+        io_error
+            .and_then(std::io::Error::raw_os_error)
+            .is_some_and(is_out_of_files)
+            || io_error
+                .and_then(std::io::Error::get_ref)
+                .is_some_and(|inner| is_out_of_files_error(inner))
+            || names_out_of_files(&error.to_string())
+    })
+}
+
+fn names_out_of_files(message: &str) -> bool {
+    #[cfg(unix)]
+    {
+        [libc::EMFILE, libc::ENFILE].into_iter().any(|errno| {
+            let text = std::io::Error::from_raw_os_error(errno).to_string();
+            let description = text.split(" (os error").next().unwrap_or(&text);
+            message.contains(description)
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = message;
+        false
     }
 }
 
@@ -191,6 +269,23 @@ fn is_out_of_files(errno: i32) -> bool {
 #[cfg(not(unix))]
 fn is_out_of_files(_errno: i32) -> bool {
     false
+}
+
+#[cfg(unix)]
+fn resource_refusal(errno: i32) -> Option<DaemonError> {
+    match errno {
+        libc::EMFILE | libc::ENFILE => Some(DaemonError::TooManyOpenFiles),
+        libc::EAGAIN | libc::ENOMEM => Some(crate::room_terminal::refusal(
+            "not enough resources in this kernel to open a terminal; close a terminal and try again"
+                .into(),
+        )),
+        _ => None,
+    }
+}
+
+#[cfg(not(unix))]
+fn resource_refusal(_errno: i32) -> Option<DaemonError> {
+    None
 }
 
 #[cfg(unix)]
@@ -792,22 +887,15 @@ impl PtyManager {
         resources: crate::runtime::process_resources::ProcessDomain,
         mut output_filter: Option<PtyOutputFilter>,
     ) -> Result<(), DaemonError> {
-        let input_terminal = match clone_input_terminal(master.as_ref()) {
-            Ok(input_terminal) => input_terminal,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(DaemonError::PtySpawn {
-                    provider_run_id,
-                    message: error.to_string(),
-                });
-            }
-        };
-        let mut reader = PtyOutputSource::new(master.as_ref())
-            .map_err(|error| spawn_failed(&provider_run_id, &error))?;
-        let writer = master
-            .take_writer()
-            .map_err(|error| spawn_failed(&provider_run_id, &*error))?;
+        let (input_terminal, mut reader, writer) =
+            match open_master_endpoints(master.as_ref(), &provider_run_id) {
+                Ok(endpoints) => endpoints,
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(error);
+                }
+            };
         let (input_tx, input_rx) = mpsc::sync_channel(PTY_INPUT_QUEUE_LIMIT);
         let backlog = Arc::new(PtyInputBacklog::default());
         let writer_backlog = backlog.clone();
@@ -827,14 +915,14 @@ impl PtyManager {
                     writer_backlog,
                 )
             });
-        if let Err(error) = writer_thread {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY writer: {error}"),
-            });
-        }
+        let writer_thread = match writer_thread {
+            Ok(thread) => thread,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(spawn_failed(&provider_run_id, &error));
+            }
+        };
         let input_writer = PtyInputWriter {
             provider_run_id: writer_provider_run_id,
             input_tx,
@@ -887,10 +975,10 @@ impl PtyManager {
         if let Err(error) = reader_thread {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(DaemonError::PtySpawn {
-                provider_run_id: provider_run_id.clone(),
-                message: format!("failed to spawn bounded PTY reader: {error}"),
-            });
+            drop(input_writer);
+            let _ = writer_thread.join();
+            self.output_signal.unregister_process(&process_key);
+            return Err(spawn_failed(&provider_run_id, &error));
         }
 
         // portable-pty creates a new Unix session whose leader is the child.
@@ -1690,8 +1778,9 @@ mod tests {
     };
 
     use super::{
-        mpsc, run_pty_writer, PtyInputBacklog, PtyInputRequest, PtyInputWriter, PtyManager,
-        PtyOutputSignal, PtyProcessState, PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
+        mpsc, native_pty_system, open_master_endpoints, run_pty_writer, PtyInputBacklog,
+        PtyInputRequest, PtyInputWriter, PtyManager, PtyOutputSignal, PtyProcessState, PtySize,
+        PtySpawnRequest, PTY_INPUT_QUEUE_LIMIT,
     };
 
     struct AttributionProbeWriter {
@@ -2816,5 +2905,111 @@ mod tests {
             "the memory limit did not stop its PTY tree"
         );
         assert_eq!(sibling, PtyProcessState::Running);
+    }
+    // MP-08/MP-10: a terminal that cannot get its descriptors is refused in the
+    // kernel's own words wherever the table runs out. Run in a child process:
+    // RLIMIT_NOFILE is process-wide.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_spawn_short_of_descriptors_is_refused_as_too_many_open_files() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "pty::manager::tests::spawn_short_of_descriptors_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .output()
+            .expect("isolated descriptor probe should start");
+        assert!(
+            output.status.success(),
+            "descriptor probe failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "process-wide RLIMIT_NOFILE; explicitly executed by parent"]
+    fn spawn_short_of_descriptors_child() {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+            0
+        );
+        limit.rlim_cur = limit.rlim_cur.min(256);
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
+
+        let mut manager = PtyManager::new();
+        let mut files = Vec::new();
+        while let Ok(file) = std::fs::File::open("/dev/null") {
+            files.push(file);
+        }
+        // Free one descriptor more each round, so the table runs out at every
+        // step of a spawn in turn.
+        let mut refused = 0;
+        for free in 0..48 {
+            if let Some(file) = files.pop() {
+                drop(file);
+            }
+            let id = format!("terminal-{free}");
+            match manager.spawn_interactive(PtySpawnRequest {
+                process_key: id.clone(),
+                provider_run_id: id.clone(),
+                program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), "sleep 60".to_string()],
+                env: Default::default(),
+                env_remove: Vec::new(),
+                working_directory: None,
+                cols: 80,
+                rows: 24,
+                agent: None,
+            }) {
+                Ok(()) => {
+                    // Keep the descriptors the new terminal holds out of the next round.
+                    manager.remove_process(&id).unwrap();
+                }
+                Err(crate::error::DaemonError::TooManyOpenFiles) => refused += 1,
+                Err(error) => {
+                    panic!(
+                        "with {} descriptors free the spawn failed as `{error}`",
+                        free + 1
+                    )
+                }
+            }
+        }
+        assert!(refused > 0, "the table never ran short during a spawn");
+
+        // The ends kept beside a master run out on their own, too.
+        let mut refused = 0;
+        for free in 0..6 {
+            while let Ok(file) = std::fs::File::open("/dev/null") {
+                files.push(file);
+            }
+            // Two descriptors for the master and slave, then `free` more.
+            for _ in 0..free + 2 {
+                files.pop();
+            }
+            let pair = native_pty_system()
+                .openpty(PtySize {
+                    rows: 24,
+                    cols: 80,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .unwrap();
+            match open_master_endpoints(pair.master.as_ref(), "terminal-ends") {
+                Ok(_) => {}
+                Err(crate::error::DaemonError::TooManyOpenFiles) => refused += 1,
+                Err(error) => {
+                    panic!("with {free} descriptors free the ends failed as `{error}`")
+                }
+            }
+        }
+        assert!(refused > 0, "the table never ran short opening the ends");
     }
 }

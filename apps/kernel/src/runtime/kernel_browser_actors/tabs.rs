@@ -85,7 +85,7 @@ impl BrowserTabActivity {
         self.activity.clone().unwrap_or(Value::Null)
     }
     pub(super) fn project(&self, state: &mut Value) {
-        if let Some(tabs) = state["tabs"].as_array_mut() {
+        if let Some(tabs) = state.get_mut("tabs").and_then(Value::as_array_mut) {
             for tab in tabs {
                 let opener = tab["tab_id"].as_str().and_then(|id| self.openers.get(id));
                 tab["opened_by"] = opener.map(actor_view).unwrap_or(Value::Null);

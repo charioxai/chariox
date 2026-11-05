@@ -18,6 +18,8 @@ pub(crate) enum LifecycleStoreError {
     Stale,
     #[error("app_lifecycle_stopped")]
     Stopped,
+    #[error("app_lifecycle_deadline")]
+    Deadline,
     #[error("app_lifecycle_storage")]
     Storage,
 }

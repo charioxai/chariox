@@ -1211,3 +1211,13 @@ coordinates to native coordinates and routes input, takeover and release through
 the existing kernel Computer admission and actor ledger. Browser viewports retain
 their existing path. A Cloud client must expose the native source and use this
 shared presenter before the desktop feature is user-visible.
+
+## Apps v2 execution (MP-08 / MP-09 / MP-10 / MP-11)
+
+Installed App backends are contract-2 WASM components. The kernel verifies the
+signed package, approves capabilities and owns generations, storage and Room
+App Tabs. `chariox-app-wasm-worker` ships beside the kernel, enters native OS
+containment, then instantiates the verified component in Wasmtime. The App's
+only host authority is the kernel capability broker; it has no ambient Node,
+filesystem, network or process API. Node is used by asset/build tools and by
+separate browser/workflow tooling. There is no alternate App execution engine.

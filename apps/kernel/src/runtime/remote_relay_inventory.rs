@@ -134,6 +134,7 @@ pub(crate) async fn projected_relay_status(
     let config = config_projection.snapshot();
     let connected = relay_state.read().await.connected();
     RelayStatus {
+        local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         runtime_process_identity: crate::runtime::kernel_process_identity::current(),
         capabilities: crate::local::RUNTIME_CONTROL_CAPABILITIES
             .iter()

@@ -138,7 +138,7 @@ impl KernelRuntimeState {
                     self.owned
                         .attachment_store
                         .list_session_attachment_ids(session_id),
-                    "Stopped from Health.".to_string(),
+                    "Stopped from Machines.".to_string(),
                 );
             }
             stopped.extend(ids);

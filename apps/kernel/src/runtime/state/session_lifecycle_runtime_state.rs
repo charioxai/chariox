@@ -429,6 +429,7 @@ impl KernelRuntimeState {
         terminal_caller: bool,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
         let attachment = self.owned.attach(request)?;
+        self.refresh_kernel_browser_audience(&attachment).await?;
         if terminal_caller {
             if let Ok(session) = self.owned.session_snapshot(attachment.session_id()) {
                 self.owned.kernel_browser_host.set_focus(
@@ -465,7 +466,9 @@ impl KernelRuntimeState {
         &self,
         attachment_id: &str,
     ) -> Result<crate::attachment::RuntimeAttachment, DaemonError> {
-        self.owned.detach(attachment_id)
+        let attachment = self.owned.detach(attachment_id)?;
+        self.refresh_kernel_browser_audience(&attachment).await?;
+        Ok(attachment)
     }
 
     pub(crate) async fn focus_agent(

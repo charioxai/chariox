@@ -43,7 +43,7 @@ environment hygiene without forking ordinary provider filesystem semantics.
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
-`chariox-relay`, `chariox-app-package`, and `chariox-app-storage` for `x86_64-unknown-linux-gnu` from an exact pushed
+`chariox-relay`, `chariox-app-package`, `chariox-app-storage`, and `chariox-app-wasm-worker` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -69,6 +69,7 @@ node scripts/package-managed-kernel-release.mjs \
   --relay <build-output>/chariox-relay \
   --app-package <build-output>/chariox-app-package \
   --app-storage <build-output>/chariox-app-storage \
+  --app-wasm-worker <build-output>/chariox-app-wasm-worker \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \
@@ -105,11 +106,17 @@ force recovery. Retain their public history and resolve the interrupted old
 transaction with its matching reviewed tooling before attempting rotation.
 The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
-and all five staged binary digests
+and all six staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
 untracked files cannot enter the release.
+
+The signed release includes the WASM App worker beside the kernel
+(`usr/local/bin/chariox-app-wasm-worker`, root-owned, mode 0755), which the kernel
+opens next to its own executable. Without it a managed kernel answers
+`app_wasm_runtime` for every App, so the verifier refuses a release that carries
+the App set without it, and a builder attestation that does not list it.
 
 The signed release includes the privileged App storage helper and its service.
 The installer derives its enrollment from the actual `chariox` OS UID/GID; it
@@ -198,7 +205,22 @@ probe and rejects the slice before use if the namespace cannot be created.
 The first managed Docker slice builds its runtime image lazily from the complete
 signed context, using the builder-attested kernel and relay binaries rather than
 compiling them again on the managed host. Ordinary local source builds retain
-the Cargo build path. The cache fingerprint covers the Dockerfile and all build
+the Cargo build path. MP-08/MP-10/MP-11: prebuilt runtime binaries must target
+Debian 12's glibc 2.36 and runtime libraries. Ubuntu 24.04 binaries can require
+glibc 2.39 and cannot be copied into this image. The final image executes both
+binaries during its build and fails with a rebuild instruction if either cannot
+load. Build compatible binaries inside the image by leaving
+`CHARIOX_PREBUILT_RUNTIME` at its default `0`:
+
+```sh
+docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile \
+  -t chariox-slice:local .
+```
+
+For a development build, add `--build-arg CHARIOX_RUNTIME_BUILD_PROFILE=dev`.
+Both profiles compile against the slice's Debian 12 libraries; running a binary's
+protocol-version probe on the host alone does not establish slice compatibility.
+The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
 from the same signed lock. Provider CLI policy lives in

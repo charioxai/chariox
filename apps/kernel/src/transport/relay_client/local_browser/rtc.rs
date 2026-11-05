@@ -70,6 +70,7 @@ const FRAME_PONG: u8 = 3;
 pub(in crate::transport::relay_client) struct RtcEndpoint {
     port: Option<u16>,
     interfaces: Interfaces,
+    stun_port: u16,
     state: Mutex<Option<Bound>>,
 }
 
@@ -109,8 +110,15 @@ impl RtcEndpoint {
         Self {
             port,
             interfaces,
+            stun_port: stun::DEFAULT_PORT,
             state: Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_stun_port(mut self, port: u16) -> Self {
+        self.stun_port = port;
+        self
     }
 
     /// Answers the offer with this kernel's host and server-reflexive
@@ -132,7 +140,11 @@ impl RtcEndpoint {
             .upgrade()
             .and_then(|direct| direct.router.relay_config_snapshot().relay_url);
         let reflexive = match relay_url {
-            Some(relay_url) => bound.reflexive(&stun_servers(&relay_url).await).await,
+            Some(relay_url) => {
+                bound
+                    .reflexive(&stun_servers(&relay_url, self.stun_port).await)
+                    .await
+            }
             None => Vec::new(),
         };
         let mut rtc = RtcConfig::new()
@@ -299,7 +311,7 @@ impl Bound {
 }
 
 /// The STUN responder runs on the relay's host at the STUN port.
-async fn stun_servers(relay_url: &str) -> Vec<SocketAddr> {
+async fn stun_servers(relay_url: &str, port: u16) -> Vec<SocketAddr> {
     let Some(host) = url::Url::parse(relay_url).ok().and_then(|url| {
         url.host_str()
             .map(|host| host.trim_matches(['[', ']']).to_owned())
@@ -308,7 +320,7 @@ async fn stun_servers(relay_url: &str) -> Vec<SocketAddr> {
     };
     let servers = timeout(
         STUN_WAITS[0],
-        tokio::net::lookup_host((host.as_str(), stun::DEFAULT_PORT)),
+        tokio::net::lookup_host((host.as_str(), port)),
     )
     .await;
     match servers {

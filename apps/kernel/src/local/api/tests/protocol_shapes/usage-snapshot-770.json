@@ -1,6 +1,6 @@
 {
-  "local_protocol": 959,
-  "peer_protocol": 408,
+  "local_protocol": 966,
+  "peer_protocol": 415,
   "requests": [
     {
       "GetProviderUsageSnapshot": {}

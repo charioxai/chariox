@@ -32,7 +32,7 @@ impl KernelRuntimeState {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(&user);
         protection.require(&scope, false)?;
-        protection.revision(&scope).map(Some)
+        self.kernel_browser_policy_revision(&user).map(Some)
     }
     pub(crate) async fn validate_kernel_browser_receipt(
         &self,
@@ -60,7 +60,7 @@ impl KernelRuntimeState {
         let scope = KernelBrowserHost::profile_key(&user);
         let _barrier = protection.barrier(&scope)?.read_owned().await;
         protection.require(&scope, false)?;
-        if revision != Some(protection.revision(&scope)?) {
+        if revision != Some(self.kernel_browser_policy_revision(&user)?) {
             return Err(host_error(
                 "MD-5: browser receipt protection changed; fetch a fresh observation".into(),
             ));

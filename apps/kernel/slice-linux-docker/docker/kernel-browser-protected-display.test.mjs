@@ -91,7 +91,7 @@ test('MP-11 trusted mask metadata stays aligned through native crops and DPR2 th
   // The screenshot path already masks exact Vault targets; this helper only
   // crops its protected pixels and carries private region metadata.
   const protectedPng=maskPng(png,[[mask.x,mask.y,mask.width,mask.height]],scale);
-  const tab={tab_id:'tab',document_id:'doc'},host={scales:new Map([['tab',scale]]),screenshot:async()=>({tab_id:'tab',document_id:'doc',width,height,data_base64:protectedPng,protected_regions:[mask]})};
+  const tab={tab_id:'tab',document_id:'doc'},host={protection:{values:[],targets:[],display_masked:true},scales:new Map([['tab',scale]]),screenshot:async()=>({tab_id:'tab',document_id:'doc',width,height,data_base64:protectedPng,protected_regions:[mask]})};
   const crop=await captureProtectedDisplay(host,tab,{x:890,y:190,width:50,height:50,scale:1});
   assert.deepEqual(crop[displayMaskRegions],[{x:10*scale,y:10*scale,width:150*scale,height:80*scale}]);
   assert.equal(decodePng(crop.data_base64).pixels[(30*scale*crop.width+30*scale)*4],0);

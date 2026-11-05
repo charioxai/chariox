@@ -816,7 +816,6 @@ impl KernelRuntimeState {
         dispatch: crate::app::KernelPromptDispatch,
         error: DaemonError,
     ) -> Result<(), DaemonError> {
-        let mut next_dispatch = None;
         let dispatch_owns_active_prompt = self
             .owned
             .prompt_dispatch_matches_active_prompt(&dispatch)?;
@@ -956,7 +955,7 @@ impl KernelRuntimeState {
             self.owned
                 .remove_provider_process_tracking_for_run(&dispatch.provider_run_id, process_key);
         }
-        let mut restart_provider_for_queued_prompt = false;
+        let advance_queued_prompt_after_failure;
         {
             let owned = &self.owned;
             owned.update_metaagent_event_prompt_delivery_for_prompt(
@@ -1053,43 +1052,7 @@ impl KernelRuntimeState {
                     &dispatch_failure,
                 );
             }
-            if should_advance && retire_failed_provider {
-                restart_provider_for_queued_prompt = owned
-                    .prompt_state_owner
-                    .peek_next_queued_prompt(
-                        &owned.session_store.get_session(&dispatch.session_id)?,
-                        &dispatch.agent_id,
-                    )
-                    .is_some();
-            } else if should_advance
-                && self
-                    .queue_head_is_workflow_turn(&dispatch.session_id, &dispatch.agent_id)
-                    .await
-            {
-                // The failed run lacks what a workflow node needs; its promotion prepares one.
-                restart_provider_for_queued_prompt = true;
-            } else if should_advance {
-                match owned.advance_next_queued_prompt_dispatch(
-                    &dispatch.session_id,
-                    &dispatch.agent_id,
-                    &dispatch.provider_run_id,
-                ) {
-                    Ok(dispatch) => next_dispatch = dispatch,
-                    Err(advance_error) => {
-                        let recipients = owned
-                            .attachment_store
-                            .list_session_attachment_ids(&dispatch.session_id);
-                        owned.record_notice(
-                            &dispatch.session_id,
-                            Some(&dispatch.provider_run_id),
-                            recipients,
-                            format!(
-                                "Queued prompt remained pending after dispatch failure: {advance_error}"
-                            ),
-                        );
-                    }
-                }
-            }
+            advance_queued_prompt_after_failure = should_advance;
             let _ = owned.session_snapshot(&dispatch.session_id);
             let recipients = owned
                 .attachment_store
@@ -1123,10 +1086,7 @@ impl KernelRuntimeState {
                 self.schedule_agent_lifecycle_sweep();
             }
         }
-        if let Some(next_dispatch) = next_dispatch {
-            self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
-        }
-        if restart_provider_for_queued_prompt {
+        if advance_queued_prompt_after_failure {
             // The queue head starts the way it does after any settlement: a workflow node gets
             // its workflow-capable run, an ordinary prompt a plain one.
             Box::pin(self.advance_project_queued_prompt_after_settlement(
@@ -4558,6 +4518,9 @@ pub(in crate::runtime::state) mod tests {
         let expected = crate::provider::TurnOutcome::classify(&adapter_key, REFUSAL);
         assert_eq!(expected.kind, crate::provider::TurnOutcomeKind::Overloaded);
         assert!(visible.contains(&expected.notice()));
+        assert!(visible
+            .iter()
+            .all(|text| !text.contains("Selected model is at capacity")));
         assert_eq!(failure, Some(serde_json::to_value(&expected).unwrap()));
     }
 
@@ -4806,7 +4769,10 @@ pub(in crate::runtime::state) mod tests {
 
         let entries = not_carried_out_entries(&runtime, &session_id, &observer_id);
         assert_eq!(entries.len(), 1, "{entries:?}");
-        assert!(entries[0].contains("rejected"), "{entries:?}");
+        assert!(
+            entries[0].contains("The provider could not complete this request"),
+            "{entries:?}"
+        );
         assert!(entries[0].ends_with("It was dropped; send it again to retry."));
         let failed = failed_requests(&runtime, &agent_id);
         assert_eq!(failed.len(), 1);
@@ -5384,17 +5350,20 @@ pub(in crate::runtime::state) mod tests {
         let failed = failed_requests(&runtime, agent.id());
         assert_eq!(failed.len(), 1, "{provider}");
         assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
-        assert_eq!(failed[0].reason, "usage limit reached", "{provider}");
+        assert_eq!(
+            failed[0].reason, "The provider's usage limit was reached",
+            "{provider}"
+        );
         assert_eq!(
             not_carried_out_entries(&runtime, session.id(), observer.id()),
-            vec!["Request not carried out: usage limit reached. It was dropped; send it again to retry."],
+            vec!["Request not carried out: The provider's usage limit was reached. It was dropped; send it again to retry."],
             "{provider}"
         );
         assert!(runtime
             .owned
             .agent_store
             .hidden_context_with_failed_requests(agent.id(), "")
-            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (usage limit reached)"));
+            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (The provider's usage limit was reached)"));
     }
 
     #[tokio::test]

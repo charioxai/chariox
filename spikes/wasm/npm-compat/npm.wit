@@ -1,0 +1,19 @@
+package spike:npm;
+
+world npm {
+  export run: func() -> string;
+}
+
+world npm-async {
+  export run: async func() -> string;
+}
+
+world bench {
+  export compute: func() -> string;
+  export json: func() -> string;
+}
+
+world bench-async {
+  export compute: async func() -> string;
+  export json: async func() -> string;
+}
