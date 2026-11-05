@@ -549,6 +549,16 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
 // provider process, shell and Environment revision come from the owner's Project holding its folder.
 #[tokio::test]
 async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder() {
+    leased_project_inputs(false).await;
+}
+
+// MP-08/MP-10/MP-11: create the linked checkout through the leased-agent entry point.
+#[tokio::test]
+async fn leased_linked_worktree_launch_takes_project_inputs() {
+    leased_project_inputs(true).await;
+}
+
+async fn leased_project_inputs(linked_worktree: bool) {
     crate::test_support::isolated_env_test!();
     let _env = crate::env_lock::lock();
     let root = crate::test_support::TestWorktree::new("leased-project-inputs");
@@ -579,6 +589,28 @@ async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder(
     let folder = root.path().join("checkout");
     std::fs::create_dir_all(&folder).unwrap();
     let folder = folder.canonicalize().unwrap();
+    if linked_worktree {
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        ] {
+            let output = crate::process_spawn::command("git")
+                .args(args)
+                .current_dir(&folder)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "Git repository setup failed");
+        }
+    }
     let (project_session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(
             crate::session::CreateSessionRequest::new(
@@ -620,7 +652,11 @@ async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder(
                 None,
                 None,
                 None,
-                None,
+                linked_worktree.then(|| crate::agent::GitWorktreePlacement {
+                    target_directory: Some(root.path().join("checkout-task").display().to_string()),
+                    branch: Some("leased-task".into()),
+                    from_ref: Some("HEAD".into()),
+                }),
             )
             .unwrap()
     };
@@ -629,8 +665,21 @@ async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder(
         .get_session(&leased.backing_session_id)
         .unwrap();
     assert!(hidden.is_hidden() && hidden.project_id().is_empty());
+    let checkout = std::path::PathBuf::from(hidden.worktree_id());
+    if linked_worktree {
+        assert_ne!(checkout, folder);
+        assert!(
+            checkout.join(".git").is_file(),
+            "a real linked Git worktree"
+        );
+    }
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
+    assert_eq!(
+        runtime.tool_project(&hidden, "cloud-owner").unwrap().id(),
+        project_id
+    );
+    assert!(runtime.tool_project(&hidden, "someone-else").is_err());
     let request = runtime
         .prepare_provider_launch_request_with_vault(
             crate::provider::LaunchProviderRequest::new(
@@ -641,7 +690,7 @@ async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder(
                 "model",
             )
             .with_agent_id(&leased.backing_agent_id)
-            .with_working_directory(folder.clone()),
+            .with_working_directory(checkout.clone()),
             "leased agent launch takes its Project's inputs",
         )
         .await

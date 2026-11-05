@@ -123,11 +123,46 @@ impl SessionStateStore {
         self.list_projects(session.owner_user_id(), false)
             .into_iter()
             .find(|project| {
-                project
-                    .workspace_ids()
-                    .iter()
-                    .any(|id| id == session.worktree_id())
+                self.project_has_checkout(project, session.worktree_id())
+                    .unwrap_or(false)
             })
+    }
+
+    /// Workspace roots, Project sessions and linked Git checkouts share one Environment.
+    pub(crate) fn project_has_checkout(
+        &self,
+        project: &RuntimeProject,
+        checkout: &str,
+    ) -> Result<bool, DaemonError> {
+        use crate::runtime::workspace_git_common::same_fs_path;
+        if project
+            .workspace_ids()
+            .iter()
+            .any(|root| same_fs_path(root, checkout))
+        {
+            return Ok(true);
+        }
+        let sessions = self.sessions_in_project(project.id())?;
+        if sessions
+            .iter()
+            .any(|session| same_fs_path(session.worktree_id(), checkout))
+        {
+            return Ok(true);
+        }
+        Ok(project
+            .workspace_ids()
+            .iter()
+            .map(String::as_str)
+            .chain(sessions.iter().map(|session| session.worktree_id()))
+            .any(|root| {
+                crate::runtime::workspace_worktrees::list_workspace_worktrees(root, None).is_ok_and(
+                    |worktrees| {
+                        worktrees
+                            .iter()
+                            .any(|worktree| same_fs_path(&worktree.path, checkout))
+                    },
+                )
+            }))
     }
 
     pub(crate) fn sessions_in_project(

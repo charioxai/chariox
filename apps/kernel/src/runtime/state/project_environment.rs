@@ -114,19 +114,10 @@ impl KernelRuntimeState {
         let Some(requested) = requested else {
             return Ok(PathBuf::from(first));
         };
-        let known = project.workspace_ids().iter().any(|id| id == requested)
-            || self
-                .owned
-                .session_store
-                .read()
-                .sessions_in_project(project.id())?
-                .iter()
-                .any(|session| session.worktree_id() == requested)
-            || project.workspace_ids().iter().any(|id| {
-                crate::runtime::workspace_worktrees::list_workspace_worktrees(id, None).is_ok_and(
-                    |worktrees| worktrees.iter().any(|worktree| worktree.path == requested),
-                )
-            });
+        let known = self
+            .owned
+            .session_store
+            .project_has_checkout(project, requested)?;
         if !known {
             return Err(environment_error(
                 "the folder is not a checkout of this Project",
