@@ -3103,21 +3103,26 @@ test('a Tab an agent works in behind the shown one is kept at full speed, and le
   assert.equal(emulation().filter(s => s === session).length, after, 'a closed Tab is not touched again');
 }));
 
-test('an agent action on a Tab the person is typing in waits for the person to be idle, and the person never waits', { timeout: 5000 }, () => using(async ({ host, sent }) => {
+test('an agent action on a Tab the person is typing in waits for the person to be idle, and the person never waits', { timeout: 5000 }, t => using(async ({ host, sent }) => {
   const opened = await host.request({ op: 'open', url: 'https://example.com/' });
   const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
   const keys = () => sent.filter(call => call.method === 'Input.dispatchKeyEvent').length;
+  // Event-loop load must not consume the idle window before the assertion runs.
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
   await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'a' } });
   const afterPerson = keys();
   assert.ok(afterPerson > 0, 'the person\'s key is dispatched at once');
   const startedAt = Date.now();
   const agent = host.request({ op: 'input', focused_agent: true, ...base, input: { kind: 'key', key: 'b' } });
-  await new Promise(resolve => setTimeout(resolve, 60));
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(keys(), afterPerson, 'the agent waits while the person has just typed');
+  now += 60;
   await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'c' } });
   assert.ok(keys() > afterPerson, 'the person is not held back by the waiting agent');
+  now += 150;
   await agent;
-  assert.ok(Date.now() - startedAt >= 140, 'the agent resumed only after the person had been idle');
+  assert.ok(Date.now() - startedAt >= 210, 'the agent resumed only after the person had been idle');
   assert.ok(keys() > afterPerson + 1);
 }, { personIdleMs: 150 }));
 
