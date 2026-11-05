@@ -213,6 +213,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (outcome.kind === "saved") {
         if (target.typed.script === submitted.script) delete target.typed.script
         if (target.typed.variables === submitted.variables) delete target.typed.variables
+      } else {
+        // A later edit may retry; edits already queued must not overwrite this revision.
+        target.saveTextPending = false
       }
       if (target === editor) {
         setEnvironment(outcome.environment)
