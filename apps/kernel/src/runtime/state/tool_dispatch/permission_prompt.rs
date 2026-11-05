@@ -64,16 +64,13 @@ impl KernelRuntimeState {
         if provider_run.execution_mode() == crate::provider::AgentExecutionMode::Plan
             && args.tool_name == "ExitPlanMode"
         {
+            let active_turn = self.owned.active_turns.get(provider_run.id());
             let live = provider_run.state() == crate::provider::ProviderRunState::Running
-                && self
-                    .owned
-                    .active_turns
-                    .get(provider_run.id())
-                    .is_some_and(|turn| {
-                        turn.session_id == provider_run.session_id()
-                            && turn.agent_id == agent_id
-                            && !turn.settlement_requested
-                    });
+                && active_turn.as_ref().is_some_and(|turn| {
+                    turn.session_id == provider_run.session_id()
+                        && turn.agent_id == agent_id
+                        && !turn.settlement_requested
+                });
             let message = if !live {
                 "This plan exit belongs to an ended turn."
             } else if let Some(plan) = args
@@ -86,6 +83,11 @@ impl KernelRuntimeState {
                 // stopped the process and queued the proposal for settlement.
                 let receipt = self.owned.provider_store.publish_claude_plan(
                     provider_run.clone(),
+                    active_turn
+                        .as_ref()
+                        .expect("live planning turn")
+                        .prompt_id
+                        .clone(),
                     args.tool_use_id.clone(),
                     plan.to_string(),
                 )?;

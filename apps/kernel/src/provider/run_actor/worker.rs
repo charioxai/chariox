@@ -77,6 +77,7 @@ pub(super) enum ProviderRunActorCommand {
     },
     PublishClaudePlan {
         run: RuntimeProviderRun,
+        prompt_id: String,
         tool_use_id: Option<String>,
         plan: String,
         response: tokio::sync::oneshot::Sender<Result<(), String>>,
@@ -245,6 +246,7 @@ impl ProviderRunWorkerDeps {
                     output_poll_delay,
                 );
                 let finished = FinishedProviderOutputPollJob {
+                    prompt_identity: super::ProviderOutputPromptIdentity::InFlightPoll,
                     provider_run_id: provider_run_id.clone(),
                     result,
                     settlement_retry_attempt: 0,
@@ -257,6 +259,7 @@ impl ProviderRunWorkerDeps {
             }
             ProviderRunActorCommand::PublishClaudePlan {
                 run,
+                prompt_id,
                 tool_use_id,
                 plan,
                 response,
@@ -271,6 +274,7 @@ impl ProviderRunWorkerDeps {
                 push_finished_output_poll(
                     &self.finished_output_polls,
                     FinishedProviderOutputPollJob {
+                        prompt_identity: super::ProviderOutputPromptIdentity::Captured(prompt_id),
                         provider_run_id: run_id.clone(),
                         result: Ok(Some(batch)),
                         settlement_retry_attempt: 0,

@@ -9,6 +9,7 @@ impl ProviderRunActorMailbox {
     pub(crate) fn publish_claude_plan(
         &self,
         run: RuntimeProviderRun,
+        prompt_id: String,
         tool_use_id: Option<String>,
         plan: String,
     ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
@@ -17,6 +18,7 @@ impl ProviderRunActorMailbox {
         self.worker_for_run(&run_id)
             .try_send(ProviderRunActorCommand::PublishClaudePlan {
                 run,
+                prompt_id,
                 tool_use_id,
                 plan,
                 response,
@@ -569,6 +571,7 @@ mod tests {
         let sequence = signal.sequence();
 
         mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
+            prompt_identity: crate::provider::ProviderOutputPromptIdentity::InFlightPoll,
             provider_run_id: "run-1".to_string(),
             result: Ok(None),
             settlement_retry_attempt: 0,

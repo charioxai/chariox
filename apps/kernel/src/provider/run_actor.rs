@@ -25,8 +25,8 @@ use finished_jobs::{
 };
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
-    FinishedProviderRunSelectionSyncJob, ProviderPromptSubmitAcknowledgement,
-    ProviderPromptSubmitReceipt,
+    FinishedProviderRunSelectionSyncJob, ProviderOutputPromptIdentity,
+    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
 };
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
