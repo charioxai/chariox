@@ -299,7 +299,12 @@ impl KernelRuntimeState {
         reason: &str,
         keep_for_restart: bool,
     ) -> Result<usize, DaemonError> {
-        let reach_count = self.revoke_reach_access(owner, id);
+        // A stop is not a revoke: the runs a hot reload hands over keep their reach.
+        let reach_count = if keep_for_restart {
+            0
+        } else {
+            self.revoke_reach_access(owner, id)
+        };
         let sudo_result = self.revoke_sudo(owner, id, reason);
         let sudo_count = sudo_result.as_ref().copied().unwrap_or(0);
         let mut state = self

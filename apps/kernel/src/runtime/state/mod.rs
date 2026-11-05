@@ -1039,7 +1039,14 @@ impl KernelRuntimeState {
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
                 passkey_prompts: Arc::default(),
-                kernel_access: Default::default(),
+                kernel_access: Arc::new(std::sync::Mutex::new(
+                    crate::runtime::kernel_access::AccessState {
+                        // A handed-over run keeps its id: so does the owner's revoke of it.
+                        #[cfg(unix)]
+                        revoked_reach_runs: crate::hot_reload::take_revoked_reach_runs(),
+                        ..Default::default()
+                    },
+                )),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
                 sudo_timers: Default::default(),

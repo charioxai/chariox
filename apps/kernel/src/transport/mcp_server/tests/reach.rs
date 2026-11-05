@@ -1026,3 +1026,55 @@ async fn revoking_one_reach_identity_keeps_other_runs_and_allows_a_new_run() {
     let fresh = state.reach_for_auth_token("fresh-reach-token").unwrap();
     assert!(state.gateway_origin(&fresh.id).is_some());
 }
+
+/// The new program of a hot reload: a fresh runtime that adopts the handed-over run
+/// under the same id and tool token.
+async fn hot_reloaded(reach: &Reach) -> Reach {
+    let reload = crate::hot_reload::PreparedForTests::new();
+    reach
+        .router
+        .runtime_state()
+        .shutdown_cleanup()
+        .await
+        .unwrap();
+    reload.reload();
+    drop(reload);
+    fixture()
+}
+
+#[tokio::test]
+async fn a_gateway_revoke_survives_a_hot_reload_of_the_same_run() {
+    let reach = fixture();
+    let untouched = hot_reloaded(&reach).await;
+    let state = untouched.router.runtime_state();
+    let caller = state.reach_for_auth_token(&untouched.owner_token).unwrap();
+    assert!(
+        state.gateway_origin(&caller.id).is_some(),
+        "a reload that follows no revoke keeps the run's reach"
+    );
+    let reach = untouched;
+    let state = reach.router.runtime_state();
+    let caller = state.reach_for_auth_token(&reach.owner_token).unwrap();
+    state
+        .revoke_kernel_access(None, None, "gateway_revoked")
+        .unwrap();
+
+    let reloaded = hot_reloaded(&reach).await;
+    let state = reloaded.router.runtime_state();
+    assert!(
+        state.reach_for_auth_token(&reloaded.owner_token).is_err(),
+        "the revoked run keeps its id and token across the swap and stays refused"
+    );
+    assert!(
+        state.gateway_origin(&caller.id).is_none(),
+        "the revoked run cannot register the gateway again"
+    );
+    let (ok, payload) = call(
+        &reloaded,
+        &reloaded.owner_token,
+        Some("local"),
+        serde_json::json!({"ListSessions": null}),
+    )
+    .await;
+    assert!(!ok, "{payload}");
+}

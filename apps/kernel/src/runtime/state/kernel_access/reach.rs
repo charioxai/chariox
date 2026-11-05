@@ -226,6 +226,18 @@ impl KernelRuntimeState {
         count
     }
 
+    /// Handed to the next program of a hot reload, whose adopted runs keep their ids.
+    pub(crate) fn hand_over_reach_revocations(&self) {
+        let revoked = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned")
+            .revoked_reach_runs
+            .clone();
+        crate::hot_reload::hand_over_revoked_reach_runs(revoked);
+    }
+
     /// `<room>/<agent> (Chariox agent)`: how another kernel's audit and paired
     /// clients name an agent of this kernel.
     pub(crate) fn agent_harness_name(&self, session_id: &str, agent_id: &str) -> Option<String> {
