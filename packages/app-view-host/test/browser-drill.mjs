@@ -16,6 +16,7 @@ import { attribution } from './attribution.mjs';
 import { processNetwork } from './process-network.mjs';
 import { clientViewChromiumArgs } from '../chromium-launch.mjs';
 import { browserProfile } from './browser-profile.mjs';
+import { assessResults } from './drill-result.mjs';
 
 const evidence = process.env.CHARIOX_APP_VIEW_EVIDENCE;
 const builds = process.env.CHARIOX_APP_VIEW_BUILDS;
@@ -133,16 +134,7 @@ try {
   results.references = await referenceCases({ chromium, launchOptions: { ...launchOptions, args: [...launchOptions.args, ...clientViewChromiumArgs] }, server, evidence, builds });
   results.strictReceived = server.hits.filter(hit => !hit.control);
   results.receiver = { hits: server.hits, connections: server.connections, udpPackets: server.packets };
-  results.wholeTreePassed = results.isolationNetwork.passed && results.attacks.every(item => item.runs[1].processNetwork.passed) && results.references.every(row => row.processNetwork?.passed);
-  results.rendererPassed = results.references.length === 4 && results.references.every(row => row.rendered && !row.failure);
-  results.containmentPassed = results.launch.passed && results.wholeTreePassed && results.attacks.every(item => item.blocked && item.redCapable && item.framePolicyPresent)
-    && results.isolation.passed && results.sourceBinding.passed && results.rejectedBeforeExecution;
-  results.failedChecks = results.attacks.filter(item => !item.blocked || !item.redCapable || !item.framePolicyPresent).map(item => item.name);
-  if (!results.launch.passed) results.failedChecks.push('independent-launch-frame-controls');
-  if (!results.wholeTreePassed) results.failedChecks.push('whole-browser-tree-zero-network');
-  if (!results.isolation.passed) results.failedChecks.push('storage/native-input/compilation');
-  if (!results.sourceBinding.passed) results.failedChecks.push('host-source-binding');
-  if (!results.rejectedBeforeExecution) results.failedChecks.push('signature-before-execution');
+  assessResults(results);
   results.limitations.push('Real authenticated descriptor, Room conversation, backend broker, live WSS and TUI hosts require AV2–AV5; frontend-only fixture is not their acceptance.');
   results.attribution = await attribution(evidence, results);
   results.finished = new Date().toISOString();
