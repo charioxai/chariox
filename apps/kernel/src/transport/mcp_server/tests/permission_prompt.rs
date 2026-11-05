@@ -399,7 +399,7 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         CLAUDE_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
     );
-    // Print runs in Plan mode or at the Yolo level have no prompt tool flag.
+    // Build/YOLO has no prompt tool; Plan keeps the native approval surface.
     for (run_id, token, execution_mode, permission_level) in [
         (
             "provider-run-claude-plan",
@@ -458,7 +458,10 @@ async fn claude_print_permission_prompt_fails_closed_and_closes_an_abandoned_pro
         })
     };
 
-    for token in [PLAN_TOKEN, YOLO_TOKEN] {
+    assert!(tool_names(&router, PLAN_TOKEN)
+        .await
+        .contains(&"chariox.permission_prompt".to_string()));
+    for token in [YOLO_TOKEN] {
         assert!(!tool_names(&router, token)
             .await
             .contains(&"chariox.permission_prompt".to_string()));
@@ -763,6 +766,22 @@ fn claude_print_fixture_with_app() -> (
     std::path::PathBuf,
     Arc<Mutex<DaemonApp>>,
 ) {
+    claude_print_fixture_in_mode(
+        crate::provider::AgentExecutionMode::Build,
+        crate::provider::AgentPermissionLevel::Required,
+    )
+}
+
+fn claude_print_fixture_in_mode(
+    execution_mode: crate::provider::AgentExecutionMode,
+    permission_level: crate::provider::AgentPermissionLevel,
+) -> (
+    Arc<CommandRouter>,
+    crate::session::RuntimeSession,
+    String,
+    std::path::PathBuf,
+    Arc<Mutex<DaemonApp>>,
+) {
     let root = std::env::temp_dir().join(format!(
         "chariox-permission-prompt-session-{}-{}",
         std::process::id(),
@@ -774,8 +793,8 @@ fn claude_print_fixture_with_app() -> (
         .create_session(
             CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
                 .with_agent_defaults(crate::session::SessionAgentDefaults {
-                    execution_mode: Some(crate::provider::AgentExecutionMode::Build),
-                    permission_level: Some(crate::provider::AgentPermissionLevel::Required),
+                    execution_mode: Some(execution_mode),
+                    permission_level: Some(permission_level),
                     ..Default::default()
                 }),
         )
@@ -784,13 +803,15 @@ fn claude_print_fixture_with_app() -> (
     app.agents_mut()
         .update_agent_config(agent.id(), Some(None), Some(None), None, None)
         .expect("the fixture agent should inherit session defaults");
-    insert_claude_run(
+    insert_claude_run_in_mode(
         &mut app,
         session.id(),
         agent.id(),
         "provider-run-claude-print",
         CLAUDE_TOKEN,
         crate::provider::ProviderClientInterface::Chariox,
+        execution_mode,
+        permission_level,
     );
     app.active_turn_store()
         .start(crate::app::ActiveTurnState::new(
@@ -802,6 +823,45 @@ fn claude_print_fixture_with_app() -> (
     let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app.clone(), 8));
     (router, session, agent.id().to_string(), root, app)
+}
+
+#[tokio::test]
+async fn claude_plan_exit_uses_the_owned_permission_bridge_at_both_permission_levels() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+        let (router, session, agent_id, root, _app) =
+            claude_print_fixture_in_mode(AgentExecutionMode::Plan, level);
+        assert!(tool_names(&router, CLAUDE_TOKEN)
+            .await
+            .contains(&"chariox.permission_prompt".to_string()));
+        for (id, choice, expected) in [
+            ("toolu_plan_allow", "allow_once", "allow"),
+            ("toolu_plan_deny", "deny", "deny"),
+        ] {
+            let (call, interaction) = start_tool_prompt(
+                &router,
+                CLAUDE_TOKEN,
+                session.id(),
+                id,
+                "ExitPlanMode",
+                serde_json::json!({}),
+            )
+            .await;
+            assert_eq!(interaction.agent_id(), Some(agent_id.as_str()));
+            router
+                .runtime_state()
+                .resolve_runtime_interaction(session.id(), interaction.id(), choice, None)
+                .await
+                .expect("plan exit decision should resolve");
+            let response = decision(&call.await.expect("plan exit prompt should join"));
+            assert_eq!(response["behavior"], expected);
+            if expected == "allow" {
+                assert_eq!(response["updatedInput"], serde_json::json!({}));
+            }
+            assert!(active_interactions(&router, session.id()).is_empty());
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 #[tokio::test]
@@ -1348,7 +1408,7 @@ async fn session_defaults_change_allows_unaffected_active_claude_turn() {
 }
 
 /// A person who changes what the agent may do has ended what they granted, even when they change
-/// it back: Plan and Yolo runs never ask Claude about a tool, so only the change itself shows it.
+/// it back: a mode or permission change invalidates the earlier grant.
 #[tokio::test]
 async fn an_allow_for_session_grant_ends_when_the_agent_config_changes_and_changes_back() {
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};

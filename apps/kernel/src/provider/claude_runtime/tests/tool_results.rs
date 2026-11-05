@@ -4,12 +4,21 @@ use crate::provider::claude_runtime::{drain_claude_events, process::ClaudeRuntim
 use std::time::{Duration, Instant};
 
 fn drain(messages: Vec<serde_json::Value>) -> ProviderPromptSignalBatch {
+    drain_in_mode(messages, AgentExecutionMode::Build)
+}
+
+fn drain_in_mode(
+    messages: Vec<serde_json::Value>,
+    mode: AgentExecutionMode,
+) -> ProviderPromptSignalBatch {
     let (mut state, _) = parser_state();
+    state.active_execution_mode = mode;
     let (sender, receiver) = std::sync::mpsc::channel();
     state.output.receiver = receiver;
     let run = RuntimeProviderRun::new(
         "run-1",
-        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+            .with_execution_mode(mode),
         ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "test-claude".to_string(),
@@ -26,6 +35,42 @@ fn drain(messages: Vec<serde_json::Value>) -> ProviderPromptSignalBatch {
         sender.send(ClaudeRuntimeMessage::Stdout(message)).unwrap();
     }
     drain_claude_events(&run, &mut state).expect("provider stream should drain")
+}
+
+#[test]
+fn native_plan_exit_finishes_planning_before_any_implementation() {
+    let batch = drain_in_mode(
+        vec![
+            json!({"type":"assistant","message":{"content":[{
+                "type":"tool_use","id":"plan","name":"ExitPlanMode","input":{}
+            }]}}),
+            json!({"type":"user","message":{"content":[{
+                "type":"tool_result","tool_use_id":"plan",
+                "content":"User has approved your plan.\n\n## Approved Plan:\nImplement after the person clicks Implement."
+            }]}}),
+            json!({"type":"assistant","message":{"content":[{
+                "type":"tool_use","id":"too_early","name":"Write","input":{"file_path":"implementation.txt","content":"too early"}
+            }]}}),
+        ],
+        AgentExecutionMode::Plan,
+    );
+    assert!(
+        batch.prompt_completed,
+        "native plan exit must settle the planning turn"
+    );
+    assert_eq!(batch.completions.len(), 1);
+    assert!(batch.terminal_failure.is_none());
+    assert_eq!(
+        batch.chunks.len(),
+        2,
+        "only the proposed plan reaches history"
+    );
+    let completed: serde_json::Value = serde_json::from_slice(&batch.chunks[1].bytes).unwrap();
+    assert_eq!(completed["status"], "completed");
+    assert_eq!(
+        completed["input"]["plan"],
+        "Implement after the person clicks Implement."
+    );
 }
 
 #[test]

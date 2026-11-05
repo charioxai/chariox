@@ -181,6 +181,17 @@ impl ClaudeToolTranscript {
                     let failed = block.get("is_error").and_then(Value::as_bool) == Some(true);
                     payload["status"] = json!(if failed { "error" } else { "completed" });
                     let output = bounded_result(block.get("content"));
+                    // Current Claude reads its plan file itself and returns the
+                    // text here, rather than sending the old inline plan input.
+                    if !failed && pending.name == "ExitPlanMode" {
+                        if let Some(input) = payload["input"].as_object_mut() {
+                            if !input.get("plan").and_then(Value::as_str).is_some_and(|plan| !plan.trim().is_empty()) {
+                                if let Some(plan) = approved_plan(&output) {
+                                    input.insert("plan".to_string(), json!(plan));
+                                }
+                            }
+                        }
+                    }
                     payload[if failed { "error" } else { "output" }] = json!(output);
                     let (images, omitted) = bounded_result_images(block.get("content"));
                     if !images.is_empty() {
@@ -253,6 +264,16 @@ impl ClaudeToolTranscript {
     }
 }
 
+fn approved_plan(output: &str) -> Option<&str> {
+    [
+        "\n\n## Approved Plan:\n",
+        "\n\n## Approved Plan (edited by user):\n",
+    ]
+    .into_iter()
+    .find_map(|marker| output.split_once(marker).map(|(_, plan)| plan.trim()))
+    .filter(|plan| !plan.is_empty())
+}
+
 fn is_unsupported_claude_stream_json_tool(name: &str) -> bool {
     name == "ToolSearch"
 }
@@ -271,6 +292,56 @@ mod tests {
         json!({"type":"user","message":{"content":[{
             "type":"tool_result","tool_use_id":id,"content":content
         }]}})
+    }
+
+    #[test]
+    fn native_plan_file_result_supplies_the_existing_plan_card_input() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let mut call = invocation("plan", "ExitPlanMode");
+        call["message"]["content"][0]["input"] = json!({});
+        transcript.observe(&call);
+        let completed = transcript.observe(&result("plan", json!(
+            "User has approved your plan.\n\nYour plan has been saved to: /plan.md\n\n## Approved Plan:\n1. Implement the change.\n2. Test it."
+        )));
+        assert_eq!(completed[0]["status"], "completed");
+        assert_eq!(
+            completed[0]["input"]["plan"],
+            "1. Implement the change.\n2. Test it."
+        );
+    }
+
+    #[test]
+    fn failed_or_unrelated_results_do_not_become_native_plan_cards() {
+        for (tool, failed) in [("ExitPlanMode", true), ("Bash", false)] {
+            let mut transcript = ClaudeToolTranscript::default();
+            let mut call = invocation("plan", tool);
+            call["message"]["content"][0]["input"] = json!({});
+            transcript.observe(&call);
+            let mut reply = result(
+                "plan",
+                json!("Denied.\n\n## Approved Plan:\nDo not publish this."),
+            );
+            reply["message"]["content"][0]["is_error"] = json!(failed);
+            let completed = transcript.observe(&reply);
+            assert!(completed[0]["input"].get("plan").is_none());
+        }
+    }
+
+    #[test]
+    fn edited_native_plan_is_extracted_and_inline_plan_is_preserved() {
+        for input in [json!({}), json!({"plan":"Inline plan"})] {
+            let mut transcript = ClaudeToolTranscript::default();
+            let mut call = invocation("plan", "ExitPlanMode");
+            call["message"]["content"][0]["input"] = input.clone();
+            transcript.observe(&call);
+            let completed = transcript.observe(&result("plan", json!([
+                {"type":"text","text":"Approved.\n\n## Approved Plan (edited by user):\nEdited plan"}
+            ])));
+            assert_eq!(
+                completed[0]["input"]["plan"],
+                input.get("plan").cloned().unwrap_or(json!("Edited plan"))
+            );
+        }
     }
 
     #[test]

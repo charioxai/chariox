@@ -290,7 +290,20 @@ pub(crate) fn drain_claude_events(
         match state.output.receiver.try_recv() {
             Ok(ClaudeRuntimeMessage::Stdout(value)) => {
                 state.turn_watchdog.record_runtime_message(Instant::now());
-                handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
+                let plan_ready = handle_claude_tool_uses(run.id(), state, &value, &mut batch)?;
+                if plan_ready
+                    && run.execution_mode() == AgentExecutionMode::Plan
+                    && value
+                        .get("parent_tool_use_id")
+                        .is_none_or(serde_json::Value::is_null)
+                {
+                    // Claude's native exit changes its internal permission mode.
+                    // Keep the kernel's Plan selection authoritative: publish the
+                    // proposal, then resume a fresh process before another turn.
+                    events::complete_claude_turn(state, &mut batch);
+                    restart_claude_runtime(run, state, "claude_restart_after_plan_proposal")?;
+                    break;
+                }
                 apply_claude_message(run.id(), state, value, &mut batch);
             }
             Ok(ClaudeRuntimeMessage::StdoutParseError(error)) => {
@@ -471,8 +484,14 @@ fn handle_claude_tool_uses(
     state: &mut ClaudeRuntimeState,
     value: &serde_json::Value,
     batch: &mut ProviderPromptSignalBatch,
-) -> Result<(), DaemonError> {
+) -> Result<bool, DaemonError> {
+    let mut plan_ready = false;
     for payload in state.tool_transcript.observe(value) {
+        plan_ready |= payload["tool"] == "ExitPlanMode"
+            && payload["status"] == "completed"
+            && payload["input"]["plan"]
+                .as_str()
+                .is_some_and(|plan| !plan.trim().is_empty());
         let bytes =
             serde_json::to_vec(&payload).map_err(|error| DaemonError::ProviderProtocol {
                 provider_run_id: provider_run_id.to_string(),
@@ -508,7 +527,7 @@ fn handle_claude_tool_uses(
             "Rejected unsupported Claude stream-json tool use for `{provider_run_id}`"
         ));
     }
-    Ok(())
+    Ok(plan_ready)
 }
 
 fn claude_runtime_selection_changed(run: &RuntimeProviderRun, state: &ClaudeRuntimeState) -> bool {
