@@ -60,7 +60,9 @@ async fn run_command(
     tokio::task::spawn_blocking(move || {
         state.recheck_vault_command_context(&context)?;
         let run = state.watched_process_run(context.run.id())?;
-        state.run_kernel_command(&run, command)
+        state.run_kernel_command(&run, command, || {
+            state.recheck_vault_command_context(&context)
+        })
     })
     .await
     .map_err(|_| error("the command runner stopped unexpectedly"))?

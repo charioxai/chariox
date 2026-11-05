@@ -530,3 +530,51 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     assert!(f.state.owned.sudo_turns.lock().unwrap().is_empty());
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+/// Stop uses the same cancellation entry point as a user's CancelActivePrompt.
+#[tokio::test]
+async fn vault_command_stops_when_its_prompt_is_cancelled_after_tool_drop() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let captured = capture(&f, "cancel-key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let started = workspace(&f).join("cancel-started");
+    let marker = workspace(&f).join("cancel-must-not-run");
+    {
+        let arguments = json!({"origin":"https://api.example.com", "env":{"KEY":captured["credential_id"]},
+            "argv":["/bin/sh", "-c", format!("touch '{}'; sleep 2; touch '{}'", started.display(), marker.display())]});
+        let pending = call(&f, USE_ENV, arguments);
+        tokio::pin!(pending);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut pending => panic!("command ended before cancellation: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                if started.exists() { break; }
+            }
+        }).await.unwrap();
+        // Simulate an MCP transport dropping its request before the person presses Stop.
+    }
+    f.state
+        .cancel_agent_prompt_with_external_authority(
+            &turn.session_id,
+            &turn.agent_id,
+            &f.request.attachment_id,
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let wrote = marker.exists();
+    let live = f.state.owned.agent_wakes.processes.count();
+    f.state.shutdown_cleanup().await.unwrap();
+    assert!(
+        !wrote,
+        "a cancelled prompt's detached Vault command still wrote its marker"
+    );
+    assert_eq!(live, 0, "the cancelled command's owned tree must settle");
+}

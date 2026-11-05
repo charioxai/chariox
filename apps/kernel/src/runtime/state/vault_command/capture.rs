@@ -140,6 +140,11 @@ impl KernelRuntimeState {
                     stderr_excerpt(&output.stderr)
                 )))
             }
+            KernelCommandExit::Cancelled => {
+                return Err(error(
+                    "the submitting prompt ended and its command was stopped; nothing was stored",
+                ))
+            }
             KernelCommandExit::TimedOut => {
                 return Err(error(format!(
                     "the command did not finish within {} s and was stopped; nothing was stored",
