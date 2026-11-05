@@ -340,7 +340,7 @@ async fn client_app_view_router_uses_terminal_owner_and_refuses_agents() {
             installation_id: "installed".into(),
         });
         let command = KernelCommand::from_local_request_with_caller(
-            &format!("client-view-{:032x}", rand::random::<u128>()),
+            format!("client-view-{:032x}", rand::random::<u128>()),
             KernelCommandSource::RelayClient,
             KernelCaller {
                 caller_kind: KernelCallerKind::RemoteClient,
