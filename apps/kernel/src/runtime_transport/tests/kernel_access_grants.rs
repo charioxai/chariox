@@ -37,6 +37,7 @@ fn kernel_access_child_server() {
         .unwrap()
         .block_on(async {
             let root = PathBuf::from(root);
+            std::fs::write(root.join("started"), "").unwrap();
             let worktree = root.join("worktree");
             std::fs::create_dir(&worktree).unwrap();
             let tcp = StdTcpListener::bind("127.0.0.1:0").unwrap();
@@ -625,33 +626,32 @@ impl Kernel {
         std::fs::create_dir(&root).unwrap();
         crate::config::validate_local_socket_path(&kernel_access_socket(&root))
             .expect("the test kernel socket path is bounded independently of TMPDIR");
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["kernel_access_child_server", "--ignored", "--nocapture"])
-            .env("CHARIOX_ACCESS_TEST_ROOT", &root)
-            .env("CHARIOX_ACCESS_TEST_SUDO", if sudo { "1" } else { "0" })
-            .env(
-                "CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION",
-                if credential_session { "1" } else { "0" },
-            )
-            .env("CHARIOX_HOME", root.join("state"))
-            .env("HOME", root.join("home"))
-            .envs(extra_env.iter().copied())
-            .env_remove("CLAUDE_CONFIG_DIR")
-            .env_remove("CODEX_HOME")
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .unwrap();
-        let addr = timeout(Duration::from_secs(20), async {
-            loop {
-                if let Ok(addr) = std::fs::read_to_string(root.join("ready")) {
-                    break addr;
-                }
-                sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .unwrap();
+        let mut starting = StartingKernel {
+            root: root.clone(),
+            child: Some(
+                Command::new(std::env::current_exe().unwrap())
+                    .args(["kernel_access_child_server", "--ignored", "--nocapture"])
+                    .env("CHARIOX_ACCESS_TEST_ROOT", &root)
+                    .env("CHARIOX_ACCESS_TEST_SUDO", if sudo { "1" } else { "0" })
+                    .env(
+                        "CHARIOX_ACCESS_TEST_CREDENTIAL_SESSION",
+                        if credential_session { "1" } else { "0" },
+                    )
+                    .env("CHARIOX_HOME", root.join("state"))
+                    .env("HOME", root.join("home"))
+                    .envs(extra_env.iter().copied())
+                    .env_remove("CLAUDE_CONFIG_DIR")
+                    .env_remove("CODEX_HOME")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::inherit())
+                    .spawn()
+                    .unwrap(),
+            ),
+        };
+        let addr = starting
+            .wait_ready(FIXTURE_START_BUDGET, FIXTURE_READY_BUDGET)
+            .await
+            .unwrap_or_else(|error| panic!("{error}"));
         let mut request = format!("ws://{addr}").into_client_request().unwrap();
         request.headers_mut().insert(
             AUTHORIZATION,
@@ -674,7 +674,7 @@ impl Kernel {
         assert!(subscribed["error"].is_null(), "{subscribed}");
         let kernel = Self {
             root,
-            child,
+            child: starting.release(),
             tcp,
             popups,
         };
@@ -798,29 +798,143 @@ impl Kernel {
 }
 impl Drop for Kernel {
     fn drop(&mut self) {
-        if self.child.id() > 1 {
-            let _ = self.child.kill();
-        }
-        let _ = self.child.wait();
-        if let Ok(pid) = std::fs::read_to_string(self.root.join("descendant-pid")) {
-            let fields = pid.split_whitespace().collect::<Vec<_>>();
-            if let [pid, start] = fields.as_slice() {
-                if let (Ok(pid), Ok(start)) = (pid.parse::<u32>(), start.parse::<u64>()) {
-                    if pid > 1
-                        && pid <= i32::MAX as u32
-                        && crate::runtime::kernel_access::process::inspect(pid)
-                            .is_ok_and(|(p, _)| p.start == start)
-                    {
-                        unsafe {
-                            libc::kill(pid as i32, libc::SIGTERM);
-                        }
+        reap_fixture(&mut self.child, &self.root);
+    }
+}
+
+/// How long the fixture process may take to begin running its test body (exec
+/// and dynamic linking under heavy load), then how long it may take to publish
+/// its address once it runs. Each phase is measured from its own start.
+const FIXTURE_START_BUDGET: Duration = Duration::from_secs(120);
+const FIXTURE_READY_BUDGET: Duration = Duration::from_secs(120);
+
+/// Stops the fixture process and removes its disposable state. The `Child`
+/// handle is still unreaped here, so its pid cannot belong to another process.
+fn reap_fixture(child: &mut Child, root: &Path) {
+    if child.id() > 1 {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    if let Ok(pid) = std::fs::read_to_string(root.join("descendant-pid")) {
+        let fields = pid.split_whitespace().collect::<Vec<_>>();
+        if let [pid, start] = fields.as_slice() {
+            if let (Ok(pid), Ok(start)) = (pid.parse::<u32>(), start.parse::<u64>()) {
+                if pid > 1
+                    && pid <= i32::MAX as u32
+                    && crate::runtime::kernel_access::process::inspect(pid)
+                        .is_ok_and(|(p, _)| p.start == start)
+                {
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGTERM);
                     }
                 }
             }
         }
-        let _ = std::fs::remove_file(kernel_access_socket(&self.root));
-        let _ = std::fs::remove_dir_all(&self.root);
     }
+    let _ = std::fs::remove_file(kernel_access_socket(root));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Owns a fixture process until it is ready, so a failed wait or a panic before
+/// the `Kernel` exists still reaps the process and its state.
+struct StartingKernel {
+    root: PathBuf,
+    child: Option<Child>,
+}
+impl StartingKernel {
+    /// The address the fixture published, or why it never did.
+    async fn wait_ready(
+        &mut self,
+        start_budget: Duration,
+        ready_budget: Duration,
+    ) -> Result<String, String> {
+        let child = self.child.as_mut().expect("the fixture is still owned");
+        let mut started_at = None;
+        let spawned = std::time::Instant::now();
+        loop {
+            if let Ok(addr) = std::fs::read_to_string(self.root.join("ready")) {
+                return Ok(addr);
+            }
+            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                return Err(format!("the fixture exited before it was ready: {status}"));
+            }
+            if started_at.is_none() && self.root.join("started").exists() {
+                started_at = Some(std::time::Instant::now());
+            }
+            match started_at {
+                Some(started) if started.elapsed() > ready_budget => {
+                    return Err(format!(
+                        "the fixture ran for {ready_budget:?} without publishing its address"
+                    ));
+                }
+                None if spawned.elapsed() > start_budget => {
+                    return Err(format!(
+                        "the fixture did not begin running within {start_budget:?}"
+                    ));
+                }
+                _ => sleep(Duration::from_millis(20)).await,
+            }
+        }
+    }
+
+    fn release(mut self) -> Child {
+        self.child.take().expect("the fixture is still owned")
+    }
+}
+impl Drop for StartingKernel {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            reap_fixture(&mut child, &self.root);
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_fixture_that_never_becomes_ready_is_reaped() {
+    let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("started"), "").unwrap();
+    let child = Command::new("sleep").arg("600").spawn().unwrap();
+    let pid = child.id();
+    let mut starting = StartingKernel {
+        root: root.clone(),
+        child: Some(child),
+    };
+    let error = starting
+        .wait_ready(Duration::from_millis(100), Duration::from_millis(200))
+        .await
+        .expect_err("a fixture that never publishes its address is not ready");
+    assert!(error.contains("without publishing its address"), "{error}");
+    drop(starting);
+    assert!(
+        !Path::new(&format!("/proc/{pid}")).exists(),
+        "the timed-out fixture process must be killed and reaped"
+    );
+    assert!(
+        !root.exists(),
+        "the fixture's disposable state must be removed"
+    );
+}
+
+#[tokio::test]
+async fn a_fixture_that_exits_before_it_is_ready_fails_fast_and_is_reaped() {
+    let root = std::env::temp_dir().join(format!("a{:016x}", rand::random::<u64>()));
+    std::fs::create_dir(&root).unwrap();
+    let child = Command::new("true").spawn().unwrap();
+    let mut starting = StartingKernel {
+        root: root.clone(),
+        child: Some(child),
+    };
+    let error = starting
+        .wait_ready(Duration::from_secs(60), Duration::from_secs(60))
+        .await
+        .expect_err("an exited fixture is not ready");
+    assert!(error.contains("exited before it was ready"), "{error}");
+    drop(starting);
+    assert!(
+        !root.exists(),
+        "the fixture's disposable state must be removed"
+    );
 }
 
 async fn grant(kernel: &mut Kernel, holder: &mut Client) -> String {
