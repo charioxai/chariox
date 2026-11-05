@@ -578,3 +578,48 @@ async fn vault_command_stops_when_its_prompt_is_cancelled_after_tool_drop() {
     );
     assert_eq!(live, 0, "the cancelled command's owned tree must settle");
 }
+
+#[tokio::test]
+async fn overlapping_capture_retry_retains_ownership_after_tool_drop() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let runs = workspace(&f).join("overlap-runs");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
+            runs.display()
+        )
+    ]);
+    {
+        let pending = capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"}));
+        tokio::pin!(pending);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut pending => panic!("capture ended before retry: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                if runs.exists() {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let retried = capture(&f, "overlap", argv, json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let count = std::fs::read_to_string(&runs).unwrap();
+    let stored_value = stored(&f, retried["credential_id"].as_str().unwrap());
+    f.state.shutdown_cleanup().await.unwrap();
+    assert_eq!(
+        count, "run\n",
+        "overlapping retries must run argv only once"
+    );
+    assert_eq!(stored_value.as_str(), SECRET);
+    assert_eq!(retried["created"], false);
+}

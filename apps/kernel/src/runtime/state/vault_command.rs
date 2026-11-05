@@ -6,6 +6,27 @@ use super::*;
 use crate::runtime::kernel_access::error;
 
 mod capture;
+
+#[derive(Default)]
+pub(super) struct CaptureClaims {
+    handles: std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+}
+
+impl CaptureClaims {
+    fn lock(&self, handle: &str) -> Result<Arc<tokio::sync::Mutex<()>>, DaemonError> {
+        let mut handles = self
+            .handles
+            .lock()
+            .map_err(|_| error("Vault capture claims are unavailable"))?;
+        handles.retain(|_, lock| lock.strong_count() > 0);
+        if let Some(lock) = handles.get(handle).and_then(std::sync::Weak::upgrade) {
+            return Ok(lock);
+        }
+        let lock = Arc::new(tokio::sync::Mutex::new(()));
+        handles.insert(handle.into(), Arc::downgrade(&lock));
+        Ok(lock)
+    }
+}
 mod files;
 mod use_env;
 
