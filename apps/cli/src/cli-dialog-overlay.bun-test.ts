@@ -53,7 +53,7 @@ for (const [width, height] of [[80, 24], [60, 24], [40, 24]] as const) {
     const controller = createProjectEnvironmentController({ otherKernels: async () => [],
       send: async () => ({ ProjectEnvironment: { environment: {
         projectId: "project-1", exists: true, revision: 1, setup: { script: "make setup" }, variables: "A=1",
-        secrets: [{ name: "API_KEY", presence: "missing" }], files: [{ path: ".env", presence: "present", sizeBytes: 12 }],
+        secrets: [{ name: "API_KEY", presence: "missing" }], files: [{ path: ".env", presence: "present", sizeBytes: 12 }], mcps: [], skills: [], proposals: [],
         changedAtMs: 1, machineLabel: "Kernel", checkoutPath: "/p", setupState: { state: "notRun" },
       } } }),
       render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0,
