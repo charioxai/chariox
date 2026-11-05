@@ -62,6 +62,11 @@ try {
   const unlockOnce=async(waiting=false)=>{
    await page.locator('[data-feature=vault]').click();
    const form=page.locator('.work-editor-popup [data-vault-unlock]');
+   await page.locator('.work-editor-popup [data-vault-unlock], [data-vault-window][role=button]').first().waitFor();
+   if(!await form.isVisible()) {
+    try {await page.locator('[data-vault-window][role=button]').click({timeout:3000});}
+    catch(error) {if(!await form.isVisible())throw error;}
+   }
    await form.waitFor();await form.locator('input[type=password]').fill(fixture.passkey);
    await form.locator('[data-vault-unlock-duration]').selectOption('once');
    await form.locator('button[type=submit]').click();await form.waitFor({state:'detached'});
@@ -93,14 +98,14 @@ try {
   phase=`second-generation-dpr${dpr}`;await prompt(generate(`once-${dpr}-second`));
   if(expected==='green') {
    const card=await waitFor(async()=>(await cards()).find(c=>c.id.startsWith('vault-unlock-')),'next agent call requests a fresh unlock',180000);
-   cell.nextAsked=true;assert.equal(await count(),before+1);
+   cell.nextAsked=true;await save();assert.equal(await count(),before+1);
    await page.locator(`[data-interaction-id='${card.id}'] [data-action=read-interaction]`).click();
    await page.locator(`[data-interaction-detail='${card.id}'] [data-vault-unlock]`).waitFor();
    await page.screenshot({path:evidence+`/next-needs-unlock-dpr${dpr}.png`});
    // Owner unlocks from the Vault window while the agent card is pending.
    await page.keyboard.press('Escape');await unlockOnce(true);
    await waitFor(async()=>(await count())===before+2,'notified generation succeeds',180000);await settle();
-   cell.notificationConsumed=!(await vaultStatus()).unlocked;assert.equal(cell.notificationConsumed,true);
+   cell.notificationConsumed=!(await vaultStatus()).unlocked;await save();assert.equal(cell.notificationConsumed,true);
    assert.equal((await cards()).length,0);
    await page.screenshot({path:evidence+`/notification-consumed-dpr${dpr}.png`});
 
@@ -116,7 +121,7 @@ try {
    for(const [tool,field]of [['chariox.kernel_browser_paste_secret','password input'],['chariox.vault.fill_field','username text input']]) {
     await unlockOnce();
     const marker=`FILLED_${dpr}_${cell.browserFills.length}`;
-    await prompt(`Call ${tool} exactly once with credential_id "${handle}" into the ${field} observed in the GitHub login tab from the previous turn, with submit false. Use its observed tab_id, generation, document_id and node_ref. Do not submit, navigate, read any secret, or call other tools. Only if the tool returns inserted true, reply exactly ${marker}. Otherwise report the error.`);
+    await prompt(`Take a fresh snapshot of the GitHub login tab and identify its ${field}. Then call ${tool} exactly once with credential_id "${handle}", with submit false, using tab_id, generation, document_id and node_ref from that fresh snapshot. Do not submit, navigate, read any secret, or call tools other than the snapshot and this fill. Only if the fill returns inserted true, reply exactly ${marker}. Otherwise report the error.`);
     await waitFor(async()=>(await page.locator(`[data-room-pane='${agentId}'] .pane-transcript-reply`).allTextContents()).some(text=>text.replace(/^[^A-Za-z0-9]+/,'').startsWith(marker)),'real browser fill succeeds',180000);
     await settle();assert.equal((await vaultStatus()).unlocked,false,'browser fill consumes the owner unlock');
     cell.browserFills.push({tool,...await observedFill(tool),vaultLocked:true});await save();
@@ -135,6 +140,15 @@ try {
  report.status='FAIL';report.phase=phase;
  const message=String(error.message);
  report.error=(fixture?message.split(fixture.passkey).join('[redacted]'):message).slice(0,400);
+ if(fixture&&sessionId) {
+  try {
+   const outline=(await fixture.send({GetSessionHistoryOutline:{session_id:sessionId,latest_prompt_count:1,include_prefetched_content:false}})).SessionHistoryOutline;
+   report.lastTurns=outline.agents.flatMap(a=>a.turns.map(t=>{
+    const text=t.summary?.entry?.text??'';
+    return {lifecycle:t.lifecycle,tools:t.blobs.filter(b=>b.kind==='provider_tool').map(b=>b.title),hasSummaryText:Boolean(text),unauthorized:/unauthorized|\b401\b/i.test(text),rateLimited:/\b429\b|response_too_many_failed_attempts/i.test(text)};
+   }));
+  }catch{report.historyDiagnosticUnavailable=true;}
+ }
  process.exitCode=1;
 }
 finally {
