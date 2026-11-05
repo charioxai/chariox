@@ -86,3 +86,105 @@ async fn elevated_reach_spawns_follow_the_reach_inbox() {
         }
     }
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: enrollment does not strand the owner's older rooms.
+#[tokio::test]
+async fn ordinary_reach_reads_pre_enrollment_rooms_as_their_member() {
+    let f =
+        super::tests::fixture_for_owner(None, true, "dev-stub", "dev-stub", None, "enrolled-owner");
+    let root = crate::test_support::TestWorktree::new("reach-before-enrollment");
+    let (legacy, agent) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(root.session_request())
+        .unwrap();
+    assert_eq!(legacy.owner_user_id(), "local");
+    let mut config = f.state.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "enrolled-owner".into(),
+        ..Default::default()
+    });
+    f.state.owned.config_projection.update(config);
+    let caller = f.state.reach_for_auth_token("sudo-fixture-bearer").unwrap();
+    assert_eq!(caller.owner_user_id, "enrolled-owner");
+    for request in [
+        json!({"GetSessionState": {"session_id": legacy.id()}}),
+        json!({"ListAgents": {"session_id": legacy.id()}}),
+    ] {
+        let result = f
+            .router
+            .dispatch_reach_tool_call(
+                "sudo-fixture-bearer",
+                "request",
+                json!({"request": request}),
+            )
+            .await
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+        let agents = if result.payload.get("SessionState").is_some() {
+            &result.payload["SessionState"]["session"]["agents"]
+        } else {
+            &result.payload["AgentsListed"]["agents"]
+        };
+        assert!(
+            agents
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["id"] == agent.id()),
+            "the local member's agent is visible: {result:?}"
+        );
+    }
+    let result = f.router.dispatch_reach_tool_call("sudo-fixture-bearer", "request", json!({"request": {"AttachToSession": {
+        "session_id": legacy.id(), "client_id": "reach-enrolled", "capability_level": "FullTerminal"
+    }}})).await.unwrap();
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        f.state
+            .owned
+            .attachment_store
+            .get_attachment(
+                result.payload["SessionAttached"]["attachment"]["id"]
+                    .as_str()
+                    .unwrap()
+            )
+            .unwrap()
+            .owner_user_id(),
+        "local"
+    );
+    // Membership/view mapping must not replace the authenticated identity or widen authority.
+    assert_eq!(
+        f.state
+            .reach_for_auth_token("sudo-fixture-bearer")
+            .unwrap()
+            .owner_user_id,
+        "enrolled-owner"
+    );
+    let result = f
+        .router
+        .dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "request",
+            json!({"request": {"UpdateAgentProfile": {
+                "session_id": legacy.id(), "agent_id": agent.id(), "model": "changed"
+            }}}),
+        )
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert_eq!(result.payload["code"], "reach_requires_sudo");
+    let (other, _) = crate::app::KernelSessionService::new(&mut *f.app.lock().await)
+        .create_session(root.session_request().with_owner_user_id("stranger"))
+        .unwrap();
+    let result = f
+        .router
+        .dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "request",
+            json!({"request": {"GetSessionState": {"session_id": other.id()}}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !result.ok,
+        "the owner's mapping does not admit another user's room"
+    );
+}

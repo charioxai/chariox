@@ -14,6 +14,9 @@ import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
 import { createServer } from "node:net"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
+import { CloudClient } from "../../apps/cli/dist/cloud-client.js"
+import { CloudClientCredentialStore } from "../../apps/cli/dist/cloud-client-credential-store.js"
+import { createCliRelayIdentityStore } from "../../apps/cli/dist/cli-relay-identity-store.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
 
 const flags = new Map()
@@ -43,7 +46,7 @@ const stackRoot = `/w/valenv/prs/${stack}`
 const meta = JSON.parse(readFileSync(`${stackRoot}/metadata.json`, "utf8"))
 const origin = `https://${meta.hostname}`
 const root = mkdtempSync(join(stateRoot, "machines-"))
-const children = [], steps = [], failures = []
+const children = [], clients = [], terminals = [], steps = [], failures = []
 const note = (name, data = {}) => {
   steps.push({ at: new Date().toISOString(), name, ...data })
   writeFileSync(join(evidence, "steps.json"), JSON.stringify(steps, null, 2) + "\n", { mode: 0o600 })
@@ -91,6 +94,7 @@ async function homeKernel() {
   children.push(child)
   note("process-start", { label: "home", pid: child.pid })
   const client = new LocalIpcClient(`ws://127.0.0.1:${ports[0]}/kernel`, { localAuthEnvironment: env, controlRequestRetryDeadlineMs: 1000 })
+  clients.push(client)
   const r = { dir, env, client, child, passkey: randomBytes(24).toString("hex") }
   r.rpc = async request => {
     const result = await client.send(request)
@@ -98,6 +102,12 @@ async function homeKernel() {
     return result
   }
   await until(async () => !!(await r.rpc({ RelayStatus: null })).RelayStatus, "home ready", 90000)
+  // MP-08 / MP-09 / MP-10 / MP-11: create the old room before normal enrollment.
+  if (flags.get("--legacy-room") === "yes") {
+    r.legacy = (await r.rpc({CreateSession: {workspace_id: join(dir, "work"), worktree_id: join(dir, "work"), alias: "before-enrollment"}})).SessionCreated
+    assert.equal(r.legacy.session.owner_user_id, "local")
+    await r.rpc({EndSession: {session_id: r.legacy.session.id}})
+  }
   const login = (await r.rpc({ StartCloudRelayLogin: { api_url: origin, client_alias: "Reach machines drill" } })).CloudRelayLoginStarted.login
   const accessKey = readFileSync(`${stackRoot}/config/browser-access-key`, "utf8").trim()
   const approval = await fetch(`${origin}/auth/dev/device/approve`, { method: "POST", headers: { "Content-Type": "application/json", "x-chariox-dev-auth-secret": accessKey },
@@ -106,9 +116,30 @@ async function homeKernel() {
   await delay(Math.max(5200, (login.interval_seconds ?? 5) * 1000 + 200))
   const enrolled = (await r.rpc({ PollCloudRelayLogin: { api_url: origin, device_code: login.device_code, supports_access_denied: true } })).CloudRelayLoginPolled.result
   assert.equal(enrolled.status, "approved")
+  r.owner = enrolled.profile.user_id
   await r.rpc({ ConnectCloudRelay: null })
   r.status = await until(async () => { const s = (await r.rpc({ RelayStatus: null })).RelayStatus.status; return s.connected && s }, "home relay connected", 90000, 1000)
   note("home-enrolled", { kernel: r.status.daemon_id, relay: r.status.relay_url, realm: enrolled.profile.realm_id })
+  if (r.legacy) {
+    const identity = createCliRelayIdentityStore(join(dir, "terminal/identity.json")).getOrCreate()
+    r.terminal = new CloudClient(new CloudClientCredentialStore(join(dir, "terminal/cloud.json")), () => identity)
+    terminals.push(r.terminal)
+    const profile = await r.terminal.login(origin, async ({userCode}) => {
+      const approved = await fetch(`${origin}/auth/dev/device/approve`, {method: "POST", headers: {"Content-Type": "application/json", "x-chariox-dev-auth-secret": accessKey},
+        body: JSON.stringify({userCode, email: meta.fixture_email, displayName: "Reach validation", accountSlug: stack, accountName: "Reach validation"}), signal: AbortSignal.timeout(30000)})
+      assert(approved.ok, `terminal device approval failed: ${approved.status}`)
+    })
+    r.owner = profile.userId
+    r.ownerClient = await r.terminal.connect(r.status.daemon_id)
+    clients.push(r.ownerClient)
+    r.ownerRpc = async request => {
+      const response = await r.ownerClient.send(request)
+      if (response.Error) throw Error(`owner ${Object.keys(request)[0]}: ${response.Error.code}`)
+      return response
+    }
+    // Creating through the real authenticated terminal sets the enrolled owner identity.
+  }
+
   return r
 }
 
@@ -142,7 +173,7 @@ async function main() {
   }
   const { model, variant } = providers[provider]
   const defaults = { provider, account_profile: accountProfile, model, effort: variant, permission_level: "yolo" }
-  const room = (await home.rpc({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "home-room", agent_defaults: defaults } })).SessionCreated
+  const room = (await (home.ownerRpc ?? home.rpc)({ CreateSession: { workspace_id: join(home.dir, "work"), worktree_id: join(home.dir, "work"), alias: "home-room", agent_defaults: defaults, ...(home.legacy ? {owner_user_id: home.owner} : {}) } })).SessionCreated
   const attached = (await home.rpc({ AttachToSession: { session_id: room.session.id, client_id: "reach-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   const agent = room.agent.id
   await home.rpc({ LaunchProviderRun: { session_id: room.session.id, agent_id: agent, adapter_key: provider, provider, account_profile: accountProfile, model, variant, native_tui: false } })
@@ -205,7 +236,12 @@ async function main() {
   }
   async function turn(text, marker, timeout = 900000) {
     const before = (await turnOf()).id
-    const submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
+    let submitted
+    if (home.legacy && photoCommand) {
+      writeFileSync(join(evidence, "legacy-ui.json"), JSON.stringify({origin, relay: home.status.relay_url, kernelId: home.status.daemon_id, sessionId: room.session.id, agentId: agent, prompt: text}))
+      assert(photograph("legacy-submit"), "the web prompt must be submitted before waiting for a turn")
+      submitted = Promise.resolve()
+    } else submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
     submitted.catch(error => note("submit-error", { message: String(error.message).slice(0, 300) }))
     await until(async () => { await pump(); const t = await turnOf(); return t.id !== before && t.done }, `agent turn (${marker})`, timeout, 2000).catch(error => note("turn-timeout", { message: error.message }))
     await submitted.catch(() => {})
@@ -218,11 +254,39 @@ async function main() {
   const photograph = phase => {
     if (!photoCommand) return
     try {
-      execFileSync("bash", ["-c", `${photoCommand} ${phase}`], { stdio: ["ignore", "inherit", "inherit"], timeout: 600000 })
+      execFileSync("bash", ["-c", `${photoCommand} ${phase}`], { stdio: ["ignore", "inherit", "inherit"], timeout: home.legacy ? 120000 : 600000 })
       note("photos", { phase })
-    } catch (error) { check(`the Machines view photographs at phase ${phase}`, false, { message: String(error.message).slice(0, 200) }) }
+      return true
+    } catch (error) { check(`the Machines view photographs at phase ${phase}`, false, { message: String(error.message).slice(0, 200) }); return false }
   }
   const request = body => JSON.stringify({ request: body })
+
+  if (home.legacy) {
+    assert.equal(room.agent.owner_user_id, home.owner)
+    assert.notEqual(home.owner, "local")
+    const providerRunId = (await state(room.session.id)).active_provider_run_id
+    const liveRun = (await home.rpc({GetProviderRun: {provider_run_id: providerRunId}})).ProviderRun.provider_run
+    assert.equal(liveRun.provider, provider)
+    assert.equal(liveRun.model, model)
+    note("legacy-agent-run", {provider: liveRun.provider, model: liveRun.model, variant: liveRun.variant})
+    // Enrollment adopts resident rooms; ended rooms retain their stored member.
+    const legacyState = await state(home.legacy.session.id)
+    assert.equal(legacyState.owner_user_id, "local")
+    assert.equal(legacyState.status, "Ended")
+    const legacyId = home.legacy.session.id, legacyAgent = home.legacy.agent.id
+    const rows = await turn([
+      "This is a regression drill. Use only chariox-reach MCP tools. No sudo. Call each request exactly once, including if an earlier call fails.",
+      `1. request with ${request({GetSessionState: {session_id: legacyId}})}.`,
+      `2. request with ${request({ListAgents: {session_id: legacyId}})}.`,
+      "Finish with LEGACY_DONE and the results. Do not use other tools or attempt a workaround.",
+    ].join("\n"), "LEGACY_DONE")
+    saveToolLog()
+    const answers = rows.filter(row => row.answer).map(row => row.answer)
+    check("the enrolled owner's reach reads the pre-enrollment room", answers.some(answer => answer.includes("SessionState") && answer.includes(legacyAgent)))
+    check("the enrolled owner's reach lists its local-owned agent", answers.some(answer => answer.includes("AgentsListed") && answer.includes(legacyAgent)))
+    photograph("legacy-done")
+    return
+  }
 
   if (flags.get("--rehearse") === "yes") {
     // No machine: the question and the tools are exercised with a revision the service refuses before it creates anything.
@@ -324,9 +388,12 @@ try {
 } catch (error) {
   note("FAIL", { message: stripped(String(error.message)) }); process.exitCode = 1
 } finally {
+  await Promise.allSettled(clients.map(client => client.close()))
+  for (const terminal of terminals) terminal.stop()
   const stopped = await Promise.allSettled(children.toReversed().map(stop))
   const failed = stopped.some(result => result.status === "rejected")
-  if (!failed && (!failures.length || flags.get("--discard") === "yes")) rmSync(root, { recursive: true, force: true })
+  const stateRemoved = !failed && (!failures.length || flags.get("--discard") === "yes")
+  if (stateRemoved) rmSync(root, { recursive: true, force: true })
   else process.exitCode = 1
-  note("cleanup", { stateRemoved: !failed, liveChildren: children.filter(c => c.exitCode === null && c.signalCode === null).map(c => c.pid) })
+  note("cleanup", { stateRemoved, liveChildren: children.filter(c => c.exitCode === null && c.signalCode === null).map(c => c.pid) })
 }
