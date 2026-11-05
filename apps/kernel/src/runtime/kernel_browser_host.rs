@@ -29,6 +29,7 @@ pub(crate) struct KernelBrowserHost {
     authority_epoch: Arc<AtomicU64>,
     web_bot_auth_revision: Arc<AtomicU64>,
     terminal_leases: terminal_lease::TerminalLeases,
+    person_inputs: Arc<person_input::PersonInputs>,
 }
 #[derive(Default)]
 struct HostState {
@@ -150,6 +151,7 @@ impl KernelBrowserHost {
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
+            person_inputs: Arc::default(),
         })
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -1692,6 +1694,7 @@ mod dialog_tests;
 mod native_input_tests;
 
 mod access;
+mod person_input;
 mod terminal_lease;
 pub(crate) use terminal_lease::TerminalLease;
 #[cfg(test)]

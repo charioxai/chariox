@@ -1,3 +1,4 @@
+import { captureBackgroundRenderer } from './kernel-browser-background.mjs';
 import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
@@ -107,7 +108,7 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS } = {}) {
     this.root = root;
     this.personIdleMs = personIdleMs;
     this.timing = displayTiming(root);
@@ -272,6 +273,8 @@ export class KernelBrowserHost {
     await this.downloads.close();
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
+    this.backgroundHolds.clear();this.personInputAt.clear();
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
@@ -701,6 +704,8 @@ export class KernelBrowserHost {
       if (!this.downloads.bindings.has(tab.target_id)) this.downloads.bind(tab,
         this.downloads.bindings.get(tab.opener_target_id)?.session ?? "browser-viewer");
     }
+    for (const target of [...this.backgroundHolds.keys()]) if (![...this.tabs.values()].some(tab => tab.target_id === target)) void this.releaseBackground(target);
+    for (const id of [...this.personInputAt.keys()]) if (!this.tabs.has(id)) this.personInputAt.delete(id);
     // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
     for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
     // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
@@ -758,9 +763,10 @@ export class KernelBrowserHost {
       for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
     });
   }
-  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession } = {}) {
-    await this.closeCompositors();this.foreground.reset();
-    await this.createTab(url, tabId, { signal, downloadSession });
+  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession, background = false } = {}) {
+    // A background Tab leaves the shown Tab, and the native claim on it, as they are.
+    if (!background) { await this.closeCompositors();this.foreground.reset(); }
+    await this.createTab(url, tabId, { signal, downloadSession, background });
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
@@ -1049,7 +1055,14 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    // Only the person changes the visible Tab: an agent's new Tab opens behind it.
+    if (command.op === "open") {
+      const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session, background: Boolean(agentRequest) });
+      await this.rebindWindows();
+      const tab = agentRequest ? this.tabs.get(opened.tab_id) : null;
+      if (tab) await this.holdBackground(tab).catch(() => {});
+      return this.observe(opened, null, scope);
+    }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -1111,6 +1124,9 @@ export class KernelBrowserHost {
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
+    // An agent's Tab runs at full speed behind the shown one; the person's own input to it goes first.
+    if (agentRequest) await this.holdBackground(tab).catch(() => {});
+    if (agentRequest && command.op === "input" && !command._person_idle_checked) await this.personQuiet(tab.tab_id, signal);
     const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
