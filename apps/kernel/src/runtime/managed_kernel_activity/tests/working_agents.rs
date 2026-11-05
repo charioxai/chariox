@@ -41,7 +41,6 @@ fn managed_working_agents_change_alone_is_reported_again() {
     let waiting = crate::runtime::state::ManagedActivityObservation {
         working_agent_count: 1,
         changed_at_ms: 2_000,
-        ..idle
     };
     let second = cursor
         .next_report(waiting)

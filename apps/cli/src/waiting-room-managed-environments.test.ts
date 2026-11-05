@@ -9,8 +9,9 @@ import {
   waitingRoomManagedMachineFocusTargets,
 } from "./waiting-room-focus-targets.js"
 import {
-  cycleManagedCustomIdle,
-  managedEnvironmentAutoStopPolicy,
+  managedEnvironmentShutdownPolicy,
+  cycleManagedAutoStopPreset,
+  managedAutoStopLabel,
   managedEnvironmentContextPlanInput,
   managedEnvironmentDraftBlockReason,
   managedEnvironmentMachineRef,
@@ -627,23 +628,15 @@ test("missing managed catalog never retargets an explicit managed launch to loca
   })
 })
 
-test("custom auto-stop preserves an explicit never idle delay", () => {
-  const normalized = normalizeWaitingRoomState({
-    ...baseState(),
-    managedAutoStopPreset: "custom",
-    managedCustomMinimumRuntimeSeconds: 3600,
-    managedCustomIdleDelaySeconds: null,
-  }, [], catalog(), undefined, remote())
-
-  assert.equal(normalized.managedCustomIdleDelaySeconds, null)
-  assert.deepEqual(managedEnvironmentAutoStopPolicy(normalized), {
-    minimumRuntimeSeconds: 3600,
-    idleDelaySeconds: null,
-  })
-  assert.equal(cycleManagedCustomIdle({
-    ...normalized,
-    managedCustomIdleDelaySeconds: 3600,
-  }, 1).managedCustomIdleDelaySeconds, null)
+test("shutdown selector offers last-work warning, hard three-hour limit and manual", () => {
+  const initial = normalizeWaitingRoomState(baseState(), [], catalog(), undefined, remote())
+  assert.deepEqual(managedEnvironmentShutdownPolicy(initial), { kind: "last_work_finished", warningSeconds: 30 })
+  const hard = cycleManagedAutoStopPreset(initial, 1)
+  assert.deepEqual(managedEnvironmentShutdownPolicy(hard), { kind: "time_limit", durationSeconds: 10800 })
+  assert.match(managedAutoStopLabel(hard), /including active work/)
+  const manual = cycleManagedAutoStopPreset(hard, 1)
+  assert.deepEqual(managedEnvironmentShutdownPolicy(manual), { kind: "manual" })
+  assert.deepEqual(managedEnvironmentShutdownPolicy(cycleManagedAutoStopPreset(manual, 1)), { kind: "last_work_finished", warningSeconds: 30 })
 })
 
 test("source-backed plans require the connected Machine and kernel", () => {

@@ -26,8 +26,6 @@ import { cycleWaitingRoomProjectSelectionId } from "./waiting-room-projects.js"
 import {
   cycleManagedAutoStopPreset,
   cycleManagedComputeClass,
-  cycleManagedCustomIdle,
-  cycleManagedCustomMinimum,
   cycleManagedDevelopment,
   cycleManagedGitCredentials,
   cycleManagedKernelContext,
@@ -150,12 +148,6 @@ export function cycleWaitingRoomFocusedValue(
   }
   if (state.focus === "managed-auto-stop") {
     return context.normalizeState(cycleManagedAutoStopPreset(state, delta))
-  }
-  if (state.focus === "managed-custom-minimum") {
-    return context.normalizeState(cycleManagedCustomMinimum(state, delta))
-  }
-  if (state.focus === "managed-custom-idle") {
-    return context.normalizeState(cycleManagedCustomIdle(state, delta))
   }
   if (state.focus === "project") {
     return {

@@ -498,7 +498,9 @@ mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
 mod structured_prompt_dispatch;
-pub(crate) use managed_activity_persistence::{ManagedActivityCounts, ManagedActivityObservation};
+#[cfg(test)]
+pub(crate) use managed_activity_persistence::ManagedActivityCounts;
+pub(crate) use managed_activity_persistence::ManagedActivityObservation;
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;

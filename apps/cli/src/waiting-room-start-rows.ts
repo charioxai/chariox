@@ -22,7 +22,6 @@ import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
 import {
   DEFAULT_MANAGED_REPOSITORY_ROOT,
   managedAutoStopLabel,
-  managedDurationLabel,
   managedEnvironmentIsLaunchReady,
   managedKernelContextLabel,
   managedProviderAccountIsTransferable,
@@ -64,8 +63,6 @@ export function waitingRoomStartRows(
     | "managedProviderAccountIndex"
     | "managedGitCredentialSource"
     | "managedAutoStopPreset"
-    | "managedCustomMinimumRuntimeSeconds"
-    | "managedCustomIdleDelaySeconds"
     | "providerId"
     | "accountProfileId"
     | "modelId"
@@ -420,24 +417,6 @@ export function waitingRoomManagedMachineDialogRows(
       titleWidth,
     ),
     startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state), state, titleWidth),
-    ...(state.managedAutoStopPreset === "custom"
-      ? [
-          startRow(
-            "managed-custom-minimum",
-            "Minimum runtime",
-            managedDurationLabel(state.managedCustomMinimumRuntimeSeconds),
-            state,
-            titleWidth,
-          ),
-          startRow(
-            "managed-custom-idle",
-            "Idle delay",
-            managedDurationLabel(state.managedCustomIdleDelaySeconds),
-            state,
-            titleWidth,
-          ),
-        ]
-      : []),
   ]
 }
 

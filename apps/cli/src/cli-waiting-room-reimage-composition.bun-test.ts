@@ -1133,7 +1133,7 @@ function environment(overrides: Partial<ManagedEnvironmentSummary> = {}): Manage
     runtimeReleaseDigest: "sha256:new-release",
     contextPlan: emptyPlan(),
     contextManifestDigest: "sha256:manifest",
-    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+    shutdownPolicy: { kind: "last_work_finished", warningSeconds: 30 },
     lastErrorCode: null,
     lastErrorMessage: null,
     createdAt: "2026-09-22T00:00:00.000Z",
