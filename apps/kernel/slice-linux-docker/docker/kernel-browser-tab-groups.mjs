@@ -23,6 +23,8 @@ const shown = new Map(), made = new Map();
 // creation by an opener that was not the shown Tab is put back behind it, like one created active.
 const keepActivated = (info, before) => {
   const tab = made.get(info.tabId);
+  // Only the initial activation belongs to opening; subsequent selections belong to the person.
+  made.delete(info.tabId);
   if (tab && Date.now() - tab.at < 1500 && tab.opener !== undefined && before !== undefined && before !== info.tabId && tab.opener !== before) chrome.tabs.update(before, { active: true }).catch(() => {});
 };
 for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(info => { if (kind === 'activated' && info) { const before = shown.get(info.windowId); shown.set(info.windowId, info.tabId); keepActivated(info, before); } invalidateNativeState(kind)(); });

@@ -292,3 +292,18 @@ test('a page opened by a background Tab that Chrome shows a moment after creatin
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(calls, [], 'a Tab the person chooses is left alone');
 });
+
+// MP-08/MP-10/MP-11: the opening guard must yield to the person's later selection.
+test('a person can select a new background popup after its automatic activation is restored', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: false, openerTabId: 5 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  listeners.activated({ tabId: 9, windowId: 10 });
+  listeners.activated({ tabId: 1, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'automatic opening stays in the background');
+  calls.length = 0;
+  listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [], 'the person selects the new popup immediately, within the opening guard window');
+});
