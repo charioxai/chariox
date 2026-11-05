@@ -1469,27 +1469,66 @@ async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key()
     let f = &login.f;
     unlock(f);
     let first = call(f, CAPTURE, capture_args("equal-first")).await.unwrap();
-    let second = call(f, CAPTURE, capture_args("equal-second")).await.unwrap();
+    let second = call(f, CAPTURE, capture_args("equal-second"))
+        .await
+        .unwrap();
     let first = first["credential_id"].as_str().unwrap();
     let second = second["credential_id"].as_str().unwrap();
     let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
-    assert_ne!(registry.get(first).unwrap().unwrap().source, registry.get(second).unwrap().unwrap().source);
+    assert_ne!(
+        registry.get(first).unwrap().unwrap().source,
+        registry.get(second).unwrap().unwrap().source
+    );
     call(f, FILL, paste_args(second)).await.unwrap();
-    call(f, REMOVE, json!({"credential_id": first})).await.unwrap();
+    call(f, REMOVE, json!({"credential_id": first}))
+        .await
+        .unwrap();
     assert_eq!(stored(f, second).as_str(), CAPTURED);
     assert!(registry.get(first).unwrap().is_none());
-    let observed = call(f, "chariox.kernel_browser", json!({"command": {
-        "op": "snapshot", "tab_id": "host-tab-new", "generation": 1
-    }})).await.unwrap();
-    assert_eq!(observed["snapshot"]["dom_nodes"][0]["text"], "echo [redacted]",
-        "removing another key must not expose the retained entry through the outer MCP response");
+    let observed = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command": {
+            "op": "snapshot", "tab_id": "host-tab-new", "generation": 1
+        }}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        observed["snapshot"]["dom_nodes"][0]["text"], "echo [redacted]",
+        "removing another key must not expose the retained entry through the outer MCP response"
+    );
     let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
-    let policy: Value = serde_json::from_str(&f.state.owned.kernel_browser_secret_observations.capture_policy(&scope).unwrap()).unwrap();
-    assert!(!policy["targets"].as_array().unwrap().is_empty(), "the model frame still needs its field mask");
-    assert_eq!(f.state.owned.room_secret_observations.scrub_text_or_withhold(&f.request.session_id, CAPTURED), "[redacted]");
-    call(f, REMOVE, json!({"credential_id": second})).await.unwrap();
-    assert_eq!(f.state.owned.kernel_browser_secret_observations.scrub_text_or_withhold(&scope, CAPTURED), CAPTURED,
-        "removing the last owner still undoes mistaken protection");
+    let policy: Value = serde_json::from_str(
+        &f.state
+            .owned
+            .kernel_browser_secret_observations
+            .capture_policy(&scope)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        !policy["targets"].as_array().unwrap().is_empty(),
+        "the model frame still needs its field mask"
+    );
+    assert_eq!(
+        f.state
+            .owned
+            .room_secret_observations
+            .scrub_text_or_withhold(&f.request.session_id, CAPTURED),
+        "[redacted]"
+    );
+    call(f, REMOVE, json!({"credential_id": second}))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.state
+            .owned
+            .kernel_browser_secret_observations
+            .scrub_text_or_withhold(&scope, CAPTURED),
+        CAPTURED,
+        "removing the last owner still undoes mistaken protection"
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 review P2: the outer MCP scrub preserves control replies.
@@ -1500,18 +1539,37 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
     let f = &login.f;
     unlock(f);
     std::fs::write(login.root.path().join("value"), "Tabs").unwrap();
-    call(f, CAPTURE, capture_args("state-schema-label")).await.unwrap();
+    call(f, CAPTURE, capture_args("state-schema-label"))
+        .await
+        .unwrap();
     for command in [
         json!({"op":"state"}),
         json!({"op":"open","url":SITE}),
         json!({"op":"navigate","tab_id":"host-tab-new","generation":1,"url":SITE}),
-        json!({"op":"input","tab_id":"host-tab-new","generation":1,"document_id":"doc-login","input":{"kind":"key","key":"ArrowDown"}}),
+        json!({"op":"input","tab_id":"host-tab-new","generation":1,"input":{"kind":"key","key":"ArrowDown"}}),
     ] {
-        let result = call(f, "chariox.kernel_browser", json!({"command":command})).await.unwrap();
+        let arguments = if command["op"] == "input" {
+            json!({"document_id":"doc-login", "command":command})
+        } else {
+            json!({"command":command})
+        };
+        let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
         assert_eq!(result["generation"], 1);
-        assert!(result["tabs"].is_array(), "capturing Tabs must preserve browser inventory through every boundary");
+        assert!(
+            result["tabs"].is_array(),
+            "capturing Tabs must preserve browser inventory through every boundary"
+        );
         assert_eq!(result["tabs"][0]["tab_id"], "host-tab-new");
     }
+    let stopped = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"stop"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stopped["state"], "stopped");
+    assert_eq!(stopped["tabs"], json!([]));
 }
 
 #[tokio::test]

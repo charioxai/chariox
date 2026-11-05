@@ -637,7 +637,9 @@ fn a_dropped_value_stays_dropped_in_a_room_not_yet_loaded_after_restart() {
 
     let restarted = RoomSecretObservations::new(path.clone(), BTreeSet::from(["room".into()]))
         .with_identity(&key);
-    assert!(restarted.drop_value("room", "cap-1", "Token").unwrap());
+    assert!(restarted
+        .drop_value("room", "cap-1", "Token", false)
+        .unwrap());
     assert_eq!(
         restarted.scrub_text_or_withhold("room", "Token page"),
         "Token page"
@@ -654,7 +656,7 @@ fn a_dropped_value_stays_dropped_in_a_room_not_yet_loaded_after_restart() {
         "[redacted]"
     );
     assert!(!again
-        .drop_value("never-protected", "cap-1", "Token")
+        .drop_value("never-protected", "cap-1", "Token", false)
         .unwrap());
 }
 

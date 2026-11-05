@@ -1,6 +1,6 @@
 //! `chariox.vault.remove_capture` undoes a capture the same agent made by mistake (a label
-//! instead of the value): the Vault entry and the protection of its value go together, so
-//! the page reads normally again. No person approves it; the agent chose the capture itself.
+//! instead of the value). The last owner of its bytes releases observation protection.
+//! No person approves it; the agent chose the capture itself.
 use super::capture::CAPTURED_KIND;
 use super::*;
 use crate::transport::runtime_tools::{RuntimeToolResult, RuntimeToolSpec};
@@ -16,7 +16,7 @@ struct RemoveArgs {
 pub(crate) fn remove_capture_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: VAULT_REMOVE_CAPTURE.into(),
-        description: "remove a Vault entry that this agent captured in this session (capture_browser, capture_command or capture_file), for example after capturing a label instead of the value. The entry's value stops being masked in what you observe. The result names what was removed (credential_id, label, length); the value is never returned. Entries made by the owner, by another agent or by generate cannot be removed with this tool.".into(),
+        description: "remove a Vault entry that this agent captured in this session (capture_browser, capture_command or capture_file), for example after capturing a label instead of the value. The entry's value stops being masked unless another Vault entry still owns the same value. The result names what was removed (credential_id, label, length); the value is never returned. Entries made by the owner, by another agent or by generate cannot be removed with this tool.".into(),
         input_schema: serde_json::json!({"type":"object","required":["credential_id"],"properties":{
             "credential_id":{"type":"string","minLength":1,"maxLength":128}},
             "additionalProperties":false}),
@@ -71,6 +71,23 @@ impl KernelRuntimeState {
         let value = service
             .vault_secret_for_dictation(key)?
             .ok_or_else(|| error("this entry holds no value"))?;
+        // Different Vault keys may hold identical bytes. Check ownership while
+        // the lifecycle guard excludes capture, fill and owner mutations.
+        let mut retained = false;
+        for other in registry.list()? {
+            if other.id == entry.id {
+                continue;
+            }
+            if let crate::config::UserCredentialSourceConfig::Vault { key: other_key } =
+                &other.source
+            {
+                if service.vault_secret_for_dictation(other_key)?.as_deref() == Some(value.as_str())
+                {
+                    retained = true;
+                    break;
+                }
+            }
+        }
         let length = value.chars().count();
         super::super::owner_vault::commit_entry(
             &service,
@@ -81,12 +98,12 @@ impl KernelRuntimeState {
             "Removed by the agent that captured it",
         )?;
         let browser_user = self.provider_account_authority_owner_user_id(&context.owner_user_id);
-        self.drop_protected_value(&browser_user, key, &value)
+        self.drop_protected_value(&browser_user, key, &value, retained)
             .await?;
         Ok(RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"removed": [{"credential_id": entry.id, "label": entry.description, "length": length}],
-                "protection_dropped": true}),
+                "protection_dropped": !retained}),
         })
     }
 }

@@ -136,6 +136,29 @@ export function redactObservation(value, protectedValues) {
   return observationScrubber(protectedValues)(value);
 }
 
+// Inventory replies have a fixed schema. Only these fields originate on the
+// page; rewriting keys, enums or opaque IDs would break the next browser action.
+export function redactBrowserState(state, protectedValues) {
+  const scrub = observationScrubber(protectedValues);
+  const result = { ...state };
+  for (const [collection, fields] of [
+    ['tabs', ['title', 'url']],
+    ['dialogs', ['message', 'default_prompt', 'origin']],
+    ['downloads', ['name', 'path']],
+  ]) {
+    if (!Array.isArray(result[collection])) continue;
+    result[collection] = result[collection].map(item => {
+      const clean = { ...item };
+      for (const field of fields) {
+        if (collection === 'dialogs' && field === 'message' && clean.kind === 'permission') continue;
+        if (Object.hasOwn(clean, field)) clean[field] = scrub(clean[field]);
+      }
+      return clean;
+    });
+  }
+  return result;
+}
+
 function observationScrubber(protectedValues) {
   const ordered = observationSpellings(protectedValues);
   const scrub = (input) => {

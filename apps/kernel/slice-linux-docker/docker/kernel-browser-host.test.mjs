@@ -3078,6 +3078,7 @@ for (const word of ['Tabs', 'generation', 'ready', 'host-tab-protocol']) {
       { op: 'input', tab_id: opened.tab_id, generation: opened.generation, document_id: 'doc-target-1', input: { kind: 'key', key: 'ArrowDown' } },
     ]) {
       for (const page of pages.values()) page.title = 'Page ' + word;
+      if (command.op === 'input') command.document_id = host.tabs.get(opened.tab_id).document_id;
       const reply = await host.handle({ id: 888, method: 'host.browser', params: command });
       assert.equal(reply.ok, true, command.op + ': ' + JSON.stringify(reply.error));
       assert.equal(reply.result.state, 'ready', command.op + ' keeps state enum');

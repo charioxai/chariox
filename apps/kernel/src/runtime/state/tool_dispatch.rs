@@ -296,8 +296,24 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let kernel_snapshot =
-            tool_name == "chariox.kernel_browser" && arguments["command"]["op"] == "snapshot";
+        let kernel_browser = tool_name == "chariox.kernel_browser";
+        let kernel_snapshot = kernel_browser && arguments["command"]["op"] == "snapshot";
+        let browser_state = kernel_browser
+            && matches!(
+                arguments["command"]["op"].as_str(),
+                Some(
+                    "start"
+                        | "state"
+                        | "open"
+                        | "close"
+                        | "navigate"
+                        | "resize"
+                        | "input"
+                        | "dialog"
+                        | "cancel_download"
+                        | "stop"
+                )
+            );
         let rooms = self
             .owned
             .provider_store
@@ -326,6 +342,8 @@ impl KernelRuntimeState {
             let protection = &self.owned.room_secret_observations;
             if kernel_snapshot {
                 result.payload = protection.scrub_kernel_snapshot_result(&room, result.payload)?;
+            } else if browser_state {
+                result.payload = protection.scrub_kernel_browser_state(&room, result.payload)?;
             } else {
                 result = protection.scrub_runtime_result(&room, result)?;
             }

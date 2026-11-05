@@ -1,6 +1,6 @@
 //! MP-08/MP-10/MP-11: Room-scoped observation protection, below every client.
 //! Values use zeroizing memory and a private runtime-identity-sealed registry.
-//! Retired values are scrub-only for the Room lifetime; deletion wipes them.
+//! Retired values are scrub-only for the Room lifetime; last-owner deletion wipes them.
 //! Vault values never inserted into the Room are scrub-only and never fence streams.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -11,6 +11,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
+mod browser_state;
 mod lifecycle;
 mod revocation;
 mod snapshot;
@@ -437,13 +438,14 @@ impl RoomSecretObservations {
         Ok(())
     }
 
-    /// An agent undoes its own mistaken capture: the value stops being scrubbed, masked and fenced.
-    /// Returns whether this Room knew it. Earlier scrubbed history keeps its markers.
+    /// Remove this key's provenance. Another key owning the same bytes keeps
+    /// the value and target protection; the last removal undoes the capture.
     pub(super) fn drop_value(
         &self,
         room: &str,
         key: &str,
         value: &str,
+        retained: bool,
     ) -> Result<bool, DaemonError> {
         let room = self.room_key(room);
         let _history_guard = self
@@ -463,16 +465,18 @@ impl RoomSecretObservations {
         let hash = format!("{:x}", Sha256::digest(value.as_bytes()));
         let known = protection.value_count();
         let (targets, keys) = (protection.targets.len(), protection.vault_keys.len());
-        for values in [
-            &mut protection.values,
-            &mut protection.retired_values,
-            &mut protection.stored_values,
-        ] {
-            values.retain(|known| known.as_str() != value);
+        if !retained {
+            for values in [
+                &mut protection.values,
+                &mut protection.retired_values,
+                &mut protection.stored_values,
+            ] {
+                values.retain(|known| known.as_str() != value);
+            }
+            protection
+                .targets
+                .retain(|target| target["value_hash"] != hash);
         }
-        protection
-            .targets
-            .retain(|target| target["value_hash"] != hash);
         protection.vault_keys.remove(key.trim());
         if (known, targets, keys)
             == (

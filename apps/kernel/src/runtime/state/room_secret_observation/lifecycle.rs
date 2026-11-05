@@ -48,12 +48,14 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// Forgets a value in every Room and in the user-domain browser of `owner`, after its Vault entry was removed.
+    /// Drop deleted-key provenance in every scope; retain masks while another
+    /// Vault key still owns the same bytes.
     pub(in crate::runtime::state) async fn drop_protected_value(
         &self,
         owner: &str,
         key: &str,
         value: &str,
+        retained: bool,
     ) -> Result<(), DaemonError> {
         let protection = &self.owned.kernel_browser_secret_observations;
         let mut scopes = self
@@ -67,12 +69,12 @@ impl KernelRuntimeState {
         }
         for scope in scopes {
             let _barrier = protection.barrier(&scope)?.write_owned().await;
-            protection.drop_value(&scope, key, value)?;
+            protection.drop_value(&scope, key, value, retained)?;
         }
         for session in self.owned.session_store.list_all_sessions() {
             self.owned
                 .room_secret_observations
-                .drop_value(session.id(), key, value)?;
+                .drop_value(session.id(), key, value, retained)?;
         }
         Ok(())
     }

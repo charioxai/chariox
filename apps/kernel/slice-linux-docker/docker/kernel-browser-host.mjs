@@ -31,7 +31,7 @@ import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-g
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
-import { redactObservation, redactSnapshot } from "./browser-controller-snapshot.mjs";
+import { redactObservation, redactSnapshot, redactBrowserState } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { publicUploadFailure } from "./kernel-browser-upload.mjs";
@@ -557,7 +557,7 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
-    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
+    return redactBrowserState({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
         ...tab,
         ...this.header.read(tab),
@@ -1376,6 +1376,9 @@ export class KernelBrowserHost {
         // and other host replies receive the same protection at this boundary.
         if (request.params?.op === "snapshot") {
           return { id: request.id, ok: true, result: { ...result, snapshot: redactSnapshot(result.snapshot, this.protection.values) } };
+        }
+        if (Array.isArray(result?.tabs) && Number.isSafeInteger(result.generation)) {
+          return { id: request.id, ok: true, result: redactBrowserState(result, this.protection.values) };
         }
         if (!["screenshot", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };

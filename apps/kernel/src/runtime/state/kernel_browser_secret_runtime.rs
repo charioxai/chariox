@@ -139,6 +139,22 @@ impl KernelRuntimeState {
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
         let snapshot = method == "host.browser" && params["op"] == "snapshot";
         let card_region = method == "host.browser" && params["op"] == "popup_region";
+        let browser_state = method == "host.browser"
+            && matches!(
+                params["op"].as_str(),
+                Some(
+                    "start"
+                        | "state"
+                        | "open"
+                        | "close"
+                        | "navigate"
+                        | "resize"
+                        | "input"
+                        | "dialog"
+                        | "cancel_download"
+                        | "stop"
+                )
+            );
         let input =
             matches!(method.as_str(), "host.browser" | "host.computer") && params["op"] == "input";
         let at = std::time::Instant::now();
@@ -167,6 +183,9 @@ impl KernelRuntimeState {
                 *origin = protection.scrub(&scope, origin.take())?;
             }
             return Ok(result);
+        }
+        if browser_state {
+            return protection.scrub_kernel_browser_state(&scope, result);
         }
         scrub_browser_result(
             protection, &scope, result, pixels, display, mirror, snapshot,

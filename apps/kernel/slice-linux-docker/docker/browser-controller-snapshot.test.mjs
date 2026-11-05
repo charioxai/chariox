@@ -191,3 +191,25 @@ test("MP-08/MP-11 observed controls after decorative nodes fit in the DOM budget
   assert(snapshot.dom_nodes.every(n=>n.parent_ref===null||refs.has(n.parent_ref)));
   assert.equal(snapshot.dom_nodes.at(-1).parent_ref,"backend:2");
 });
+
+// MP-08 / MP-09 / MP-10 / MP-11 review P2: fixed dialog/download metadata is not page text.
+test('MP-11 browser inventory scrubs page fields while preserving protocol metadata', () => {
+  const state = {
+    state: 'ready', generation: 7, active_tab_id: 'same-value',
+    tabs: [{tab_id:'same-value',document_id:'same-value',title:'same-value',url:'https://example.com/same-value'}],
+    dialogs: [{dialog_id:'same-value',document_id:'same-value',kind:'prompt',message:'same-value',default_prompt:'same-value',origin:'https://same-value.test'}, {dialog_id:'permission',kind:'permission',message:'geolocation',origin:'https://same-value.test'}],
+    downloads: [{download_id:'same-value',tab_id:'same-value',state:'done',name:'same-value',path:'/work/same-value'}],
+  };
+  const clean = observations.redactBrowserState(state, ['same-value', 'ready', 'prompt', 'done', 'generation', 'geolocation']);
+  assert.equal(clean.state, 'ready'); assert.equal(clean.generation, 7);
+  assert.equal(clean.active_tab_id, 'same-value');
+  assert.equal(clean.tabs[0].tab_id, 'same-value'); assert.equal(clean.tabs[0].document_id, 'same-value');
+  assert.equal(clean.tabs[0].title, '[redacted]'); assert.equal(clean.tabs[0].url, 'https://example.com/[redacted]');
+  assert.equal(clean.dialogs[0].dialog_id, 'same-value'); assert.equal(clean.dialogs[0].kind, 'prompt');
+  assert.equal(clean.dialogs[0].message, '[redacted]'); assert.equal(clean.dialogs[0].default_prompt, '[redacted]');
+  assert.equal(clean.dialogs[0].origin, 'https://[redacted].test');
+  assert.equal(clean.dialogs[1].message, 'geolocation');
+  assert.equal(clean.dialogs[1].origin, 'https://[redacted].test');
+  assert.equal(clean.downloads[0].download_id, 'same-value'); assert.equal(clean.downloads[0].state, 'done');
+  assert.equal(clean.downloads[0].name, '[redacted]'); assert.equal(clean.downloads[0].path, '/work/[redacted]');
+});
