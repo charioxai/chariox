@@ -48,11 +48,11 @@ operations are the only admitted child wait/output path, enforced by source lint
 
 ## Inventory at the incident base
 
-The attached [site inventory](KERNEL_LOCK_SITES.tsv) enumerates 3,382 declaration,
+The attached [site inventory](KERNEL_LOCK_SITES.tsv) enumerates 3,370 declaration,
 acquisition, environment-lock, and read/write candidates at incident base
 `96f1c682ac`, with the enclosing function, approximate guard scope and blocking
 operations in that scope. The [global inventory](KERNEL_LOCK_GLOBALS.tsv) lists
-110 global ownership/lock declarations. Line numbers refer to that base, before
+109 global ownership/lock declarations. Line numbers refer to that base, before
 this change. Test-named paths and explicit test-only items are excluded from the
 site table; the global table deliberately retains a few test statics and immutable
 OnceLocks as candidates. A read/write candidate is not necessarily an RwLock.
