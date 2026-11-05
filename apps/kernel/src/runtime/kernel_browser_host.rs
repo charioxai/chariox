@@ -1038,6 +1038,12 @@ impl KernelBrowserHost {
         result
     }
     fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {
+        // Same order as `lease_terminal`: a viewer that connected before the model existed is
+        // registered here, so a takeover can move to it when the viewer that took it leaves.
+        let leases = self
+            .terminal_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut state = self
             .inner
             .lock()
@@ -1048,7 +1054,17 @@ impl KernelBrowserHost {
         Ok(state
             .actors
             .entry(user.into())
-            .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
+            .or_insert_with(|| {
+                let mut model = KernelBrowserActors::default();
+                for (_, viewer) in leases.keys().filter(|(leased, _)| leased == user) {
+                    model.viewer_connected(EnvironmentActor::new(
+                        viewer,
+                        EnvironmentActorKind::Human,
+                        "Human",
+                    ));
+                }
+                Arc::new(Mutex::new(model))
+            })
             .clone())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from

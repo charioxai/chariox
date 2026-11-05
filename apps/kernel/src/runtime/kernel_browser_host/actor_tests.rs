@@ -1936,3 +1936,47 @@ fn mp10_replacement_viewer_lease_recovers_the_orphaned_takeover_for_its_lifetime
         .unwrap()
         .is_empty());
 }
+
+#[test]
+fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-overlap"));
+    let input = |tab: &str| json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}});
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let first = host.lease_terminal("alice", "terminal:a");
+    let second = host.lease_terminal("alice", "terminal:b");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(first);
+    let timeout = super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT;
+    model
+        .lock()
+        .unwrap()
+        .reclaim_lapsed_takeovers(Instant::now() + timeout);
+    let ownership =
+        |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(
+        model.lock().unwrap().begin(agent(), &input("a")).is_err(),
+        "the agent stays fenced while the person's other viewer is connected"
+    );
+    // The last viewer's absence is the only thing that starts the timeout.
+    drop(second);
+    assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
+    model
+        .lock()
+        .unwrap()
+        .reclaim_lapsed_takeovers(Instant::now() + timeout);
+    assert!(ownership(&host).as_array().unwrap().is_empty());
+}

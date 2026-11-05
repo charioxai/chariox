@@ -690,8 +690,14 @@ impl KernelBrowserActors {
             }
         }
         if keeps_takeover {
-            self.orphaned_takeovers
-                .insert(actor_id.into(), Instant::now() + ORPHANED_TAKEOVER_TIMEOUT);
+            if let Some(remaining) = self.live_viewer_other_than(actor_id) {
+                self.ledger.transfer_tab_ownership(actor_id, &remaining);
+                self.actors.remove(actor_id);
+                self.seen.remove(actor_id);
+            } else {
+                self.orphaned_takeovers
+                    .insert(actor_id.into(), Instant::now() + ORPHANED_TAKEOVER_TIMEOUT);
+            }
         } else {
             self.actors.remove(actor_id);
             self.seen.remove(actor_id);
@@ -707,6 +713,19 @@ impl KernelBrowserActors {
         if self.register(actor).is_ok() {
             self.adopt_orphaned_takeovers(&actor_id);
         }
+    }
+
+    /// A viewer of the person that is still connected: it continues a takeover whose own viewer left,
+    /// so a takeover is only orphaned when no viewer of the person is left.
+    fn live_viewer_other_than(&self, actor_id: &str) -> Option<String> {
+        self.actors
+            .iter()
+            .find(|(id, actor)| {
+                id.as_str() != actor_id
+                    && actor.kind == EnvironmentActorKind::Human
+                    && !self.orphaned_takeovers.contains_key(id.as_str())
+            })
+            .map(|(id, _)| id.clone())
     }
 
     /// A renewed authenticated connection no longer has an orphan deadline.
