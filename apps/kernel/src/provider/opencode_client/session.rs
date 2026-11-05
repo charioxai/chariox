@@ -10,6 +10,9 @@ use crate::error::DaemonError;
 
 use super::{OpenCodeClient, OpenCodeMessage};
 
+/// Runtime reconciliation only needs a recent window; never fetch an unbounded transcript.
+pub(super) const RECENT_MESSAGE_LIMIT: usize = 100;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenCodeSessionSnapshot {
     pub status: OpenCodeSessionStatus,
@@ -126,7 +129,7 @@ impl OpenCodeClient {
 
     pub fn snapshot(&self, session_id: &str) -> Result<OpenCodeSessionSnapshot, DaemonError> {
         let status = self.session_status(session_id)?;
-        let messages = self.messages(session_id)?;
+        let messages = self.recent_messages(session_id)?;
 
         Ok(OpenCodeSessionSnapshot { status, messages })
     }
@@ -140,7 +143,11 @@ impl OpenCodeClient {
             .unwrap_or_else(|| "idle".into()))
     }
 
-    pub fn messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {
-        self.send_json_request("GET", &format!("/session/{session_id}/message"), None)
+    pub fn recent_messages(&self, session_id: &str) -> Result<Vec<OpenCodeMessage>, DaemonError> {
+        self.send_json_request(
+            "GET",
+            &format!("/session/{session_id}/message?limit={RECENT_MESSAGE_LIMIT}"),
+            None,
+        )
     }
 }

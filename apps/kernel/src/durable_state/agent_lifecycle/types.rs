@@ -518,6 +518,12 @@ pub(crate) enum Operation {
         tail: String,
         now: u64,
     },
+    /// The owner can cancel a retained timer without a running provider turn.
+    CancelOwnerTimer {
+        id: String,
+        room: String,
+        owner: String,
+    },
     /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled
     /// task. `pending` means the driver must still stop the source physically
     /// and will report the end; a watched process always settles on its exit.

@@ -176,14 +176,19 @@ fn remote_workspace_live_sync_final_apply_rejects_worker_external_change() {
 
 #[test]
 fn workspace_live_sync_opaque_read_payload_includes_base64() {
-    let payload = workspace_live_sync_read_payload(crate::io::ArtifactReadResult {
-        artifact_id: crate::io::ArtifactId::new("artifact:opaque"),
-        path: PathBuf::from("asset.bin"),
-        domain: crate::io::ArtifactDomainKind::OpaqueBlob,
-        version: crate::io::ArtifactVersion::initial(),
-        snapshot_id: crate::io::ArtifactSnapshotId::new("snap:opaque:1"),
-        content: crate::io::ArtifactContent::Bytes(vec![0, 1, 255]),
-    });
+    let payload = workspace_live_sync_read_payload(
+        crate::io::ArtifactReadResult {
+            artifact_id: crate::io::ArtifactId::new("artifact:opaque"),
+            path: PathBuf::from("asset.bin"),
+            domain: crate::io::ArtifactDomainKind::OpaqueBlob,
+            version: crate::io::ArtifactVersion::initial(),
+            snapshot_id: crate::io::ArtifactSnapshotId::new("snap:opaque:1"),
+            content: crate::io::ArtifactContent::Bytes(vec![0, 1, 255]),
+        },
+        0,
+        None,
+    )
+    .expect("opaque read should produce a page");
 
     assert_eq!(payload["domain"], "opaque");
     assert_eq!(payload["byte_count"], 3);

@@ -79,6 +79,23 @@ pub struct CancelActivePromptRequest {
     pub expected_prompt_id: Option<String>,
 }
 
+/// Cancel one task at its displayed revision, including its retained resources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAgentTaskRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub task_id: String,
+    pub revision: u64,
+}
+
+/// Cancel one retained timer without cancelling its owning task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelAgentWakeRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub wake_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SteerQueuedPromptRequest {
     pub session_id: String,

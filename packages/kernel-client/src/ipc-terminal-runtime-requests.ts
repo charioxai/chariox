@@ -255,6 +255,16 @@ export function cancelActivePromptRequest(sessionId: string, attachmentId: strin
   }
 }
 
+export const agentCancellationMinimumProtocolVersion = 987
+
+export function cancelAgentTaskRequest(sessionId: string, attachmentId: string, taskId: string, revision: number) {
+  return { CancelAgentTask: { session_id: sessionId, attachment_id: attachmentId, task_id: taskId, revision } }
+}
+
+export function cancelAgentWakeRequest(sessionId: string, attachmentId: string, wakeId: string) {
+  return { CancelAgentWake: { session_id: sessionId, attachment_id: attachmentId, wake_id: wakeId } }
+}
+
 export function steerQueuedPromptRequest(
   sessionId: string,
   attachmentId: string,

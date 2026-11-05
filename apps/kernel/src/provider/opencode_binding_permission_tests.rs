@@ -196,7 +196,7 @@ pub(crate) fn assert_archived_opencode_resume_contract(
                 "/global/health" => r#"{"healthy":true}"#,
                 "/agent" => "[]",
                 path if path.ends_with("/prompt_async") => "",
-                path if path.ends_with("/message") => "[]",
+                path if path.ends_with("/message?limit=100") => "[]",
                 "/config/providers" => r#"{"providers":[],"default":{}}"#,
                 _ => "{}",
             };
@@ -230,7 +230,7 @@ pub(crate) fn assert_archived_opencode_resume_contract(
         .any(|request| request.starts_with("POST /session ")));
     assert!(requests
         .iter()
-        .any(|request| request.starts_with(&format!("GET /session/{saved}/message "))));
+        .any(|request| request.starts_with(&format!("GET /session/{saved}/message?limit=100 "))));
     assert!(requests
         .last()
         .unwrap()

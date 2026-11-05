@@ -56,6 +56,52 @@ separate acceptance cells in the end-to-end plan; focused regressions alone do
 not close the broader MP-10 matrix or the MP-11 security-anchor review.
 
 
+## MP-08 / MP-09 / MP-10 / MP-11 agent resume and parked work (2026-11-04)
+
+The shared Codex adapter resumes with the official app-server `excludeTurns`
+option. Native conversation history stays in Codex; recovery reads bounded
+summary pages instead of falling back to an unbounded `thread/read`. Failure
+to prepare a resumed thread settles prompt dispatch directly, including when
+the failed connection cannot carry another output poll.
+
+The runtime MCP response boundary bounds large tool output before Codex, Claude
+or OpenCode can retain it in native history. Truncated output is identified in
+both text and structured content; ordinary screenshots retain their image
+blocks. Claude resumes through its official CLI event stream. OpenCode baseline
+and reconciliation requests explicitly select the latest 100 messages through
+its native session API. Its HTTP reader rejects bodies over 32 MiB, including
+aggregate chunked bodies, without retrying or replacing the saved session.
+
+Local993 / peer432 keeps oversized workspace artifacts retrievable through
+`chariox.read_artifact`. Ordinary and forwarded reads share bounded pages:
+`offset_bytes` selects the next page, `max_bytes` defaults to 8192 (range
+4–8192), and `next_offset_bytes` is null at EOF. Text and structured pages keep
+UTF-8 boundaries; opaque pages carry independently decodable base64. Every page
+retains its artifact version and snapshot metadata. Restart at offset 0 if the
+version changes between pages. This preserves the shared MCP history bound
+without discarding the remainder of a file.
+
+Local987 adds owner cancellation of an exact retained task or timer. The
+ordinary Stop route also resolves parked work when no prompt is active. Task
+cancellation retains its reason, settles owned sources and informs the agent
+on its next wake; cancelling one timer preserves its task. These operations
+use the same durable authority on ordinary and managed kernels. Peer framing,
+relay authority and managed automatic shutdown policy are unchanged (MP-09).
+Focused regressions and the live resume drill cover this seam; they do not
+close the wider MP-10 matrix or MP-11 security-anchor review.
+
+Required regression scenarios for this seam are:
+
+| Acceptance ID | Required evidence |
+| --- | --- |
+| `apps-agent-model/ARTIFACT-PAGING` | A real Codex agent, prompted through the built TUI on the real kernel, retrieves text and opaque pages near the end of the project protocol document. The same drill fails on the pre-fix kernel because range arguments return truncated prefixes. MCP entry-point regressions reconstruct entire oversized text, structured and opaque artifacts under the response limit, including escaped control characters and UTF-8 boundaries. |
+| `apps-agent-model/RESUME-64MIB` | A real Codex agent accumulates more than 64 MiB of native tool history on the base, fails to resume after restart, then completes a turn through the built CLI on the fixed kernel with the same agent and native thread. MCP regressions prove large output is bounded before native persistence and startup failures settle. Audit Claude and OpenCode and run their native restart paths. A provider usage limit must settle definitively and preserve its reason for the person; an exhausted account blocks that provider's restart leg. |
+| `apps-agent-model/PARKED-OWNER-CANCEL` | The built CLI cancels parked tasks and independent timers without an active prompt. A real provider receives the cancellation reason on its next wake. Entry-point regressions cover unrelated active work, stale revisions, foreign owners, removed completion subscriptions, idempotency and acknowledgement. |
+
+These are ordinary-kernel regression scenarios. Managed placement, hosted
+transport, browser sites and the wider parity matrix retain their separate
+acceptance rows.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

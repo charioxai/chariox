@@ -90,7 +90,7 @@ pub(super) fn refresh_opencode_message_metadata(
     provider_run_id: &str,
 ) -> Result<(), DaemonError> {
     let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
-    if let Ok(messages) = client.messages(&state.session_id) {
+    if let Ok(messages) = client.recent_messages(&state.session_id) {
         record_snapshot_message_metadata(state, &messages);
     }
     Ok(())

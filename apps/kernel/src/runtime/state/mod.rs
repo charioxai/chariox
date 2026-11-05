@@ -1506,6 +1506,8 @@ mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
+
+mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;

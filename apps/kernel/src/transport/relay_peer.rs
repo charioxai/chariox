@@ -182,6 +182,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 409 carries the final integrated local 960 Vault and Machines contract.
 /// Peer 412 carries local963 one-use Vault capture bindings.
 /// Peer 414 carries local965 integrated Vault and machine contracts.
+/// Peer432 carries local993 workspace artifact read pagination.
 /// Peer415 carries local966 WASM Apps plus Landing965 contracts.
 /// OSS boundary: 416 pairs the embedded local union with local 967 (retired Cloud controls removed).
 /// Allocated 424 carries local983 (the waiting-command row and the outside `process` event).

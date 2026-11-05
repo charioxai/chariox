@@ -224,3 +224,21 @@ fn parked_stop_response_semantics_are_versioned() {
         "5d4d7cab46a07c8f05fa4223b2853b66cb117a99a13ccd4c68446d87b2e4d731"
     );
 }
+
+#[test]
+fn owner_agent_cancellation_987_snapshot_and_hash() {
+    const {
+        assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 987);
+    }
+    let bytes = include_bytes!("owner-agent-cancellation-987.json");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(bytes)),
+        "4c75503279f41b5db77a18569fa37ca7b89d6b95a64ee957efb061ba862009ae"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    for key in ["task", "timer"] {
+        let request: LocalDaemonRequest = serde_json::from_value(fixture[key].clone()).unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), fixture[key]);
+    }
+}

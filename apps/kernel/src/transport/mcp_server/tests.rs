@@ -12,6 +12,53 @@ use crate::session::CreateSessionRequest;
 use crate::{DaemonApp, DaemonConfig};
 
 use super::handle_json_rpc_value;
+use super::runtime_tool_content_for_test;
+use super::tool_content::runtime_tool_content;
+
+#[test]
+fn mcp_tool_content_bounds_large_results_and_preserves_small_images() {
+    let payload = serde_json::json!({
+        "snapshot": {"dom": "x".repeat(2 * 1024 * 1024)},
+        "mime_type": "image/png",
+        "image_base64": "aGVsbG8=",
+    });
+    let (content, structured) = runtime_tool_content_for_test(payload);
+
+    assert_eq!(content[0]["type"], "image");
+    assert_eq!(content[0]["data"], "aGVsbG8=");
+    assert!(content[1]["text"].as_str().unwrap().len() <= 64 * 1024);
+    assert!(content[1]["text"].as_str().unwrap().contains("truncated"));
+    assert_eq!(structured["chariox_truncated"], true);
+}
+
+#[test]
+fn mcp_tool_content_truncates_at_utf8_boundaries() {
+    let payload = serde_json::json!({"text": "🙂".repeat(100_000)});
+    let (content, structured) = runtime_tool_content_for_test(payload);
+    let text = content[0]["text"].as_str().unwrap();
+
+    assert!(text.len() <= 64 * 1024);
+    assert!(text.is_char_boundary(text.len()));
+    assert_eq!(structured["chariox_truncated"], true);
+}
+
+#[test]
+fn mcp_tool_content_omits_only_images_over_the_image_limit() {
+    let payload = serde_json::json!({
+        "mime_type": "image/png",
+        "image_base64": "a".repeat(8 * 1024 * 1024 + 1),
+        "tab_id": "tab-1",
+    });
+    let (content, structured) = runtime_tool_content_for_test(payload);
+
+    assert_eq!(content.len(), 1);
+    assert_eq!(structured["tab_id"], "tab-1");
+    assert_eq!(structured["chariox_image_omitted"], true);
+    assert!(structured["chariox_image_omission_reason"]
+        .as_str()
+        .unwrap()
+        .contains("8 MiB"));
+}
 
 fn run_mcp_server_large_stack_test<Fut>(name: &str, test: fn() -> Fut)
 where
@@ -376,6 +423,12 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
     ));
     std::fs::create_dir_all(&root).expect("test root should be created");
     std::fs::write(root.join("notes.txt"), "alpha\nbeta\n").expect("file should be written");
+    let large_text = format!("{}END-OF-LARGE-TEXT", "\0é\n\"\\".repeat(16_000));
+    std::fs::write(root.join("large.txt"), &large_text)
+        .expect("large test artifact should be written");
+    let opaque_bytes: Vec<u8> = (0..100_000).map(|index| (index % 256) as u8).collect();
+    std::fs::write(root.join("large.bin"), &opaque_bytes)
+        .expect("opaque test artifact should be written");
 
     let mut config = DaemonConfig::for_tests();
     config.user_config.providers.workspace_live_sync.mode =
@@ -472,6 +525,149 @@ async fn mcp_http_tools_call_reads_and_edits_workspace_live_sync_artifact_inner(
         read_value["result"]["structuredContent"]["workspace"]["identity_changed"],
         false
     );
+    // Follow only the continuation returned by MCP, through the real tool entry
+    // point. JSON escaping and UTF-8 boundaries must not lose any file bytes.
+    for (path, domain, expected) in [
+        ("large.txt", "text", large_text.as_bytes()),
+        ("large.txt", "structured", large_text.as_bytes()),
+        ("large.bin", "opaque", opaque_bytes.as_slice()),
+    ] {
+        let mut offset = 0;
+        let mut reconstructed = Vec::new();
+        let mut version = None;
+        loop {
+            let mut arguments = serde_json::json!({"path": path, "domain": domain});
+            if offset > 0 {
+                arguments["offset_bytes"] = serde_json::json!(offset);
+                arguments["max_bytes"] = serde_json::json!(8191);
+            }
+            let response = handle_json_rpc_value(
+                router.clone(),
+                &auth_token,
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                    "params": {"name": "chariox.read_artifact", "arguments": arguments}
+                }),
+            )
+            .await
+            .expect("paged read request should succeed");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("read body")
+                .to_bytes();
+            let value: Value = serde_json::from_slice(&body).expect("read json");
+            assert_eq!(value["result"]["isError"], false);
+            let page = &value["result"]["structuredContent"];
+            assert_eq!(
+                page["offset_bytes"], offset,
+                "MCP must expose the requested page"
+            );
+            assert_eq!(page["total_bytes"], expected.len());
+            assert_ne!(
+                page["chariox_truncated"], true,
+                "pages must survive MCP bounding"
+            );
+            let encoded = value["result"]["content"][0]["text"]
+                .as_str()
+                .expect("text block");
+            assert!(encoded.len() <= 64 * 1024);
+            assert_eq!(
+                serde_json::from_str::<Value>(encoded).expect("text json"),
+                *page
+            );
+            assert!(serde_json::to_vec(page).expect("structured json").len() <= 64 * 1024);
+            if let Some(version) = &version {
+                assert_eq!(&page["version"], version);
+            } else {
+                version = Some(page["version"].clone());
+            }
+            let bytes = if domain == "opaque" {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(page["content_base64"].as_str().expect("base64 page"))
+                    .expect("valid base64")
+            } else {
+                page["content_text"]
+                    .as_str()
+                    .expect("text page")
+                    .as_bytes()
+                    .to_vec()
+            };
+            assert!(!bytes.is_empty());
+            assert!(bytes.len() <= 8192);
+            reconstructed.extend_from_slice(&bytes);
+            match page["next_offset_bytes"].as_u64() {
+                Some(next) => {
+                    assert_eq!(next as usize, reconstructed.len());
+                    assert!(next as usize > offset);
+                    offset = next as usize;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(reconstructed.len(), expected.len());
+        assert!(
+            reconstructed == expected,
+            "MCP pages must reproduce the entire artifact"
+        );
+    }
+    let eof_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": {"name": "chariox.read_artifact", "arguments": {
+                "path": "large.txt", "offset_bytes": large_text.len(), "max_bytes": 4
+            }}
+        }),
+    )
+    .await
+    .expect("EOF page should succeed");
+    let eof_body = eof_response
+        .into_body()
+        .collect()
+        .await
+        .expect("EOF body")
+        .to_bytes();
+    let eof_value: Value = serde_json::from_slice(&eof_body).expect("EOF json");
+    assert_eq!(eof_value["result"]["isError"], false);
+    assert_eq!(eof_value["result"]["structuredContent"]["content_text"], "");
+    assert!(eof_value["result"]["structuredContent"]["next_offset_bytes"].is_null());
+    for arguments in [
+        serde_json::json!({"path": "large.txt", "offset_bytes": 2}), // inside é
+        serde_json::json!({"path": "large.txt", "offset_bytes": large_text.len() + 1}),
+        serde_json::json!({"path": "large.txt", "max_bytes": 0}),
+        serde_json::json!({"path": "large.txt", "max_bytes": 8193}),
+    ] {
+        let response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+                "params": {"name": "chariox.read_artifact", "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("invalid page should produce a response");
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("error body")
+            .to_bytes();
+        let value: Value = serde_json::from_slice(&body).expect("error json");
+        assert_eq!(
+            value["error"]["code"], -32000,
+            "invalid page must fail clearly"
+        );
+        let message = value["error"]["message"]
+            .as_str()
+            .expect("actionable range error");
+        assert!(message.contains("offset_bytes") || message.contains("max_bytes"));
+    }
     let snapshot_id = read_value["result"]["structuredContent"]["snapshot_id"]
         .as_str()
         .expect("snapshot id should be present")
@@ -1003,7 +1199,7 @@ fn runtime_tool_content_wraps_non_objects_as_structured_results() {
         serde_json::json!(true),
         serde_json::Value::Null,
     ] {
-        let (content, structured) = super::runtime_tool_content(payload.clone());
+        let (content, structured) = runtime_tool_content(payload.clone());
         assert!(
             structured.is_object(),
             "MCP structuredContent must be an object"
@@ -1016,10 +1212,10 @@ fn runtime_tool_content_wraps_non_objects_as_structured_results() {
 #[test]
 fn runtime_tool_content_preserves_objects_and_extracts_images() {
     let payload = serde_json::json!({"result": "crm result"});
-    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let (content, structured) = runtime_tool_content(payload.clone());
     assert_eq!(structured, payload.clone());
     assert_eq!(content[0]["text"], payload.to_string());
-    let (content, structured) = super::runtime_tool_content(serde_json::json!({
+    let (content, structured) = runtime_tool_content(serde_json::json!({
         "mime_type": "image/png", "image_base64": "aW1hZ2U=", "width": 1
     }));
     assert_eq!(content[0]["type"], "image");
@@ -1043,7 +1239,7 @@ fn mp08_browser_snapshot_remains_readable_after_provider_line_truncation() {
         "document_id":"document-a", "dom_nodes":nodes,
         "accessibility_nodes":[{"node_ref":80,"value":""}]
     }});
-    let (content, structured) = super::runtime_tool_content(payload.clone());
+    let (content, structured) = runtime_tool_content(payload.clone());
     let text = content[0]["text"].as_str().unwrap();
     assert_eq!(serde_json::from_str::<Value>(text).unwrap(), payload);
     assert_eq!(structured, payload);
@@ -1069,7 +1265,7 @@ fn primitive_mcp_result_shape_is_versioned_and_hashed() {
         crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let (content, structured) = super::runtime_tool_content(serde_json::json!("crm result"));
+    let (content, structured) = runtime_tool_content(serde_json::json!("crm result"));
     let response = serde_json::json!({"jsonrpc": "2.0", "id": 7, "result": {
         "content": content, "structuredContent": structured, "isError": false
     }});
@@ -1177,7 +1373,7 @@ fn mp08_mp10_mp11_browser_artifact_native_image_attachment() {
     // These are synthetic converter inputs, not Chromium/perception proof.
     for bytes in [small, large] {
         let data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        let (content, metadata) = super::runtime_tool_content(serde_json::json!({
+        let (content, metadata) = runtime_tool_content(serde_json::json!({
             "source":"browser_controller","artifact_id":"art-1","mime_type":"image/png","image_base64":data,
             "identity":{"tab_id":"tab-1","document_id":"document-1","browser_generation":1,"runtime_generation":2}
         }));

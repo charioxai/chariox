@@ -132,7 +132,7 @@ fn reconnect_snapshot_preserves_retry_details() {
     let (address, server) = serve(vec![
         ("/session/status", "application/json", status.to_string()),
         (
-            "/session/session-1/message",
+            "/session/session-1/message?limit=100",
             "application/json",
             "[]".into(),
         ),
@@ -324,7 +324,11 @@ fn status_failure_preserves_drained_text_and_tool_output_through_http_recovery()
             "application/json",
             r#"{"session-1":{"type":"idle"}}"#.into(),
         ),
-        ("/session/session-1/message", "application/json", body),
+        (
+            "/session/session-1/message?limit=100",
+            "application/json",
+            body,
+        ),
     ]);
     state.base_url = recovered;
     let next = drain_opencode_events(&test_run(), &mut state, None).unwrap();

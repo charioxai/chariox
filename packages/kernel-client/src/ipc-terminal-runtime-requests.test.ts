@@ -57,3 +57,14 @@ test("resends a trigger firing the provider did not confirm", async () => {
     ResendTriggerDelivery: { session_id: "s", prompt_id: "prompt-7" },
   })
 })
+
+test("owner task and timer cancellation address retained work with protocol 987", async () => {
+  const r = await import("./ipc-terminal-runtime-requests.js")
+  assert.equal(r.agentCancellationMinimumProtocolVersion, 987)
+  assert.deepEqual(r.cancelAgentTaskRequest("room", "terminal", "task", 8), {
+    CancelAgentTask: { session_id: "room", attachment_id: "terminal", task_id: "task", revision: 8 },
+  })
+  assert.deepEqual(r.cancelAgentWakeRequest("room", "terminal", "timer"), {
+    CancelAgentWake: { session_id: "room", attachment_id: "terminal", wake_id: "timer" },
+  })
+})

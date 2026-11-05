@@ -1513,13 +1513,23 @@ done
         // The official CLI's result of an exhausted subscription (api_error
         // `usage_limit_reached`, HTTP 429), recorded 2026-10-27 (failwhy/r1).
         let weekly = "You've hit your weekly limit \u{b7} resets Oct 28, 9pm (UTC)";
-        assert_eq!(result_error(weekly), expected(UsageLimit, false, weekly));
+        let weekly_outcome = result_error(weekly);
+        assert_eq!(
+            (weekly_outcome.kind, weekly_outcome.retryable),
+            (UsageLimit, false)
+        );
+        assert_eq!(weekly_outcome.reason, weekly);
         let refused =
             "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)";
         assert_eq!(result_error(refused), expected(Network, true, refused));
+        let credit_balance = result_error("Credit balance is too low");
         assert_eq!(
-            result_error("Credit balance is too low"),
-            expected(UsageLimit, false, "Credit balance is too low")
+            (
+                credit_balance.kind,
+                credit_balance.retryable,
+                credit_balance.reason.as_str()
+            ),
+            (UsageLimit, false, "Credit balance is too low")
         );
         assert_eq!(
             result_error("Claude Code exited before completing the active turn: exit status: 1"),
@@ -1532,9 +1542,14 @@ done
         // Recorded official CLI output (r39 fixture drill): a synthetic backend that
         // answers HTTP 429 with Anthropic's `rate_limit_error` body.
         let rate_limited = "API Error: Server is temporarily limiting requests (not your usage limit) · Number of request tokens has exceeded your per-minute rate limit";
+        let rate_limited_outcome = result_error(rate_limited);
         assert_eq!(
-            result_error(rate_limited),
-            expected(UsageLimit, true, rate_limited)
+            (
+                rate_limited_outcome.kind,
+                rate_limited_outcome.retryable,
+                rate_limited_outcome.reason.as_str()
+            ),
+            (UsageLimit, true, rate_limited)
         );
         let stop_failure = crate::provider::claude_native_stop_failure(&json!({
             "hook_event_name": "StopFailure",
@@ -1542,13 +1557,14 @@ done
             "last_assistant_message": "You've hit your session limit · resets 8:30am"
         }))
         .expect("StopFailure frame");
+        let stop_failure_outcome = TurnOutcome::classify("claude", &stop_failure);
         assert_eq!(
-            TurnOutcome::classify("claude", &stop_failure),
-            expected(
-                UsageLimit,
-                false,
-                "You've hit your session limit · resets 8:30am"
-            )
+            (stop_failure_outcome.kind, stop_failure_outcome.retryable),
+            (UsageLimit, false)
+        );
+        assert_eq!(
+            stop_failure_outcome.reason,
+            "You've hit your session limit · resets 8:30am"
         );
         let auth = crate::provider::claude_native_stop_failure(&json!({
             "hook_event_name": "StopFailure",

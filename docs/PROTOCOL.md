@@ -7,6 +7,19 @@ current release and the previous release (636 and 629), plus the new target
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
+### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
+
+`chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
+`max_bytes` (default 8192, range 4–8192). Local and forwarded workspace reads
+return `offset_bytes`, `total_bytes`, and `next_offset_bytes` (null at EOF), plus
+the existing artifact, version and snapshot metadata. Continue with the returned
+offset and the same path/domain; restart if the artifact version changes.
+`content_text` pages preserve UTF-8 boundaries. `content_base64` pages encode
+only the returned source bytes and decode independently; `byte_count` remains
+the total opaque artifact size. An offset past EOF or inside a UTF-8 character
+fails with an actionable error. The page cap leaves room for JSON escaping and
+metadata under the shared 64 KiB MCP text bound.
+
 ### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
 
 `UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
@@ -6455,3 +6468,28 @@ person does: `KernelBrowser.command={op:"show_tab",tab_id,generation}` makes Chr
 with the browser state; the host refuses it for an agent. A person's typing, click or scroll in a Tab holds an agent's
 input to that same Tab until the person has been idle for two seconds. Each agent's native tab group is titled with
 its status dot, and with a spinner while the agent acts in one of its Tabs.
+
+
+### Owner cancellation of retained work — local 987
+
+`CancelAgentTask { session_id, attachment_id, task_id, revision }` lets the room
+owner cancel one exact task at the displayed revision, including when the agent
+has no active provider turn or another task is running. The kernel cancels only
+that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
+and foreign room or attachment ownership are refused. A completed task cannot
+be cancelled.
+
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
+retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
+the task and uses the normal source cancellation receipt to inform the agent.
+Other wake sources stop with their owning task. The shared shell exposes these
+controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
+`stop` keeps its active-turn or focused-task behavior.
+
+An unconditional, targetless `CancelActivePrompt` still stops an active turn;
+when no turn is active it resolves the focused agent's parked task. A request
+with `expected_prompt_id` remains an exact active-prompt cancellation and never
+falls through to parked work. Owner task cancellation records a durable inbox
+notice, included in the agent's next ordinary task context until it is handled.
+It does not create a provider turn that revives stopped work. Relay frame shapes
+are unchanged.

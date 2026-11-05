@@ -310,8 +310,18 @@ impl AgentRuntime {
         let agent_id = if let Some(target_agent_id) = request.target_agent_id.as_deref() {
             target_agent_id.to_string()
         } else {
-            self.resolve_active_prompt_agent_id(&request.session_id)
-                .await?
+            match self
+                .resolve_active_prompt_agent_id(&request.session_id)
+                .await
+            {
+                Ok(agent_id) => agent_id,
+                // A parked task has no active prompt to route an unconditional Stop.
+                Err(DaemonError::NoActivePrompt { .. }) if request.expected_prompt_id.is_none() => {
+                    self.resolve_submit_agent_id(&request.session_id, None)
+                        .await?
+                }
+                Err(error) => return Err(error),
+            }
         };
         self.store
             .ensure_agent_owner(&agent_id, &caller_user_id, "cancel active prompt")

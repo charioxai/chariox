@@ -1,0 +1,23 @@
+{
+  "local": 993,
+  "relayPeer": 432,
+  "tool": "chariox.read_artifact",
+  "arguments": {
+    "path": "asset.bin",
+    "domain": "opaque",
+    "offset_bytes": 8192,
+    "max_bytes": 32
+  },
+  "payload": {
+    "artifact_id": "artifact:opaque",
+    "path": "asset.bin",
+    "domain": "opaque",
+    "version": 1,
+    "snapshot_id": "snap:opaque:1",
+    "offset_bytes": 8192,
+    "total_bytes": 9000,
+    "byte_count": 9000,
+    "content_base64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    "next_offset_bytes": 8224
+  }
+}

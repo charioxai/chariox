@@ -684,6 +684,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
+        | Operation::CancelOwnerTimer { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
     }

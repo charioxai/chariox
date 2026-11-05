@@ -627,7 +627,7 @@ mod tests {
                     .unwrap_or("/");
                 let body = match path {
                     "/session/status" => "{}".to_string(),
-                    "/session/session-1/message" => "[]".to_string(),
+                    "/session/session-1/message?limit=100" => "[]".to_string(),
                     other => panic!("unexpected path: {other}"),
                 };
                 let response = format!(

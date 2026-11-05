@@ -10,7 +10,7 @@ use super::tool_update::render_codex_tool_transcript_update;
 use crate::extension::RemoteExtensionManifest;
 use crate::provider::codex_runtime::CodexOutputChunk;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
     pub(in crate::provider::codex_runtime) item: Value,
     pub(in crate::provider::codex_runtime) streamed_output: String,
@@ -20,7 +20,7 @@ pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
     pub(in crate::provider::codex_runtime) last_emitted: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::provider::codex_runtime) enum ToolOutputStream {
     Legacy,
     Modern,

@@ -1,4 +1,4 @@
-import { cancelActivePromptRequest } from "./ipc-requests.js"
+import { cancelActivePromptRequest, cancelAgentTaskRequest, cancelAgentWakeRequest } from "./ipc-requests.js"
 import type { ParsedShellCommand, ShellCommandResult, ShellContext } from "./shell-core.js"
 import { resolveShellAttachmentId } from "./shell-session-attachment.js"
 
@@ -15,8 +15,14 @@ export async function executeStopCommand(
   context: ShellContext,
   deps: ShellStopCommandDeps,
 ): Promise<ShellCommandResult> {
-  if (parsed.args.length > 0) {
-    return { ok: false, message: "usage: stop" }
+  const [kind, id, rawRevision] = parsed.args
+  const revision = kind === "task" && rawRevision !== undefined && /^\d+$/u.test(rawRevision)
+    ? Number(rawRevision) : undefined
+  if (parsed.args.length > 0 && !(
+    kind === "task" && parsed.args.length === 3 && id && revision !== undefined && Number.isSafeInteger(revision)
+    || kind === "timer" && parsed.args.length === 2 && id
+  )) {
+    return { ok: false, message: "usage: stop [task <task-id> <revision> | timer <wake-id>]" }
   }
   if (!context.sessionId) {
     return { ok: false, message: "no current session; run `session new` or `session use <ref>` first" }
@@ -25,10 +31,18 @@ export async function executeStopCommand(
   if (!attachmentId.ok) {
     return { ok: false, message: attachmentId.message }
   }
-  const response = await deps.client.send(cancelActivePromptRequest(context.sessionId, attachmentId.attachmentId, context.agentId))
+  const request = kind === "task"
+    ? cancelAgentTaskRequest(context.sessionId, attachmentId.attachmentId, id!, revision!)
+    : kind === "timer"
+      ? cancelAgentWakeRequest(context.sessionId, attachmentId.attachmentId, id!)
+      : cancelActivePromptRequest(context.sessionId, attachmentId.attachmentId, context.agentId)
+  const response = await deps.client.send(request)
   if ("AgentTaskUpdated" in response) {
     const payload = response.AgentTaskUpdated as { session_id: string; task: { task_id: string } }
-    return { ok: true, message: `cancelled task ${payload.task.task_id}`, data: payload }
+    return { ok: true, message: kind === "timer" ? `cancelled timer ${id}` : `cancelled task ${payload.task.task_id}`, data: payload }
+  }
+  if (kind === "task" || kind === "timer") {
+    throw new Error("unexpected response variant: expected AgentTaskUpdated")
   }
   const payload = expectVariant<{ cancellation: { prompt?: { id?: string | null } | null } }>(response, "PromptCancelled")
   return { ok: true, message: `cancellation requested${payload.cancellation.prompt?.id ? ` for prompt ${payload.cancellation.prompt.id}` : ""}`, data: payload }
