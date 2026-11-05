@@ -371,3 +371,15 @@ test('MP-11 subscription keeps malformed, capacity, geometry and foreign-owner f
   await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}),error=>error===failure);
  }
 });
+
+for(const kind of ['browser_chrome','browser_auxiliary'])test(`MP-08/MP-10 retired ${kind} startup is a stale reference`,async()=>{
+ const f=fixture('browser_chrome');
+ if(kind==='browser_auxiliary'){
+  f.command.target={kind,window_generation:7,auxiliary_id:'popup'};
+  f.host.chromeWindows.auxiliary=()=>({isCurrent:()=>f.lease.isAlive()});
+  f.host.chromeWindows.auxiliaryRegion=()=>f.host.chromeWindows.band();
+ }
+ class Capture extends f.Capture {async start(){f.retire();throw Error('MP-08: native region readback unavailable');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
+});

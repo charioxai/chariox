@@ -64,9 +64,9 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   offRetire=()=>{unwatch?.();offBand?.();offWindow?.();};
   host.armDisplayExpiry(stream);return result;
  }catch(error){
-  // Startup may fail after its admitted region retires; check before cleanup closes the lease.
+  // Startup may fail after its admitted display retires; check before cleanup closes the lease.
   let current;
-  try{current=target.kind!=='region'||window.isCurrent()&&await lease.isCurrent();}
+  try{current=window.isCurrent()&&await lease.isCurrent();}
   finally{if(stream)await stream.close();else{await source?.close();await lease.close();}}
   if(!current)refuse();
   throw error;
