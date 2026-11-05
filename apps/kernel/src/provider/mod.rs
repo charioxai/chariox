@@ -463,6 +463,7 @@ pub(crate) fn run_blocking_provider_utility_prompt(
 }
 
 /// `stop` ends this request's own utility turn and returns once it has ended.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     run: &RuntimeProviderRun,
     visible_user_prompt: &str,

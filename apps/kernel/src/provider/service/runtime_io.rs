@@ -302,6 +302,7 @@ impl ProviderProcessService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn enqueue_structured_utility_prompt(
         &mut self,
         run: &RuntimeProviderRun,

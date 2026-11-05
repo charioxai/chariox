@@ -63,6 +63,7 @@ impl KernelRuntimeState {
         Ok((agent, provider_run))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_structured_provider_utility_prompt(
         &self,
         provider_run: crate::provider::RuntimeProviderRun,

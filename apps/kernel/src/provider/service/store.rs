@@ -586,6 +586,7 @@ impl ProviderProcessServiceStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run_structured_utility_prompt(
         &self,
         run: &RuntimeProviderRun,
@@ -606,6 +607,7 @@ impl ProviderProcessServiceStore {
     }
 
     /// `stop` ends a fresh metadata child only; a utility on the run's own conversation runs to its end.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_structured_utility_prompt_with_admission(
         &self,
         run: &RuntimeProviderRun,

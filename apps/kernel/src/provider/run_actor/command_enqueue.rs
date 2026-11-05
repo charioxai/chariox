@@ -52,6 +52,7 @@ impl ProviderRunActorMailbox {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn enqueue_utility(
         &self,
         provider_run_id: String,
