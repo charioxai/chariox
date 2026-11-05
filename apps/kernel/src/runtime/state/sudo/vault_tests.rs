@@ -422,7 +422,8 @@ while IFS= read -r request; do
   *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/value" 2>/dev/null || echo vaudit-captured-fixture-value)" ;;
   *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; if printf '%s' "$request" | grep -q '"submit":true'; then printf '{"id":%s,"ok":true,"result":{"inserted":true,"submitted":{"navigated":true,"url":"http://127.0.0.1:8123/welcome","title":"Welcome"}}}\n' "$id"; else printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; fi ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
-  *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
+  *'"op":"stop"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","tabs":[]}}\n' "$id" ;;
+  *'"op":"state"'*|*'"op":"start"'*|*'"op":"navigate"'*|*'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
   *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
@@ -1548,13 +1549,14 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
         json!({"op":"navigate","tab_id":"host-tab-new","generation":1,"url":SITE}),
         json!({"op":"input","tab_id":"host-tab-new","generation":1,"input":{"kind":"key","key":"ArrowDown"}}),
     ] {
+        let command_name = command["op"].as_str().unwrap().to_string();
         let arguments = if command["op"] == "input" {
             json!({"document_id":"doc-login", "command":command})
         } else {
             json!({"command":command})
         };
         let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
-        assert_eq!(result["generation"], 1);
+        assert_eq!(result["generation"], 1, "{} keeps generation", command_name);
         assert!(
             result["tabs"].is_array(),
             "capturing Tabs must preserve browser inventory through every boundary"
