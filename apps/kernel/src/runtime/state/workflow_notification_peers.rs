@@ -783,8 +783,11 @@ mod tests {
         let (workflow, _, _) = f.workflow("source");
         let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
         let source = f.source(&workflow);
-        let mut remote =
-            summaries(&runtime.owned.session_store.read(), &[source.clone()]).remove(0);
+        let mut remote = summaries(
+            &runtime.owned.session_store.read(),
+            std::slice::from_ref(&source),
+        )
+        .remove(0);
         remote.source_id = "remote-source".into();
         remote.kernel_id = "other-home".into();
         runtime
