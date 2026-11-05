@@ -971,7 +971,7 @@ async fn run_daemon_relay_connector_inner(
                 let mut leased_projection_pump_task = None;
                 let mut heartbeat_tick: u64 = 0;
 
-                let mut last_read_at = Instant::now();
+                let mut last_read_at = tokio::time::Instant::now();
                 let reader_progress = crate::runtime::stall_watchdog::progress_watch(
                     "daemon.relay_client",
                     "socket_read",
@@ -997,7 +997,7 @@ async fn run_daemon_relay_connector_inner(
                                 return;
                             }
                         }
-                        _ = tokio::time::sleep_until(tokio::time::Instant::from_std(last_read_at + RELAY_READ_IDLE_LIMIT)) => {
+                        _ = tokio::time::sleep_until(last_read_at + RELAY_READ_IDLE_LIMIT) => {
                             crate::logging::warn_with_fields("daemon.relay_client", "relay reader stalled; reconnecting", serde_json::json!({"operation": "socket_read", "duration_ms": last_read_at.elapsed().as_millis()}));
                             abort_leased_projection_pump_task(&mut leased_projection_pump_task);
                             abort_inventory_refresh_task(&mut inventory_refresh_task);
@@ -1008,7 +1008,7 @@ async fn run_daemon_relay_connector_inner(
                             break "relay read deadline exceeded";
                         }
                         incoming = reader.next() => {
-                            last_read_at = Instant::now();
+                            last_read_at = tokio::time::Instant::now();
                             reader_progress.progress();
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
