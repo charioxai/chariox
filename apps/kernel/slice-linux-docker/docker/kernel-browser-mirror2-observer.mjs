@@ -118,9 +118,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
     const opaque = new Set(); // ids of opaque regions (tiles, foreign frames): none means the kernel has nothing to place
     // Protocol 503: each same-origin frame document's fragment (its `:target`) as last sent; the top document's is a header.
     // The HTML document mode, on snapshots only; limited-quirks (CSS1Compat) is told apart by its doctype, as the parser chose it.
-    const documentMode = () => document.compatMode === 'BackCompat' ? 'quirks'
-      : /^-\/\/W3C\/\/DTD XHTML 1\.0 (Frameset|Transitional)\/\//i.test(document.doctype?.publicId ?? '')
-        || !!document.doctype?.systemId && /^-\/\/W3C\/\/DTD HTML 4\.01 (Frameset|Transitional)\/\//i.test(document.doctype.publicId) ? 'limited-quirks' : 'no-quirks';
+    const documentMode = (doc = document) => doc.compatMode === 'BackCompat' ? 'quirks'
+      : /^-\/\/W3C\/\/DTD XHTML 1\.0 (Frameset|Transitional)\/\//i.test(doc.doctype?.publicId ?? '')
+        || !!doc.doctype?.systemId && /^-\/\/W3C\/\/DTD HTML 4\.01 (Frameset|Transitional)\/\//i.test(doc.doctype.publicId) ? 'limited-quirks' : 'no-quirks';
     const fragments = new Map(), fragmentOf = doc => { const hash = doc.location?.hash ?? ''; return hash.length > 1 ? hash.slice(1, 2049) : null; };
     // Hosts of closed shadow roots (found by the kernel's trusted DOMSnapshot pass):
     // this world cannot read their content, so they are opaque regions.
@@ -489,6 +489,8 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
       if (type === 9 || type === 11) {
         record.kind = type === 9 ? 'document' : 'shadow';
         const sheets = adopted(node); if (sheets.length) record.adopted = sheets;
+        // Protocol 981: a frame document's own mode (the viewer builds frame documents in no-quirks mode unless told).
+        if (type === 9) { const mode = documentMode(node); if (mode !== 'no-quirks') record.document_mode = mode; }
         if (type === 9 && node !== document) { const fragment = fragmentOf(node); fragments.set(id, fragment); if (fragment) record.fragment = fragment; }
         spend(32); remember(record, node);
         walk.then = { node, id, kind: record.kind, depth, root: true }; return record;
@@ -1060,7 +1062,9 @@ export function installMirror2(sanitizeMirrorCss, fontRequirements = nativeFontR
         const style = getComputedStyle(at), cause = style.filter !== 'none' ? 'filter' : linear(style.transform) ? 'transform' : style.rotate !== 'none' ? 'rotate' : style.scale !== 'none' ? 'scale' : Number(style.opacity) < 1 ? 'opacity' : style.mixBlendMode !== 'normal' ? 'blend' : '';
         if (cause) return cause + (at === node ? '' : '_ancestor');
       }
-      return false;
+      // A script-disabled mirror cannot reliably paint video inside canvas fallback content.
+      // Its region is already composited by Chrome and must use a root video patch.
+      return node.namespaceURI === HTML && node.localName === 'canvas' ? 'canvas' : false;
     };
     // Whether the node or an ancestor (through frame owners) moves or resizes pixels, independent of the one cause distorted() names:
     // a crop of the frame inside maps into the page by translation only.

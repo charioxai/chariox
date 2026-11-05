@@ -131,7 +131,7 @@ export class NativeWindowRegionCapture extends LinuxCapture {
    }else this.regions=this.protection();
    await this.regions.refresh();
    this.poolRoot=await this.createRasterPool();
-   startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
+   await startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MP-08: native region readback unavailable');
    if(this.pageOverlay){
     await this.attestOverlay();

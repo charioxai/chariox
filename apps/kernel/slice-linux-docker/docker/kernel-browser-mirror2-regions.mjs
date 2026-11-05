@@ -65,7 +65,7 @@ export class Mirror2Regions {
     // A change of compositing (a fade, a rotation starting or ending) retires the lease: the viewer places a patch
     // over a composited region differently from one inside an untransformed element.
     const viewport = this.host.pageSize(tab.tab_id);
-    return {box:box.box,rect:clipped(box.clip ?? box.box,viewport),viewport,composited:Boolean(box.distorted)};
+    return {box:box.box,rect:clipped(box.clip ?? box.box,viewport),viewport,composited:box.distorted || false};
   }
   async resolve(target, scope, {signal} = {}) {
     if (!target || Object.keys(target).some(k => !fields.has(k)) || !id(target.region_id) || typeof target.document_id !== 'string' ||

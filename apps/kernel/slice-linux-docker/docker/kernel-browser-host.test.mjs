@@ -2308,6 +2308,22 @@ test('MP-08/MP-10/MP-11 a busy renderer that is late to acknowledge a click neve
  assert.ok((await host.request({op:'state'})).tabs.length,'the browser is still there');
 }));
 
+// 2026-11-03: a click that lost its target (a solved challenge frame closing) reset the browser as if the owner had
+// stopped it: every Tab left the Browser view and nothing brought them back until an agent asked for the browser.
+test('MP-08/MP-10/MP-11 a dispatched input that fails resets the browser through recovery, keeping its Tabs',()=>using(async({host,connection})=>{
+ const opened=await host.request({op:'open',url:'https://www.wikipedia.org/'}),tab=opened.tabs[0];
+ connection.beforeSend=async(method,params)=>{if(method==='Input.dispatchMouseEvent'&&params.type==='mousePressed')throw Object.assign(Error('browser target is gone'),{code:'browser_target_not_found'})};
+ const logged=[],write=process.stderr.write;process.stderr.write=(chunk,...rest)=>{logged.push(String(chunk));return true};
+ try{await assert.rejects(host.request({op:'input',tab_id:tab.tab_id,generation:opened.generation,document_id:tab.document_id,input:{kind:'click',x:10,y:10}}),error=>error.code==='browser_target_not_found')}finally{process.stderr.write=write}
+ connection.beforeSend=null;
+ assert.ok(logged.some(line=>/^CHARIOX-LOG browser_reset after /.test(line)),`the reset names its reason in the controller log: ${logged}`);
+ assert.equal(host.recovery.enabled,true,'the reset is a loss the browser recovers from, not a stop');
+ await new Promise(r=>setTimeout(r,300));
+ const state=await host.request({op:'state'});
+ assert.equal(state.tabs.length,1,'the Tab comes back on the next request');
+ assert.equal(state.tabs[0].tab_id,tab.tab_id);
+}));
+
 // r55: Chrome's band input has its own busy lane; page input and unbound input share the page lane.
 test('MP-08/MP-10/MP-11 inputLane separates Chrome band input from page input', () => using(async ({ host }) => {
   host.displays.set('band', { binding_id: 'b1', regionTarget: { kind: 'browser_chrome' } });

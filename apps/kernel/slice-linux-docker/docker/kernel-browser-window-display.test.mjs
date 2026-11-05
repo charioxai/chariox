@@ -122,3 +122,17 @@ test('MP-11 a registered fill target does not stop the window display: the fence
   assert.ok(measures>=2,'the fence was measured before the readback and again after it');
  }finally{NativeRegionProtection.prototype.measure=measure;}
 });
+
+test('MP-08/MP-10 window startup that loses its native epoch reports a stale reference',async()=>{
+ const f=fixture();
+ class Capture extends f.Capture {async start(){f.retire();throw Error('MP-08: native window readback unavailable');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
+});
+
+test('MP-11 a current native window keeps its actual startup failure',async()=>{
+ const f=fixture(),failure=Error('MP-08: native window readback unavailable');
+ class Capture extends f.Capture {async start(){throw failure;}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),error=>error===failure);
+ assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
+});

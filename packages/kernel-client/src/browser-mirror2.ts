@@ -1,4 +1,4 @@
-import { Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
+import { mirror2AbsentFont, mirror2PendingFontSource, Mirror2FontStyle, mirror2RenderedFontReady, mirror2DocumentFontsReady } from './browser-mirror2-fonts.js'
 import { Mirror2SheetCache } from './browser-mirror2-sheets.js'
 import { rememberMirror2Range, restoreMirror2Range } from './browser-mirror2-selection.js'
 // MP-08/MP-10/MP-11: DOM mirror v2 renderer (local protocol 517). The page's own
@@ -14,6 +14,7 @@ export { mirror2SandboxCsp, validateMirror2Packet, decodeMirror2Packet } from '.
 export const browserMirror2MinimumProtocolVersion = 550
 const NS = { svg: 'http://www.w3.org/2000/svg', math: 'http://www.w3.org/1998/Math/MathML' } as const
 const resourcePattern = /url\("mr:(r[0-9]{1,9})"\)/g
+const styledResourcePattern = /url\("mr:(r[0-9]{1,9})"\)(\s*(?:format\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\)\s*)?(?:tech\(\s*(?:"[^"]*"|'[^']*'|[^)]*)\s*\))?)?/g
 const CREDIT_WINDOW = 4 // credits in flight at most (attachBrowserMirror2)
 const IMAGE_HOLD_MS = 3000 // resource-quiet time after which a missing visible image stops holding the handover
 const TEXT_LIMIT = 16384 // UTF-8 bytes per text action, matching the Rust boundary
@@ -67,6 +68,7 @@ export class BrowserMirror2Renderer {
   private frameDocuments = new Set<string>() // frame document records (protocol 503: each has its own fragment)
   private bound = new WeakSet<Document>() // a retired frame document is not kept alive by its binding
   private empty: string
+  private absentFont: string
   sequence = 0
   documentId = ''
   private counts = { tile: 0, mask: 0 } // public diagnostics on the frame element (data-mirror-*)
@@ -91,6 +93,8 @@ export class BrowserMirror2Renderer {
   private localScrollAt = -Infinity
   private localRootScrollAt = -Infinity
   private rootScrollReplies = new Set<{epoch:{document_id:string}}>()
+  private scrollReplies = new Set<object>() // scroll_to inputs sent and not yet answered: the kernel's reports may predate them
+  private scrollAnsweredAt = -Infinity
   private applied = new WeakMap<Node, [number, number]>() // kernel-applied positions (their scroll events are not viewer input)
   private deferred = new Map<Node, [number, number]>() // latest kernel position per scroller that arrived while the viewer scrolled
   private wheel = new Mirror2Wheel(fn => requestAnimationFrame(fn), handle => cancelAnimationFrame(handle))
@@ -98,6 +102,7 @@ export class BrowserMirror2Renderer {
   onEmptyPaint: (() => void) | undefined
   constructor(private container: HTMLElement, private send: (action: Mirror2Input, epoch: { sequence: number; document_id: string }, onWritten?: () => void) => Promise<unknown>, _failure?: (error: unknown) => void) {
     this.empty = URL.createObjectURL(new Blob([]))
+    this.absentFont = URL.createObjectURL(mirror2AbsentFont())
     this.navigation = new Mirror2Navigation(container, () => { if (!this.disposed) { this.navigationPaint(); this.onEmptyPaint?.() } })
     const owner = container.ownerDocument
     owner.addEventListener('pointerup', this.releasePointer, true)
@@ -157,7 +162,7 @@ export class BrowserMirror2Renderer {
         if (this.inputReplies.size >= 2) await Promise.race(this.inputReplies)
         const next = this.queue.shift(); if (!next || this.disposed) break
         const before = this.kernelFocus
-        if (next.action.kind === 'scroll_to' && next.action.node_id === null) this.rootScrollReplies.add(next)
+        if (next.action.kind === 'scroll_to') { this.scrollReplies.add(next); if (next.action.node_id === null) this.rootScrollReplies.add(next) }
         let written = () => {}
         const sent = new Promise<void>(resolve => { written = resolve })
         // MP-08/MP-10/MP-11: preserve actual write order, including asynchronous
@@ -168,7 +173,7 @@ export class BrowserMirror2Renderer {
         }).then(() => { if (!this.disposed && next.resetSerial === this.resetSerial) { this.holdFocus(next.action, before); if (next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) this.selectionHold.until = this.sequence + CREDIT_WINDOW } })
           .catch(() => { if (next.resetSerial === this.resetSerial && next.action.kind === 'selection' && this.selectionHold?.key === JSON.stringify(next.action) && this.selectionHold.epoch === next.epoch.sequence && next.epoch.document_id === this.documentId) { this.selectionFailure = true; this.selectionHold = null; this.selectionSent = '' } if (!this.disposed) this.frame.dataset.mirrorRefusals = String(Number(this.frame.dataset.mirrorRefusals ?? 0) + 1) })
           .finally(() => {
-            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
+            this.inputReplies.delete(replied); this.rootScrollReplies.delete(next); if (this.scrollReplies.delete(next)) this.scrollAnsweredAt = performance.now(); this.pendingInputs = Math.max(0, this.pendingInputs - 1)
             written(); this.settleFocus()
           })
         this.inputReplies.add(replied)
@@ -235,7 +240,9 @@ export class BrowserMirror2Renderer {
     this.selectionDoc = doc
     if (JSON.stringify(action) !== this.selectionSent) this.enqueue(action)
   }
-  private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || this.queue.some(q => q.action.kind === 'scroll_to') }
+  // The viewer owns scroll while it scrolls and until the kernel has answered (and one settle window after): a kernel position
+  // reported before it applied the viewer's scroll_to is older than the person's scroll and must not move the page back.
+  private scrolling(): boolean { return performance.now() - this.localScrollAt < 500 || performance.now() - this.scrollAnsweredAt < 500 || this.scrollReplies.size > 0 || this.queue.some(q => q.action.kind === 'scroll_to') }
   private rootScrolling(): boolean { return performance.now() - this.localRootScrollAt < 500 || [...this.rootScrollReplies].some(q => q.epoch.document_id === this.documentId) || this.queue.some(q => q.action.kind === 'scroll_to' && q.action.node_id === null && q.epoch.document_id === this.documentId) }
   private idOf(node: Node | null | undefined): string | undefined {
     for (let n: Node | null | undefined = node, depth = 0; n && depth < 512; depth++) { const id = this.ids.get(n); if (id) return id; n = n.parentNode ?? (n as ShadowRoot).host }
@@ -384,7 +391,12 @@ export class BrowserMirror2Renderer {
     })
   }
   // ---- resources
-  private substitute(raw: string): string { return raw.replace(resourcePattern, (_, key: string) => `url("${this.resources.get(key) ?? this.empty}")`) }
+  private substitute(raw: string): string { return raw.replace(styledResourcePattern, (_match, key: string, suffix: string, offset: number) => {
+    const resource = this.resources.get(key)
+    if (resource) return `url("${resource}")${suffix ?? ''}`
+    const pending = mirror2PendingFontSource(raw, offset, this.empty)
+    return pending ?? `url("${this.empty}")${suffix ?? ''}`
+  }) }
   private keysOf(raw: string): string[] { return [...raw.matchAll(resourcePattern)].map(m => m[1]!) }
   private async addResource(resource: Mirror2Resource): Promise<void> {
     const bytes = bytesOf(resource.data_base64)
@@ -414,8 +426,8 @@ export class BrowserMirror2Renderer {
       if (view) this.adopt(root, raw.map(text => { const sheet = new view.CSSStyleSheet(); sheet.replaceSync(this.substitute(text)); return sheet }))
     }
   }
-  // Author sheets of a document, led by its font shadow: for each stack name the native machine lacks, a face that covers no
-  // character and is never fetched (a failed face would hand the name back to the system fonts), so the stack falls
+  // Author sheets of a document, led by its font shadow: for each stack name the native machine lacks, a valid empty face that covers no
+  // character used by the page (a failed face would hand the name back to the system fonts), so the stack falls
   // through to the next family here as it did natively.
   private shadows = new WeakMap<Document, CSSStyleSheet>()
   private adopt(root: Document | ShadowRoot, sheets: CSSStyleSheet[]): void {
@@ -427,7 +439,7 @@ export class BrowserMirror2Renderer {
     this.shadows.delete(doc)
     if (names.length && view?.CSSStyleSheet) {
       const sheet = new view.CSSStyleSheet()
-      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:url(${this.empty});unicode-range:U+10FFFF}`).join(''))
+      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:url(${JSON.stringify(this.absentFont)});unicode-range:U+10FFFF}`).join(''))
       this.shadows.set(doc, sheet)
     }
     this.adopt(doc, doc.adoptedStyleSheets.filter(sheet => sheet !== held))
@@ -474,7 +486,8 @@ export class BrowserMirror2Renderer {
       const style = (element as HTMLElement).style
       const [width, height] = record.size ?? [0, 0]
       style.setProperty('box-sizing', 'border-box', 'important'); style.setProperty('width', `${width}px`, 'important'); style.setProperty('height', `${height}px`, 'important')
-      style.setProperty('overflow', 'hidden', 'important'); style.setProperty('background-color', 'black', 'important'); style.setProperty('color', 'transparent', 'important')
+      style.setProperty('overflow', 'hidden', 'important'); style.setProperty('color', 'transparent', 'important')
+      if (record.kind === 'mask' || !this.tileUrls.has(record.id)) style.setProperty('background-color', 'black', 'important')
       // A mask keeps the protected box: inline/contents boxes become inline blocks of the source size.
       if (record.kind === 'mask') { style.setProperty('display', record.display === 'none' ? 'none' : !record.display || ['inline', 'contents'].includes(record.display) ? 'inline-block' : record.display, 'important'); style.setProperty('background-image', 'none', 'important'); element.setAttribute('aria-label', 'Protected content') }
       if (record.kind === 'tile') { if (element.localName === 'iframe') element.setAttribute('sandbox', ''); this.paintTile(record.id, element as HTMLElement) }
@@ -608,6 +621,7 @@ export class BrowserMirror2Renderer {
       const { frame, id } = frames[i]!
       const nested = frame.contentDocument; if (!nested) throw Error('MP-11: nested mirror unavailable')
       const documentRecord = records.find(r => r.parent === id && r.kind === 'document'); if (!documentRecord) continue
+      this.layoutMode(nested, documentRecord.document_mode)
       const subtree = this.subtree(records, documentRecord.id)
       this.records.set(documentRecord.id, documentRecord); this.dom.set(documentRecord.id, nested); this.ids.set(nested, documentRecord.id); this.frameDocuments.add(documentRecord.id)
       const built = this.build(subtree.slice(1), nested, frames, scrolls)
@@ -617,6 +631,16 @@ export class BrowserMirror2Renderer {
       else { this.shadows.delete(nested); nested.adoptedStyleSheets = [] } // a replaced document's sheets do not style the new one
       this.bind(nested)
     }
+  }
+  // A frame's initial document is in quirks mode, whatever its source is: the source's doctype decides how
+  // percentage heights and table cells lay out (an image grid's rows stretch to the frame in quirks mode).
+  // Writing the doctype switches the mode and, like any open(), drops listeners (bind() follows).
+  private layoutMode(doc: Document, mode: Mirror2Record['document_mode']): void {
+    const now = doc.compatMode === 'BackCompat' ? 'quirks' : doc.doctype?.publicId ? 'limited-quirks' : 'no-quirks'
+    if (now === (mode ?? 'no-quirks')) return
+    const doctype = mode === 'quirks' ? '' : mode === 'limited-quirks' ? '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">' : '<!doctype html>'
+    this.bound.delete(doc)
+    doc.open(); doc.write(`${doctype}<html></html>`); doc.close()
   }
   private subtree(records: Mirror2Record[], rootId: string): Mirror2Record[] {
     const ids = new Set([rootId]), out: Mirror2Record[] = []
@@ -904,7 +928,14 @@ export class BrowserMirror2Renderer {
     const old = this.tileUrls.get(tile.node_id); if (old) URL.revokeObjectURL(old)
     const url = URL.createObjectURL(new Blob([bytesOf(tile.data_base64) as Uint8Array<ArrayBuffer>], { type: 'image/png' })); this.tileUrls.set(tile.node_id, url)
     this.tileBoxes.set(tile.node_id, { x: tile.x, y: tile.y, width: tile.width, height: tile.height })
-    this.paintTile(tile.node_id, element)
+    const record = this.records.get(tile.node_id)
+    if (!old && record?.kind === 'tile') {
+      // Remove the placeholder by restoring author CSS, including shorthand/variable backgrounds.
+      const authored = this.styled.get(`${tile.node_id}#style`)
+      if (authored?.kind === 'attr') element.setAttribute('style', this.substitute(authored.raw))
+      else element.removeAttribute('style')
+      this.opaqueLayout(record, element)
+    } else this.paintTile(tile.node_id, element)
   }
   private paintTile(id: string, element: HTMLElement): void {
     const tile = this.tileBoxes.get(id), url = this.tileUrls.get(id); if (!tile || !url) return
@@ -922,7 +953,7 @@ export class BrowserMirror2Renderer {
     this.doc = null
     for (const url of [...this.resources.values(), ...this.sprites.values()]) if (url.startsWith('blob:')) URL.revokeObjectURL(url)
     for (const url of this.tileUrls.values()) URL.revokeObjectURL(url)
-    URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
+    URL.revokeObjectURL(this.absentFont); URL.revokeObjectURL(this.empty); this.wheel.close(); this.sprites.clear(); this.deferred.clear(); this.resources.clear(); this.slices.clear(); this.tileUrls.clear(); this.tileBoxes.clear(); this.dom.clear(); this.records.clear(); this.styled.clear(); this.navigation.close()
   }
 }
 

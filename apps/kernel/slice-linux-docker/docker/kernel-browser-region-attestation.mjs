@@ -91,7 +91,7 @@ export async function attestNativeRegion(source){
  probe.off=source.connection.subscribe(m=>probe.onCdp(m));
  try{
   await probe.regions.refresh();probe.poolRoot=await probe.createRasterPool();
-  startNativeReadback(probe,{width:plan.rect.width,height:plan.rect.height,
+  await startNativeReadback(probe,{width:plan.rect.width,height:plan.rect.height,
    window_region:{...source.region.window_region,left:plan.rect.left,top:plan.rect.top}});
   if(!await probe.waitForCurrentSample())throw nativeReadbackFailure(probe,'MP-08: native region readback unavailable');
   const shot=await source.screenshot();

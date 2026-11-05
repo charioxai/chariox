@@ -110,7 +110,7 @@ export function decodeMirror2Packet(packet: Mirror2Packet): Mirror2Packet {
   if (packet.ops !== undefined) { if (!Array.isArray(packet.ops)) fail('ops'); decoded.ops = packet.ops.map(op => op?.op === 'children' ? { ...op, nodes: decodeMirror2Records(op.nodes, op.id) } : op) }
   return decoded
 }
-const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted', 'state', 'fragment'])
+const RECORD_KEYS = new Set(['id', 'parent', 'kind', 'tag', 'ns', 'attrs', 'text', 'css', 'res', 'form', 'scroll', 'size', 'display', 'reason', 'adopted', 'state', 'fragment', 'document_mode'])
 export function validateMirror2Record(record: Mirror2Record): void {
   if (record && typeof record === 'object' && Object.keys(record).some(key => !RECORD_KEYS.has(key))) fail('node')
   if (!record || typeof record !== 'object' || !id.test(record.id) || record.parent !== null && !id.test(record.parent) || !['document', 'shadow', 'element', 'text', 'frame', 'mask', 'tile'].includes(record.kind)) fail('node')
@@ -133,6 +133,7 @@ export function validateMirror2Record(record: Mirror2Record): void {
   if (record.kind === 'mask' && (record.text !== undefined || record.res !== undefined || record.form !== undefined || record.css !== undefined || Object.keys(record.attrs ?? {}).some(name => !['class', 'id'].includes(name)) || !record.size)) fail('protected payload')
   if (record.kind === 'tile' && !record.size) fail('tile')
   if (record.state !== undefined && (record.kind !== 'element' || record.ns !== undefined || !validState(record.state))) fail('state')
+  if (record.document_mode !== undefined && (record.kind !== 'document' || !['quirks', 'limited-quirks'].includes(record.document_mode))) fail('document_mode')
   if (record.fragment !== undefined && (record.kind !== 'document' || !validFragment(record.fragment) || record.fragment === null)) fail('fragment')
 }
 // Pre-order: every parent precedes its children; leaves never parent nodes.

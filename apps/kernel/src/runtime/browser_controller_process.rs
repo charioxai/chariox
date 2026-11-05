@@ -39,6 +39,7 @@ pub(crate) use retire_lane::RetireLane;
 mod room_computer;
 pub(crate) use cancellation::CancellationSignal as BrowserCancellation;
 mod configuration_cancellation;
+mod controller_log;
 mod display_frames;
 mod display_packets;
 pub(crate) use display_frames::{DirectFrames, Next as DirectFrame};
@@ -368,6 +369,10 @@ impl BrowserControllerProcessStdioBackend {
         if let Some(packets) = &display_packets {
             command.env("CHARIOX_BROWSER_DISPLAY_PACKET_ROOT", packets.root());
         }
+        command.env(
+            "CHARIOX_BROWSER_DISPLAY_CODEC_ROOT",
+            crate::config::default_state_dir().join("browser/display-codecs"),
+        );
         // L3: native workers this controller spawns hand whole frames straight to the pump.
         let direct_frames = match &display_packets {
             // Optional: without a channel (e.g. a socket path too long), Node publishes every frame.
@@ -428,13 +433,7 @@ impl BrowserControllerProcessStdioBackend {
         }
         let _ = std::thread::Builder::new()
             .name("chariox-browser-controller-stderr".to_string())
-            .spawn(move || {
-                for line in BufReader::new(stderr).lines() {
-                    if line.is_err() {
-                        break;
-                    }
-                }
-            });
+            .spawn(move || controller_log::forward(stderr));
         let stdin = Arc::new(Mutex::new(stdin));
         self.retire_lane.attach(&stdin);
         self.process = Some(BrowserControllerChild {

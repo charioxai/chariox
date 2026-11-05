@@ -67,6 +67,29 @@ test('MP-10: review #941-1 kernel positions of other scrollers that arrive while
   } finally { await page.close(); }
 });
 
+// A page scrolled by the person is not moved by the kernel's older answer: the kernel reports its position
+// as of the packet, which can predate the scroll_to it has not acknowledged yet (a slow kernel or relay).
+test('MP-08/MP-10: a kernel scroll position that predates the viewer\'s unanswered scroll_to does not move the viewer back (also after the settle window), and a position it did not cause still applies', async () => {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  try {
+    await page.goto(url);
+    await page.evaluate(async () => { window.sent = []; window.release = []; window.r = new Mirror2.BrowserMirror2Renderer(document.getElementById('c'), action => new Promise(resolve => { window.sent.push(action); window.release.push(resolve); })); await window.r.ready(); });
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0;height:5000px' } }]));
+    const y = () => page.evaluate(() => window.r.frame.contentWindow.scrollY);
+    await page.evaluate(() => window.r.frame.contentWindow.scrollTo(0, 600)); await frames();
+    await new Promise(resolve => setTimeout(resolve, 700)); // past the viewer's own settle window; the kernel has not answered the scroll_to
+    assert.equal(await page.evaluate(() => window.sent.filter(a => a.kind === 'scroll_to').length), 1, 'MP-08: the scroll position was sent');
+    await apply(page, delta(2, [], { scroll: [0, 200] })); // the kernel reports where it was before it applied 600
+    assert.equal(await y(), 600, 'MP-08: an unanswered scroll_to keeps the viewer where the person put it');
+    await page.evaluate(() => window.release.splice(0).forEach(resolve => resolve())); await new Promise(resolve => setTimeout(resolve, 30));
+    await apply(page, delta(3, [], { scroll: [0, 400] })); // just after the answer: still the kernel's older report
+    assert.equal(await y(), 600, 'MP-08: the settle window also covers reports that were in flight when the answer arrived');
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await apply(page, delta(4, [], { scroll: [0, 900] })); // the page scrolled itself, long after
+    assert.equal(await y(), 900, 'MP-08: a position the viewer did not cause is applied once the viewer is quiet');
+  } finally { await page.close(); }
+});
+
 test('MP-10: review #320-1 an existing select keeps its recorded selection when its options change (regrouped into an optgroup, replaced beneath it)', async () => {
   const page = await viewer();
   try {
@@ -94,6 +117,65 @@ test('MP-10: review #320-2 a frame document replaced by one without adopted styl
     // The child navigates (the frame adapter rebuilds the frame's document through a children op).
     await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n9'], nodes: frameDoc(9) }]));
     assert.deepEqual(await nested(), [0, 'rgb(0, 0, 0)'], 'MP-10: the new page is not styled by the old adopted sheets');
+  } finally { await page.close(); }
+});
+
+test('MP-08/MP-10: a frame document is laid out in the document mode of its source (no-quirks unless the record says otherwise), also when the frame navigates', async () => {
+  const page = await viewer();
+  try {
+    const frameDoc = (base, extra = {}) => [{ id: `n${base}`, parent: 'n4', kind: 'document', ...extra }, { id: `n${base + 1}`, parent: `n${base}`, kind: 'element', tag: 'html' }, { id: `n${base + 2}`, parent: `n${base + 1}`, kind: 'element', tag: 'body', attrs: { style: 'margin:0' } }, { id: `n${base + 3}`, parent: `n${base + 2}`, kind: 'element', tag: 'div', attrs: { style: 'height:100%;width:100%' } }];
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body' },
+      { id: 'n4', parent: 'n3', kind: 'frame', tag: 'iframe', attrs: { style: 'width:300px;height:500px;border:0' } }, ...frameDoc(5)]));
+    const nested = () => page.evaluate(() => { const d = window.r.frame.contentDocument.querySelector('iframe').contentDocument; return [d.compatMode + (d.doctype?.publicId ? '+public' : ''), Math.round(d.querySelector('div').getBoundingClientRect().height)]; });
+    const input = async base => {
+      await frames();
+      await page.evaluate(() => { window.sent = []; });
+      const target = page.frameLocator('#c > iframe:not([inert])').frameLocator('iframe').locator('div');
+      await target.evaluate(el => el.style.minHeight = '40px');
+      await target.click({ position: { x: 10, y: 10 } });
+      await page.keyboard.press('x');
+      await target.evaluate(el => { el.style.cssText = 'height:40px;overflow:auto'; el.innerHTML = '<div style="height:2000px"></div>'; el.scrollTop = 50; });
+      await page.waitForFunction(() => window.sent.some(a => a.kind === 'scroll_to'), null, { timeout: 1000 }).catch(() => {});
+      const sent = await page.evaluate(() => window.sent);
+      assert.equal(sent.filter(a => a.kind === 'click' && a.node_id === `n${base + 3}`).length, 1, 'MP-08: each frame document forwards one click');
+      assert.equal(sent.filter(a => a.kind === 'key' && a.key === 'x').length, 1, 'MP-08: each frame document forwards one key');
+      assert.equal(sent.filter(a => a.kind === 'scroll_to' && a.node_id === `n${base + 3}`).length, 1, 'MP-08: each frame document forwards one scroll');
+    };
+    assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: a standards frame document: an auto-height body makes height:100% auto');
+    await input(5);
+    await apply(page, delta(2, [{ op: 'children', id: 'n4', children: ['n9'], nodes: frameDoc(9, { document_mode: 'quirks' }) }]));
+    assert.deepEqual(await nested(), ['BackCompat', 500], 'MP-08: a quirks frame document resolves height:100% against the frame');
+    await input(9);
+    await apply(page, delta(3, [{ op: 'children', id: 'n4', children: ['n13'], nodes: frameDoc(13, { document_mode: 'limited-quirks' }) }]));
+    assert.deepEqual(await nested(), ['CSS1Compat+public', 0], 'MP-08: a limited-quirks frame document keeps standards layout with its almost-standards doctype');
+    await input(13);
+    await apply(page, delta(4, [{ op: 'children', id: 'n4', children: ['n17'], nodes: frameDoc(17) }]));
+    assert.deepEqual(await nested(), ['CSS1Compat', 0], 'MP-08: the next page of the frame is standards again');
+    await input(17);
+  } finally { await page.close(); }
+});
+
+// A canvas region's still keeps its own transparency: the page's content under the transparent part (a CAPTCHA's header banner
+// under a canvas that is drawn only over its grid) stays visible. Before the still arrives the region is an opaque placeholder.
+for (const authored of ['', 'background:rgb(12,34,56)', 'background-color:rgb(12,34,56)!important', '--paint:rgb(12,34,56);background:var(--paint)']) test('MP-08/MP-10: a tile still with transparent pixels shows the page beneath it, not black: ' + (authored || 'transparent'), async () => {
+  const page = await viewer();
+  try {
+    const png = await page.evaluate(() => { const c = document.createElement('canvas'); c.width = 100; c.height = 100; const x = c.getContext('2d'); x.fillStyle = '#0a0'; x.fillRect(0, 50, 100, 50); return c.toDataURL('image/png').split(',')[1]; }); // top half transparent
+    await apply(page, snapshot([{ id: 'n1', parent: null, kind: 'document' }, { id: 'n2', parent: 'n1', kind: 'element', tag: 'html' }, { id: 'n3', parent: 'n2', kind: 'element', tag: 'body', attrs: { style: 'margin:0' } },
+      { id: 'n4', parent: 'n3', kind: 'element', tag: 'div', attrs: { style: 'position:absolute;left:0;top:0;width:100px;height:100px;background:rgb(200,0,0)' } },
+      { id: 'n5', parent: 'n3', kind: 'tile', tag: 'canvas', attrs: { style: `position:absolute;left:0;top:0;width:100px;height:100px;${authored}` }, size: [100, 100] }]));
+    const color = () => page.evaluate(() => getComputedStyle(window.r.frame.contentDocument.querySelector('canvas')).backgroundColor);
+    assert.equal(await color(), 'rgb(0, 0, 0)', 'MP-08: before its still the region is an opaque placeholder');
+    await apply(page, { ...delta(2), tiles: [{ node_id: 'n5', x: 0, y: 0, width: 100, height: 100, data_base64: png }] });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(await color(), authored ? 'rgb(12, 34, 56)' : 'rgba(0, 0, 0, 0)', 'MP-08: the painted still does not fill its transparent pixels with black');
+    const shot = await page.screenshot({ clip: { x: 10, y: 10, width: 1, height: 1 } });
+    const pixel = await page.evaluate(async b64 => { const img = new Image(); img.src = 'data:image/png;base64,' + b64; await img.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const x = c.getContext('2d'); x.drawImage(img, 0, 0); return [...x.getImageData(0, 0, 1, 1).data]; }, shot.toString('base64'));
+    assert.deepEqual(pixel.slice(0, 3), authored ? [12, 34, 56] : [200, 0, 0], 'MP-08: the page beneath the transparent part shows through');
+    await apply(page, delta(3, [{ op: 'attr', id: 'n5', name: 'style', value: 'background:rgb(70,80,90)' }]));
+    assert.equal(await color(), 'rgb(70, 80, 90)', 'MP-08: author style updates keep their background under the still');
+    await apply(page, delta(4, [{ op: 'attr', id: 'n5', name: 'style', value: null }]));
+    assert.equal(await color(), 'rgba(0, 0, 0, 0)', 'MP-08: removing author style restores transparency without a new placeholder');
   } finally { await page.close(); }
 });
 
@@ -1342,6 +1424,19 @@ test('MP-08/MP-10/MP-11 native font requirements ignore a failed unused fallback
  }finally{await page.close()}
 });
 
+test('MP-08/MP-10/MP-11 an absent-font shadow never decodes the empty-page sentinel',async()=>{
+ const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n2',kind:'element',tag:'body',attrs:{style:'font-family:MissingMirror,monospace'}},{id:'n5',parent:'n4',kind:'text',text:'\u{10ffff}'}];
+  await apply(page,{...snapshot(nodes),ops:[{op:'fonts',id:'n1',required:[],absent:['MissingMirror']}]});
+  await page.evaluate(async()=>{const d=window.r.frame.contentDocument;d.body.getBoundingClientRect();await d.fonts.load('16px MissingMirror','\u{10ffff}').catch(()=>{});await d.fonts.ready});
+  const state=await page.evaluate(()=>{const d=window.r.frame.contentDocument,face=[...d.fonts].find(value=>value.family==='MissingMirror');return{family:getComputedStyle(d.body).fontFamily,range:face?.unicodeRange,status:face?.status}});
+  assert.equal(state.family,'MissingMirror, monospace','the absent family remains in the source stack');
+  assert.equal(state.range,'U+10FFFF','the shadow still covers no ordinary glyph');
+  assert.deepEqual(warnings.filter(value=>value.includes('Failed to decode downloaded font')),[],'forcing U+10FFFF through the sentinel must not decode an empty font');
+  assert.equal(state.status,'loaded','the shadow remains a valid font even when its noncharacter is requested');
+ }finally{await page.close()}
+});
+
 test('MP-08/MP-10/MP-11 native font requirements belong to each document and retire with its frame or reset',async()=>{
  const page=await viewer();try{
   await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
@@ -1358,16 +1453,17 @@ test('MP-08/MP-10/MP-11 native font requirements belong to each document and ret
 });
 
 test('MP-08/MP-10/MP-11 required font bytes hydrate a previously failed face and preload an offscreen native face',async()=>{
- const page=await viewer();try{
+ const page=await viewer(),warnings=[];page.on('console',message=>{if(message.type()==='warning')warnings.push(message.text())});try{
   const bytes=await readFile(process.env.MIRROR_LAB_FONT??'/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf');
   const signature=createHash('sha256').update(JSON.stringify(['requiredmirror','normal','400','100%','U+0-10FFFF'])).digest('hex');
   await apply(page,snapshot(page2([{id:'n4',parent:'n3',kind:'text',text:'old page'}])));await page.evaluate(()=>window.r.holdForHandover());
-  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'@font-face{font-family:RequiredMirror;src:url("mr:r1")}body{font-family:Arial}'},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'System font text'}];
+  const nodes=[{id:'n1',parent:null,kind:'document'},{id:'n2',parent:'n1',kind:'element',tag:'html'},{id:'n3',parent:'n2',kind:'element',tag:'head'},{id:'n4',parent:'n3',kind:'element',tag:'style',css:'@font-face{font-family:RequiredMirror;src:url("mr:r1") format("truetype"),url("mr:r2") tech("variations")}body{font-family:Arial}'},{id:'n5',parent:'n2',kind:'element',tag:'body'},{id:'n6',parent:'n5',kind:'text',text:'System font text'}];
   await apply(page,{...snapshot(nodes),document_id:'requirements',sequence:2,ops:[{op:'fonts',id:'n1',required:[signature]}]});
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),false,'missing source-required bytes remain held');
   await apply(page,{...delta(3),document_id:'requirements',resources:[{key:'r1',resource_id:createHash('sha256').update(bytes).digest('hex'),mime_type:'font/ttf',data_base64:bytes.toString('base64')}]});
   assert.equal(await page.evaluate(()=>window.r.readyForHandover()),true,'materialized native font preloads even without local text using it');
   assert.equal(await page.evaluate(()=>[...window.r.frame.contentDocument.fonts][0].status),'loaded');
+  assert.deepEqual(warnings.filter(value=>value.includes('Failed to decode downloaded font')),[],'pending font URLs use an unavailable source instead of decoding the empty image placeholder');
  }finally{await page.close()}
 });
 
