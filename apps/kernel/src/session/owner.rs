@@ -113,20 +113,25 @@ impl SessionStateStore {
         self.read().get_project(project_id)
     }
 
-    /// The Project whose Environment a session's processes use. A helper that another machine leases
-    /// here works in a hidden session with no Project, so its Project is its owner's one that holds
-    /// the helper's folder.
+    /// A leased session retains the source Project even when its checkout is newly created.
     pub(crate) fn environment_project(&self, session: &RuntimeSession) -> Option<RuntimeProject> {
-        if !session.project_id().is_empty() {
-            return self.get_project(session.project_id()).ok();
+        self.get_project(session.project_id()).ok()
+    }
+
+    pub(crate) fn environment_project_for_checkout(
+        &self,
+        owner_user_id: &str,
+        checkout: &str,
+    ) -> Result<Option<RuntimeProject>, DaemonError> {
+        let projects =
+            self.projects_owning_checkout(self.list_projects(owner_user_id, false), checkout)?;
+        match projects.as_slice() {
+            [] => Ok(None),
+            [project] => Ok(Some(project.clone())),
+            _ => Err(crate::project_environment::environment_error(
+                "this checkout belongs to several Projects; use a registered Project folder",
+            )),
         }
-        self.projects_owning_checkout(
-            self.list_projects(session.owner_user_id(), false),
-            session.worktree_id(),
-        )
-        .ok()?
-        .into_iter()
-        .next()
     }
 
     /// Workspace roots, Project sessions and linked Git checkouts share one Environment.
@@ -919,10 +924,43 @@ mod tests {
             .create_session(
                 CreateSessionRequest::new("remote-lease:test", linked.display().to_string())
                     .with_owner_user_id("owner")
-                    .with_hidden(true),
+                    .with_hidden(true)
+                    .with_project_selection(crate::session::SessionProjectSelection::Existing {
+                        project_id: "z-linked".into(),
+                    }),
             )
             .unwrap();
         assert_eq!(store.environment_project(&hidden).unwrap().id(), "z-linked");
+    }
+
+    #[test]
+    fn leased_worktree_placement_keeps_the_source_project_environment_when_unbound_is_ambiguous() {
+        crate::test_support::isolated_env_test!();
+        let _env = crate::env_lock::lock();
+        let (root, store, linked) = linked_project_fixture();
+        let third = root.path().join("third");
+        crate::git_worktree_placement::prepare_git_worktree(
+            &crate::agent::GitWorktreePlacement {
+                target_directory: Some(third.display().to_string()),
+                branch: Some("third".into()),
+                from_ref: Some("HEAD".into()),
+            },
+            &linked,
+            None,
+            "test ambiguous leased checkout",
+        )
+        .unwrap();
+        let hidden = store
+            .create_ephemeral_session(
+                CreateSessionRequest::new("remote-lease:test", third.display().to_string())
+                    .with_owner_user_id("owner")
+                    .with_hidden(true),
+            )
+            .unwrap();
+        assert!(
+            store.environment_project(&hidden).is_none(),
+            "Git membership alone cannot choose between registered Projects"
+        );
     }
 
     #[test]

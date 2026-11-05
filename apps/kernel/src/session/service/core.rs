@@ -62,7 +62,11 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let project_id = if request.hidden {
+        let project_id = if request.hidden
+            && !matches!(
+                &request.project_selection,
+                SessionProjectSelection::Existing { .. }
+            ) {
             None
         } else {
             Some(self.resolve_project_selection(&request)?)
@@ -694,7 +698,8 @@ impl SessionService {
                         ),
                     ));
                 }
-                if !project.contains_workspace(&request.workspace_id) {
+                // A hidden lease uses the Project without registering its synthetic workspace.
+                if !request.hidden && !project.contains_workspace(&request.workspace_id) {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
                     let workspaces = normalize_project_workspace_ids(workspaces)?;

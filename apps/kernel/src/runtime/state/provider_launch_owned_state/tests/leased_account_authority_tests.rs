@@ -545,8 +545,8 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
     );
 }
 
-// A helper that another machine leases here runs in a hidden session with no Project: its
-// provider process, shell and Environment revision come from the owner's Project holding its folder.
+// A leased helper retains the source Project in its hidden session, so every process and
+// Environment tool uses that Project even in a newly created checkout.
 #[tokio::test]
 async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder() {
     leased_project_inputs(false, false).await;
@@ -673,7 +673,8 @@ async fn leased_project_inputs(linked_worktree: bool, check_files: bool) {
         .sessions
         .get_session(&leased.backing_session_id)
         .unwrap();
-    assert!(hidden.is_hidden() && hidden.project_id().is_empty());
+    assert!(hidden.is_hidden());
+    assert_eq!(hidden.project_id(), project_id);
     let checkout = std::path::PathBuf::from(hidden.worktree_id());
     if linked_worktree {
         assert_ne!(checkout, folder);

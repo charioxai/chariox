@@ -47,3 +47,192 @@ async fn a_locked_vault_leaves_secrets_out_of_a_shell_and_a_terminal_but_keeps_t
     assert_eq!(terminal.get("LOG_LEVEL").map(String::as_str), Some("debug"));
     assert!(!terminal.contains_key("NOTION_TOKEN"));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: each new checkout retains the source Project, not the first Git sibling.
+#[tokio::test]
+async fn local_worktree_placement_keeps_the_source_project_environment() {
+    assert_placed_project_environment(false).await;
+}
+
+#[tokio::test]
+async fn leased_worktree_placement_keeps_the_source_project_environment() {
+    assert_placed_project_environment(true).await;
+}
+
+async fn assert_placed_project_environment(remote: bool) {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    std::env::set_var("CHARIOX_ALLOW_VOLATILE_PROCESS_MEMORY_VAULT", "1");
+    let root = crate::test_support::TestWorktree::new("placed-project-environment");
+    let main = root.path().join("main");
+    let linked = root.path().join("linked");
+    let target = root.path().join("third");
+    std::fs::create_dir_all(&main).unwrap();
+    for args in [
+        vec!["init"],
+        vec![
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Initial",
+        ],
+        vec!["worktree", "add", "-b", "linked", linked.to_str().unwrap()],
+    ] {
+        assert!(crate::process_spawn::command("git")
+            .args(args)
+            .current_dir(&main)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = root.path().join("vault.json").display().to_string();
+    crate::secret::unlock_chariox_encrypted_vault(
+        std::path::Path::new(&config.user_config.credential_vault.path),
+        "fixture-pass",
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .unwrap();
+    let mut app = crate::test_support::bootstrap_authenticated_app(config.clone()).unwrap();
+    let store = app.session_state_store();
+    store.restore_projects(vec![
+        crate::session::RuntimeProject::new(
+            "a-main",
+            "owner",
+            main.display().to_string(),
+            "Main",
+            crate::session::RuntimeProjectKind::Named,
+        ),
+        crate::session::RuntimeProject::new(
+            "z-linked",
+            "owner",
+            linked.display().to_string(),
+            "Linked",
+            crate::session::RuntimeProjectKind::Named,
+        ),
+    ]);
+    let environments = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
+    for (id, label) in [("a-main", "wrong"), ("z-linked", "source")] {
+        environments
+            .save(
+                id,
+                0,
+                ProjectEnvironmentRecord {
+                    schema: PROJECT_ENVIRONMENT_SCHEMA,
+                    variables: format!("PROJECT_LABEL={label}"),
+                    secrets: vec!["PROJECT_SECRET".into()],
+                    files: vec![format!("{label}.local")],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::secret::project_environment_vault(&config)
+            .unwrap()
+            .set_secret(
+                &project_environment_vault_service(id),
+                "PROJECT_SECRET",
+                label,
+            )
+            .unwrap();
+        std::fs::write(linked.join(format!("{label}.local")), "fixture").unwrap();
+    }
+    let placement = crate::agent::GitWorktreePlacement {
+        target_directory: Some(target.display().to_string()),
+        branch: Some("third".into()),
+        from_ref: Some("HEAD".into()),
+    };
+    let (session, agent, runtime) = if remote {
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease("home", "home-session", "home-agent", false, "owner")
+            .unwrap();
+        let leased = crate::app::RemoteLeaseRuntime::new(&mut app)
+            .create_leased_agent_from_base_directory(
+                &linked,
+                &lease.id,
+                "dev-stub",
+                "default",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(placement),
+            )
+            .unwrap();
+        let session = store.get_session(&leased.backing_session_id).unwrap();
+        let agent = app.agents().get_agent(&leased.backing_agent_id).unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        (session, agent, runtime)
+    } else {
+        let session = store
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    linked.display().to_string(),
+                    linked.display().to_string(),
+                )
+                .with_owner_user_id("owner")
+                .with_project_selection(
+                    crate::session::SessionProjectSelection::Existing {
+                        project_id: "z-linked".into(),
+                    },
+                ),
+            )
+            .unwrap();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let agent = runtime
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_owner_user_id("owner")
+                    .with_worktree_placement(placement),
+            )
+            .await
+            .unwrap();
+        (session, agent, runtime)
+    };
+    assert!(target.join("source.local").exists());
+    assert!(!target.join("wrong.local").exists());
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "test",
+    )
+    .with_working_directory(target.clone());
+    let request =
+        attach_project_provider_environment(&config, &store, &session, Some(&agent), request)
+            .unwrap();
+    // Compare as booleans so even a failing assertion cannot echo Secret values.
+    for name in ["PROJECT_LABEL", "PROJECT_SECRET"] {
+        assert!(
+            request
+                .provider_credential_env
+                .iter()
+                .any(|(key, value)| key == name && value == "source"),
+            "source Project input missing"
+        );
+    }
+    assert_eq!(
+        runtime.tool_project(&session, "owner").unwrap().id(),
+        "z-linked"
+    );
+    assert_eq!(
+        store.get_session(session.id()).unwrap().project_id(),
+        "z-linked"
+    );
+    assert_eq!(
+        store.get_project("z-linked").unwrap().workspace_ids(),
+        &[linked.display().to_string()],
+        "a leased checkout must not register a remote-lease workspace root"
+    );
+}
