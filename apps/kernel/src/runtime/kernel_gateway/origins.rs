@@ -27,6 +27,10 @@ pub(crate) struct GatewayOrigin {
     pub(crate) first_seen_ms: u64,
     pub(crate) last_seen_ms: u64,
     pub(crate) revoked: bool,
+    /// Pending work cannot regain authority when the same key is restored.
+    /// It does not survive a kernel restart, so this witness is memory-only.
+    #[serde(skip)]
+    pub(crate) generation: u64,
 }
 
 impl GatewayOrigin {
@@ -129,6 +133,7 @@ pub(crate) fn admit(
                         first_seen_ms: now_ms,
                         last_seen_ms: now_ms,
                         revoked: false,
+                        generation: 0,
                     });
                     (true, true)
                 }
@@ -148,6 +153,7 @@ pub(crate) fn revoke(path: &Path, client_id: &str) -> Result<Option<GatewayOrigi
         match origins.iter_mut().find(|o| o.client_id() == client_id) {
             Some(found) => {
                 found.revoked = true;
+                found.generation = found.generation.wrapping_add(1);
                 (Some(found.clone()), true)
             }
             None => (None, false),
@@ -167,11 +173,28 @@ pub(crate) fn reinstate(
         {
             Some(found) => {
                 found.revoked = false;
+                found.generation = found.generation.wrapping_add(1);
                 (Some(found.clone()), true)
             }
             None => (None, false),
         }
     })
+}
+
+/// The current admission witness of a paired gateway, without refreshing it.
+pub(crate) fn admission_generation(
+    path: &Path,
+    client_public_key: &str,
+) -> Result<Option<u64>, DaemonError> {
+    let thumbprint = public_key_thumbprint(client_public_key);
+    let cache = CACHE.lock().expect("gateway origins poisoned");
+    let origins = cache.get(path).ok_or_else(|| {
+        unavailable("gateway request was not admitted at the transport boundary".into())
+    })?;
+    Ok(origins
+        .iter()
+        .find(|origin| origin.key_thumbprint == thumbprint && !origin.revoked)
+        .map(|origin| origin.generation))
 }
 
 #[cfg(test)]
@@ -194,6 +217,22 @@ mod tests {
             ));
         std::fs::create_dir_all(&dir).unwrap();
         path_in(&dir)
+    }
+
+    #[test]
+    fn restoring_a_gateway_cannot_revive_a_queued_admission_witness() {
+        let path = file();
+        admit(&path, "gateway-key", Some(mac(Some("Machine/Kernel"))), 10).unwrap();
+        let original = admission_generation(&path, "gateway-key").unwrap().unwrap();
+        let client = entries(&path).unwrap()[0].client_id();
+        revoke(&path, &client).unwrap();
+        assert_eq!(admission_generation(&path, "gateway-key").unwrap(), None);
+        reinstate(&path, &public_key_thumbprint("gateway-key")).unwrap();
+        assert_ne!(
+            admission_generation(&path, "gateway-key").unwrap(),
+            Some(original)
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

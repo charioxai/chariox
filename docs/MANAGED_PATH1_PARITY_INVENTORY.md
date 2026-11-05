@@ -6,8 +6,12 @@ Ordinary and managed kernels use the same immutable binary launch intent and
 shared resource pool before a user program is spawned. A queued launch owns its
 existing stdin/output offsets and reader lease without a PID. Local Start now
 and cancel keep that exec identity. Dispatch rechecks the original authority
-and Room ownership; already-observed held/paused processes retain their current
-process controls. Queued work participates in the existing managed activity
+and Room ownership. Gateway exec retains the existing renewable requester lease
+and a memory-only gateway admission generation. Original grant end, lease expiry
+and target revocation end queued authority; re-pairing cannot revive it. The
+changed admission anchors are `state/gateway_requester.rs`, gateway
+`requester_watch.rs` and `origins.rs`. Already-observed held/paused processes retain
+their current process controls. Queued work participates in the existing managed activity
 fence. No shutdown trigger, Cloud authority or provider launch path changes.
 
 Focused regressions are `room_exec::queue_tests` and the real native-client drill

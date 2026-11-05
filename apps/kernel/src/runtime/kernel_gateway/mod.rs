@@ -20,7 +20,7 @@ pub(crate) mod origins;
 mod paired;
 mod self_hosted;
 mod subscription;
-mod sudo_watch;
+mod requester_watch;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -88,7 +88,7 @@ pub(crate) struct KernelGateway {
     links: Mutex<HashMap<String, Arc<Link>>>,
     ledger: OnceLock<ledger::GatewayLedger>,
     keeper: keeper::Keeper,
-    sudo_watch: sudo_watch::SudoWatch,
+    requester_watch: requester_watch::RequesterWatch,
     event_parts: events::EventParts,
     hosted: hosted::HostedClient,
     paired: Arc<paired::PairedKernels>,
@@ -120,7 +120,7 @@ impl KernelGateway {
             links: Mutex::new(HashMap::new()),
             ledger: OnceLock::new(),
             keeper: keeper::Keeper::default(),
-            sudo_watch: sudo_watch::SudoWatch::default(),
+            requester_watch: requester_watch::RequesterWatch::default(),
             event_parts: events::EventParts::default(),
             hosted: hosted::HostedClient::new(),
             paired,

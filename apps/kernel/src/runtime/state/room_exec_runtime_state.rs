@@ -11,6 +11,7 @@ impl KernelRuntimeState {
         intent: &crate::room_exec::LaunchIntent,
     ) -> Result<(), DaemonError> {
         self.authorize_current_external_command()?;
+        self.authorize_gateway_requester()?;
         self.ensure_room_running(&intent.session_id)?;
         let session = self.owned.session_store.get_session(&intent.session_id)?;
         if session.owner_user_id() != intent.owner_user_id {

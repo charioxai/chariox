@@ -22,7 +22,7 @@ const exists = file => access(file).then(() => true, () => false)
 
 const fixture = new AdmissionFixture({home, evidence, kernelBinary: value('--kernel-bin'), relayBinary: value('--relay-bin'), cliBinary: value('--cli-bin')})
 const active = new Set(), cells = []
-const result = {mp: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], scope: 'native CLI and real kernels, local scoped relay; deterministic learned peak; no remote placement or hosted/paid acceptance', cells}
+const result = {status: 'FAIL', mp: ['MP-08', 'MP-09', 'MP-10', 'MP-11'], scope: 'native CLI and real kernels, local scoped relay; deterministic learned peak; no remote placement or hosted/paid acceptance', cells}
 let session, peerSession
 const operation = async (operation, host = 'A') => (await fixture[host].send({RoomTerminal: {session_id: host === 'A' ? session : peerSession, operation}})).RoomTerminal.result
 
@@ -33,9 +33,19 @@ function run(name, bytes, host = 'A') {
   const stdout = [], stderr = []
   child.stdout.on('data', chunk => stdout.push(chunk)); child.stderr.on('data', chunk => stderr.push(chunk))
   child.stdin.on('error', () => {})
+  let timedOut = false, escalation
+  const deadline = setTimeout(() => {
+    timedOut = true
+    if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw Error('invalid owned native exec PID')
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+    escalation = setTimeout(() => {
+      if (!Number.isSafeInteger(child.pid) || child.pid <= 1) throw Error('invalid owned native exec PID')
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    }, 5000)
+  }, 60_000)
   const done = new Promise((resolve, reject) => {
     child.once('error', reject)
-    child.once('close', (code, signal) => {active.delete(child); resolve({code, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr)})})
+    child.once('close', (code, signal) => {active.delete(child); clearTimeout(deadline); clearTimeout(escalation); if (timedOut) reject(Error('native exec exceeded its deadline')); else resolve({code, signal, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr)})})
   })
   done.catch(() => {})
   child.done = done

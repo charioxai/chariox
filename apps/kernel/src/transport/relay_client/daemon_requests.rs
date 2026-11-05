@@ -962,6 +962,11 @@ async fn dispatch_on_behalf_of(
         .run(&key, fingerprint, async {
             let outcome = if matches!(request, LocalDaemonRequest::RequestKernelSudo(_)) {
                 remote_sudo_outcome(router, &command, on_behalf_of, &request).await
+            } else if matches!(&request, LocalDaemonRequest::RoomTerminal(terminal) if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecOpen { .. })) {
+                match router.dispatch_gateway_exec(command.clone(), request, on_behalf_of, gateway_public_key).await {
+                    Ok(response) => RelayDispatchOutcome::Response(serde_json::to_value(response).expect("typed exec response serializes")),
+                    Err(error) => RelayDispatchOutcome::RelayError(map_relay_error(&error)),
+                }
             } else {
                 dispatch_relay_client_request(
                     router,

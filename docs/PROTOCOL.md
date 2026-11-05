@@ -5881,7 +5881,11 @@ requests and responses, using its existing bounded framing and flow control.
   tagged `queued { wait }`, `starting`, `running` or `finished` state, the original
   command and its owner. `exec_start_now { exec_id }` admits only queued work;
   cancellation before dispatch never starts the user program. The original
-  authority is checked again immediately before spawn. Queueing preserves the
+  authority is checked again immediately before spawn. A gateway submission
+  retains the existing remote-requester lease and the authenticated gateway's
+  admission generation. Grant-end delivery, lease expiry or target revocation
+  ends queued authority; re-pairing the same key cannot revive an old intent.
+  Queueing preserves the
   same bounded stdin offsets, stdout/stderr cursors, cancellation and reader
   lease. Queued work counts as busy for the managed shutdown fence.
 - Observed process `held` and `paused` states still describe programs that have

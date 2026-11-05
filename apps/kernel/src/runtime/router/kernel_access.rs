@@ -149,6 +149,22 @@ impl CommandRouter {
         result
     }
 
+    /// The transport already admitted the paired gateway. Retain its requester
+    /// lease for the asynchronous pre-spawn continuation, through the normal router.
+    pub(crate) async fn dispatch_gateway_exec(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+        origin: &OnBehalfOf,
+        gateway_public_key: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut scoped = self.clone();
+        scoped.runtime_state = self
+            .runtime_state
+            .with_gateway_requester(origin, gateway_public_key)?;
+        scoped.dispatch(command, request).await
+    }
+
     /// The gateway's own requests: attachment heartbeats, kernel files and pairing.
     /// They follow the same role policy and command log as every public request.
     pub(super) async fn dispatch_machine_request(
