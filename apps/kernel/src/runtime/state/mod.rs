@@ -246,6 +246,7 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     agent_auth_registrations: agent_auth::RegistrationClaims,
+    vault_capture_claims: vault_command::CaptureClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -1049,6 +1050,7 @@ impl KernelRuntimeState {
                 )),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
+                vault_capture_claims: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
