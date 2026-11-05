@@ -2,6 +2,7 @@
 // OF-42 runaway). Each flow gives real agents real work through their own tools, then checks the kernel's
 // side on the real machine: files, processes and the session's process rows. Nothing here talks to a provider.
 import assert from "node:assert/strict"
+import { createServer } from "node:net"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -15,7 +16,7 @@ export async function runDiskCells(ctx) {
   const checks = (report.checks = [])
   const check = (name, ok, detail = {}) => { checks.push({ name, ok: !!ok, ...detail }); note(ok ? "check-pass" : "check-FAIL", { name, ...detail }) }
   const tempRoot = join(dir, "chariox/t")
-  const tempDir = agent => join(tempRoot, short(sessionId), short(agent.id))
+  const tempDir = agent => join(tempRoot, sessionId, short(agent.id))
   const answer = (tag, n) => join(work, `answer-${tag}-b${n}.txt`)
   const waitAnswers = (tag, timeoutS = 600) => Promise.all(agents.map((_, i) =>
     until(() => existsSync(answer(tag, i + 1)) && /DONE/.test(readFileSync(answer(tag, i + 1), "utf8")), `agent ${i + 1} answer ${tag}`, timeoutS * 1000)
@@ -24,6 +25,32 @@ export async function runDiskCells(ctx) {
   const df = () => { const [total, free] = ctx.execFileSync("df", ["-B1", "--output=size,avail", work], { encoding: "utf8" }).trim().split("\n")[1].trim().split(/\s+/).map(Number); return { total, free } }
   const hogs = () => ctx.osProcesses("hog.py")
   const rowsOf = agent => latestRows().filter(p => p.owner?.id === agent.id)
+
+  if (scenario === "room-isolation") {
+    await say(`Run exactly sh -c 'printf "%s" "$TMPDIR" > answer-room-path-b{N}.txt; echo keep > "$TMPDIR/room-keep.txt"; echo DONE > answer-room-ready-b{N}.txt' in the current directory. Do not change or retry it.`, "room-ready")
+    await waitAnswers("room-ready", 120)
+    const sockets = []
+    try {
+      for (let n = 1; n <= agents.length; n++) {
+        const folder = readFileSync(answer("room-path", n), "utf8")
+        assert(folder.startsWith(tempRoot + "/"))
+        const path = join(folder, "room.sock")
+        const server = createServer(connection => { connection.end("kept"); note("room-socket-connected", {agent: n}) })
+        await new Promise((resolve, reject) => { server.once("error", reject); server.listen(path, resolve) })
+        sockets.push({server, folder, path})
+      }
+      await rpc({ EndSession: { session_id: ctx.siblingId } })
+      for (const {folder, path} of sockets) {
+        check("ending the sibling preserves the live Room's file", existsSync(join(folder, "room-keep.txt")), {folder})
+        check("ending the sibling preserves the live Room's socket", existsSync(path), {path})
+      }
+      await say(`Run exactly python3 -c 'import os,socket,tempfile; p=os.environ["TMPDIR"]; assert open(p+"/room-keep.txt").read().strip()=="keep"; f=tempfile.TemporaryFile(); s=socket.socket(socket.AF_UNIX); s.connect(p+"/room.sock"); assert s.recv(4)==b"kept"; open("answer-room-after-b{N}.txt","w").write("DONE")'. Report the result without changing it or retrying.`, "room-after")
+      await waitAnswers("room-after", 120)
+      check("the real providers can still use their files, temp roots and sockets", true)
+    } finally {
+      await Promise.all(sockets.map(({server}) => new Promise(resolve => server.close(resolve))))
+    }
+  }
 
   if (scenario === "temp") {
     // OF-38: no instruction about where scratch goes; the tools find TMPDIR set by the kernel.
@@ -122,7 +149,7 @@ except Exception as error:
       check(`${tag}: a freshly written item stays`, names.includes("fresh.txt"), { names })
     }
     // The Room ends: its scratch goes at once (what was open goes with the processes that held it).
-    const room = join(tempRoot, short(sessionId))
+    const room = join(tempRoot, sessionId)
     await rpc({ EndSession: { session_id: sessionId } })
     await until(() => !existsSync(room), "the ended Room's temp folder to go", 20000).then(() => check("ending the Room clears its temp at once", true), () => check("ending the Room clears its temp at once", false, { left: existsSync(room) ? readdirSync(room) : [] }))
   }

@@ -37,7 +37,13 @@ fn short(id: &str) -> String {
 }
 
 pub(crate) fn room_dir(root: &Path, session_id: &str) -> PathBuf {
-    root.join(short(session_id))
+    // Timestamp Room IDs vary in their low bits; a prefix merges nearby Rooms.
+    root.join(
+        session_id
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>(),
+    )
 }
 
 pub(crate) fn dir(session_id: &str, agent_id: &str) -> Option<PathBuf> {
@@ -92,7 +98,7 @@ pub(crate) fn clear_room(session_id: &str) {
 
 fn clear_room_in(root: &Path, session_id: &str) {
     let room = room_dir(root, session_id);
-    if short(session_id).is_empty() || !room.starts_with(root) {
+    if room == root || !room.starts_with(root) {
         return;
     }
     if let Err(error) = std::fs::remove_dir_all(&room) {

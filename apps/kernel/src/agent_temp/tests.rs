@@ -54,7 +54,7 @@ fn the_path_is_short_and_the_same_after_a_restart() {
     let root = scratch.0.join("t");
     let (room, agent) = ("18e4df7c1509db5b", "agent-210eff29d53051337c3df0cbaeb69178");
     let first = dir_in(&root, room, agent);
-    assert_eq!(first, root.join("18e4df7c/210eff29"));
+    assert_eq!(first, root.join("18e4df7c1509db5b/210eff29"));
     assert_eq!(first, dir_in(&root, room, agent));
     let vars = environment_in(&root, room, agent);
     assert_eq!(
@@ -151,4 +151,27 @@ fn ending_a_room_clears_its_temp_at_once() {
     clear_room_in(&scratch.0.join("t"), "room0001");
     assert!(!room.exists());
     assert!(other.exists(), "another Room's temp folder was cleared");
+}
+
+#[test]
+fn ending_a_room_preserves_scratch_for_another_with_the_same_prefix() {
+    let scratch = Scratch::new("shared-prefix");
+    let root = scratch.0.join("t");
+    let (ended, live) = ("18e4df7c1509db5b", "18e4df7c2509db5b");
+    let agent = "agent-210eff29d53051337c3df0cbaeb69178";
+    environment_in(&root, ended, agent);
+    environment_in(&root, live, agent);
+    let file = dir_in(&root, live, agent).join("keep.txt");
+    fs::write(&file, b"live scratch").unwrap();
+    clear_room_in(&root, ended);
+    assert!(!room_dir(&root, ended).exists());
+    assert_eq!(fs::read(&file).unwrap(), b"live scratch");
+    #[cfg(unix)]
+    {
+        let socket = dir_in(&root, live, agent).join("live.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        clear_room_in(&root, ended);
+        std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        listener.accept().unwrap();
+    }
 }
