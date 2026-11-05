@@ -1563,6 +1563,11 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
         );
         assert_eq!(result["tabs"][0]["tab_id"], "host-tab-new");
     }
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    f.state
+        .owned
+        .kernel_browser_host
+        .set_focus("local", Some(agent));
     let stopped = call(
         f,
         "chariox.kernel_browser",
