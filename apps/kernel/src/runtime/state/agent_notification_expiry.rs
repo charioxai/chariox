@@ -9,17 +9,12 @@ impl KernelRuntimeOwnedState {
         now: u64,
     ) -> Result<(), DaemonError> {
         let session = self.session_store.get_session(session_id)?;
-        let (_, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
-        let expired: Vec<_> = queued
-            .into_iter()
-            .filter(|prompt| prompt.notification_expired(now) && !prompt.remote_steer_reserved())
-            .collect();
-        if expired.is_empty() {
+        if self
+            .prompt_state_owner
+            .expire_queued_notifications(&session, agent_id, now)
+            == 0
+        {
             return Ok(());
-        }
-        for prompt in expired {
-            self.prompt_state_owner
-                .remove_queued_prompt(&session, agent_id, prompt.id());
         }
         let (active, queued) = self.prompt_state_owner.state_parts(&session, agent_id);
         // The ordinary durable prompt transition also settles the associated App receipt.

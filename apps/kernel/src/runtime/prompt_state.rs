@@ -1439,6 +1439,25 @@ impl PromptStateOwner {
         })
     }
 
+    pub(crate) fn expire_queued_notifications(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        now: u64,
+    ) -> usize {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = owner.ensure_agent_state(session, agent_id);
+        let before = state.queued_prompts.len();
+        // Steer reservation and promotion use this same owner lock.
+        state
+            .queued_prompts
+            .retain(|prompt| !prompt.notification_expired(now) || prompt.remote_steer_reserved());
+        before - state.queued_prompts.len()
+    }
+
     pub(crate) fn remove_queued_prompt(
         &self,
         session: &RuntimeSession,
@@ -1834,6 +1853,54 @@ mod tests {
                 .id(),
             "active-prompt"
         );
+    }
+
+    #[test]
+    fn r6_expiry_preserves_ordinary_prompts_and_reserved_notification_steers() {
+        let owner = PromptStateOwner::default();
+        let session = RuntimeSession::new(
+            "session",
+            None,
+            "workspace",
+            "worktree",
+            "machine",
+            "kernel",
+        );
+        let notification = |id| {
+            PromptQueueItem::new(
+                id,
+                "attachment",
+                "agent",
+                "notification",
+                PromptStatus::Queued,
+            )
+            .with_notification_deadline(1)
+        };
+        let reserved = notification("reserved");
+        let hold = reserved.reserve_remote_steer().unwrap();
+        for prompt in [
+            notification("expired"),
+            reserved.clone(),
+            PromptQueueItem::new(
+                "ordinary",
+                "attachment",
+                "agent",
+                "ordinary",
+                PromptStatus::Queued,
+            ),
+        ] {
+            owner
+                .submit_prepared_prompt(&session, prompt, true)
+                .unwrap();
+        }
+        assert_eq!(owner.expire_queued_notifications(&session, "agent", 2), 1);
+        let (_, queue) = owner.state_parts(&session, "agent");
+        assert_eq!(
+            queue.iter().map(|p| p.id()).collect::<Vec<_>>(),
+            vec!["reserved", "ordinary"]
+        );
+        assert!(reserved.release_remote_steer(hold));
+        assert_eq!(owner.expire_queued_notifications(&session, "agent", 2), 1);
     }
 
     #[test]
