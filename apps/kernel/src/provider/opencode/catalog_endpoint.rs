@@ -65,7 +65,7 @@ pub(crate) fn ensure_opencode_account_endpoint(
                         ),
                     }
                 })?;
-                Ok(ManagedAccountEndpoint { endpoint, child })
+                Ok(ManagedAccountEndpoint::new(endpoint, child))
             },
         )
 }

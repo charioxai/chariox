@@ -11,6 +11,46 @@ use crate::runtime::{child_shutdown, stall_watchdog};
 pub(super) struct ManagedAccountEndpoint {
     pub endpoint: String,
     pub child: Child,
+    #[cfg(target_os = "linux")]
+    processes: Option<crate::runtime::owned_process_signals::OwnedProcessHandles>,
+}
+
+impl ManagedAccountEndpoint {
+    pub fn new(endpoint: String, child: Child) -> Self {
+        Self {
+            endpoint,
+            child,
+            #[cfg(target_os = "linux")]
+            processes: None,
+        }
+    }
+
+    fn pin_processes(&mut self) -> Result<(), DaemonError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.processes = Some(
+                crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&self.child)
+                    .and_then(|mut signals| signals.pin_owned_processes())
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "pin_account_helper",
+                        message: format!("cannot retain account helper process ownership: {error}"),
+                    })?,
+            );
+        }
+        Ok(())
+    }
+
+    fn all_exited(&mut self) -> bool {
+        let reaped = matches!(self.child.try_wait(), Ok(Some(_)));
+        #[cfg(target_os = "linux")]
+        return reaped
+            && self
+                .processes
+                .as_ref()
+                .is_none_or(|processes| processes.all_exited());
+        #[cfg(not(target_os = "linux"))]
+        reaped
+    }
 }
 
 type Reply<T> = SyncSender<Result<T, DaemonError>>;
@@ -114,17 +154,10 @@ impl AccountEndpoints {
 
 fn supervise(name: &'static str, receiver: Receiver<Command>) {
     let mut endpoints = BTreeMap::<String, ManagedAccountEndpoint>::new();
-    let mut unreaped = Vec::<Child>::new();
+    let mut unreaped = Vec::<ManagedAccountEndpoint>::new();
     loop {
         // An uninterruptible child never pins a request thread or the owner.
-        unreaped.retain_mut(|child| match child.try_wait() {
-            Ok(Some(_)) => false,
-            Ok(None) => true,
-            Err(error) => {
-                report(name, "reap", &error.to_string());
-                true
-            }
-        });
+        unreaped.retain_mut(|endpoint| !endpoint.all_exited());
         match receiver.recv_timeout(Duration::from_millis(250)) {
             Ok(Command::Ensure {
                 key,
@@ -146,7 +179,7 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             }
             Ok(Command::Invalidate { key, reply }) => {
                 let result = match endpoints.remove(&key) {
-                    Some(endpoint) => stop(name, endpoint.child, &mut unreaped),
+                    Some(endpoint) => stop(name, endpoint, &mut unreaped),
                     None => Ok(()),
                 };
                 let _ = reply.send(result);
@@ -154,7 +187,7 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             Ok(Command::Shutdown { reply }) => {
                 let mut result = Ok(());
                 for (_, endpoint) in std::mem::take(&mut endpoints) {
-                    if let Err(error) = stop(name, endpoint.child, &mut unreaped) {
+                    if let Err(error) = stop(name, endpoint, &mut unreaped) {
                         result = Err(error);
                     }
                 }
@@ -163,18 +196,19 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
             #[cfg(test)]
             Ok(Command::Install {
                 key,
-                endpoint,
+                mut endpoint,
                 reply,
             }) => {
+                let pinned = endpoint.pin_processes();
                 if let Some(old) = endpoints.insert(key, endpoint) {
-                    let _ = stop(name, old.child, &mut unreaped);
+                    let _ = stop(name, old, &mut unreaped);
                 }
-                let _ = reply.send(Ok(()));
+                let _ = reply.send(pinned);
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 for (_, endpoint) in endpoints {
-                    let _ = stop(name, endpoint.child, &mut unreaped);
+                    let _ = stop(name, endpoint, &mut unreaped);
                 }
                 return;
             }
@@ -185,7 +219,7 @@ fn supervise(name: &'static str, receiver: Receiver<Command>) {
 fn ensure(
     name: &'static str,
     endpoints: &mut BTreeMap<String, ManagedAccountEndpoint>,
-    unreaped: &mut Vec<Child>,
+    unreaped: &mut Vec<ManagedAccountEndpoint>,
     key: String,
     healthy: fn(&str) -> bool,
     timeout: Duration,
@@ -198,7 +232,7 @@ fn ensure(
             endpoints.insert(key, endpoint);
             return Ok(address);
         }
-        stop(name, endpoint.child, unreaped)?;
+        stop(name, endpoint, unreaped)?;
     }
     let mut endpoint = launch()?;
     let diagnostic =
@@ -206,6 +240,10 @@ fn ensure(
     let deadline = Instant::now() + timeout;
     let failure = loop {
         if healthy(&endpoint.endpoint) {
+            if let Err(error) = endpoint.pin_processes() {
+                let _ = stop(name, endpoint, unreaped);
+                return Err(error);
+            }
             let address = endpoint.endpoint.clone();
             endpoints.insert(key, endpoint);
             return Ok(address);
@@ -225,7 +263,7 @@ fn ensure(
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    if let Err(error) = stop(name, endpoint.child, unreaped) {
+    if let Err(error) = stop(name, endpoint, unreaped) {
         report(name, "startup_cleanup", &error.to_string());
     }
     Err(DaemonError::LocalTransport {
@@ -236,21 +274,50 @@ fn ensure(
 
 fn stop(
     name: &'static str,
-    mut child: Child,
-    unreaped: &mut Vec<Child>,
+    mut endpoint: ManagedAccountEndpoint,
+    unreaped: &mut Vec<ManagedAccountEndpoint>,
 ) -> Result<(), DaemonError> {
-    match child_shutdown::stop(&mut child, "stop_account_endpoint") {
-        Ok(()) => Ok(()),
-        Err(error) => {
+    #[cfg(target_os = "linux")]
+    if let Some(processes) = &endpoint.processes {
+        if let Err(error) = processes.signal(libc::SIGTERM) {
+            report(name, "signal_helper_tree", &error.to_string());
+        }
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while !processes.all_exited() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        if let Err(error) = processes.signal(libc::SIGKILL) {
+            report(name, "kill_helper_tree", &error.to_string());
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let mut descendants =
+        crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&endpoint.child).ok();
+    let result = child_shutdown::stop(&mut endpoint.child, "stop_account_endpoint");
+    #[cfg(all(unix, not(target_os = "linux")))]
+    if let Some(signals) = descendants.as_mut() {
+        if let Err(error) = signals.kill_owned_processes() {
+            report(name, "kill_helper_tree", &error.to_string());
+        }
+    }
+    match result {
+        Ok(()) if endpoint.all_exited() => Ok(()),
+        result => {
+            let error = result.err().unwrap_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "account helper descendants have not exited",
+                )
+            });
             report(
                 name,
                 "stop_account_endpoint",
                 &format!(
                     "child {}: {error}; supervisor retains reap ownership",
-                    child.id()
+                    endpoint.child.id()
                 ),
             );
-            unreaped.push(child);
+            unreaped.push(endpoint);
             Err(DaemonError::LocalTransport {
                 operation: "stop_account_endpoint",
                 message: format!("{name}: {error}"),

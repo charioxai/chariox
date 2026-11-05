@@ -66,7 +66,7 @@ pub(crate) fn ensure_codex_account_endpoint(
                         ),
                     }
                 })?;
-                Ok(ManagedAccountEndpoint { endpoint, child })
+                Ok(ManagedAccountEndpoint::new(endpoint, child))
             },
         )
 }
@@ -99,18 +99,13 @@ mod stall_tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         for ignore_term in [false, true] {
+            let descendants = crate::test_support::TestWorktree::new("account-child");
+            let child_pid_file = descendants.path().join("child.pid");
+            let grandchild = format!("import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(600)", child_pid_file.to_string_lossy());
+            let script = format!("import signal,time,subprocess,sys,pathlib; {}; subprocess.Popen([sys.executable,'-c',{:?}]); p=pathlib.Path({:?});\nwhile not p.exists(): time.sleep(0.01)\nprint('ready',flush=True); time.sleep(600)",
+                if ignore_term { "signal.signal(signal.SIGTERM,signal.SIG_IGN)" } else { "pass" }, grandchild, child_pid_file.to_string_lossy());
             let mut child = crate::process_spawn::command("python3")
-                .args([
-                    "-c",
-                    &format!(
-                        "import signal,time; {}; print('ready',flush=True); time.sleep(600)",
-                        if ignore_term {
-                            "signal.signal(signal.SIGTERM,signal.SIG_IGN)"
-                        } else {
-                            "pass"
-                        }
-                    ),
-                ])
+                .args(["-c", &script])
                 .stdout(Stdio::piped())
                 .spawn()
                 .unwrap();
@@ -120,16 +115,17 @@ mod stall_tests {
                 .unwrap();
             assert_eq!(ready.trim(), "ready");
             let pid = child.id();
+            let descendant_pid: u32 = std::fs::read_to_string(&child_pid_file)
+                .unwrap()
+                .parse()
+                .unwrap();
+            let mut cleanup =
+                crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child)
+                    .unwrap();
             let key = "stall-owner\0stall-profile".to_string();
             let endpoints =
                 CODEX_ACCOUNT_ENDPOINTS.get_or_init(|| AccountEndpoints::new("codex.catalog"));
-            endpoints.install(
-                key,
-                ManagedAccountEndpoint {
-                    endpoint: "unused".into(),
-                    child,
-                },
-            );
+            endpoints.install(key, ManagedAccountEndpoint::new("unused".into(), child));
             let (start, started) = std::sync::mpsc::channel();
             let (done, finished) = std::sync::mpsc::channel();
             let worker = std::thread::spawn(move || {
@@ -171,6 +167,9 @@ mod stall_tests {
                 0
             );
             // A failing base run must still release the exact helper it created.
+            if !returned {
+                let _ = cleanup.kill_owned_processes();
+            }
             if !returned && pid > 1 && pid <= i32::MAX as u32 {
                 unsafe {
                     libc::kill(pid as i32, libc::SIGKILL);
@@ -180,6 +179,16 @@ mod stall_tests {
             assert!(
                 !crate::runtime::process_health::process_running(pid),
                 "helper must be reaped"
+            );
+            let exit_deadline = std::time::Instant::now() + Duration::from_secs(1);
+            while crate::runtime::process_health::process_running(descendant_pid)
+                && std::time::Instant::now() < exit_deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                !crate::runtime::process_health::process_running(descendant_pid),
+                "native helper descendant survived invalidation"
             );
             assert!(
                 other_account_can_progress,

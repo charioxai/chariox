@@ -178,6 +178,14 @@ be replaced when the agent's previous run is unchanged; simultaneous starts for
 one agent return an explicit retry error. Waiting-room target computation also
 runs outside its cache lock.
 
+Linux account helpers retain pidfds for their observed process tree once readiness
+succeeds. Native CLI wrappers often have a separate server child: terminating
+only the wrapper can leave that server alive. The retained handles allow TERM,
+KILL and exit polling even when opening `/proc` fails under descriptor pressure;
+PID reuse cannot redirect a signal. Invalidation retains all handles until both
+the direct child is reaped and the observed descendants have exited. Other Unix
+hosts retain birth witnesses and check process-tree termination outside locks.
+
 The PTY spawn boundary uses a separate execution permit from the general run
 actor lane, avoiding re-entry of an already held actor permit. A session permit
 orders spawn/commit against session retirement; a run permit orders exec/attach

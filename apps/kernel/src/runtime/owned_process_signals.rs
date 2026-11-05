@@ -157,6 +157,35 @@ impl OwnedProcessSignals {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn pin_owned_processes(&mut self) -> io::Result<OwnedProcessHandles> {
+        let rows = snapshot()?;
+        self.refresh_from(&rows);
+        let mut handles = Vec::new();
+        for row in rows.iter().filter(|row| self.matches(row)) {
+            if row.pid <= 1 || row.pid > i32::MAX as u32 {
+                return Err(io::Error::other("invalid child PID"));
+            }
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
+            if fd < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    continue;
+                }
+                return Err(error);
+            }
+            use std::os::fd::FromRawFd;
+            let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+            if snapshot()?
+                .iter()
+                .any(|current| current.pid == row.pid && self.matches(current))
+            {
+                handles.push((row.pid, handle));
+            }
+        }
+        Ok(OwnedProcessHandles(handles))
+    }
+
     pub(crate) fn kill_child(&mut self) -> io::Result<bool> {
         let rows = snapshot()?;
         let Some(row) = rows.iter().find(|row| row.pid == self.root) else {
@@ -167,6 +196,49 @@ impl OwnedProcessSignals {
         }
         send_signal(self.root as i32)?;
         Ok(true)
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct OwnedProcessHandles(Vec<(u32, std::os::fd::OwnedFd)>);
+
+#[cfg(target_os = "linux")]
+impl OwnedProcessHandles {
+    pub(crate) fn signal(&self, signal: i32) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        for (pid, handle) in &self.0 {
+            if *pid <= 1 {
+                return Err(io::Error::other("reserved child signal target"));
+            }
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    handle.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn all_exited(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        self.0.iter().all(|(_, handle)| {
+            let mut fd = libc::pollfd {
+                fd: handle.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            unsafe { libc::poll(&mut fd, 1, 0) == 1 }
+        })
     }
 }
 
