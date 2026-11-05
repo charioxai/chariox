@@ -366,8 +366,8 @@ impl KernelRuntimeOwnedState {
             sessions.restore_session(session);
         }
         self.pending_interactions.write().remove(id);
-        activity_mutation.record();
         drop(sessions);
+        activity_mutation.record();
         if let Some(sender) = pending
             .responder
             .lock()

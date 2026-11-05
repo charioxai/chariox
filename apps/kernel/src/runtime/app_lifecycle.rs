@@ -1,7 +1,6 @@
 //! Retained owners for approved first installs and active-generation restarts.
 //! Data migrations and terminal approval projection remain separate duties.
 mod authority_check;
-mod disk_space;
 mod first_install;
 mod manual_stop;
 mod notifications;
@@ -69,10 +68,6 @@ pub(crate) enum LifecycleError {
     Preparation,
     #[error("{0}")]
     Wasm(&'static str),
-    /// App storage would leave less than the host's reserve free. The App's
-    /// log says how much is free and how much to free (`disk_space`).
-    #[error("app_lifecycle_disk_space")]
-    DiskSpace(chariox_app_runtime::worker_process::HostDiskSpace),
     #[error("app_lifecycle_registration")]
     Registration,
     #[error("app_lifecycle_registration_cancelled")]

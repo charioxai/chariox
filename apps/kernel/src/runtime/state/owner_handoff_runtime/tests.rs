@@ -678,3 +678,60 @@ fn mp08_mp10_mp11_a07_owner_click_retains_full_url_on_private_controller_request
         "public controller actions do not gain a caller-controlled hand-off fence"
     );
 }
+
+/// MP-09: a managed kernel counts the open cards as work, and that count reads the Room store. The sweep must
+/// record a withdrawn hand-off after it released the store; recording under it waited for the sweep itself, so the
+/// kernel stopped heartbeating. A wedge blocks its thread for good, so the sweep runs on its own thread.
+fn sweep_finishes(state: KernelRuntimeState, session: RuntimeSession, handoff_id: String) -> bool {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(state.reconcile_handoff(&session, &handoff_id));
+        let _ = done.send(());
+    });
+    finished
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .is_ok()
+}
+
+#[tokio::test]
+async fn sweeping_an_expired_handoff_on_a_managed_kernel_does_not_wait_for_itself() {
+    let (state, room) = fixture();
+    state
+        .ensure_managed_activity_tracking("kernel-handoff-expiry")
+        .unwrap();
+    let id = register(&state, &room, &handoff()).await;
+    state.owned.pending_interactions.write().remove(&id);
+    let session = state.owned.session_store.get_session(&room).unwrap();
+    assert!(
+        sweep_finishes(state, session, id),
+        "the sweep never finished"
+    );
+}
+
+#[tokio::test]
+async fn sweeping_a_claimed_handoff_after_restart_on_a_managed_kernel_does_not_wait_for_itself() {
+    let (state, room) = fixture();
+    state
+        .ensure_managed_activity_tracking("kernel-handoff-restart")
+        .unwrap();
+    let id = register(&state, &room, &handoff()).await;
+    let original = state.owned.session_store.get_session(&room).unwrap();
+    let (_claimed, guard) = state
+        .owned
+        .claim_handoff(&room, &id, DEFAULT_LOCAL_USER_ID, |_| Ok(()))
+        .unwrap();
+    drop(guard);
+    // A crash can restore a snapshot older than the write-ahead claim.
+    state
+        .owned
+        .session_store
+        .write()
+        .restore_session(original.clone());
+    assert!(
+        sweep_finishes(state, original, id),
+        "the sweep never finished"
+    );
+}

@@ -232,16 +232,19 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
     if fields.len() < 20 {
         return Err(io::Error::other("short process identity"));
     }
-    let parse = |field: &str| {
-        field
-            .parse()
-            .map_err(|_| io::Error::other("invalid process ID"))
+    // A row whose ids are not numbers (a process that is exiting, or one in another PID
+    // namespace) is not one of ours, like a row that has vanished: it must not fail the
+    // snapshot of every process on the host.
+    let (Ok(parent), Ok(group), Ok(session)) =
+        (fields[1].parse(), fields[2].parse(), fields[3].parse())
+    else {
+        return Ok(None);
     };
     Ok(Some(ProcessIdentity {
         pid,
-        parent: parse(fields[1])?,
-        group: parse(fields[2])?,
-        session: parse(fields[3])?,
+        parent,
+        group,
+        session,
         start: fields[19].into(),
     }))
 }
@@ -408,6 +411,20 @@ mod tests {
         let _ = own.wait();
         assert!(witness.is_ok(), "witness failed: {:?}", witness.err());
         assert!(seen.unwrap().iter().any(|row| row.pid == foreign.id()));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_row_with_non_numeric_ids_is_skipped_not_an_error() {
+        let stat =
+            |ids: &str| format!("77 (x) S {ids} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 5000 0").into_bytes();
+        assert!(linux_row(77, Ok(stat("1 1 1"))).unwrap().is_some());
+        for ids in ["1 -1 1", "1 1 -1", "-1 1 1"] {
+            assert!(
+                linux_row(77, Ok(stat(ids))).unwrap().is_none(),
+                "a row with ids `{ids}` failed the snapshot"
+            );
+        }
     }
 
     #[test]
