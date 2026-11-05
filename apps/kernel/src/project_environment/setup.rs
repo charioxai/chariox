@@ -57,6 +57,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct SetupRuns {
     root: PathBuf,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
+    managed: crate::room_terminal::managed_work::ManagedWork,
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -73,7 +74,25 @@ impl SetupRuns {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
             live: Mutex::new(HashMap::new()),
+            managed: Default::default(),
         })
+    }
+
+    pub(crate) fn link_managed_kernel(
+        &self,
+        gate: Arc<crate::runtime::state::ManagedKernelQuiescenceGate>,
+        callback: std::sync::Weak<dyn Fn() + Send + Sync>,
+    ) {
+        self.managed.link(gate, callback);
+    }
+
+    pub(crate) fn has_running_work(&self) -> bool {
+        // Keep cancelled runs counted until the child is reaped and its output has drained.
+        !lock(&self.live).is_empty()
+    }
+
+    fn report_work(&self) {
+        self.managed.report(|| self.has_running_work());
     }
 
     fn run_path(&self, operation_id: &str) -> PathBuf {
@@ -188,6 +207,7 @@ impl SetupRuns {
         self: &Arc<Self>,
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
+        let _admission = self.managed.admission()?;
         // Serialize competing operation ids and keep readers out until publication is complete.
         let mut live_runs = lock(&self.live);
         if let Some(existing) = self.get_with_live(&spec.operation_id, &live_runs)? {
@@ -240,6 +260,7 @@ impl SetupRuns {
         });
         live_runs.insert(spec.operation_id.clone(), Arc::clone(&live));
         drop(live_runs);
+        self.report_work();
         let runs = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runs.execute(&live, &spec).await;
@@ -359,6 +380,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
+        self.report_work();
     }
 
     /// Ends the run's process tree by its exact PID; the run then settles as cancelled.

@@ -223,9 +223,9 @@ pub(crate) struct KernelRuntimeState {
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
-    /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
-    /// own the runtime state that owns the terminal service.
-    managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
+    /// so it cannot own the runtime state that owns those services.
+    managed_work_activity: Option<Arc<dyn Fn() + Send + Sync>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -1032,7 +1032,7 @@ impl KernelRuntimeState {
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
-            managed_terminal_activity: None,
+            managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
                 app_control,
                 dev_app_bindings: Default::default(),
@@ -1194,7 +1194,7 @@ impl KernelRuntimeState {
                 ),
             },
         };
-        runtime.link_room_terminals_to_managed_kernel();
+        runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();

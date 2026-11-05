@@ -205,14 +205,14 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
-    /// Terminal commands are work: they keep a managed kernel from stopping,
-    /// and the stop fence refuses new ones.
-    pub(super) fn link_room_terminals_to_managed_kernel(&mut self) {
+    /// Owned commands and Setup runs keep a managed kernel from stopping;
+    /// the same stop fence refuses new work.
+    pub(super) fn link_work_to_managed_kernel(&mut self) {
         let Some(gate) = self.owned.managed_kernel_quiescence.clone() else {
             return;
         };
         let owned = self.owned.clone();
-        let callback = self.managed_terminal_activity.insert(Arc::new(move || {
+        let callback = self.managed_work_activity.insert(Arc::new(move || {
             owned.begin_managed_activity_mutation().record();
             owned.runtime_projection_changes.record_change();
         }));
@@ -221,6 +221,9 @@ impl KernelRuntimeState {
             .link_managed_kernel(gate.clone(), Arc::downgrade(callback));
         self.owned
             .room_execs
+            .link_managed_kernel(gate.clone(), Arc::downgrade(callback));
+        self.owned
+            .project_environment_setups
             .link_managed_kernel(gate, Arc::downgrade(callback));
     }
 }
@@ -249,7 +252,8 @@ impl KernelRuntimeOwnedState {
         let active_turn_count = active_turns.len() + self.agent_wakes.processes.count();
         let any_work = work_in_flight(active_turn_count, &sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
-            .max(u8::from(self.room_execs.has_running_work()));
+            .max(u8::from(self.room_execs.has_running_work()))
+            .max(u8::from(self.project_environment_setups.has_running_work()));
 
         let mut in_flight: BTreeSet<(&str, &str)> = BTreeSet::new();
         for turn in active_turns.values() {

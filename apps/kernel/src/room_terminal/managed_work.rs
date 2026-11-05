@@ -1,6 +1,6 @@
-//! A managed kernel must not stop under a running terminal command, and the
-//! stop fence closes terminal commands like it closes agent prompts. This
-//! module is the terminals' side of that contract; it knows no terminal.
+//! Managed work shares one admission fence and reports its activity transitions.
+//! Terminal commands, execs and Project Setup runs keep the machine running
+//! until their processes settle, and cannot start behind a reserved stop.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
@@ -40,7 +40,7 @@ impl ManagedWork {
     }
 
     /// Tell the kernel when the answer to "is a command running" changed.
-    /// Called without any terminal lock held.
+    /// Called without any work registry lock held.
     pub(crate) fn report(&self, is_working: impl FnOnce() -> bool) {
         let Some(link) = self.link.get() else {
             return;
