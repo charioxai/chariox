@@ -473,9 +473,13 @@ async fn login_room_at(site: &str) -> Login {
 }
 
 async fn login_room_with_fixture(f: Fixture, site: &str) -> Login {
+    login_room_with_controller(f, site, LOGIN_CONTROLLER).await
+}
+
+async fn login_room_with_controller(f: Fixture, site: &str, controller: &str) -> Login {
     let root = crate::test_support::TestWorktree::new("a06-login-controller");
     let script = root.path().join("controller.sh");
-    std::fs::write(&script, LOGIN_CONTROLLER.replace(SITE, site)).unwrap();
+    std::fs::write(&script, controller.replace(SITE, site)).unwrap();
     let host = &f.state.owned.kernel_browser_host;
     host.install_fixture_backend("local", &script, root.path());
     host.protected_request(
@@ -1638,6 +1642,64 @@ async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
     .unwrap();
     assert_eq!(stopped["state"], "stopped");
     assert_eq!(stopped["tabs"], json!([]));
+}
+
+#[tokio::test]
+async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_results() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER
+        .replace(
+            r#""result":{"generation":1"#,
+            r#""result":{"state":"ready","generation":1"#,
+        )
+        .replace(
+            r#""tab_id":"host-tab-new","document_id":"doc-login""#,
+            r#""tab_id":"host-tab-new","document_id":"doc-login","title":"Tabs generation ready host-tab-new""#,
+        );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    for (index, label) in ["Tabs", "generation", "ready", "host-tab-new"]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(login.root.path().join("value"), label).unwrap();
+        call(
+            f,
+            CAPTURE,
+            capture_args(&format!("inventory-schema-{index}")),
+        )
+        .await
+        .unwrap();
+    }
+    for command in [
+        json!({"op":"state"}),
+        json!({"op":"open","url":SITE}),
+        json!({"op":"navigate","tab_id":"host-tab-new","generation":1,"url":SITE}),
+        json!({"op":"input","tab_id":"host-tab-new","generation":1,"input":{"kind":"key","key":"ArrowDown"}}),
+    ] {
+        let operation = command["op"].as_str().unwrap().to_string();
+        let arguments = if operation == "input" {
+            json!({"document_id":"doc-login", "command":command})
+        } else {
+            json!({"command":command})
+        };
+        let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
+        assert_eq!(result["state"], "ready", "{operation} keeps its state enum");
+        assert_eq!(result["generation"], 1, "{operation} keeps generation");
+        let tabs = result["tabs"]
+            .as_array()
+            .expect("capturing Tabs preserves the fixed inventory key");
+        let tab = tabs
+            .iter()
+            .find(|tab| tab["tab_id"] == "host-tab-new")
+            .expect("the filled tab keeps its opaque identity");
+        assert_eq!(tab["document_id"], "doc-login");
+        assert_eq!(
+            tab["title"], "[redacted] [redacted] [redacted] [redacted]",
+            "{operation} still scrubs page-derived title text"
+        );
+    }
 }
 
 #[tokio::test]
