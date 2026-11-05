@@ -134,6 +134,7 @@ pub(super) struct ClaudeToolTranscript {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PendingTool {
     name: String,
+    top_level: bool,
     // Retain bounded encoded input, not an expanded JSON tree per pending call.
     input: Vec<u8>,
 }
@@ -151,6 +152,16 @@ impl PendingTool {
 }
 
 impl ClaudeToolTranscript {
+    pub(super) fn plan_proposal_id(&self, requested: Option<&str>) -> Option<String> {
+        let mut candidates = self.pending.iter().filter(|(id, tool)| {
+            requested.is_none_or(|requested| requested == id.as_str())
+                && tool.name == "ExitPlanMode"
+                && tool.top_level
+        });
+        let (id, _) = candidates.next()?;
+        candidates.next().is_none().then(|| id.clone())
+    }
+
     pub(super) fn has_pending_tools(&self) -> bool {
         !self.pending.is_empty()
     }
@@ -229,6 +240,7 @@ impl ClaudeToolTranscript {
                 }
                 let pending = PendingTool {
                     name: name.to_string(),
+                    top_level: value.get("parent_tool_use_id").is_none_or(Value::is_null),
                     input: bounded_input(block.get("input").unwrap_or(&Value::Null)),
                 };
                 if pending.bytes(id) > PENDING_BYTES.saturating_sub(self.pending_bytes) {
@@ -292,6 +304,29 @@ mod tests {
         json!({"type":"user","message":{"content":[{
             "type":"tool_result","tool_use_id":id,"content":content
         }]}})
+    }
+
+    #[test]
+    fn plan_proposal_matches_only_its_pending_root_invocation() {
+        let mut transcript = ClaudeToolTranscript::default();
+        let root = invocation("root", "ExitPlanMode");
+        let mut nested = invocation("nested", "ExitPlanMode");
+        nested["parent_tool_use_id"] = json!("subagent");
+        transcript.observe(&root);
+        transcript.observe(&nested);
+        transcript.observe(&invocation("write", "Write"));
+        assert_eq!(
+            transcript.plan_proposal_id(Some("root")).as_deref(),
+            Some("root")
+        );
+        assert_eq!(transcript.plan_proposal_id(None).as_deref(), Some("root"));
+        assert!(transcript.plan_proposal_id(Some("nested")).is_none());
+        assert!(transcript.plan_proposal_id(Some("write")).is_none());
+        assert!(transcript.plan_proposal_id(Some("ended")).is_none());
+        transcript.observe(&invocation("another-root", "ExitPlanMode"));
+        assert!(transcript.plan_proposal_id(None).is_none());
+        transcript.clear();
+        assert!(transcript.plan_proposal_id(Some("root")).is_none());
     }
 
     #[test]

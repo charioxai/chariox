@@ -38,39 +38,61 @@ fn drain_in_mode(
 }
 
 #[test]
-fn native_plan_exit_finishes_planning_before_any_implementation() {
-    let batch = drain_in_mode(
-        vec![
-            json!({"type":"assistant","message":{"content":[{
-                "type":"tool_use","id":"plan","name":"ExitPlanMode","input":{}
-            }]}}),
-            json!({"type":"user","message":{"content":[{
-                "type":"tool_result","tool_use_id":"plan",
-                "content":"User has approved your plan.\n\n## Approved Plan:\nImplement after the person clicks Implement."
-            }]}}),
-            json!({"type":"assistant","message":{"content":[{
-                "type":"tool_use","id":"too_early","name":"Write","input":{"file_path":"implementation.txt","content":"too early"}
-            }]}}),
-        ],
-        AgentExecutionMode::Plan,
+fn rejected_plan_callback_preserves_output_drained_before_the_turn_ended() {
+    let (mut state, _) = parser_state();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    state.output.receiver = receiver;
+    state.active_execution_mode = AgentExecutionMode::Plan;
+    let run = RuntimeProviderRun::new(
+        "run-1",
+        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+            .with_execution_mode(AgentExecutionMode::Plan),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "test-claude".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-claude-runtime".into()),
+        },
+    );
+    sender
+        .send(ClaudeRuntimeMessage::Stdout(
+            json!({"type":"assistant","message":{"content":[
+                {"type":"text","text":"This turn finished without that plan call."}
+            ]}}),
+        ))
+        .unwrap();
+    sender
+        .send(ClaudeRuntimeMessage::Stdout(
+            json!({"type":"result","subtype":"success","result":""}),
+        ))
+        .unwrap();
+    let (batch, result) = crate::provider::claude_runtime::publish_claude_plan(
+        &run,
+        &mut state,
+        Some("ended-plan"),
+        "Late proposal",
+    );
+    assert!(
+        result.is_err(),
+        "the absent native call must not publish a proposal"
     );
     assert!(
         batch.prompt_completed,
-        "native plan exit must settle the planning turn"
+        "the actual provider completion must survive"
     );
-    assert_eq!(batch.completions.len(), 1);
-    assert!(batch.terminal_failure.is_none());
-    assert_eq!(
-        batch.chunks.len(),
-        2,
-        "only the proposed plan reaches history"
+    assert!(
+        batch.terminal_failure.is_none(),
+        "a stale callback must not fail the provider turn"
     );
-    let completed: serde_json::Value = serde_json::from_slice(&batch.chunks[1].bytes).unwrap();
-    assert_eq!(completed["status"], "completed");
-    assert_eq!(
-        completed["input"]["plan"],
-        "Implement after the person clicks Implement."
-    );
+    assert!(batch
+        .chunks
+        .iter()
+        .any(|chunk| chunk.bytes == b"This turn finished without that plan call."));
 }
 
 #[test]

@@ -75,6 +75,12 @@ pub(super) enum ProviderRunActorCommand {
         run: RuntimeProviderRun,
         output_poll_delay: Duration,
     },
+    PublishClaudePlan {
+        run: RuntimeProviderRun,
+        tool_use_id: Option<String>,
+        plan: String,
+        response: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     Stop,
 }
 
@@ -248,6 +254,31 @@ impl ProviderRunWorkerDeps {
                 push_finished_output_poll(&self.finished_output_polls, finished);
                 self.in_flight.clear_output_poll_in_flight(&provider_run_id);
                 self.completion_signal.record_completion(&provider_run_id);
+            }
+            ProviderRunActorCommand::PublishClaudePlan {
+                run,
+                tool_use_id,
+                plan,
+                response,
+            } => {
+                let run_id = run.id().to_string();
+                let (batch, result) = super::command_execution::execute_claude_plan_proposal(
+                    &self.runtime_registry,
+                    &run,
+                    tool_use_id.as_deref(),
+                    &plan,
+                );
+                push_finished_output_poll(
+                    &self.finished_output_polls,
+                    FinishedProviderOutputPollJob {
+                        provider_run_id: run_id.clone(),
+                        result: Ok(Some(batch)),
+                        settlement_retry_attempt: 0,
+                    },
+                );
+                self.completion_signal.record_completion(&run_id);
+                let receipt = result.map_err(|error| error.to_string());
+                let _ = response.send(receipt);
             }
             ProviderRunActorCommand::Stop => return true,
         }

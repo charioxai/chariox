@@ -6,8 +6,8 @@
 //! Claude expects: `{"behavior":"allow","updatedInput":...}` or
 //! `{"behavior":"deny","message":...}`. "Allow for this session" also answers with
 //! session-scoped rules, so Claude stops asking for the same kind of call in that
-//! run. Plan-mode ExitPlanMode only publishes a proposal: the provider runtime
-//! settles it before Build can start, leaving approval on the existing Implement action.
+//! run. Plan-mode ExitPlanMode publishes a proposal after stopping the blocked
+//! provider process; the existing Implement action approves the Build turn.
 
 use super::*;
 use crate::provider::{ProviderNativeInteractionResolution, RuntimeProviderRun};
@@ -64,9 +64,6 @@ impl KernelRuntimeState {
         if provider_run.execution_mode() == crate::provider::AgentExecutionMode::Plan
             && args.tool_name == "ExitPlanMode"
         {
-            // Native exit only publishes the proposed plan. The runtime settles
-            // that turn and restarts in Plan; the existing Implement action is
-            // the person's approval to begin a Build turn.
             let live = provider_run.state() == crate::provider::ProviderRunState::Running
                 && self
                     .owned
@@ -77,13 +74,38 @@ impl KernelRuntimeState {
                             && turn.agent_id == agent_id
                             && !turn.settlement_requested
                     });
+            let message = if !live {
+                "This plan exit belongs to an ended turn."
+            } else if let Some(plan) = args
+                .input
+                .get("plan")
+                .and_then(serde_json::Value::as_str)
+                .filter(|plan| !plan.trim().is_empty())
+            {
+                // Leave Claude blocked on this callback until its actor has
+                // stopped the process and queued the proposal for settlement.
+                let receipt = self.owned.provider_store.publish_claude_plan(
+                    provider_run.clone(),
+                    args.tool_use_id.clone(),
+                    plan.to_string(),
+                )?;
+                match receipt.await {
+                    Ok(Ok(())) => "The plan is ready for review. Implementation starts with the Implement action.",
+                    Ok(Err(error)) => {
+                        crate::logging::warn_with_fields(
+                            "runtime.permission_prompt", "Claude plan proposal failed",
+                            serde_json::json!({"provider_run_id": provider_run.id(), "error": error}),
+                        );
+                        "The plan could not be published. Retry the planning turn."
+                    }
+                    Err(_) => "The plan proposal actor stopped. Retry the planning turn.",
+                }
+            } else {
+                "The plan exit must include nonempty plan text. Retry with the proposed plan."
+            };
             return Ok(RuntimeToolResult {
                 ok: true,
-                payload: if live {
-                    serde_json::json!({"behavior": "allow", "updatedInput": args.input})
-                } else {
-                    deny("This plan exit belongs to an ended turn.")
-                },
+                payload: deny(message),
             });
         }
         let working_directory = provider_run.working_directory().map(PathBuf::as_path);

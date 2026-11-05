@@ -823,8 +823,132 @@ fn claude_print_fixture_in_mode(
     (router, session, agent.id().to_string(), root, app)
 }
 
+// The child models a native tool which is already allowed in Claude's settings.
+// No output pump runs while the permission callback is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn claude_plan_exit_blocks_process_side_effects_when_output_draining_is_delayed() {
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
+    for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
+        let (router, session, agent_id, root, app) =
+            claude_print_fixture_in_mode(AgentExecutionMode::Plan, level);
+        let ready = root.join("ready");
+        let reply = root.join("reply.json");
+        let side_effect = root.join("implemented.txt");
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "claude",
+            "claude",
+            "default",
+            "sonnet",
+        )
+        .with_agent_id(&agent_id)
+        .with_execution_mode(AgentExecutionMode::Plan)
+        .with_permission_level(level)
+        .with_runtime_mcp_binding(crate::provider::RuntimeMcpBinding::new(
+            "http://127.0.0.1:1/mcp",
+            CLAUDE_TOKEN,
+        ));
+        let mut run = crate::provider::RuntimeProviderRun::new(
+            "provider-run-claude-print", &request,
+            crate::provider::ProviderLaunchResult {
+                endpoint_mode: crate::provider::AgentEndpointMode::External,
+                process_label: "claude-plan-boundary-regression".into(),
+                pty_target: None,
+                pty_program: Some("/usr/bin/python3".into()),
+                pty_args: vec!["-c".into(), r#"
+import json, os, pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+sys.stdin.readline()
+print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','id':'toolu_plan_proposal','name':'ExitPlanMode','input':{'plan':'Create implemented.txt only after Implement.'}}]}}), flush=True)
+(root / 'ready').write_text(str(os.getpid()))
+while not (root / 'reply.json').exists(): time.sleep(.005)
+if json.loads((root / 'reply.json').read_text()).get('behavior') == 'allow':
+    (root / 'implemented.txt').write_text('EXECUTED BEFORE IMPLEMENT')
+while True: time.sleep(1)
+"#.into(), root.display().to_string()],
+                pty_env: Default::default(),
+                pty_env_remove: Vec::new(),
+                working_directory: Some(root.clone()),
+                structured_endpoint: Some("stdio://claude".into()),
+            },
+        );
+        run.mark_running();
+        let mut binding = crate::provider::initialize_claude_runtime(&run).unwrap();
+        crate::provider::submit_claude_prompt(
+            &run,
+            &mut binding.state,
+            &crate::prompt_assembly::PromptEnvelope::new(
+                "Make a plan",
+                "",
+                Vec::new(),
+                crate::prompt_assembly::PromptManifest::current(),
+            ),
+        )
+        .unwrap();
+        {
+            let app = app.lock().await;
+            app.providers_mut().insert_run_for_test(run.clone());
+            app.providers()
+                .apply_runtime_binding(
+                    run.id(),
+                    crate::provider::ProviderRuntimeBinding::Claude(binding),
+                )
+                .unwrap();
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !ready.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("provider must reach the native permission boundary");
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            rpc(&router, CLAUDE_TOKEN, "tools/call", serde_json::json!({
+                "name":"chariox.permission_prompt", "arguments": {
+                    "tool_name":"ExitPlanMode",
+                    "input":{"plan":"Create implemented.txt only after Implement."},
+                    "tool_use_id": (level == AgentPermissionLevel::Required).then_some("toolu_plan_proposal")
+                }
+            })),
+        ).await.expect("publishing a proposal must settle without another approval");
+        let original_pid: u32 = std::fs::read_to_string(&ready).unwrap().parse().unwrap();
+        let stopped_before_reply =
+            crate::runtime::kernel_access::process::inspect(original_pid).is_err();
+        std::fs::write(&reply, serde_json::to_vec(&decision(&response)).unwrap()).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let executed = side_effect.exists();
+        let jobs = {
+            let app = app.lock().await;
+            let jobs = app.providers().drain_finished_structured_output_poll_jobs();
+            app.providers().clear_runtime(run.id());
+            jobs
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(!executed, "native plan exit must never authorize execution before Implement, even without output draining");
+        assert!(
+            stopped_before_reply,
+            "the provider must be physically stopped before answering its callback"
+        );
+        assert_eq!(decision(&response)["behavior"], "deny");
+        assert!(active_interactions(&router, session.id()).is_empty());
+        let batch = jobs
+            .into_iter()
+            .find_map(|job| job.result.unwrap())
+            .expect("proposal must reach output settlement");
+        assert!(batch.prompt_completed);
+        assert_eq!(batch.completions.len(), 1);
+        assert!(batch.chunks.iter().any(|chunk| {
+            let value: Value = serde_json::from_slice(&chunk.bytes).unwrap_or_default();
+            value["tool"] == "ExitPlanMode"
+                && value["status"] == "completed"
+                && value["input"]["plan"] == "Create implemented.txt only after Implement."
+        }));
+    }
+}
+
 #[tokio::test]
-async fn claude_plan_exit_presents_the_plan_without_a_second_approval() {
+async fn claude_plan_exit_rejects_missing_plan_and_ended_turns_without_an_approval() {
     use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
     for level in [AgentPermissionLevel::Required, AgentPermissionLevel::Yolo] {
         let (router, session, _agent_id, root, app) =
@@ -842,10 +966,11 @@ async fn claude_plan_exit_presents_the_plan_without_a_second_approval() {
         )
         .await
         .expect("presenting a plan must not wait for a second approval");
-        assert_eq!(
-            decision(&response),
-            serde_json::json!({"behavior":"allow","updatedInput":{}})
-        );
+        assert_eq!(decision(&response)["behavior"], "deny");
+        assert!(decision(&response)["message"]
+            .as_str()
+            .unwrap()
+            .contains("nonempty plan"));
         assert!(active_interactions(&router, session.id()).is_empty());
         app.lock()
             .await
