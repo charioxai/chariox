@@ -431,7 +431,7 @@ export class BrowserMirror2Renderer {
     this.shadows.delete(doc)
     if (names.length && view?.CSSStyleSheet) {
       const sheet = new view.CSSStyleSheet()
-      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:url(${this.empty});unicode-range:U+10FFFF}`).join(''))
+      sheet.replaceSync(names.map(name => `@font-face{font-family:${JSON.stringify(name)};src:local(${JSON.stringify(this.empty)});unicode-range:U+10FFFF}`).join(''))
       this.shadows.set(doc, sheet)
     }
     this.adopt(doc, doc.adoptedStyleSheets.filter(sheet => sheet !== held))
