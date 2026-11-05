@@ -253,8 +253,8 @@ impl KernelRuntimeState {
         let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms)
             .max(Duration::from_millis(blocking) + Duration::from_secs(20));
         let worker_kernel_id = binding.worker_kernel_id.clone();
-        let response =
-            crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+        let response = self
+            .enqueue_leased_worker_request_authorized(
                 &relay_config,
                 chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(binding.worker_kernel_id),
@@ -268,6 +268,9 @@ impl KernelRuntimeState {
                 timeout,
                 || self.authorize_current_external_command(),
             )
+            .await
+            .map_err(|error| worker_unreachable(&worker_kernel_id, error))?
+            .wait()
             .await
             .map_err(|error| worker_unreachable(&worker_kernel_id, error))?;
         match response {
@@ -322,12 +325,10 @@ impl KernelRuntimeState {
             .as_deref()
             .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID);
         let session = self.owned.session_store.get_session(&request.session_id)?;
-        // The enrolled terminal still owns the OS-local Rooms made before
-        // enrollment; it keeps its authenticated identity as the actor.
-        let owns_room = session.owner_user_id() == user_id
-            || (caller.is_terminal_caller()
-                && self.is_legacy_local_terminal_owner(&request.session_id, user_id));
-        if !owns_room {
+        if !self
+            .owned
+            .acts_for_owner(session.id(), user_id, session.owner_user_id())
+        {
             return Err(DaemonError::OwnershipAccessDenied {
                 user_id: user_id.to_string(),
                 owner_user_id: session.owner_user_id().to_string(),

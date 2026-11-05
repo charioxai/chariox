@@ -21,6 +21,10 @@ impl CommandRouter {
             .subscribe_appended_events()
     }
 
+    pub(crate) fn local_daemon_id(&self) -> String {
+        self.config_projection.snapshot().daemon_id
+    }
+
     pub(crate) fn kernel_websocket_bind_address(&self) -> (String, u16) {
         let config = self.config_projection.snapshot();
         (config.kernel_websocket_host, config.kernel_websocket_port)
@@ -231,6 +235,11 @@ impl CommandRouter {
         self.runtime_state.shutdown_cleanup().await
     }
 
+    /// Changes as soon as the kernel connects to or loses its relay.
+    pub(crate) async fn relay_connection_changes(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.relay_state.read().await.connection_changes()
+    }
+
     pub(crate) async fn transport_relay_status_snapshot(&self) -> RelayStatus {
         crate::runtime::remote_relay_inventory::projected_relay_status(
             self.relay_state.clone(),
@@ -244,7 +253,7 @@ impl CommandRouter {
         caller: &crate::runtime::command::KernelCaller,
     ) -> bool {
         let config = self.config_projection.snapshot();
-        config.cloud_relay.is_none()
+        !crate::runtime::cloud_relay_control::cloud_relay_transport_selected(&config)
             || crate::runtime::cloud_relay_authorization::cloud_relay_caller_owner(&config, caller)
     }
 
@@ -352,6 +361,43 @@ fn worker_presence_is_authenticated(
 #[cfg(test)]
 mod tests {
     use super::worker_presence_is_authenticated;
+    use crate::runtime::command::KernelCaller;
+    use std::sync::Arc;
+
+    // MP-08 / MP-10 / MP-11: a private relay vouches for its own callers; only the
+    // selected Cloud relay restricts the machine directory to the Cloud owner.
+    #[tokio::test]
+    async fn retained_cloud_profile_restricts_the_directory_only_on_the_cloud_relay() {
+        let root = crate::test_support::TestWorktree::new("private-relay-directory");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        config.relay_url = Some("ws://operator-relay:49100".into());
+        config.relay_token = Some("synthetic-private-transport".into());
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://cloud-relay".into(),
+            user_id: "cloud-owner".into(),
+            realm_id: "cloud-realm".into(),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let projection = app.config_projection_store();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let mut caller = KernelCaller::for_relay_request(None);
+        caller.user_id = Some("private-peer".into());
+        assert!(router.relay_owner_directory_allowed(&caller));
+
+        let mut hosted = config;
+        hosted.relay_url = Some("wss://cloud-relay".into());
+        projection.update(hosted);
+        assert!(!router.relay_owner_directory_allowed(&caller));
+        caller.user_id = Some("cloud-owner".into());
+        caller.realm_id = Some("cloud-realm".into());
+        assert!(router.relay_owner_directory_allowed(&caller));
+    }
 
     #[test]
     fn slice_health_reconciliation_requires_pinned_worker_presence() {

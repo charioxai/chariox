@@ -15,7 +15,7 @@ test('MP-11: protected crop over patch budget keeps all full-raster masks throug
  // Keep the mocked raster valid so this test reaches full-mask propagation.
  const redact=()=>{for(const r of masks)for(let y=r.y;y<r.y+r.height;y++)pixels.fill(Buffer.from([0,0,0,255]),(y*1280+r.x)*4,(y*1280+r.x+r.width)*4)};
  redact();
- const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:masks,data_base64:encodePng(1280,800,pixels)})};
+ const host={protection:{values:[],targets:[],display_masked:true},generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:masks,data_base64:encodePng(1280,800,pixels)})};
  const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1,canonical);
  const encoder=new PortableEncoder();let encodedMasks;
  const encode=encoder.encode.bind(encoder);encoder.encode=(...args)=>{encodedMasks=args[4];return encode(...args)};
@@ -61,7 +61,7 @@ test('MP-11: crop merge masks the merged raster with the crop capture full masks
  const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]},late=[{x:900,y:600,width:24,height:24}];
  const pixels=Buffer.alloc(1280*800*4,255);let shots=0;
  // The protected field appears outside the damage between preview and crop.
- const host={generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:++shots>3?late:[],data_base64:encodePng(1280,800,pixels)})};
+ const host={protection:{values:[],targets:[],display_masked:true},generation:1,scales:new Map([['t',1]]),screenshot:async()=>({...tab,generation:1,protected_regions:++shots>3?late:[],data_base64:encodePng(1280,800,pixels)})};
  const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),1,canonical);
  await capture.next(tab,policy,false);
  for(let y=100;y<140;y++)pixels.fill(0,(y*1280+100)*4,(y*1280+140)*4);
@@ -180,7 +180,7 @@ test('MP-08/MP-11: thumbnail damage at the right/bottom edge of an odd resized v
  for(const [scale,width,height] of [[1,900,600],[2,901,603],[1,1437,893]]){
   const tab={tab_id:'t',document_id:'d',input_epoch:0},policy={values:[]},w=width*scale,h=height*scale;
   const pixels=Buffer.alloc(w*h*4,255);
-  const host={generation:1,scales:new Map([['t',scale]]),screenshot:async()=>({...tab,generation:1,protected_regions:[],data_base64:encodePng(w,h,pixels)})};
+  const host={protection:{values:[],targets:[],display_masked:true},generation:1,scales:new Map([['t',scale]]),screenshot:async()=>({...tab,generation:1,protected_regions:[],data_base64:encodePng(w,h,pixels)})};
   const capture=new DisplayCapture(clip=>captureProtectedDisplay(host,tab,clip),scale,()=>({width,height}));
   await capture.next(tab,policy,false);
   // Paint the viewport's last device pixels, which the thumbnail's final column/row samples.

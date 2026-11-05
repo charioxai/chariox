@@ -179,3 +179,73 @@ async fn post_reservation_failure() {
         "the failure must follow actual prompt admission"
     );
 }
+
+#[test]
+fn room_spawn_with_a_claude_mode_name_keeps_the_parent_account() {
+    run_large_stack_async_test("room-spawn-claude-account", spawn_keeps_claude_account);
+}
+
+/// A parent running as `claude-headless` that spawns `--provider claude` is the
+/// same provider: the child must start on the parent's account, not the default.
+async fn spawn_keeps_claude_account() {
+    let env = TestMetaRuntimeEnv::new("room-spawn-claude-account");
+    let mut config = DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, actor) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            env.root.to_string_lossy(),
+            env.root.to_string_lossy(),
+        ))
+        .unwrap();
+    let profile = app
+        .provider_account_profile_registry()
+        .create_managed(actor.owner_user_id(), "claude", "Parent account")
+        .unwrap();
+    let parent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            CreateAgentRequest::new(session.id(), "claude-headless")
+                .with_alias("parent")
+                .with_account_profile(profile.profile_id.clone()),
+        )
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        parent.id(),
+        "dev-stub",
+        "dev-stub",
+        "room-model",
+    );
+    // The run launches on the stub; the agent then reports the Claude mode and account.
+    app.agents_mut()
+        .set_agent_runtime_profile_with_account_profile(
+            parent.id(),
+            "claude-headless",
+            None,
+            None,
+            Some(profile.profile_id.clone()),
+            Default::default(),
+        )
+        .unwrap();
+    let auth = run.runtime_mcp_auth_token().unwrap().to_owned();
+    let app = Arc::new(Mutex::new(app));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
+    let created = router
+        .dispatch_authenticated_runtime_tool_call(
+            &auth,
+            "chariox.room.run_command",
+            serde_json::json!({"command":"agent spawn child --provider claude"}),
+        )
+        .await
+        .unwrap();
+    assert!(created.ok, "{created:?}");
+    let child_id = created.payload["response"]["agent"]["id"].as_str().unwrap();
+    let guard = app.lock().await;
+    let child = guard.agents().get_agent(child_id).unwrap();
+    assert_eq!(
+        child.account_profile(),
+        Some(profile.profile_id.as_str()),
+        "the child must not fall back to the default account"
+    );
+}

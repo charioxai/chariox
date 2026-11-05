@@ -1,5 +1,5 @@
 //! Fixed native ABI fixture for cross-crate tests. This is intentionally NOT a
-//! sandbox or embedded Node worker. There is no caller-selected executable,
+//! sandbox or WASM worker. There is no caller-selected executable,
 //! bootstrap, path, generation, limit or resource domain. The feature is absent
 //! from production dependencies and rejected by release-profile compilation.
 //! Only package identity comes from an already verified package; no package
@@ -172,6 +172,10 @@ impl Observation {
         }
         Ok(Some(bytes))
     }
+    /// Fixed export staging location for the queued broker cleanup regression.
+    pub fn export_staging_directory(&self) -> PathBuf {
+        self.marker.with_file_name(".export-cancelled")
+    }
     pub fn pending_file_replacements(&self) -> io::Result<usize> {
         let mut count = 0;
         for (index, entry) in fs::read_dir(self.marker.parent().unwrap())?.enumerate() {
@@ -200,16 +204,21 @@ impl Fixture {
     /// Compiles only the fixed libc fixture and production startup-record codec.
     /// Run on a bounded blocking test thread, never the async kernel coordinator.
     pub fn compile() -> io::Result<Self> {
-        let mut pattern = CString::new("/tmp/chariox-worker-fixture-XXXXXX")
-            .unwrap()
-            .into_bytes_with_nul();
+        let mut pattern = CString::new(
+            std::env::temp_dir()
+                .join("chariox-worker-fixture-XXXXXX")
+                .as_os_str()
+                .as_bytes(),
+        )
+        .unwrap()
+        .into_bytes_with_nul();
         if unsafe { libc::mkdtemp(pattern.as_mut_ptr().cast()) }.is_null() {
             return Err(io::Error::last_os_error());
         }
         let scratch = Arc::new(Scratch(fs::canonicalize(Path::new(OsStr::from_bytes(
             &pattern[..pattern.len() - 1],
         )))?));
-        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/app-worker/src");
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture");
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/worker_process/fixture.c");
         let executable = scratch.0.join("fixed-worker-fixture");
         let diagnostic_path = scratch.0.join("compiler.log");
@@ -351,7 +360,8 @@ impl Fixture {
                         heap_mib: 64,
                         v8_threads: 1,
                         max_file_bytes: 1048576,
-                    },
+                    }
+                    .into(),
                     _objects: objects,
                     domain: Box::new(FixtureDomain {
                         private_data,

@@ -11,7 +11,7 @@ async fn claude_cancellation_waits_for_abort_ack_before_promoting_queued_prompt(
 }
 
 #[tokio::test]
-async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_dispatch() {
+async fn cancellation_defers_queued_workflow_and_refreshes_its_projection() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -152,31 +152,38 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
             cancellation.cancellation.prompt.id(),
             Some(provider_run.id()),
         )
-        .expect("provider abort acknowledgement should promote queued workflow prompt");
-    assert!(cancellation.cancellation.started_next.is_some());
+        .expect("provider abort acknowledgement should leave the workflow for shared promotion");
+    assert!(cancellation.cancellation.started_next.is_none());
+    assert!(cancellation.dispatch.is_none());
+    assert!(cancellation.queue_head_deferred);
     assert!(
         agent_runtime_projection
             .get(agent.id())
-            .and_then(|projection| projection.active_prompt)
-            .is_some_and(|prompt| prompt.workflow_run_id() == Some(queued_run.id())),
-        "runtime-owned cancellation settlement must refresh the promoted workflow prompt projection"
+            .expect("the cancelled agent projection should remain available")
+            .active_prompt
+            .is_none(),
+        "cancellation settlement must clear the old active prompt projection"
     );
 
     let snapshot = runtime
         .owned
         .session_snapshot(session.id())
         .expect("session snapshot should exist");
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&snapshot, agent.id())
+        .is_some_and(|head| head.workflow_run_id() == Some(queued_run.id())));
     let run = snapshot
         .workflow_runs()
         .iter()
         .find(|run| run.id() == queued_run.id())
         .expect("queued workflow run should remain in the session");
-    assert_eq!(run.status(), crate::session::WorkflowRunStatus::Running);
     assert_eq!(
         run.node_runs()[0].status(),
-        crate::session::WorkflowNodeRunStatus::Running
+        crate::session::WorkflowNodeRunStatus::Ready
     );
-    assert!(run.node_runs()[0].started_at_ms().is_some());
+    assert!(run.node_runs()[0].started_at_ms().is_none());
 }
 
 async fn assert_structured_cancellation_waits_for_abort_ack(adapter_key: &str) {
@@ -899,4 +906,168 @@ async fn owner_stop_acknowledged_by_abort_cancels_the_agent_task() {
         .prompt_state_owner
         .active_prompt_for_agent(&snapshot, agent.id())
         .is_none());
+}
+
+/// MP-08/MP-10/MP-11: a Stop that the provider acknowledges through its abort receipt settles
+/// the prompt in the reaper. A workflow node queued behind that prompt needs its prepared run
+/// (workflow tools, fresh context), so the reaper leaves it queued for the shared promotion.
+#[tokio::test]
+async fn an_acknowledged_stop_leaves_a_queued_workflow_node_for_the_shared_promotion() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-stop-ack-workflow-head",
+            "worktree-stop-ack-workflow-head",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "stop-ack-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("client should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+        "stop-ack-test",
+    )
+    .with_agent_id(agent.id());
+    let mut provider_run = crate::provider::RuntimeProviderRun::new(
+        "stop-ack-provider",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "stop-ack".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    provider_run.mark_running();
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "stop-ack-active",
+            attachment.id(),
+            agent.id(),
+            "a long story",
+            crate::session::PromptStatus::Queued,
+        ),
+        false,
+    )
+    .expect("the ordinary prompt should start");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("stop-ack-workflow".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("start".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            format!("workflow-ack:{node_run_id}"),
+            "the workflow node".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared before provider dispatch");
+    app.prompt_owner_submit_prepared_prompt(
+        session.id(),
+        crate::session::PromptQueueItem::new(
+            "stop-ack-node",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+            agent.id(),
+            "the workflow node",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(workflow_run.id(), &node_run_id),
+        false,
+    )
+    .expect("the workflow node should queue behind the ordinary prompt");
+    let stopped_prompt_id = app
+        .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+        .unwrap()
+        .expect("the ordinary prompt is active")
+        .id()
+        .to_string();
+    app.prompt_owner_begin_cancelling_active_prompt(session.id(), agent.id())
+        .unwrap();
+    app.providers_mut().inject_finished_abort_for_test(
+        crate::provider::FinishedProviderPromptAbortJob {
+            session_id: session.id().to_string(),
+            provider_run_id: provider_run.id().to_string(),
+            prompt_id: stopped_prompt_id,
+            result: Ok(()),
+        },
+    );
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let follow_ups = runtime.owned.reap_structured_prompt_jobs();
+
+    assert!(
+        follow_ups.local.is_empty(),
+        "the node must not be dispatched on the stopped run: {:?}",
+        follow_ups
+            .local
+            .iter()
+            .map(|dispatch| dispatch.prompt_id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        follow_ups.project_queue_promotions
+            == vec![(session.id().to_string(), agent.id().to_string())],
+        "the node must be handed to the shared promotion"
+    );
+    let snapshot = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&snapshot, agent.id())
+            .is_none(),
+        "the node stays queued until the shared promotion prepares its run"
+    );
+    assert!(runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(&snapshot, agent.id())
+        .is_some_and(|head| head.workflow_run_id() == Some(workflow_run.id())));
 }

@@ -24,11 +24,14 @@ mod operational_query;
 mod operational_retention;
 mod operational_session;
 pub(crate) mod public_history;
+mod range_cache;
 mod remote_lease_context;
 mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
-pub use operational_session::{ExternalImportHistoryEntry, ExternalImportHistoryIndex};
+pub use operational_session::{
+    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex,
+};
 pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
     external_provider_observed_state_merge_key, parse_external_provider_observed_id,
@@ -614,6 +617,7 @@ pub struct OperationalHistoryStore {
     read_connections: Arc<Vec<Mutex<Connection>>>,
     next_read_connection: Arc<AtomicU64>,
     next_sequence: Arc<AtomicU64>,
+    range_cache: Arc<range_cache::RangeCache>,
     reclaim_in_progress: Arc<AtomicBool>,
     appended_bytes_since_size_check: Arc<AtomicU64>,
     read_delay_ms: u64,
@@ -741,6 +745,7 @@ impl OperationalHistoryStore {
             read_connections: Arc::new(read_connections),
             next_read_connection: Arc::new(AtomicU64::new(0)),
             next_sequence: Arc::new(AtomicU64::new(max_sequence + 1)),
+            range_cache: Arc::default(),
             reclaim_in_progress: Arc::new(AtomicBool::new(false)),
             appended_bytes_since_size_check: Arc::new(AtomicU64::new(0)),
             read_delay_ms,
@@ -945,6 +950,7 @@ impl OperationalHistoryStore {
         transaction
             .commit()
             .map_err(|error| operational_history_error("replace public history", error))?;
+        self.range_cache.invalidate();
         Ok(Some(replacement))
     }
 

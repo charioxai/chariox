@@ -67,6 +67,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetUserConfigValue(_)
             | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
             | LocalDaemonRequest::UnsetUserConfigValue(_)
+            | LocalDaemonRequest::OwnerVault(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
@@ -131,6 +132,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ForgetRemoteMachine(_)
             | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
+                    &self.runtime_state,
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,

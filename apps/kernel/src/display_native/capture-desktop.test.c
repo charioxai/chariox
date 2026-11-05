@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-11: owner 0 reads the root of an actual kernel-owned X server. */
 #include <assert.h>
 #include <stdio.h>

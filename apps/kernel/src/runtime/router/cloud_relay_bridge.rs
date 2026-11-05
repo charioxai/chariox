@@ -3,7 +3,10 @@ use crate::error::DaemonError;
 use crate::runtime::cloud_api_client::{
     post_cloud_json_with_timeout, CLOUD_PRESENCE_REQUEST_TIMEOUT,
 };
-use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor;
+use crate::runtime::cloud_relay_connection_executor::{
+    ensure_cloud_relay_connection as ensure_cloud_relay_connection_with_executor,
+    ensure_cloud_relay_connection_replacing as ensure_cloud_relay_connection_replacing_with_executor,
+};
 use crate::runtime::cloud_relay_control::{
     cloud_kernel_presence_body, cloud_relay_token_refresh_due,
 };
@@ -21,6 +24,18 @@ impl CommandRouter {
     pub(crate) async fn ensure_cloud_relay_connection(&self) -> Result<(), DaemonError> {
         ensure_cloud_relay_connection_with_executor(&self.runtime_state, &self.config_projection)
             .await
+    }
+
+    pub(crate) async fn ensure_cloud_relay_connection_replacing(
+        &self,
+        refused_token: Option<&str>,
+    ) -> Result<(), DaemonError> {
+        ensure_cloud_relay_connection_replacing_with_executor(
+            &self.runtime_state,
+            &self.config_projection,
+            refused_token,
+        )
+        .await
     }
 
     pub(crate) async fn publish_cloud_kernel_presence(

@@ -185,6 +185,7 @@ impl WakeSink {
 
     pub(crate) fn occurred(&self, occurrence: WakeOccurrence) -> Result<(), DaemonError> {
         #[cfg(test)]
+        #[allow(deprecated)]
         if self
             .reject_next
             // fetch_update: CI pins Rust 1.88, where try_update is unstable.

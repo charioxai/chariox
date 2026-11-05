@@ -1220,3 +1220,30 @@ fn full_receipt_journal_stops_and_reaps_a_live_worker() {
             .desired_running
     );
 }
+
+#[test]
+fn an_expired_operation_budget_reports_a_deadline_not_a_stop() {
+    use crate::runtime::app_operation_budget::AppOperationStopped;
+    // A debug worker compiling a 3.9 MB JS App took 39 s of the 30 s first
+    // install budget; the user saw "stopped" although nothing stopped it.
+    assert_eq!(
+        LifecycleError::from(AppOperationStopped::Deadline),
+        LifecycleError::Deadline
+    );
+    assert_eq!(
+        LifecycleError::from(InstallOperationError::Deadline),
+        LifecycleError::Deadline
+    );
+    assert_eq!(
+        LifecycleError::from(LifecycleStoreError::Deadline),
+        LifecycleError::Deadline
+    );
+    assert_eq!(
+        LifecycleError::Deadline.to_string(),
+        "app_lifecycle_deadline"
+    );
+    assert_eq!(
+        LifecycleError::from(AppOperationStopped::Cancelled),
+        LifecycleError::Stopped
+    );
+}

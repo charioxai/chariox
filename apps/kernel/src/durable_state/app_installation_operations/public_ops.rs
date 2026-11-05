@@ -295,6 +295,13 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     input.upload_handle.len() == 71 && input.upload_handle.starts_with("upload_")
                 }
             };
+            let dev = input.source
+                == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush;
+            if dev != input.expected_upload_digest.is_some()
+                || (dev && input.expected_upload_digest.as_deref() != Some(&digest))
+            {
+                return Err(InstallOperationError::Invalid);
+            }
             if !source_valid
                 || digest.len() != 71
                 || !digest.strip_prefix("sha256:").is_some_and(|v| {
@@ -307,7 +314,14 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             limit(&budget)?;
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             if let Some(old) = load(&tx, &owner, &request_id)? {
-                if old.package_digest != digest || old.input.as_ref() != Some(&input) {
+                if old
+                    .input
+                    .as_ref()
+                    .and_then(|input| input.expected_upload_digest.as_deref())
+                    .unwrap_or(&old.package_digest)
+                    != digest
+                    || old.input.as_ref() != Some(&input)
+                {
                     return Err(InstallOperationError::Conflict);
                 }
                 sql(tx.execute("UPDATE app_installation_operations SET updated_ms=?1 WHERE owner_id=?2 AND request_id=?3",params![now()?,owner,request_id]))?;
@@ -318,6 +332,14 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 None => (format!("app_{:032x}", rand::random::<u128>()), 0, 1),
                 Some(target) => {
                     require_updatable(&tx, &owner, target)?;
+                    let (channel,room): (String,Option<String>) = sql(tx.query_row("SELECT channel,dev_room_id FROM app_installations WHERE installation_id=?1 AND owner_id=?2",params![target.installation_id,owner], |r| Ok((r.get(0)?,r.get(1)?))))?;
+                    let dev = input.source
+                        == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush;
+                    if dev != (channel == "dev")
+                        || (dev && room.as_deref() != Some(&input.session_id))
+                    {
+                        return Err(InstallOperationError::Conflict);
+                    }
                     if let Some(deployment) = &input.deployment {
                         super::deployment_consent::require_copy_of(
                             &tx,
@@ -337,6 +359,9 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             let deployment = input.deployment.as_ref();
             sql(tx.execute("INSERT INTO app_installation_operations(owner_id,request_id,installation_id,package_digest,phase,session_id,upload_handle,created_ms,updated_ms,base_generation,generation,deployment_consent,deployment_id)
                 VALUES(?1,?2,?3,?4,'preparing',?5,?6,?7,?7,?8,?9,?10,?11)", params![owner,request_id,id,digest,input.session_id,input.upload_handle,time,base as i64,generation,deployment.map(|d| &d.consent),deployment.map(|d| &d.deployment_id)]))?;
+            let input_json =
+                serde_json::to_string(&input).map_err(|_| InstallOperationError::Storage)?;
+            sql(tx.execute("UPDATE app_installation_operations SET input_json=?1 WHERE owner_id=?2 AND request_id=?3",params![input_json,owner,request_id]))?;
             let value = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, value)
         }
@@ -354,7 +379,37 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
             }
             let tx = sql(connection.transaction_with_behavior(TransactionBehavior::Immediate))?;
             let current = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::NotFound)?;
-            if current.package_digest != candidate.release_metadata().package_digest {
+            let input = current
+                .input
+                .as_ref()
+                .ok_or(InstallOperationError::Storage)?;
+            let dev = input.source
+                == chariox_app_runtime::installation::channel::AcquisitionSource::DevPush;
+            use chariox_app_runtime::installation::{
+                activation::check_source,
+                channel::{AcquisitionSource, InstallationChannel},
+            };
+            let signer = candidate.signer_principal();
+            check_source(
+                input.source,
+                if dev {
+                    InstallationChannel::Dev
+                } else {
+                    InstallationChannel::Release
+                },
+                &signer,
+            )
+            .map_err(|_| InstallOperationError::Conflict)?;
+            if input.source == AcquisitionSource::Register {
+                super::registration::check_in(
+                    &tx,
+                    &owner,
+                    candidate.release_metadata(),
+                    &signer,
+                    current.token.base_generation == 0,
+                )?;
+            }
+            if !dev && current.package_digest != candidate.release_metadata().package_digest {
                 return Err(InstallOperationError::Conflict);
             }
             if current.phase != InstallPhase::Preparing {
@@ -367,6 +422,13 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 .as_ref()
                 .and_then(|input| input.update.as_ref())
             {
+                None if dev => candidate.stage_dev_first_in(
+                    &tx,
+                    &owner,
+                    installation,
+                    &input.session_id,
+                    time as u64,
+                ),
                 None => candidate.stage_first_in(&tx, &owner, installation, time as u64),
                 Some(target) => {
                     // A reinstall inherits no grants, automations or routes.
@@ -385,6 +447,9 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 VerifiedStageError::Installation(InstallationError::Invalid(
                     "data schema downgrade",
                 )) => InstallOperationError::SchemaDowngrade,
+                VerifiedStageError::Installation(InstallationError::Invalid(
+                    "immutable release version",
+                )) => InstallOperationError::ImmutableVersion,
                 _ => InstallOperationError::Stale,
             })?;
             if let Some(deployment) = current
@@ -399,7 +464,7 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                     &deployment.deployment_id,
                 )?;
             }
-            sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2,generation=?3 WHERE owner_id=?4 AND request_id=?5",params![review,time,staged.token.generation as i64,owner,request_id]))?;
+            sql(tx.execute("UPDATE app_installation_operations SET phase='approval',review_json=?1,updated_ms=?2,generation=?3,package_digest=?6 WHERE owner_id=?4 AND request_id=?5",params![review,time,staged.token.generation as i64,owner,request_id,candidate.release_metadata().package_digest]))?;
             let result = load(&tx, &owner, &request_id)?.ok_or(InstallOperationError::Storage)?;
             commit(tx, &budget, result)
         }
@@ -489,7 +554,14 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                 _ => active_capabilities(&tx, &current.token.installation_id)?,
             };
             let reinstall = current.token.base_generation > 0 && active.is_none();
-            if active.as_deref() == Some(update.release.capabilities_digest.as_str()) {
+            let normalized_reuse = if current.token.base_generation > 0 && active.is_some() {
+                super::authority::reuses_in(&tx, &current.token)?
+            } else {
+                false
+            };
+            if normalized_reuse
+                || active.as_deref() == Some(update.release.capabilities_digest.as_str())
+            {
                 binding
                     .decide_in(
                         &tx,
@@ -500,7 +572,12 @@ pub(super) fn apply(connection: &mut Connection, command: PublicCommand) -> Resu
                                 // The authority names the policy; the request id
                                 // (<= 128 bytes) identifies this decision.
                                 decision_id: request_id.clone(),
-                                authority_ref: "kernel_unchanged_capabilities".into(),
+                                authority_ref: if normalized_reuse {
+                                    "kernel_approved_authority"
+                                } else {
+                                    "kernel_unchanged_capabilities"
+                                }
+                                .into(),
                             },
                         },
                         now()? as u64,

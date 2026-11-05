@@ -1,0 +1,17 @@
+[package]
+name = "chariox-app-wit"
+version = "0.1.0"
+edition = "2021"
+description = "Async App WIT contracts and offline component admission"
+license = "MIT"
+repository = "https://github.com/charioxai/chariox"
+
+[dependencies]
+wasmparser = "=0.262.0"
+wit-component = "=0.262.0"
+wit-parser = "=0.262.0"
+
+[dev-dependencies]
+wit-component = { version = "=0.262.0", features = ["dummy-module"] }
+wasm-encoder = "=0.262.0"
+wat = "=1.262.0"

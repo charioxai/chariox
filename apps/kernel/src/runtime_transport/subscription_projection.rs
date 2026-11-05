@@ -161,7 +161,7 @@ mod tests {
 
     fn add_process(snapshot: &mut SessionSnapshotProjection) {
         use crate::runtime::process_resources::{
-            ProcessSample, SessionProcess, SessionProcessOwner,
+            ProcessSample, SessionProcess, SessionProcessOwner, SessionProcessState,
         };
         snapshot.processes.push(SessionProcess {
             owner: SessionProcessOwner::Agent("agent".into()),
@@ -170,10 +170,12 @@ mod tests {
                 pid: 42,
                 command: "provider".into(),
                 resident_set_bytes: 1024,
+                disk_io_bytes: Some(4096),
                 cpu_millis: 0,
                 sampled_at_ms: 10,
                 age_ms: 10,
             },
+            state: SessionProcessState::Running,
         });
     }
 

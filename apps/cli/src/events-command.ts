@@ -3,7 +3,7 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 import type { OutsideEvent, EventsBatch } from "@chariox/kernel-client/kernel-types"
 
-export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "list", "wait", "watch", "ack"] as const
+export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "list", "wait", "watch", "ack", "mcp"] as const
 export type EventVerb = typeof EVENT_VERBS[number]
 export type EventFlags = Map<string, string | true>
 
@@ -44,6 +44,7 @@ export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: re
     return 0
   }
   if (verb === "subscription") { const response = await send({ GetEventSubscription: {} }); write((response as { EventSubscription: unknown }).EventSubscription); return 0 }
+  if (verb === "mcp") throw new CommandFailure("usage", "events mcp serves a harness over stdio")
   if (verb === "ack") { const response = await send({ AckEvents: { cursor: integer(args[0], 0, "cursor") } }); write((response as { EventsAcknowledged: unknown }).EventsAcknowledged); return 0 }
   const limit = integer(flags.get("--limit"), 1000, "--limit", 1000)
   if (limit === 0) throw new CommandFailure("usage", "--limit needs an integer from 1 to 1000")

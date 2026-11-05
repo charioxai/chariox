@@ -3,7 +3,9 @@ use super::*;
 #[rustfmt::skip]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LocalDaemonResponse {
+    ControlPlane { result: ControlPlaneResponse },
     SessionProcessesStopped { result: crate::runtime::process_resources::ProcessControlResult },
+    SessionProcessStartedNow { process_id: String },
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },
@@ -27,8 +29,13 @@ pub enum LocalDaemonResponse {
     WorkflowNotificationDetached { subscription_id: String },
     WorkflowNotifications { sources: Vec<WorkflowNotificationSourceSummary>, subscriptions: Vec<WorkflowNotificationSubscription>, diagnostics: Vec<WorkflowNotificationDiagnostic> },
     KernelSudoRequested { agent_id: String },
+    /// Protocol 929: the secret prompt is up; `link` opens it on the owner's page.
+    VaultSecretRequested { interaction_id: String, link: String, expires_at: u64, credential_id: String },
+    VaultSecretStatusReported { interaction_id: String, credential_id: String, status: VaultSecretStatus },
     KernelSudoExtended { turn: KernelSudoTurn },
     KernelAccessGranted { grant: KernelAccessGrant, },
+    /// Protocol 938: a `--no-wait` request's answer and `GetKernelAccessStatus`.
+    KernelAccessStatus { status: KernelAccessStatus },
     /// Protocol 641: the grant now covers this process by name.
     KernelAccessCovered { grant_id: String, process: CoveredProcess, },
     KernelAccessGrantsListed { grants: Vec<KernelAccessGrant>, sudo_turns: Vec<KernelSudoTurn>, },
@@ -63,6 +70,8 @@ pub enum LocalDaemonResponse {
     AppInstallationJournal { installation_id: String, updates: Vec<AppUpdateSummary>, },
     AppDataSnapshotRestored { installation_id: String, generation: String, snapshot_id: String, },
     AppRequestFailed { code: AppRequestErrorCode, },
+    AppDevPushBuilding { request_id: String },
+    AppDevPushFailed { request_id: String, code: AppDevPushFailureCode, message: String },
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
@@ -73,6 +82,8 @@ pub enum LocalDaemonResponse {
     UserAppViewCallResult { result: Option<serde_json::Value>, error: Option<AppViewChannelError> },
     UserAppViewsChanged { cursor: u64, views: Vec<UserAppView>, interactions: Vec<crate::session::RuntimeInteraction> },
     UserDomainInteractionAnswered { interaction_id: String },
+    /// `target_id` is the logical Room Tab ID, for subsequent inspection reads.
+    AppViewInspected { installation_id: String, target_id: String, generation: String, development: bool, catalog_json: String },
     AppViewOpened { installation_id: String, target_id: String, origin: String, bound_agent_id: Option<String>, },
     /// The user's panel choice for the App's views in this session.
     AppViewPanelSet { installation_id: String, placement: Option<crate::session::AppPanelPlacement>, minimized: bool, },
@@ -257,6 +268,7 @@ pub enum LocalDaemonResponse {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<UserConfigMutationEffect>,
     },
+    OwnerVault { result: OwnerVaultResult },
     CredentialSecretStored { key: String, },
     CredentialSecretDeleted { key: String, },
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
@@ -390,8 +402,12 @@ pub enum LocalDaemonResponse {
     PromptSetting { setting: crate::prompt_assembly::PromptSettingRecord, },
     PromptSettingPreview { id: String, markdown: String, variables: BTreeMap<String, String>, },
     PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
-    AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
-    AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
+    AgentTriggerTranscript { trigger: crate::session::AgentTrigger, agent_alias: String, online: bool, busy: bool, history: Box<LocalDaemonResponse>, deliveries: Vec<crate::session::TriggerDelivery>, },
+    AgentTriggerInvoked { invocation: AgentTriggerInvocation, },
+    AgentTriggerCreated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerUpdated { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    AgentTriggerDeleted { trigger: crate::session::AgentTrigger, session: RuntimeSession, },
+    TriggerDeliveryResent { session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },
     SemanticRecallEvents {
         results: Vec<SemanticRecallMatch>,

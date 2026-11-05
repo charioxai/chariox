@@ -1,3 +1,7 @@
+# MP-08 / MP-09 / MP-10 / MP-11: current boot image boundary
+
+Reusable preinstall images now live in Cloud; the release-coupled OSS image builder is removed. Use [authenticated kernel boot](AUTHENTICATED_KERNEL_BOOT.md) for new managed VMs. The installed release/update details below apply to existing consumers until their lifecycle slice replaces them.
+
 # Managed remote-kernel image
 
 The Hetzner adapter creates servers from one immutable snapshot ID. Build that
@@ -39,7 +43,7 @@ environment hygiene without forking ordinary provider filesystem semantics.
 ## Release inputs
 
 Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
-`chariox-relay`, `chariox-app-package`, and `chariox-app-storage` for `x86_64-unknown-linux-gnu` from an exact pushed
+`chariox-relay`, `chariox-app-package`, `chariox-app-storage`, and `chariox-app-wasm-worker` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -65,6 +69,7 @@ node scripts/package-managed-kernel-release.mjs \
   --relay <build-output>/chariox-relay \
   --app-package <build-output>/chariox-app-package \
   --app-storage <build-output>/chariox-app-storage \
+  --app-wasm-worker <build-output>/chariox-app-wasm-worker \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \
@@ -101,11 +106,17 @@ force recovery. Retain their public history and resolve the interrupted old
 transaction with its matching reviewed tooling before attempting rotation.
 The packager
 verifies the detached builder signature, exact commit and tree IDs, target,
-and all five staged binary digests
+and all six staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
 untracked files cannot enter the release.
+
+The signed release includes the WASM App worker beside the kernel
+(`usr/local/bin/chariox-app-wasm-worker`, root-owned, mode 0755), which the kernel
+opens next to its own executable. Without it a managed kernel answers
+`app_wasm_runtime` for every App, so the verifier refuses a release that carries
+the App set without it, and a builder attestation that does not list it.
 
 The signed release includes the privileged App storage helper and its service.
 The installer derives its enrollment from the actual `chariox` OS UID/GID; it
@@ -118,65 +129,16 @@ existing service namespace. The dedicated Ubuntu24.04 storage drill covers
 that seam; its first execution and the Ubuntu26.04 full image gate remain
 required validation.
 
-## Disposable Hetzner builder
+## Image preparation and installed runtime consumers
 
-Create one x86 Hetzner server from the `ubuntu-26.04` system image. Give the
-server, its temporary SSH key, and its temporary SSH firewall the label
-`chariox.dev/managed-image-builder=true`. Limit inbound TCP 22 to the operator's
-current address. Do not attach the final outbound-only managed-machine firewall
-to this builder.
+New reusable images use Cloud's preinstall recipe and snapshot lifecycle, followed
+by the [authenticated boot installer](AUTHENTICATED_KERNEL_BOOT.md) on each
+allocation. No release root filesystem or kernel version is installed in the
+base image. The old disposable builder marker, topology selector and preparation
+command are removed.
 
-Before copying release files, write this exact marker on the disposable server:
-
-```text
-managed-remote-kernels-image-builder-v1
-```
-
-Store it at `/.chariox-managed-image-builder`. Copy the release root filesystem,
-the trusted public key, and `deploy/managed-kernel/` to a task directory. The
-image topology is a required caller-provided validation input. The production
-managed image is the shared-host topology, so pass `shared_host` explicitly;
-omitting it or using an unknown value fails closed instead of silently skipping
-the Bubblewrap/provider-bind validation. A disposable Path-1 worker image must
-likewise opt in explicitly with `path1`.
-
-Run the production/shared-host preparation path with:
-
-```sh
-sudo env CHARIOX_MANAGED_PROVIDER_TOPOLOGY=shared_host \
-  deploy/managed-kernel/prepare-hetzner-image.sh \
-  <release-rootfs> \
-  <release-digest> \
-  <trusted-public-key>
-```
-
-For a disposable-VM Path-1 image, replace `shared_host` with `path1` and set
-`CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY=<external-pinned-builder-public-key>` in
-the `sudo env` command. Keep that file root-owned with mode `0600` for upgrades.
-The key path must be outside the release rootfs;
-omitting it fails before package installation or image mutation. Use the same
-external pin for Path-1 `upgrade-image.sh` and parity collection's
-`--kernel-builder-public-key` argument. The shared-host rollback path does not
-require the new builder pin.
-
-The preparation script refuses an unmarked host or the wrong OS and
-architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
-pinned Codex, OpenCode, and Claude Code releases, and the signed Chariox
-release. It disables and masks the rootful Docker units, verifies both are
-inactive, rejects any live owner or unexpected file at the rootful socket path,
-and removes only the stale socket inode Ubuntu 26.04 can leave behind after
-shutdown. It then validates a rootless daemon owned by the separate
-`chariox-docker` principal. Neither the kernel nor its
-provider and shell descendants can open that daemon socket. At boot the
-bootstrap supervisor claims a single broker connection before any provider can
-start. The broker socket is owned by `chariox-docker:chariox-slice`, has mode
-`0660`, and lives below the setgid, non-listable
-`/var/lib/chariox-slice-share/.broker-private/control` directory. The broker
-immediately removes its listener after the bootstrap claim and accepts only
-bounded slice operations and host paths under `/var/lib/chariox-slice-share`.
-The credential vault remains under the private `chariox` home. Docker and the
-broker are soft dependencies: kernel bootstrap still runs if either is
-unavailable, while slice operations report Docker as unavailable.
+The remaining broker and update notes describe installed runtime consumers.
+They are not a second recipe for building new managed VM base images.
 
 The broker runs as `chariox-docker` inside the rootless Docker daemon's user,
 mount, and network namespaces. Its mount namespace contains RootlessKit's
@@ -243,7 +205,22 @@ probe and rejects the slice before use if the namespace cannot be created.
 The first managed Docker slice builds its runtime image lazily from the complete
 signed context, using the builder-attested kernel and relay binaries rather than
 compiling them again on the managed host. Ordinary local source builds retain
-the Cargo build path. The cache fingerprint covers the Dockerfile and all build
+the Cargo build path. MP-08/MP-10/MP-11: prebuilt runtime binaries must target
+Debian 12's glibc 2.36 and runtime libraries. Ubuntu 24.04 binaries can require
+glibc 2.39 and cannot be copied into this image. The final image executes both
+binaries during its build and fails with a rebuild instruction if either cannot
+load. Build compatible binaries inside the image by leaving
+`CHARIOX_PREBUILT_RUNTIME` at its default `0`:
+
+```sh
+docker build -f apps/kernel/slice-linux-docker/docker/Dockerfile \
+  -t chariox-slice:local .
+```
+
+For a development build, add `--build-arg CHARIOX_RUNTIME_BUILD_PROFILE=dev`.
+Both profiles compile against the slice's Debian 12 libraries; running a binary's
+protocol-version probe on the host alone does not establish slice compatibility.
+The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
 from the same signed lock. Provider CLI policy lives in

@@ -180,7 +180,7 @@ async fn renewal_drill(reduce_permissions: bool) {
     )
     .await;
     assert!(
-        matches!(receive(&mut foreign).await, RelayEnvelope::Close { reason } if reason == "relay authorization renewal changed identity or reduced permissions")
+        matches!(receive(&mut foreign).await, RelayEnvelope::Close { reason, .. } if reason == "relay authorization renewal changed identity or reduced permissions")
     );
     let _ = foreign.close(None).await;
     for i in 1..=6 {
@@ -257,7 +257,7 @@ async fn renewal_drill(reduce_permissions: bool) {
         // The active token's revocation immediately closes the existing connection.
         revocations.revoke_token_id("client-6", now + 2_200);
         assert!(
-            matches!(receive(&mut client).await, RelayEnvelope::Close { reason } if reason == "relay token revoked")
+            matches!(receive(&mut client).await, RelayEnvelope::Close { reason, .. } if reason == "relay token revoked")
         );
     }
     let _ = client.close(None).await;

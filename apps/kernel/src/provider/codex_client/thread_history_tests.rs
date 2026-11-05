@@ -1,7 +1,8 @@
 use super::*;
+use crate::provider::test_codex_connect as connect;
 use serde_json::json;
 use std::{net::TcpListener, thread, time::Duration};
-use tokio_tungstenite::tungstenite::{accept, connect, Message};
+use tokio_tungstenite::tungstenite::{accept, Message};
 
 fn list_with_legacy_server(error: &str) -> Result<Value, DaemonError> {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();

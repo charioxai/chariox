@@ -25,6 +25,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::StopSessionProcesses(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::StartSessionProcessNow(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
@@ -40,6 +43,9 @@ pub(crate) fn request_session_scope(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::ExtendKernelSudo(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InspectAppView(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::OpenAppView(request) => Some(SessionMembershipScope::SessionId(
@@ -136,10 +142,22 @@ pub(crate) fn request_session_scope(
                     .filter_map(|prompt| prompt.session_id.as_deref()),
             ),
         ),
-        LocalDaemonRequest::CreateAgentPromptSchedule(request) => Some(
+        LocalDaemonRequest::CreateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::UpdateAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::DeleteAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::InvokeAgentTrigger(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::ResendTriggerDelivery(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::CancelAgentPromptSchedule(request) => Some(
+        LocalDaemonRequest::ReadAgentTriggerTranscript(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::CompletePrompt(request) => Some(SessionMembershipScope::SessionId(
@@ -616,6 +634,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
         | LocalDaemonRequest::AdjustProjectEnvironment(_)
+        | LocalDaemonRequest::ControlPlane(_)
         | LocalDaemonRequest::CreateDisposableWorker(_)
         | LocalDaemonRequest::GetDisposableWorker(_)
         | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
@@ -643,8 +662,11 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
+        | LocalDaemonRequest::RequestVaultSecret(_)
+        | LocalDaemonRequest::GetVaultSecretStatus(_)
         | LocalDaemonRequest::RenewKernelSudoRequester(_)
         | LocalDaemonRequest::RequestKernelAccess(_)
+        | LocalDaemonRequest::GetKernelAccessStatus(_)
         | LocalDaemonRequest::CoverKernelAccessProcess(_)
         | LocalDaemonRequest::ListKernelAccessGrants(_)
         | LocalDaemonRequest::RevokeKernelAccessGrant(_)
@@ -666,6 +688,8 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetAppPublisherEnrollment(_)
         | LocalDaemonRequest::CancelAppPublisherEnrollment(_)
         | LocalDaemonRequest::BeginAppInstall(_)
+        | LocalDaemonRequest::BeginAppDevPush(_)
+        | LocalDaemonRequest::GetAppDevPush(_)
         | LocalDaemonRequest::BeginAppUpdate(_)
         | LocalDaemonRequest::GetAppInstallOperation(_)
         | LocalDaemonRequest::CancelAppInstallOperation(_)
@@ -794,6 +818,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SetUserConfigValue(_)
         | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
         | LocalDaemonRequest::UnsetUserConfigValue(_)
+        | LocalDaemonRequest::OwnerVault(_)
         | LocalDaemonRequest::SetCredentialSecret(_)
         | LocalDaemonRequest::DeleteCredentialSecret(_)
         | LocalDaemonRequest::GetCredentialVaultStatus(_)

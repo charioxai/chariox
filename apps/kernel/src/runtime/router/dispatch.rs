@@ -5,7 +5,9 @@ use crate::runtime::command_latency::{log_command_completed, log_command_receive
 use crate::runtime::command_response_refresh::{
     refresh_command_response_state, CommandResponseRefreshContext,
 };
-use crate::runtime::session_membership::authorize_session_membership;
+use crate::runtime::session_membership::{
+    authorize_session_membership, request_room_member_user_id,
+};
 use crate::runtime::session_projection_refresh::{
     focus_projection_refresh, session_projection_refresh,
 };
@@ -88,6 +90,32 @@ impl CommandRouter {
                     .request_kernel_sudo(&command.caller.caller_id, sudo_request.clone()),
             )
             .await;
+        }
+        if let LocalDaemonRequest::RequestVaultSecret(_)
+        | LocalDaemonRequest::GetVaultSecretStatus(_) = &request
+        {
+            crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
+                &self.config_projection.snapshot(),
+                &request,
+            )?;
+            if command.caller.connection_class
+                != Some(crate::local::KernelConnectionClass::ExternalAgent)
+            {
+                return Err(crate::runtime::kernel_access::error(
+                    "only a local grant holder can ask for a Vault value",
+                ));
+            }
+            return match request {
+                LocalDaemonRequest::RequestVaultSecret(secret) => {
+                    self.runtime_state
+                        .request_vault_secret(&command.caller.caller_id, secret)
+                        .await
+                }
+                LocalDaemonRequest::GetVaultSecretStatus(status) => self
+                    .runtime_state
+                    .vault_secret_status(&command.caller.caller_id, status),
+                _ => unreachable!("matched above"),
+            };
         }
         if crate::runtime::state::is_outside_event_request(&request) {
             crate::runtime::kernel_runtime_role_policy::ensure_public_request_allowed(
@@ -183,6 +211,8 @@ impl CommandRouter {
                 return result;
             }
         };
+        let view_user_id =
+            request_room_member_user_id(&self.runtime_state, &command, &request, &caller_user_id);
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::Terminal) {
             if let LocalDaemonRequest::RespondToInteraction(answer) = &request {
                 if self
@@ -290,7 +320,9 @@ impl CommandRouter {
             ));
         }
         // MD-4: keep transport callers independent of unrelated pre-lane futures.
-        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id)).await {
+        match Box::pin(self.dispatch_pre_lane(&command, &request, &caller_user_id, &view_user_id))
+            .await
+        {
             Ok(Some(response)) => {
                 if let Some((session_id, attachment_id)) =
                     projected_terminal_output_attachment(&request)
@@ -339,7 +371,7 @@ impl CommandRouter {
             &result,
         )
         .await;
-        let result = self.redact_result_for_user(result, &caller_user_id);
+        let result = self.redact_result_for_user(result, &view_user_id, &caller_user_id);
         log_command_completed(&command_trace, &result);
         result
     }

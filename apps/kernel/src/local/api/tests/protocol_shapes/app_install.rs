@@ -10,6 +10,7 @@ fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack()
     );
     let requests = vec![
         LocalDaemonRequest::BeginAppInstall(BeginAppInstallRequest {
+            source: Default::default(),
             session_id: "session".into(),
             request_id: "retry".into(),
             upload_handle: format!("upload_{}", "a".repeat(64)),
@@ -67,7 +68,7 @@ fn install_operation_protocol_shapes_preserve_owner_decision_and_immediate_ack()
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "9385100cb1f127a83e7392ae22e0302cd5560157156745c1ff5ee2649c43b210"
+        "2ec5c34f7dbef5e7ff663a032922d52bfcabb9a958813fafd96bbba4220a0f7d"
     );
     for field in [
         "owner_id",

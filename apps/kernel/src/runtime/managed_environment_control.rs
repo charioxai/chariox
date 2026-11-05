@@ -99,11 +99,7 @@ pub(crate) async fn execute_managed_environment_control_request(
                 token.to_string(),
             )
             .await?;
-            if preflight.environment_id != request.environment_id {
-                return Err(control_error(
-                    "Cloud returned reimage preflight for another managed environment",
-                ));
-            }
+            validate_reimage_preflight(&preflight, &request.environment_id)?;
             Ok(LocalDaemonResponse::ManagedEnvironmentReimagePreflight { preflight })
         }
         LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(request) => {
@@ -380,6 +376,23 @@ fn validate_reimage_request(
     {
         return Err(control_error(
             "managed environment reimage request is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reimage_preflight(
+    preflight: &ManagedEnvironmentReimagePreflight,
+    environment_id: &str,
+) -> Result<(), DaemonError> {
+    if preflight.environment_id != environment_id {
+        return Err(control_error(
+            "Cloud returned reimage preflight for another managed environment",
+        ));
+    }
+    if !is_cloud_control_identifier(&preflight.desired_release.provider_id) {
+        return Err(control_error(
+            "Cloud returned a reimage preflight with an invalid provider id",
         ));
     }
     Ok(())
@@ -1440,10 +1453,7 @@ mod tests {
         assert_eq!(preflight.retained.provider_server_id, "123456789");
         assert_eq!(preflight.retained.generation, 1);
         assert_eq!(preflight.desired_release.provider_image_id, "222222222");
-        assert_eq!(
-            preflight.desired_release.provider_id,
-            crate::local::ManagedEnvironmentReimageProviderId::Hetzner
-        );
+        assert_eq!(preflight.desired_release.provider_id, "acme-cloud");
 
         let prepared = execute_managed_environment_control_request(
             config.clone(),
@@ -1883,6 +1893,20 @@ mod tests {
         })
     }
 
+    #[test]
+    fn reimage_preflight_accepts_only_identifier_provider_ids_for_the_requested_environment() {
+        let preflight = |provider_id: &str| -> ManagedEnvironmentReimagePreflight {
+            let mut json = reimage_preflight_json("environment-1");
+            json["desiredRelease"]["providerId"] = serde_json::json!(provider_id);
+            serde_json::from_value(json).expect("preflight shape")
+        };
+
+        assert!(validate_reimage_preflight(&preflight("acme-cloud"), "environment-1").is_ok());
+        assert!(validate_reimage_preflight(&preflight("Acme Cloud!"), "environment-1").is_err());
+        assert!(validate_reimage_preflight(&preflight(""), "environment-1").is_err());
+        assert!(validate_reimage_preflight(&preflight("acme-cloud"), "environment-2").is_err());
+    }
+
     fn reimage_preflight_json(environment_id: &str) -> serde_json::Value {
         serde_json::json!({
             "environmentId": environment_id,
@@ -1897,7 +1921,7 @@ mod tests {
                 "runtimeReleaseDigest": format!("sha256:{}", "a".repeat(64)),
             },
             "desiredRelease": {
-                "providerId": "hetzner",
+                "providerId": "acme-cloud",
                 "providerImageId": "222222222",
                 "providerProfileId": "hetzner-path1-v2",
                 "providerProfileDigest": format!("sha256:{}", "b".repeat(64)),

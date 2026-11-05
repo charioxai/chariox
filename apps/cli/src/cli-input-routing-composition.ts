@@ -102,7 +102,7 @@ export type CliInputRoutingCompositionDeps = {
   handleSettingsCommand: AnyFn
   handleLoopCommand: AnyFn
   handleGoalCommand: AnyFn
-  handleWaitCommand: AnyFn
+  handleTriggerCommand: AnyFn
   handleMcpCommand: AnyFn
   handleSkillCommand: AnyFn
   handleEnvCommand: AnyFn
@@ -304,7 +304,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleSettingsCommand: deps.handleSettingsCommand,
     handleLoopCommand: deps.handleLoopCommand,
     handleGoalCommand: deps.handleGoalCommand,
-    handleWaitCommand: deps.handleWaitCommand,
+    handleTriggerCommand: deps.handleTriggerCommand,
     handleMcpCommand: deps.handleMcpCommand,
     handleSkillCommand: deps.handleSkillCommand,
     handleEnvCommand: deps.handleEnvCommand,
@@ -784,6 +784,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       void deps.requestExit()
     },
     focusedInteractionActive: () => Boolean(deps.focusedAgentInteraction()),
+    focusedInteractionTaskOwned: () => Boolean(deps.focusedAgentInteraction()?.asking_task_id),
     handleFocusedInteractionKey,
     handleQueuedPromptKey: deps.handleQueuedPromptKey,
     promptFocused: deps.promptInputRefController.isFocused,

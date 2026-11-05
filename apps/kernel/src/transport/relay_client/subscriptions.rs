@@ -31,7 +31,20 @@ pub(super) struct RelaySubscriptionTask {
     pub(super) display_id: Option<String>,
     /// MP-08/MP-10: protocol 491 push pump of a display subscription.
     pub(super) display_pump: Option<Arc<super::display_pump::DisplayPump>>,
+    /// Keeps the viewer's browser actor registered; the relay ends the viewer by ending its
+    /// subscriptions (a goodbye or a lost connection alike), so releasing the last one releases it.
+    pub(super) _terminal_lease: Option<crate::runtime::kernel_browser_host::TerminalLease>,
     pub(super) handle: JoinHandle<()>,
+}
+
+/// The lease of the browser actor `caller` acts as, if it is an authenticated terminal.
+pub(super) fn terminal_lease(
+    router: &CommandRouter,
+    caller: &crate::runtime::command::KernelCaller,
+) -> Option<crate::runtime::kernel_browser_host::TerminalLease> {
+    let state = router.runtime_state();
+    let context = state.kernel_browser_terminal_actor(caller).ok()?;
+    Some(state.kernel_browser_terminal_lease(&context))
 }
 
 pub(super) async fn abort_subscription_tasks(
@@ -42,7 +55,7 @@ pub(super) async fn abort_subscription_tasks(
     for task in guard.values() {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     guard.clear();
@@ -142,7 +155,7 @@ pub(super) async fn handle_relay_subscribe(
         heartbeat_interval,
         caller: crate::runtime::command::KernelCaller::for_relay_request(caller_identity.clone()),
         user_id: if paired {
-            crate::session::DEFAULT_LOCAL_USER_ID.into()
+            router.self_host_terminal_owner_user_id()
         } else {
             relay_subscription_caller_user_id(caller_identity.as_ref())
         },
@@ -314,6 +327,11 @@ pub(super) async fn handle_relay_subscribe(
     {
         return Ok(());
     }
+    // Taken before the task it replaces is dropped, so a re-subscribing viewer keeps its actor.
+    let terminal_lease =
+        super::browser_display::stream_caller(router, caller_identity.clone(), &client_public_key)
+            .ok()
+            .and_then(|caller| terminal_lease(router, &caller));
     if let Some(existing) = subscription_tasks.lock().await.remove(&task_key) {
         existing.handle.abort();
     }
@@ -359,6 +377,7 @@ pub(super) async fn handle_relay_subscribe(
         RelaySubscriptionTask {
             display_id: None,
             display_pump: None,
+            _terminal_lease: terminal_lease,
             relay_subscription_id,
             client_public_key,
             handle: task,
@@ -398,7 +417,7 @@ pub(super) async fn handle_relay_unsubscribe(
     if let Some(task) = existing {
         task.handle.abort();
         if let Some(pump) = &task.display_pump {
-            pump.stop();
+            pump.stop_on(subscription_tasks);
         }
     }
     let ack = match encrypt_json_response(
@@ -1313,6 +1332,7 @@ mod tests {
             RelaySubscriptionTask {
                 display_id: None,
                 display_pump: None,
+                _terminal_lease: None,
                 relay_subscription_id: "relay-subscription-1".to_string(),
                 client_public_key: "client-public-key-1".to_string(),
                 handle: first_handle,
@@ -1327,6 +1347,7 @@ mod tests {
             RelaySubscriptionTask {
                 display_id: None,
                 display_pump: None,
+                _terminal_lease: None,
                 relay_subscription_id: "relay-subscription-2".to_string(),
                 client_public_key: "client-public-key-2".to_string(),
                 handle: second_handle,
@@ -1374,6 +1395,7 @@ mod tests {
         let task = RelaySubscriptionTask {
             display_id: None,
             display_pump: None,
+            _terminal_lease: None,
             relay_subscription_id: "relay-subscription-1".to_string(),
             client_public_key: "client-public-key-1".to_string(),
             handle,

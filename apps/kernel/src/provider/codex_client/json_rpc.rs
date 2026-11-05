@@ -19,4 +19,6 @@ pub(super) struct JsonRpcMessage {
 pub(super) struct JsonRpcError {
     #[serde(default)]
     pub(super) message: Option<String>,
+    #[serde(default)]
+    pub(super) data: Value,
 }

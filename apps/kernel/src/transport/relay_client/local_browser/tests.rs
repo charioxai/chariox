@@ -95,6 +95,14 @@ impl Kernel {
 
     /// `interfaces` stands in for the machine's network interfaces.
     fn build_on(paired_at_start: bool, port: Option<u16>, interfaces: rtc::Interfaces) -> Self {
+        Self::build_with_rtc(
+            paired_at_start,
+            port,
+            rtc::RtcEndpoint::new(Some(0), interfaces),
+        )
+    }
+
+    fn build_with_rtc(paired_at_start: bool, port: Option<u16>, rtc: rtc::RtcEndpoint) -> Self {
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
             kernel_credential: None,
@@ -143,7 +151,7 @@ impl Kernel {
             Arc::new(CommandResultCache::default()),
             shutdown_rx,
             port,
-            rtc::RtcEndpoint::new(Some(0), interfaces),
+            rtc,
         );
         if !paired_at_start {
             let mut paired = projection.snapshot();
@@ -1562,6 +1570,11 @@ struct RtcClient {
     open: bool,
     frames: std::collections::VecDeque<serde_json::Value>,
     partial: Vec<u8>,
+    pings: usize,
+    answer_pings: bool,
+    /// Bytes per second the client's downlink delivers, like a slow link;
+    /// later datagrams wait in the socket buffer or are lost there.
+    downlink: Option<(u64, std::time::Instant, u64)>,
 }
 
 impl RtcClient {
@@ -1594,6 +1607,9 @@ impl RtcClient {
             open: false,
             frames: Default::default(),
             partial: Vec::new(),
+            pings: 0,
+            answer_pings: true,
+            downlink: None,
         };
         PENDING_OFFER.with(|slot| *slot.borrow_mut() = Some(pending));
         (client, offer.to_sdp_string())
@@ -1642,8 +1658,11 @@ impl RtcClient {
                             }
                         }
                         2 => {
-                            let mut channel = self.rtc.channel(self.channel).unwrap();
-                            assert!(channel.write(true, &[3]).unwrap());
+                            self.pings += 1;
+                            if self.answer_pings {
+                                let mut channel = self.rtc.channel(self.channel).unwrap();
+                                assert!(channel.write(true, &[3]).unwrap());
+                            }
                         }
                         _ => {}
                     }
@@ -1658,15 +1677,22 @@ impl RtcClient {
         };
         let mut buf = [0_u8; 2048];
         let input = match timeout(wait, self.socket.recv_from(&mut buf)).await {
-            Ok(Ok((len, source))) => str0m::Input::Receive(
-                std::time::Instant::now(),
-                str0m::net::Receive {
-                    proto: str0m::net::Protocol::Udp,
-                    source,
-                    destination: self.socket.local_addr().unwrap(),
-                    contents: buf[..len].try_into().unwrap(),
-                },
-            ),
+            Ok(Ok((len, source))) => {
+                if let Some((rate, since, received)) = self.downlink.as_mut() {
+                    *received += len as u64;
+                    let due = *since + Duration::from_secs_f64(*received as f64 / *rate as f64);
+                    tokio::time::sleep_until(due.into()).await;
+                }
+                str0m::Input::Receive(
+                    std::time::Instant::now(),
+                    str0m::net::Receive {
+                        proto: str0m::net::Protocol::Udp,
+                        source,
+                        destination: self.socket.local_addr().unwrap(),
+                        contents: buf[..len].try_into().unwrap(),
+                    },
+                )
+            }
             _ => str0m::Input::Timeout(std::time::Instant::now()),
         };
         self.rtc.handle_input(input).unwrap();
@@ -1853,10 +1879,8 @@ fn mp11_webrtc_channel_admits_only_the_grant_issued_with_its_offer() {
 fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
     large_stack(async {
         let mapped_ip: std::net::IpAddr = "203.0.113.9".parse().unwrap();
-        let responder =
-            tokio::net::UdpSocket::bind(("127.0.0.2", chariox_relay::stun::DEFAULT_PORT))
-                .await
-                .expect("UDP 127.0.0.2:3478 free for the test STUN responder");
+        let responder = tokio::net::UdpSocket::bind(("127.0.0.2", 0)).await.unwrap();
+        let stun_port = responder.local_addr().unwrap().port();
         // A NAT in front of the kernel: every socket appears at 203.0.113.9.
         tokio::spawn(async move {
             let mut buf = [0_u8; 1500];
@@ -1867,7 +1891,11 @@ fn mp08_webrtc_answer_offers_the_address_the_relay_stun_responder_sees() {
                 }
             }
         });
-        let kernel = Kernel::new();
+        let kernel = Kernel::build_with_rtc(
+            true,
+            Some(0),
+            rtc::RtcEndpoint::new(Some(0), Arc::new(rtc::host_addresses)).with_stun_port(stun_port),
+        );
         let mut config = kernel.projection.snapshot();
         config.relay_url = Some("wss://127.0.0.2:8443/".into());
         kernel.projection.update(config);
@@ -1914,6 +1942,113 @@ fn mp11_webrtc_session_closes_when_the_pairing_is_cleared() {
     });
 }
 
+/// MP-08 TR-16: an admitted channel hears from the kernel every second even
+/// when the session has nothing to send, so the browser can tell a dead direct
+/// path from a quiet one within a few seconds and move to the relay.
+#[test]
+fn mp08_webrtc_idle_channel_carries_a_keepalive_every_second() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        let started = std::time::Instant::now();
+        client.pump(|client| client.pings >= 3).await;
+        assert!(
+            started.elapsed() < Duration::from_millis(3_600),
+            "three keepalives took {:?}",
+            started.elapsed()
+        );
+    });
+}
+
+/// MP-08 TR-16: a browser that stopped answering has left this path (UDP
+/// dropped, it moved to the relay); the kernel ends the session within a few
+/// seconds so its displays and leases stop serving a dead carrier.
+#[test]
+fn mp08_webrtc_peer_that_stops_answering_is_closed_within_three_seconds() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        client.answer_pings = false;
+        let silent = std::time::Instant::now();
+        while silent.elapsed() < Duration::from_millis(3_800) {
+            client.step().await;
+        }
+        let before = client.pings;
+        let quiet = std::time::Instant::now();
+        while quiet.elapsed() < Duration::from_millis(2_500) {
+            client.step().await;
+        }
+        assert_eq!(
+            client.pings, before,
+            "the kernel kept serving a browser that stopped answering"
+        );
+    });
+}
+
+/// MP-08 TR-16: frames already handed to SCTP delay the keepalive on a slow
+/// link; a browser that keeps acknowledging them is alive, so the kernel keeps
+/// the path while more than a megabyte drains at 1 Mbit/s.
+#[test]
+fn mp08_webrtc_slow_link_draining_queued_frames_stays_connected() {
+    large_stack(async {
+        let kernel = Kernel::new();
+        let browser = Browser::new();
+        let (mut client, offer) = RtcClient::offer();
+        let issued = kernel.mint_rtc(&browser, &offer).await;
+        client.accept(issued["answer"].as_str().unwrap());
+        let grant = issued["grant"].as_str().unwrap().to_owned();
+        let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
+        assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        // Each refusal echoes its 700 KB request id: 1.4 MB queued for the browser.
+        let ids: Vec<String> = ["a", "b"].iter().map(|id| id.repeat(700_000)).collect();
+        for id in &ids {
+            client
+                .send_json(serde_json::json!({
+                    "kind": "client_request", "request_id": id,
+                    "target": {"daemon_id": "another-kernel"},
+                    "encrypted_request": proof(&browser, &kernel, serde_json::json!({})),
+                }))
+                .await;
+        }
+        client.downlink = Some((125_000, std::time::Instant::now(), 0));
+        let started = std::time::Instant::now();
+        let mut received = Vec::new();
+        while received.len() < ids.len() {
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the kernel ended a slow direct path that kept receiving ({} of {} frames, {:?})",
+                received.len(),
+                ids.len(),
+                started.elapsed()
+            );
+            client.step().await;
+            while let Some(frame) = client.frames.pop_front() {
+                received.push(frame);
+            }
+        }
+        assert!(
+            started.elapsed() > Duration::from_secs(5),
+            "the shaped link drained in {:?}",
+            started.elapsed()
+        );
+        for (frame, id) in received.iter().zip(&ids) {
+            assert_eq!(frame["request_id"].as_str(), Some(id.as_str()));
+        }
+    });
+}
+
 /// MP-08 TR-15: after the machine changes network a new offer is answered from
 /// the interfaces that exist now; the address it left is no longer offered.
 #[test]
@@ -1942,6 +2077,29 @@ fn mp08_webrtc_offer_after_a_network_change_uses_the_current_interfaces() {
             let grant = issued["grant"].as_str().unwrap().to_owned();
             let verdict = rtc_handshake(&kernel, &browser, &mut client, &issued, &grant).await;
             assert_eq!(verdict["kind"], "local_connected", "{verdict}");
+        }
+    });
+}
+
+#[test]
+fn a_hot_reload_tells_a_direct_browser_it_is_a_reload() {
+    large_stack(async {
+        for reload in [false, true] {
+            let kernel = Kernel::new();
+            let browser = Browser::new();
+            let grant = kernel.mint(&browser, browser.identity()).await.unwrap();
+            let (mut socket, verdict) = connect(&kernel, &browser, &grant).await;
+            assert_eq!(verdict["kind"], "local_connected");
+            let prepared = reload.then(crate::hot_reload::PreparedForTests::new);
+            kernel._shutdown.send(true).unwrap();
+            let close = next_json(&mut socket).await;
+            drop(prepared);
+            let expected = if reload {
+                serde_json::json!({"kind": "close", "reason": "daemon shutting down", "kernel_reload": true})
+            } else {
+                serde_json::json!({"kind": "close", "reason": "daemon shutting down"})
+            };
+            assert_eq!(close, expected, "reload: {reload}");
         }
     });
 }

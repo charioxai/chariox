@@ -72,6 +72,7 @@ fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
             external_provider_sessions_has_more: false,
             external_provider_sessions_next_cursor: None,
             relay_status: RelayStatus {
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
                 runtime_process_identity: None,
                 capabilities: Vec::new(),
                 configured: true,
@@ -283,49 +284,30 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
     );
 }
 
+/// Protocol 901: a trigger firing the provider did not confirm is listed on the
+/// session, and the person resends it.
 #[test]
-fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
+fn local_daemon_protocol_trigger_delivery_shape_is_versioned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-
-    let create = LocalDaemonRequest::CreateAgentPromptSchedule(
-        crate::local::CreateAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            agent_id: "agent-1".to_string(),
-            kind: crate::session::AgentPromptScheduleKind::Recurring,
-            interval_seconds: 300,
-            prompt: Some("Continue the audit.".to_string()),
-        },
-    );
+    let resend = serde_json::json!(LocalDaemonRequest::ResendTriggerDelivery(
+        crate::local::ResendTriggerDeliveryRequest {
+            session_id: "session-1".into(),
+            prompt_id: "prompt-7".into(),
+        }
+    ));
     assert_eq!(
-        serde_json::to_value(create).expect("agent prompt schedule request should encode"),
+        resend,
         serde_json::json!({
-            "CreateAgentPromptSchedule": {
-                "session_id": "session-1",
-                "agent_id": "agent-1",
-                "kind": "recurring",
-                "interval_seconds": 300,
-                "prompt": "Continue the audit."
-            }
+            "ResendTriggerDelivery": { "session_id": "session-1", "prompt_id": "prompt-7" }
         })
     );
-
-    let cancel = LocalDaemonRequest::CancelAgentPromptSchedule(
-        crate::local::CancelAgentPromptScheduleRequest {
-            session_id: "session-1".to_string(),
-            schedule_id: "schedule-1".to_string(),
-        },
-    );
+    let hash = Sha256::digest(serde_json::to_string(&resend).unwrap().as_bytes());
     assert_eq!(
-        serde_json::to_value(cancel).expect("agent prompt schedule cancellation should encode"),
-        serde_json::json!({
-            "CancelAgentPromptSchedule": {
-                "session_id": "session-1",
-                "schedule_id": "schedule-1"
-            }
-        })
+        format!("{hash:x}"),
+        "38c08e5e006324a79d32f7fcb1cd5df52224349a2b3ddac5d064dff3c4a3adab"
     );
 
     let mut session = crate::session::RuntimeSession::new(
@@ -336,25 +318,119 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
         "machine-1",
         "daemon-1",
     );
-    let schedule = crate::session::AgentPromptSchedule::new(
-        "schedule-1",
+    session.note_unconfirmed_trigger_delivery(crate::session::TriggerDelivery::not_confirmed(
+        "prompt-7",
+        "trigger-1",
         "agent-1",
-        crate::session::AgentPromptScheduleKind::Once,
+        crate::session::PromptOrigin::Schedule,
+        "Check the build.",
+        crate::session::AgentTriggerBusyPolicy::Steer,
+        2_000,
+    ));
+    let snapshot = serde_json::to_value(LocalDaemonResponse::TriggerDeliveryResent { session })
+        .expect("trigger delivery response should encode");
+    assert_eq!(
+        snapshot.pointer("/TriggerDeliveryResent/session/trigger_deliveries"),
+        Some(&serde_json::json!([{
+            "prompt_id": "prompt-7", "trigger_id": "trigger-1", "agent_id": "agent-1",
+            "origin": "schedule", "prompt": "Check the build.", "busy_policy": "steer",
+            "state": "not_confirmed", "recorded_at_ms": 2_000,
+        }]))
+    );
+}
+
+/// Protocol 931: agent triggers; `/wait` schedules are schedule triggers.
+#[test]
+fn local_daemon_protocol_agent_trigger_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let create = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: "session-1".into(),
+        agent_id: "agent-1".into(),
+        source: crate::local::AgentTriggerSourceRequest::Schedule {
+            interval_seconds: 300,
+            repeat: crate::session::AgentTriggerRepeat::Every,
+        },
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Steer,
+        prompt: Some("Check the build.".into()),
+    });
+    let update = LocalDaemonRequest::UpdateAgentTrigger(crate::local::UpdateAgentTriggerRequest {
+        session_id: "session-1".into(),
+        trigger_id: "trigger-1".into(),
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
+        prompt: None,
+        enabled: Some(false),
+    });
+    let delete = LocalDaemonRequest::DeleteAgentTrigger(crate::local::DeleteAgentTriggerRequest {
+        session_id: "session-1".into(),
+        trigger_id: "trigger-1".into(),
+    });
+    let requests = serde_json::json!([create, update, delete]);
+    assert_eq!(
+        requests,
+        serde_json::json!([
+            { "CreateAgentTrigger": {
+                "session_id": "session-1", "agent_id": "agent-1",
+                "source": { "kind": "schedule", "interval_seconds": 300, "repeat": "every" },
+                "busy_policy": "steer", "prompt": "Check the build.",
+            } },
+            { "UpdateAgentTrigger": {
+                "session_id": "session-1", "trigger_id": "trigger-1",
+                "busy_policy": "queue", "enabled": false,
+            } },
+            { "DeleteAgentTrigger": { "session_id": "session-1", "trigger_id": "trigger-1" } },
+        ])
+    );
+    let hash = Sha256::digest(serde_json::to_string(&requests).unwrap().as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "d7be76173ad86e109c06608125a2c8f2cf3cb86570b989f7c760e174d2d59eb7"
+    );
+
+    let mut session = crate::session::RuntimeSession::new(
+        "session-1",
+        None,
+        "workspace-1",
+        "worktree-1",
+        "machine-1",
+        "daemon-1",
+    );
+    let trigger = crate::session::AgentTrigger::schedule(
+        "trigger-1",
+        "agent-1",
+        "user-1",
         60,
+        crate::session::AgentTriggerRepeat::Once,
+        crate::session::AgentTriggerBusyPolicy::Queue,
         "Continue from where you left off.",
         1_000,
     );
-    session.add_agent_prompt_schedule(schedule.clone());
-    let response = LocalDaemonResponse::AgentPromptScheduleCreated { schedule, session };
-    let snapshot =
-        serde_json::to_value(response).expect("agent prompt schedule response should encode");
+    session.add_agent_trigger(trigger.clone());
+    let response = LocalDaemonResponse::AgentTriggerCreated { trigger, session };
+    let snapshot = serde_json::to_value(response).expect("agent trigger response should encode");
     assert_eq!(
-        snapshot.pointer("/AgentPromptScheduleCreated/schedule/next_run_at_ms"),
-        Some(&serde_json::json!(61_000))
+        snapshot.pointer("/AgentTriggerCreated/trigger"),
+        Some(&serde_json::json!({
+            "id": "trigger-1", "agent_id": "agent-1", "created_by_user_id": "user-1",
+            "source": { "kind": "schedule", "interval_seconds": 60, "repeat": "once", "next_run_at_ms": 61_000 },
+            "busy_policy": "queue", "prompt": "Continue from where you left off.",
+            "enabled": true, "created_at_ms": 1_000, "fired": 0, "coalesced": 0,
+        }))
     );
     assert_eq!(
-        snapshot.pointer("/AgentPromptScheduleCreated/session/agent_prompt_schedules/0/id"),
-        Some(&serde_json::json!("schedule-1"))
+        snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),
+        Some(&serde_json::json!("trigger-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/AgentTriggerCreated/session/agent_prompt_schedules"),
+        None,
+        "sessions no longer carry the old /wait schedule view"
+    );
+    assert_eq!(
+        snapshot.pointer("/AgentTriggerCreated/session/agent_triggers/0/id"),
+        Some(&serde_json::json!("trigger-1"))
     );
 }
 
@@ -1235,5 +1311,53 @@ fn waiting_room_session_pages_have_versioned_shapes_and_hash() {
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
         "6e6c7820650983eb841ef1d97325bd16484a0a9e1d0692e6b56db81ef69ee842"
+    );
+}
+
+// MP-08 / MP-10 / MP-11: local ingress uses the reserved trigger protocol.
+#[test]
+fn local_daemon_protocol_http_agent_trigger_shape_is_versioned() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    assert!(
+        crate::test_support::expected_local_protocol_version() >= 932,
+        "the HTTP source and its invoke/read variants are protocol 932"
+    );
+    let request = LocalDaemonRequest::CreateAgentTrigger(crate::local::CreateAgentTriggerRequest {
+        session_id: "s1".into(),
+        agent_id: "a1".into(),
+        source: crate::local::AgentTriggerSourceRequest::Http,
+        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        prompt: Some("Handle input".into()),
+    });
+    let shape = serde_json::to_value(request).unwrap();
+    assert_eq!(
+        shape,
+        serde_json::json!({"CreateAgentTrigger":{"session_id":"s1","agent_id":"a1","source":{"kind":"http"},"busy_policy":"queue","prompt":"Handle input"}})
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_string(&shape).unwrap().as_bytes())
+        ),
+        "f9419e3fcbadc4c17da27366023f63894597569187c6da123b425d755249596d"
+    );
+    let invoke = LocalDaemonRequest::InvokeAgentTrigger(crate::local::InvokeAgentTriggerRequest {
+        session_id: "s1".into(),
+        trigger_id: "h1".into(),
+        payload: serde_json::json!({"prompt":"Hello"}),
+    });
+    assert_eq!(
+        serde_json::to_value(invoke).unwrap(),
+        serde_json::json!({"InvokeAgentTrigger":{"session_id":"s1","trigger_id":"h1","payload":{"prompt":"Hello"}}})
+    );
+    let response = LocalDaemonResponse::AgentTriggerInvoked {
+        invocation: crate::local::AgentTriggerInvocation::Offline,
+    };
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"AgentTriggerInvoked":{"invocation":{"status":"offline"}}})
     );
 }

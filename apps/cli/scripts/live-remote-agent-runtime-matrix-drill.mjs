@@ -9,9 +9,9 @@ import {
   selectDrillMatrixScenarios,
 } from "./lib/drill-matrix-runner.mjs"
 import {
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
 import {
   applyProviderAccountAlias,
@@ -123,32 +123,32 @@ const MATRIX = [
     ],
   },
   {
-    id: "hetzner-single-user-remote-agent",
-    description: "Hetzner worker remote agent lease and home execution authority",
+    id: "remote-kernel-single-user-remote-agent",
+    description: "remote kernel worker remote agent lease and home execution authority",
     script: remoteHomeExtensionDrill,
-    args: ["--hetzner-worker"],
-    requires: ["hetzner"],
+    args: ["--remote-kernel-worker"],
+    requires: ["remote-kernel"],
     classification: "worker-execution",
     runtimeSignals: ["agent-lifecycle", "lease-health", "session-authority"],
-    deployment: "hetzner",
+    deployment: "remote-kernel",
     provider: "dev-stub",
     exitCriteria: [
-      "remote worker on Hetzner receives the leased agent",
+      "remote worker on remote kernel receives the leased agent",
       "home remains authority for projected runtime capabilities",
     ],
   },
   {
-    id: "hetzner-collab-remote-agent",
-    description: "Hetzner worker collab remote agent authority",
+    id: "remote-kernel-collab-remote-agent",
+    description: "remote kernel worker collab remote agent authority",
     script: remoteHomeExtensionDrill,
-    args: ["--hetzner-worker", "--collab"],
-    requires: ["hetzner"],
+    args: ["--remote-kernel-worker", "--collab"],
+    requires: ["remote-kernel"],
     classification: "kernel-authority",
     runtimeSignals: ["lease-health", "session-authority"],
-    deployment: "hetzner",
+    deployment: "remote-kernel",
     provider: "dev-stub",
     exitCriteria: [
-      "collab remote agent can run on the Hetzner worker",
+      "collab remote agent can run on the remote kernel worker",
       "home-side grant/revoke authority remains enforced across machines",
     ],
   },
@@ -214,10 +214,10 @@ function printHelp() {
     "Usage: node apps/cli/scripts/live-remote-agent-runtime-matrix-drill.mjs [options]",
     "",
     "Runs leased remote-agent lifecycle, prompt dispatch, provider-run binding, collab, and deployment evidence.",
-    "By default this runs same-host/self-hosted relay scenarios. Hetzner and hosted Cloud are opt-in.",
+    "By default this runs same-host/self-hosted relay scenarios. remote kernel and hosted Cloud are opt-in.",
     "",
     "Options:",
-    "  --include-hetzner        Include Hetzner worker scenarios",
+    "  --include-remote-kernel        Include remote kernel worker scenarios",
     "  --include-hosted-cloud   Include hosted Cloud relay scenarios",
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
@@ -227,9 +227,9 @@ function printHelp() {
     "  --artifact-index PATH    Write a verifiable artifact index for the matrix report",
     "  --provider-model P=M     Override model for provider-backed scenarios",
     "  --provider-account P=A   Label the provider account/profile used by this matrix without exposing credentials",
-    "  --hetzner-host HOST      Forwarded to Hetzner drill scenarios",
-    "  --hetzner-key PATH       Forwarded to Hetzner drill scenarios",
-    "  --hetzner-repo PATH      Forwarded to Hetzner drill scenarios",
+    "  --remote-kernel-host HOST      Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-key PATH       Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-repo PATH      Forwarded to remote kernel drill scenarios",
     "",
     "Environment defaults:",
     `  CHARIOX_REMOTE_AGENT_RUNTIME_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
@@ -249,7 +249,7 @@ function readValue(argv, index, flag) {
 
 function parseArgs(argv) {
   const options = {
-    includeHetzner: false,
+    includeRemoteKernel: false,
     includeHostedCloud: false,
     only: null,
     dryRun: false,
@@ -265,7 +265,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
     if (arg === "--") continue
-    else if (arg === "--include-hetzner") options.includeHetzner = true
+    else if (arg === "--include-remote-kernel") options.includeRemoteKernel = true
     else if (arg === "--include-hosted-cloud") options.includeHostedCloud = true
     else if (arg === "--dry-run") options.dryRun = true
     else if (arg === "--continue-on-failure") options.continueOnFailure = true
@@ -283,10 +283,10 @@ function parseArgs(argv) {
     else if (arg === "--only") options.only = parseDrillScenarioIds(readValue(argv, index++, arg))
     else if (arg.startsWith("--only=")) options.only = parseDrillScenarioIds(arg.slice("--only=".length))
     else {
-      const hetznerArg = parseHetznerPassthroughArg(argv, index)
-      if (hetznerArg) {
-        options.passthrough.push(...hetznerArg.args)
-        index = hetznerArg.nextIndex
+      const remoteKernelArg = parseRemoteKernelPassthroughArg(argv, index)
+      if (remoteKernelArg) {
+        options.passthrough.push(...remoteKernelArg.args)
+        index = remoteKernelArg.nextIndex
         continue
       }
       throw new Error(`unknown argument: ${arg}`)
@@ -297,14 +297,14 @@ function parseArgs(argv) {
 
 function selectScenarios(options) {
   const enabledRequirements = new Set()
-  if (options.includeHetzner) enabledRequirements.add("hetzner")
+  if (options.includeRemoteKernel) enabledRequirements.add("remote-kernel")
   if (options.includeHostedCloud) enabledRequirements.add("hosted-cloud")
   const selected = selectDrillMatrixScenarios({
     scenarios: MATRIX,
     requestedIds: options.only,
     enabledRequirements,
     requirementLabels: {
-      hetzner: "--include-hetzner",
+      "remote-kernel": "--include-remote-kernel",
       "hosted-cloud": "--include-hosted-cloud",
     },
   })
@@ -360,7 +360,7 @@ function commandForScenario(scenario, options) {
   }
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough(args, scenario, options.passthrough),
+    args: appendRemoteKernelPassthrough(args, scenario, options.passthrough),
     env: scenario.env,
   }
 }
@@ -370,16 +370,16 @@ function metadataFor(selected, options) {
     .map((scenario) => scenario.providerFamily ?? scenario.provider)
     .filter((provider) => provider && provider !== "dev-stub"))].sort()
   return {
-    includeHetzner: options.includeHetzner,
+    includeRemoteKernel: options.includeRemoteKernel,
     includeHostedCloud: options.includeHostedCloud,
     generatedMatrixNames: "remote-agent-runtime-matrix",
     generatedMatrixRepos: "oss",
     ...drillDeploymentPresetMetadata([
       "same-host-remote",
       "self-hosted-relay",
-      ...(options.includeHetzner ? ["hetzner"] : []),
+      ...(options.includeRemoteKernel ? ["remote-kernel"] : []),
       ...(options.includeHostedCloud ? ["hosted-cloud"] : []),
-    ], { hetznerPassthrough: options.passthrough }),
+    ], { remoteKernelPassthrough: options.passthrough }),
     ...providerProfileMetadata({
       providers,
       defaultModel: "per-provider",

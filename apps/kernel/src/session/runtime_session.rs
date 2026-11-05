@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::agent::AgentInstance;
 use crate::provider::ExternalProviderImportMetadata;
 
-use super::agent_prompt_scheduling::AgentPromptSchedule;
+use super::agent_triggers::{AgentTrigger, AgentTriggers, TriggerDelivery, TriggerDeliveryState};
 use super::metaagent_task::{MetaagentTask, MetaagentTaskStatus};
 #[cfg(test)]
 use super::prompt_queue::PromptSubmissionOutcome;
@@ -138,8 +138,11 @@ pub struct RuntimeSession {
     agent_wakes: Vec<crate::durable_state::agent_lifecycle::AgentWake>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
     queued_metaagent_tasks: VecDeque<QueuedMetaagentTask>,
+    #[serde(default, skip_serializing_if = "AgentTriggers::is_empty")]
+    agent_triggers: AgentTriggers,
+    /// Trigger firings the provider did not confirm, newest last.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    agent_prompt_schedules: Vec<AgentPromptSchedule>,
+    trigger_deliveries: Vec<TriggerDelivery>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     agent_output_read_state: BTreeMap<String, AgentOutputReadState>,
     config_state: SessionConfigState,
@@ -291,7 +294,8 @@ impl RuntimeSession {
             sudo_windows: Vec::new(),
             agent_wakes: Vec::new(),
             queued_metaagent_tasks: VecDeque::new(),
-            agent_prompt_schedules: Vec::new(),
+            agent_triggers: AgentTriggers::default(),
+            trigger_deliveries: Vec::new(),
             agent_output_read_state: BTreeMap::new(),
             pinned: false,
             pinned_at_ms: None,
@@ -350,31 +354,69 @@ impl RuntimeSession {
         self.alias = alias;
     }
 
-    pub fn agent_prompt_schedules(&self) -> &[AgentPromptSchedule] {
-        &self.agent_prompt_schedules
+    pub fn agent_triggers(&self) -> &[AgentTrigger] {
+        &self.agent_triggers.0
     }
 
-    pub(crate) fn agent_prompt_schedules_mut(&mut self) -> &mut Vec<AgentPromptSchedule> {
-        &mut self.agent_prompt_schedules
+    pub(crate) fn agent_triggers_mut(&mut self) -> &mut Vec<AgentTrigger> {
+        &mut self.agent_triggers.0
     }
 
-    pub(crate) fn add_agent_prompt_schedule(
-        &mut self,
-        schedule: AgentPromptSchedule,
-    ) -> AgentPromptSchedule {
-        self.agent_prompt_schedules.push(schedule.clone());
-        schedule
+    pub(crate) fn add_agent_trigger(&mut self, trigger: AgentTrigger) -> AgentTrigger {
+        self.agent_triggers.0.push(trigger.clone());
+        trigger
     }
 
-    pub(crate) fn remove_agent_prompt_schedule(
-        &mut self,
-        schedule_id: &str,
-    ) -> Option<AgentPromptSchedule> {
+    pub(crate) fn remove_agent_trigger(&mut self, trigger_id: &str) -> Option<AgentTrigger> {
         let index = self
-            .agent_prompt_schedules
+            .agent_triggers
+            .0
             .iter()
-            .position(|schedule| schedule.id() == schedule_id)?;
-        Some(self.agent_prompt_schedules.remove(index))
+            .position(|trigger| trigger.id() == trigger_id)?;
+        Some(self.agent_triggers.0.remove(index))
+    }
+
+    pub fn trigger_deliveries(&self) -> &[TriggerDelivery] {
+        &self.trigger_deliveries
+    }
+
+    /// Keeps the first record of a firing, so recovery can run more than once.
+    pub(crate) fn note_unconfirmed_trigger_delivery(&mut self, delivery: TriggerDelivery) {
+        const KEPT_DELIVERIES: usize = 32;
+        if self
+            .trigger_deliveries
+            .iter()
+            .any(|known| known.prompt_id() == delivery.prompt_id())
+        {
+            return;
+        }
+        self.trigger_deliveries.push(delivery);
+        if self.trigger_deliveries.len() > KEPT_DELIVERIES {
+            self.trigger_deliveries.remove(0);
+        }
+    }
+
+    /// Moves a delivery between its two states; `None` when it was not in `from`.
+    pub(crate) fn move_trigger_delivery(
+        &mut self,
+        prompt_id: &str,
+        from: TriggerDeliveryState,
+        to: TriggerDeliveryState,
+    ) -> Option<TriggerDelivery> {
+        let delivery = self
+            .trigger_deliveries
+            .iter_mut()
+            .find(|delivery| delivery.prompt_id() == prompt_id && delivery.state() == from)?;
+        delivery.set_state(to);
+        Some(delivery.clone())
+    }
+
+    pub(crate) fn remove_agent_triggers_for_agent(&mut self, agent_id: &str) -> Vec<AgentTrigger> {
+        let (removed, kept) = std::mem::take(&mut self.agent_triggers.0)
+            .into_iter()
+            .partition(|trigger| trigger.agent_id() == agent_id);
+        self.agent_triggers.0 = kept;
+        removed
     }
 
     pub fn workspace_id(&self) -> &str {
@@ -421,6 +463,42 @@ impl RuntimeSession {
             None,
             CollaborationLevel::Private,
         )];
+    }
+
+    /// MP-08/MP-10/MP-11: enrollment identifies the existing OS owner.
+    pub(crate) fn enroll_local_owner(&mut self, owner: &str) {
+        let local = super::DEFAULT_LOCAL_USER_ID;
+        if self.owner_user_id != local {
+            return;
+        }
+        self.owner_user_id = owner.into();
+        self.members.retain(|member| member.user_id() != owner);
+        for member in &mut self.members {
+            if member.user_id() == local {
+                *member = SessionMember::new(
+                    owner,
+                    member.joined_at_ms(),
+                    member.invited_by_user_id().map(str::to_owned),
+                    member.collaboration_level(),
+                );
+            }
+        }
+        for agent in &mut self.agents {
+            if agent.owner_user_id() == local {
+                agent.set_owner_user_id(owner);
+            }
+        }
+        for trigger in &mut self.agent_triggers.0 {
+            trigger.enroll_local_owner(owner);
+        }
+        for window in &mut self.sudo_windows {
+            if window.owner_user_id == local {
+                window.owner_user_id = owner.into();
+            }
+        }
+        for workflow in &mut self.workflows {
+            workflow.enroll_local_owner(owner);
+        }
     }
 
     pub fn members(&self) -> &[SessionMember] {
@@ -941,11 +1019,15 @@ impl RuntimeSession {
     }
 
     pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
-        self.active_interactions
-            .retain(|existing| existing.subject() != interaction.subject());
+        self.active_interactions.retain(|existing| {
+            existing.id() != interaction.id()
+                && (existing.subject() != interaction.subject()
+                    || existing.asking_task_id().is_some()
+                    || interaction.asking_task_id().is_some())
+        });
         self.active_interactions.push(interaction);
         self.active_interactions
-            .sort_by_key(|left| left.requested_at_ms());
+            .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
     pub fn remove_active_interaction(

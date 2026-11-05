@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* L1: the persistent inventory connection on a real X server. Idle costs no events; every change a
  * row depends on (a popup mapped, frame extents, focus, geometry, unmapping) is reported at once and
  * listed by the next read; a title change is not a trigger. */

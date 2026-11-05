@@ -275,7 +275,8 @@ impl KernelRuntimeState {
                 Err(e) => {
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
-                    self.owned.settle_failed_delegate_start(room, agent)?;
+                    self.owned
+                        .settle_failed_delegate_start(room, agent, &e.to_string())?;
                     return Err(e);
                 }
             }

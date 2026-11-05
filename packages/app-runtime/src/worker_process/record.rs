@@ -1,8 +1,96 @@
 use super::WorkerError;
 
 pub(super) const CONTINUE: &[u8; 8] = b"CXAWGO01";
+/// Sent instead of the ready record by a worker that cannot enter its OS
+/// containment; it exits without running App code.
+pub(super) const UNCONTAINED: &[u8; 8] = b"CXAWC001";
+
+pub(super) enum PreparedLaunch {
+    #[cfg(any(test, feature = "test-fixtures"))]
+    Fixture(LaunchRecord),
+    Wasm {
+        generation: String,
+        installation: String,
+        release_digest: String,
+    },
+}
+#[cfg(any(test, feature = "test-fixtures"))]
+impl From<LaunchRecord> for PreparedLaunch {
+    fn from(record: LaunchRecord) -> Self {
+        Self::Fixture(record)
+    }
+}
+impl PreparedLaunch {
+    pub fn generation(&self) -> &str {
+        match self {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.generation,
+            Self::Wasm { generation, .. } => generation,
+        }
+    }
+    pub fn installation(&self) -> &str {
+        match self {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.installation,
+            Self::Wasm { installation, .. } => installation,
+        }
+    }
+    pub fn release_digest(&self) -> &str {
+        match self {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => &record.release_digest,
+            Self::Wasm { release_digest, .. } => release_digest,
+        }
+    }
+    pub fn encode(&self) -> Result<Vec<u8>, WorkerError> {
+        match self {
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Self::Fixture(record) => record.encode(),
+            Self::Wasm { .. } => {
+                self.validate()?;
+                Ok(Vec::new())
+            }
+        }
+    }
+    fn validate(&self) -> Result<(), WorkerError> {
+        let generation = self
+            .generation()
+            .parse::<u64>()
+            .map_err(|_| WorkerError::Identity)?;
+        if generation == 0
+            || generation > i64::MAX as u64
+            || generation.to_string() != self.generation()
+            || self.installation().is_empty()
+            || self.installation().len() > 128
+            || !self
+                .installation()
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+            || self.release_digest().len() != 71
+            || !self.release_digest().starts_with("sha256:")
+            || !self.release_digest()[7..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(WorkerError::Identity);
+        }
+        Ok(())
+    }
+    pub fn ready(&self) -> Vec<u8> {
+        let mut frame = b"CXAWR001".to_vec();
+        for value in [
+            self.generation(),
+            self.installation(),
+            &self.release_digest()[7..],
+        ] {
+            string(&mut frame, value);
+        }
+        frame
+    }
+}
 
 /// Internal native ABI, never deserialized from a terminal or App request.
+#[cfg(any(test, feature = "test-fixtures"))]
 pub(super) struct LaunchRecord {
     pub generation: String,
     pub installation: String,
@@ -16,6 +104,7 @@ pub(super) struct LaunchRecord {
     pub max_file_bytes: u64,
 }
 
+#[cfg(any(test, feature = "test-fixtures"))]
 impl LaunchRecord {
     pub fn encode(&self) -> Result<Vec<u8>, WorkerError> {
         let generation = self
@@ -95,19 +184,6 @@ impl LaunchRecord {
         frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
         frame.extend_from_slice(&payload);
         Ok(frame)
-    }
-
-    /// Exact length and byte comparison also bounds a hostile startup reply.
-    pub fn ready(&self) -> Vec<u8> {
-        let mut frame = b"CXAWR001".to_vec();
-        for value in [
-            &self.generation,
-            &self.installation,
-            &self.release_digest[7..],
-        ] {
-            string(&mut frame, value);
-        }
-        frame
     }
 }
 

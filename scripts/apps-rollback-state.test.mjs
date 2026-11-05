@@ -17,7 +17,7 @@ for (const kind of ["empty", "storage", "release", "tables", "corrupt", "redirec
     t.after(() => rm(root, {recursive: true, force: true}))
     const database = join(root, "home/chariox/.chariox/state/kernel.db")
     await mkdir(dirname(database), {recursive: true})
-    const storage = join(root, "var/lib/chariox-app-storage")
+    const storage = join(root, "home/chariox/.chariox/state/app-wasm-state-fixture")
     await mkdir(storage, {recursive: true})
     if (kind === "storage") await writeFile(join(storage, "synthetic-state"), "synthetic")
     if (kind === "release") {

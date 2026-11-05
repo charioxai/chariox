@@ -61,6 +61,10 @@ impl SessionStateStore {
         self.read().get_session(session_id)
     }
 
+    pub(crate) fn session_owner_user_id(&self, session_id: &str) -> Option<String> {
+        self.read().session_owner_user_id(session_id)
+    }
+
     pub(crate) fn try_get_session_for_projection(
         &self,
         session_id: &str,
@@ -98,11 +102,11 @@ impl SessionStateStore {
 
     pub(crate) fn list_visible_projects(
         &self,
-        caller_user_id: &str,
         include_archived: bool,
+        is_member: impl Fn(&RuntimeSession) -> bool,
     ) -> Vec<RuntimeProject> {
         self.read()
-            .list_visible_projects(caller_user_id, include_archived)
+            .list_visible_projects(include_archived, is_member)
     }
 
     pub(crate) fn get_project(&self, project_id: &str) -> Result<RuntimeProject, DaemonError> {

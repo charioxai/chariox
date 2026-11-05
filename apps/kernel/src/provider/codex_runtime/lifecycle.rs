@@ -21,6 +21,17 @@ pub fn initialize_codex_runtime(
             message: "codex run did not expose a structured endpoint".to_string(),
         })?
         .to_string();
+    #[cfg(unix)]
+    if let Some(turn) = crate::hot_reload::take_codex(run.id()) {
+        // The prompt's submit continues this turn on the handed-over connection.
+        return Ok(CodexRuntimeBinding {
+            state: super::handover::adopt(turn),
+            selection: CodexRunSelection {
+                model: normalize_codex_model(run.model()),
+                variant: run.variant().map(str::to_string),
+            },
+        });
+    }
     let deadline = Instant::now() + CODEX_ENDPOINT_STARTUP_TIMEOUT;
     while !codex_endpoint_is_healthy(&endpoint) {
         if Instant::now() >= deadline {

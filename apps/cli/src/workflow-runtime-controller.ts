@@ -180,9 +180,23 @@ export function createWorkflowRuntimeController(deps: WorkflowRuntimeControllerD
   }
 
   const listWorkflowRuns = async (workflowRef?: string | null) => {
-    const response = await deps.sendRequest(listWorkflowRunsRequest(deps.sessionId(), workflowRef))
-    const payload = expectVariant<{ workflow_runs: WorkflowRun[] }>(response, "WorkflowRunsListed")
-    return payload.workflow_runs
+    const workflowRuns: WorkflowRun[] = []
+    let cursor: string | null = null
+    do {
+      const response = await deps.sendRequest(
+        listWorkflowRunsRequest(deps.sessionId(), workflowRef, { cursor }),
+      )
+      const payload = expectVariant<{ workflow_runs: WorkflowRun[]; next_cursor?: string | null }>(
+        response,
+        "WorkflowRunsListed",
+      )
+      workflowRuns.push(...payload.workflow_runs)
+      if (payload.next_cursor != null && payload.next_cursor === cursor) {
+        throw new Error("the kernel returned the same workflow run page cursor twice; update the kernel")
+      }
+      cursor = payload.next_cursor ?? null
+    } while (cursor)
+    return workflowRuns
   }
 
   const getWorkflowRun = async (workflowRunRef: string) => {

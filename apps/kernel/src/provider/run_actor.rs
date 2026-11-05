@@ -26,6 +26,7 @@ use finished_jobs::{
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     FinishedProviderRunSelectionSyncJob, ProviderPromptSubmitAcknowledgement,
+    ProviderPromptSubmitReceipt,
 };
 use in_flight::ProviderRunInFlightState;
 pub(crate) use native_interaction::{
@@ -156,6 +157,12 @@ impl ProviderRunActorMailbox {
     pub(crate) fn insert_opencode_runtime(&self, run_id: String, state: OpenCodeRuntimeState) {
         state.bind_output_ready(run_id.clone(), self.output_ready_signal.clone());
         self.runtime_registry.insert_opencode_runtime(run_id, state);
+    }
+
+    /// Whether any run still has an output poll queued or running: its result
+    /// is not yet there to apply.
+    pub(crate) fn any_output_poll_in_flight(&self) -> bool {
+        self.in_flight.any_output_poll_in_flight()
     }
 
     pub(crate) fn structured_prompt_io_in_flight(&self, run_id: &str) -> bool {

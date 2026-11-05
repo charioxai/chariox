@@ -19,8 +19,10 @@ pub struct UserCredentialConfig {
     pub metadata: Option<UserCredentialMetadataConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserCredentialMetadataConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_binding: Option<super::VaultUseBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,8 +63,6 @@ pub struct UserCredentialVaultConfig {
     pub default_ttl_minutes: u64,
     #[serde(default = "default_credential_vault_max_ttl_minutes")]
     pub max_ttl_minutes: u64,
-    #[serde(default)]
-    pub agent_management: CredentialVaultAgentManagementPolicy,
 }
 
 impl Default for UserCredentialVaultConfig {
@@ -74,7 +74,6 @@ impl Default for UserCredentialVaultConfig {
             unlock_policy: CredentialVaultUnlockPolicy::default(),
             default_ttl_minutes: default_credential_vault_default_ttl_minutes(),
             max_ttl_minutes: default_credential_vault_max_ttl_minutes(),
-            agent_management: CredentialVaultAgentManagementPolicy::default(),
         }
     }
 }
@@ -118,32 +117,6 @@ impl<'de> Deserialize<'de> for CredentialVaultUnlockPolicy {
                 "unsupported credential vault unlock policy; use kernel_init, ttl, or always",
             )
         })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CredentialVaultAgentManagementPolicy {
-    Allow,
-    Deny,
-}
-
-impl Default for CredentialVaultAgentManagementPolicy {
-    fn default() -> Self {
-        Self::Allow
-    }
-}
-
-impl CredentialVaultAgentManagementPolicy {
-    pub(crate) fn parse(field: &'static str, value: &str) -> Result<Self, DaemonError> {
-        match value.trim() {
-            "allow" => Ok(Self::Allow),
-            "deny" => Ok(Self::Deny),
-            _ => Err(DaemonError::InvalidConfig {
-                field,
-                message: "unsupported credential vault agent management policy",
-            }),
-        }
     }
 }
 
@@ -200,6 +173,10 @@ fn default_credential_vault_max_ttl_minutes() -> u64 {
 pub enum UserCredentialUse {
     Http,
     Pty,
+    /// The environment or stdin of a command the kernel runs for the agent.
+    Env,
+    /// A file the kernel writes in the agent's workspace.
+    File,
     Connector,
     Browser,
     Computer,
@@ -228,9 +205,13 @@ pub enum UserCredentialInjectionConfig {
         signature_header: String,
     },
     Pty,
+    Env,
+    File,
     Browser,
     Computer,
     Provider,
+    Totp(super::TotpConfig),
+    BackupCodes,
 }
 
 fn default_hmac_timestamp_header() -> String {
@@ -282,10 +263,40 @@ pub fn validate_credentials(credentials: &[UserCredentialConfig]) -> Result<(), 
                 validate_non_empty("credentials.injection.signature_header", signature_header)?;
             }
             UserCredentialInjectionConfig::Pty => {}
+            UserCredentialInjectionConfig::Env => {}
+            UserCredentialInjectionConfig::File => {}
             UserCredentialInjectionConfig::Browser => {}
             UserCredentialInjectionConfig::Computer => {}
             UserCredentialInjectionConfig::Provider => {}
+            UserCredentialInjectionConfig::Totp(config) => {
+                config.validate()?;
+                validate_factor_source(credential)?;
+            }
+            UserCredentialInjectionConfig::BackupCodes => validate_factor_source(credential)?,
         }
+    }
+    Ok(())
+}
+
+fn validate_factor_source(credential: &UserCredentialConfig) -> Result<(), DaemonError> {
+    if !matches!(credential.source, UserCredentialSourceConfig::Vault { .. }) {
+        return Err(DaemonError::InvalidConfig {
+            field: "credentials.source",
+            message: "TOTP and backup codes must be stored in the Vault",
+        });
+    }
+    if credential.allowed_uses.is_empty()
+        || credential.allowed_uses.iter().any(|usage| {
+            !matches!(
+                usage,
+                UserCredentialUse::Browser | UserCredentialUse::Pty | UserCredentialUse::Env
+            )
+        })
+    {
+        return Err(DaemonError::InvalidConfig {
+            field: "credentials.allowed_uses",
+            message: "TOTP and backup codes require explicit browser, pty or env uses",
+        });
     }
     Ok(())
 }

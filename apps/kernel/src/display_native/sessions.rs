@@ -205,6 +205,10 @@ fn clips(
     }
     output
 }
+/// One encoder session per watching display. A shared room is watched by as many viewers as the transport
+/// admits sessions (32 local browser sessions, 32 WebRTC peers), so the bound follows that count: a lower one
+/// stops the video of every viewer past it without a disconnect (TR-19).
+const MAX_ENCODER_SESSIONS: usize = 32;
 pub(super) struct Sessions {
     sessions: HashMap<String, Session>,
     /// MP-08/MP-10 (P2): the last encoded whole frame is coarse; the capture loop takes an unchanged
@@ -359,7 +363,7 @@ impl Sessions {
             }
         }
         if !sessions.contains_key(&q.encoder) {
-            if sessions.len() >= 8 {
+            if sessions.len() >= MAX_ENCODER_SESSIONS {
                 return Err("MP-11: native encoder count".into());
             }
             let codec = Codec(unsafe {
@@ -755,6 +759,21 @@ mod protection_tests {
         let mut sessions = Sessions::new(800, 600, std::env::temp_dir());
         assert!(sessions.begin_encode(&claim(field)).is_err());
         assert!(!encode(json!([]), true).unprotected, "absent = unknown");
+    }
+    // MP-08 TR-19: every viewer of a shared room owns one encoder session, so a burst of viewers must
+    // not stop at a small fixed count.
+    #[test]
+    fn tr19_twenty_viewers_each_open_their_own_encoder_session() {
+        let mut sessions = Sessions::new(800, 600, std::env::temp_dir());
+        for viewer in 0..20 {
+            let name = format!("viewer-{viewer}");
+            let request: Encode = serde_json::from_value(json!({"id":1,"encoder":name,"serial":1,"bitrate":8000000,"reset":false,"regions":[]})).unwrap();
+            let job = sessions
+                .begin_encode(&request)
+                .unwrap_or_else(|error| panic!("viewer {viewer}: {error}"));
+            sessions.sessions.get_mut(&name).unwrap().codec = Some(job.codec);
+        }
+        assert_eq!(sessions.sessions.len(), 20);
     }
     #[test]
     fn mp11_aligned_stripe_boundary_keeps_damage_and_protection_in_the_encoded_row() {

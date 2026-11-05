@@ -513,7 +513,13 @@ async fn explicit_handoff_rebuilds_after_room_policy_changed_after_capture() {
     );
     let result = fixture
         .runtime
-        .submit_structured_prompt_with_handoff(&dispatch, &fixture.run, Some(handoff), "")
+        .submit_structured_prompt_with_handoff(
+            &dispatch,
+            &fixture.run,
+            Some(handoff),
+            "",
+            crate::runtime::state::structured_prompt_dispatch::SteerReceipt::Ignored,
+        )
         .await;
     result.unwrap();
     fixture.wait_for("final-provider-envelope").await;

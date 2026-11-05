@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: selected crops and inventory retain #958's WM client binding. */
 #include <assert.h>
 #include <unistd.h>

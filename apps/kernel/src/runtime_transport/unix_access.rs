@@ -21,6 +21,42 @@ pub(super) async fn admit_frame(
     } = *connection;
 
     let runtime_state = router.runtime_state();
+    // Status reads only the caller's own chain, so every local peer may ask, covered or not.
+    if let KernelIncomingFrame::Request {
+        request_id,
+        request: crate::local::LocalDaemonRequest::GetKernelAccessStatus(request),
+        kernel: None,
+        ..
+    } = frame
+    {
+        let (response, error) = match runtime_state.kernel_access_status(peer, request.holder_pid) {
+            Ok(status) => (
+                Some(
+                    serde_json::to_value(crate::local::LocalDaemonResponse::KernelAccessStatus {
+                        status,
+                    })
+                    .unwrap(),
+                ),
+                None,
+            ),
+            Err(e) => (None, Some(access_transport_error(&e))),
+        };
+        let _ = try_send_outgoing_frame(
+            outgoing_tx,
+            close_tx,
+            close_requested,
+            &runtime.transport_health,
+            KernelOutgoingFrame::Response {
+                kernel: None,
+                request_id: request_id.clone(),
+                response: Box::new(response),
+                error,
+            },
+            None,
+            None,
+        );
+        return Err(());
+    }
     let bound = bound_grant.lock().expect("bound grant poisoned").clone();
     let sudo = if bound.as_deref().is_none_or(|id| id.starts_with("sudo:")) {
         runtime_state
@@ -32,13 +68,16 @@ pub(super) async fn admit_frame(
     };
     if let Some(turn) = sudo {
         let verdict = match frame {
-            // A sudo window is one turn on this kernel; it does not reach other kernels.
             KernelIncomingFrame::Request {
+                kernel: Some(_),
+                request,
+                ..
+            } => runtime_state
+                .authorize_gateway_request(&turn.entry_id, request)
+                .map_err(|error| Refusal::of(&error)),
+            KernelIncomingFrame::Subscribe {
                 kernel: Some(_), ..
-            }
-            | KernelIncomingFrame::Subscribe {
-                kernel: Some(_), ..
-            } => Err(Refusal::NotCovered),
+            } => Ok(()),
             KernelIncomingFrame::Request { request, .. } => runtime_state
                 .authorize_sudo_request(&turn.entry_id, request)
                 .map(|_| ())
@@ -52,7 +91,9 @@ pub(super) async fn admit_frame(
                 && runtime_state
                     .attachment_owner_user_id(attachment_id)
                     .await
-                    .is_ok_and(|owner| owner == turn.owner_user_id)
+                    .is_ok_and(|owner| {
+                        runtime_state.acts_for_owner(session_id, &turn.owner_user_id, &owner)
+                    })
                 && kernel_subscription_scope(subscription_scope.as_deref())
                     != KernelSubscriptionScope::WaitingRoomInventory
                 && router
@@ -179,38 +220,28 @@ pub(super) async fn admit_frame(
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let response = runtime_state
-                .request_kernel_access(peer.clone(), request)
-                .await;
-            let (response, error) = match response {
-                Ok(grant) => {
-                    // A socket never changes authority after its first admission.
-                    // Existing subscriptions and queued deliveries retain that grant.
-                    // A `--no-wait` waiter that left its holder's tree is only told the
-                    // outcome: its socket gets no authority, or delivery would close it.
-                    if runtime_state.access_grant_live(&grant.grant_id, &peer) {
-                        bound_grant
-                            .lock()
-                            .expect("bound grant poisoned")
-                            .get_or_insert_with(|| grant.grant_id.clone());
-                    }
-                    (
-                        Some(
-                            serde_json::to_value(
-                                crate::local::LocalDaemonResponse::KernelAccessGranted { grant },
-                            )
-                            .unwrap(),
-                        ),
-                        None,
-                    )
-                }
-                Err(e) => (
-                    None,
-                    Some(match Refusal::exact(&e) {
-                        Some(refusal) => refusal.transport_error(),
-                        None => map_kernel_error(&e),
-                    }),
-                ),
+            let result = if request.no_wait {
+                submit_without_waiting(&runtime_state, &peer, &request)
+            } else {
+                runtime_state
+                    .request_kernel_access(peer.clone(), request)
+                    .await
+                    .map(|grant| {
+                        // A socket never changes authority after its first admission.
+                        // Existing subscriptions and queued deliveries retain that grant.
+                        if runtime_state.access_grant_live(&grant.grant_id, &peer) {
+                            bound_grant
+                                .lock()
+                                .expect("bound grant poisoned")
+                                .get_or_insert_with(|| grant.grant_id.clone());
+                        }
+                        crate::local::LocalDaemonResponse::KernelAccessGranted { grant }
+                    })
+                    .map_err(|e| access_transport_error(&e))
+            };
+            let (response, error) = match result {
+                Ok(response) => (Some(serde_json::to_value(response).unwrap()), None),
+                Err(error) => (None, Some(error)),
             };
             let _ = try_send_outgoing_frame(
                 &outgoing_tx,
@@ -360,6 +391,70 @@ pub(super) async fn admit_frame(
     caller.caller_id = grant.summary.grant_id;
     caller.user_id = Some(grant.summary.owner_user_id);
     Ok(caller)
+}
+
+fn access_transport_error(
+    error: &crate::error::DaemonError,
+) -> crate::transport::kernel_protocol::KernelTransportError {
+    match Refusal::exact(error) {
+        Some(refusal) => refusal.transport_error(),
+        None => map_kernel_error(error),
+    }
+}
+
+/// `--no-wait`: the kernel records the request, raises the popup and answers at once. The
+/// owner's decision binds to the holder, so the requester may exit (and a sandbox may tear
+/// down its namespace) before it; status reports the outcome by holder identity.
+fn submit_without_waiting(
+    runtime_state: &crate::runtime::state::KernelRuntimeState,
+    peer: &ProcessIdentity,
+    request: &crate::local::RequestKernelAccessRequest,
+) -> Result<
+    crate::local::LocalDaemonResponse,
+    crate::transport::kernel_protocol::KernelTransportError,
+> {
+    use crate::local::KernelAccessHolderState;
+    use crate::runtime::state::AccessSubmission;
+    let status = |state: &crate::runtime::state::KernelRuntimeState| {
+        state
+            .kernel_access_status(peer, request.holder_pid)
+            .map(|status| crate::local::LocalDaemonResponse::KernelAccessStatus { status })
+            .map_err(|e| access_transport_error(&e))
+    };
+    // Asking again while the owner decides is the same request.
+    let current = runtime_state
+        .kernel_access_status(peer, request.holder_pid)
+        .map_err(|e| access_transport_error(&e))?;
+    if matches!(
+        current.state,
+        KernelAccessHolderState::Pending | KernelAccessHolderState::Granted
+    ) {
+        return Ok(crate::local::LocalDaemonResponse::KernelAccessStatus { status: current });
+    }
+    match runtime_state
+        .submit_kernel_access(peer, request)
+        .map_err(|e| access_transport_error(&e))?
+    {
+        AccessSubmission::Granted(_) => status(runtime_state),
+        AccessSubmission::Pending(pending) => {
+            let answer = status(runtime_state);
+            let holder = pending.holder.clone();
+            let runtime_state = runtime_state.clone();
+            tokio::spawn(async move {
+                if let Err(error) = runtime_state.decide_kernel_access(pending, None).await {
+                    let error = access_transport_error(&error);
+                    runtime_state.remember_access_request_outcome(
+                        &holder,
+                        crate::local::KernelAccessStatusReason {
+                            code: error.code,
+                            message: error.message,
+                        },
+                    );
+                }
+            });
+            answer
+        }
+    }
 }
 
 fn deny_frame(
@@ -663,8 +758,8 @@ pub(super) fn serve_gateway(
     let grant_id = caller.caller_id.clone();
     let harness = router
         .runtime_state()
-        .access_grant_summary(&grant_id)
-        .map(|grant| crate::runtime::kernel_gateway::harness_name(&grant))
+        .gateway_origin(&grant_id)
+        .map(|origin| origin.harness)
         .unwrap_or_else(|| "unknown".into());
     let router = Arc::clone(router);
     let health = runtime.transport_health.clone();

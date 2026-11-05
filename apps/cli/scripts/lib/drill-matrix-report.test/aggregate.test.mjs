@@ -25,7 +25,7 @@ test("aggregates multiple matrix reports for CI", () => {
   const failed = matrixReport({
     matrix: "remote",
     metadata: {
-      deploymentPresets: "local,self-hosted-relay,hetzner",
+      deploymentPresets: "local,self-hosted-relay,remote-kernel",
       providers: "codex,opencode",
     },
     scenarios: [
@@ -36,7 +36,7 @@ test("aggregates multiple matrix reports for CI", () => {
         artifactHints: ["/tmp/chariox-drill-remote", { kind: "manifest", path: ".artifacts/remote.json" }],
         runtimeSignals: ["lease-health", "provider-run-lifecycle"],
       }),
-      scenario("hetzner", "skipped", { reason: "skipped after previous failure" }),
+      scenario("remote-kernel", "skipped", { reason: "skipped after previous failure" }),
     ],
   })
   const dryRun = matrixReport({
@@ -114,7 +114,7 @@ test("aggregates multiple matrix reports for CI", () => {
     workspace: 1,
   })
   assert.deepEqual(aggregate.deploymentPresets, {
-    hetzner: 1,
+    "remote-kernel": 1,
     "hosted-cloud": 1,
     local: 1,
     "self-hosted-relay": 1,
@@ -125,7 +125,7 @@ test("aggregates multiple matrix reports for CI", () => {
     opencode: 1,
   })
   assert.deepEqual(aggregate.scenarioIds, {
-    hetzner: 1,
+    "remote-kernel": 1,
     local: 1,
     remote: 1,
     tracked: 1,
@@ -172,7 +172,7 @@ test("aggregates multiple matrix reports for CI", () => {
     providers: report.providers,
     scenarioIds: report.scenarioIds,
   })), [
-    { matrix: "remote", deploymentPresets: ["hetzner", "local", "self-hosted-relay"], providers: ["codex", "opencode"], scenarioIds: ["local", "remote", "hetzner"] },
+    { matrix: "remote", deploymentPresets: ["local", "remote-kernel", "self-hosted-relay"], providers: ["codex", "opencode"], scenarioIds: ["local", "remote", "remote-kernel"] },
     { matrix: "workspace", deploymentPresets: ["hosted-cloud"], providers: ["claude"], scenarioIds: ["tracked"] },
   ])
   assert.deepEqual(aggregate.failedScenarios, [{
@@ -188,14 +188,14 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.deepEqual(aggregate.skippedScenarios, [{
     matrix: "remote",
     source: "/tmp/remote-matrix.json",
-    id: "hetzner",
+    id: "remote-kernel",
     reason: "skipped after previous failure",
   }])
   assert.deepEqual(aggregate.incompleteScenarios, [
     {
       matrix: "remote",
       source: "/tmp/remote-matrix.json",
-      id: "hetzner",
+      id: "remote-kernel",
       status: "skipped",
       reason: "skipped after previous failure",
     },
@@ -218,9 +218,9 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /artifacts: \/tmp\/chariox-drill-remote, manifest:\.artifacts\/remote\.json/)
   assert.match(text, /owners: provider-account=1/)
   assert.match(text, /matrix_names: remote=1 workspace=1/)
-  assert.match(text, /deployment_presets: hetzner=1 hosted-cloud=1 local=1 self-hosted-relay=1/)
+  assert.match(text, /deployment_presets: hosted-cloud=1 local=1 remote-kernel=1 self-hosted-relay=1/)
   assert.match(text, /providers: claude=1 codex=1 opencode=1/)
-  assert.match(text, /scenario_ids: hetzner=1 local=1 remote=1 tracked=1/)
+  assert.match(text, /scenario_ids: local=1 remote=1 remote-kernel=1 tracked=1/)
   assert.match(text, /runtime_signals: lease-health=1 provider-run-lifecycle=1 session-authority=1 workspace-live-sync-state=1/)
   assert.match(text, /runtime_signal_owners: kernel-authority=2 provider-runtime=1 runtime-state=1/)
   assert.match(text, /runtime_signal_sources:/)
@@ -234,7 +234,7 @@ test("aggregates multiple matrix reports for CI", () => {
   assert.match(text, /sources: workspace\/tracked report=\/tmp\/workspace-matrix\.json/)
   assert.match(text, /next: refresh provider login/)
   assert.match(text, /incomplete scenarios:/)
-  assert.match(text, /- remote\/hetzner status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)
+  assert.match(text, /- remote\/remote-kernel status=skipped reason=skipped after previous failure source=\/tmp\/remote-matrix.json/)
   assert.match(text, /- workspace\/tracked status=dry-run source=\/tmp\/workspace-matrix.json planned_owner=runtime-state planned_classification=workspace-live-sync-conflict planned_next=inspect workspace live sync status/)
 })
 

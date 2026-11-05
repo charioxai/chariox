@@ -197,13 +197,13 @@ export async function respondToHandoff(
   return payload.outcome
 }
 
-/** MP-08 / MP-10 / MP-11: kernel-wide access popup; no session projection. */
+/** MP-08 / MP-10 / MP-11: kernel-wide access or Vault value popup; no session projection. */
 export async function respondToKernelAccessDecision(
   client: LocalIpcClient, interactionId: string, choiceId: string,
-  proof?: InteractionPasskeyProof | null,
+  proof?: InteractionPasskeyProof | null, customReply: string | null = null,
 ): Promise<void> {
   const response = await client.send<Record<string, unknown>>(
-    respondToInteractionRequest("kernel-access", interactionId, choiceId, null, proof),
+    respondToInteractionRequest("kernel-access", interactionId, choiceId, customReply, proof),
   )
   const payload = expectVariant<{ interaction_id: string }>(response, "KernelAccessDecisionResponded")
   if (payload.interaction_id !== interactionId) throw new Error("access response identity mismatch")

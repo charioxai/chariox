@@ -33,7 +33,7 @@ export function parseArgs(argv) {
     dryRun: false,
     exampleSuite: false,
     secondKernel: false,
-    hetznerSecondKernel: false,
+    remoteKernelSecondKernel: false,
     realProviderTopology: null,
     providerModels: {
       codex: process.env.CHARIOX_WORKFLOW_CODE_CODEX_MODEL ?? process.env.CHARIOX_CODEX_MODEL ?? 'gpt-5.4-mini',
@@ -55,10 +55,10 @@ export function parseArgs(argv) {
       opencode: process.env.CHARIOX_WORKFLOW_CODE_OPENCODE_EFFORT ?? 'low',
       claude: process.env.CHARIOX_WORKFLOW_CODE_CLAUDE_EFFORT ?? 'low',
     },
-    hetznerHost: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_HOST ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_HOST ?? 'root@195.201.123.115',
-    hetznerKey: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_KEY ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_KEY ?? path.join(os.homedir(), '.ssh/chariox_hetzner_staging'),
-    hetznerRepo: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_REPO ?? process.env.CHARIOX_NATIVE_TUI_HETZNER_REPO ?? '/tmp/chariox-native-remote-validate',
-    hetznerRemoteRoot: process.env.CHARIOX_WORKFLOW_CODE_HETZNER_ROOT ?? '/tmp/chariox-workflow-code-second-kernel',
+    remoteKernelHost: process.env.CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_HOST ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_HOST ?? '',
+    remoteKernelKey: process.env.CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_KEY ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_KEY ?? '',
+    remoteKernelRepo: process.env.CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_REPO ?? process.env.CHARIOX_NATIVE_TUI_REMOTE_KERNEL_REPO ?? '/tmp/chariox-native-remote-validate',
+    remoteKernelRemoteRoot: process.env.CHARIOX_WORKFLOW_CODE_REMOTE_KERNEL_ROOT ?? '/tmp/chariox-workflow-code-second-kernel',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -78,16 +78,16 @@ export function parseArgs(argv) {
     else if (arg === '--discard-artifacts-on-success') options.preserveOnSuccess = false
     else if (arg === '--example-suite') options.exampleSuite = true
     else if (arg === '--second-kernel') options.secondKernel = true
-    else if (arg === '--hetzner-second-kernel') options.hetznerSecondKernel = true
+    else if (arg === '--remote-kernel-second-kernel') options.remoteKernelSecondKernel = true
     else if (arg === '--real-provider-topology') options.realProviderTopology = argv[++index]
     else if (arg === '--provider-id') applyKeyValueOverride(options.providerIds, argv[++index], '--provider-id')
     else if (arg === '--provider-model') applyKeyValueOverride(options.providerModels, argv[++index], '--provider-model')
     else if (arg === '--provider-account') applyKeyValueOverride(options.providerAccounts, argv[++index], '--provider-account')
     else if (arg === '--provider-effort') applyKeyValueOverride(options.providerEfforts, argv[++index], '--provider-effort')
-    else if (arg === '--hetzner-host') options.hetznerHost = argv[++index]
-    else if (arg === '--hetzner-key') options.hetznerKey = argv[++index]
-    else if (arg === '--hetzner-repo') options.hetznerRepo = argv[++index]
-    else if (arg === '--hetzner-remote-root') options.hetznerRemoteRoot = argv[++index]
+    else if (arg === '--remote-kernel-host') options.remoteKernelHost = argv[++index]
+    else if (arg === '--remote-kernel-key') options.remoteKernelKey = argv[++index]
+    else if (arg === '--remote-kernel-repo') options.remoteKernelRepo = argv[++index]
+    else if (arg === '--remote-kernel-remote-root') options.remoteKernelRemoteRoot = argv[++index]
     else if (arg === '--dry-run') options.dryRun = true
     else if (arg === '--help' || arg === '-h') {
       printHelp()
@@ -135,16 +135,16 @@ export function printHelp() {
     '  --discard-artifacts-on-success',
     '  --example-suite',
     '  --second-kernel',
-    '  --hetzner-second-kernel',
+    '  --remote-kernel-second-kernel',
     '  --real-provider-topology NAME.js',
     '  --provider-id SOURCE_PROVIDER=LAUNCH_PROVIDER',
     '  --provider-model PROVIDER=MODEL',
     '  --provider-account PROVIDER=ACCOUNT_PROFILE',
     '  --provider-effort PROVIDER=EFFORT',
-    '  --hetzner-host HOST',
-    '  --hetzner-key PATH',
-    '  --hetzner-repo PATH',
-    '  --hetzner-remote-root PATH',
+    '  --remote-kernel-host HOST',
+    '  --remote-kernel-key PATH',
+    '  --remote-kernel-repo PATH',
+    '  --remote-kernel-remote-root PATH',
     '  --dry-run',
   ].join('\n'))
 }

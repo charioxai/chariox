@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: public 519 adapter over the owners' private region leases.
 // No client geometry, native handle, permission path, or separate frame pump.
-import {reserveDisplay} from './kernel-browser-display-admission.mjs';
+import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
 import {randomUUID} from 'node:crypto';
 import {UserDomainRefusal} from './kernel-browser-refusal.mjs';
 import {assertNotCancelled} from './browser-controller-actions.mjs';
@@ -33,7 +33,7 @@ async function subscribeReservedRegion(host,command,scope,signal,{Capture=Native
  if(chromeUi(target)&&host.chromium?.policy!=='managed')refuse();
  if(command._agent_input||command.focused_agent||command.generation!==host.generation)refuse();
  if(!Array.isArray(command.codecs)||command.codecs.length>8||!command.codecs.includes('png')||!command.codecs.includes('avc1.420033')||
-  !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=8)refuse();
+  !Number.isInteger(command.bitrate)||command.bitrate<500_000||command.bitrate>64_000_000||![1,2].includes(command.device_scale_factor)||host.displays.size>=maxDisplays)refuse();
  // Protocol 560: the owner's window display asks no Tab or renderer anything.
  if(target.kind==='browser_window')return (await import('./kernel-browser-window-display.mjs')).subscribeBrowserWindow(host,command,scope,signal,Capture===NativeWindowRegionCapture?{}:{Capture});
  const tab=await host.displayTarget(command),policy=host.protection,generation=host.generation;

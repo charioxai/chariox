@@ -17,6 +17,8 @@ pub(crate) use worker_identity::{
     machine_scoped_slice_worker_ref, require_hosted_slice_worker_ref,
 };
 
+#[cfg(unix)]
+pub(crate) use local_docker::hand_over_managed_docker_broker;
 pub(crate) use local_docker::managed_docker_broker_configured;
 pub(crate) use local_docker::{
     acknowledge_protected_home_restore, cleanup_replaced_saved_state_generation,

@@ -375,6 +375,35 @@ mod tests {
         slugify_segment,
     };
 
+    // Git refuses a repository owned by another user ("dubious ownership"); only a root kernel can
+    // be given such a repository, so a kernel running as someone else has nothing to check here.
+    #[test]
+    fn a_repository_owned_by_another_user_lists_no_worktrees_instead_of_failing() {
+        use std::os::unix::fs::chown;
+        if unsafe { libc::geteuid() } != 0 {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "chariox-foreign-owned-repo-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let init = crate::process_spawn::command("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .unwrap();
+        assert!(init.success());
+        chown(root.join(".git"), Some(1000), Some(1000)).unwrap();
+        chown(&root, Some(1000), Some(1000)).unwrap();
+        let listed = super::list_workspace_worktrees(root.to_str().unwrap(), None);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(listed
+            .expect("an unusable repository is not an error")
+            .is_empty());
+    }
+
     #[test]
     fn parse_git_worktree_list_reads_porcelain_entries() {
         let entries = parse_git_worktree_list(

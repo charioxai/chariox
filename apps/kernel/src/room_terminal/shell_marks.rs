@@ -10,12 +10,18 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ShellMark {
     CommandStarted,
-    CommandFinished { exit_code: Option<u32> },
+    /// `jobs` are the process groups in the shell's job table: the only way
+    /// to tell which line started a background job, whatever the kernel
+    /// sampled in between.
+    CommandFinished {
+        exit_code: Option<u32>,
+        jobs: Vec<u32>,
+    },
 }
 
 const OSC_PREFIX: &[u8] = b"133;";
-/// Longer bodies are not ours: `D;255` is the longest mark.
-const MAX_BODY: usize = 32;
+/// Longer bodies are not ours: a `D` mark lists the shell's jobs.
+const MAX_BODY: usize = 4096;
 
 #[derive(Default)]
 enum Scan {
@@ -69,11 +75,16 @@ fn parse(body: &[u8]) -> Option<ShellMark> {
     let rest = body.strip_prefix(OSC_PREFIX)?;
     match rest {
         b"C" => Some(ShellMark::CommandStarted),
-        b"D" => Some(ShellMark::CommandFinished { exit_code: None }),
+        b"D" => Some(ShellMark::CommandFinished {
+            exit_code: None,
+            jobs: Vec::new(),
+        }),
         _ => {
-            let status = rest.strip_prefix(b"D;")?;
+            let fields = std::str::from_utf8(rest.strip_prefix(b"D;")?).ok()?;
+            let (status, jobs) = fields.split_once(';').unwrap_or((fields, ""));
             Some(ShellMark::CommandFinished {
-                exit_code: std::str::from_utf8(status).ok()?.parse().ok(),
+                exit_code: status.parse().ok(),
+                jobs: jobs.split(',').filter_map(|job| job.parse().ok()).collect(),
             })
         }
     }
@@ -94,9 +105,21 @@ if [[ -n "${CHARIOX_ORIG_ZDOTDIR+x}" ]]; then
   unset CHARIOX_ORIG_ZDOTDIR
 fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
-__chariox_precmd() { local status_code=$?; print -rn -- $'\e]133;D;'"$status_code"$'\a'; }
+__chariox_precmd() {
+  local status_code=$? word
+  local -a pgids
+  # One word per job, `state:mark:pid=state[:pid=state...]`: the first pid is
+  # the process group the job leads.
+  for word in ${(v)jobstates}; do
+    word=${word#*:*:}
+    pgids+=(${word%%=*})
+  done
+  print -rn -- $'\e]133;D;'"$status_code;${(j:,:)pgids}"$'\a'
+}
 __chariox_preexec() { print -rn -- $'\e]133;C\a'; }
 __chariox_install() {
+  # `$jobstates` comes from this module; not every build loads it on use.
+  zmodload zsh/parameter 2>/dev/null
   precmd_functions=(${precmd_functions:#__chariox_install})
   precmd_functions=(__chariox_precmd $precmd_functions)
   preexec_functions=(__chariox_preexec $preexec_functions)
@@ -198,8 +221,32 @@ mod tests {
             marks,
             vec![
                 ShellMark::CommandStarted,
-                ShellMark::CommandFinished { exit_code: Some(7) },
-                ShellMark::CommandFinished { exit_code: None },
+                ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    jobs: Vec::new()
+                },
+                ShellMark::CommandFinished {
+                    exit_code: None,
+                    jobs: Vec::new()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_finished_line_reports_the_jobs_the_shell_holds() {
+        let mut scanner = MarkScanner::default();
+        assert_eq!(
+            scanner.feed(b"\x1b]133;D;0;4242,4243\x07\x1b]133;D;1;\x07"),
+            vec![
+                ShellMark::CommandFinished {
+                    exit_code: Some(0),
+                    jobs: vec![4242, 4243]
+                },
+                ShellMark::CommandFinished {
+                    exit_code: Some(1),
+                    jobs: Vec::new()
+                },
             ]
         );
     }
@@ -208,12 +255,15 @@ mod tests {
     fn other_sequences_and_oversized_bodies_are_not_marks() {
         let mut scanner = MarkScanner::default();
         let mut input = b"\x1b]0;title\x07\x1b[31mred\x1b[0m\x1b]133;".to_vec();
-        input.extend(vec![b'x'; 64]);
+        input.extend(vec![b'x'; MAX_BODY + 1]);
         input.extend(b"\x07\x1b]1337;D;1\x07");
         assert!(scanner.feed(&input).is_empty());
         assert_eq!(
             scanner.feed(b"\x1b]133;D;0\x07"),
-            vec![ShellMark::CommandFinished { exit_code: Some(0) }]
+            vec![ShellMark::CommandFinished {
+                exit_code: Some(0),
+                jobs: Vec::new()
+            }]
         );
     }
 
@@ -277,7 +327,10 @@ mod tests {
             let mut marks = Vec::new();
             let mut output = Vec::new();
             while Instant::now() < deadline
-                && !marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) })
+                && !marks.contains(&ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    jobs: Vec::new()
+                })
             {
                 for chunk in pty.drain_output("hooks").unwrap() {
                     marks.extend(scanner.feed(&chunk.bytes));
@@ -304,7 +357,10 @@ mod tests {
                 "{hooks}: {marks:?}"
             );
             assert!(
-                marks.contains(&ShellMark::CommandFinished { exit_code: Some(7) }),
+                marks.contains(&ShellMark::CommandFinished {
+                    exit_code: Some(7),
+                    jobs: Vec::new()
+                }),
                 "{hooks}: {marks:?}"
             );
         }

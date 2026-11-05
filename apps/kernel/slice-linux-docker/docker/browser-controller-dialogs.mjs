@@ -6,6 +6,7 @@ export class BrowserDialogDefaults {
   constructor() {
     this.byTarget = new Map();
     this.dialogs = new Map();
+    this.permissions = new Map();
     this.answering = new Set();
   }
 
@@ -42,10 +43,10 @@ export class BrowserDialogDefaults {
     return entry?.documentId === documentId ? entry.text : undefined;
   }
 
-  pending() { return [...this.dialogs.values()].map(dialog => ({ ...dialog })); }
+  pending() { return [...this.dialogs.values(), ...this.permissions.values()].map(dialog => ({ ...dialog })); }
   current(targetId, dialogId, documentId) {
-    const dialog = this.dialogs.get(targetId);
-    return dialog?.dialog_id === dialogId && dialog.document_id === documentId;
+    const dialog = this.permissions.get(dialogId) ?? this.dialogs.get(targetId);
+    return dialog?.dialog_id === dialogId && dialog.target_id === targetId && dialog.document_id === documentId;
   }
   claim(targetId, dialogId, documentId) {
     if (!this.current(targetId, dialogId, documentId) || this.answering.has(dialogId)) return false;
@@ -54,5 +55,5 @@ export class BrowserDialogDefaults {
   }
   release(dialogId) { this.answering.delete(dialogId); }
   delete(targetId) { this.byTarget.delete(targetId); this.dialogs.delete(targetId); }
-  clear() { this.byTarget.clear(); this.dialogs.clear(); this.answering.clear(); }
+  clear() { this.byTarget.clear(); this.dialogs.clear(); this.permissions.clear(); this.answering.clear(); }
 }

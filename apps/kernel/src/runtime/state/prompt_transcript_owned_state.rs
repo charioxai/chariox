@@ -96,6 +96,55 @@ impl KernelRuntimeOwnedState {
         self.notify_metaagent_trace_activity(&dispatch.session_id, Some(&dispatch.agent_id));
     }
 
+    /// Ends the tool rows a run left open when it ended without its provider
+    /// closing them (see `crate::app::ended_open_provider_tool_rows`). A leased
+    /// worker's run has no in-memory activity here, so its rows come from history.
+    pub(super) fn end_open_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        ending: crate::app::ProviderToolEnding,
+    ) -> Result<(), DaemonError> {
+        let rows = crate::app::ended_open_provider_tool_rows(
+            self.operational_history_store
+                .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
+            ending,
+        );
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let metadata = self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
+        let outputs = rows
+            .into_iter()
+            .map(|(merge_key, bytes)| {
+                let entry = SessionHistoryEntry::provider_output(
+                    session_id,
+                    provider_run_id,
+                    Some(agent_id),
+                    crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key.clone(),
+                    String::from_utf8_lossy(&bytes).into_owned(),
+                )
+                .with_prompt_origin(metadata.prompt_origin)
+                .with_source_attachment_id(metadata.source_attachment_id.clone());
+                (
+                    TerminalOutputBatchAppend {
+                        provider_run_id: provider_run_id.to_string(),
+                        agent_id: Some(agent_id.to_string()),
+                        kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                        merge_key,
+                        sequence: None,
+                        bytes,
+                    },
+                    Some(entry),
+                )
+            })
+            .collect();
+        self.append_history_and_fan_out(session_id, None, outputs);
+        Ok(())
+    }
+
     pub(super) fn record_failed_provider_tools(
         &self,
         session_id: &str,
@@ -150,8 +199,7 @@ impl KernelRuntimeOwnedState {
         );
     }
 
-    /// A failed turn's typed notice: already redacted, so it keeps its own
-    /// words and its recovery whole.
+    /// A failed turn's calm explanation and recovery.
     pub(super) fn record_provider_failure_notice(
         &self,
         session_id: &str,
@@ -162,8 +210,8 @@ impl KernelRuntimeOwnedState {
         self.append_provider_failure_entry(session_id, provider_run_id, agent_id, failure.notice());
     }
 
-    /// A refused dispatch shows the owner the provider's own failure when it
-    /// reported one; a kernel-side error stays an internal diagnostic.
+    /// A refused dispatch shows the owner a typed explanation and recovery; a
+    /// kernel-side error stays an internal diagnostic.
     pub(super) fn record_dispatch_failure_output(
         &self,
         session_id: &str,
@@ -1093,6 +1141,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         prompt: &str,
         attachments: &[crate::session::PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
     ) -> Result<u64, DaemonError> {
         // Resolve canonical ownership before the transcript/projection locks.
         let public_owner = self
@@ -1143,6 +1192,12 @@ impl KernelRuntimeOwnedState {
             "source_attachment_id".to_string(),
             serde_json::Value::String(source_attachment_id.to_string()),
         );
+        if prompt_origin != crate::session::PromptOrigin::Chariox {
+            metadata.insert(
+                "prompt_origin".to_string(),
+                serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if !attachments.is_empty() {
             metadata.insert(
                 "attachments".to_string(),

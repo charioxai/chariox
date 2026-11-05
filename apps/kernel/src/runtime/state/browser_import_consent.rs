@@ -536,26 +536,27 @@ impl KernelRuntimeState {
             }
             _ => return Err(denied()),
         };
-        if !self
+        let session = self
             .session_snapshot(session_id)
             .await
-            .map_err(|_| denied())?
-            .has_member(user_id)
-        {
+            .map_err(|_| denied())?;
+        if !self.is_room_member(&session, user_id) {
             return Err(denied());
         }
         let attachment = self
             .owned
             .ensure_attachment_in_session(session_id, attachment_id)
             .map_err(|_| denied())?;
-        if attachment.owner_user_id() != user_id
-            || !matches!(
-                attachment.capability_level(),
-                ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
-            )
-            || (command.source == KernelCommandSource::RelayClient
-                && (command.caller.client_id.as_deref() != Some(attachment.client_id())
-                    || command.caller.caller_id != attachment.client_id()))
+        if !self.owned.acts_for_owner_in(
+            session.owner_user_id(),
+            user_id,
+            attachment.owner_user_id(),
+        ) || !matches!(
+            attachment.capability_level(),
+            ClientCapabilityLevel::FullTerminal | ClientCapabilityLevel::InteractiveStructured
+        ) || (command.source == KernelCommandSource::RelayClient
+            && (command.caller.client_id.as_deref() != Some(attachment.client_id())
+                || command.caller.caller_id != attachment.client_id()))
         {
             return Err(denied());
         }

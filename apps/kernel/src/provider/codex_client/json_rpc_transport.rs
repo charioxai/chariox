@@ -2,30 +2,21 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tokio_tungstenite::tungstenite::{
-    client::connect_with_config, protocol::WebSocketConfig, Message,
-};
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::error::DaemonError;
 
 use super::json_rpc::JsonRpcMessage;
 use super::notifications::{parse_notification, rpc_error_message};
-use super::socket_io::{read_socket_nonblocking, set_socket_timeouts};
+#[cfg(test)]
+use super::socket_io::CODEX_WEBSOCKET_MAX_MESSAGE_SIZE;
+use super::socket_io::{connect_codex_socket, read_socket_nonblocking, set_socket_timeouts};
 use super::{CodexClient, CodexNotification, CodexSocket};
-
-const CODEX_WEBSOCKET_MAX_MESSAGE_SIZE: usize = 64 << 20;
-
-fn codex_websocket_config() -> WebSocketConfig {
-    WebSocketConfig::default()
-        .max_message_size(Some(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE))
-        .max_frame_size(Some(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE))
-}
 
 impl CodexClient {
     pub fn connect_initialized(&self) -> Result<CodexSocket, DaemonError> {
-        let (mut socket, _) =
-            connect_with_config(self.endpoint.as_str(), Some(codex_websocket_config()), 3)
-                .map_err(|error| self.protocol_error("codex_connect", error.to_string()))?;
+        let mut socket = connect_codex_socket(self.endpoint.as_str())
+            .map_err(|error| self.protocol_error("codex_connect", error))?;
         set_socket_timeouts(
             &mut socket,
             Some(Duration::from_secs(10)),
@@ -114,9 +105,12 @@ impl CodexClient {
             }
             if message.id.as_ref() == Some(&json!(request_id)) {
                 if let Some(error) = rpc_error_message(&message) {
-                    // The app-server's own answer to a turn request is the
-                    // provider's refusal; every other method stays a protocol fault.
-                    let failure = if matches!(method, "turn/start" | "turn/steer") {
+                    // Thread preparation is part of prompt dispatch too. Preserve
+                    // provider refusals there before protocol framing hides the code.
+                    let failure = if matches!(
+                        method,
+                        "turn/start" | "turn/steer" | "thread/start" | "thread/resume"
+                    ) {
                         DaemonError::ProviderRefusal { message: error }
                     } else {
                         self.protocol_error(method, error)
@@ -356,6 +350,7 @@ mod tests {
         codex_read_should_retry, codex_request_timeout, CodexClient,
         CODEX_WEBSOCKET_MAX_MESSAGE_SIZE,
     };
+    use crate::provider::test_codex_connect as connect;
     use crate::provider::{
         AgentExecutionMode, AgentPermissionLevel, CodexNotification, ProviderWriteAccessMode,
     };
@@ -363,7 +358,7 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
     use std::time::{Duration, Instant};
-    use tokio_tungstenite::tungstenite::{accept, connect, Message};
+    use tokio_tungstenite::tungstenite::{accept, Message};
 
     #[test]
     fn codex_read_retries_transient_empty_socket_errors() {

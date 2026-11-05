@@ -120,7 +120,7 @@ impl KernelRuntimeState {
             .session_store
             .list_sessions()
             .into_iter()
-            .filter(|session| session.has_member(owner))
+            .filter(|session| self.is_room_member(session, owner))
             .max_by_key(|session| {
                 (
                     session.owner_user_id() == owner,

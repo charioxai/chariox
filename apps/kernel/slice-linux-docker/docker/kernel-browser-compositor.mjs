@@ -53,6 +53,8 @@ export class CompositorSource {
       const png=header.length>=24&&header.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]));
       const geometry=png?{width:header.readUInt32BE(16),height:header.readUInt32BE(20)}:jpegDimensions(Buffer.from(data,'base64'));
       if(!geometry||geometry.width!==this.width||geometry.height!==this.height){this.latest=null;return;}
+      // Each protected capture makes Chrome send one more frame of the unchanged page: only a changed frame wakes a capture.
+      if(this.latest&&data===this.lastFrame)return;
       this.pendingImage={data,receivedAt:performance.timeOrigin+this.now(),format:png?'png':'jpeg'};
       void this.processLatest();
     });
@@ -79,7 +81,7 @@ export class CompositorSource {
     this.hashing=true;
     try{
       while(this.pendingImage&&!this.closed&&!this.fenced){
-        let {data,receivedAt,format}=this.pendingImage;this.pendingImage=null;const revision=this.regionRevision;
+        let {data,receivedAt,format}=this.pendingImage;this.pendingImage=null;const revision=this.regionRevision,frame=data;
         // MP-11: screencast pixels have no protected-layout binding. Use them
         // only as a wake; capture/mask afresh before hashing or video encoding.
         let protectedRegions=[];
@@ -92,6 +94,7 @@ export class CompositorSource {
         const masks=JSON.stringify(protectedRegions);if(this.masks!==undefined&&masks!==this.masks){retireNativeStates();this.regionRevision++;}this.masks=masks;
         if(this.latest?.signature!==fingerprint.signature){this.motionStreak=this.now()-this.changedAt<90?this.motionStreak+1:1;this.serial++;this.changedAt=this.now();}
         this.latest={data_base64:data,[displayMaskRegions]:protectedRegions,signature:fingerprint.signature,width:this.width,height:this.height,motion:true,tab_id:this.tab.tab_id,document_id:this.tab.document_id,serial:this.serial};
+        this.lastFrame=frame;
         if(this.attested)for(const listener of this.listeners)listener(this.latest);
       }
     }catch{this.fenced=true;this.attested=false;this.latest=null;await this.close().catch(error=>{this.failure=error});}
@@ -106,7 +109,10 @@ export class CompositorSource {
   close(){
     if(this.closing)return this.closing;
     this.closed=true;this.attested=false;this.latest=null;this.pendingImage=null;this.off?.();this.off=null;this.listeners.clear();
-    this.closing=(async()=>{await this.connection.send('Page.stopScreencast',{},this.sessionId).catch(()=>{});try{await this.hasher.close()}finally{await this.release?.()}})();
+    this.closing=(async()=>{try{
+      const results=await Promise.allSettled([this.connection.send('Page.stopScreencast',{},this.sessionId).catch(()=>{}),this.hasher.close()]);
+      const failed=results.find(result=>result.status==='rejected');if(failed)throw failed.reason;
+    }finally{await this.release?.()}})();
     return this.closing;
   }
 }

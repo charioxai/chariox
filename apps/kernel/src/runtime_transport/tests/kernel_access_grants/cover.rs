@@ -38,13 +38,16 @@ async fn orphaned(pid: u32, holder: u32) {
 /// What the background process `label` got back for `request`.
 async fn call(kernel: &Kernel, label: &str, request: Option<Value>) -> Value {
     let _ = std::fs::remove_file(kernel.root.join(format!("bg-{label}-result")));
+    // Rename so the background process never reads a half-written request.
+    let partial = kernel.root.join(format!("bg-{label}-go.partial"));
     std::fs::write(
-        kernel.root.join(format!("bg-{label}-go")),
+        &partial,
         request
             .map(|request| request.to_string())
             .unwrap_or_default(),
     )
     .unwrap();
+    std::fs::rename(&partial, kernel.root.join(format!("bg-{label}-go"))).unwrap();
     timeout(Duration::from_secs(10), async {
         loop {
             if let Ok(text) =

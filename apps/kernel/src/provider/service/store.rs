@@ -373,6 +373,10 @@ impl ProviderProcessServiceStore {
         self.read().get_runs_by_runtime_mcp_auth_token(auth_token)
     }
 
+    pub(crate) fn any_output_poll_in_flight(&self) -> bool {
+        self.read().any_output_poll_in_flight()
+    }
+
     pub(crate) fn structured_prompt_io_in_flight(&self, provider_run_id: &str) -> bool {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
@@ -587,7 +591,10 @@ impl ProviderProcessServiceStore {
         mode: PromptAssemblyMode,
         private_assessment_evidence: Option<crate::prompt_assembly::AssessmentEvidence>,
         steering: bool,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<
+        tokio::sync::oneshot::Receiver<crate::provider::ProviderPromptSubmitReceipt>,
+        DaemonError,
+    > {
         let move_session = session_id.clone();
         let move_agent = agent_id.clone();
         self.with_agent_move_admission(&move_session, Some(&move_agent), None, || {

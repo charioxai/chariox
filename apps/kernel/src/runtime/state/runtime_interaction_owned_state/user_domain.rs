@@ -48,6 +48,7 @@ impl KernelRuntimeOwnedState {
             id.clone(),
             super::super::PendingInteraction {
                 goal_approval: None,
+                async_task_id: None,
                 session_id: String::new(),
                 session_store_identity: self.session_store.weak_identity(),
                 agent_lifetime: None,

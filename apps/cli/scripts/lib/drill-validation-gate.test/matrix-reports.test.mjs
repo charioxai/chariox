@@ -212,18 +212,18 @@ test("fails when matrix reports miss required deployment presets", async () => {
 
     const report = await runDrillValidationGate({
       matrixReports: [reportPath],
-      requiredDeploymentPresets: ["local", "hosted-cloud", "hetzner"],
+      requiredDeploymentPresets: ["local", "hosted-cloud", "remote-kernel"],
     })
 
     assert.equal(report.status, "failed")
     assert.equal(report.checks.matrices.status, "failed")
-    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hetzner", "hosted-cloud"])
+    assert.deepEqual(report.checks.matrices.missingDeploymentPresets, ["hosted-cloud", "remote-kernel"])
     assert.deepEqual(report.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
       owner: "validation-harness",
       classification: "matrix-coverage",
-      nextAction: "run matrix reports for missing deployment presets: hetzner, hosted-cloud",
+      nextAction: "run matrix reports for missing deployment presets: hosted-cloud, remote-kernel",
     }])
-    assert.match(formatDrillValidationGateSummary(report), /missing=hetzner,hosted-cloud/)
+    assert.match(formatDrillValidationGateSummary(report), /missing=hosted-cloud,remote-kernel/)
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
@@ -284,14 +284,14 @@ test("gates matrix reports by required scenario coverage", async () => {
 
     const fail = await runDrillValidationGate({
       matrixReports: [reportPath],
-      requiredScenarios: ["hetzner-collab", "local-single-user"],
+      requiredScenarios: ["local-single-user", "remote-kernel-collab"],
     })
     assert.equal(fail.status, "failed")
-    assert.deepEqual(fail.checks.matrices.missingScenarios, ["hetzner-collab"])
+    assert.deepEqual(fail.checks.matrices.missingScenarios, ["remote-kernel-collab"])
     assert.deepEqual(fail.nextActions.map(({ owner, classification, nextAction }) => ({ owner, classification, nextAction })), [{
       owner: "validation-harness",
       classification: "matrix-coverage",
-      nextAction: "run matrix reports for missing scenarios: hetzner-collab",
+      nextAction: "run matrix reports for missing scenarios: remote-kernel-collab",
     }])
   } finally {
     await rm(rootDir, { recursive: true, force: true })

@@ -1,3 +1,4 @@
+import type { TriggerDelivery } from "@chariox/kernel-client/kernel-types"
 import {
   BoxRenderable,
   MouseButton,
@@ -21,7 +22,9 @@ import {
   queuedPromptMetaLabel,
   queuedPromptTitleLabel,
 } from "@chariox/kernel-client/queued-prompt-controls"
+import { triggerPromptOriginLabel, type AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
+import type { QueuedJob } from "@chariox/kernel-client/queued-jobs"
 import { theme } from "./theme.js"
 
 type InteractionStripRenderOptions = {
@@ -37,8 +40,12 @@ type InteractionStripRenderOptions = {
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  /** Commands of the agent waiting for room, in line order. */
+  queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
+  agentTriggerStripItemsForAgent: (agentId: string | null | undefined) => readonly AgentTriggerStripItem[]
+  unconfirmedTriggerDeliveriesForAgent?: (agentId: string | null | undefined) => readonly TriggerDelivery[]
   providerLoginState?: (interaction: RuntimeInteraction) => ProviderLoginStripState | null
   /** Focuses a login's code field the first time it is shown. */
   focusCustomChoiceOnce?: (interactionId: string, index: number, requestedAtMs: number) => void
@@ -70,7 +77,10 @@ function renderInteractionStrip(
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
-  const visible = Boolean(interaction) || queuedPrompts.length > 0
+  const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
+  const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
+  const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
+  const visible = Boolean(interaction) || queuedPrompts.length > 0 || queuedJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -131,8 +141,71 @@ function renderInteractionStrip(
     box.add(messageLine)
     renderInteractionChoices(options, box, interaction, focused)
   }
+  renderQueuedJobStrip(options, box, queuedJobs)
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
+  renderAgentTriggerStrip(options, box, triggers)
+  for (const delivery of deliveries) {
+    box.add(new TextRenderable(options.renderer, {
+      content: [triggerPromptOriginLabel(delivery.origin) ?? delivery.origin, "Not confirmed", delivery.busy_policy, `/trigger resend ${delivery.prompt_id}`].join(" · "),
+      fg: theme.warning,
+      wrapMode: "word",
+    }))
+  }
   box.requestRender?.()
+}
+
+/** One row per command waiting for room, first in the stack: the kernel's
+ * state, so every client shows the same rows. The wait leads so a long
+ * command never clips the place in line. */
+function renderQueuedJobStrip(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  jobs: readonly QueuedJob[],
+): void {
+  for (const job of jobs) {
+    const row = new BoxRenderable(options.renderer, {
+      width: "100%",
+      flexDirection: "row",
+      gap: 1,
+      flexShrink: 0,
+    })
+    const kind = new TextRenderable(options.renderer, {
+      content: "Queued",
+      fg: theme.info,
+      attributes: TextAttributes.BOLD,
+      wrapMode: "none",
+    })
+    kind.flexShrink = 0
+    row.add(kind)
+    const copy = new TextRenderable(options.renderer, {
+      content: `${job.wait} · ${job.command}`,
+      fg: theme.text,
+      wrapMode: "word",
+    })
+    copy.flexBasis = 0
+    copy.flexGrow = 1
+    copy.flexShrink = 1
+    row.add(copy)
+    container.add(row)
+  }
+}
+
+function renderAgentTriggerStrip(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  triggers: readonly AgentTriggerStripItem[],
+): void {
+  for (const trigger of triggers) {
+    const state = trigger.enabled
+      ? trigger.localUrl ?? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+      : "off"
+    container.add(new TextRenderable(options.renderer, {
+      content: [`⏱ ${trigger.label}`, trigger.busyPolicy, state, `${trigger.fired} fired`, trigger.id]
+        .join(" · ") + (trigger.lastError ? ` · ${trigger.lastError}` : ""),
+      fg: trigger.lastError ? theme.warning : theme.textMuted,
+      wrapMode: "word",
+    }))
+  }
 }
 
 function renderQueuedPromptStrip(

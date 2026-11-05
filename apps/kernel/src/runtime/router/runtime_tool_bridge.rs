@@ -12,6 +12,12 @@ type AuthenticatedRuntimeToolFuture<'a> = std::pin::Pin<
 >;
 
 impl CommandRouter {
+    pub(crate) fn web_bot_auth_directory(
+        &self,
+        authority: &str,
+    ) -> Result<(Vec<u8>, std::collections::BTreeMap<String, String>), DaemonError> {
+        self.runtime_state.web_bot_auth_directory(authority)
+    }
     pub(crate) fn with_forwarded_response_authority<R>(
         &self,
         operation: impl FnOnce() -> Result<R, DaemonError>,
@@ -187,8 +193,8 @@ impl CommandRouter {
             )
             .with_connection_class(crate::local::KernelConnectionClass::KernelAgent);
             command.provider_run_id = turn.provider_run_id.clone();
-            command.caller.caller_id = turn.entry_id;
-            command.caller.user_id = Some(turn.owner_user_id);
+            command.caller.caller_id = turn.entry_id.clone();
+            command.caller.user_id = Some(turn.owner_user_id.clone());
             // MP-08/MP-10/MP-11: preserve creator attribution for agent and
             // workflow mutations even under a freshly authorized host scope.
             if command.command_type.starts_with("agent.")
@@ -196,7 +202,31 @@ impl CommandRouter {
             {
                 command.caller.metaagent_id = Some(turn.agent_id.clone());
             }
+            let ssh_host = match &request {
+                crate::local::LocalDaemonRequest::AddSshMachine(r) => Some(r.host.clone()),
+                _ => None,
+            };
+            let ssh_removal = matches!(
+                &request,
+                crate::local::LocalDaemonRequest::RemoveSshMachine(_)
+            );
             let response = Box::pin(self.dispatch(command, request)).await?;
+            if let (Some(host), crate::local::LocalDaemonResponse::SshMachine { machine }) =
+                (ssh_host, &response)
+            {
+                if machine.status == "ready" {
+                    self.runtime_state
+                        .record_ssh_resource(&turn, &host, &machine.install_id)?;
+                }
+            }
+            if ssh_removal {
+                if let crate::local::LocalDaemonResponse::SshMachine { machine } = &response {
+                    if machine.status == "removed" {
+                        self.runtime_state
+                            .record_ssh_removal(&turn, &machine.install_id)?;
+                    }
+                }
+            }
             Ok(crate::transport::runtime_tools::RuntimeToolResult {
                 ok: true,
                 payload: serde_json::to_value(response).map_err(|_| {

@@ -415,6 +415,7 @@ impl CommandRouter {
             | LocalDaemonRequest::SetUserConfigValue(_)
             | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
             | LocalDaemonRequest::UnsetUserConfigValue(_)
+            | LocalDaemonRequest::OwnerVault(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
@@ -459,6 +460,16 @@ impl CommandRouter {
                         request,
                     )
                     .await
+                })
+            }
+            LocalDaemonRequest::ReadAgentTriggerTranscript(request) => {
+                boxed_handler(|| async move {
+                    // Gateway startup waits for this read before creation can settle.
+                    // Keep it outside the session command lane, like ordinary history reads.
+                    let caller = command_caller_user_id(&command);
+                    self.runtime_state
+                        .read_agent_trigger_transcript(request, &caller, self.history_store.clone())
+                        .await
                 })
             }
             request @ (LocalDaemonRequest::GetWaitingRoomInventory(_)
@@ -571,6 +582,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ForgetRemoteMachine(_)
             | LocalDaemonRequest::RenameRemoteMachine(_)) => boxed_handler(|| async move {
                 execute_remote_machine_registry_request(
+                    &self.runtime_state,
                     &self.app,
                     &self.config_projection,
                     &self.provider_catalog_projection,
@@ -669,6 +681,15 @@ impl CommandRouter {
                     .stop_session_processes(&request.session_id, &caller, request.target)
                     .await?;
                 Ok(LocalDaemonResponse::SessionProcessesStopped { result })
+            }),
+            LocalDaemonRequest::StartSessionProcessNow(request) => boxed_handler(|| async move {
+                let caller = command_caller_user_id(&command);
+                self.runtime_state
+                    .start_session_process_now(&request.session_id, &caller, &request.process_id)
+                    .await?;
+                Ok(LocalDaemonResponse::SessionProcessStartedNow {
+                    process_id: request.process_id,
+                })
             }),
             request @ (LocalDaemonRequest::ListProviderProcesses(_)
             | LocalDaemonRequest::TeardownProviderProcesses(_)) => boxed_handler(|| async move {

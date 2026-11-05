@@ -220,6 +220,8 @@ fn project_error(value: &Value) -> KernelTransportError {
             | "kernel_access_cover_kernel_process"
             | "kernel_access_cover_outside"
             | "kernel_access_cover_limit"
+            | "interaction_closed"
+            | "leased_backing_session_refused"
             | "invalid_request"
             | "invalid_frame"
             | "kernel_request_overloaded"

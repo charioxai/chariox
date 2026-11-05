@@ -6,6 +6,39 @@ waiting on it with a finite deadline (`chariox.events.yield`), and the kernel
 starts a new turn when the source occurs. Nothing in this path is silent: every
 state is stored, shown to every client, and has a visible failure.
 
+## Asking without stopping work
+
+MP-08 / MP-09 / MP-10 / MP-11: use `chariox.request_popup` with `wait:false`
+for a question whose answer can arrive later. Keep working after its immediate
+`interaction_id` and `registration_id` response. The same question card appears
+on every attached terminal; authorized agents and granted external followers
+answer through the existing interaction response path.
+
+```json
+{"wait":false,"title":"Choose the next check","message":"Which check should run next?","choices":[{"id":"focused","label":"Focused checks","reply":"Run the focused checks."}],"timeout_sec":300}
+```
+
+Include `registration_id` when yielding on several sources. If questions are
+your only remaining obligations, finishing this turn retains their wait. The
+answer wakes the idle agent through its event inbox. Read the exact choice,
+reply and answerer in `payload.public_answer`, handle it, then acknowledge the
+event. Deadline defaults keep `status:"timed_out"`; without a default there is
+no reply. Questions and deadlines survive kernel restart. Stop/cancel/delete
+withdraws pending questions, without choosing a default. Treat `source_lost`,
+including the existing `public_answer.cancelled:true` receipt, as withdrawal
+rather than an answer. An ended asking task does not start another provider turn.
+
+Use the default `wait:true` only when work cannot continue without the answer.
+That mode keeps the existing blocking result. `events.blocked` is for an owner
+action that actually prevents further work.
+
+| Tool | When to use it | Result |
+| --- | --- | --- |
+| `request_popup` with `wait:false` | Keep working while awaiting input | Interaction and wake registration IDs; attributed answer in inbox |
+| `request_popup` with `wait:true` or omitted | Work needs the answer before continuing | Blocking answer or timeout |
+| `events.yield` | Await admitted sources after useful work | End the provider turn; kernel wakes it for a source or deadline |
+| `events.blocked` | Work requires an owner action | Existing owner decision and supervised task |
+
 ## Parts
 
 | Part | Job | Where |
@@ -84,6 +117,17 @@ trait WakeDriver: Send + Sync {
   Cancel retires its wakes.
 - A deadline that lapses with healthy sources is one `deadline_reached` wake; a
   new wait needs a fresh deadline. A lost source is one `source_lost` wake.
+- A helper's work that can no longer complete ends with a definitive outcome and
+  wakes whoever waits on it (A10-S04). The helper's task ends `cancelled` with
+  its obligations `failed`, and the waiter's `source_lost` wake carries
+  `public_answer`: the typed turn outcome (`outcome.kind`, `retryable`, `reason`,
+  the same one the turn's event, history and state carry), `recovery` and, for a
+  leased helper, its `host` (the slice or worker kernel). Three causes are
+  covered: the provider process is killed (`provider_crashed` with the exit or
+  signal), the relay reports the slice or worker kernel offline for 20 s
+  (`provider_crashed`, the turn is never replayed), and the turn's workspace
+  (a git worktree the sweep saw earlier) is removed. A task that owes ledger work
+  stays `blocked` for the owner instead of cancelled.
 
 ## What clients see
 

@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
 import { CommandFailure, exitCodeFor } from "./agent-command-table.js"
-import { failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withKernel } from "./kernels-command.js"
+import { eventsMcpRoutes, failureOf, lostConnectionFailure, parseRequestBody, runKernelsCommand, sendRequest, watchKernel, withKernel } from "./kernels-command.js"
 import { Readable, Writable } from "node:stream"
 import { runExec } from "./exec-command.js"
 import type { WebSocket } from "ws"
@@ -76,6 +76,19 @@ test("a kernel request preflights the gateway capability on a client without ker
     assert.deepEqual(kernel.frames.map(frame => frame.kernel), [undefined, "b3"])
     await sendRequest({ Ping: {} }, { socket: kernel.path, timeoutSeconds: 5 })
     assert.deepEqual(requestNames(kernel.frames), ["RelayStatus", "Ping", "Ping"])
+  } finally { await kernel.close() }
+})
+
+test("events mcp answers a decision of this computer's kernel locally and any other kernel through the gateway", async () => {
+  const kernel = await startFakeKernel((socket, frame) => replyWith(socket, frame, "RelayStatus" in frame.request ? relayStatus(["kernel_gateway_v1"]) : { response: { Pong: {} } }))
+  try {
+    await withKernel({ socket: kernel.path, timeoutSeconds: 5 }, async send => {
+      const routes = eventsMcpRoutes(send, kernel.path, 5)
+      assert.equal(await routes.isLocal("d"), true)
+      assert.equal(await routes.isLocal("remote-id"), false)
+      await routes.sendTo("remote-id", { Ping: {} })
+    })
+    assert.deepEqual(kernel.frames.filter(frame => "Ping" in frame.request).map(frame => frame.kernel), ["remote-id"])
   } finally { await kernel.close() }
 })
 
@@ -260,4 +273,30 @@ for (const ended of [false, true]) test(`exec real socket loss preserves resume 
     assert.ok(dropped)
     assert.ok(requestNames(kernel.frames).includes("ListGatewayKernels"))
   } finally { await kernel.close() }
+})
+
+// `--help` is a success path: the usage on stdout, exit 0, for every command, without needing a kernel.
+test("--help answers with usage and exit 0 for every agent command; bare terminal shows both families", async () => {
+  const printed: string[] = []
+  const log = console.log
+  const previous = process.exitCode
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    for (const [argv, expected] of [
+      [["events", "--help"], /Usage: chariox events subscribe\|/],
+      [["events", "wait", "--help"], /Usage: chariox events wait/],
+      [["files", "--help"], /Usage: chariox files stat\|/],
+      [["request", "--help"], /Usage: chariox request/],
+      [["kernels", "--help"], /Usage: chariox kernels/],
+      [["terminal", "open", "--help"], /Usage: chariox terminal open/],
+      [["terminal", "--help"], /chariox terminal --session[^]*chariox terminal open\|/],
+      [["terminal"], /chariox terminal --session[^]*chariox terminal open\|/],
+    ] as const) {
+      printed.length = 0
+      process.exitCode = undefined
+      assert.equal(await runKernelsCommand([...argv]), true, argv.join(" "))
+      assert.match(printed.join("\n"), expected, argv.join(" "))
+      assert.ok(!process.exitCode, `${argv.join(" ")} exits 0`)
+    }
+  } finally { console.log = log; process.exitCode = previous }
 })

@@ -49,6 +49,15 @@ impl SessionRuntimeCommandExecutor {
         executor
     }
 
+    pub(super) fn with_interaction_answerer(
+        &self,
+        caller: &crate::runtime::command::KernelCaller,
+    ) -> Self {
+        let mut executor = self.clone();
+        executor.store = self.store.with_interaction_answerer(caller);
+        executor
+    }
+
     pub(super) fn with_room_request_origin(
         &self,
         actor: Option<&str>,
@@ -330,12 +339,31 @@ impl SessionRuntimeCommandExecutor {
                     .cancel_room_environment_action(request, caller_user_id)
                     .await
             }),
-            LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
-                Box::pin(async move { self.store.create_agent_prompt_schedule(request).await })
-            }
-            LocalDaemonRequest::CancelAgentPromptSchedule(request) => {
-                Box::pin(async move { self.store.cancel_agent_prompt_schedule(request).await })
-            }
+            LocalDaemonRequest::CreateAgentTrigger(request) => Box::pin(async move {
+                self.store
+                    .create_agent_trigger(request, &caller_user_id)
+                    .await
+            }),
+            LocalDaemonRequest::UpdateAgentTrigger(request) => Box::pin(async move {
+                self.store
+                    .update_agent_trigger(request, &caller_user_id)
+                    .await
+            }),
+            LocalDaemonRequest::InvokeAgentTrigger(request) => Box::pin(async move {
+                self.store
+                    .invoke_agent_trigger(request, &caller_user_id)
+                    .await
+            }),
+            LocalDaemonRequest::DeleteAgentTrigger(request) => Box::pin(async move {
+                self.store
+                    .delete_agent_trigger(request, &caller_user_id)
+                    .await
+            }),
+            LocalDaemonRequest::ResendTriggerDelivery(request) => Box::pin(async move {
+                self.store
+                    .resend_trigger_delivery(request, &caller_user_id)
+                    .await
+            }),
             LocalDaemonRequest::UpdateAgentConfig(request) => Box::pin(async move {
                 self.store
                     .update_agent_config(request, caller_user_id)

@@ -10,9 +10,9 @@ import {
   selectDrillMatrixScenarios,
 } from "./lib/drill-matrix-runner.mjs"
 import {
-  appendHetznerPassthrough,
+  appendRemoteKernelPassthrough,
   drillDeploymentPresetMetadata,
-  parseHetznerPassthroughArg,
+  parseRemoteKernelPassthroughArg,
 } from "./lib/drill-environment-presets.mjs"
 import {
   applyProviderAccountAlias,
@@ -431,14 +431,14 @@ const MATRIX = [
     ],
   }),
   scenario({
-    id: "hetzner-collaborator-reconnect-authority",
-    description: "Hetzner collaborator remote agent survives relay loss and repairs after worker loss while home authority remains enforced",
+    id: "remote-kernel-collaborator-reconnect-authority",
+    description: "remote kernel collaborator remote agent survives relay loss and repairs after worker loss while home authority remains enforced",
     script: remoteHomeExtensionDrill,
-    args: ["--hetzner-worker", "--collab", "--restart-relay", "--restart-worker"],
-    requires: ["hetzner"],
+    args: ["--remote-kernel-worker", "--collab", "--restart-relay", "--restart-worker"],
+    requires: ["remote-kernel"],
     classification: "kernel-authority",
     runtimeSignals: ["home-extension-manifest-sync", "lease-health", "session-authority"],
-    deployment: "hetzner",
+    deployment: "remote-kernel",
     provider: "dev-stub",
     exitCriteria: [
       "the active collaborator runtime resumes through a restarted relay without losing its home extension grants",
@@ -506,12 +506,12 @@ function printHelp() {
   console.log([
     "Usage: node apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.mjs [options]",
     "",
-    "Runs runtime resilience chaos coverage by composing existing reconnect, restart, relay, remote, TUI/web, provider-resume, display-fault, slice, Hetzner, and hosted Cloud drills.",
-    "Local and same-host scenarios are selected by default. Slice, Hetzner, and hosted Cloud scenarios are opt-in.",
+    "Runs runtime resilience chaos coverage by composing existing reconnect, restart, relay, remote, TUI/web, provider-resume, display-fault, slice, remote kernel, and hosted Cloud drills.",
+    "Local and same-host scenarios are selected by default. Slice, remote kernel, and hosted Cloud scenarios are opt-in.",
     "",
     "Options:",
     "  --include-slices         Include local Docker slice restart provider scenarios",
-    "  --include-hetzner        Include Hetzner worker/collaborator scenarios",
+    "  --include-remote-kernel        Include remote kernel worker/collaborator scenarios",
     "  --include-hosted-cloud   Include hosted Cloud relay scenarios",
     "  --only IDS               Comma-separated scenario ids",
     "  --dry-run                Print selected commands without running drills",
@@ -522,9 +522,9 @@ function printHelp() {
     "  --chaos-replay PATH       Deterministic replay artifact path",
     "  --provider-model P=M      Override model for provider-resume scenarios",
     "  --provider-account P=A    Label provider account/profile metadata without exposing credentials",
-    "  --hetzner-host HOST       Forwarded to Hetzner drill scenarios",
-    "  --hetzner-key PATH        Forwarded to Hetzner drill scenarios",
-    "  --hetzner-repo PATH       Forwarded to Hetzner drill scenarios",
+    "  --remote-kernel-host HOST       Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-key PATH        Forwarded to remote kernel drill scenarios",
+    "  --remote-kernel-repo PATH       Forwarded to remote kernel drill scenarios",
     "",
     "Environment defaults:",
     `  CHARIOX_RUNTIME_RESILIENCE_CODEX_MODEL=${DEFAULT_CODEX_MODEL}`,
@@ -545,7 +545,7 @@ function readValue(argv, index, flag) {
 function parseArgs(argv) {
   const options = {
     includeSlices: false,
-    includeHetzner: false,
+    includeRemoteKernel: false,
     includeHostedCloud: false,
     only: null,
     dryRun: false,
@@ -563,7 +563,7 @@ function parseArgs(argv) {
     const arg = argv[index]
     if (arg === "--") continue
     else if (arg === "--include-slices") options.includeSlices = true
-    else if (arg === "--include-hetzner") options.includeHetzner = true
+    else if (arg === "--include-remote-kernel") options.includeRemoteKernel = true
     else if (arg === "--include-hosted-cloud") options.includeHostedCloud = true
     else if (arg === "--dry-run") options.dryRun = true
     else if (arg === "--continue-on-failure") options.continueOnFailure = true
@@ -583,10 +583,10 @@ function parseArgs(argv) {
     else if (arg === "--only") options.only = parseDrillScenarioIds(readValue(argv, index++, arg))
     else if (arg.startsWith("--only=")) options.only = parseDrillScenarioIds(arg.slice("--only=".length))
     else {
-      const hetznerArg = parseHetznerPassthroughArg(argv, index)
-      if (hetznerArg) {
-        options.passthrough.push(...hetznerArg.args)
-        index = hetznerArg.nextIndex
+      const remoteKernelArg = parseRemoteKernelPassthroughArg(argv, index)
+      if (remoteKernelArg) {
+        options.passthrough.push(...remoteKernelArg.args)
+        index = remoteKernelArg.nextIndex
         continue
       }
       throw new Error(`unknown argument: ${arg}`)
@@ -598,7 +598,7 @@ function parseArgs(argv) {
 function selectScenarios(options) {
   const enabledRequirements = new Set()
   if (options.includeSlices) enabledRequirements.add("slice")
-  if (options.includeHetzner) enabledRequirements.add("hetzner")
+  if (options.includeRemoteKernel) enabledRequirements.add("remote-kernel")
   if (options.includeHostedCloud) enabledRequirements.add("hosted-cloud")
   return selectDrillMatrixScenarios({
     scenarios: MATRIX,
@@ -606,7 +606,7 @@ function selectScenarios(options) {
     enabledRequirements,
     requirementLabels: {
       slice: "--include-slices",
-      hetzner: "--include-hetzner",
+      "remote-kernel": "--include-remote-kernel",
       "hosted-cloud": "--include-hosted-cloud",
     },
   })
@@ -633,7 +633,7 @@ function commandForScenario(scenarioItem, options) {
   }
   return {
     command: process.execPath,
-    args: appendHetznerPassthrough(args, scenarioItem, options.passthrough),
+    args: appendRemoteKernelPassthrough(args, scenarioItem, options.passthrough),
     env: scenarioItem.env,
   }
 }
@@ -648,7 +648,7 @@ function metadataFor(selected, options) {
   ])].sort()
   return {
     includeSlices: options.includeSlices,
-    includeHetzner: options.includeHetzner,
+    includeRemoteKernel: options.includeRemoteKernel,
     includeHostedCloud: options.includeHostedCloud,
     generatedMatrixNames: "runtime-resilience-chaos-matrix",
     generatedMatrixRepos: "oss",
@@ -665,9 +665,9 @@ function metadataFor(selected, options) {
       "local",
       "same-host-remote",
       "self-hosted-relay",
-      ...(options.includeHetzner ? ["hetzner"] : []),
+      ...(options.includeRemoteKernel ? ["remote-kernel"] : []),
       ...(options.includeHostedCloud ? ["hosted-cloud"] : []),
-    ], { hetznerPassthrough: options.passthrough }),
+    ], { remoteKernelPassthrough: options.passthrough }),
     ...providerProfileMetadata({
       providers,
       defaultModel: providers.length > 0 ? "per-provider" : "dev-stub",

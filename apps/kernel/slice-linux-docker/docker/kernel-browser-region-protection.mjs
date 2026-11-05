@@ -38,12 +38,12 @@ export async function captureProtectionFence(connection,sessionId,targetId,polic
 // Mirror tiles fence their policy's fill targets. Without a policy there is
 // no fill target and no generic field, frame or shadow mask to measure.
 export async function captureRegionMasks(connection,sessionId,options={}) {
-  if(!options.policy)return {beforeAt:-Infinity,async afterCapture(){return [];}};
+  if(!options.policy||options.policy.display_masked===false)return {beforeAt:-Infinity,async afterCapture(){return [];}};
   return captureProtectionFence(connection,sessionId,options.targetId,options.policy,options);
 }
 
 // MP-11: a kernel-known protected target: a policy target or a recorded Vault fill (any tab, any frame).
-export const hasProtectedTarget=(policy,browser)=>Boolean(policy?.targets?.length||browser?.fillTargets?.size);
+export const hasProtectedTarget=(policy,browser)=>Boolean(policy?.display_masked!==false&&(policy?.targets?.length||browser?.fillTargets?.size));
 
 export class NativeRegionProtection {
   constructor(connection,sessionId,options={}) {Object.assign(this,{connection,sessionId,options});this.revision=0;}
@@ -52,7 +52,7 @@ export class NativeRegionProtection {
   get beforeAt() {return this.fencedAt??-Infinity;}
   async measure() {
     const {policy={targets:[],values:[]},browser,tab,scale=1}=this.options;
-    if(!policy.targets.length&&!browser?.fillTargets?.size)return [];
+    if(!hasProtectedTarget(policy,browser))return [];
     return locateBrowserRegions(policy.targets,browser,policy.values,{contentTarget:tab.target_id,contentScale:scale});
   }
   async refresh() {
@@ -75,7 +75,8 @@ export class NativeRegionProtection {
 export async function captureProtectedDisplay(host,tab,clip=null,optimizeForSpeed=true){
   const scale=host.scales.get(tab.tab_id)??host.viewport().device_scale_factor;let frame;
   {
-    const {protected_regions,...captured}=await host.screenshot(tab,null,true,'png',optimizeForSpeed);
+    const masked=host.protection.display_masked!==false;
+    const {protected_regions=[],...captured}=await host.screenshot(tab,null,masked,'png',optimizeForSpeed,masked);
     frame={...captured,[displayMaskRegions]:protected_regions,data_base64:protected_regions.length?maskPng(captured.data_base64,protected_regions.map(r=>[r.x,r.y,r.width,r.height]),scale):captured.data_base64};
   }
   const cropped=cropProtectedPng(frame.data_base64,clip,scale);

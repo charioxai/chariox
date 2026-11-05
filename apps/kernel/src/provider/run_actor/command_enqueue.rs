@@ -14,7 +14,8 @@ impl ProviderRunActorMailbox {
         prompt_id: String,
         run: RuntimeProviderRun,
         envelope: PromptEnvelope,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<tokio::sync::oneshot::Receiver<ProviderPromptSubmitReceipt>, DaemonError> {
+        let (acceptance, receipt) = tokio::sync::oneshot::channel();
         self.mark_structured_prompt_io_in_flight(provider_run_id.clone());
         let sender = self.worker_for_run(&provider_run_id);
         match sender.try_send(ProviderRunActorCommand::Submit {
@@ -24,10 +25,11 @@ impl ProviderRunActorMailbox {
             prompt_id,
             run,
             envelope,
+            acceptance,
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
-                Ok(())
+                Ok(receipt)
             }
             Err(error) => {
                 self.operation_lanes.record_enqueue_rejection();
@@ -561,6 +563,39 @@ mod tests {
             ["run-1".to_string()].into_iter().collect()
         );
         assert!(signal.take_ready_provider_run_ids().is_empty());
+        assert_eq!(mailbox.drain_finished_output_polls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_poll_counts_as_in_flight_until_its_result_can_be_drained() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let finished = Arc::clone(&mailbox.finished_output_polls);
+        // The worker runs the poll but cannot store its result yet.
+        let (holding, held) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = std::thread::spawn(move || {
+            let _held = finished.lock().expect("finished poll list not poisoned");
+            holding.send(()).expect("test is waiting");
+            let _ = released.recv();
+        });
+        held.recv().expect("the list is held");
+        assert!(mailbox
+            .spawn_output_poll("run-1".to_string(), runtime_run("run-1"))
+            .expect("poll should enqueue"));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            mailbox.any_output_poll_in_flight(),
+            "a poll whose result nobody could apply yet no longer counts as in flight"
+        );
+        release.send(()).expect("holder is waiting");
+        holder.join().expect("holder ends");
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while mailbox.any_output_poll_in_flight() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the poll should finish");
         assert_eq!(mailbox.drain_finished_output_polls().len(), 1);
     }
 

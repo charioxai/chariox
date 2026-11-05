@@ -106,7 +106,7 @@ test('classifies remote worker protocol version skew', () => {
 
   assert.equal(classifyDrillChildFailure(text), 'remote-worker-version')
   assert.match(
-    formatDrillChildFailure('hetzner remote agent drill', 1, null, '', text),
+    formatDrillChildFailure('remote-kernel remote agent drill', 1, null, '', text),
     /Remote worker kernel version\/protocol skew blocked validation/,
   )
 })
@@ -122,7 +122,7 @@ test('classifies remote host disk capacity failures', () => {
 
   assert.equal(classifyDrillChildFailure(text), 'remote-host-capacity')
   assert.match(
-    formatDrillChildFailure('hetzner remote agent drill', 1, null, '', text),
+    formatDrillChildFailure('remote-kernel remote agent drill', 1, null, '', text),
     /Remote host disk or filesystem capacity blocked validation/,
   )
 })

@@ -4,7 +4,7 @@
 import { realpathSync } from "node:fs"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-provider-rebuild-capture.mjs"
+import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 export const PATH1_FRESH_RELAY_CAPTURE_SCHEMA = "chariox.path1-fresh-relay-capture/v1"
 export const PATH1_FRESH_RELAY_MINIMUM_PROTOCOL_VERSION = 346

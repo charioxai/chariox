@@ -299,15 +299,12 @@ impl KernelRuntimeState {
                         return Ok(true);
                     };
                     if let Err(error) = self
-                        .resume_delivered_remote_prompt_cancellation_after_restart(
-                            &dispatch,
-                            prompt.durable_delivery_provider_run_id(),
-                        )
+                        .resume_delivered_remote_prompt_cancellation_after_restart(&dispatch)
                         .await
                     {
                         crate::logging::warn_with_fields(
                             "daemon.remote_prompt_dispatch",
-                            "restart kept delivered remote cancellation held because its worker receipt was not reconciled",
+                            "restart could not reconcile a delivered remote cancellation from its worker receipt; retrying it",
                             serde_json::json!({
                                 "session_id": dispatch.session_id,
                                 "agent_id": dispatch.agent_id,
@@ -317,6 +314,7 @@ impl KernelRuntimeState {
                                 "error": error.to_string(),
                             }),
                         );
+                        self.spawn_delivered_remote_cancellation_resume(dispatch);
                     }
                     return Ok(true);
                 }
@@ -541,6 +539,10 @@ impl KernelRuntimeState {
                     agent_id,
                     stale_binding,
                     stale_provider_run_id,
+                    &format!(
+                        "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease)",
+                        stale_binding.worker_kernel_id
+                    ),
                     trigger_error,
                 )
                 .await;
@@ -908,7 +910,7 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    fn end_lost_leased_provider_run(
+    pub(super) fn end_lost_leased_provider_run(
         &self,
         session_id: &str,
         projected_run_id: &str,
@@ -923,16 +925,42 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// The worker accepted this turn and then lost it (it restarted or dropped
-    /// the lease), so the turn may have partly run. Replaying it would repeat a
-    /// non-idempotent instruction: the turn ends failed and its task waits for
-    /// the owner to resume or cancel it.
-    async fn settle_lost_remote_prompt_run(
+    /// The worker accepted this turn and then lost it (`lost` says how), so the
+    /// turn may have partly run. Replaying it would repeat a non-idempotent
+    /// instruction: the turn ends failed with a typed provider-crash outcome, its
+    /// task resolves, and whoever waits on it wakes with that failure.
+    pub(super) async fn settle_lost_remote_prompt_run(
         &self,
         session_id: &str,
         agent_id: &str,
         stale_binding: &crate::agent::RemoteAgentBinding,
         stale_provider_run_id: &str,
+        lost: &str,
+        trigger_error: &str,
+    ) -> Result<(), DaemonError> {
+        let diagnostic =
+            format!("{lost}. The turn may have partly run; Chariox did not run it again");
+        self.end_accepted_remote_prompt_run(
+            session_id,
+            agent_id,
+            stale_binding,
+            stale_provider_run_id,
+            &diagnostic,
+            trigger_error,
+        )
+        .await
+    }
+
+    /// Ends the accepted turn of a leased agent without replaying it: the
+    /// turn fails with `diagnostic` as a typed host-lost outcome and its task
+    /// resolves with it.
+    pub(in crate::runtime::state) async fn end_accepted_remote_prompt_run(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        stale_binding: &crate::agent::RemoteAgentBinding,
+        stale_provider_run_id: &str,
+        diagnostic: &str,
         trigger_error: &str,
     ) -> Result<(), DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
@@ -950,13 +978,9 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        let diagnostic = format!(
-            "Worker kernel `{}` lost this turn after accepting it (it restarted or dropped the lease). The turn may have partly run; Chariox did not run it again",
-            binding.worker_kernel_id,
-        );
         crate::logging::warn_with_fields(
             "daemon.remote_prompt_dispatch",
-            "worker lost an accepted remote prompt; ending it for the owner without replay",
+            "ending an accepted remote prompt for the owner without replay",
             serde_json::json!({
                 "session_id": session_id,
                 "agent_id": agent_id,
@@ -972,12 +996,11 @@ impl KernelRuntimeState {
             &binding.leased_agent_id,
             stale_provider_run_id,
         );
-        self.owned.block_failed_prompt_task(
+        self.owned.end_open_provider_tools(
             session_id,
+            &projected_run_id,
             agent_id,
-            prompt.id(),
-            Some(&projected_run_id),
-            &diagnostic,
+            crate::app::ProviderToolEnding::Failed,
         )?;
         self.end_lost_leased_provider_run(session_id, &projected_run_id)?;
         self.settle_remote_prompt_receipt(
@@ -987,8 +1010,8 @@ impl KernelRuntimeState {
                 prompt_id: prompt.id(),
                 binding,
                 provider_run_id: stale_provider_run_id,
-                termination: Some(crate::provider::ProviderRunTermination::runtime_failure(
-                    &diagnostic,
+                termination: Some(crate::provider::ProviderRunTermination::host_lost(
+                    diagnostic,
                     crate::session::unix_epoch_ms(),
                 )),
                 diagnostic: None,

@@ -1,3 +1,4 @@
+mod dev_apps;
 use super::*;
 #[path = "tests/account_sync_timeout.rs"]
 mod account_sync_timeout;
@@ -29,6 +30,8 @@ mod goal_assessment;
 
 #[path = "tests/worker_failure_settlement.rs"]
 mod worker_failure_settlement;
+#[path = "tests/workspace_loss.rs"]
+mod workspace_loss;
 
 #[path = "tests/substitute_launch_identity.rs"]
 mod substitute_launch_identity;

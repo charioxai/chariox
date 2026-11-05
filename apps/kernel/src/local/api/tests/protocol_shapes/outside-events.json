@@ -1,6 +1,6 @@
 {
-  "local_protocol": 923,
-  "peer_protocol": 374,
+  "local_protocol": 966,
+  "peer_protocol": 415,
   "requests": [
     {
       "SubscribeEvents": {
@@ -216,6 +216,66 @@
                 "kind": "overloaded",
                 "retryable": true,
                 "reason": "Selected model is at capacity. Please try a different model."
+              }
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 1,
+            "refs": {
+              "interaction_id": "question-a"
+            },
+            "summary": "Which colour?",
+            "cursor": 11,
+            "type": "interaction",
+            "value": {
+              "state": "pending",
+              "question": {
+                "title": "Which colour?",
+                "message": "Pick one",
+                "choices": [
+                  {
+                    "id": "red",
+                    "label": "Red"
+                  },
+                  {
+                    "id": "blue",
+                    "label": "Blue",
+                    "style": "primary"
+                  }
+                ],
+                "text_reply": {
+                  "id": "other",
+                  "label": "Something else",
+                  "placeholder": "type here",
+                  "min_length": 1,
+                  "max_length": 80
+                },
+                "expires_at_ms": 300001,
+                "default_on_timeout": "red"
+              }
+            }
+          },
+          {
+            "kernel": "kernel-a",
+            "machine": "machine-a",
+            "session_id": "room-a",
+            "agent_id": "agent-a",
+            "at_ms": 1,
+            "refs": {
+              "interaction_id": "question-a"
+            },
+            "summary": "decision closed",
+            "cursor": 12,
+            "type": "interaction",
+            "value": {
+              "state": "resolved",
+              "resolution": {
+                "via": "external_agent",
+                "choice_id": "blue"
               }
             }
           }

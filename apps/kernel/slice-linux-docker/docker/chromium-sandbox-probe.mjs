@@ -97,7 +97,9 @@ async function processInfo(pid, includeCommand = false) {
   const number = name => Number(status.match(new RegExp(`^${name}:\\s+(\\d+)`, "m"))?.[1] ?? NaN);
   const list = name => status.match(new RegExp(`^${name}:\\s+([0-9 \\t]+)$`, "m"))?.[1].trim().split(/\s+/).map(Number) ?? [];
   const uids = list("Uid");
-  return { pid, parent: number("PPid"), uid: uids[0], uids, command: command.split("\0"),
+  // Chromium rewrites the browser process title to its merged command line, so argv
+  // may arrive as one space-joined entry.
+  return { pid, parent: number("PPid"), uid: uids[0], uids, command: command.split("\0").flatMap(argument => argument.split(" ")),
     capabilities: status.match(/^CapEff:\s+([a-f0-9]+)$/m)?.[1],
     noNewPrivileges: number("NoNewPrivs"), seccomp: number("Seccomp"), seccompFilters: number("Seccomp_filters"),
     namespacePids: list("NSpid"),

@@ -102,6 +102,7 @@ export class BrowserFrameSessions {
     this.registry = registry;
     this.rootTargetForSession = rootTargetForSession;
     this.sessions = new Map();
+    this.workerSessions = new Set();
     this.pending = new Set();
   }
   clear() { this.sessions.clear(); }
@@ -133,14 +134,26 @@ export class BrowserFrameSessions {
     }
     return this.removeWhere((_entry, id) => removed.has(id));
   }
+  // Chromium pauses every dedicated worker a page creates while this session waits for the debugger,
+  // even one the filter leaves out, and then never reports it. Listing "worker" makes the pause visible
+  // so observe() can resume it; without that, pages that start a Worker hang for good.
   start(connection, sessionId) {
     return connection.send("Target.setAutoAttach", {
       autoAttach: true, waitForDebuggerOnStart: true, flatten: true,
-      filter: [{ type: "iframe" }, { exclude: true }],
+      filter: [{ type: "iframe" }, { type: "worker" }, { exclude: true }],
     }, sessionId);
   }
   observe(message, connection) {
     const params = message?.params ?? {};
+    if (message?.method === "Target.attachedToTarget" && params.targetInfo?.type === "worker") {
+      if (typeof params.sessionId !== "string" || !params.sessionId) return true;
+      // Detaching here would leave the worker unattachable ("Target closed") for the writer fence that follows.
+      this.workerSessions.add(params.sessionId);
+      void this.release(connection, params.sessionId, false);
+      return true;
+    }
+    // A worker is not a page: its detach must not retire page-wide state.
+    if (message?.method === "Target.detachedFromTarget" && this.workerSessions.delete(params.sessionId)) return true;
     if (message?.method === "Target.attachedToTarget" && params.targetInfo?.type === "iframe") {
       const targetId = this.sessions.get(message.sessionId)?.targetId ?? this.rootTargetForSession(message.sessionId);
       const childSession = params.sessionId;
@@ -210,47 +223,85 @@ export async function registerBrowserFrameTargets(connection, sessionId, targetI
 // frame and document in references returned for isolated renderers.
 const prefix = (frame) => `frame:${frame.id}:${frame.loaderId}:`;
 
-export async function withBrowserFrames(connection, sessionId, targetId, documentId, run) {
+// Reads the frames this page owns: its own tree and, going down from it, every isolated renderer whose parent
+// frame is already owned. The browser's other iframe targets (other tabs, advertising frames) never count against
+// this page. A page that owns more than `limit` frames is cut there and `info.truncated` says so; `strict`
+// callers (they must see every frame to protect it) get snapshot_frame_limit instead.
+//
+// Two phases share one set of retained frame ids. Admission is the only way an id enters it: first come, first
+// kept, never more than `limit`, the top tree before any renderer. Resolution then gives every retained frame the
+// session that renders it and never admits an id, so a frame left out cannot stop a retained one from being read.
+export async function withBrowserFrames(connection, sessionId, targetId, documentId, run, { strict = false, limit = MAX_FRAMES } = {}) {
   const attached = [];
   try {
     const top = await connection.send("Page.getFrameTree", {}, sessionId);
     if (top.frameTree?.frame?.loaderId !== documentId) {
       throw new BrowserSnapshotError("stale_document_reference", "browser top document changed");
     }
-    const root = { sessionId, tree: top.frameTree, frame: top.frameTree.frame, prefix: "" };
-    const { targetInfos = [] } = await connection.send("Target.getTargets");
-    const candidates = targetInfos.filter((target) => target.type === "iframe");
-    if (candidates.length >= MAX_FRAMES) {
-      throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded isolated frame bound");
-    }
-    const frames = [root];
-    for (const target of candidates) {
-      const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      attached.push(childSession);
-      const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
-      frames.push({ sessionId: childSession, tree: frameTree, frame: frameTree.frame, prefix: prefix(frameTree.frame) });
-    }
-    const owned = [root];
-    const owners = new Map();
-    const remember = (entry, tree) => {
-      owners.set(tree.frame.id, entry);
-      if (owners.size > MAX_FRAMES) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
-      for (const child of tree.childFrames ?? []) remember(entry, child);
+    const retained = new Set();
+    const omitted = new Set();
+    const info = { truncated: false };
+    const claim = (id) => {
+      if (retained.has(id)) return true;
+      if (retained.size >= limit) {
+        if (strict) throw new BrowserSnapshotError("snapshot_frame_limit", "browser exceeded frame bound");
+        info.truncated = true;
+        omitted.add(id);
+        return false;
+      }
+      retained.add(id);
+      return true;
     };
-    remember(root, root.tree);
+    const admit = (tree) => {
+      if (!claim(tree.frame.id)) return;
+      for (const child of tree.childFrames ?? []) admit(child);
+    };
+
+    // Phase 1: admit the top tree, then follow the isolated renderers down from retained frames.
+    admit(top.frameTree);
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const pending = targetInfos.filter((target) => target.type === "iframe");
+    const renderers = [];
     for (let changed = true; changed;) {
       changed = false;
-      for (const entry of frames.slice(1)) {
-        if (!owned.includes(entry) && owners.has(entry.frame.parentId)) {
-          entry.parent = owners.get(entry.frame.parentId);
-          owned.push(entry);
-          remember(entry, entry.tree);
-          changed = true;
-        }
+      for (const target of [...pending]) {
+        if (!retained.has(target.parentFrameId)) continue;
+        pending.splice(pending.indexOf(target), 1);
+        // An iframe target is named after the frame it renders, so its place under the bound is decided before the
+        // renderer is opened: a frame left out costs no attachment, and a discarded advertising iframe that
+        // disappears meanwhile cannot fail the read.
+        if (!claim(target.targetId)) continue;
+        const { sessionId: childSession } = await connection.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
+        attached.push(childSession);
+        const { frameTree } = await connection.send("Page.getFrameTree", {}, childSession);
+        admit(frameTree);
+        renderers.push({ parentFrameId: target.parentFrameId, sessionId: childSession, tree: frameTree });
+        changed = true;
       }
     }
-    const result = await run(owned);
-    return result;
+
+    // Phase 2: a frame belongs to the tree that holds it, except that its own renderer replaces the placeholder
+    // its parent's tree holds; every returned tree drops the frames left out under the bound.
+    const root = { sessionId, tree: top.frameTree, frame: top.frameTree.frame, prefix: "" };
+    const entries = [root, ...renderers.filter(({ tree }) => retained.has(tree.frame.id)).map(({ parentFrameId, sessionId: owner, tree }) =>
+      ({ sessionId: owner, tree, frame: tree.frame, prefix: prefix(tree.frame), parentFrameId }))];
+    const owners = new Map();
+    const holds = (entry, tree) => {
+      if (!retained.has(tree.frame.id)) return;
+      if (tree !== entry.tree) owners.set(tree.frame.id, entry);
+      for (const child of tree.childFrames ?? []) holds(entry, child);
+    };
+    for (const entry of entries) holds(entry, entry.tree);
+    for (const entry of entries) owners.set(entry.frame.id, entry);
+    for (const entry of entries) {
+      if (entry !== root) entry.parent = owners.get(entry.parentFrameId);
+      delete entry.parentFrameId;
+      entry.omitted = omitted;
+      entry.tree = withoutOmitted(entry.tree, omitted);
+    }
+    // Callers let a later tree replace the placeholder an earlier one holds, so a parent comes before its children.
+    const depth = (entry) => { let count = 0; for (let up = entry.parent; up && count < entries.length; up = up.parent) count++; return count; };
+    return await run(entries.sort((a, b) => depth(a) - depth(b)), info);
   } finally {
     await Promise.all(attached.map((childSession) => connection.send("Target.detachFromTarget", { sessionId: childSession }).catch(() => {})));
   }
@@ -258,7 +309,7 @@ export async function withBrowserFrames(connection, sessionId, targetId, documen
 
 export async function captureBrowserFrames(options) {
   const { connection, sessionId, targetId, documentId } = options;
-  return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames) => {
+  return withBrowserFrames(connection, sessionId, targetId, documentId, async (frames, info) => {
     let result;
     for (const entry of frames) {
       const remaining = MAX_NODES - Math.max(result?.accessibility_nodes.length ?? 0, result?.dom_nodes.length ?? 0);
@@ -274,6 +325,7 @@ export async function captureBrowserFrames(options) {
       result.shadow_roots.push(...snapshot.shadow_roots.map((node) => ({ ...node, node_ref: ref(node.node_ref) })));
     }
     await assertBrowserFramesUnchanged(connection, frames);
+    if (info.truncated) result.accessibility_truncated = true;
     return result;
   });
 }
@@ -283,7 +335,7 @@ export async function captureBrowserFrames(options) {
 export async function assertBrowserFramesUnchanged(connection, frames) {
   for (const entry of frames) {
     const current = await connection.send("Page.getFrameTree", {}, entry.sessionId);
-    if (frameIdentity(current.frameTree) !== frameIdentity(entry.tree)) {
+    if (frameIdentity(withoutOmitted(current.frameTree, entry.omitted)) !== frameIdentity(entry.tree)) {
       throw new BrowserSnapshotError("stale_document_reference", "browser frame tree changed during capture");
     }
   }
@@ -298,7 +350,7 @@ export async function withBrowserActionFrame(options, run) {
     const assertContext = async () => {
       for (let parent = entry.parent; parent; parent = parent.parent) {
         const current = await connection.send("Page.getFrameTree", {}, parent.sessionId);
-        if (frameIdentity(current.frameTree) !== frameIdentity(parent.tree)) {
+        if (frameIdentity(withoutOmitted(current.frameTree, parent.omitted)) !== frameIdentity(parent.tree)) {
           throw new BrowserSnapshotError("stale_document_reference", "browser parent frame changed during action");
         }
       }
@@ -306,6 +358,11 @@ export async function withBrowserActionFrame(options, run) {
     const result = await run({ ...options, sessionId: entry.sessionId, documentId: entry.frame.loaderId, nodeRef: nodeRef.slice(entry.prefix.length), assertContext });
     return { ...result, target_id: targetId, document_id: documentId };
   });
+}
+
+// The frames left out under the bound are never read, so a change to them is not a change to the capture.
+function withoutOmitted(tree, omitted = new Set()) {
+  return { ...tree, childFrames: (tree.childFrames ?? []).filter((child) => !omitted.has(child.frame.id)).map((child) => withoutOmitted(child, omitted)) };
 }
 
 function frameIdentity(tree) {

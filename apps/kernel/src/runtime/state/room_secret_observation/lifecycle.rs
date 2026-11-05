@@ -108,7 +108,7 @@ impl KernelRuntimeState {
         credential: crate::config::UserCredentialConfig,
     ) -> Result<(crate::config::UserCredentialConfig, std::path::PathBuf), DaemonError> {
         let _guard = self.vault_observation_mutation_guard().await;
-        crate::credential::validate_credential_registration(&credential)?;
+        registry.validate_upsert(&credential)?;
         if let Some(previous) = registry.get(&credential.id)? {
             if previous.source != credential.source {
                 if let crate::config::UserCredentialSourceConfig::Vault { key } = previous.source {
@@ -142,10 +142,97 @@ impl KernelRuntimeState {
         overwrite: bool,
     ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
         let _guard = self.vault_observation_mutation_guard().await;
-        crate::credential::validate_credential_registration(&credential)?;
+        self.upsert_vault_credential_locked(service, registry, credential, secret, overwrite)
+            .await
+    }
+
+    /// The owner's hand-off save. The owner may replace a Vault value that has no record,
+    /// but never an existing credential record: only the same browser-only record is refreshed.
+    /// The check and the write share one lifecycle guard.
+    pub(in crate::runtime::state) async fn save_owner_handoff_credential(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        mut credential: crate::config::UserCredentialConfig,
+        secret: &str,
+    ) -> Result<(), DaemonError> {
+        let _guard = self.vault_observation_mutation_guard().await;
+        if let Some(previous) = registry.get(&credential.id)? {
+            if previous.source != credential.source
+                || previous.allowed_hosts != credential.allowed_hosts
+                || previous.allowed_uses != credential.allowed_uses
+                || previous.injection != credential.injection
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "credential_vault_upsert",
+                    message: format!(
+                        "credential `{}` already exists for another use; save under a different name",
+                        credential.id
+                    ),
+                });
+            }
+            credential.description = previous.description;
+            credential.metadata = previous.metadata;
+        }
+        self.upsert_vault_credential_locked(service, registry, credential, secret, true)
+            .await
+            .map(|_| ())
+    }
+
+    /// The storage step of `upsert_observed_vault_credential`. The caller holds the Vault
+    /// lifecycle write guard, so the registry it reads here is the one it writes.
+    pub(in crate::runtime::state) async fn upsert_vault_credential_locked(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        credential: crate::config::UserCredentialConfig,
+        secret: &str,
+        overwrite: bool,
+    ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
+        self.upsert_vault_credential_locked_for_agent(
+            service, registry, credential, secret, overwrite, None,
+        )
+        .await
+    }
+
+    pub(in crate::runtime::state) async fn upsert_vault_credential_locked_for_agent(
+        &self,
+        service: &crate::secret::RuntimeSecretService,
+        registry: &crate::credential::CharioxCredentialRegistry,
+        credential: crate::config::UserCredentialConfig,
+        secret: &str,
+        overwrite: bool,
+        context: Option<&super::super::vault_use::VaultAgentContext>,
+    ) -> Result<crate::secret::VaultCredentialUpsertResult, DaemonError> {
+        let (credential, secret) =
+            crate::secret::normalize_vault_credential_input(credential, secret)?;
+        let secret = secret.as_str();
+        registry.validate_upsert(&credential)?;
         let previous = registry.get(&credential.id)?;
-        // A new handle can still overwrite an existing Vault key. Rejecting an
-        // existing handle or an empty value must not revoke unrelated observations.
+        // A new handle must not take over a Vault slot that holds a value: storing would
+        // replace the value of the handle that uses it, or one that was stored or kept
+        // without a record. `overwrite` is the caller's explicit choice to replace the latter.
+        if previous.is_none() {
+            if let crate::config::UserCredentialSourceConfig::Vault { key } = &credential.source {
+                if let Some(holder) = registry.other_handle_using_vault_key(key, &credential.id)? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "credential_vault_upsert",
+                        message: format!(
+                            "Vault key `{key}` already holds the value of credential `{holder}`"
+                        ),
+                    });
+                }
+                if !overwrite && service.vault_slot_holds_value(key)? {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "credential_vault_upsert",
+                        message: format!(
+                            "Vault key `{key}` already holds a value; pass overwrite=true to replace it"
+                        ),
+                    });
+                }
+            }
+        }
+        // Rejecting an existing handle or an empty value must not revoke unrelated observations.
         if (overwrite || previous.is_none()) && !secret.is_empty() {
             if let crate::config::UserCredentialSourceConfig::Vault { key } = &credential.source {
                 self.revoke_vault_observation_values(key).await?;
@@ -165,11 +252,15 @@ impl KernelRuntimeState {
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.session_id.clone());
+        let resource_metadata = credential.clone();
         let key = match &credential.source {
             crate::config::UserCredentialSourceConfig::Vault { key } => Some(key.clone()),
             _ => None,
         };
         self.with_authorized_app_side_effect(|_| {
+            if let Some(context) = context {
+                self.recheck_vault_agent(context)?;
+            }
             self.with_forwarded_binding_operation(|| {
                 let _history = self.owned.operational_history_store.lock_public_history()?;
                 let result = service.upsert_vault_backed_credential_with_secret(
@@ -188,6 +279,7 @@ impl KernelRuntimeState {
                     source?;
                     protection?;
                 }
+                self.record_vault_resource(&resource_metadata)?;
                 Ok(result)
             })
         })

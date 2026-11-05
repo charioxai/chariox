@@ -28,6 +28,8 @@ pub(super) struct TerminalState {
     pub active_until: Instant,
     pub removed: bool,
     pub shutdown: bool,
+    /// A hot reload holds this terminal's output for the next kernel program.
+    pub handed_over: bool,
 }
 
 impl TerminalOwner {
@@ -44,6 +46,7 @@ impl TerminalOwner {
                 active_until: Instant::now(),
                 removed: false,
                 shutdown: false,
+                handed_over: false,
             }),
             output_changed: Notify::new(),
             pump_wake: Notify::new(),

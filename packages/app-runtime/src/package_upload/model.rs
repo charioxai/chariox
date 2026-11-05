@@ -7,8 +7,11 @@ pub(super) const MAX_UPLOADS: usize = 32;
 pub(super) const MAX_RESERVED_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const MAX_TTL_MS: u64 = 30 * 60 * 1_000;
 /// How long an aborted receipt answers a late retry of its request. It
-/// reserves no bytes but still counts toward the upload limits.
+/// reserves neither archive bytes nor an active upload slot.
 pub(super) const ABORTED_RECEIPT_MS: u64 = 60 * 1_000;
+// Bound retry/audit metadata separately, reserving room for every active
+// upload to become a receipt without making abort itself fail admission.
+pub(super) const RETAINED_UPLOADS_PER_SLOT: usize = 8;
 pub(super) const MAX_READERS: usize = 4;
 pub(super) const STATE_VERSION: u32 = 2;
 
@@ -50,7 +53,9 @@ impl From<crate::private_fs::FsError> for UploadError {
 
 pub(super) type Result<T> = std::result::Result<T, UploadError>;
 
-/// Limits cover this store's reserved archive bytes, plus bounded metadata.
+/// Limits cover active uploads and reserved archive bytes. Retry/audit records
+/// have a separate bound of eight times the upload counts (64 per owner and
+/// 256 total by default), including room for every active upload to abort.
 /// They are admission accounting, not an OS disk quota against other programs.
 #[derive(Debug, Clone, Copy)]
 pub struct UploadLimits {
@@ -212,11 +217,14 @@ fn lower_hex(value: &str) -> bool {
 }
 
 pub(super) fn validate_state(state: &DurableState, limits: UploadLimits) -> Result<()> {
-    if state.version != STATE_VERSION || state.uploads.len() > limits.max_uploads {
+    if state.version != STATE_VERSION
+        || state.uploads.len() > limits.max_uploads * RETAINED_UPLOADS_PER_SLOT
+    {
         return Err(UploadError::CorruptState);
     }
     let mut total = 0_u64;
-    let mut owners = BTreeMap::<&str, (usize, u64)>::new();
+    let mut active = 0;
+    let mut owners = BTreeMap::<&str, (usize, usize, u64)>::new();
     let mut requests = BTreeSet::new();
     for (handle, entry) in &state.uploads {
         if !valid_handle(handle)
@@ -238,15 +246,22 @@ pub(super) fn validate_state(state: &DurableState, limits: UploadLimits) -> Resu
             .ok_or(UploadError::CorruptState)?;
         let count = owners.entry(&entry.owner).or_default();
         count.0 += 1;
-        count.1 = count
-            .1
+        if entry.phase != UploadPhase::Aborted {
+            active += 1;
+            count.1 += 1;
+        }
+        count.2 = count
+            .2
             .checked_add(entry.reserved_bytes())
             .ok_or(UploadError::CorruptState)?;
-        if count.0 > limits.max_uploads_per_owner || count.1 > limits.max_reserved_bytes_per_owner {
+        if count.0 > limits.max_uploads_per_owner * RETAINED_UPLOADS_PER_SLOT
+            || count.1 > limits.max_uploads_per_owner
+            || count.2 > limits.max_reserved_bytes_per_owner
+        {
             return Err(UploadError::CorruptState);
         }
     }
-    if total > limits.max_reserved_bytes {
+    if active > limits.max_uploads || total > limits.max_reserved_bytes {
         return Err(UploadError::CorruptState);
     }
     Ok(())

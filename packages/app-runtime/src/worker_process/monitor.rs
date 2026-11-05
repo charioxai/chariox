@@ -1,4 +1,4 @@
-use super::record::CONTINUE;
+use super::record::{CONTINUE, UNCONTAINED};
 use super::{PreparedWorker, WorkerError, WorkerExit, WorkerLimits};
 use std::{
     collections::VecDeque,
@@ -210,6 +210,25 @@ impl Logs {
     }
 }
 
+/// A worker that exits before ready may have refused containment first; its
+/// refusal can still be unread when the exit is observed.
+fn early_exit(control: &mut UnixStream, reply: &mut Vec<u8>) -> WorkerError {
+    let mut buffer = [0; UNCONTAINED.len()];
+    while reply.len() < UNCONTAINED.len() && UNCONTAINED.starts_with(reply) {
+        match control.read(&mut buffer[..UNCONTAINED.len() - reply.len()]) {
+            Ok(0) => break,
+            Ok(count) => reply.extend_from_slice(&buffer[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    if reply.as_slice() == UNCONTAINED {
+        WorkerError::Containment
+    } else {
+        WorkerError::EarlyExit
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run(
     mut child: Child,
@@ -271,7 +290,7 @@ pub(super) fn run(
                 break if running {
                     child.exit_failure()
                 } else {
-                    Some(WorkerError::EarlyExit)
+                    Some(early_exit(&mut control, &mut reply))
                 }
             }
             Ok(false) => {}
@@ -294,7 +313,10 @@ pub(super) fn run(
         }
         if !running {
             if let Err(error) = write_some(&mut control, &record, &mut record_sent) {
-                break Some(error);
+                break Some(match error {
+                    WorkerError::EarlyExit => early_exit(&mut control, &mut reply),
+                    error => error,
+                });
             }
             if record_sent == record.len() && reply.len() < ready.len() {
                 let mut buffer = [0; 512];
@@ -303,7 +325,10 @@ pub(super) fn run(
                     Ok(0) => break Some(WorkerError::EarlyExit),
                     Ok(count) => {
                         reply.extend_from_slice(&buffer[..count]);
-                        if !ready.starts_with(&reply) {
+                        if reply.as_slice() == UNCONTAINED {
+                            break Some(WorkerError::Containment);
+                        }
+                        if !ready.starts_with(&reply) && !UNCONTAINED.starts_with(&reply) {
                             break Some(WorkerError::Identity);
                         }
                     }

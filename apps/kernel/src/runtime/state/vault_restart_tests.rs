@@ -99,7 +99,13 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
         let (state, sessions, _workspace, _private) = fixture(policy);
         let (session, agent) = &sessions[0];
         // A durable session can retain this card after its in-memory responder dies.
-        let orphan = vault_passphrase_interaction(session, agent, "before restart");
+        let orphan = vault_passphrase_interaction(
+            &VaultRequester {
+                agent: None,
+                room: None,
+            },
+            agent,
+        );
         let mut snapshot = state.owned.session_store.get_session(session).unwrap();
         snapshot.add_active_interaction(orphan.clone());
         state.owned.session_store.write().restore_session(snapshot);
@@ -205,12 +211,48 @@ async fn mp08_vault_unlock_resumes_other_sessions_and_keeps_one_prompt_per_sessi
     assert!(interaction(&state, &sessions[1].0).is_none());
 }
 
+/// A managed kernel samples its running work while a prompt is registered; reading the session list under
+/// the registration's own write guard used to hang the whole kernel (rented machine, Vault prompt).
+#[test]
+fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
+    let (state, sessions, _workspace, _private) =
+        fixture(crate::config::CredentialVaultUnlockPolicy::KernelInit);
+    state
+        .ensure_managed_activity_tracking("kernel-managed-vault-prompt")
+        .unwrap();
+    let (session, agent) = sessions[0].clone();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let registering = state.clone();
+    std::thread::spawn(move || {
+        let card = vault_passphrase_interaction(
+            &VaultRequester {
+                agent: None,
+                room: None,
+            },
+            &agent,
+        );
+        let _receiver = registering
+            .create_terminal_credential_interaction(&session, card)
+            .unwrap();
+        let _ = done_tx.send(());
+    });
+    done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("registering a prompt on a managed kernel must not deadlock on the session lock");
+}
+
 #[tokio::test]
 async fn mp11_vault_retry_cannot_replace_another_live_decision() {
     let (state, sessions, _workspace, _private) =
         fixture(crate::config::CredentialVaultUnlockPolicy::KernelInit);
     let (session, agent) = &sessions[0];
-    let card = vault_passphrase_interaction(session, agent, "live credential request");
+    let card = vault_passphrase_interaction(
+        &VaultRequester {
+            agent: None,
+            room: None,
+        },
+        agent,
+    );
     let _receiver = state
         .create_terminal_credential_interaction(session, card.clone())
         .unwrap();
@@ -219,4 +261,148 @@ async fn mp11_vault_retry_cannot_replace_another_live_decision() {
         .await;
     assert!(result.is_err());
     assert_eq!(interaction(&state, session).unwrap().id(), card.id());
+}
+
+const RUN_TOKEN: &str = "vault-refusal-bearer";
+
+/// A kernel with a locked Vault, one handle bound to `api.example.com`, and an agent whose
+/// provider run can call the runtime tools.
+fn locked_vault_with_a_run() -> (
+    KernelRuntimeState,
+    String,
+    crate::test_support::TestWorktree,
+    crate::test_support::TestWorktree,
+    crate::env_lock::EnvGuard,
+) {
+    let environment = crate::env_lock::lock();
+    let workspace = crate::test_support::TestWorktree::new("vault-refusal-workspace");
+    let private = crate::test_support::TestWorktree::new("vault-refusal-state");
+    std::env::set_var("CHARIOX_HOME", private.path().join("home"));
+    let vault = private.path().join("vault.json");
+    crate::secret::create_chariox_encrypted_vault_for_test(&vault, "refusal passphrase").unwrap();
+    crate::credential::CharioxCredentialRegistry::user()
+        .unwrap()
+        .upsert(crate::config::UserCredentialConfig {
+            id: "bound_key".into(),
+            description: None,
+            source: crate::config::UserCredentialSourceConfig::Vault {
+                key: "bound_key".into(),
+            },
+            allowed_hosts: vec!["api.example.com".into()],
+            allowed_uses: vec![crate::config::UserCredentialUse::Http],
+            injection: crate::config::UserCredentialInjectionConfig::Header {
+                name: "authorization".into(),
+                value: "Bearer ${secret}".into(),
+            },
+            metadata: None,
+        })
+        .unwrap();
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let launch = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "claude",
+        "claude",
+        "default",
+        "default",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "vault-refusal-run",
+        &launch,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "metadata-only".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: Some(workspace.path().to_owned()),
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    run.set_runtime_mcp_auth_token(Some(RUN_TOKEN.into()));
+    app.providers_mut().insert_run_for_test(run.clone());
+    let state = super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+    state.owned.provider_run_projection.update(run);
+    (
+        state,
+        session.id().to_owned(),
+        workspace,
+        private,
+        environment,
+    )
+}
+
+async fn call_tool(
+    state: &KernelRuntimeState,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+    state
+        .dispatch_authenticated_runtime_tool_call(RUN_TOKEN, tool, arguments)
+        .await
+}
+
+#[tokio::test]
+async fn a_locked_vault_refuses_a_request_before_it_asks_for_the_unlock() {
+    let (state, session, _workspace, _private, _environment) = locked_vault_with_a_run();
+    let refused = [
+        (
+            crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL,
+            serde_json::json!({"credential_id": "bound_key", "url": "http://127.0.0.1:19/echo"}),
+        ),
+        (
+            crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL,
+            serde_json::json!({"credential_id": "no_such_key", "url": "https://api.example.com/"}),
+        ),
+        (
+            crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL,
+            serde_json::json!({"credential_id": "bound_key"}),
+        ),
+    ];
+    for (tool, arguments) in refused {
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            call_tool(&state, tool, arguments),
+        )
+        .await
+        .expect("a refused request must end at once, not wait for an unlock");
+        assert!(outcome.is_err(), "{tool} should be refused");
+        assert!(
+            interaction(&state, &session).is_none(),
+            "{tool} asked for the unlock before refusing"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_request_that_passes_every_check_still_asks_for_the_unlock() {
+    let (state, session, _workspace, _private, _environment) = locked_vault_with_a_run();
+    let mut call = Box::pin(call_tool(
+        &state,
+        crate::transport::runtime_tools::HTTP_REQUEST_WITH_CREDENTIAL_TOOL,
+        serde_json::json!({"credential_id": "bound_key", "url": "https://api.example.com/v1"}),
+    ));
+    tokio::select! {
+        biased;
+        result = &mut call => panic!("the call ended before the unlock was answered: {result:?}"),
+        card = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(card) = interaction(&state, &session) { return card; }
+                tokio::task::yield_now().await;
+            }
+        }) => {
+            let card = card.expect("an allowed request asks for the unlock");
+            assert!(card.message().contains("needs the Vault"), "{}", card.message());
+        }
+    }
 }

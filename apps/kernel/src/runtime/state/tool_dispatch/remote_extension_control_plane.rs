@@ -214,6 +214,28 @@ impl KernelRuntimeState {
         self.pause_forwarded_meta_request_before_dispatch_for_test();
         self.with_app_side_effect(|_| self.authorize_forwarded_workspace_context(&context))
             .await?;
+        if crate::transport::runtime_tools::canonical_credential_tool_name(&tool_name)
+            == Some(crate::transport::runtime_tools::REQUEST_POPUP_TOOL)
+        {
+            let args: crate::transport::runtime_tools::RequestPopupArgs =
+                serde_json::from_value(arguments).map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_request_popup",
+                    message: format!("invalid tool arguments: {error}"),
+                })?;
+            if args.wait != Some(false) || context.home_prompt_id.is_none() {
+                return Err(crate::durable_state::agent_lifecycle::error(
+                    "forwarded question requires wait:false and a running home prompt",
+                ));
+            }
+            return self
+                .dispatch_popup_for_agent(
+                    &context.home_session_id,
+                    &context.home_agent_id,
+                    None,
+                    args,
+                )
+                .await;
+        }
         if let Some(name) =
             crate::transport::runtime_tools::canonical_agent_event_tool_name(&tool_name)
         {
@@ -226,6 +248,21 @@ impl KernelRuntimeState {
             &context.leased_agent_id,
             &context.worker_provider_run_id,
         );
+        if matches!(
+            tool_name.as_str(),
+            super::super::resource_register::RECORD
+                | super::super::resource_register::LIST
+                | super::super::resource_register::SET_REVOKE
+                | super::super::resource_register::REVOKE
+        ) {
+            // Resource provenance must survive forwarding even when Room tools
+            // are disabled. The peer admission above owns this origin.
+            let mut state = self.clone();
+            state.room_provider_origin = Some((context.home_agent_id.clone(), run.clone()));
+            return state
+                .resource_register_for_run(&run, &tool_name, arguments)
+                .await;
+        }
         self.with_room_provider_origin(Some(&context.home_agent_id), Some(&run))
             .dispatch_meta_runtime_tool_call_for_agent(
                 &context.home_session_id,

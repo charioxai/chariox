@@ -1128,6 +1128,9 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::NoActiveProviderRun { .. } => {
             kernel_error("no_active_provider_run", error, false)
         }
+        DaemonError::LeasedBackingSessionRefused { .. } => {
+            kernel_error("leased_backing_session_refused", error, false)
+        }
         DaemonError::ProviderRunNotFound { .. } => {
             kernel_error("provider_run_not_found", error, false)
         }
@@ -1141,10 +1144,25 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
             kernel_error("provider_protocol_error", error, true)
         }
         DaemonError::LocalTransport { operation, .. }
+            if *operation == crate::runtime::state::INTERACTION_CLOSED =>
+        {
+            kernel_error(crate::runtime::state::INTERACTION_CLOSED, error, false)
+        }
+        DaemonError::LocalTransport { operation, .. }
             if *operation == "credential_vault_locked" =>
         {
             kernel_error("credential_vault_locked", error, false)
         }
+        DaemonError::RelayTransport {
+            operation: "connected control plane",
+            code,
+            message,
+            retryable,
+        } => KernelTransportError {
+            code: code.clone(),
+            message: message.clone(),
+            retryable: *retryable,
+        },
         DaemonError::RelayTransport {
             operation: "dictation",
             code,
@@ -1202,6 +1220,7 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         } => kernel_error("local_transport_error", error, false),
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
+        DaemonError::TooManyOpenFiles => kernel_error("too_many_open_files", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),
         DaemonError::PtyWrite { .. } => kernel_error("pty_write_failed", error, true),
         DaemonError::PtyResize { .. } => kernel_error("pty_resize_failed", error, true),

@@ -1,4 +1,5 @@
 import type { PasskeyPrompt, PasskeyPromptClosure } from "@chariox/kernel-client/kernel-types"
+import { VAULT_SECRET_MAX_LENGTH } from "@chariox/kernel-client/interaction-choice"
 import type { InteractionPasskeyProof } from "./ipc-requests.js"
 import { approvalExpiredMessage, type KernelClock } from "./kernel-clock.js"
 
@@ -7,7 +8,11 @@ export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
 export const SUDO_WINDOW_MINUTES = [60, 120, 240, 480] as const
 const PASSKEY_MAX_LENGTH = 512
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
-const PASSKEY_PASTE_REFUSED = `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
+const pasteRefused = (prompt: PasskeyPrompt | null) => prompt?.kind === "vault_secret"
+  ? `Paste not added: a value is one line of at most ${VAULT_SECRET_MAX_LENGTH} characters, without control characters.`
+  : `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
+/** A Vault value may be a long bearer token; every other answer is a passkey. */
+const inputLimit = (prompt: PasskeyPrompt | null) => prompt?.kind === "vault_secret" ? VAULT_SECRET_MAX_LENGTH : PASSKEY_MAX_LENGTH
 const PASSKEY_INPUT_REFUSED = "The passkey was cleared: the input held a terminal control sequence. Enter it again."
 const UNCONFIRMED = "The kernel did not confirm this answer. Try again."
 
@@ -81,7 +86,7 @@ export function passkeyPromptsFromEvent(prompts: unknown, userAppViews = false):
   if (!Array.isArray(prompts)) return []
   return prompts.filter((item): item is PasskeyPrompt => {
     const prompt = item as Partial<PasskeyPrompt> | null
-    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo"].includes(prompt.kind ?? "")
+    return !!prompt && ["critical_approval", "access_grant", "access_extension", "sudo", "vault_secret"].includes(prompt.kind ?? "")
       && (isText(prompt.session_id) || (userAppViews && prompt.session_id === "" && prompt.kind === "critical_approval")) && isText(prompt.interaction_id)
       && typeof prompt.title === "string" && typeof prompt.message === "string"
       && isText(prompt.approve_choice_id) && isText(prompt.refuse_choice_id)
@@ -111,7 +116,8 @@ export function createPasskeyPopupController(deps: {
   onOpen(): void
   onClose(): void
   scroll(direction: -1 | 1): void
-  respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof): Promise<unknown>
+  /** `reply` is the typed value of a Vault value request: its custom reply, never a passkey proof. */
+  respond(prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof, reply?: string): Promise<unknown>
   notify(message: string): void
   serverClock?: KernelClock
 }) {
@@ -210,7 +216,7 @@ export function createPasskeyPopupController(deps: {
       expiryTimer = setTimeout(() => { refreshExpiry(); render() }, delay)
     }
   }
-  const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof) => {
+  const send = async (prompt: PasskeyPrompt, choiceId: string, proof?: InteractionPasskeyProof, reply?: string) => {
     const epoch = connectionEpoch
     const token = {}
     pending = token
@@ -218,7 +224,7 @@ export function createPasskeyPopupController(deps: {
     error = null
     render()
     try {
-      await (proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
+      await (reply !== undefined ? deps.respond(prompt, choiceId, undefined, reply) : proof ? deps.respond(prompt, choiceId, proof) : deps.respond(prompt, choiceId))
       if (epoch !== connectionEpoch) return
       settle(prompt)
     } catch (failure) {
@@ -242,6 +248,12 @@ export function createPasskeyPopupController(deps: {
     const prompt = current()
     if (!open || !prompt || pending || !deps.connected()) return
     const typed = value
+    if (prompt.kind === "vault_secret") {
+      if (!typed) return
+      value = ""
+      await send(prompt, prompt.approve_choice_id, undefined, typed)
+      return
+    }
     // Another terminal may have opened the owner's remember window. Ordinary
     // approvals always let the kernel check it; new authority needs fresh proof.
     if (!typed && prompt.kind !== "critical_approval") {
@@ -352,8 +364,8 @@ export function createPasskeyPopupController(deps: {
       // Added exactly as sent, without a trailing line break, or refused
       // whole: OpenTUI strips ANSI codes from `text`, so the raw paste decides.
       const text = (event.rawText ?? event.text).replace(/(?:\r\n|\r|\n)+$/, "")
-      if (CONTROL_CHARACTERS.test(text) || Array.from(value + text).length > PASSKEY_MAX_LENGTH) {
-        error = PASSKEY_PASTE_REFUSED
+      if (CONTROL_CHARACTERS.test(text) || Array.from(value + text).length > inputLimit(current())) {
+        error = pasteRefused(current())
       } else {
         value += text
         error = null
@@ -415,7 +427,7 @@ export function createPasskeyPopupController(deps: {
         return true
       }
       const typed = passkeyKeyText(event)
-      if (typed && Array.from(value + typed).length <= PASSKEY_MAX_LENGTH) {
+      if (typed && Array.from(value + typed).length <= inputLimit(current())) {
         value += typed
         render()
       }

@@ -8,9 +8,6 @@ use super::paths::{default_config_dir, default_state_dir};
 use super::private_file::write_private_file;
 use crate::error::DaemonError;
 
-const HOSTED_STAGING_API_URL: &str = "https://staging.chariox.com";
-pub(super) const HOSTED_STAGING_RELAY_URL: &str = "wss://195.201.123.115.sslip.io";
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct PersistedDaemonConfig {
     #[serde(default)]
@@ -68,7 +65,6 @@ pub struct PersistedCloudRelayProfile {
 impl PersistedCloudRelayProfile {
     pub(super) fn canonicalized(mut self) -> Self {
         self.api_url = normalize_url_without_trailing_slash(&self.api_url);
-        self.relay_url = canonicalize_hosted_cloud_relay_url(&self.api_url, &self.relay_url);
         self
     }
 }
@@ -181,35 +177,11 @@ fn canonicalize_persisted_daemon_config(config: &mut PersistedDaemonConfig) {
     let Some(profile) = config.cloud_relay.take() else {
         return;
     };
-    let profile = profile.canonicalized();
-    if let Some(relay_url) = config.relay_url.clone() {
-        config.relay_url = Some(canonicalize_hosted_cloud_relay_url(
-            &profile.api_url,
-            &relay_url,
-        ));
-    }
-    config.cloud_relay = Some(profile);
+    config.cloud_relay = Some(profile.canonicalized());
 }
 
 fn normalize_url_without_trailing_slash(value: &str) -> String {
     value.trim().trim_end_matches('/').to_string()
-}
-
-fn canonicalize_hosted_cloud_relay_url(api_url: &str, relay_url: &str) -> String {
-    let normalized_api = normalize_url_without_trailing_slash(api_url);
-    let relay_url = relay_url.trim();
-    if normalized_api == HOSTED_STAGING_API_URL
-        && matches!(
-            relay_url,
-            HOSTED_STAGING_RELAY_URL
-                | "ws://195.201.123.115:43130"
-                | "ws://195.201.123.115.sslip.io"
-                | "wss://195.201.123.115.sslip.io/"
-        )
-    {
-        return HOSTED_STAGING_RELAY_URL.to_string();
-    }
-    relay_url.to_string()
 }
 
 pub(super) fn upsert_machine_registration<'a>(

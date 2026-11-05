@@ -1,12 +1,13 @@
 import { LocalIpcError } from "@chariox/kernel-client/ipc"
-import { CommandFailure, exitCodeFor, guideText, parseArguments, usageOf } from "./agent-command-table.js"
+import { CommandFailure, exitCodeFor, familyUsageOf, guideText, parseArguments, usageOf, wantsHelp } from "./agent-command-table.js"
 import { kernelUnixClient } from "./kernel-unix-client.js"
 import { FILES_VERBS, runFilesVerb, type SendRequest } from "./kernel-files.js"
-import { runTerminalVerb, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
+import { runTerminalVerb, TERMINAL_ATTACH_USAGE, TERMINAL_VERBS, waitMsOf, type TerminalFlags, type TerminalVerb } from "./terminal-verbs.js"
 
 import { runExec } from "./exec-command.js"
 
 import { EVENT_VERBS, eventTimeoutSeconds, runEventsVerb } from "./events-command.js"
+import { runEventsMcp, type KernelRoutes } from "./events-mcp.js"
 
 import { failureOf, lostInFlight, lostConnectionFailure } from "./kernel-command-failure.js"
 export { failureOf, lostConnectionFailure } from "./kernel-command-failure.js"
@@ -91,6 +92,18 @@ export function sendRequest(
   return withKernel(options, send => send(body))
 }
 
+// The inbox lives on this computer's kernel; a decision raised by another kernel is answered through the gateway.
+export function eventsMcpRoutes(send: SendRequest, socket: string | undefined, timeoutSeconds: number): KernelRoutes {
+  return {
+    isLocal: async kernel => {
+      const status = (await send({ RelayStatus: null }) as { RelayStatus?: { status?: { daemon_id?: string } } }).RelayStatus?.status
+      if (!status?.daemon_id) throw new CommandFailure("kernel_not_available", "This computer's Chariox kernel did not report its id; update it.")
+      return status.daemon_id === kernel
+    },
+    sendTo: (kernel, request) => sendRequest(request, { socket, kernel, timeoutSeconds }),
+  }
+}
+
 // Ends only by failing: the stream has no end of its own, and a lost connection says where to resume.
 export async function watchKernel(
   options: { socket: string | undefined; kernel: string; sessionId: string; attachmentId: string; from: number | null },
@@ -141,21 +154,36 @@ export async function runKernelsCommand(argv: string[]): Promise<boolean> {
   if (command === undefined) return false
   // `chariox terminal --session ...` is the interactive attach for a person; a verb first is the agent's.
   const terminalVerb = command === "terminal" ? TERMINAL_VERBS.find(name => name === rest[0]) : undefined
-  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb) return false
+  const terminalFamily = command === "terminal" && (rest.length === 0 || rest[0] === "--help")
+  if (command !== "guide" && command !== "kernels" && command !== "request" && command !== "watch" && command !== "files" && command !== "events" && command !== "exec" && !terminalVerb && !terminalFamily) return false
+  if (terminalFamily) {
+    console.log(`${TERMINAL_ATTACH_USAGE}\n${familyUsageOf("terminal", TERMINAL_VERBS)}`)
+    return true
+  }
+  if (wantsHelp(rest)) {
+    const family = command === "events" ? EVENT_VERBS : command === "files" ? FILES_VERBS : undefined
+    const verb = family?.find(name => name === rest[0])
+    console.log(family && !verb ? familyUsageOf(command, family) : usageOf(family ? `${command} ${verb}` : terminalVerb ? `terminal ${terminalVerb}` : command))
+    return true
+  }
   let kernel: string | null = null
   try {
     if (command === "events") {
       const verb = EVENT_VERBS.find(name => name === rest[0])
-      if (!verb) throw new CommandFailure("usage", `Usage: chariox events ${EVENT_VERBS.join("|")} (chariox guide lists the arguments)`)
+      if (!verb) throw new CommandFailure("usage", familyUsageOf("events", EVENT_VERBS))
       const { flags, positionals } = parseArguments(`events ${verb}`, rest.slice(1))
       const socket = flags.get("--socket") as string | undefined
       if (verb === "watch") for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => process.exit(0))
+      if (verb === "mcp") {
+        process.exitCode = await withKernel({ socket, timeoutSeconds: 90 }, send => runEventsMcp(send, process.stdin, process.stdout, eventsMcpRoutes(send, socket, 90)))
+        return true
+      }
       process.exitCode = await withKernel({ socket, timeoutSeconds: eventTimeoutSeconds(verb, flags) + DEFAULT_TIMEOUT_SECONDS }, send => runEventsVerb(verb, flags, positionals, send, value => console.log(JSON.stringify(value))))
       return true
     }
     // `files` is a command family: the verb is part of the table name.
     const verb = command === "files" ? FILES_VERBS.find(name => name === rest[0]) : undefined
-    if (command === "files" && !verb) throw new CommandFailure("usage", `Usage: chariox files ${FILES_VERBS.join("|")} (chariox guide lists the arguments)`)
+    if (command === "files" && !verb) throw new CommandFailure("usage", familyUsageOf("files", FILES_VERBS))
     // What follows `--` of `terminal open` is the program to run, not options.
     const split = terminalVerb === "open" || command === "exec" ? rest.indexOf("--") : -1
     const program = split < 0 ? [] : rest.slice(split + 1)

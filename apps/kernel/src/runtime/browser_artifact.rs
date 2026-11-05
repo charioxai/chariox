@@ -123,14 +123,25 @@ impl BrowserArtifactCapture {
             return Err("Browser artifact geometry is invalid".into());
         }
         let bytes = self.bytes.decode()?;
+        // The image is the page the controller observed. An App Tab is laid out
+        // beside its panel, so that page can be narrower than the canonical viewport.
+        let pixels = |key: &str| {
+            self.geometry[key]
+                .as_f64()
+                .map(|css| css * f64::from(self.viewport.device_scale_factor))
+        };
         if self.kind == BrowserArtifactKind::Image
             && (self.bytes.mime_type != "image/png"
                 || bytes.len() < 24
                 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                || u32::from_be_bytes(bytes[16..20].try_into().unwrap())
-                    != self.viewport.css_width * self.viewport.device_scale_factor
-                || u32::from_be_bytes(bytes[20..24].try_into().unwrap())
-                    != self.viewport.css_height * self.viewport.device_scale_factor
+                || pixels("clientWidth")
+                    != Some(f64::from(u32::from_be_bytes(
+                        bytes[16..20].try_into().unwrap(),
+                    )))
+                || pixels("clientHeight")
+                    != Some(f64::from(u32::from_be_bytes(
+                        bytes[20..24].try_into().unwrap(),
+                    )))
                 || !matches!(
                     self.redaction.as_str(),
                     "none" | "fill_targets" | "full_viewport"
@@ -153,6 +164,62 @@ impl BrowserArtifactCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A header-only PNG: validation reads the signature and the size.
+    fn png_of(width: u32, height: u32) -> Vec<u8> {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&width.to_be_bytes());
+        png.extend_from_slice(&height.to_be_bytes());
+        png
+    }
+
+    fn image_capture(png: &[u8], geometry_width: u32) -> BrowserArtifactCapture {
+        BrowserArtifactCapture {
+            bytes: BrowserArtifactBytes {
+                display_name: "capture.png".into(),
+                mime_type: "image/png".into(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(png),
+                sha256: format!("{:x}", Sha256::digest(png)),
+                size_bytes: png.len() as u64,
+            },
+            kind: BrowserArtifactKind::Image,
+            guid: None,
+            target_id: "target".into(),
+            document_id: "document".into(),
+            browser_generation: 1,
+            browser_id: format!("browser-{}", "a".repeat(64)),
+            viewport: crate::session::CanonicalViewport::new(1280, 800, 1, 1280, 800).unwrap(),
+            geometry: serde_json::json!({"pageX":0,"pageY":0,"clientWidth":geometry_width,"clientHeight":800,"scale":1}),
+            redaction: "none".into(),
+        }
+    }
+
+    fn request_for(capture: &BrowserArtifactCapture) -> BrowserArtifactRequest {
+        BrowserArtifactRequest {
+            target_id: capture.target_id.clone(),
+            document_id: capture.document_id.clone(),
+            browser_generation: capture.browser_generation,
+            viewport: capture.viewport.clone(),
+            kind: capture.kind,
+            guid: None,
+        }
+    }
+
+    #[test]
+    fn an_app_tab_image_is_as_wide_as_the_page_beside_its_panel() {
+        // The kernel asks for the canonical 1280x800 viewport; an App Tab is laid out
+        // 900 wide beside the trusted panel, and its capture is that page.
+        let png = png_of(900, 800);
+        let capture = image_capture(&png, 900);
+        capture
+            .validate(&request_for(&capture))
+            .expect("the page-sized image of an App Tab must validate");
+        let wrong = image_capture(&png_of(1280, 800), 900);
+        assert!(
+            wrong.validate(&request_for(&wrong)).is_err(),
+            "an image that is not the observed page size is refused"
+        );
+    }
+
     #[test]
     fn mp08_mp11_browser_image_redaction_validates_and_publishes() {
         use crate::artifacts::{OperationalArtifactStore, StoreArtifactRequest};

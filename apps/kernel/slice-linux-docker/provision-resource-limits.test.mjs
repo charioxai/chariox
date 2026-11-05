@@ -75,7 +75,7 @@ throw new Error("unexpected Docker call: " + args[0]);
     const result = spawnSync("bash", [provisioner, "start-runtime"], {
       encoding: "utf8",
       // Includes owned-process inspection on shared builders.
-      timeout: 45_000,
+      timeout: 300_000,
       env: {
         ...env,
         PATH: `${root}:${env.PATH}`,

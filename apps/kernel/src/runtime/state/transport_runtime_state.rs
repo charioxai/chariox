@@ -88,12 +88,16 @@ impl KernelRuntimeState {
         self.app_control().publishers().pump(self).await;
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control().installs().pump(self).await;
+        if let Err(error) = self.sync_dev_app_bindings().await {
+            tracing::warn!(%error, "MP-08/MP-10/MP-11: dev App binding failed; retrying after the next maintenance pass");
+        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         self.app_control()
             .lifecycle()
             .schedule_recovery(tokio::runtime::Handle::current());
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
+        self.reconcile_agent_trigger_gateways().await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
             self,
         )
@@ -118,7 +122,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
-        self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
+        self.dispatch_due_agent_triggers(crate::session::unix_epoch_ms())
             .await;
     }
 
@@ -369,7 +373,6 @@ impl KernelRuntimeState {
         idle_interval_ms: u64,
         now_ms: u64,
     ) -> u64 {
-        let archived_agent_ids = self.owned.archived_agent_ids();
         let next_runtime_due_at_ms = [
             self.next_structured_output_poll_due_at_ms(),
             self.owned.provider_output_deadlines.next_due_at_ms(),
@@ -384,7 +387,7 @@ impl KernelRuntimeState {
             self.owned
                 .session_store
                 .read()
-                .next_scheduled_runtime_wake_at_ms(&archived_agent_ids),
+                .next_scheduled_runtime_wake_at_ms(),
             now_ms,
             active_interval_ms,
             idle_interval_ms,
@@ -419,14 +422,22 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
+        // Before the browser host stops, which clears it.
+        #[cfg(unix)]
+        crate::hot_reload::hand_over_user_domain(self.owned.kernel_browser_host.hand_over_access());
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();
-        tokio::task::spawn_blocking(|| crate::runtime::process_resources::end_owner(None, None))
+        // A hot reload keeps what workloads left running: the next program owns it.
+        if !crate::hot_reload::handing_over() {
+            tokio::task::spawn_blocking(|| {
+                crate::runtime::process_resources::end_owner(None, None)
+            })
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "stop released processes",
                 message: error.to_string(),
             })?;
+        }
         self.stop_app_grant_wakes();
         for id in self.app_control().user_views().shutdown() {
             self.app_control().views().forget_session(&id);
@@ -449,7 +460,8 @@ impl KernelRuntimeState {
         let _ = tokio::task::spawn_blocking(move || wakes.processes.shutdown()).await;
         let sessions = self.owned.session_store.read().list_sessions();
         for session in sessions {
-            self.owned.withdraw_agent_interactions(session.id(), None)?;
+            self.owned
+                .withdraw_agent_interactions_for_shutdown(session.id())?;
         }
         {
             let publishers = self.app_control().publishers().clone();
@@ -464,13 +476,17 @@ impl KernelRuntimeState {
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         {
             let installs = self.app_control().installs().clone();
+            let dev_push = self.app_control().dev_push().clone();
             let runtime = tokio::runtime::Handle::current();
-            tokio::task::spawn_blocking(move || installs.shutdown_blocking(runtime))
-                .await
-                .map_err(|_| DaemonError::LocalTransport {
-                    operation: "runtime.app_install_shutdown",
-                    message: "App installation tasks did not drain".into(),
-                })?;
+            tokio::task::spawn_blocking(move || {
+                dev_push.shutdown_blocking(runtime.clone());
+                installs.shutdown_blocking(runtime)
+            })
+            .await
+            .map_err(|_| DaemonError::LocalTransport {
+                operation: "runtime.app_install_shutdown",
+                message: "App installation tasks did not drain".into(),
+            })?;
         }
         self.owned.sweep_kernel_operation_interactions(true);
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]

@@ -15,7 +15,10 @@ pub(crate) fn is_internal_dispatch_diagnostic(message: &str) -> bool {
 pub(crate) fn user_facing_dispatch_failure(error: &DaemonError) -> String {
     let message = match error {
         DaemonError::ProviderProtocol { operation, .. } => operation_failure_summary(operation),
-        DaemonError::LocalTransport { message, .. } | DaemonError::ProviderRefusal { message } => {
+        DaemonError::ProviderRefusal { message } => {
+            return crate::provider::TurnOutcome::classify("", message).notice();
+        }
+        DaemonError::LocalTransport { message, .. } => {
             return crate::provider::sanitize_provider_diagnostic(message);
         }
         _ => "The provider could not complete the request.",
@@ -70,6 +73,17 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ea2_75_refused_dispatch_errors_use_the_same_calm_recovery_text() {
+        let error = DaemonError::ProviderRefusal {
+            message: "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.".into(),
+        };
+        assert_eq!(
+            user_facing_dispatch_failure(&error),
+            "The provider is at capacity. Try again in a moment or choose another model."
+        );
+    }
 
     #[test]
     fn older_durable_dispatch_reason_has_no_internal_protocol_text() {
