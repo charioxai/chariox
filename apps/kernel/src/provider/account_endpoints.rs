@@ -487,11 +487,15 @@ mod tests {
     #[test]
     fn failed_pidfd_pin_keeps_startup_cleanup_ownership() {
         use crate::runtime::bounded_process::BoundedCommandExt as _;
+        let helper = format!(
+            "{}::pidfd_failure_helper",
+            module_path!().split_once("::").unwrap().1
+        );
         let output = crate::process_spawn::command(std::env::current_exe().unwrap())
             .args([
                 "--ignored",
                 "--exact",
-                concat!(module_path!(), "::pidfd_failure_helper"),
+                &helper,
                 "--test-threads=1",
                 "--nocapture",
             ])
@@ -502,6 +506,10 @@ mod tests {
             "{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+            "the descriptor failure helper must actually run"
         );
     }
 
