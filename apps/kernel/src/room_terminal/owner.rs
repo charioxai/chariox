@@ -1,6 +1,7 @@
 //! A terminal's PTY, parser and readers share only this terminal's lock.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -15,6 +16,7 @@ pub(super) struct TerminalOwner {
     pub session_id: String,
     pub title: String,
     pub opened_by: TerminalActor,
+    exited: AtomicBool,
     state: Mutex<TerminalState>,
     pub output_changed: Notify,
     pub pump_wake: Notify,
@@ -34,10 +36,12 @@ pub(super) struct TerminalState {
 
 impl TerminalOwner {
     pub fn new(terminal: Terminal, pty: PtyManager) -> Self {
+        let exited = !terminal.is_running();
         Self {
             session_id: terminal.record.session_id.clone(),
             title: terminal.record.title.clone(),
             opened_by: terminal.record.opened_by.clone(),
+            exited: AtomicBool::new(exited),
             state: Mutex::new(TerminalState {
                 terminal,
                 pty,
@@ -71,6 +75,11 @@ impl TerminalOwner {
     /// A busy parser is conservatively work. Checking a managed stop must
     /// never wait for another terminal's parsing or rendering.
     pub fn has_running_work(&self) -> bool {
+        // A PTY never restarts in the same owner. Later rendering or persistence
+        // locks must not turn its known exit into a new busy/idle activity cycle.
+        if self.exited.load(Ordering::Acquire) {
+            return false;
+        }
         let state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::WouldBlock) => return true,
@@ -78,6 +87,7 @@ impl TerminalOwner {
         };
         let terminal = &state.terminal;
         if state.removed || !terminal.is_running() {
+            self.exited.store(true, Ordering::Release);
             return false;
         }
         if terminal.is_busy(&state.pty) || terminal.driver.launching(Instant::now()) {

@@ -1,5 +1,16 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 exited terminal activity
+
+A terminal owner remembers its observed PTY exit, which is permanent for that
+owner. Rendering, pumping or persistence of its retained output cannot turn lock
+contention into a new busy/idle activity cycle and renew last-work shutdown.
+A live terminal with a busy owner still counts conservatively as work; its
+managed admission fence is unchanged. Ordinary and managed terminals use the
+same owner. Real-PTY regressions cover both states through the terminal service.
+This adds no serialized shape and does not establish production-signed or paid
+shutdown acceptance by itself.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 transfer-aware shutdown admission
 
 Kernel-file requests and managed-context import disk tasks hold activity until the
