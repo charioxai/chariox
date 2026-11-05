@@ -1,5 +1,6 @@
 //! MP-08/MP-09/MP-10/MP-11: dialog replies release the page action that opened them.
 use super::*;
+use crate::runtime::kernel_browser_actors::TAB_TAKEN_OVER_REFUSAL;
 use serde_json::json;
 use std::time::Instant;
 
@@ -97,17 +98,15 @@ done
         .unwrap()
         .lock()
         .unwrap()
-        .elapse_orphaned_takeovers();
+        .elapse_idle_takeovers();
     let expired = request();
     let requests_after = std::fs::read_to_string(root.path().join("requests")).unwrap();
     host.shutdown().unwrap();
     for refused in [active, recent_orphan] {
         assert!(
             matches!(
-                refused,
-                Err(crate::error::HostFailure::Refused(
-                    crate::error::UserDomainRefusalReason::NotGranted
-                ))
+                &refused,
+                Err(crate::error::HostFailure::Other(reason)) if reason.contains("human_takeover")
             ),
             "live takeover or unexpired orphan must fence the agent: {refused:?}"
         );
@@ -275,9 +274,7 @@ done
             cancel,
             policy.clone()
         ),
-        Err(crate::error::HostFailure::Refused(
-            crate::error::UserDomainRefusalReason::NotGranted
-        ))
+        Err(crate::error::HostFailure::Other(message)) if message == TAB_TAKEN_OVER_REFUSAL
     ));
     let reached = root.path().join("answered").exists();
     let human = host.protected_request(
@@ -295,9 +292,7 @@ done
     host.shutdown().unwrap();
     assert!(matches!(
         refused,
-        Err(crate::error::HostFailure::Refused(
-            crate::error::UserDomainRefusalReason::NotGranted
-        ))
+        Err(crate::error::HostFailure::Other(message)) if message == TAB_TAKEN_OVER_REFUSAL
     ));
     assert!(!reached, "refused answer must not reach the controller");
     assert!(

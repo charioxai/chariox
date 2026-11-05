@@ -1094,6 +1094,28 @@ impl KernelBrowserHost {
         })?;
         Ok(reply["signal"].as_u64())
     }
+    /// A person holding one Tab of `user`'s browser.
+    #[cfg(test)]
+    pub(crate) fn seed_person_takeover_for_test(&self, user: &str, actor: &str) {
+        let model = self.actor_model(user).unwrap();
+        model
+            .lock()
+            .unwrap()
+            .reconcile(&serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}))
+            .unwrap();
+        self.request_takeover(
+            user,
+            EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
+            "host-tab-a",
+            1,
+        )
+        .unwrap();
+    }
+    /// The idle sweep as it runs `idle` after the person's last input.
+    #[cfg(test)]
+    pub(crate) fn reclaim_idle_takeovers_after_for_test(&self, idle: std::time::Duration) -> bool {
+        self.reclaim_idle_takeovers_at(std::time::Instant::now() + idle)
+    }
     #[cfg(test)]
     pub(crate) fn request_takeover(
         &self,
@@ -1158,8 +1180,30 @@ impl KernelBrowserHost {
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
         model.retire_lapsed_desktop_viewers(std::time::Instant::now());
-        model.reclaim_lapsed_takeovers(std::time::Instant::now());
+        model.reclaim_idle_takeovers(std::time::Instant::now());
         Ok(model.snapshot())
+    }
+
+    /// Ends every Tab takeover whose person went quiet, whichever viewer is open. True when one ended.
+    pub(crate) fn reclaim_idle_takeovers(&self) -> bool {
+        self.reclaim_idle_takeovers_at(std::time::Instant::now())
+    }
+    fn reclaim_idle_takeovers_at(&self, now: std::time::Instant) -> bool {
+        let models = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .actors
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        models.iter().fold(false, |ended, model| {
+            let released = model
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reclaim_idle_takeovers(now);
+            ended | released
+        })
     }
 
     pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {

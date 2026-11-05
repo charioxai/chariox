@@ -724,6 +724,8 @@ impl KernelRuntimeState {
             KernelBrowserDisplayRequest::Release { tab_id, generation } => {
                 host.release_input(&user, &actor, &tab_id, generation)
                     .map_err(host_error)?;
+                // An agent waiting for the person continues now, not at the next periodic sweep.
+                self.schedule_agent_lifecycle_sweep();
                 return Ok(serde_json::json!({"released":true}));
             }
             KernelBrowserDisplayRequest::Actors => {

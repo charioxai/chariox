@@ -1,5 +1,6 @@
 //! MD-3/MD-4: actual host ledger → controller cancellation, no Chromium dependency.
 use super::*;
+use crate::runtime::kernel_browser_actors::TAB_TAKEN_OVER_REFUSAL;
 use serde_json::json;
 use std::time::Instant;
 
@@ -337,7 +338,7 @@ done
                 policy
             )
             .unwrap_err(),
-            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+            crate::error::HostFailure::Other(message) if message == TAB_TAKEN_OVER_REFUSAL
         ));
         let state = host.actor_snapshot("alice").unwrap();
         assert_eq!(state["input_ownership"][0]["actor_id"], "terminal:a");
@@ -1863,7 +1864,7 @@ done
 }
 
 #[test]
-fn mp10_same_terminal_lease_reconnect_keeps_takeover_past_the_orphan_deadline() {
+fn mp10_same_terminal_lease_reconnect_keeps_takeover_before_idle_timeout() {
     let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-reconnect"));
     let lease = host.lease_terminal("alice", "terminal:viewer");
     let model = host.actor_model("alice").unwrap();
@@ -1882,8 +1883,8 @@ fn mp10_same_terminal_lease_reconnect_keeps_takeover_past_the_orphan_deadline() 
     }
     drop(lease);
     let _reconnected = host.lease_terminal("alice", "terminal:viewer");
-    model.lock().unwrap().reclaim_lapsed_takeovers(
-        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT / 2,
     );
     assert_eq!(
         host.actor_snapshot("alice").unwrap()["input_ownership"][0]["actor_id"],
@@ -1892,7 +1893,7 @@ fn mp10_same_terminal_lease_reconnect_keeps_takeover_past_the_orphan_deadline() 
 }
 
 #[test]
-fn mp10_replacement_viewer_lease_recovers_the_orphaned_takeover_for_its_lifetime() {
+fn mp10_replacement_viewer_lease_recovers_takeover_until_the_person_goes_idle() {
     let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-replacement"));
     let input = |tab: &str| json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}});
     let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
@@ -1915,21 +1916,21 @@ fn mp10_replacement_viewer_lease_recovers_the_orphaned_takeover_for_its_lifetime
     let second = host.lease_terminal("alice", "terminal:b");
     let ownership =
         |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
-    // The first viewer's orphan deadline passes while the replacement only watches.
-    model.lock().unwrap().reclaim_lapsed_takeovers(
-        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    // The replacement watches before the person reaches the idle timeout.
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT / 2,
     );
     assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
     assert!(
         model.lock().unwrap().begin(agent(), &input("a")).is_err(),
         "the agent stays fenced while the person's replacement viewer is present"
     );
-    // The replacement viewer's own absence starts a fresh orphan timeout.
+    // Disconnecting the replacement preserves the existing idle timeout.
     drop(second);
     assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
     assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
-    model.lock().unwrap().reclaim_lapsed_takeovers(
-        Instant::now() + super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT,
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT,
     );
     assert!(host.actor_snapshot("alice").unwrap()["input_ownership"]
         .as_array()
@@ -1959,11 +1960,11 @@ fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() 
             .unwrap();
     }
     drop(first);
-    let timeout = super::super::kernel_browser_actors::ORPHANED_TAKEOVER_TIMEOUT;
+    let timeout = super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT;
     model
         .lock()
         .unwrap()
-        .reclaim_lapsed_takeovers(Instant::now() + timeout);
+        .reclaim_idle_takeovers(Instant::now() + timeout / 2);
     let ownership =
         |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
     assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
@@ -1971,12 +1972,12 @@ fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() 
         model.lock().unwrap().begin(agent(), &input("a")).is_err(),
         "the agent stays fenced while the person's other viewer is connected"
     );
-    // The last viewer's absence is the only thing that starts the timeout.
+    // The existing idle timeout still ends the takeover after the last viewer leaves.
     drop(second);
     assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
     model
         .lock()
         .unwrap()
-        .reclaim_lapsed_takeovers(Instant::now() + timeout);
+        .reclaim_idle_takeovers(Instant::now() + timeout);
     assert!(ownership(&host).as_array().unwrap().is_empty());
 }
