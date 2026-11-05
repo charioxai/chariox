@@ -330,3 +330,25 @@ test('MP-08/MP-10/MP-11 region capture and encoder drain concurrently before rel
  } finally {clearTimeout(timer);release.resolve();await closing;}
  assert.equal(leaseClosed,true);
 });
+
+// A resize can retire the admitted region while native startup awaits a mask or codec.
+test('MP-08/MP-10 retired region startup reports the existing stale refusal and releases resources',async()=>{
+ const f=fixture();
+ class Capture extends f.Capture {async start(){await Promise.resolve();f.retire();throw Error('MP-11: native readback source not owned');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.host.displays.size,0);assert.equal(f.lease.isAlive(),false);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});
+
+test('MP-11 active-region startup failures retain the original ownership error',async()=>{
+ const f=fixture(),failure=Error('MP-11: native readback source not owned');
+ class Capture extends f.Capture {async start(){throw failure;}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),error=>error===failure);
+ assert.equal(f.host.displays.size,0);assert.equal(f.lease.isAlive(),false);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});
+
+test('MP-08/MP-10 a retired native window invalidates startup even while mirror geometry is unchanged',async()=>{
+ const f=fixture();
+ class Capture extends f.Capture {async start(){f.binding.isCurrent=()=>false;throw Error('MP-11: native readback source not owned');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.host.displays.size,0);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});

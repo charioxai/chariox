@@ -63,5 +63,12 @@ export async function createRegionDisplay({host,command,scope,signal,target,leas
   const offWindow=host.chromeWindows.onRetire?.(()=>{if(!window.isCurrent())void host.removeDisplay(stream.subscription_id).catch(()=>{});});
   offRetire=()=>{unwatch?.();offBand?.();offWindow?.();};
   host.armDisplayExpiry(stream);return result;
- }catch(error){if(stream)await stream.close();else{await source?.close();await lease.close();}throw error;}
+ }catch(error){
+  // Startup may fail after its admitted region retires; check before cleanup closes the lease.
+  let current;
+  try{current=target.kind!=='region'||window.isCurrent()&&await lease.isCurrent();}
+  finally{if(stream)await stream.close();else{await source?.close();await lease.close();}}
+  if(!current)refuse();
+  throw error;
+ }
 }

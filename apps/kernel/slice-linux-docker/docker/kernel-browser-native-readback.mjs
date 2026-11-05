@@ -12,14 +12,19 @@ import {ownsDisplay} from './kernel-browser-owned-display.mjs';
 export function nativeReadbackFailure(capture,message){
  return Object.assign(Error(message),{nativeStage:capture.helperStage});
 }
-export async function startNativeReadback(capture,config){
- if(!ownsDisplay(capture.display)||!capture.valid()||!Number.isSafeInteger(capture.pid)||capture.pid<=1)
+function assertOwnedReadback(capture){
+ if(!ownsDisplay(capture.display)||!Number.isSafeInteger(capture.pid)||capture.pid<=1||!capture.valid())
   throw Error('MP-11: native readback source not owned');
+}
+export async function startNativeReadback(capture,config){
+ assertOwnedReadback(capture);
  if(config.window_region&&!nativeWorkerResource())
   throw Error('MP-08: cropped native worker unavailable');
  config=Object.freeze({...config,...(config.window_region?{window_region:Object.freeze({...config.window_region})}:{})});
    const executable=nativeWorkerResource()?.executable,environment={...process.env,...capture.display.environment};
    if(executable){capture.phase='codec';Object.assign(environment,await prepareNativeCodecEnvironment({worker:executable,environment}));}
+   // Codec setup yields while a resize or navigation can retire the admitted source.
+   assertOwnedReadback(capture);
    capture.phase='readback';const child=spawn(executable||process.env.CHARIOX_BROWSER_DISPLAY_PYTHON||'python3',executable?['--display-native-worker']:['-u',fileURLToPath(new URL('./kernel-browser-xshm.py',import.meta.url))],{env:environment,stdio:executable?['pipe','pipe','pipe','pipe']:['pipe','pipe','pipe']});capture.child=child;if(executable)capture.nativeWorker=new NativeWorkerControl(child,capture.timing);
    const fail=()=>{if(!capture.closed)capture.timing?.(`native_readback_ended ${capture.surface??'page'}`,performance.timeOrigin+performance.now());capture.fence()};child.on('error',fail);child.on('exit',fail);child.stdin.on('error',fail);
    // MP-08/MP-10: fixed-label stage and owned-window sizes only.
