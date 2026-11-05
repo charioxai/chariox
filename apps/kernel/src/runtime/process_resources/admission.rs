@@ -50,10 +50,18 @@ impl Wait {
 }
 
 /// The largest memory and the bytes written by one run of a command.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Peak {
     pub memory: u64,
     pub writes: u64,
+    /// Where the run's output went: a path on the volume that received the
+    /// most of its writes, and how much it received there. `None` while no
+    /// run showed it, since the working directory says nothing about it (a
+    /// checkout on one volume can build into another).
+    #[serde(default)]
+    pub volume: Option<PathBuf>,
+    #[serde(default)]
+    pub volume_writes: u64,
     /// The exact command line (numbers kept) of the run that reached it: a
     /// peak decides alone only for that line, since `-j16` and `-j1` share
     /// the normalized key.
@@ -133,26 +141,31 @@ impl Entry {
         self.holdable
     }
 
-    /// The workspace volume used for advisory reservations. A destructive
-    /// disk stop requires observed output-file growth on the receiving volume.
+    /// The volume its last run wrote most to: the one it waits for. Where the
+    /// output goes is unknown until a run showed it, and then it is not
+    /// held: a destructive disk stop requires observed growth anyway.
     fn disk(&self, room: &Room) -> Option<Disk> {
-        self.seen
-            .as_ref()
-            .and_then(|seen| disk_room(room.volume, seen.cwd.as_deref()?))
+        let volume = self.expected.as_ref()?.volume.as_ref()?;
+        // The file may be gone since: its nearest directory is on the same volume.
+        volume
+            .ancestors()
+            .find_map(|path| disk_room(room.volume, path))
     }
 
-    /// Writes it still has ahead toward its expected peak; only a heavy
-    /// writer counts.
+    /// Writes it still has ahead toward its expected peak on that volume;
+    /// only a heavy writer counts.
     fn writes_ahead(&self, room: &Room) -> u64 {
         self.expected
-            .filter(|peak| peak.writes >= room.light)
-            .map_or(0, |peak| peak.writes.saturating_sub(self.writes))
+            .as_ref()
+            .filter(|peak| peak.volume.is_some() && peak.volume_writes >= room.light)
+            .map_or(0, |peak| peak.volume_writes.saturating_sub(self.writes))
     }
 
     /// Memory it still has ahead toward its expected peak; only a heavy
     /// command counts.
     fn memory_ahead(&self, room: &Room) -> u64 {
         self.expected
+            .as_ref()
             .filter(|peak| peak.memory >= room.light)
             .map_or(0, |peak| peak.memory.saturating_sub(self.resident))
     }
@@ -201,7 +214,7 @@ impl HeldCommand {
             forced: entry.forced,
             stopped: entry.stopped,
             paused_rate: entry.paused_rate,
-            peak: entry.peak,
+            peak: entry.peak.clone(),
             arrived: entry.arrived,
             since_ms: entry.since_ms,
         })
@@ -365,6 +378,15 @@ impl Ledger {
             entry.writes = command.writes;
             entry.peak.memory = entry.peak.memory.max(command.resident);
             entry.peak.writes = entry.peak.writes.max(command.writes);
+            if let Some(output) = observation
+                .disk_writes
+                .get(&command.pid)
+                .and_then(|outputs| outputs.iter().max_by_key(|output| output.written))
+                .filter(|output| output.written > entry.peak.volume_writes)
+            {
+                entry.peak.volume = Some(output.path.clone());
+                entry.peak.volume_writes = output.written;
+            }
             // Until it is decided, follow a shell to the command it runs.
             if !entry.admitted
                 && entry.wait.is_none()
@@ -582,7 +604,7 @@ impl Ledger {
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
             }
-            let Some(expected) = entry.expected else {
+            let Some(expected) = entry.expected.clone() else {
                 // Unknown: light until it grows.
                 entry.admitted = entry.resident >= room.light;
                 continue;
@@ -706,6 +728,7 @@ impl Ledger {
             *available = available.saturating_sub(
                 entry
                     .expected
+                    .as_ref()
                     .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
             );
             if let Some(volume) = volume {
@@ -794,7 +817,11 @@ impl State {
     /// heavy work it is, however it came to run.
     fn running(&mut self, entry: &Entry, room: &Room) {
         let heavy = entry.resident >= room.light
-            || entry.admitted && entry.expected.is_some_and(|peak| peak.memory >= room.light);
+            || entry.admitted
+                && entry
+                    .expected
+                    .as_ref()
+                    .is_some_and(|peak| peak.memory >= room.light);
         if heavy {
             self.heavy_running = true;
             self.oldest = Some(
@@ -820,6 +847,7 @@ impl State {
                 if entry.admitted {
                     state.reserved += entry
                         .expected
+                        .as_ref()
                         .map_or(0, |peak| peak.memory.saturating_sub(entry.resident));
                     let ahead = entry.writes_ahead(room);
                     if let Some(disk) = entry.disk(room).filter(|_| ahead > 0) {
@@ -835,9 +863,9 @@ impl State {
 
 /// What a waiting command still needs to continue.
 fn need(entry: &Entry, reason: WaitReason, room: &Room) -> u64 {
-    let expected = entry.expected.map(|peak| match reason {
+    let expected = entry.expected.as_ref().map(|peak| match reason {
         WaitReason::Memory => peak.memory.saturating_sub(entry.resident),
-        WaitReason::Disk => peak.writes.saturating_sub(entry.writes),
+        WaitReason::Disk => peak.volume_writes.saturating_sub(entry.writes),
     });
     match entry.wait {
         Some(Wait::Held(_)) => expected.unwrap_or(room.growth_room),
@@ -914,9 +942,9 @@ fn number(
                 continue;
             };
             entry.position = position as u32 + 1;
-            entry.need = match (reason, entry.expected) {
+            entry.need = match (reason, entry.expected.as_ref()) {
                 (WaitReason::Memory, Some(peak)) => peak.memory,
-                (WaitReason::Disk, Some(peak)) => peak.writes,
+                (WaitReason::Disk, Some(peak)) => peak.volume_writes,
                 _ => entry.resident + room.growth_room,
             };
             entry.free = match reason {
@@ -1192,7 +1220,7 @@ impl Peaks {
     }
 
     fn get(&self, key: &str) -> Option<Peak> {
-        self.known.get(key).copied()
+        self.known.get(key).cloned()
     }
 
     /// Light runs of an unknown command are not worth remembering.

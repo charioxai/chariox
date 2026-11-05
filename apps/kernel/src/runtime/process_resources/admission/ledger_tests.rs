@@ -94,11 +94,13 @@ fn wait(member: &Arc<Mutex<Observation>>, pid: u32) -> Option<Wait> {
     member.lock().unwrap().admission[&pid].wait
 }
 
+/// A peak whose run wrote `writes` bytes to the volume under `/scratch`.
 fn scratch(writes: u64) -> Peak {
     Peak {
-        memory: 0,
         writes,
-        exact: 0,
+        volume: Some("/scratch/output".into()),
+        volume_writes: writes,
+        ..Peak::default()
     }
 }
 
@@ -182,7 +184,7 @@ fn writers_on_different_volumes_reserve_room_separately() {
         })
     });
     let mut elsewhere = entry(3, scratch(6 * GIB));
-    elsewhere.seen.as_mut().unwrap().cwd = Some(PathBuf::from("/other/build"));
+    elsewhere.expected.as_mut().unwrap().volume = Some("/other/output".into());
     let current = owner(
         "agent",
         true,
@@ -217,6 +219,7 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
             memory: 900 * MIB,
             writes: 0,
             exact: 0,
+            ..Peak::default()
         },
     );
     build.admitted = true;
@@ -228,7 +231,10 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
             Peak {
                 memory: 600 * MIB,
                 writes: GIB,
+                volume: Some("/scratch/output".into()),
+                volume_writes: GIB,
                 exact: 0,
+                ..Peak::default()
             },
         )
     };
@@ -263,7 +269,10 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
             Peak {
                 memory: 600 * MIB,
                 writes: 6 * GIB,
+                volume: Some("/scratch/output".into()),
+                volume_writes: 6 * GIB,
                 exact: 0,
+                ..Peak::default()
             },
         )
     };
@@ -334,7 +343,10 @@ fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory
             Peak {
                 memory: 6 * GIB,
                 writes: GIB,
+                volume: Some("/scratch/output".into()),
+                volume_writes: GIB,
                 exact: 0,
+                ..Peak::default()
             },
         )
     };
@@ -368,12 +380,13 @@ fn two_new_known_builds_do_not_both_start_onto_one_free_machine() {
         memory: 6 * GIB,
         writes: 0,
         exact: 0,
+        ..Peak::default()
     };
     let current = owner(
         "agent",
         true,
         vec![command(1, 0, 0), command(2, 0, 0)],
-        vec![(1, entry(1, peak)), (2, entry(2, peak))],
+        vec![(1, entry(1, peak.clone())), (2, entry(2, peak))],
     );
     Ledger::new(None).pass(
         std::slice::from_ref(&current),
@@ -708,6 +721,7 @@ fn a_paused_and_a_held_command_are_one_row_apart_from_the_kind() {
                 memory: 6 * GIB,
                 writes: 0,
                 exact: 0,
+                ..Peak::default()
             },
         );
         waiting.wait = Some(wait);
@@ -942,6 +956,7 @@ fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
             memory: 80 * GIB,
             writes: 0,
             exact: 0,
+            ..Peak::default()
         },
     );
     let fits = entry(
@@ -950,6 +965,7 @@ fn a_command_that_needs_more_than_the_whole_pool_is_refused_not_held() {
             memory: 40 * GIB,
             writes: 0,
             exact: 0,
+            ..Peak::default()
         },
     );
     let current = owner(
@@ -982,6 +998,7 @@ fn a_smaller_run_of_a_command_is_not_refused_for_the_peak_of_a_bigger_one() {
             memory: 80 * GIB,
             writes: 0,
             exact: 7,
+            ..Peak::default()
         },
     );
     smaller.seen.as_mut().unwrap().exact = 8;
@@ -991,6 +1008,7 @@ fn a_smaller_run_of_a_command_is_not_refused_for_the_peak_of_a_bigger_one() {
             memory: 80 * GIB,
             writes: 0,
             exact: 7,
+            ..Peak::default()
         },
     );
     same.seen.as_mut().unwrap().exact = 7;
@@ -1200,7 +1218,7 @@ fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
         ..entry(arrived, scratch(6 * GIB))
     };
     let mut later = held(2);
-    later.seen.as_mut().unwrap().cwd = Some("/other/build".into());
+    later.expected.as_mut().unwrap().volume = Some("/other/output".into());
     let first = owner("first", true, vec![command(1, 0, 0)], vec![(1, held(1))]);
     let second = owner(
         "second",
@@ -1228,4 +1246,106 @@ fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
     ledger.pass(&members, &first, &room(GIB, false, &*volume));
     assert_eq!(wait(&first, 1), None);
     assert!(wait(&second, 3).is_some());
+}
+
+#[test]
+fn a_known_writer_waits_for_the_volume_its_output_goes_to_not_the_checkout_volume() {
+    // The checkout (/scratch) is below its floor; the build wrote its 6 GiB
+    // to a roomy volume under /data last time.
+    let checkout = Arc::new(AtomicU64::new(GIB));
+    let output = Arc::new(AtomicU64::new(40 * GIB));
+    let (checkout_space, output_space) = (checkout.clone(), output.clone());
+    let volume: Box<Volume> = Box::new(move |path| {
+        let data = path.starts_with("/data");
+        Some(Space {
+            id: if data { 2 } else { 1 },
+            free: if data { &output_space } else { &checkout_space }.load(Ordering::SeqCst),
+            total: 100 * GIB,
+        })
+    });
+    let build = |arrived, volume: &str| {
+        let mut build = entry(arrived, scratch(6 * GIB));
+        build.expected.as_mut().unwrap().volume = Some(volume.into());
+        build
+    };
+    let current = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0), command(2, 0, 0)],
+        vec![
+            (1, build(1, "/data/target/out.o")),
+            (2, build(2, "/scratch/out.o")),
+        ],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(
+        wait(&current, 1),
+        None,
+        "a build whose output goes to a roomy volume was held for its full checkout volume"
+    );
+    assert_eq!(
+        wait(&current, 2),
+        Some(Wait::Held(WaitReason::Disk)),
+        "a build whose output goes to the full volume started"
+    );
+    // The checkout volume recovering releases the one that writes there.
+    checkout.store(30 * GIB, Ordering::SeqCst);
+    unsettle(&mut ledger);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(wait(&current, 2), None);
+}
+
+#[test]
+fn a_known_writer_whose_output_volume_was_never_seen_is_not_held_for_disk() {
+    let free = Arc::new(AtomicU64::new(GIB));
+    let volume = volume(&free);
+    let mut unseen = entry(1, scratch(6 * GIB));
+    unseen.expected.as_mut().unwrap().volume = None;
+    let current = owner("agent", true, vec![command(1, 0, 0)], vec![(1, unseen)]);
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&current),
+        &current,
+        &room(GIB, false, &*volume),
+    );
+    assert_eq!(wait(&current, 1), None);
+}
+
+#[test]
+fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
+    let (_, build, usage) = writing(1, 6 * GIB, 50 * MIB);
+    let current = owner("agent", true, vec![usage], vec![(1, build)]);
+    {
+        let mut observation = current.lock().unwrap();
+        observation
+            .disk_writes
+            .get_mut(&1)
+            .unwrap()
+            .push(disk_use::VolumeWrites {
+                id: 2,
+                path: "/data/target/out.o".into(),
+                written: 5 * GIB,
+                rate: 50 * MIB,
+                files: [9].into(),
+            });
+    }
+    let mut ledger = Ledger::new(None);
+    ledger.register(&current, 512 * MIB);
+    current.lock().unwrap().commands.clear();
+    ledger.register(&current, 512 * MIB);
+    let peak = ledger
+        .peaks
+        .get("key-1")
+        .expect("the heavy run was remembered");
+    assert_eq!(peak.volume, Some(PathBuf::from("/scratch/output")));
+    assert_eq!(peak.volume_writes, 6 * GIB);
 }
