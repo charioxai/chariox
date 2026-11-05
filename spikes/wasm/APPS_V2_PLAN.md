@@ -1,6 +1,7 @@
 # Apps v2: one plan, two testable stages
 
-For Miguel · updated 2026-11-02 · design only; Apps implementation stays **PAUSED**.
+For Miguel · updated 2026-11-05 · Apps product cutover stays **PAUSED**;
+the AV1 feasibility candidate and its failed network gate are recorded in §2.1.2.
 
 ## 1. Summary
 
@@ -173,6 +174,17 @@ messages cannot choose the kernel, owner, Room or arbitrary RPC method. Closing
 the page detaches its view; CLI exit closes the host and its exact owned sockets.
 
 ### 2.1.2 Verified bundle and generation (MP-08 / MP-10 / MP-11)
+
+AV1 implementation result (2026-11-05, MP-08 / MP-09 / MP-10 / MP-11): the
+candidate renders both reference Apps in the built Cloud web assets at DPR 1/2,
+but the ordinary-profile Chrome155 network gate is **FAIL**. Speculative
+navigation/preconnect opens TCP sockets and explicit DNS-prefetch issues queries
+despite the candidate restrictions. No browser is accepted for contained App
+views from this result. The candidate packer, host/bootstrap/CSP, complete
+controls, evidence and AV2–AV7 dependencies are frozen in
+[`docs/APP_VIEW_HOST_AV1.md`](../../docs/APP_VIEW_HOST_AV1.md). Keep the streamed
+product path until a contained path passes its real exits; this feasibility
+result does not authorize cutover or relax the network guarantee.
 
 Opening returns a kernel-authenticated descriptor: installation, owner/Room
 scope, decimal-string generation, release digest, view entry, signed manifest

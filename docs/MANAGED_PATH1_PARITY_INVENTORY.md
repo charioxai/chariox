@@ -1,5 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 client App view feasibility (AV1)
+
+The 2026-11-05 renderer candidate is shared client code in
+`packages/app-view-host`, pinned into Cloud's built web assets. Both reference
+frontends render at native DPR 1/2, but the ordinary-profile Chrome155 containment
+gate fails: blocked navigation and explicit preconnect still open TCP sockets,
+and explicit DNS-prefetch still issues queries. There is no accepted contained
+browser, App-open cutover, kernel/protocol change or managed activity lease.
+Real ordinary/managed Web/TUI/relay opens require AV2–AV5 and remain untested.
+
+The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
+pre-script bootstrap, inherited policy and Cloud's dedicated static response are
+the security anchors for this candidate. Their rule-removal controls and exact
+evidence/limitations are in [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md).
+Renderer/source checks do not close live MP parity or the AV1 network gate.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

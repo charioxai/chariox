@@ -5,6 +5,7 @@ import { checkLicenses, root, files, sha256 } from './licenses.mjs';
 import { npmPackages } from '../../../../packages/app-sdk-tools/npm-notices.mjs';
 
 const output = process.argv[2];
+const clientView = process.argv.includes('--client-view');
 if (!output || !isAbsolute(output) || !relative(root, output).startsWith('..')) {
   throw Error('usage: node scripts/build-view.mjs /absolute/output/bundle (outside the checkout)');
 }
@@ -18,10 +19,10 @@ await mkdir(join(output, 'ui'));
 let fontTransforms = 0;
 const result = await build({
   absWorkingDir: root, entryPoints: ['src/main.jsx'], outdir: join(output, 'ui'), entryNames: 'app',
-  bundle: true, splitting: true, format: 'esm', target: 'es2022', minify: true,
+  bundle: true, splitting: !clientView, format: 'esm', target: 'es2022', minify: true,
   conditions: ['production'], define: { 'process.env.NODE_ENV': '"production"' },
-  loader: { '.woff2': 'file' },
-  legalComments: 'linked', metafile: true,
+  loader: { '.woff2': clientView ? 'dataurl' : 'file' },
+  legalComments: clientView ? 'inline' : 'linked', metafile: true,
   plugins: [{ name: 'excalidraw-app-assets', setup(build) {
     build.onResolve({ filter: /^@excalidraw\/mermaid-to-excalidraw$/ }, () => ({ path: join(root, 'src/mermaid.js') }));
     build.onLoad({ filter: /dist\/prod\/chunk-K2UTITRG\.js$/ }, async ({ path }) => {
@@ -63,7 +64,7 @@ for (const file of await files(join(root, 'node_modules/.pnpm'))) {
 await writeFile(join(output, 'licenses/DEPENDENCY-NOTICES.txt'), notices.join('\n'));
 await writeFile(join(output, 'ui/index.html'), '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Excalidraw</title><link rel="stylesheet" href="app.css"><style>html,body,#root{height:100%;margin:0}</style><script src="assets.js"></script><script type="module" src="app.js"></script></head><body><div id="root"></div></body></html>');
 await writeFile(join(output, 'ui/assets.js'), 'window.EXCALIDRAW_ASSET_PATH = new URL("./", document.currentScript.src).href;');
-await writeFile(join(output, 'view-build.json'), JSON.stringify({ inputs: Object.keys(result.metafile.inputs).sort() }, null, 2) + '\n');
+await writeFile(join(output, 'view-build.json'), JSON.stringify({ inputs: Object.keys(result.metafile.inputs).sort(), outputs: result.metafile.outputs }, null, 2) + '\n');
 let uiBytes = 0;
 for (const file of await files(join(output, 'ui'))) uiBytes += (await stat(join(output, 'ui', file))).size;
 if (uiBytes > 8 * 1024 * 1024) throw Error(`UI exceeds the browser host's 8 MiB asset budget: ${uiBytes} bytes`);
