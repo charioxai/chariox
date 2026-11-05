@@ -568,6 +568,29 @@ impl EnvironmentActionLedger {
         self.pending_takeovers.retain(|_, owner| owner != actor_id);
     }
 
+    /// A disconnected person keeps the Tabs they took over; everything else they held is released.
+    pub(crate) fn release_actor_input_keeping_tabs(&mut self, actor_id: &str) {
+        self.input_owners.retain(|target, owner| {
+            owner != actor_id || matches!(target, InputTarget::BrowserTab(_))
+        });
+        self.pending_takeovers.retain(|_, owner| owner != actor_id);
+    }
+
+    /// Move every Tab `from` took over to `to`: the same person on a new connection.
+    pub(crate) fn transfer_tab_ownership(&mut self, from: &str, to: &str) {
+        for (target, owner) in &mut self.input_owners {
+            if owner == from && matches!(target, InputTarget::BrowserTab(_)) {
+                *owner = to.to_string();
+            }
+        }
+    }
+
+    pub(crate) fn owns_tab(&self, actor_id: &str) -> bool {
+        self.input_owners.iter().any(|(target, owner)| {
+            owner == actor_id && matches!(target, InputTarget::BrowserTab(_))
+        })
+    }
+
     pub(crate) fn invalidate_after_kernel_restart(
         &mut self,
         actors: &BTreeMap<String, EnvironmentActor>,

@@ -1,4 +1,4 @@
-//! MP-10: a relay viewer's browser actor ends with the viewer, like a local socket's.
+//! MP-10: a relay viewer's browser actor ends with the viewer, like a local socket's, except for a Tab its person took over.
 #![cfg(unix)]
 use super::support::*;
 use crate::transport::relay_client::subscriptions::{
@@ -100,6 +100,16 @@ impl Rig {
             .len()
     }
 
+    /// The Tabs a person holds after Take over.
+    fn held_tabs(&self) -> usize {
+        self.router
+            .runtime_state()
+            .kernel_browser_fixture_actors(&self.user)["input_ownership"]
+            .as_array()
+            .unwrap()
+            .len()
+    }
+
     /// The viewer opens its relay subscription, then takes over the Tab, as the web viewer does.
     async fn connect(&self, viewer: usize) -> Result<String, DaemonError> {
         let key = relay_crypto::public_key_from_private_key_base64(
@@ -155,7 +165,7 @@ impl Rig {
 }
 
 #[tokio::test]
-async fn mp10_reloaded_relay_viewers_do_not_leave_browser_actors_behind() {
+async fn mp10_reloaded_relay_viewers_leave_only_the_actor_that_holds_the_takeover() {
     let _guard = relay_client_test_guard().await;
     let rig = Rig::new().await;
     let (mut left_behind, mut refused) = (Vec::new(), Vec::new());
@@ -166,10 +176,15 @@ async fn mp10_reloaded_relay_viewers_do_not_leave_browser_actors_behind() {
         }
         left_behind.push(rig.actors());
     }
+    let held = rig.held_tabs();
     rig.router.runtime_state().shutdown_cleanup().await.unwrap();
     assert!(
-        refused.is_empty() && left_behind.iter().all(|actors| *actors == 0),
+        refused.is_empty() && left_behind.iter().all(|actors| *actors <= 1),
         "actors left after each of 70 ended viewers: {left_behind:?}; refused: {refused:?}"
+    );
+    assert_eq!(
+        held, 1,
+        "the person's takeover follows each reloaded viewer and is still theirs"
     );
 }
 
@@ -209,24 +224,29 @@ async fn mp10_a_viewer_with_two_subscriptions_keeps_its_actor_until_the_last_one
     )
     .await
     .unwrap();
-    assert_eq!(rig.actors(), 0);
+    assert_eq!(
+        (rig.actors(), rig.held_tabs()),
+        (1, 1),
+        "the viewer is gone; its person still holds the Tab"
+    );
     rig.router.runtime_state().shutdown_cleanup().await.unwrap();
 }
 
 #[tokio::test]
-async fn mp10_a_lost_relay_connection_releases_every_viewers_actor() {
+async fn mp10_a_lost_relay_connection_keeps_the_persons_takeover_for_their_next_viewer() {
     let _guard = relay_client_test_guard().await;
     let rig = Rig::new().await;
     rig.connect(1).await.unwrap();
     assert_eq!(rig.actors(), 1);
     abort_subscription_tasks(&rig.router, &rig.tasks).await;
     assert_eq!(
-        rig.actors(),
-        0,
-        "the kernel lost its relay: no viewer is left"
+        (rig.actors(), rig.held_tabs()),
+        (1, 1),
+        "the kernel lost its relay: no viewer is left, the person's takeover is kept"
     );
     rig.connect(2)
         .await
-        .expect("the next viewer can take over the Tab");
+        .expect("the next viewer continues the person's takeover");
+    assert_eq!((rig.actors(), rig.held_tabs()), (1, 1));
     rig.router.runtime_state().shutdown_cleanup().await.unwrap();
 }
