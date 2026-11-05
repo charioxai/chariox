@@ -81,6 +81,7 @@ pub(crate) struct ProviderUsageRefresher {
     registry: ProviderAccountProfileRegistry,
     reader: Box<dyn ProviderUsageReader>,
     has_running_agent: Box<dyn Fn(&UsageAccountKey) -> bool + Send + Sync>,
+    now_ms: Box<dyn Fn() -> u64 + Send + Sync>,
     schedules: Mutex<HashMap<UsageAccountKey, AccountSchedule>>,
     finished: Notify,
 }
@@ -95,6 +96,7 @@ impl ProviderUsageRefresher {
             registry,
             reader,
             has_running_agent,
+            now_ms: Box::new(crate::session::unix_epoch_ms),
             schedules: Mutex::new(HashMap::new()),
             finished: Notify::new(),
         })
@@ -197,6 +199,7 @@ impl ProviderUsageRefresher {
             .reader
             .read(key)
             .and_then(|usage| self.record(key, usage));
+        let finished_at_ms = (self.now_ms)();
         let outcome = {
             let mut schedules = self.lock();
             let schedule = schedules.entry(key.clone()).or_default();
@@ -211,14 +214,17 @@ impl ProviderUsageRefresher {
                 Err(error) => {
                     schedule.failures = schedule.failures.saturating_add(1);
                     let wait = failure_wait(schedule.failures, error.retry_after);
-                    schedule.no_read_before_ms = now_ms.saturating_add(wait.as_millis() as u64);
+                    schedule.no_read_before_ms =
+                        finished_at_ms.saturating_add(wait.as_millis() as u64);
+                    let failures = schedule.failures;
+                    drop(schedules);
                     crate::logging::warn_with_fields(
                         "daemon.provider",
                         "provider usage refresh failed; keeping the last reading",
                         serde_json::json!({
                             "provider": key.provider,
                             "account_profile": key.profile_id,
-                            "failures": schedule.failures,
+                            "failures": failures,
                             "retry_in_secs": wait.as_secs(),
                             "error": error.message,
                         }),

@@ -61,6 +61,7 @@ struct ScriptedReader {
     answers: Mutex<VecDeque<Result<f64, ProviderUsageReadError>>>,
     clock: Arc<AtomicU64>,
     reads: Arc<AtomicUsize>,
+    read_delay_ms: Arc<AtomicU64>,
 }
 
 impl ProviderUsageReader for ScriptedReader {
@@ -69,6 +70,8 @@ impl ProviderUsageReader for ScriptedReader {
         _account: &UsageAccountKey,
     ) -> Result<ProviderAccountUsageSnapshot, ProviderUsageReadError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
+        self.clock
+            .fetch_add(self.read_delay_ms.load(Ordering::SeqCst), Ordering::SeqCst);
         let answer = self
             .answers
             .lock()
@@ -86,6 +89,7 @@ struct Fixture {
     t0: u64,
     clock: Arc<AtomicU64>,
     reads: Arc<AtomicUsize>,
+    read_delay_ms: Arc<AtomicU64>,
     running: Arc<AtomicBool>,
     _root: crate::test_support::TestWorktree,
 }
@@ -111,18 +115,23 @@ impl Fixture {
         let t0 = crate::session::unix_epoch_ms();
         let clock = Arc::new(AtomicU64::new(t0));
         let reads = Arc::new(AtomicUsize::new(0));
+        let read_delay_ms = Arc::new(AtomicU64::new(0));
         let running = Arc::new(AtomicBool::new(false));
         let reader = ScriptedReader {
             answers: Mutex::new(answers.into()),
             clock: Arc::clone(&clock),
             reads: Arc::clone(&reads),
+            read_delay_ms: Arc::clone(&read_delay_ms),
         };
         let running_flag = Arc::clone(&running);
-        let refresher = ProviderUsageRefresher::new(
+        let mut refresher = ProviderUsageRefresher::new(
             registry.clone(),
             Box::new(reader),
             Box::new(move |_| running_flag.load(Ordering::SeqCst)),
         );
+        let refresh_clock = Arc::clone(&clock);
+        Arc::get_mut(&mut refresher).unwrap().now_ms =
+            Box::new(move || refresh_clock.load(Ordering::SeqCst));
         Self {
             refresher,
             key: UsageAccountKey {
@@ -134,6 +143,7 @@ impl Fixture {
             t0,
             clock,
             reads,
+            read_delay_ms,
             running,
             _root: root,
         }
@@ -303,6 +313,32 @@ fn a_selected_candidate_cannot_bypass_a_retry_delay_installed_by_another_reader(
         UsageRefreshOutcome::Refreshed
     );
     assert_eq!(f.reads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_slow_failure_starts_the_retry_delay_when_the_reader_finishes() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::new(vec![Err(
+        ProviderUsageReadError::new("rate limited").retry_after(Some(Duration::from_secs(60))),
+    )]);
+    f.read_delay_ms.store(10_000, Ordering::SeqCst);
+
+    assert_eq!(
+        f.refresher.refresh_account(&f.key, f.at(0.0)),
+        UsageRefreshOutcome::Failed
+    );
+
+    let retry_at = f.refresher.lock()[&f.key].no_read_before_ms;
+    assert!(
+        retry_at >= f.t0 + 70_000,
+        "the promised wait must start after the ten-second read finishes"
+    );
+    assert!(f.refresher.due_accounts(f.at(69.0 / 60.0)).is_empty());
+    assert!(f
+        .refresher
+        .stale_accounts("local", None, f.at(69.0 / 60.0))
+        .is_empty());
+    assert_eq!(f.refresher.due_accounts(f.at(77.0 / 60.0)), vec![f.key.clone()]);
 }
 
 #[test]
