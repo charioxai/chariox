@@ -13,7 +13,7 @@ pub enum LocalDaemonResponse {
     EventsAcknowledged { cursor: u64 },
     EventsCursorExpired { oldest_cursor: u64 },
     AgentDeadline { deadline: Option<AgentDeadline> },
-    SshMachine { machine: SshMachineResult },
+    OwnMachineEnrollment { enrollment: OwnMachineEnrollmentCommand },
     EnvironmentUnsupportedFeature { feature: crate::project_environment::EnvironmentCapability, supported_schema: u32 },
     ProjectEnvironmentDiff { diff: crate::project_environment::EnvironmentRevisionDiff },
     ProjectEnvironmentSaved { environment: crate::project_environment::ProjectEnvironment, diff: crate::project_environment::EnvironmentRevisionDiff },

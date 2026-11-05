@@ -603,6 +603,30 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
 }
 
 #[tokio::test]
+async fn persistent_command_cache_never_writes_an_own_machine_enrollment_code() {
+    let path = temp_cache_path("own-machine-enrollment-not-persisted");
+    let mut fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"enroll");
+    fingerprint.command_type = "machine.enroll".to_string();
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    cache
+        .insert_completed_for_test(
+            "command-enroll".to_string(),
+            fingerprint.clone(),
+            Some(serde_json::json!({ "command": "printf '%s\\n' ket_one-time-code" })),
+        )
+        .await;
+
+    let stored = fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        !stored.contains("ket_one-time-code"),
+        "the enrollment code reached the command result file"
+    );
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn command_cache_byte_bounds_oversized_non_persisted_results_in_memory() {
     let path = temp_cache_path("byte-bound-oversized-memory-results");
     let retention = CommandResultRetentionPolicy {

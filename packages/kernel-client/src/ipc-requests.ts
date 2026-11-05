@@ -19,7 +19,7 @@ export * from "./ipc-control-capability.js"
 export * from "./ipc-managed-context-requests.js"
 export * from "./ipc-project-environment-setup-requests.js"
 export * from "./ipc-config-requests.js"
-export * from "./ipc-ssh-machine-requests.js"
+export * from "./ipc-own-machine-enrollment-requests.js"
 export * from "./ipc-room-terminal-requests.js"
 
 export { controlRoomWorkflowRunsRequest } from "./room-workflows.js"

@@ -2,7 +2,7 @@
 import { createInterface } from "node:readline/promises"
 import { stdin, stdout } from "node:process"
 import { installLocal, publicUrl } from "./installer.mjs"
-import { command } from "../kernel/ssh-machine/remote.mjs"
+import { command } from "./machine/remote.mjs"
 
 export async function runSetup(build, argv = process.argv.slice(2)) {
   const options = { ...build, apiUrl: build.controlPlaneUrl }

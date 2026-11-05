@@ -1,12 +1,12 @@
 // MP-07 / MP-08 / MP-11: per-user launchd projection for the shared installer lifecycle.
 import { join } from "node:path"
-import { command, isolatedKernelEnvironment } from "../kernel/ssh-machine/remote.mjs"
+import { command, isolatedKernelEnvironment } from "./machine/remote.mjs"
 const xml = value => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;")
 export function launchdDefinition(id) {
   const name = `com.chariox.kernel.${id}.plist`, label = name.slice(0, -6)
   return { name, relativeDirectory: "Library/LaunchAgents", render(home, request, root, kernelPath) {
     const args = ["/usr/bin/env", ...isolatedKernelEnvironment.flatMap(key => ["-u", key]), `${root}/current/${kernelPath}`]
-    const env = { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", CHARIOX_HOME: `${home}/.chariox/dev/ssh-machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: request.port, CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: request.port + 1 }
+    const env = { HOME: home, PATH: process.env.PATH ?? "/usr/bin:/bin", CHARIOX_HOME: `${home}/.chariox/dev/machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: request.port, CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: request.port + 1 }
     return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict>${Object.entries(env).map(([key, value]) => `<key>${key}</key><string>${xml(value)}</string>`).join("")}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict></dict></plist>\n`
   } }
 }

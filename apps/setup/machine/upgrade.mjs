@@ -2,7 +2,7 @@
 import { lstat, readlink, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { command, regular } from "./remote.mjs"
-const FORMAT = "chariox.ssh-machine-install.v1"
+const FORMAT = "chariox.machine-install.v1"
 const fail = message => { throw new Error(message) }
 const metadata = path => lstat(path).catch(error => error.code === "ENOENT" ? null : Promise.reject(error))
 async function activate(root, digest) {

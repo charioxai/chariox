@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::UserCredentialConfig;
-use crate::local::KernelSudoTurn;
 
 impl KernelRuntimeState {
     /// Shared by generated and captured credentials, including future capture entry points.
@@ -69,48 +68,5 @@ impl KernelRuntimeState {
             .durable_state_store
             .record_created_resource(owner, &row)?;
         Ok(())
-    }
-
-    pub(in crate::runtime) fn record_ssh_resource(
-        &self,
-        turn: &KernelSudoTurn,
-        host: &str,
-        install_id: &str,
-    ) -> Result<(), DaemonError> {
-        // The privileged request already admitted this turn. Recording the result must survive
-        // the turn ending during SSH installation: it records an existing effect, not new authority.
-        let session = self.owned.session_store.get_session(&turn.session_id)?;
-        let row = CreatedResource { id: resource_id(&["ssh",install_id]), project_id: session.project_id().into(),
-            service: host.into(), kind: "ssh_machine".into(), name: install_id.into(), url: None,
-            credential_id: None, created_by: turn.agent_id.clone(), created_at_ms: crate::session::unix_epoch_ms(),
-            revoke: ResourceRevokeMethod::Unavailable { reason: format!("Use RemoveSshMachine with install_id {install_id} to remove this installation.") },
-            state: CreatedResourceState::Active, revoked_at_ms: None, last_http_status: None };
-        self.owned
-            .durable_state_store
-            .record_created_resource(&turn.owner_user_id, &row)?;
-        Ok(())
-    }
-    pub(in crate::runtime) fn record_ssh_removal(
-        &self,
-        turn: &KernelSudoTurn,
-        install_id: &str,
-    ) -> Result<(), DaemonError> {
-        let session = self.owned.session_store.get_session(&turn.session_id)?;
-        let store = &self.owned.durable_state_store;
-        let Some(mut row) = store.created_resource(
-            &turn.owner_user_id,
-            session.project_id(),
-            &resource_id(&["ssh", install_id]),
-        )?
-        else {
-            return Ok(());
-        };
-        if row.state == CreatedResourceState::Revoked {
-            return Ok(());
-        }
-        let previous = row.clone();
-        row.state = CreatedResourceState::Revoked;
-        row.revoked_at_ms = Some(crate::session::unix_epoch_ms());
-        store.change_created_resource(&turn.owner_user_id, &row, Some(&previous))
     }
 }

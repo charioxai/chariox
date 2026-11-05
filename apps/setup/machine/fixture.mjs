@@ -38,16 +38,16 @@ export async function createFixture(dir, chosenKernelBytes) {
   for (const [path, source] of [
     ["deploy/local-linux/provision-docker-admission-locks.py", "../../../deploy/local-linux/provision-docker-admission-locks.py"],
     ["deploy/managed-kernel/chariox-docker-admission-locks.service", "../../../deploy/managed-kernel/chariox-docker-admission-locks.service"],
-    ...["chariox-data-volume-admission.mjs", "slice-data-volume-device.mjs", "slice-data-volume-protected-io.mjs", "slice-disk-quota-xfs-readback.mjs"].map(p => [`apps/kernel/slice-linux-docker/${p}`, `../slice-linux-docker/${p}`]),
+    ...["chariox-data-volume-admission.mjs", "slice-data-volume-device.mjs", "slice-data-volume-protected-io.mjs", "slice-disk-quota-xfs-readback.mjs"].map(p => [`apps/kernel/slice-linux-docker/${p}`, `../../kernel/slice-linux-docker/${p}`]),
   ]) await put(root, `${context}/${path}`, await readFile(new URL(source, import.meta.url)))
   const attestation = Buffer.from(JSON.stringify({ schemaVersion: 1, sourceCommit, sourceTree, target: "x86_64-unknown-linux-gnu", artifacts: ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"].map(name => ({ name, sha256: sha(name === "chariox-kernel" && kernelBytes ? kernelBytes : bytes) })) }))
   const specs = [
     ["chariox-kernel", "/usr/local/bin/chariox-kernel", kernelBytes ?? bytes, 0o755],
     ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", bytes, 0o755],
     ...["chariox-managed-bootstrap.service", "chariox-path1-managed-bootstrap.service", "chariox-rootless-docker.service", "chariox-slice-broker.service"].map(n => [n, `/etc/systemd/system/${n}`, new URL(`../../../deploy/managed-kernel/${n}`, import.meta.url)]),
-    ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", new URL("../slice-linux-docker/chariox-data-volume-admission.service", import.meta.url)],
-    ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", new URL("../slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf", import.meta.url)],
-    ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", new URL("../slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf", import.meta.url)],
+    ["chariox-data-volume-admission.service", "/etc/systemd/system/chariox-data-volume-admission.service", new URL("../../kernel/slice-linux-docker/chariox-data-volume-admission.service", import.meta.url)],
+    ["chariox-rootless-docker.path1-data-volume.conf", "/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf", new URL("../../kernel/slice-linux-docker/chariox-rootless-docker.path1-data-volume.conf", import.meta.url)],
+    ["chariox-slice-disk-quota-allocator.path1-data-volume.conf", "/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf", new URL("../../kernel/slice-linux-docker/chariox-slice-disk-quota-allocator.path1-data-volume.conf", import.meta.url)],
     ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", attestation],
     ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", Buffer.from(sign(null, attestation, builderKeys.privateKey).toString("base64"))],
     ["chariox-builder-public-key", "/usr/lib/chariox/builder-public-key", Buffer.from(publicKey(builderKeys.publicKey))],

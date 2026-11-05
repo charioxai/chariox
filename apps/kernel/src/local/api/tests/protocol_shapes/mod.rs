@@ -118,7 +118,6 @@ mod owner_handoff;
 mod relay_transport;
 mod room_workflows;
 mod screenshot;
-mod ssh_machine;
 mod waiting_room_workspace;
 
 mod provider_tool_images;

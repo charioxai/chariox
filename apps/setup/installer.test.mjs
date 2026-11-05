@@ -9,7 +9,7 @@ import test from "node:test"
 import { installLocal, targetPlatform, publicUrl } from "./installer.mjs"
 import { setupFixture } from "./fixture.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
-import { runMachine } from "../kernel/ssh-machine/remote.mjs"
+import { runMachine } from "./machine/remote.mjs"
 const extractorSource = await readFile(new URL("../../deploy/managed-kernel/extract-release.py", import.meta.url), "utf8")
 const state = await realpath(process.env.CHARIOX_BYOM_TEST_STATE ?? tmpdir())
 async function harness(t, overrides = {}) {
@@ -23,7 +23,7 @@ async function harness(t, overrides = {}) {
   await serve(f)
   const server = createServer((req, res) => { requests.push(req.url); if (!responses.has(req.url)) { res.writeHead(404); return res.end() }; res.end(responses.get(req.url)) })
   await new Promise(r => server.listen(0, "127.0.0.1", r)); t.after(() => new Promise(r => server.close(r)))
-  const root = join(home, ".local/share/chariox/ssh-machines/local")
+  const root = join(home, ".local/share/chariox/machines/local")
   const options = { home, platform: f.platform, version: f.version, publicKeyHex: f.publicKeyHex, releaseBase: `http://127.0.0.1:${server.address().port}`, apiUrl: "http://127.0.0.1:1", extractorSource, installOnly: true, servicePersistence: async () => {}, serviceManager: async args => { calls.push(args); return "LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n" } }
   return { dir, home, f, responses, requests, calls, root, options, serve }
 }
@@ -40,7 +40,7 @@ test("MP-07 signed CLI/kernel install is idempotent and retains staging plus run
   assert.equal(await readlink(join(h.home, ".local/bin/chariox")), `${h.root}/current/bin/chariox`)
   assert.equal((await installLocal({ ...h.options, action: "remove" })).stateRetained, true)
   assert.equal(await readFile(join(staging, "sentinel"), "utf8"), "keep")
-  assert.ok((await readdir(join(h.home, ".chariox/dev/ssh-machines/local"))).includes("ssh-install-owner.json"))
+  assert.ok((await readdir(join(h.home, ".chariox/dev/machines/local"))).includes("machine-install-owner.json"))
   assert.deepEqual(await readdir(join(h.home, ".local/bin")), [])
 })
 test("MP-07 signature failure refuses execution before archive download and service publication", async t => {
@@ -64,7 +64,7 @@ test("MP-07 explicit upgrade is atomic, verifies original pins and rolls back fa
   const h = await harness(t); await installLocal(h.options)
   const nextDir = join(h.dir, "next"); await mkdir(nextDir)
   const next = await setupFixture(nextDir, { version: "0.4.0", keys: h.f.keys }); await h.serve(next)
-  const before = await readFile(join(h.root, "install.json")), state = join(h.home, ".chariox/dev/ssh-machines/local/sentinel"); await writeFile(state, "private state stays")
+  const before = await readFile(join(h.root, "install.json")), state = join(h.home, ".chariox/dev/machines/local/sentinel"); await writeFile(state, "private state stays")
   let readyCalls = 0
   const upgrade = { ...h.options, version: next.version, action: "upgrade", kernelCommand: async () => { if (++readyCalls === 1) return { connected: true }; throw new Error("relay unavailable") } }
   await assert.rejects(installLocal(upgrade), /relay unavailable/)
@@ -81,9 +81,9 @@ for (const cached of [false, true]) {
       const nextDir = join(h.dir, "next"); await mkdir(nextDir)
       const next = await setupFixture(nextDir, { version: "0.4.0", keys: h.f.keys }); await h.serve(next)
       if (cached) await cp(next.bundle, join(h.root, "releases", next.digest.slice(7)), { recursive: true })
-      const parent = join(h.home, ".local/share/chariox/ssh-machines")
+      const parent = join(h.home, ".local/share/chariox/machines")
       const lock = join(parent, ".local.lock"), before = await readFile(join(h.root, "install.json"))
-      const sentinel = join(h.home, ".chariox/dev/ssh-machines/local/sentinel")
+      const sentinel = join(h.home, ".chariox/dev/machines/local/sentinel")
       await writeFile(sentinel, "private state stays")
       let readiness = 0, stops = 0, stages
       async function held(checkImage = false) {
@@ -150,7 +150,7 @@ test("MP-07/MP-08 multiple installs use distinct roots, service labels, ports an
   const h = await harness(t); await installLocal(h.options)
   const second = { ...h.options, installId: "second", port: 55149 }
   await installLocal(second)
-  assert.equal(await readlink(join(h.home, ".local/bin/chariox-second")), `${h.home}/.local/share/chariox/ssh-machines/second/current/bin/chariox`)
+  assert.equal(await readlink(join(h.home, ".local/bin/chariox-second")), `${h.home}/.local/share/chariox/machines/second/current/bin/chariox`)
   await installLocal({ ...second, action: "remove" })
   assert.equal(await readlink(join(h.home, ".local/bin/chariox")), `${h.root}/current/bin/chariox`)
 })
@@ -224,7 +224,7 @@ for (const platform of ["linux-x64", "darwin-arm64"]) {
     const h = await harness(t, { platform })
     await installLocal(h.options)
     const unit = platform === "linux-x64"
-      ? join(h.home, ".config/systemd/user/chariox-ssh-local.service")
+      ? join(h.home, ".config/systemd/user/chariox-machine-local.service")
       : join(h.home, "Library/LaunchAgents/com.chariox.kernel.local.plist")
     const previous = await readFile(unit)
     const oldPath = process.env.PATH

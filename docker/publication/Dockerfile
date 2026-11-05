@@ -66,8 +66,7 @@ COPY packages/app-wasm-worker packages/app-wasm-worker
 COPY packages/app-sdk-rust packages/app-sdk-rust
 COPY packages/app-sdk-tools packages/app-sdk-tools
 COPY deploy/managed-kernel/extract-release.py deploy/managed-kernel/extract-release.py
-COPY deploy/managed-kernel/verify-image-release.mjs deploy/managed-kernel/verify-image-release.mjs
-COPY deploy/managed-kernel/path1-service-policy.mjs deploy/managed-kernel/path1-service-policy.mjs
+COPY deploy/managed-kernel/release-update-storage.py deploy/managed-kernel/release-update-storage.py
 COPY packages/event-protocol packages/event-protocol
 RUN CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS}" cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"

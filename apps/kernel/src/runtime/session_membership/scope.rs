@@ -28,7 +28,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::StartSessionProcessNow(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
+        LocalDaemonRequest::IssueOwnMachineEnrollment(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
