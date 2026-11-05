@@ -6361,3 +6361,16 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### MP-08 / MP-09 / MP-10 / MP-11: peer Browser snapshot encoding
+
+Local 996 / peer 435 changes only the private `RoomBrowserControllerResult::Snapshot.snapshot`
+wire field. A present snapshot is `{decoded_bytes, zlib_base64}`; an absent
+snapshot remains null. The decoded JSON is the same complete structured Browser
+observation. The sender compresses after observation scrubbing and before peer
+encryption. The receiver authenticates/decrypts normally, checks the encoded and
+decoded byte limits, expands at most the declared size plus one byte, requires
+the exact declared size and complete zlib stream, and then applies the existing
+Browser snapshot validation. Decoded data is capped at 32 MiB; compressed data
+is capped at that size plus 64 KiB for framing overhead. There is no legacy
+plain-snapshot decoding path and no change to the 15-second peer response bound.

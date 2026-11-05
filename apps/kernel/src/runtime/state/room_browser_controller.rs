@@ -342,6 +342,7 @@ impl KernelRuntimeState {
         };
         let feature = match &command {
             Command::NoteObservation { .. } => Some("Room Notes"),
+            Command::Snapshot { .. } => Some("Browser observations"),
             Command::AppView {
                 request:
                     crate::runtime::browser_controller_app_view::BrowserAppViewRequest::Agent { .. }

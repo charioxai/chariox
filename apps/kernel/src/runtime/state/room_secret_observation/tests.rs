@@ -1793,3 +1793,44 @@ fn fresh_environment_reset_and_room_delete_recover_a_corrupt_sealed_registry() {
         }
     }
 }
+
+#[test]
+fn peer_snapshot_compression_keeps_observation_scrubbing_before_encoding() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    let secret = "synthetic-peer-snapshot-secret";
+    store.register("room", secret).unwrap();
+    let snapshot = serde_json::from_value(serde_json::json!({
+        "browser_generation":1, "target_id":"target", "document_id":"document", "snapshot_revision":1,
+        "accessibility_nodes":[], "dom_documents":[{"document_index":0,"url":"https://example.test/","owner_node_ref":null}],
+        "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":3,
+            "node_name":"#text","text":secret,"attributes":{},"bounds":null}]
+    })).unwrap();
+    let result = store
+        .scrub_response(
+            "room",
+            Response::Snapshot {
+                snapshot: Some(snapshot),
+            },
+        )
+        .unwrap();
+    let reply = crate::transport::relay_peer::RelayPeerResponse::RoomBrowserController {
+        session_id: "room".into(),
+        slice_id: "slice".into(),
+        result,
+    };
+    let wire = serde_json::to_vec(&reply).unwrap();
+    let decoded: crate::transport::relay_peer::RelayPeerResponse =
+        serde_json::from_slice(&wire).unwrap();
+    let crate::transport::relay_peer::RelayPeerResponse::RoomBrowserController {
+        result: Response::Snapshot {
+            snapshot: Some(snapshot),
+        },
+        ..
+    } = decoded
+    else {
+        panic!("expected a decoded snapshot")
+    };
+    assert_eq!(snapshot.dom_nodes[0].text, "[redacted]");
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains(secret));
+}

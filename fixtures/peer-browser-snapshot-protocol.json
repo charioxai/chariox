@@ -1,0 +1,16 @@
+{
+  "local": 996,
+  "peer": 435,
+  "response": {
+    "kind": "room_browser_controller",
+    "session_id": "room",
+    "slice_id": "slice",
+    "result": {
+      "kind": "snapshot",
+      "snapshot": {
+        "decoded_bytes": 169,
+        "zlib_base64": "eAFNjE0KwkAMhe+SdTdu5yoiIZ0JbaBNJIkWEe+uwoy4e3/fe8LsdgQ7LqzslGIK5TRBki+cKA1K1zBBs3rbWXs83KcIpWusluh8lxgfVCtHyCyb5APVGgeU8+X7s+OgexQrNTvQzfJv9GNeb1CCPP0="
+      }
+    }
+  }
+}

@@ -1,5 +1,18 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 bounded peer Browser observations
+
+Local 996 / peer 435 transports the private Browser snapshot field as lossless
+zlib data inside the existing authenticated encryption. Home retains document
+validation, element-reference authority and status/text/accessibility projection.
+Both placements preserve the complete bounded observation; no node reduction,
+new display dependency or longer relay deadline is introduced. The receiver
+rejects oversized declared output before decoding, stops expansion at the
+declared length plus one byte (32 MiB hard cap), and rejects corrupt, truncated
+or trailing data. The existing snapshot validation still runs after decoding.
+Real signed A3 baseline timeouts and candidate transport/placement results are
+recorded separately; this source change does not close the MP parity matrix.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
