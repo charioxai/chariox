@@ -1178,6 +1178,7 @@ export class KernelBrowserHost {
     if (command.op === "show_tab") {
       if (agentRequest) throw new UserDomainRefusal("not_granted");
       await this.retireNativeForeground(tab.target_id);
+      await this.tabGroups?.personSelection?.();
       await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id });
       this.pendingActive = null;
       // The answer names the Tab Chrome now shows: wait (bounded) until its own report agrees.

@@ -105,8 +105,10 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 6,
+  revision: 7,
   favicon,
+  // Physical Chrome input and show_tab announce the person's choice before dispatch.
+  personSelection() { made.clear(); },
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
     if (target === undefined) return activeViewport();
@@ -180,7 +182,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 6",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 7",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
@@ -205,6 +207,7 @@ export class ChromeTabGroups {
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
   active(){return this.evaluate("charioxTabs.active()",'active');}
+  personSelection(){return this.evaluate("charioxTabs.personSelection()");}
   favicon(target){return this.evaluate(`charioxTabs.favicon(${JSON.stringify(target)})`);}
   keepalive(target){this.keepaliveTarget=target;return this.evaluate(`charioxTabs.keepalive(${JSON.stringify(target)})`);}
   /** A target-specific read is geometry only, never active-Tab authority. */

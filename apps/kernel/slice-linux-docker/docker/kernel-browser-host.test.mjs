@@ -3131,8 +3131,11 @@ test('show_tab makes Chrome activate exactly that Tab for a person, and an agent
   const refused = await host.handle({ id: 'agent-show', method: 'host.browser', params: { op: 'show_tab', focused_agent: true, tab_id: tab.tab_id, generation: second.generation } });
   assert.equal(refused.ok, false);
   assert.deepEqual(activations(), [], 'an agent never activates a Tab');
+  let personSelections = 0;
+  host.tabGroups = { personSelection: async () => { personSelections++; assert.deepEqual(activations(), [], 'person selection is announced before activation'); }, close() {} };
   const shown = await host.handle({ id: 'person-show', method: 'host.browser', params: { op: 'show_tab', tab_id: tab.tab_id, generation: second.generation } });
   assert.equal(shown.ok, true);
+  assert.equal(personSelections, 1, 'explicit show retires creation-time activation guards');
   assert.deepEqual(activations(), [host.tabs.get(tab.tab_id).target_id]);
 }));
 

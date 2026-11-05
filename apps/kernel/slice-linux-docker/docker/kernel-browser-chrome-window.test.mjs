@@ -1031,7 +1031,7 @@ const publishFixture=async()=>{
  const connection={subscribe(fn){listener=fn;return()=>{listener=null}},isOpen:()=>true,async send(method,params){
   if(method==='Target.getTargets')return {targetInfos:[{type:'service_worker',targetId:'worker',url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return {sessionId:'worker-session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 6')return{result:{value:true}};reads++;return {result:{value:viewport}};}
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 7')return{result:{value:true}};reads++;return {result:{value:viewport}};}
   if(method==='Browser.getWindowForTarget')return {windowId:1,bounds:{left:0,top:0,width:1280,height:887,windowState:'normal'}};
   return {};
  }};
@@ -1159,4 +1159,12 @@ test("MP-08/MP-10 Chrome UI wheel turns 100-pixel steps and accumulated trackpad
   const scroll = (delta_x, delta_y) => arbiter.input({ stream: { regionSource: source }, command: { tab_id: "host-tab-b", document_id: "db", generation: 3, input: { kind: "scroll", x: 30, y: 40, delta_x, delta_y } } });
   for (const delta of [100, -100, 120, 40, 40, 40, 50, -30, -90, -100]) assert.deepEqual(await scroll(0, delta), { dispatched: true });
   assert.deepEqual(wheels, [[0, 1], [0, -1], [0, 1], [0, 1], [0, -1], [0, -1]]);
+});
+
+test('MP-08/MP-10/MP-11 band dispatch announces the person selection before Chrome receives the click', async () => {
+  const calls = [], tab = { tab_id: 'shown', target_id: 'target' };
+  const host = { generation: 3, tabs: new Map([['shown', tab]]), tabGroups: { active: async () => 'target', personSelection: async () => calls.push('person') } };
+  const arbiter = new InputArbiter(host, {});
+  await arbiter.dispatchInput({ stream: { regionSource: { surface: 'browser_chrome', isCurrent: () => true, click: async () => calls.push('click') } }, command: { tab_id: 'shown', generation: 3, input: { kind: 'click', x: 100, y: 10 } } }, {});
+  assert.deepEqual(calls, ['person', 'click']);
 });
