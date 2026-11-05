@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod receiving_volume;
+use receiving_volume::ReceivingVolume;
+
 /// Commands that stay under this never wait (OF-03); small pools scale it.
 const MAX_LIGHT: u64 = 512 * MIB;
 /// Room a paused command of unknown peak needs before it continues.
@@ -59,7 +62,7 @@ pub(super) struct Peak {
     /// run showed it, since the working directory says nothing about it (a
     /// checkout on one volume can build into another).
     #[serde(default)]
-    pub volume: Option<PathBuf>,
+    pub volume: Option<ReceivingVolume>,
     #[serde(default)]
     pub volume_writes: u64,
     /// The exact command line (numbers kept) of the run that reached it: a
@@ -146,10 +149,7 @@ impl Entry {
     /// held: a destructive disk stop requires observed growth anyway.
     fn disk(&self, room: &Room) -> Option<Disk> {
         let volume = self.expected.as_ref()?.volume.as_ref()?;
-        // The file may be gone since: its nearest directory is on the same volume.
-        volume
-            .ancestors()
-            .find_map(|path| disk_room(room.volume, path))
+        volume.disk(room.volume)
     }
 
     /// Writes it still has ahead toward its expected peak on that volume;
@@ -384,7 +384,7 @@ impl Ledger {
                 .and_then(|outputs| outputs.iter().max_by_key(|output| output.written))
                 .filter(|output| output.written > entry.peak.volume_writes)
             {
-                entry.peak.volume = Some(output.path.clone());
+                entry.peak.volume = ReceivingVolume::capture(output);
                 entry.peak.volume_writes = output.written;
             }
             // Until it is decided, follow a shell to the command it runs.

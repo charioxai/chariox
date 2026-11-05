@@ -1,5 +1,14 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 remembered output volumes (2026-11-05)
+
+Ordinary and managed admission remember a sampled writer's resolved output
+directory and receiving device, rather than its process descriptor path. Hold,
+resume and reservations verify that device through the nearest surviving path;
+a destination that cannot be resolved or whose device changed remains unknown.
+The real-writer regression samples growth, exits, removes the output, reloads
+saved peaks and reruns the same command. No client wire shape changes.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 Room membership read isolation (2026-11-05)
 
 Ordinary and managed kernels use the same default-agent creation path. It releases

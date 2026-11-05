@@ -98,7 +98,10 @@ fn wait(member: &Arc<Mutex<Observation>>, pid: u32) -> Option<Wait> {
 fn scratch(writes: u64) -> Peak {
     Peak {
         writes,
-        volume: Some("/scratch/output".into()),
+        volume: Some(ReceivingVolume {
+            path: "/scratch/output".into(),
+            id: 1,
+        }),
         volume_writes: writes,
         ..Peak::default()
     }
@@ -184,7 +187,10 @@ fn writers_on_different_volumes_reserve_room_separately() {
         })
     });
     let mut elsewhere = entry(3, scratch(6 * GIB));
-    elsewhere.expected.as_mut().unwrap().volume = Some("/other/output".into());
+    elsewhere.expected.as_mut().unwrap().volume = Some(ReceivingVolume {
+        path: "/other/output".into(),
+        id: 2,
+    });
     let current = owner(
         "agent",
         true,
@@ -231,7 +237,10 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
             Peak {
                 memory: 600 * MIB,
                 writes: GIB,
-                volume: Some("/scratch/output".into()),
+                volume: Some(ReceivingVolume {
+                    path: "/scratch/output".into(),
+                    id: 1,
+                }),
                 volume_writes: GIB,
                 exact: 0,
             },
@@ -268,7 +277,10 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
             Peak {
                 memory: 600 * MIB,
                 writes: 6 * GIB,
-                volume: Some("/scratch/output".into()),
+                volume: Some(ReceivingVolume {
+                    path: "/scratch/output".into(),
+                    id: 1,
+                }),
                 volume_writes: 6 * GIB,
                 exact: 0,
             },
@@ -341,7 +353,10 @@ fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory
             Peak {
                 memory: 6 * GIB,
                 writes: GIB,
-                volume: Some("/scratch/output".into()),
+                volume: Some(ReceivingVolume {
+                    path: "/scratch/output".into(),
+                    id: 1,
+                }),
                 volume_writes: GIB,
                 exact: 0,
             },
@@ -1215,7 +1230,10 @@ fn a_later_disk_wait_resumes_when_only_its_volume_recovers() {
         ..entry(arrived, scratch(6 * GIB))
     };
     let mut later = held(2);
-    later.expected.as_mut().unwrap().volume = Some("/other/output".into());
+    later.expected.as_mut().unwrap().volume = Some(ReceivingVolume {
+        path: "/other/output".into(),
+        id: 2,
+    });
     let first = owner("first", true, vec![command(1, 0, 0)], vec![(1, held(1))]);
     let second = owner(
         "second",
@@ -1262,7 +1280,10 @@ fn a_known_writer_waits_for_the_volume_its_output_goes_to_not_the_checkout_volum
     });
     let build = |arrived, volume: &str| {
         let mut build = entry(arrived, scratch(6 * GIB));
-        build.expected.as_mut().unwrap().volume = Some(volume.into());
+        build.expected.as_mut().unwrap().volume = Some(ReceivingVolume {
+            path: volume.into(),
+            id: if volume.starts_with("/data") { 2 } else { 1 },
+        });
         build
     };
     let current = owner(
@@ -1319,21 +1340,23 @@ fn a_known_writer_whose_output_volume_was_never_seen_is_not_held_for_disk() {
 
 #[test]
 fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
+    let output = std::env::temp_dir().join(format!("remembered-output-{}", std::process::id()));
+    std::fs::write(&output, b"output").unwrap();
+    let id = statvfs(&output).unwrap().id;
     let (_, build, usage) = writing(1, 6 * GIB, 50 * MIB);
     let current = owner("agent", true, vec![usage], vec![(1, build)]);
     {
         let mut observation = current.lock().unwrap();
-        observation
-            .disk_writes
-            .get_mut(&1)
-            .unwrap()
-            .push(disk_use::VolumeWrites {
-                id: 2,
-                path: "/data/target/out.o".into(),
-                written: 5 * GIB,
-                rate: 50 * MIB,
-                files: [9].into(),
-            });
+        let outputs = observation.disk_writes.get_mut(&1).unwrap();
+        outputs[0].path = output.clone();
+        outputs[0].id = id;
+        outputs.push(disk_use::VolumeWrites {
+            id: 2,
+            path: "/data/target/out.o".into(),
+            written: 5 * GIB,
+            rate: 50 * MIB,
+            files: [9].into(),
+        });
     }
     let mut ledger = Ledger::new(None);
     ledger.register(&current, 512 * MIB);
@@ -1343,6 +1366,207 @@ fn a_finished_run_remembers_the_volume_that_received_most_of_its_writes() {
         .peaks
         .get("key-1")
         .expect("the heavy run was remembered");
-    assert_eq!(peak.volume, Some(PathBuf::from("/scratch/output")));
+    assert_eq!(
+        peak.volume,
+        Some(ReceivingVolume {
+            path: std::fs::canonicalize(output.parent().unwrap()).unwrap(),
+            id
+        })
+    );
     assert_eq!(peak.volume_writes, 6 * GIB);
+    std::fs::remove_file(output).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sampled_writer_can_exit_and_rerun_on_its_healthy_output_volume() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+
+    let scratch = std::env::temp_dir().join(format!("writer-volume-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let output = scratch.join("output");
+    let peaks = scratch.join("peaks.json");
+    let mut launch = Command::new("python3");
+    launch
+        .args([
+            "-I",
+            "-c",
+            "import os,sys
+f=open(sys.argv[1], 'wb')
+print('ready',flush=True)
+sys.stdin.readline()
+f.write(b'x' * 2097152)
+f.flush()
+os.fsync(f.fileno())
+print('written',flush=True)
+sys.stdin.readline()",
+            output.to_str().unwrap(),
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    let mut writer = launch.spawn().unwrap();
+    let pid = writer.id();
+    let mut stdout = BufReader::new(writer.stdout.take().unwrap());
+    let mut stdin = writer.stdin.take().unwrap();
+    let mut ready = String::new();
+    stdout.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "ready");
+    let seen = recognise(pid).unwrap();
+    let key = seen.key.clone();
+    let current = owner(
+        "agent",
+        true,
+        vec![command(pid, 0, 0)],
+        vec![(
+            pid,
+            Entry {
+                arrived: 1,
+                holdable: true,
+                seen: Some(seen),
+                ..Entry::default()
+            },
+        )],
+    );
+    let mut growth = disk_use::WriteGrowth::default();
+    growth.sample(&[pid], 1000);
+    writeln!(stdin).unwrap();
+    ready.clear();
+    stdout.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "written");
+    let outputs = growth.sample(&[pid], 2000);
+    let written = outputs.iter().map(|output| output.written).sum::<u64>();
+    assert!(written >= 2 * MIB);
+    current.lock().unwrap().disk_writes.insert(pid, outputs);
+    let mut ledger = Ledger::new(Some(peaks.clone()));
+    current.lock().unwrap().commands[0].writes = written;
+    ledger.register(&current, MIB);
+    writeln!(stdin).unwrap();
+    assert!(writer.wait().unwrap().success());
+    // Build outputs are often removed after the writer exits, too.
+    std::fs::remove_file(&output).unwrap();
+    current.lock().unwrap().commands.clear();
+    ledger.register(&current, MIB);
+    let mut ledger = Ledger::new(Some(peaks));
+    let peak = ledger
+        .peaks
+        .get(&key)
+        .expect("the sampled writer is remembered across restart");
+    let mut rerun = launch.spawn().unwrap();
+    let rerun_pid = rerun.id();
+    let mut stdout = BufReader::new(rerun.stdout.take().unwrap());
+    let mut stdin = rerun.stdin.take().unwrap();
+    ready.clear();
+    stdout.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "ready");
+    let seen = recognise(rerun_pid).unwrap();
+    assert_eq!(
+        seen.key, key,
+        "the exact command reruns in the same directory"
+    );
+    let mut next = entry(2, peak);
+    next.seen = Some(seen);
+    let next = owner(
+        "rerun",
+        true,
+        vec![command(rerun_pid, 0, 0)],
+        vec![(rerun_pid, next)],
+    );
+    // The actual filesystem is healthy. Procfs reports zero available space.
+    assert!(statvfs(&scratch).unwrap().free > DISK_FLOOR + written);
+    let mut room = room(GIB, false, &statvfs);
+    room.light = MIB;
+    ledger.register(&next, MIB);
+    ledger.pass(std::slice::from_ref(&next), &next, &room);
+    let held = wait(&next, rerun_pid);
+    next.lock()
+        .unwrap()
+        .admission
+        .get_mut(&rerun_pid)
+        .unwrap()
+        .wait = Some(Wait::Held(WaitReason::Disk));
+    unsettle(&mut ledger);
+    ledger.pass(std::slice::from_ref(&next), &next, &room);
+    let still_held = wait(&next, rerun_pid);
+    // Settle the real child even when either regression assertion fails.
+    writeln!(stdin).unwrap();
+    ready.clear();
+    stdout.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), "written");
+    writeln!(stdin).unwrap();
+    assert!(rerun.wait().unwrap().success());
+    std::fs::remove_dir_all(scratch).unwrap();
+    assert_eq!(
+        held, None,
+        "the exited writer's procfs descriptor must not hold its rerun"
+    );
+    assert_eq!(
+        still_held, None,
+        "a disk wait must also recover on the healthy output volume"
+    );
+}
+
+#[test]
+fn a_remembered_destination_on_a_replaced_volume_is_unknown_for_hold_and_resume() {
+    let replaced: Box<Volume> = Box::new(|_| {
+        Some(Space {
+            id: 2,
+            free: GIB,
+            total: 100 * GIB,
+        })
+    });
+    let next = owner(
+        "agent",
+        true,
+        vec![command(1, 0, 0)],
+        vec![(1, entry(1, scratch(6 * GIB)))],
+    );
+    let mut ledger = Ledger::new(None);
+    ledger.pass(
+        std::slice::from_ref(&next),
+        &next,
+        &room(GIB, false, &*replaced),
+    );
+    assert_eq!(
+        wait(&next, 1),
+        None,
+        "a replacement filesystem cannot justify a hold"
+    );
+    next.lock().unwrap().admission.get_mut(&1).unwrap().wait = Some(Wait::Held(WaitReason::Disk));
+    unsettle(&mut ledger);
+    ledger.pass(
+        std::slice::from_ref(&next),
+        &next,
+        &room(GIB, false, &*replaced),
+    );
+    assert_eq!(
+        wait(&next, 1),
+        None,
+        "a disk wait with an unresolved volume must resume"
+    );
+}
+
+#[test]
+fn unresolved_sampled_destinations_are_not_remembered_as_a_receiving_volume() {
+    let output = std::env::temp_dir().join(format!("unresolved-volume-{}", std::process::id()));
+    std::fs::write(&output, b"output").unwrap();
+    let id = statvfs(&output).unwrap().id;
+    let sample = disk_use::VolumeWrites {
+        id: id.wrapping_add(1),
+        path: output.clone(),
+        written: GIB,
+        rate: MIB,
+        files: Default::default(),
+    };
+    assert_eq!(
+        ReceivingVolume::capture(&sample),
+        None,
+        "a destination resolved onto a different device is unknown"
+    );
+    std::fs::remove_file(output).unwrap();
+    assert_eq!(
+        ReceivingVolume::capture(&sample),
+        None,
+        "an unresolved descriptor is unknown"
+    );
 }
