@@ -34,7 +34,7 @@ const manifest = { schema: 'chariox.app.v2', appContractVersion: 2, publisher: {
 const pack = script => packView(manifest, { schema: 'chariox.app-view-source.v1', rootId: 'root', script, style: '' }, key);
 const launchOptions = { executablePath: process.env.CHARIOX_TEST_CHROME ?? '/opt/google/chrome/chrome', headless: true,
   ignoreDefaultArgs: ['--disable-background-networking'], args: ['--no-sandbox', '--disable-dev-shm-usage'] };
-let browser, server, currentProfile;
+let browser, server, currentProfile, isolationProfile;
 const consoleMessages = [];
 async function save() { await writeFile(join(evidence, 'results.json'), JSON.stringify(results, null, 2)); }
 try {
@@ -108,9 +108,12 @@ try {
   }
   if (process.env.CHARIOX_AV1_PROBE) { results.probeOnly = true; results.containmentPassed = false; results.finished = new Date().toISOString(); process.exitCode = 1; await save(); } else {
   server.setBoundary(null);
-  browser = await chromium.launch(launchOptions);
-  results.isolation = await isolationCases({ browser, server, pack }); await save();
-  results.sourceBinding = await sourceBindingCases({ browser, server, pack }); await save();
+  isolationProfile = await browserProfile(chromium, { ...launchOptions, clientView: true,
+    args: [...launchOptions.args, ...clientViewChromiumArgs], captureDirectory: join(evidence, 'process-tree', 'isolation-and-binding') });
+  browser = isolationProfile.context.browser();
+  const snapshot = label => isolationProfile.snapshot(label);
+  results.isolation = await isolationCases({ browser, server, pack, snapshot }); await save();
+  results.sourceBinding = await sourceBindingCases({ browser, server, pack, snapshot }); await save();
 
   // A valid signed package is required even for an entry that would otherwise
   // execute. This goes through the actual Cloud-built host, not verifyView alone.
@@ -123,12 +126,14 @@ try {
     results.rejectedBeforeExecution = /signature failed/.test(error.message) && host === undefined;
     results.signatureRejection = error.message;
   }
-  await context.close(); await browser.close(); browser = null;
+  await snapshot('signature-rejection');
+  await context.close(); await isolationProfile.close(); isolationProfile = null; browser = null;
+  results.isolationNetwork = await processNetwork(join(evidence, 'process-tree', 'isolation-and-binding'));
   results.launch = await launchCases({ chromium, launchOptions, evidence, server, pack }); await save();
   results.references = await referenceCases({ chromium, launchOptions: { ...launchOptions, args: [...launchOptions.args, ...clientViewChromiumArgs] }, server, evidence, builds });
   results.strictReceived = server.hits.filter(hit => !hit.control);
   results.receiver = { hits: server.hits, connections: server.connections, udpPackets: server.packets };
-  results.wholeTreePassed = results.attacks.every(item => item.runs[1].processNetwork.passed) && results.references.every(row => row.processNetwork?.passed);
+  results.wholeTreePassed = results.isolationNetwork.passed && results.attacks.every(item => item.runs[1].processNetwork.passed) && results.references.every(row => row.processNetwork?.passed);
   results.rendererPassed = results.references.length === 4 && results.references.every(row => row.rendered && !row.failure);
   results.containmentPassed = results.launch.passed && results.wholeTreePassed && results.attacks.every(item => item.blocked && item.redCapable && item.framePolicyPresent)
     && results.isolation.passed && results.sourceBinding.passed && results.rejectedBeforeExecution;
@@ -145,7 +150,7 @@ try {
   if (!process.env.CHARIOX_AV1_PROBE && (!results.rendererPassed || !results.containmentPassed)) process.exitCode = 1;
 } catch (error) { results.failure = error.stack; console.error(error); process.exitCode = 1; }
 finally {
-  await currentProfile?.close(); await browser?.close(); await server?.close();
+  await currentProfile?.close(); await isolationProfile?.close(); if (!isolationProfile) await browser?.close(); await server?.close();
   results.cleanup = 'All browsers closed; own HTTP/TCP/UDP servers closed; own tcpdump stopped by guarded exact PID.';
   await save(); await writeFile(join(evidence, 'console.json'), JSON.stringify(consoleMessages, null, 2));
 }

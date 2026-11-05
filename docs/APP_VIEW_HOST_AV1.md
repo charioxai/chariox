@@ -77,11 +77,15 @@ Use fresh **ordinary** profiles: private profiles suppress preconnect/DNS
 controls. Every strict network case runs at actual DPR1 and DPR2. `strace -ff`
 starts before Chrome exec, follows all child processes/threads through shutdown,
 and records all socket calls; CDP plus `/proc` labels processes and threads.
-Native User Timing marks identify each live frame's renderer PID in the trace.
+Native User Timing marks identify each live frame's renderer PID in the trace,
+including the separate private contexts used for storage/native input and source
+binding. Their browser also uses the restricted launch/profile.
 The gate includes browser startup/shutdown, so background work is not hidden
 outside a chosen frame interval. A filtered pcap additionally records the owned
 receivers and synthetic App DNS questions without collecting other lanes' data.
-Unknown destinations or process attribution fail the gate. The root-only test
+Unknown destinations/process attribution and any incomplete thread capture fail
+the gate. DNS summaries count send operations; sendmmsg may batch several wire
+questions, whose packet count is available in the pcap. The root-only test
 option `--no-sandbox` concerns Chromium's OS sandbox; the HTML sandbox is present.
 
 An ordinary Web page cannot enforce these launch settings or disable other
@@ -236,8 +240,8 @@ Cloud web entry/assets, runs Chromium checks and cleans its processes:
 
 ```sh
 bash packages/app-view-host/test/run-av1.sh /root/work/agent-appview-cloud \
-  /root/.codex/evidence/browser-resume-20260930/appview/r3/enforce-final \
-  /root/.chariox/dev/appview-av1-verify
+  /root/.codex/evidence/browser-resume-20260930/appview/r3/enforce-complete \
+  /root/.chariox/dev/appview-av1-complete
 ```
 
 Use new evidence/scratch directories on each run. Keep the scratch path short:
@@ -256,7 +260,10 @@ Evidence root: `/root/.codex/evidence/browser-resume-20260930/appview/r3/`.
 4/4 reference renders, zero strict DNS and zero frame receiver sockets. All 76
 strict browser runs retain only the IPv6 route socket, so the whole-tree gate
 fails. `enforce-layer-probe/` independently tests resolver, frame CSP and idle
-browser behavior. `enforce-final/` is the clean-head one-command reproduction.
+browser behavior. `enforce-final/` is the first clean-head reproduction. `enforce-complete/`
+adds restricted-launch whole-tree capture for the storage/native-input/source-
+binding/signature contexts as well, with native renderer PID marks and explicit
+parent URLs for all captured frames. Both are honest nonzero gate runs.
 The earlier `enforce-{probe,launch-probe,prefs-probe}/` captures isolate the
 original attribution, flags-only result and additional prediction preference.
 Each final run has:

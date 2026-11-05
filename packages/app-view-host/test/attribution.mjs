@@ -6,7 +6,7 @@ import { join } from 'node:path';
 export async function attribution(evidence, results) {
   const rows = [];
   const runs = results.attacks.flatMap(item => item.runs.map(run => ({ name: item.name, dpr: item.dpr, ...run })));
-  for (const run of [...runs, ...results.references, ...(results.launch?.rows ?? []).map(row => ({ ...row, name: 'launch-' + row.kind, dpr: 1, processNetwork: row.network }))]) {
+  for (const run of [...runs, ...results.references, ...(results.isolationNetwork ? [{ name: 'isolation-and-binding', dpr: 1, processNetwork: results.isolationNetwork }] : []), ...(results.launch?.rows ?? []).map(row => ({ ...row, name: 'launch-' + row.kind, dpr: 1, processNetwork: row.network }))]) {
     if (!run.processNetwork) continue;
     const directory = run.processNetwork.directory;
     const network = JSON.parse(await readFile(join(directory, 'network.json'), 'utf8'));

@@ -18,7 +18,7 @@ await attempt('sw',async()=>{const before=await navigator.serviceWorker.getRegis
 checks.origin=origin;checks.done=true;
 `;
 
-export async function isolationCases({ browser, server, pack }) {
+export async function isolationCases({ browser, server, pack, snapshot }) {
   const results = { persistence: [] };
   for (const control of [true, false]) {
     server.setBoundary(control ? 'all' : null); server.setPhase(`persistence-${control ? 'control' : 'strict'}`);
@@ -29,6 +29,7 @@ export async function isolationCases({ browser, server, pack }) {
       const frame = await server.frame(page);
       await frame.waitForFunction(() => globalThis.checks?.done, null, { timeout: 8000 });
       visits.push(await frame.evaluate(() => globalThis.checks));
+      await snapshot(`persistence-${control}-${visit}`);
     }
     results.persistence.push({ control, visits });
     await context.close();
@@ -60,6 +61,7 @@ export async function isolationCases({ browser, server, pack }) {
   await (await chooser).setFiles({ name: 'native-picked.txt', mimeType: 'text/plain', buffer: Buffer.from('native file proof') });
   await frame.waitForFunction(() => globalThis.picked !== undefined);
   results.filePicker = await frame.evaluate(() => globalThis.picked);
+  await snapshot('native-input-and-compilation');
   await context.close();
 
   const [red, green] = results.persistence.map(row => row.visits);
@@ -77,7 +79,7 @@ export async function isolationCases({ browser, server, pack }) {
   return results;
 }
 
-export async function sourceBindingCases({ browser, server, pack }) {
+export async function sourceBindingCases({ browser, server, pack, snapshot }) {
   const rows = [];
   for (const control of [true, false]) {
     server.setBoundary(control ? 'source' : null); server.setPhase(`source-binding-${control ? 'control' : 'strict'}`);
@@ -100,6 +102,7 @@ export async function sourceBindingCases({ browser, server, pack }) {
     const reply=await sibling.evaluate(()=>globalThis.reply);
     const host=page.frames().find(f=>f.url().endsWith('/assets/app-view-host/host.html'));
     rows.push({control,reply,appFrames:host.childFrames().length});
+    await snapshot(`source-binding-${control}`);
     await context.close();
   }
   server.setBoundary(null);

@@ -37,13 +37,13 @@ export async function browserProfile(chromium, options) {
       } catch (error) { processes.push({ ...info, pid, exited: error.code === 'ENOENT' }); }
     }
     const frames = [];
-    for (const page of context.pages()) for (const frame of page.frames()) {
+    for (const page of context.browser().contexts().flatMap(context => context.pages())) for (const frame of page.frames()) {
       const marker = `av1-frame-${samples.length}-${frames.length}`;
       try {
         // Native User Timing events carry the actual renderer PID, including
         // opaque out-of-process frames. A URL or Target id alone does not.
         await frame.evaluate(marker => { performance.mark(marker); }, marker);
-        frames.push({ url: frame.url(), marker });
+        frames.push({ url: frame.url(), parentUrl: frame.parentFrame()?.url() ?? null, marker });
       } catch (error) { frames.push({ url: frame.url(), error: error.message }); }
     }
     samples.push({ label, time: Date.now(), processes, frames });
