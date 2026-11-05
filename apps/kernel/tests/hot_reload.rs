@@ -2065,11 +2065,45 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         // The new program starts after the old one is gone; a loaded builder
         // can need several times the usual half minute.
         let deadline = Instant::now() + Duration::from_secs(180);
-        while !std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
-            std::fs::read_to_string(file.unwrap().path())
-                .unwrap()
-                .contains("continuing a handed-over Codex turn")
-        }) {
+        let adopted = loop {
+            if std::fs::read_dir(scratch.join("logs")).unwrap().any(|file| {
+                std::fs::read_to_string(file.unwrap().path())
+                    .unwrap()
+                    .contains("continuing a handed-over Codex turn")
+            }) {
+                break true;
+            }
+            // A turn that ended in the gap may have been read to its end by
+            // the old program, which settles it: nothing is left to adopt.
+            if finish_in_gap
+                && lines(&record.join("parts")).last().map(String::as_str) == Some("result 1")
+            {
+                let state = request(
+                    &mut socket,
+                    json!({"GetSessionState": {"session_id": session_id}}),
+                )
+                .await;
+                // A program that has just started shows no active prompt until
+                // it has restored the turn it is about to adopt; only a turn
+                // its history records as completed was settled by the old one.
+                let history = request(
+                    &mut socket,
+                    json!({"GetSessionHistoryOutline": {"session_id": session_id,
+                        "agent_ids": [agent_id], "include_prefetched_content": false}}),
+                )
+                .await;
+                let settled = history["SessionHistoryOutline"]["agents"][0]["turns"]
+                    .as_array()
+                    .is_some_and(|turns| {
+                        turns.last().is_some_and(|turn| turn["lifecycle"] == "completed")
+                    });
+                if settled
+                    && state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
+                        .is_null()
+                {
+                    break false;
+                }
+            }
             assert!(Instant::now() < deadline, "the Codex turn was not adopted");
             tokio::time::sleep(Duration::from_millis(20)).await;
         };

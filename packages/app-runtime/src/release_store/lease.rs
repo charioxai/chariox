@@ -153,67 +153,6 @@ impl VerifiedReleaseLease {
             world.to_owned(),
         ))
     }
-
-    /// Re-read through the held directory and compare the exact signed bytes.
-    /// A lease never turns a pathname into continuing executable provenance.
-    pub fn verified_component(&self) -> Result<super::aot_cache::VerifiedComponent> {
-        let (path, size, digest) = self
-            .component
-            .as_ref()
-            .ok_or(ReleaseStoreError::InvalidExisting)?;
-        let manifest = self
-            .manifest
-            .wasm()
-            .ok_or(ReleaseStoreError::InvalidExisting)?;
-        self.read_component(path, *size, digest, &manifest.world)
-    }
-
-    /// Only signed migration entries retained by this verified lease qualify.
-    pub fn verified_migration(&self, path: &str) -> Result<super::aot_cache::VerifiedComponent> {
-        let (size, digest) = self
-            .migrations
-            .get(path)
-            .ok_or(ReleaseStoreError::InvalidExisting)?;
-        self.read_component(
-            path,
-            *size,
-            digest,
-            chariox_app_package::v2::MIGRATION_WORLD,
-        )
-    }
-
-    fn read_component(
-        &self,
-        path: &str,
-        size: usize,
-        digest: &str,
-        world: &str,
-    ) -> Result<super::aot_cache::VerifiedComponent> {
-        let mut directory = self.payload.child(OsStr::new("."))?;
-        let mut parts = path.split('/').peekable();
-        let name = loop {
-            let part = parts.next().ok_or(ReleaseStoreError::UnsafeEntry)?;
-            if parts.peek().is_none() {
-                break part;
-            }
-            directory = directory.child(OsStr::new(part))?;
-        };
-        let file = directory.read_file(OsStr::new(name), true)?;
-        if file.metadata()?.len() != size as u64 {
-            return Err(ReleaseStoreError::InvalidExisting);
-        }
-        let mut bytes = Vec::new();
-        file.take(size as u64 + 1).read_to_end(&mut bytes)?;
-        if bytes.len() != size || super::aot_cache::digest(&bytes) != digest {
-            return Err(ReleaseStoreError::InvalidExisting);
-        }
-        Ok(super::aot_cache::VerifiedComponent::new(
-            bytes,
-            digest.to_owned(),
-            self.package_digest.clone(),
-            world.to_owned(),
-        ))
-    }
 }
 
 pub(super) fn verified(
