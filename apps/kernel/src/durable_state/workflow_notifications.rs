@@ -164,6 +164,11 @@ pub(crate) enum NotificationOperation {
         prompt_id: String,
         session_id: String,
     },
+    BindAgentSteer {
+        session: String,
+        notification_prompt: String,
+        active_prompt: String,
+    },
     /// A local or remote attach made under an ephemeral external access grant.
     Granted {
         grant: String,
@@ -204,6 +209,7 @@ pub(crate) enum NotificationOutcome {
     Subscription(WorkflowNotificationSubscription),
     Ack(WorkflowNotificationAck),
     Queued,
+    SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
     Retired(Vec<WorkflowNotificationSubscription>),
     Swept,
@@ -472,6 +478,17 @@ fn apply(
         } => {
             tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_object('ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
             Ok(NotificationOutcome::Queued)
+        }
+        NotificationOperation::BindAgentSteer {
+            session,
+            notification_prompt,
+            active_prompt,
+        } => {
+            tx.execute(
+                "UPDATE app_outbox SET invocation_json=json_set(invocation_json,'$.steered_into_prompt_id',?3) WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
+                params![session, notification_prompt, active_prompt],
+            ).map_err(sql)?;
+            Ok(NotificationOutcome::SteerBound)
         }
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;
@@ -808,11 +825,13 @@ impl DurableKernelStateStore {
         notification_prompt: &str,
         active_prompt: &str,
     ) -> Result<(), DaemonError> {
-        let db = self.lock_connection("workflow.notifications.steer_ancestry")?;
-        db.execute(
-            "UPDATE app_outbox SET invocation_json=json_set(invocation_json,'$.steered_into_prompt_id',?3) WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
-            params![session, notification_prompt, active_prompt],
-        ).map_err(sql)?;
-        Ok(())
+        match self.notify(NotificationOperation::BindAgentSteer {
+            session: session.into(),
+            notification_prompt: notification_prompt.into(),
+            active_prompt: active_prompt.into(),
+        })? {
+            NotificationOutcome::SteerBound => Ok(()),
+            _ => Err(error("unexpected notification steer result")),
+        }
     }
 }
