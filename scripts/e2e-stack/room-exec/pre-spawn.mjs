@@ -131,6 +131,20 @@ try {
     assert.equal(await exists(marker('peer-revoke', 'B')), false)
     return {exec_id: queued.exec_id, marker: false, native_exit: completed.code}
   })
+  await cell('target-revocation-cannot-dispatch-a-queued-launch', async () => {
+    fixture.prompts.length = 0
+    await fixture.grant()
+    const pending = run('peer-target-revoke', Buffer.alloc(0), 'B')
+    const queued = await held('peer-target-revoke', 'B')
+    const clients = (await fixture.B.send({ListPairedClients: null})).PairedClientsListed.clients
+    const gateway = clients.find(client => client.client_id.startsWith('agent-gateway:') && !client.revoked)
+    assert.ok(gateway, 'the normal paired gateway is listed on the target')
+    await fixture.B.send({RevokePairedClient: {client_id: gateway.client_id}})
+    await until(async () => (await operation({operation: 'exec_list'}, 'B')).execs?.find(row => row.exec_id === queued.exec_id && row.state.kind === 'finished'), 'target revocation settles the queued launch')
+    assert.notEqual((await pending.done).code, 0)
+    assert.equal(await exists(marker('peer-target-revoke', 'B')), false)
+    return {exec_id: queued.exec_id, marker: false}
+  })
   result.status = 'PASS'
 } finally {
   for (const child of active) {
