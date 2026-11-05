@@ -83,7 +83,7 @@ pub(crate) struct ImportTarget<'a> {
     pub checkout: &'a Path,
     pub store: &'a ProjectEnvironmentStore,
     pub vault: &'a dyn CredentialVaultStore,
-    /// Called with the record after a newer one was adopted, so the Files rules follow it.
+    /// Called with the effective record before planning, so the Files rules follow it.
     pub on_record: &'a (dyn Fn(&ProjectEnvironmentRecord) + Send + Sync),
 }
 
@@ -264,41 +264,33 @@ pub(crate) async fn run_import<S: EnvironmentSource>(
         }
     };
     handle.update(|view| view.source_label = Some(snapshot.label.clone()));
-    let local = match target.store.load(target.project_id) {
-        Ok(local) => local,
+    // Choose under the store's write lock: a Save may have advanced the local record
+    // while the source snapshot was in flight. File rules and imports use that same choice.
+    let record = match snapshot.record.clone() {
+        Some(source_record) => target
+            .store
+            .adopt(target.project_id, source_record)
+            .map(Some),
+        None => target.store.load(target.project_id),
+    };
+    let record = match record {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            handle.finish(
+                EnvironmentOperationState::Failed,
+                Some(format!(
+                    "{} has no Environment for this Project",
+                    snapshot.label
+                )),
+            );
+            return;
+        }
         Err(error) => {
             handle.finish(EnvironmentOperationState::Failed, Some(error.to_string()));
             return;
         }
     };
-    let local_revision = local.as_ref().map_or(0, |record| record.revision);
-    let record = match snapshot.record.clone() {
-        Some(source_record) if source_record.revision > local_revision => {
-            match target.store.adopt(target.project_id, source_record.clone()) {
-                Ok(()) => {
-                    (target.on_record)(&source_record);
-                    source_record
-                }
-                Err(error) => {
-                    handle.finish(EnvironmentOperationState::Failed, Some(error.to_string()));
-                    return;
-                }
-            }
-        }
-        _ => match local {
-            Some(local) => local,
-            None => {
-                handle.finish(
-                    EnvironmentOperationState::Failed,
-                    Some(format!(
-                        "{} has no Environment for this Project",
-                        snapshot.label
-                    )),
-                );
-                return;
-            }
-        },
-    };
+    (target.on_record)(&record);
     let planned = plan(&record, requested.as_deref(), &target);
     handle.update(|view| {
         view.entries = planned.iter().map(|(entry, _)| entry.clone()).collect();
@@ -688,7 +680,7 @@ mod tests {
         store: ProjectEnvironmentStore,
         vault: MemoryVault,
         operations: Arc<EnvironmentOperations>,
-        adopted: Mutex<Vec<u64>>,
+        registered: Mutex<Vec<u64>>,
     }
 
     impl Rig {
@@ -703,7 +695,7 @@ mod tests {
                 store: ProjectEnvironmentStore::new(&root.join("state")),
                 operations: EnvironmentOperations::new(&root.join("state")),
                 vault: MemoryVault::default(),
-                adopted: Mutex::default(),
+                registered: Mutex::default(),
                 checkout,
                 root,
             }
@@ -737,7 +729,7 @@ mod tests {
             requested: Option<Vec<EnvironmentEntryRef>>,
         ) -> EnvironmentOperationView {
             let on_record = |record: &ProjectEnvironmentRecord| {
-                self.adopted.lock().unwrap().push(record.revision)
+                self.registered.lock().unwrap().push(record.revision)
             };
             run_import(
                 self.begin(id),
@@ -869,7 +861,7 @@ mod tests {
         );
         assert_eq!(view.state, EnvironmentOperationState::Failed);
         assert_eq!(rig.store.load("p").unwrap().unwrap().revision, 2);
-        assert_eq!(*rig.adopted.lock().unwrap(), vec![2]);
+        assert_eq!(*rig.registered.lock().unwrap(), vec![2]);
         let service = project_environment_vault_service("p");
         assert_eq!(
             rig.vault.find_secret(&service, "A_KEY").unwrap().as_deref(),
@@ -996,6 +988,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retained_local_record_drives_both_import_planning_and_export_rules() {
+        use super::super::{environment_file_rules, register_environment_files};
+        let rig = Rig::new();
+        rig.store.save("p", 0, record(0, &[], &[])).unwrap();
+        let initially_read = rig.store.load("p").unwrap().unwrap();
+        let from = source(
+            Some(record(2, &["SOURCE"], &["source.json"])),
+            &["SOURCE", "SAVED"],
+            &["source.json", "saved.json"],
+        );
+        // A local edit overtakes the source snapshot before Import adopts it.
+        rig.store
+            .save(
+                "p",
+                initially_read.revision,
+                record(0, &["SAVED"], &["saved.json"]),
+            )
+            .unwrap();
+        let observed = Mutex::new(None);
+        let on_record = |record: &ProjectEnvironmentRecord| {
+            register_environment_files(std::slice::from_ref(&rig.checkout), &record.files);
+            *observed.lock().unwrap() = Some(record.clone());
+        };
+        run_import(
+            rig.begin("saved-before-adoption"),
+            &from,
+            ImportTarget {
+                project_id: "p",
+                checkout: &rig.checkout,
+                store: &rig.store,
+                vault: &rig.vault,
+                on_record: &on_record,
+            },
+            None,
+        )
+        .await;
+        let view = rig
+            .operations
+            .get("saved-before-adoption")
+            .unwrap()
+            .unwrap();
+        let rules = environment_file_rules(&rig.checkout);
+        register_environment_files(std::slice::from_ref(&rig.checkout), &[]);
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(
+            view.entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SAVED", "saved.json"]
+        );
+        let retained = rig.store.load("p").unwrap().unwrap();
+        assert_eq!(*observed.lock().unwrap(), Some(retained));
+        assert_eq!(rules, vec!["!saved.json"]);
+        assert!(rig.checkout.join("saved.json").exists());
+        assert!(!rig.checkout.join("source.json").exists());
+    }
+
+    #[tokio::test]
     async fn an_older_source_record_does_not_replace_this_kernels_newer_one() {
         let rig = Rig::new();
         rig.store.adopt("p", record(5, &["LOCAL"], &[])).unwrap();
@@ -1005,7 +1056,7 @@ mod tests {
             rig.store.load("p").unwrap().unwrap().secrets,
             vec!["LOCAL".to_string()]
         );
-        assert!(rig.adopted.lock().unwrap().is_empty());
+        assert_eq!(*rig.registered.lock().unwrap(), vec![5]);
         assert_eq!(states(&view)[0].0, "LOCAL");
     }
 

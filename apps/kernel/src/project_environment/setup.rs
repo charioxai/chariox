@@ -1,6 +1,7 @@
 //! Setup runs: the Project's script executed once per machine and checkout, with its output kept
 //! under the field, a Stop that ends the process, and an honest result after a kernel restart.
 use super::environment_error;
+use super::setup_output::{SetupOutput, READ_BYTES};
 use crate::error::DaemonError;
 use crate::local::{
     EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
@@ -12,11 +13,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
 const DIRECTORY: &str = "project-environment-setup";
-/// The output a run keeps; older lines are dropped first.
+/// The output a run keeps; older text is dropped first.
 const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
 /// How long output may still arrive after the script exited.
 const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -331,23 +332,24 @@ impl SetupRuns {
         let secrets = Arc::clone(secrets);
         let runs_root = self.root.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(pipe).lines();
+            let mut pipe = pipe;
+            let mut bytes = Zeroizing::new([0_u8; READ_BYTES]);
+            let mut output = SetupOutput::default();
             let mut persisted = std::time::Instant::now();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut line = line;
-                for (name, value) in secrets.iter() {
-                    if !value.is_empty() {
-                        line = line.replace(value.as_str(), &format!("[{name}]"));
-                    }
-                }
+            loop {
+                let count = pipe.read(bytes.as_mut()).await.unwrap_or(0);
+                let text = output.push(&bytes[..count], &secrets, count == 0);
                 let snapshot = {
                     let mut run = lock(&live.run);
-                    append_tail(&mut run.view.output_tail, &line);
+                    append_tail(&mut run.view.output_tail, &text);
                     (persisted.elapsed() >= PERSIST_INTERVAL).then(|| run.clone())
                 };
                 if let Some(snapshot) = snapshot {
                     persisted = std::time::Instant::now();
                     let _ = write_run(&runs_root, &snapshot);
+                }
+                if count == 0 {
+                    break;
                 }
             }
         })
@@ -411,9 +413,8 @@ fn write_run(root: &Path, run: &StoredRun) -> std::io::Result<()> {
     result
 }
 
-fn append_tail(tail: &mut String, line: &str) {
-    tail.push_str(line);
-    tail.push('\n');
+fn append_tail(tail: &mut String, text: &str) {
+    tail.push_str(text);
     if tail.len() > OUTPUT_TAIL_BYTES {
         let mut cut = tail.len() - OUTPUT_TAIL_BYTES;
         while !tail.is_char_boundary(cut) {
@@ -694,11 +695,52 @@ mod tests {
         drop(live);
     }
 
+    #[tokio::test]
+    async fn split_secret_values_and_utf8_are_preserved_as_masked_streamed_output() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        let script = "printf 'synthetic-'; sleep 0.05; printf 'token-value'; printf '\\303'; sleep 0.05; printf '\\251'; printf '\\rcomplete'";
+        runs.start(spec(&dir, "op-split", script)).unwrap();
+        let view = finished(&runs, "op-split").await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(view.output_tail, "[NOTION_TOKEN]é\rcomplete");
+    }
+
+    #[tokio::test]
+    async fn newline_free_output_is_bounded_and_visible_before_the_script_exits() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        // A real pipe must drain well past its capacity, without a newline or EOF.
+        let script = "head -c 4194304 /dev/zero | tr '\\0' x; printf '\\rprogress!'; touch emitted; while [ ! -e release ]; do sleep 0.01; done";
+        runs.start(spec(&dir, "op-stream", script)).unwrap();
+        let emitted = dir.0.join("checkout/emitted");
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let view = runs.get("op-stream").unwrap().unwrap();
+                assert!(view.output_tail.len() <= OUTPUT_TAIL_BYTES);
+                if emitted.exists() && view.output_tail.ends_with("\rprogress!") {
+                    break view;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Release even when this assertion fails on the old line reader.
+        fs::write(dir.0.join("checkout/release"), "").unwrap();
+        let view = finished(&runs, "op-stream").await;
+        let observed =
+            observed.expect("output must be visible while the newline-free script is running");
+        assert_eq!(observed.state, EnvironmentOperationState::Running);
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(view.output_tail.len(), OUTPUT_TAIL_BYTES);
+        assert!(view.output_tail.ends_with("\rprogress!"));
+    }
+
     #[test]
     fn the_output_tail_drops_the_oldest_text_on_a_character_boundary() {
         let mut tail = String::new();
         for _ in 0..OUTPUT_TAIL_BYTES {
-            append_tail(&mut tail, "é");
+            append_tail(&mut tail, "é\n");
         }
         assert!(tail.len() <= OUTPUT_TAIL_BYTES);
         assert!(tail.ends_with("é\n"));
