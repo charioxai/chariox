@@ -128,25 +128,39 @@ except Exception as error:
   }
 
   if (scenario === "stop-cycles") {
-    // Cancel during provider launch, before a tool need be running. This checks
-    // queue settlement and the next turn through public IPC; the TUI observes.
+    // Stop each new turn before its tool need be running, then check its
+    // settlement before moving focus. Cancellation uses public IPC, not a TUI key.
     let cancellationCount = 0
+    const terminal = task => task.state === "done" || task.state === "cancelled"
     for (let cycle = 0; cycle < 3; cycle++) {
-      await say(`New independent cycle ${cycle}: run python3 -c 'import time; time.sleep(30)' once, in the foreground. Do not retry if stopped.`, "stop")
-      const active = await until(async () => {
-        const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
-        const prompts = agents.map(target => session.prompt_states?.[target.id]?.active_prompt)
-        return prompts.every(Boolean) && prompts
-      }, `cycle ${cycle} prompts to become active`, 90000)
-      await delay(150)
-      const responses = await Promise.all(agents.map((target, i) => rpc({ CancelActivePrompt: {
-        session_id: sessionId, attachment_id: ctx.attachmentId, target_agent_id: target.id, expected_prompt_id: active[i].id,
-      } }).catch(error => {
-        if (!String(error.message).includes("has no active prompt")) throw error
-        return { already_settled: true }
-      })))
-      cancellationCount += responses.filter(response => !response.already_settled).length
-      note("stop-responses", { cycle, statuses: responses.map(response => response.already_settled ? "already settled" : response.PromptCancelled.cancellation.prompt.status) })
+      const statuses = []
+      for (const target of agents) {
+        const before = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+        const previousTasks = new Set((before.agent_tasks ?? []).map(task => task.task_id))
+        await ask(`New independent cycle ${cycle}: run python3 -c 'import time; time.sleep(30)' once, in the foreground. Do not retry if stopped.`, target)
+        const admitted = await until(async () => {
+          const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+          const state = session.prompt_states?.[target.id]
+          if (state?.active_prompt) return { prompt: state.active_prompt }
+          const tasks = (session.agent_tasks ?? []).filter(task => task.agent_id === target.id && !previousTasks.has(task.task_id))
+          return tasks.length && tasks.every(terminal) && !(state?.queued_prompts ?? []).length && { already_settled: true }
+        }, `cycle ${cycle} turn for ${target.alias}`, 90000)
+        await delay(150)
+        const response = admitted.already_settled ? admitted : await rpc({ CancelActivePrompt: {
+          session_id: sessionId, attachment_id: ctx.attachmentId, target_agent_id: target.id, expected_prompt_id: admitted.prompt.id,
+        } }).catch(error => {
+          if (!String(error.message).includes("has no active prompt")) throw error
+          return { already_settled: true }
+        })
+        if (!response.already_settled) cancellationCount++
+        statuses.push(response.already_settled ? "already settled" : response.PromptCancelled.cancellation.prompt.status)
+        await until(async () => {
+          const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
+          const state = session.prompt_states?.[target.id]
+          return !state?.active_prompt && !(state?.queued_prompts ?? []).length && (session.agent_tasks ?? []).filter(task => task.agent_id === target.id).every(terminal)
+        }, `stopped ${target.alias} turn to settle`, 90000)
+      }
+      note("stop-responses", { cycle, statuses })
       await until(async () => {
         const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
         return !session.active_prompt && !(session.queued_prompts ?? []).length && Object.values(session.prompt_states ?? {}).every(state => !state.active_prompt && !(state.queued_prompts ?? []).length) && (session.agent_tasks ?? []).every(task => task.state === "done" || task.state === "cancelled")
@@ -154,7 +168,7 @@ except Exception as error:
     }
     await say("Run exactly sh -c 'echo DONE > answer-stop-b{N}.txt'. Then reply finished. Do not change anything else.", "stop")
     await waitAnswers("stop", 180)
-    check("real providers accept new turns after cancellation during launch", cancellationCount >= agents.length, { cancellations: cancellationCount })
+    check("real providers accept new turns after early cancellation", cancellationCount >= agents.length, { cancellations: cancellationCount })
     assert(checks.every(c => c.ok), "the early-cancellation drill failed")
   }
 
