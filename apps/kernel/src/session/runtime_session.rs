@@ -337,11 +337,6 @@ impl RuntimeSession {
         true
     }
 
-    pub(crate) fn clear_project_id_for_hidden_restore(&mut self) {
-        debug_assert!(self.hidden);
-        self.project_id.clear();
-    }
-
     pub(crate) fn migrate_default_project_scope(
         &mut self,
         workspace_id: impl Into<String>,

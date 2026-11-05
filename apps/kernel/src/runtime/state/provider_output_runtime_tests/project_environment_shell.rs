@@ -199,6 +199,8 @@ async fn assert_placed_project_environment(remote: bool) {
             .unwrap();
         (session, agent, runtime)
     };
+    // Provider activation mirrors the session back through the shared restore entry point.
+    let session = store.restore_session(session);
     assert!(target.join("source.local").exists());
     assert!(!target.join("wrong.local").exists());
     let request = crate::provider::LaunchProviderRequest::new(

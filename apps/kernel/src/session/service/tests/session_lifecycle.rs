@@ -206,7 +206,7 @@ fn hidden_sessions_do_not_get_default_aliases() {
 }
 
 #[test]
-fn restoring_hidden_session_detaches_it_from_legacy_project() {
+fn restoring_hidden_session_keeps_its_project_without_making_it_visible() {
     let mut source = SessionService::new(&test_config());
     let visible = source
         .create_session(CreateSessionRequest::new("/repo", "worktree-visible"))
@@ -229,7 +229,7 @@ fn restoring_hidden_session_detaches_it_from_legacy_project() {
     let mut restored = SessionService::new(&test_config());
     restored.restore_projects(vec![project.clone()]);
     let hidden = restored.restore_session(hidden);
-    assert_eq!(hidden.project_id(), "");
+    assert_eq!(hidden.project_id(), project.id());
     assert!(restored
         .list_visible_projects(true, |session| {
             session.has_member(DEFAULT_LOCAL_USER_ID)

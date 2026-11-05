@@ -264,9 +264,7 @@ impl SessionService {
             session.note_activity_at(held.last_activity_at_ms());
         }
         session.purge_unsupported_workflow_publications();
-        if session.is_hidden() {
-            session.clear_project_id_for_hidden_restore();
-        } else if session.project_id().is_empty() {
+        if !session.is_hidden() && session.project_id().is_empty() {
             let project_id = self.ensure_default_project(
                 session.owner_user_id(),
                 session.workspace_id(),
@@ -274,7 +272,7 @@ impl SessionService {
             );
             let assigned = session.assign_project_id(project_id);
             debug_assert!(assigned);
-        } else if !self.projects.contains_key(session.project_id()) {
+        } else if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
                 &default_project_name(session.workspace_id()),
