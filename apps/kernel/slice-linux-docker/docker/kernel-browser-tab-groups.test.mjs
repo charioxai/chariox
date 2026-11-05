@@ -32,7 +32,7 @@ test("MP-08 one native group per agent label; unchanged groups are not re-sent",
   await groups.load("/k/tab-groups-extension");
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t2", "t1"] }]), true);
   assert.equal(await groups.sync([{ label: "Mara", target_ids: ["t1", "t2"] }]), false, "same groups, no evaluate");
-  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 5').map(call => call.params.expression);
+  const evaluated = sent.filter(call => call.method === "Runtime.evaluate"&&call.params.expression!=='chrome.runtime.reload()'&&call.params.expression!=='charioxTabs.revision === 9').map(call => call.params.expression);
   assert.equal(evaluated.length, 1);
   assert.match(evaluated[0], /^charioxTabs\.sync\(\[\{"target_ids":\["t1","t2"\],"title":"Mara","color":"[a-z]+"\}\]\)$/);
   await assert.rejects(new ChromeTabGroups({ send: async () => ({ id: "other" }) }).load("/k"), /unexpected kernel tab-groups extension id/);
@@ -46,7 +46,7 @@ test("MP-08/MP-11 a removed tab-groups extension is loaded again; until then it 
     if (method === "Target.getTargets") return { targetInfos: installed ? [{ type: "service_worker", targetId: "sw-"+worker, url: `chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js` }] : [] };
     if (method === "Target.attachToTarget") return { sessionId: "s" };
     if (method === "Extensions.uninstall") { uninstalls++; if (!installed) throw new Error("not installed"); installed = false; return {}; }
-    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 5')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
+    if (method === "Runtime.evaluate") {if(params.expression==='charioxTabs.revision === 9')return{result:{value:true}};if(params.expression==='chrome.runtime.reload()')worker++; if (!installed) throw new Error("No session with given id"); return { result: { value: "target-b" } }; }
     return {};
   } };
   const groups = new ChromeTabGroups(connection);
@@ -84,8 +84,8 @@ test("MP-08 a Tab in a second tabbed window folds into the oldest one, also afte
     listeners.created(tabs.get(1)); listeners.created(tabs.get(3));
     await listeners.attached(2);
     await new Promise(resolve => setTimeout(resolve, 20));
-    assert.deepEqual(calls, [["move", 2, { windowId: 10, index: -1 }], ["update", 2, { active: true }], ["focus", 10, { focused: true }]],
-      "only the second normal window's Tab moves (after the drag ends); the main window's and the popup's stay");
+    assert.deepEqual(calls, [["move", 2, { windowId: 10, index: -1 }]],
+      "only the second normal window's Tab moves (after the drag ends); the main window's and the popup's stay; no opener on screen, so the view stays");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -159,7 +159,7 @@ test('loading the component replaces a cached older worker',async()=>{
   if(method==='Extensions.loadUnpacked'){if(!installed)current='new-target';installed=true;return{id:TAB_GROUPS_EXTENSION_ID}}
   if(method==='Target.getTargets')return{targetInfos:[{type:'service_worker',targetId:'worker-'+worker,url:`chrome-extension://${TAB_GROUPS_EXTENSION_ID}/sw.js`}]};
   if(method==='Target.attachToTarget')return{sessionId:'session'};
-  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 5')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
+  if(method==='Runtime.evaluate'){if(params.expression==='charioxTabs.revision === 9')return{result:{value:current==='new-target'}};if(params.expression==='chrome.runtime.reload()'){current='new-target';worker++}return{result:{value:current}};}return{};
  }};
  const groups=new ChromeTabGroups(connection);await groups.load('/owned/component');assert.equal(await groups.active(),'new-target');
 });
@@ -213,4 +213,195 @@ test('MP-08/MP-10 real headless favicon cache does not require metadata headers'
  const chrome={runtime:{getPlatformInfo(){},getURL:p=>'chrome-extension://'+TAB_GROUPS_EXTENSION_ID+p},debugger:{getTargets:async()=>[{id:'target',tabId:1}]},windows:{},tabs:{get:async()=>({id:1,url:'https://www.wikipedia.org/'}),onCreated:{addListener(){}},onAttached:{addListener(){}}}};
  new Function('chrome','setInterval','setTimeout','globalThis','fetch',source)(chrome,()=>{},queueMicrotask,state,async()=>new Response(bytes));assert.equal(await state.charioxTabs.favicon('target'),bytes.toString('base64'));
  }finally{await rm(root,{recursive:true,force:true})}
+});
+
+// Miguel 11-04: agents never change the Tab the person sees.
+const activation = async ({ tabs, shown, windows, move }) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-activation-'));
+  const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8');
+  await rm(root, { recursive: true, force: true });
+  const listeners = {}, calls = [];
+  const chrome = {
+    runtime: { getPlatformInfo() {} },
+    windows: { getAll: async () => windows, update: async (id, value) => calls.push(['focus', id, value]) },
+    tabs: {
+      onCreated: { addListener: fn => { listeners.created = fn; } }, onAttached: { addListener: fn => { listeners.attached = fn; } },
+      onActivated: { addListener: fn => { listeners.activated = fn; } },
+      query: async () => shown.map(([windowId, id]) => ({ id, windowId, active: true })),
+      get: async id => tabs.get(id), move: async (id, value) => { await move?.(); calls.push(['move', id, value]); },
+      update: async (id, value) => calls.push(['update', id, value]),
+    },
+  };
+  const worker = {};
+  chrome.debugger = { getTargets: async () => [{ id: 'keepalive', tabId: 99 }, ...[...tabs.keys()].map(id => ({ id: `target-${id}`, tabId: id }))] };
+  new Function('chrome', 'setInterval', 'setTimeout', 'globalThis', source)(chrome, () => {}, queueMicrotask, worker);
+  await worker.charioxTabs.keepalive('keepalive');
+  await new Promise(resolve => setTimeout(resolve, 5));
+  return { listeners, calls, worker };
+};
+
+test('a page opened by a Tab nobody is looking at does not take the view', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: true, openerTabId: 5 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'the person\'s Tab is shown again');
+});
+
+test('a page opened by the Tab on screen stays as Chrome shows it, and a person-made Tab is left alone', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 10, active: true, openerTabId: 1 }], [8, { id: 8, windowId: 10, active: true }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9)); listeners.created(tabs.get(8));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, []);
+});
+
+test('a popup of a background Tab joins the strip without coming to front, one of the shown Tab does', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 11, openerTabId: 5 }], [3, { id: 3, windowId: 12, openerTabId: 1 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }, { id: 12, type: 'popup' }] });
+  await listeners.attached(2);
+  assert.deepEqual(calls, [['move', 2, { windowId: 10, index: -1 }], ['update', 1, { active: true }]], 'the shown Tab is put back');
+  calls.length = 0;
+  await listeners.attached(3);
+  assert.deepEqual(calls, [['move', 3, { windowId: 10, index: -1 }], ['update', 3, { active: true }], ['focus', 10, { focused: true }]]);
+});
+
+test('a group is found by its Tabs, so a changing title never makes a second group', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-group-title-'));
+  try {
+    const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8'), state = {}, calls = [];
+    const chrome = { runtime: { getPlatformInfo() {} }, windows: {}, debugger: { getTargets: async () => [{ id: 'target-a', tabId: 7 }] },
+      tabs: { onCreated: { addListener() {} }, onAttached: { addListener() {} }, get: async id => ({ id, windowId: 10, groupId: 42 }), query: async () => [{ id: 7, windowId: 10, groupId: 42 }],
+        group: async spec => { calls.push(spec); return 42; }, ungroup: async () => {} },
+      tabGroups: { query: async () => { throw Error('looked up by title'); }, update: async (id, spec) => calls.push([id, spec.title]) } };
+    new Function('chrome', 'setInterval', 'globalThis', source)(chrome, () => {}, state);
+    await state.charioxTabs.sync([{ target_ids: ['target-a'], title: '⠋ Agent', color: 'blue' }]);
+    assert.deepEqual(calls, [[42, '⠋ Agent']], 'a Tab already in its group is not regrouped');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a page opened by a background Tab that Chrome shows a moment after creating it is put back behind the shown Tab', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: false, openerTabId: 5 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'the person\'s Tab is shown again');
+  calls.length = 0;
+  listeners.activated({ tabId: 5, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [], 'a Tab the person chooses is left alone');
+});
+
+// MP-08/MP-10/MP-11: the opening guard must yield to the person's later selection.
+test('a person can select a new background popup after its automatic activation is restored', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: false, openerTabId: 5 }]]);
+  const { listeners, calls } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  listeners.activated({ tabId: 9, windowId: 10 });
+  listeners.activated({ tabId: 1, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'automatic opening stays in the background');
+  calls.length = 0;
+  listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [], 'the person selects the new popup immediately, within the opening guard window');
+});
+
+test('explicit person input can select an inactive new popup before its first activation', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [5, { id: 5, windowId: 10 }], [9, { id: 9, windowId: 10, active: false, openerTabId: 5 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  listeners.created(tabs.get(9));
+  await worker.charioxTabs.personSelection?.();
+  listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [], 'the initial explicit choice of the popup is preserved');
+});
+
+for (const active of [false, true]) test(`BTAB-01 an agent opening from the shown tab stays behind it (created active=${active})`, async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 10, active, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }] });
+  await worker.charioxTabs.openingInput?.('target-1', true);
+  listeners.created(tabs.get(9));
+  if (!active) listeners.activated({ tabId: 9, windowId: 10 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['update', 1, { active: true }]], 'watching the agent does not authorize its popup to take the view');
+  calls.length = 0;
+  await worker.charioxTabs.personSelection();
+  listeners.activated({ tabId: 9, windowId: 10 });
+  assert.deepEqual(calls, [], 'the person can select the new tab immediately');
+});
+
+test('BTAB-01 an agent popup from the shown tab folds behind it; a later person click still opens in front', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }], [8, { id: 8, windowId: 12, active: true, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }, { id: 12, type: 'popup' }] });
+  await worker.charioxTabs.openingInput?.('target-1', true);
+  listeners.created(tabs.get(9));
+  // Chrome may activate the popup before its asynchronous fold finishes.
+  listeners.activated({ tabId: 9, windowId: 11 });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }], ['update', 1, { active: true }]]);
+  calls.length = 0;
+  await worker.charioxTabs.openingInput?.('target-1', false);
+  listeners.created(tabs.get(8));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 8, { windowId: 10, index: -1 }], ['update', 8, { active: true }], ['focus', 10, { focused: true }]]);
+});
+
+test('BTAB-01 person Chrome input retires the actor of an earlier popup before another fold', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }] });
+  await worker.charioxTabs.openingInput('target-1', true);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  calls.length = 0;
+  // The person's Chrome action can move this tab to another window later.
+  await worker.charioxTabs.personSelection();
+  await listeners.attached(9);
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }], ['update', 9, { active: true }], ['focus', 10, { focused: true }]]);
+});
+
+test('BTAB-01 a person selection made while a popup fold is moving is not undone when the move finishes', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }], move: () => held });
+  await worker.charioxTabs.openingInput('target-1', true);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  // The person picks B while the agent popup is still being moved.
+  await worker.charioxTabs.personSelection();
+  listeners.activated({ tabId: 2, windowId: 10 });
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]], 'the finished move activates and focuses nothing');
+});
+
+test('BTAB-01 a watched popup does not take the view back from a person selection made during its fold', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }], move: () => held });
+  await worker.charioxTabs.openingInput('target-1', false);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await worker.charioxTabs.personSelection();
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]]);
+});
+
+test('a group the person collapsed stays collapsed while an agent spinner advances', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-group-collapsed-'));
+  try {
+    const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8'), state = {}, groups = new Map([[42, { collapsed: false }], [43, { collapsed: false }]]);
+    const chrome = { runtime: { getPlatformInfo() {} }, windows: {}, debugger: { getTargets: async () => [{ id: 'target-a', tabId: 7 }, { id: 'target-b', tabId: 8 }] },
+      tabs: { onCreated: { addListener() {} }, onAttached: { addListener() {} }, get: async id => ({ id, windowId: 10, groupId: id === 7 ? 42 : 43 }), query: async () => [{ id: 7, windowId: 10, groupId: 42 }, { id: 8, windowId: 10, groupId: 43 }],
+        group: async spec => spec.groupId, ungroup: async () => {} },
+      tabGroups: { update: async (id, spec) => { Object.assign(groups.get(id), spec); } } };
+    new Function('chrome', 'setInterval', 'globalThis', source)(chrome, () => {}, state);
+    const sync = frame => state.charioxTabs.sync([{ target_ids: ['target-a'], title: '● Idle', color: 'blue' }, { target_ids: ['target-b'], title: `${frame} Busy`, color: 'red' }]);
+    await sync('◐');
+    groups.get(42).collapsed = true;
+    await sync('◓'); await sync('◑');
+    assert.equal(groups.get(42).collapsed, true, 'the idle agent\'s group the person collapsed is not expanded again');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

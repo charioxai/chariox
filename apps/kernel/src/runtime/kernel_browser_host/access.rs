@@ -183,6 +183,7 @@ impl KernelBrowserHost {
         let root = self.root.clone();
         let app_storage_root = self.app_storage_root.clone();
         let terminal_leases = self.terminal_leases.clone();
+        let person_inputs = self.person_inputs.clone();
         let web_bot_auth_revision = self.web_bot_auth_revision.clone();
         handle.spawn(async move {
             loop {
@@ -196,6 +197,7 @@ impl KernelBrowserHost {
                     authority_epoch: Arc::default(),
                     web_bot_auth_revision: web_bot_auth_revision.clone(),
                     terminal_leases: terminal_leases.clone(),
+                    person_inputs: person_inputs.clone(),
                 };
                 if host.inner.lock().unwrap_or_else(|e| e.into_inner()).stopped {
                     return;

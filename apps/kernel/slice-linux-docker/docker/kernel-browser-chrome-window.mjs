@@ -592,7 +592,7 @@ export class InputArbiter {
       return {dispatched: true};
     };
     // Strip clicks, wheel over the strip and browser shortcuts can show another Tab (review #1016 P1).
-    const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
+    const switching = async () => { follow.switches = true; const tab = await activeAdmitted(); await this.host.tabGroups?.personSelection?.(); this.host.retireNativeForeground?.()?.catch(() => {}); return tab; };
     const popup = source?.surface === 'browser_auxiliary';
     // Protocol 540: the address bar has the person's keys; its list stream stays warm meanwhile.
     const omnibox = (on, ago) => { this.inOmnibox = on; this.windows.focusOmnibox?.(on, ago); };

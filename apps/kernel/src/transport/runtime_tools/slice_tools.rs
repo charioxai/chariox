@@ -130,7 +130,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_BROWSER_TAB_TOOL.to_string(),
-            description: "Activate or close a stable Room browser tab returned by slice_browser_status. The kernel resolves the opaque tab ID and serializes the mutation through the shared Room action authority.".to_string(),
+            description: "Select or close a stable Room browser tab returned by slice_browser_status. Selecting a tab never changes the tab the person sees: keep working in it from behind. Only a person brings a tab to front. The kernel resolves the opaque tab ID and serializes the mutation through the shared Room action authority.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["tab_id", "action"],

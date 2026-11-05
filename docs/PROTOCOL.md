@@ -6447,3 +6447,11 @@ mode. A quirks-mode top-level page is still shown in the viewer's standards-mode
 `protocol 981` controller test in `kernel-browser-mirror2.browser-test.mjs`, the compat renderer test in
 `browser-mirror2-renderer.browser-test.mjs` and the real-Chromium drill `browser-mirror2-lab.mjs` with
 `browser-mirror2-captcha-scenarios.mjs`.
+
+MP-08 / MP-09 / MP-10 / MP-11: parallel agents in one kernel browser (local 986 / relay peer 415). Agents never
+change the Tab Chrome shows: an agent's new Tab opens behind the shown one, selecting a Tab with `slice_browser_tab`
+`activate` is a no-op for the view, and a page an agent's click opened is put behind the shown Tab again. Only a
+person does: `KernelBrowser.command={op:"show_tab",tab_id,generation}` makes Chrome itself show that Tab and answers
+with the browser state; the host refuses it for an agent. A person's typing, click or scroll in a Tab holds an agent's
+input to that same Tab until the person has been idle for two seconds. Each agent's native tab group is titled with
+its status dot, and with a spinner while the agent acts in one of its Tabs.

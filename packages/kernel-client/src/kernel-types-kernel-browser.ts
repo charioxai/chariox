@@ -46,6 +46,8 @@ export type KernelBrowserCommand =
   | { op: "close" | "snapshot" | "screenshot"; tab_id: string; generation: number }
   | { op: "resize"; tab_id: string; generation: number; width: number; height: number }
   | { op: "navigate"; tab_id: string; generation: number; url: string }
+  // Protocol 986: a person asks Chrome itself to show a Tab (never an agent).
+  | { op: "show_tab"; tab_id: string; generation: number }
   | { op: "input"; tab_id: string; generation: number; input: KernelBrowserInput }
   | { op: "cancel_download"; tab_id: string; generation: number; download_id: string }
   | { op: "dialog"; tab_id: string; generation: number; document_id: string; dialog_id: string; action: "accept" | "dismiss"; prompt_text?: string }

@@ -268,3 +268,61 @@ async fn controller_restart_fence_blocks_promotion_by_other_terminal_actions() {
         );
     }
 }
+
+#[tokio::test]
+async fn an_agent_selecting_a_tab_never_brings_it_to_front() {
+    crate::test_support::isolated_env_test!();
+    let tools = TestTools::new("agent-select-behind");
+    let effects = tools.controller_tool.with_file_name("tab-effects");
+    let script = std::fs::read_to_string(&tools.controller_tool)
+        .unwrap()
+        .replace("const { id, method }", "const { id, method, params }")
+        .replace("loader-after-input", "loader-before-input")
+        .replace(
+            "const { createInterface }",
+            "const fs = require('node:fs');\nconst { createInterface }",
+        )
+        .replace(
+            "} else if (method === \"browser.reconcile\") {",
+            &format!(
+                r#"}} else if (method === "browser.tab") {{
+    fs.appendFileSync({}, params.action + '\n');
+    result = {{browser_generation:1,target_id:params.target_id,document_id:params.document_id,action:params.action}};
+  }} else if (method === "browser.reconcile") {{"#,
+                serde_json::to_string(&effects).unwrap()
+            ),
+        );
+    std::fs::write(&tools.controller_tool, script).unwrap();
+    let mut room = TestRoom::new("agent-select-behind");
+    room.enable_browser_controller(&tools).await;
+    let tab = room
+        .runtime
+        .room_environment_snapshot(&room.session_id)
+        .unwrap()
+        .tabs[0]
+        .clone();
+    room.runtime
+        .manage_browser_environment_tab_as_agent(
+            &room.session_id,
+            &room.agent_id,
+            &tab.tab_id,
+            BrowserTabAction::Activate,
+        )
+        .await
+        .expect("an agent can still select a tab to work in");
+    assert!(
+        !effects.exists(),
+        "the controller is never asked to bring an agent's tab to front"
+    );
+    room.runtime
+        .manage_browser_environment_tab(
+            &room.session_id,
+            "00000000000000000000000000000003",
+            &tab.tab_id,
+            BrowserTabAction::Activate,
+        )
+        .await
+        .expect("a person's selection reaches the controller");
+    room.stop_browser_controller().await;
+    assert_eq!(std::fs::read_to_string(&effects).unwrap(), "activate\n");
+}

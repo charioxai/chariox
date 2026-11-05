@@ -9,6 +9,7 @@ import { PortableEncoder } from "./kernel-browser-display.mjs";
 import { CompositorSource } from "./kernel-browser-compositor.mjs";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
+import { BrowserInputCapture } from './browser-controller-input.mjs';
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { BrowserMemory } from "./browser-memory.mjs";
 import { BrowserControllerStdioServer } from "./browser-controller.mjs";
@@ -32,7 +33,7 @@ test('MP-08 / MP-11: Chromium temporary sockets use the held private directory t
   for (const pid of [0, 1, -1, NaN]) assert.throws(() => chromiumTemporaryEnvironment(environment, 5, pid));
 });
 
-function fixture(root, { realCdp = false } = {}) {
+function fixture(root, { realCdp = false, personIdleMs } = {}) {
   fixture.popups = [];
   const pages = new Map();
   let next = 0;
@@ -81,7 +82,7 @@ function fixture(root, { realCdp = false } = {}) {
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
   });
-  return { host: new KernelBrowserHost(root, { chromium, browserFactory: realCdp
+  return { host: new KernelBrowserHost(root, { chromium, ...(personIdleMs ? { personIdleMs } : {}), browserFactory: realCdp
     ? () => new BrowserCdpClient({ connectionFactory: async () => connection }) : browserFactory }), chromium, handlers, sent, pages, connection };
 }
 
@@ -1492,7 +1493,7 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   const reply = await host.handle({ id: 1, method: 'host.browser', params: { op: 'state', _tab_groups: [{ tab_id: b.tab_id, label: 'Mara' }, { tab_id: 'gone', label: 'Ghost' }] } });
   assert.equal(reply.ok, true);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
+  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id], mark: '●' }]]);
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
 }));
 
@@ -1804,7 +1805,7 @@ test('MP-08 agent Tabs named by the kernel are grouped by target; the rest stay 
   const reply = await host.handle({ id: 1, method: 'host.browser', params: { op: 'state', _tab_groups: [{ tab_id: b.tab_id, label: 'Mara' }, { tab_id: 'gone', label: 'Ghost' }] } });
   assert.equal(reply.ok, true);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id] }]]);
+  assert.deepEqual(synced, [[{ label: 'Mara', target_ids: [host.tabs.get(b.tab_id).target_id], mark: '●' }]]);
   assert.notEqual(host.tabs.get(a.tab_id).target_id, host.tabs.get(b.tab_id).target_id);
 }));
 
@@ -3062,4 +3063,256 @@ test('MP-08/MP-11 a same-size window resize retires an in-flight native fit', {t
   assert.equal(host.layoutRevision(tab.tab_id),revision,'same CSS size retains its page revision');
   assert.equal(source.allowed(host.protection),false,'the resize owns the shared window even without a CSS-size change');
  }finally{await host.closeCompositors();LinuxCapture.prototype.start=start;LinuxCapture.prototype.close=close;await display.close()}
+}));
+
+// Miguel 11-04: parallel agents never change the Tab the person sees, run their Tabs at full speed, and wait for the person's input.
+for (const agent of [false, true]) test(`BTAB-01 popup opening actor is announced before page input (agent=${agent})`, () => using(async ({host, connection}) => {
+  const opened = await host.request({op:'open', url:'https://example.com/'}), tab = host.tabs.get(opened.tab_id), evidence = [];
+  host.tabGroups = { openingInput: async (target, actor) => { evidence.push([target, actor]); }, close() {} };
+  connection.beforeSend = async method => { if (method.startsWith('Input.')) assert.deepEqual(evidence, [[tab.target_id, agent]], 'the extension must know the actor before Chrome can create a popup'); };
+  await host.request({op:'input', tab_id:tab.tab_id, generation:opened.generation, document_id:tab.document_id, _agent_input:agent, input:{kind:'click',x:20,y:20}});
+  assert.deepEqual(evidence, [[tab.target_id, agent]]);
+}));
+
+test('an agent opens its Tab behind the shown one; the person opens theirs in front', () => using(async ({ host, sent }) => {
+  await host.request({ op: 'open', url: 'https://example.com/person' });
+  await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  await host.request({ op: 'open', url: 'https://example.com/agent2', _agent_input: true });
+  const created = sent.filter(call => call.method === 'Target.createTarget' && call.params.url.includes('example.com')).map(call => [call.params.url, call.params.background === true]);
+  assert.deepEqual(created, [['https://example.com/person', false], ['https://example.com/agent', true], ['https://example.com/agent2', true]]);
+}));
+
+test('a Tab an agent works in behind the shown one is kept at full speed, and left alone once it closes', { timeout: 8000 }, () => using(async ({ host, sent }) => {
+  const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).map(call => call.session);
+  await host.request({ op: 'open', url: 'https://example.com/shown' });
+  host.browser.inputCapture = new BrowserInputCapture();
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const tab = opened.tabs.find(t => t.url.endsWith('/agent')), session = `session-${host.tabs.get(tab.tab_id).target_id}`;
+  host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
+  const command = { op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } };
+  await host.request(command);
+  assert.ok(emulation().includes(session), 'the first agent action turns focus emulation on for its Tab');
+  const before = emulation().length;
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(emulation().length, before, 'the background lease stays active without toggling emulation');
+  assert.equal(sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.session === session).at(-1).params.enabled, true);
+  assert.ok(!emulation().includes(`session-${host.activeTarget}`), 'the shown Tab is left as Chrome has it');
+  await host.request({ op: 'close', tab_id: tab.tab_id, generation: opened.generation });
+  const after = emulation().filter(s => s === session).length;
+  await new Promise(resolve => setTimeout(resolve, 1700));
+  assert.equal(emulation().filter(s => s === session).length, after, 'a closed Tab is not touched again');
+}));
+
+test('an agent action on a Tab the person is typing in waits for the person to be idle, and the person never waits', { timeout: 5000 }, () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  const keys = () => sent.filter(call => call.method === 'Input.dispatchKeyEvent').length;
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'a' } });
+  const afterPerson = keys();
+  assert.ok(afterPerson > 0, 'the person\'s key is dispatched at once');
+  const startedAt = Date.now();
+  const agent = host.request({ op: 'input', focused_agent: true, ...base, input: { kind: 'key', key: 'b' } });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  assert.equal(keys(), afterPerson, 'the agent waits while the person has just typed');
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'c' } });
+  assert.ok(keys() > afterPerson, 'the person is not held back by the waiting agent');
+  await agent;
+  assert.ok(Date.now() - startedAt >= 140, 'the agent resumed only after the person had been idle');
+  assert.ok(keys() > afterPerson + 1);
+}, { personIdleMs: 150 }));
+
+test('an agent action on another Tab does not wait for the person', { timeout: 5000 }, () => using(async ({ host }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const [a, b] = [first.tabs[0], second.tabs.find(tab => tab.tab_id !== first.tabs[0].tab_id)];
+  await host.request({ op: 'input', tab_id: a.tab_id, generation: first.generation, document_id: a.document_id, input: { kind: 'key', key: 'a' } });
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, tab_id: b.tab_id, generation: second.generation, document_id: b.document_id, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 1000);
+}, { personIdleMs: 5000 }));
+
+test('an agent group carries its status dot, and a spinner while the agent acts in one of its Tabs', { timeout: 8000 }, () => using(async ({ host }) => {
+  const sent = [];
+  const opened = await host.request({ op: 'open', url: 'https://example.com/', focused_agent: true });
+  const tab = opened.tabs[0];
+  host.tabGroups = { sync: async groups => { sent.push(groups.map(({ label, mark }) => `${mark} ${label}`)); return true; }, close() {}, keepalive: async () => {} };
+  await host.syncTabGroups([{ tab_id: tab.tab_id, label: 'Mara' }]);
+  assert.deepEqual(sent.at(-1), ['● Mara'], 'idle: the status dot');
+  const acting = host.request({ op: 'snapshot', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation });
+  await new Promise(resolve => setTimeout(resolve, 900));
+  assert.ok(sent.some(groups => /^[◐◓◑◒] Mara$/.test(groups[0])), 'acting: a spinner frame ' + JSON.stringify(sent));
+  await acting;
+  await new Promise(resolve => setTimeout(resolve, 2300));
+  assert.deepEqual(sent.at(-1), ['● Mara'], 'done: the dot again');
+}));
+
+// Protocol 986: only a person makes Chrome show a Tab.
+test('show_tab makes Chrome activate exactly that Tab for a person, and an agent is refused', () => using(async ({ host, sent }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const tab = first.tabs[0];
+  const activations = () => sent.filter(call => call.method === 'Target.activateTarget').map(call => call.params.targetId);
+  const refused = await host.handle({ id: 'agent-show', method: 'host.browser', params: { op: 'show_tab', focused_agent: true, tab_id: tab.tab_id, generation: second.generation } });
+  assert.equal(refused.ok, false);
+  assert.deepEqual(activations(), [], 'an agent never activates a Tab');
+  let personSelections = 0;
+  host.tabGroups = { personSelection: async () => { personSelections++; assert.deepEqual(activations(), [], 'person selection is announced before activation'); }, close() {} };
+  const shown = await host.handle({ id: 'person-show', method: 'host.browser', params: { op: 'show_tab', tab_id: tab.tab_id, generation: second.generation } });
+  assert.equal(shown.ok, true);
+  assert.equal(personSelections, 1, 'explicit show retires creation-time activation guards');
+  assert.deepEqual(activations(), [host.tabs.get(tab.tab_id).target_id]);
+}));
+
+// Review #1264: Show tab names a Tab the host already owns; a renderer that does not answer elsewhere never delays it.
+test('show_tab activates through the scheduled host path while another Tab\'s renderer does not answer, and input follows', { timeout: 8000 }, () => using(async ({ host, sent }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const tab = first.tabs[0], previous = second.tabs.find(other => other.tab_id !== tab.tab_id);
+  host.tabGroups = { personSelection: async () => {}, active: async () => host.tabs.get(tab.tab_id).target_id, close() {} };
+  host.activeTarget = host.tabs.get(previous.tab_id).target_id;
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method: "host.browser", params })}\n`);
+    return result.promise;
+  };
+  // Reading every page waits on the unrelated renderer for good.
+  host.browser.reconcile = () => new Promise(() => {});
+  const limit = promise => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(null), 3000))]);
+  try {
+    const shown = await limit(rpc(1, { op: 'show_tab', tab_id: tab.tab_id, generation: second.generation }));
+    assert.ok(shown?.ok, 'Show tab waited for the renderer that does not answer: ' + JSON.stringify(shown));
+    assert.equal(shown.result.active_tab_id, tab.tab_id, 'the answer names the Tab Chrome confirmed, not the previous one');
+    assert.deepEqual(sent.filter(call => call.method === 'Target.activateTarget').map(call => call.params.targetId), [host.tabs.get(tab.tab_id).target_id]);
+    const typed = await limit(rpc(2, { op: 'input', tab_id: tab.tab_id, generation: second.generation, document_id: tab.document_id, input: { kind: 'text', text: 'a' } }));
+    assert.ok(typed?.ok, 'input queued behind the Show tab refresh: ' + JSON.stringify(typed));
+  } finally { input.end(); await running; lines.close(); output.end(); }
+}));
+
+// Review #1264: a reconciliation whose native active read began before Show tab confirmed the Tab must not publish the older identity.
+test('an older reconciliation still reading Chrome\'s active Tab cannot undo a confirmed Show tab', { timeout: 8000 }, () => using(async ({ host }) => {
+  const first = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const second = await host.request({ op: 'open', url: 'https://example.com/b' });
+  const tab = first.tabs[0], previous = second.tabs.find(other => other.tab_id !== tab.tab_id);
+  const previousTarget = host.tabs.get(previous.tab_id).target_id, shownTarget = host.tabs.get(tab.tab_id).target_id;
+  const held = Promise.withResolvers();
+  let reads = 0;
+  host.tabGroups = { personSelection: async () => {}, close() {}, active: () => (reads++ === 0 ? held.promise : Promise.resolve(shownTarget)) };
+  host.activeTarget = previousTarget;
+  const older = host.reconcile();
+  while (reads === 0) await new Promise(resolve => setTimeout(resolve, 5));
+  const shown = await host.request({ op: 'show_tab', tab_id: tab.tab_id, generation: second.generation });
+  assert.equal(shown.active_tab_id, tab.tab_id);
+  held.resolve(previousTarget);
+  const late = await older;
+  assert.equal(late.active_tab_id, tab.tab_id, 'the older reconciliation answers with the confirmed Tab');
+  assert.equal(host.activeTarget, shownTarget, 'the confirmed Tab stays the retained active identity');
+  assert.equal(host.tabState().active_tab_id, tab.tab_id);
+}));
+
+test('a group whose Tab a card asks the person to act in says so, over the dot and the spinner', () => using(async ({ host }) => {
+  const sent = [];
+  const opened = await host.request({ op: 'open', url: 'https://example.com/', focused_agent: true });
+  host.tabGroups = { sync: async groups => { sent.push(groups.map(({ label, mark }) => `${mark} ${label}`)); return true; }, close() {}, keepalive: async () => {} };
+  await host.syncTabGroups([{ tab_id: opened.tabs[0].tab_id, label: 'Mara', needs_person: true }]);
+  assert.deepEqual(sent.at(-1), ['▲ Mara']);
+  await host.syncTabGroups([{ tab_id: opened.tabs[0].tab_id, label: 'Mara', needs_person: false }]);
+  assert.deepEqual(sent.at(-1), ['● Mara']);
+}));
+
+test('a hidden renderer that answers late does not end the hold of its Tab', { timeout: 8000 }, () => using(async ({ host, sent, connection }) => {
+  const emulation = () => sent.filter(call => call.method === 'Emulation.setFocusEmulationEnabled' && call.params.enabled === true).length;
+  await host.request({ op: 'open', url: 'https://example.com/shown' });
+  host.browser.inputCapture = new BrowserInputCapture();
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const tab = opened.tabs.find(t => t.url.endsWith('/agent'));
+  host.activeTarget = host.tabs.get(opened.tabs.find(t => t.url.endsWith('/shown')).tab_id).target_id;
+  let late = 2;
+  connection.beforeSend = async method => { if (method === 'Emulation.setFocusEmulationEnabled' && late-- > 0) throw Object.assign(new Error('browser CDP method Emulation.setFocusEmulationEnabled timed out after 1500ms'), { code: 'browser_cdp_timeout' }); };
+  await host.request({ op: 'input', focused_agent: true, tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id, input: { kind: 'key', key: 'Tab' } });
+  await new Promise(resolve => setTimeout(resolve, 4000));
+  assert.ok(emulation() >= 1, `the background lease was acquired after the late answers (${emulation()})`);
+}));
+
+// MP-08/MP-09/MP-10/MP-11: display teardown must not turn off an agent's background renderer.
+test('releasing a display capture preserves the background agent wake-up', () => using(async ({host,connection,sent}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  host.browser.inputCapture=new BrowserInputCapture();
+  const opened=await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  await host.holdBackground(tab);
+  const session=`session-${tab.target_id}`;
+  const release=await host.browser.inputCapture.hold(connection,session);
+  await release();
+  assert.equal(sent.filter(c=>c.method==='Emulation.setFocusEmulationEnabled'&&c.session===session).at(-1)?.params.enabled,true,'display release must leave the background lease active');
+}));
+
+test('a background lease follows session replacement and releases while the person shows its Tab', () => using(async ({host,connection,sent}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  host.browser.inputCapture=new BrowserInputCapture();
+  await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  let sessionId='first-agent-session';
+  host.browser.resolvePageTarget=async()=>({connection,sessionId});
+  await host.holdBackground(tab);
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  sessionId='replacement-agent-session';await host.assertBackground();
+  assert.ok(!host.browser.inputCapture.displayLeases.has('first-agent-session'));
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  host.activeTarget=tab.target_id;await host.assertBackground();
+  assert.ok(!host.browser.inputCapture.displayLeases.has(sessionId));
+  assert.equal(sent.filter(c=>c.method==='Emulation.setFocusEmulationEnabled'&&c.session===sessionId).at(-1).params.enabled,false);
+  host.activeTarget=null;await host.assertBackground();
+  assert.ok(host.browser.inputCapture.displayLeases.has(sessionId));
+  await host.releaseBackground(tab.target_id);
+  assert.equal(host.backgroundHolds.size,0);assert.equal(host.browser.inputCapture.displayLeases.size,0);
+}));
+
+test('a background renderer has its own tiny acknowledged capture until the person shows it', () => using(async ({host,connection,sent,handlers}) => {
+  await host.request({op:'open',url:'https://example.com/person'});
+  const send=connection.send;
+  connection.send=(method,params,session)=>method==='Target.attachToTarget' ? Promise.resolve({sessionId:'background-capture'}) : send(method,params,session);
+  await host.request({op:'open',url:'https://example.com/agent',focused_agent:true});
+  const tab=[...host.tabs.values()].find(t=>t.url.endsWith('/agent'));
+  host.activeTarget=[...host.tabs.values()].find(t=>t.url.endsWith('/person')).target_id;
+  await host.holdBackground(tab);
+  const start=sent.find(c=>c.method==='Page.startScreencast');
+  assert.ok(start,'focus emulation alone does not schedule hidden RenderWidgets at full speed');
+  assert.equal(start.session,'background-capture');
+  assert.ok(start.params.maxWidth<=16&&start.params.maxHeight<=16);
+  for(const handler of handlers)handler({method:'Page.screencastFrame',sessionId:'background-capture',params:{sessionId:7,data:'UNPROTECTED_PIXELS_MUST_BE_DISCARDED'}});
+  await Promise.resolve();
+  assert.ok(sent.some(c=>c.method==='Page.screencastFrameAck'&&c.session==='background-capture'&&c.params.sessionId===7));
+  assert.ok(!JSON.stringify(sent).includes('UNPROTECTED_PIXELS_MUST_BE_DISCARDED'));
+  host.activeTarget=tab.target_id;await host.assertBackground();
+  assert.ok(sent.some(c=>c.method==='Page.stopScreencast'&&c.session==='background-capture'));
+  assert.ok(sent.some(c=>c.method==='Target.detachFromTarget'&&c.params.sessionId==='background-capture'));
+  assert.ok(!sent.some(c=>c.method==='Target.activateTarget'));
+}));
+
+test('kernel-admitted agent input does not repeat the idle wait while Rust holds its mutation reservation', { timeout: 5000 }, () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+  const tab = opened.tabs[0], base = { tab_id: tab.tab_id, generation: opened.generation, document_id: tab.document_id };
+  await host.request({ op: 'input', ...base, input: { kind: 'key', key: 'a' } });
+  const startedAt = Date.now();
+  await host.request({ op: 'input', focused_agent: true, _person_idle_checked: true, ...base, input: { kind: 'key', key: 'b' } });
+  assert.ok(Date.now() - startedAt < 100, 'the kernel already waited outside its mutation reservation');
+}, { personIdleMs: 150 }));
+
+test('an agent opening a background Tab starts its renderer before any later agent action', () => using(async ({ host, sent }) => {
+  const shown = await host.request({ op: 'open', url: 'https://example.com/person' });
+  const front = host.tabs.get(shown.tab_id).target_id;
+  host.tabGroups = { active: async () => front, sync: async () => true, close() {}, keepalive: async () => {}, viewport: () => null };
+  host.browser.inputCapture = new BrowserInputCapture();
+  const opened = await host.request({ op: 'open', url: 'https://example.com/agent', focused_agent: true });
+  const target = host.tabs.get(opened.tab_id).target_id;
+  assert.ok(host.backgroundHolds.has(target), 'open itself holds the background renderer');
+  assert.ok(sent.some(call => call.method === 'Page.startScreencast'), 'the new renderer is already scheduling frames');
 }));

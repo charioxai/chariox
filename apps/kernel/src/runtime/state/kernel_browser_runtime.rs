@@ -133,6 +133,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayTakeover { .. }
             | KernelBrowserCommand::DisplayRelease { .. }
             | KernelBrowserCommand::DisplayActors
+            | KernelBrowserCommand::ShowTab { .. }
             | KernelBrowserCommand::Computer { .. }
     ) {
         return Err(host_error(
@@ -1360,5 +1361,19 @@ mod document_tests {
             }}))
             .is_err());
         }
+    }
+
+    #[test]
+    fn an_agent_cannot_make_chrome_show_a_tab() {
+        // Only a person changes the tab Chrome shows (protocol 986).
+        let error = browser_tool_params(
+            serde_json::json!({"command":{"op":"show_tab","tab_id":"t","generation":1}}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("terminal display adapter required"),
+            "{error}"
+        );
     }
 }

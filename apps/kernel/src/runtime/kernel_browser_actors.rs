@@ -812,6 +812,9 @@ impl KernelBrowserActors {
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
     }
+    pub(crate) fn set_attention(&mut self, tabs: std::collections::BTreeSet<String>) {
+        self.tab_activity.set_attention(tabs);
+    }
     pub(crate) fn agent_tab_groups(&self) -> Value {
         self.tab_activity.agent_groups()
     }
@@ -1347,6 +1350,36 @@ mod tests {
             .snapshot()
             .to_string()
             .contains("synthetic-private-value"));
+    }
+
+    #[test]
+    fn an_agent_group_names_the_tabs_a_person_is_asked_to_act_in() {
+        let mut model = ready();
+        model.opened_tab(agent(), "host-tab-a");
+        model.opened_tab(agent(), "host-tab-b");
+        assert_eq!(
+            model
+                .agent_tab_groups()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["needs_person"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(false), json!(false)]
+        );
+        model.set_attention(["host-tab-b".to_string()].into_iter().collect());
+        let groups = model.agent_tab_groups();
+        let needs = |tab: &str| {
+            groups
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["tab_id"] == tab)
+                .unwrap()["needs_person"]
+                .clone()
+        };
+        assert_eq!(needs("host-tab-a"), json!(false));
+        assert_eq!(needs("host-tab-b"), json!(true));
     }
 }
 
