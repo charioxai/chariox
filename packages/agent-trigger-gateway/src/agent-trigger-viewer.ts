@@ -2,6 +2,7 @@ import { renderTranscriptHtml, renderTerminalEntriesByTurn, renderFreeformTransc
 import type { Conversation } from "./agent-trigger-client.js"
 import { unconfirmedHtml } from "./agent-trigger-unconfirmed.js"
 import { applyOutputRecords, reconcileSnapshot } from "./agent-trigger-live.js"
+import { setMarkdownWorkspaceImageLoader, type MarkdownWorkspaceImageLoader } from "@chariox/transcript-view/markdown/markdown-images"
 const main = document.querySelector<HTMLElement>("main[data-trigger-base]")!
 const base = main.dataset.triggerBase!
 const csrf = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content
@@ -39,6 +40,19 @@ function apply(value: Conversation, older = false) {
   input.disabled = send.disabled = !value.online || !value.enabled
   render()
 }
+// A workspace picture in a reply loads through this page's server, which reads it from the kernel; once per picture, as the page redraws on every update.
+const workspaceImages = new Map<string, ReturnType<MarkdownWorkspaceImageLoader>>()
+setMarkdownWorkspaceImageLoader((_element, reference) => {
+  const known = workspaceImages.get(reference)
+  if (known) return known
+  const loading = fetch(`${base}workspace-image?path=${encodeURIComponent(reference)}`, { headers: csrfHeaders }).then(async response => {
+    if (!response.ok) { workspaceImages.delete(reference); return { kind: "unavailable" as const, message: "image unavailable" } }
+    const blob = await response.blob()
+    return { kind: "loaded" as const, src: URL.createObjectURL(blob), sizeBytes: blob.size }
+  }, () => { workspaceImages.delete(reference); return { kind: "unavailable" as const, message: "image unavailable" } })
+  workspaceImages.set(reference, loading)
+  return loading
+})
 apply(JSON.parse(document.querySelector("#initial-conversation")!.textContent!) as Conversation)
 output.scrollTop = output.scrollHeight
 output.addEventListener("click", event => {

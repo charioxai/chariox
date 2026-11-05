@@ -1445,6 +1445,7 @@ mod tests {
             "`![alt](path)`",
             "write it to a PNG file",
             "about 800 px wide with text at least 14 px high",
+            "also say in words what it shows",
         ] {
             assert!(
                 envelope.hidden_system_context.contains(expected),

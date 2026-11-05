@@ -85,3 +85,25 @@ test("MP-08/MP-10: a prompt past the inline limit is shown whole, read from its 
   assert.deepEqual(requested, [["history:1:1"]])
   assert.equal(conversation.entries[0]!.text, text)
 })
+
+test("#1263 P2 a workspace picture is read through the kernel from the trigger agent's own worktree, and nothing outside it", async () => {
+  const png = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from("chart")])
+  const reads: Array<Record<string, unknown>> = []
+  const kernel = {
+    async send<T>(request: Record<string, unknown>): Promise<T> {
+      if ("ReadAgentTriggerTranscript" in request) return { AgentTriggerTranscript: { trigger: { agent_id: "agent-1", enabled: true }, agent_alias: "a", online: true, busy: false, history: { SessionHistoryOutline: { agents: [] } }, deliveries: [] } } as T
+      if ("GetSessionState" in request) return { SessionState: { session: { directory: "/work/repo", agents: [{ id: "other", directory: "/elsewhere" }, { id: "agent-1", directory: "/work/repo", worktree_id: "/work/repo-wt" }] } } } as T
+      reads.push(request.GetWorkspaceFileContent as Record<string, unknown>)
+      return { WorkspaceFileContent: { content: { content_base64: png.toString("base64"), truncated: false, size_bytes: png.length } } } as T
+    },
+    async subscribeToKernelEvents() {}, onKernelEvent() { return () => {} }, async close() {},
+  }
+  const client = new AgentTriggerClient("session", "trigger", kernel)
+  const image = await client.workspaceImage("./charts/cost.png")
+  assert.equal(image?.mime, "image/png")
+  assert.deepEqual(image?.bytes, png)
+  assert.equal(await client.workspaceImage("/work/repo-wt/charts/cost.png").then(found => found?.mime), "image/png")
+  assert.deepEqual(reads.map(read => [read.workspace_id, read.worktree_id, read.path]), [["/work/repo", "/work/repo-wt", "charts/cost.png"], ["/work/repo", "/work/repo-wt", "charts/cost.png"]])
+  for (const outside of ["../secret.png", "/etc/passwd", "charts//x.png"]) assert.equal(await client.workspaceImage(outside), null, outside)
+  assert.equal(reads.length, 2, "nothing outside the worktree is asked for")
+})
