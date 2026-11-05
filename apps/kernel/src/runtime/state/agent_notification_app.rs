@@ -469,6 +469,7 @@ impl KernelRuntimeState {
                 .queue_agent_notification_input(
                     &config.target.session_id,
                     &config.target.publication_id,
+                    &receipt.receipt_id,
                     input,
                 )
                 .await;

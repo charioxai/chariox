@@ -505,8 +505,10 @@ impl KernelRuntimeState {
             .ok_or_else(|| store::error("notification identifier invalid"))?;
         let payload = serde_json::to_value(&envelope)
             .map_err(|_| store::error("notification encoding failed"))?;
+        let receipt =
+            crate::durable_state::workflow_notifications::receipt_id(subscription, &envelope)?;
         if let Some(prompt_id) = self
-            .queue_agent_notification_input(session_id, trigger_id, payload)
+            .queue_agent_notification_input(session_id, trigger_id, &receipt, payload)
             .await?
         {
             self.settle_agent_notification(subscription, &envelope, &prompt_id)?;
@@ -514,10 +516,13 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Admits the prompt for one accepted receipt. The receipt's lineage commits with the
+    /// admission itself; the caller settles the receipt afterwards.
     pub(super) async fn queue_agent_notification_input(
         &self,
         session_id: &str,
         trigger_id: &str,
+        receipt_id: &str,
         payload: serde_json::Value,
     ) -> Result<Option<String>, DaemonError> {
         let now = crate::session::unix_epoch_ms();
@@ -537,6 +542,14 @@ impl KernelRuntimeState {
         if now >= deadline {
             return Ok(None);
         }
+        self.owned
+            .durable_state_store
+            .reserve_agent_notification_lineage(
+                receipt_id,
+                &crate::durable_state::workflow_notifications::agent_lineage::operation_id(
+                    trigger_id, &payload,
+                )?,
+            )?;
         let Some(dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             session_id,
             trigger_id,

@@ -1,5 +1,6 @@
 //! Kernel-owned workflow notification store on the existing single durable writer.
 //! Completion/outbox, ACK/inbox and queue/receipt each commit atomically.
+pub(crate) mod agent_lineage;
 pub(super) mod agent_steer;
 mod completion;
 pub(crate) mod naming;
@@ -118,6 +119,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
+    agent_lineage::initialize(db).map_err(sql)?;
     prune_occurrences(db).map_err(sql)?;
     Ok(())
 }
@@ -164,6 +166,11 @@ pub(crate) enum NotificationOperation {
         occurrence_id: String,
         prompt_id: String,
         session_id: String,
+    },
+    /// The receipt names the operation of the prompt about to be admitted for it.
+    ReserveAgentLineage {
+        receipt_id: String,
+        operation_id: String,
     },
     BindAgentSteer {
         session: String,
@@ -216,6 +223,7 @@ pub(crate) enum NotificationOutcome {
     Subscription(WorkflowNotificationSubscription),
     Ack(WorkflowNotificationAck),
     Queued,
+    LineageReserved,
     SteerBound,
     SteerUnbound,
     Protected(Option<WorkflowNotificationEnvelope>),
@@ -486,6 +494,13 @@ fn apply(
         } => {
             tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_object('ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
             Ok(NotificationOutcome::Queued)
+        }
+        NotificationOperation::ReserveAgentLineage {
+            receipt_id,
+            operation_id,
+        } => {
+            agent_lineage::reserve_in(tx, &receipt_id, &operation_id).map_err(sql)?;
+            Ok(NotificationOutcome::LineageReserved)
         }
         NotificationOperation::BindAgentSteer {
             session,
@@ -832,6 +847,20 @@ impl DurableKernelStateStore {
             }
         }
         Ok(found.then_some(ancestry))
+    }
+
+    pub(crate) fn reserve_agent_notification_lineage(
+        &self,
+        receipt_id: &str,
+        operation_id: &str,
+    ) -> Result<(), DaemonError> {
+        match self.notify(NotificationOperation::ReserveAgentLineage {
+            receipt_id: receipt_id.into(),
+            operation_id: operation_id.into(),
+        })? {
+            NotificationOutcome::LineageReserved => Ok(()),
+            _ => Err(error("unexpected notification lineage result")),
+        }
     }
 
     pub(crate) fn bind_agent_notification_steer(

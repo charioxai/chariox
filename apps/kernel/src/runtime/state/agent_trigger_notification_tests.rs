@@ -685,13 +685,18 @@ async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
     let payload = serde_json::json!({"source_id":source,"occurrence_id":"receipt-retry","output":"released","deadline_ms":crate::session::unix_epoch_ms()+crate::local::NOTIFICATION_RETENTION_MS});
     let first = rig
         .runtime
-        .queue_agent_notification_input(&rig.session_id, trigger.id(), payload.clone())
+        .queue_agent_notification_input(
+            &rig.session_id,
+            trigger.id(),
+            "wf_receipt_retry",
+            payload.clone(),
+        )
         .await
         .unwrap()
         .unwrap();
     let second = rig
         .runtime
-        .queue_agent_notification_input(&rig.session_id, trigger.id(), payload)
+        .queue_agent_notification_input(&rig.session_id, trigger.id(), "wf_receipt_retry", payload)
         .await
         .unwrap()
         .unwrap();
@@ -1306,6 +1311,7 @@ async fn app_agent_receipt_settles_when_prompt_cancellation_precedes_association
         .queue_agent_notification_input(
             &rig.session_id,
             trigger.id(),
+            &receipt.receipt_id,
             serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"fast-cancellation"}}),
         )
         .await
@@ -1837,7 +1843,7 @@ async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
             let trigger = rig.app_trigger(&catalog).await;
             let emitted = rig.emit_app(catalog.clone(), &trigger, "general-steer");
             let queued = if late_association {
-                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}})).await.unwrap().unwrap()
+                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), &emitted.receipt_id, serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}})).await.unwrap().unwrap()
             } else {
                 rig.runtime
                     .route_app_agent_installation("local", catalog.clone())
@@ -1919,4 +1925,198 @@ async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
             assert_eq!(store.app_event_candidate("local", catalog.clone(), &emitted.receipt_id).unwrap().receipt().state, ReceiptState::Delivered, "general Steer delivered the App notification ({mode}, late_association={late_association})");
         }
     }
+}
+
+impl Rig {
+    /// The notification pump up to the old association point: the prompt for the
+    /// accepted occurrence is admitted, its receipt is not settled yet.
+    async fn admit_workflow_notification_unsettled(&self) {
+        self.runtime.owned.route_workflow_notifications();
+        let store = &self.runtime.owned.durable_state_store;
+        let (subscription, envelope) = store
+            .notification_candidates(true, crate::session::unix_epoch_ms(), 8)
+            .unwrap()
+            .into_iter()
+            .find(|(subscription, _)| {
+                subscription.target_kind == WorkflowNotificationTargetKind::Agent
+            })
+            .expect("an accepted occurrence for the agent");
+        let receipt = store::receipt_id(&subscription, &envelope).unwrap();
+        self.runtime
+            .queue_agent_notification_input(
+                &subscription.session_id,
+                subscription.trigger_id.as_deref().unwrap(),
+                &receipt,
+                serde_json::to_value(&envelope).unwrap(),
+            )
+            .await
+            .unwrap()
+            .expect("the notification prompt is admitted");
+    }
+
+    /// The App router up to its old association point.
+    async fn admit_app_notification_unsettled(&self) {
+        let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
+            &self.runtime.owned.durable_state_store,
+            "local",
+        );
+        let trigger = self.app_trigger(&catalog).await;
+        let receipt = self.emit_app(catalog.clone(), &trigger, "unsettled");
+        self.runtime
+            .queue_agent_notification_input(
+                &self.session_id,
+                trigger.id(),
+                &receipt.receipt_id,
+                serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":receipt.occurrence_id,"occurred_at_ms":receipt.occurred_at_ms,"deadline_ms":receipt.expires_at_ms,"payload":{"text":"unsettled"}}),
+            )
+            .await
+            .unwrap()
+            .expect("the App notification prompt is admitted");
+    }
+
+    /// The provider takes the admitted notification prompt as its next turn.
+    fn start_the_queued_notification(&self) {
+        let room = self
+            .runtime
+            .owned
+            .session_store
+            .get_session(&self.session_id)
+            .unwrap();
+        let state = &self.runtime.owned.prompt_state_owner;
+        state
+            .complete_active_prompt_only(&room, &self.agent_id)
+            .unwrap();
+        state
+            .activate_next_queued_prompt(&room, &self.agent_id, None)
+            .unwrap();
+    }
+
+    /// The agent invokes `workflow` from its active turn; the completion must not notify it back.
+    async fn assert_the_cycle_is_dropped(&self, workflow: &str) {
+        let invocation = self
+            .runtime
+            .owned
+            .inherit_agent_notification_ancestry(Some(&self.agent_id), "entry", None)
+            .unwrap();
+        self.complete_with_invocation(workflow, "cycle", "done", invocation);
+        self.pass().await;
+        assert!(
+            self.queued_prompts().is_empty(),
+            "A -> W -> A must be dropped"
+        );
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a fast provider may invoke a workflow before the pump settles the receipt.
+#[tokio::test]
+async fn a_workflow_invoked_before_the_receipt_settles_keeps_the_notification_lineage() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.complete(&workflow, "first", "released");
+    rig.admit_workflow_notification_unsettled().await;
+    rig.start_the_queued_notification();
+    let lineage = rig.lineage_of_the_active_agent();
+    assert_eq!(lineage.last().unwrap(), &format!("agent:{}", rig.agent_id));
+    let room = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    assert!(lineage.contains(&store::workflow_identity(
+        room.host_daemon_id(),
+        &rig.session_id,
+        &workflow
+    )));
+    rig.assert_the_cycle_is_dropped(&workflow).await;
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a crash between admission and settlement keeps the admitted prompt's lineage.
+#[tokio::test]
+async fn a_restart_between_admission_and_settlement_keeps_the_notification_lineage() {
+    for app in [false, true] {
+        let config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+            "n2-lineage-recovery",
+        );
+        let (root, runtime, session_id, agent_id, attachment_id, _, _) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config.clone(),
+                &[],
+            )
+            .await;
+        let mut rig = Rig {
+            _root: root,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+        };
+        let workflow = rig.workflow_with_exit("recovery-pipeline");
+        let source = rig.register(&workflow);
+        if app {
+            rig.admit_app_notification_unsettled().await;
+        } else {
+            rig.runtime
+                .create_agent_trigger(rig.request(&source), "local")
+                .await
+                .unwrap();
+            rig.complete(&workflow, "first", "released");
+            rig.admit_workflow_notification_unsettled().await;
+        }
+        let mut restart_config = config.clone();
+        let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+            "n2-lineage-recovery-restart",
+        )
+        .user_config
+        .state
+        .path
+        .unwrap();
+        rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
+            .unwrap()
+            .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
+            .unwrap();
+        restart_config.user_config.state.path = Some(restart_path);
+        let restarted = crate::app::DaemonApp::bootstrap(restart_config).unwrap();
+        rig.runtime = super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(
+            &std::sync::Arc::new(tokio::sync::Mutex::new(restarted)),
+        )
+        .await;
+        assert_eq!(
+            rig.queued_prompts().len(),
+            1,
+            "recovery restores the admitted notification prompt"
+        );
+        rig.start_the_queued_notification();
+        assert_eq!(
+            rig.lineage_of_the_active_agent().last().unwrap(),
+            &format!("agent:{}", rig.agent_id),
+            "app: {app}"
+        );
+        if app {
+            rig.runtime
+                .create_agent_trigger(rig.request(&source), "local")
+                .await
+                .unwrap();
+        }
+        rig.assert_the_cycle_is_dropped(&workflow).await;
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: an App notification is in the lineage before the router settles its receipt.
+#[tokio::test]
+async fn an_app_notified_workflow_invoked_before_the_receipt_settles_drops_the_cycle() {
+    let rig = rig().await;
+    rig.admit_app_notification_unsettled().await;
+    rig.start_the_queued_notification();
+    assert_eq!(
+        rig.lineage_of_the_active_agent(),
+        vec![format!("agent:{}", rig.agent_id)]
+    );
+    let workflow = rig.workflow_with_exit("reply");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.assert_the_cycle_is_dropped(&workflow).await;
 }

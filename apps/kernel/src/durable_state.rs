@@ -1914,6 +1914,10 @@ fn commit_durable_write_batch(
                     retired_sessions::apply_event(&transaction, kind, payload_json)?;
                     created_resources::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
+                        workflow_notifications::agent_lineage::record_prompt_state_in(
+                            &transaction,
+                            payload_json,
+                        )?;
                         workflow_notifications::agent_steer::record_prompt_state_in(
                             &transaction,
                             payload_json,

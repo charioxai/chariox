@@ -618,26 +618,11 @@ impl KernelRuntimeState {
         let prompt = if origin == crate::session::PromptOrigin::Notification {
             if let Some(payload) = &dispatch.payload {
                 use sha2::{Digest, Sha256};
-                let occurrence = payload
-                    .get("occurrence_id")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        crate::durable_state::workflow_notifications::error(
-                            "notification occurrence id missing",
-                        )
-                    })?;
-                let identity = serde_json::to_vec(&(
-                    dispatch.trigger_id.as_str(),
-                    payload.get("source_id"),
-                    payload.get("installation_id"),
-                    payload.get("event_name"),
-                    occurrence,
-                ))
-                .map_err(|_| {
-                    crate::durable_state::workflow_notifications::error(
-                        "notification identity encoding failed",
-                    )
-                })?;
+                let operation_id =
+                    crate::durable_state::workflow_notifications::agent_lineage::operation_id(
+                        &dispatch.trigger_id,
+                        payload,
+                    )?;
                 let deadline = payload
                     .get("deadline_ms")
                     .and_then(serde_json::Value::as_u64)
@@ -649,7 +634,7 @@ impl KernelRuntimeState {
                 prompt
                     .with_notification_deadline(deadline)
                     .with_durable_operation(
-                        format!("agent-notification:{:x}", Sha256::digest(identity)),
+                        operation_id,
                         format!("{:x}", Sha256::digest(prompt_text.as_bytes())),
                     )
             } else {
