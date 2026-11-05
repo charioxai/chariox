@@ -334,6 +334,11 @@ fn stop(
 ) -> Result<(), DaemonError> {
     #[cfg(target_os = "linux")]
     {
+        // Ready launchers may fork more helpers between requests. Retain their
+        // identities before signalling the launcher that still proves ownership.
+        if let Err(error) = endpoint.pin_processes() {
+            report(name, "refresh_helper_tree", &error.to_string());
+        }
         if let Err(error) = endpoint.processes.signal(libc::SIGTERM) {
             report(name, "signal_helper_tree", &error.to_string());
         }
@@ -462,6 +467,57 @@ mod tests {
         let cleanup =
             crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child).unwrap();
         (root, child, pid, cleanup)
+    }
+
+    #[test]
+    fn invalidation_settles_descendant_created_after_readiness() {
+        let root = crate::test_support::TestWorktree::new("ready-account-late-child");
+        let gate = root.path().join("fork");
+        let pid_path = root.path().join("descendant");
+        let descendant = format!(
+            "import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path({:?}).write_text(str(os.getpid())); time.sleep(30)",
+            pid_path.to_string_lossy()
+        );
+        let script = format!(
+            "import pathlib,time,subprocess,sys; print('ready',flush=True); p=pathlib.Path({:?});\nwhile not p.exists(): time.sleep(.01)\nsubprocess.Popen([sys.executable,'-c',{:?}]); time.sleep(30)",
+            gate.to_string_lossy(), descendant
+        );
+        let mut command = crate::process_spawn::command("python3");
+        command
+            .args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let launcher = child.id();
+        let mut ready = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let owner = AccountEndpoints::new("late-descendant-fixture");
+        owner
+            .ensure(
+                "ready".into(),
+                |_| true,
+                Duration::from_secs(2),
+                move || Ok(ManagedAccountEndpoint::new("unused".into(), child)),
+            )
+            .unwrap();
+        std::fs::write(gate, "fork").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !pid_path.exists() {
+            assert!(Instant::now() < deadline, "late descendant did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut cleanup =
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_pid(launcher).unwrap();
+        owner.invalidate("ready".into());
+        let descendant_survived = !cleanup.all_exited().unwrap();
+        cleanup.kill_owned_processes().unwrap();
+        assert!(
+            !descendant_survived,
+            "invalidation abandoned a descendant created after readiness"
+        );
     }
 
     #[test]
