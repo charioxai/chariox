@@ -116,10 +116,11 @@ async function childFrameBox(browser, connection, sessionId, tab, command) {
 // Runs in a controller-owned isolated world. A long read returns on the next
 // geometry change, including scroll, resize, animation and element removal.
 // The timer also settles hidden documents where animation frames are paused.
-function watchBox(previous) {
-  const node = this;
+function watchBox(previous, resolveAnchor) {
+  const original = this;
   const read = () => {
-    if (!node.isConnected || node.ownerDocument !== document) return null;
+    const node = resolveAnchor ? resolveAnchor() : original;
+    if (!node?.isConnected || node.ownerDocument !== document) return null;
     const r = node.getBoundingClientRect(), w = innerWidth, h = innerHeight;
     if (r.right <= r.left || r.bottom <= r.top) return { rect: { x: 0, y: 0, width: 0, height: 0 }, viewport_width: w, viewport_height: h };
     const x = Math.max(0, Math.min(w, Math.floor(r.left - 16)));
@@ -218,7 +219,7 @@ export async function resolveCardRegion(host, command, scope, signal) {
       const resolved = objectId ? {object:{objectId}} : await connection.send('DOM.resolveNode', { backendNodeId: Number(command.ref.slice(8)), executionContextId: world.contextId }, sessionId);
       objectId = resolved.object?.objectId;
       if (!objectId) return gone('Browser element disappeared');
-      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }], returnByValue: true, awaitPromise: true }, sessionId);
+      const reply = await connection.send('Runtime.callFunctionOn', { objectId, functionDeclaration: String(watchBox), arguments: [{ value: command.after ?? null }, ...(anchor?.elementResolver ? [{ objectId: anchor.elementResolver }] : [])], returnByValue: true, awaitPromise: true }, sessionId);
       if (signal?.aborted) throw new Error('Browser card observation cancelled');
       if (reply.exceptionDetails) throw new Error('Browser card geometry could not be read');
       box = reply.result?.value;

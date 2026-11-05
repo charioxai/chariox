@@ -17,17 +17,17 @@ async function withHost(run) {
   const state = { document_id: 'doc', width: 800, height: 600, box: { left: 80, top: 90, right: 180, bottom: 140 } };
   const node = { isConnected: true, ownerDocument: document, getBoundingClientRect: () => state.box };
   const tab = { tab_id: 'one', target_id: 'target', document_id: 'doc', url: 'https://user:pass@example.com/login?token=private#fragment' };
-  const connection = { async send(method, params) {
+  const connection = { subscribe: () => () => {}, async send(method, params) {
     calls.push(method);
     if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'frame', loaderId: state.document_id } } };
     if (method === 'DOM.resolveNode') return { object: { objectId: 'element' } };
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function trackCardElement')) return {result:{objectId:'resolver'}};
-    if (method === 'Runtime.callFunctionOn' && params.objectId === 'resolver') return {result:node.isConnected ? {objectId:'element'} : {subtype:'null',value:null}};
+    if (method === 'Runtime.callFunctionOn' && params.objectId === 'resolver') return {result:(state.replacement ?? node).isConnected ? {objectId:'element'} : {subtype:'null',value:null}};
     if (method === 'Runtime.callFunctionOn' && params.functionDeclaration.includes('function bindVerificationInput')) return {result:{objectId:'cleanup'}};
     if (method === 'Runtime.callFunctionOn') {
       const context = { document, innerWidth: state.width, innerHeight: state.height, setTimeout, clearTimeout,
         requestAnimationFrame: callback => setTimeout(callback, 5), cancelAnimationFrame: clearTimeout };
-      const result = await runInNewContext(`(${params.functionDeclaration})`, context).call(node, params.arguments[0].value);
+      const result = await runInNewContext(`(${params.functionDeclaration})`, context).call(state.replacement ?? node, params.arguments[0].value, params.arguments[1]?.objectId === 'resolver' ? () => state.replacement ?? (node.isConnected ? node : null) : undefined);
       return { result: { value: JSON.parse(JSON.stringify(result)) } };
     }
     return {};
@@ -210,4 +210,18 @@ test('MP-08/MP-11 verification cannot be rebound or completed by another documen
   const result=await region({card_id:'bound',verification});
   assert.equal(result.state,'present');assert.equal(result.region.verification_result,undefined);
   await region({card_id:'bound',release:true});assert.equal(listeners.size,0);
+}));
+
+test('MP-08/MP-10/MP-11 a pending geometry poll follows the same challenge replacement', () => withHost(async ({ snapshot, region, state, node }) => {
+  await snapshot();
+  const command = { card_id: 'replacement', verification: { challenge_id: 'replacement', url: 'https://example.com/verify', accepted_json_pointer: '/accepted' } };
+  const first = await region(command);
+  const { rect, viewport_width, viewport_height } = first.region;
+  const pending = region({ ...command, after: { rect, viewport_width, viewport_height } });
+  await delay(30);
+  node.isConnected = false;
+  state.replacement = { ...node, isConnected: true, getBoundingClientRect: () => ({ left: 80, top: 190, right: 180, bottom: 240 }) };
+  const replaced = await pending;
+  assert.equal(replaced.state, 'present');
+  assert.equal(replaced.region.rect.y, 174);
 }));

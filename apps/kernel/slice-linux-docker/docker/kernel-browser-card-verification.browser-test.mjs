@@ -8,7 +8,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {KernelBrowserHost} from './kernel-browser-host.mjs';
 import {startChallengeService} from '../../../../scripts/e2e-stack/vault-autonomy/challenge-service.mjs';
 
-test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance',{timeout:120_000},async()=>{
+for (const pendingPoll of [false,true]) test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only on real acceptance, pending poll='+pendingPoll,{timeout:120_000},async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'verification-chrome-')),service=await startChallengeService();
   const host=new KernelBrowserHost(root,{appStorageRoot:path.join(root,'apps')}),scope='agent:verification-chrome';
   try {
@@ -27,7 +27,13 @@ test('MP-08/MP-10/MP-11 trusted region input retains rejection and closes only o
     };
     const input=async value=>host.request({op:'input',...binding,document_id:snapshot.document_id,input:value});
     await click('issue');await delay(100);
-    await input({kind:'text',text:'000000'});await input({kind:'key',key:'Enter'});
+    await input({kind:'text',text:'000000'});
+    const before=await host.request(command);
+    const {rect,viewport_width,viewport_height}=before.region;
+    const pending=pendingPoll ? host.request({...command,document_id:snapshot.document_id,after:{rect,viewport_width,viewport_height}}) : null;
+    if(pending)await delay(100);
+    await input({kind:'key',key:'Enter'});
+    if(pending)assert.equal((await pending).state,'present','a replacement during the outstanding geometry poll keeps the card open');
     let rejected;
     for(let i=0;i<40;i++) {rejected=await host.request({...command,document_id:snapshot.document_id});if(rejected.region?.verification_result?.result==='rejected')break;await delay(100)}
     assert.equal(rejected.state,'present');assert.equal(rejected.region.verification_result?.input_delivered,true);assert.equal(rejected.region.verification_result?.http_status,422);
