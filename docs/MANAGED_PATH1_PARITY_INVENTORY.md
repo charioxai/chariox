@@ -15,6 +15,19 @@ time limit for a sequence of calls with long gaps. Focused regressions and isola
 live drills are separate evidence; this entry does not close the three-hour or
 production-signed paid acceptance rows.
 
+## MP-08 / MP-09 / MP-10 / MP-11 admission intent and activity persistence
+
+Environment admission publishes one counted provisional owner before releasing the
+stop fence and operation registry. Intent reads and atomic durable writes run
+outside those mutexes; duplicates wait for that owner's publication, and failed
+publication retracts it. Polling rechecks the registry generation after disk reads.
+Activity mutations capture ordered transition identities and timestamps under the
+mutation boundary, then drain the journal and SQLite outside it. Stop rejects
+unacknowledged activity, so a delayed idle write cannot replace newer busy work.
+The pending journal still precedes database appends and acknowledges committed
+sequences on restart. These focused source regressions do not replace the final
+head's isolated shutdown-policy drill or production-signed paid validation.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

@@ -6,6 +6,7 @@ pub mod agent_move;
 pub mod app;
 pub mod artifacts;
 pub mod attachment;
+pub(crate) mod blocking_io;
 pub mod capability;
 pub mod config;
 pub mod connector;

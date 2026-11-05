@@ -18,8 +18,8 @@ impl KernelRuntimeState {
         self.owned
             .active_file_operations
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        mutation.record();
         drop(admission);
+        mutation.record();
         self.owned.runtime_projection_changes.record_change();
         Ok(ManagedFileOperation {
             runtime: self.clone(),

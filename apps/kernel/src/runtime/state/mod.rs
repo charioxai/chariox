@@ -914,6 +914,13 @@ impl KernelRuntimeState {
                 durable_state_store.clone(),
                 managed_activity_kernel_id.clone(),
             );
+        if let Err(error) = managed_activity_transitions.prepare() {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed activity could not be restored before runtime admission",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
         let managed_activity_mutation_lock = Arc::new(std::sync::Mutex::new(()));
         let managed_kernel_quiescence = managed_kernel_registration.as_ref().map(|_| {
             let kernel_id = config.daemon_id.clone();

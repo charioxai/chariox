@@ -15,6 +15,9 @@ const DIRECTORY: &str = "project-environment-operations";
 struct Live {
     view: Mutex<EnvironmentOperationView>,
     stop: tokio::sync::watch::Sender<bool>,
+    publication: Mutex<Option<Result<(), String>>>,
+    published: std::sync::Condvar,
+    persistence: crate::blocking_io::Serial,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -23,10 +26,18 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[derive(Default)]
+struct Registry {
+    entries: HashMap<String, Arc<Live>>,
+    generation: u64,
+}
+
 pub(crate) struct EnvironmentOperations {
     root: PathBuf,
-    live: Mutex<HashMap<String, Arc<Live>>>,
+    live: Mutex<Registry>,
     managed: crate::room_terminal::managed_work::ManagedWork,
+    #[cfg(test)]
+    pub(crate) before_persist: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 /// The running side of one operation: progress goes through it, and it tells whether Stop was pressed.
@@ -45,8 +56,10 @@ impl EnvironmentOperations {
     pub(crate) fn new(private_state_root: &Path) -> Arc<Self> {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
-            live: Mutex::new(HashMap::new()),
+            live: Mutex::new(Registry::default()),
             managed: Default::default(),
+            #[cfg(test)]
+            before_persist: Mutex::new(None),
         })
     }
 
@@ -60,7 +73,7 @@ impl EnvironmentOperations {
 
     pub(crate) fn has_running_work(&self) -> bool {
         // Stop settles the view immediately; keep the work until the task finishes its cleanup.
-        !lock(&self.live).is_empty()
+        !lock(&self.live).entries.is_empty()
     }
 
     fn report_work(&self) {
@@ -75,15 +88,19 @@ impl EnvironmentOperations {
     }
 
     fn persist(&self, view: &EnvironmentOperationView) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        {
+            let hook = lock(&self.before_persist).take();
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
         fs::create_dir_all(&self.root)
             .map_err(|_| environment_error("the operation directory is unavailable"))?;
         let bytes = serde_json::to_vec(view)
             .map_err(|_| environment_error("the operation could not be encoded"))?;
-        let temporary = self.root.join(format!(".tmp-{}", rand::random::<u64>()));
-        let result = fs::write(&temporary, bytes)
-            .and_then(|_| fs::rename(&temporary, self.path(&view.operation_id)));
-        let _ = fs::remove_file(&temporary);
-        result.map_err(|_| environment_error("saving the operation failed"))
+        crate::config::write_private_file(&self.path(&view.operation_id), &bytes)
+            .map_err(|_| environment_error("saving the operation failed"))
     }
 
     fn load(&self, operation_id: &str) -> Result<Option<EnvironmentOperationView>, DaemonError> {
@@ -100,20 +117,36 @@ impl EnvironmentOperations {
         &self,
         operation_id: &str,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        self.get_locked(&lock(&self.live), operation_id)
+        loop {
+            let registry = lock(&self.live);
+            let live = registry.entries.get(operation_id).cloned();
+            let generation = registry.generation;
+            drop(registry);
+            if let Some(live) = live {
+                live.wait_for_publication()?;
+                return Ok(Some(lock(&live.view).clone()));
+            }
+            let saved = self.load(operation_id);
+            let registry = lock(&self.live);
+            if registry.generation != generation {
+                continue;
+            }
+            drop(registry);
+            return self.settle_restarted(saved?);
+        }
     }
 
-    /// The `live` lock is the admission lock: a record that is saved but not yet registered is
-    /// only visible while it is held, so reading it as orphaned from a run needs it too.
-    fn get_locked(
+    fn remove(&self, operation_id: &str) {
+        let mut registry = lock(&self.live);
+        registry.entries.remove(operation_id);
+        registry.generation += 1;
+    }
+
+    fn settle_restarted(
         &self,
-        live: &HashMap<String, Arc<Live>>,
-        operation_id: &str,
+        saved: Option<EnvironmentOperationView>,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        if let Some(live) = live.get(operation_id) {
-            return Ok(Some(lock(&live.view).clone()));
-        }
-        let Some(mut view) = self.load(operation_id)? else {
+        let Some(mut view) = saved else {
             return Ok(None);
         };
         if view.state == EnvironmentOperationState::Running {
@@ -129,29 +162,64 @@ impl EnvironmentOperations {
         self: &Arc<Self>,
         view: EnvironmentOperationView,
     ) -> Result<Begun, DaemonError> {
-        let _admission = self.managed.admission()?;
+        let admission = self.managed.admission()?;
         let mut registry = lock(&self.live);
-        if let Some(existing) = self.get_locked(&registry, &view.operation_id)? {
-            if existing.project_id != view.project_id {
-                return Err(environment_error(
-                    "this operation id belongs to another Project",
-                ));
-            }
-            return Ok(Begun::Existing(existing));
+        if let Some(existing) = registry.entries.get(&view.operation_id).cloned() {
+            drop(registry);
+            drop(admission);
+            existing.wait_for_publication()?;
+            let existing = lock(&existing.view).clone();
+            return existing_operation(existing, &view.project_id);
         }
-        self.persist(&view)?;
         let (stop, _) = tokio::sync::watch::channel(false);
         let live = Arc::new(Live {
             view: Mutex::new(view.clone()),
             stop,
+            publication: Mutex::new(None),
+            published: std::sync::Condvar::new(),
+            persistence: Default::default(),
         });
-        registry.insert(view.operation_id, live.clone());
+        // Count the sole provisional owner before releasing admission. Stop rechecks
+        // this registry even though the intent and its activity are not durable yet.
+        registry
+            .entries
+            .insert(view.operation_id.clone(), live.clone());
+        registry.generation += 1;
         drop(registry);
+        drop(admission);
+        // Another mutation can sample this provisional owner. Report both edges
+        // even if intent persistence fails before an operation handle is returned.
         self.report_work();
-        Ok(Begun::Started(OperationHandle {
-            operations: self.clone(),
-            live,
-        }))
+        let publication = self
+            .load(&view.operation_id)
+            .and_then(|saved| self.settle_restarted(saved))
+            .and_then(|saved| match saved {
+                Some(saved) => Ok(Some(saved)),
+                None => self.persist(&view).map(|()| None),
+            });
+        match publication {
+            Ok(None) => {
+                live.publish(Ok(()));
+                self.report_work();
+                Ok(Begun::Started(OperationHandle {
+                    operations: self.clone(),
+                    live,
+                }))
+            }
+            Ok(Some(saved)) => {
+                *lock(&live.view) = saved.clone();
+                live.publish(Ok(()));
+                self.remove(&view.operation_id);
+                self.report_work();
+                existing_operation(saved, &view.project_id)
+            }
+            Err(error) => {
+                live.publish(Err(error.to_string()));
+                self.remove(&view.operation_id);
+                self.report_work();
+                Err(error)
+            }
+        }
     }
 
     /// Stop: the operation reads cancelled at once; what it already landed stays.
@@ -159,20 +227,54 @@ impl EnvironmentOperations {
         &self,
         operation_id: &str,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        let Some(live) = lock(&self.live).get(operation_id).cloned() else {
+        let Some(live) = lock(&self.live).entries.get(operation_id).cloned() else {
             return self.get(operation_id);
         };
-        let view = {
-            let mut view = lock(&live.view);
-            if view.state == EnvironmentOperationState::Running {
-                view.state = EnvironmentOperationState::Cancelled;
-                view.ended_at_ms = Some(crate::session::unix_epoch_ms());
-                self.persist(&view)?;
-            }
-            view.clone()
-        };
+        live.wait_for_publication()?;
+        let _persistence = live.persistence.acquire();
+        let mut view = lock(&live.view).clone();
+        if view.state == EnvironmentOperationState::Running {
+            view.state = EnvironmentOperationState::Cancelled;
+            view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+            self.persist(&view)?;
+            *lock(&live.view) = view.clone();
+        }
         live.stop.send_replace(true);
         Ok(Some(view))
+    }
+}
+
+fn existing_operation(
+    view: EnvironmentOperationView,
+    project_id: &str,
+) -> Result<Begun, DaemonError> {
+    if view.project_id != project_id {
+        return Err(environment_error(
+            "this operation id belongs to another Project",
+        ));
+    }
+    Ok(Begun::Existing(view))
+}
+
+impl Live {
+    fn publish(&self, result: Result<(), String>) {
+        *lock(&self.publication) = Some(result);
+        self.published.notify_all();
+    }
+
+    fn wait_for_publication(&self) -> Result<(), DaemonError> {
+        let mut publication = lock(&self.publication);
+        while publication.is_none() {
+            publication = self
+                .published
+                .wait(publication)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        publication
+            .as_ref()
+            .expect("publication completed")
+            .clone()
+            .map_err(environment_error)
     }
 }
 
@@ -193,16 +295,19 @@ impl OperationHandle {
 
     /// Changes the view and saves it. After Stop the view is final and later changes are dropped.
     pub(crate) fn update(&self, change: impl FnOnce(&mut EnvironmentOperationView)) {
-        let mut view = lock(&self.live.view);
+        let _persistence = self.live.persistence.acquire();
+        let mut view = lock(&self.live.view).clone();
         if view.state != EnvironmentOperationState::Running {
             return;
         }
         change(&mut view);
         let _ = self.operations.persist(&view);
+        *lock(&self.live.view) = view;
     }
 
     pub(crate) fn finish(&self, state: EnvironmentOperationState, reason: Option<String>) {
-        let mut view = lock(&self.live.view);
+        let _persistence = self.live.persistence.acquire();
+        let mut view = lock(&self.live.view).clone();
         if view.state != EnvironmentOperationState::Running {
             return;
         }
@@ -210,6 +315,7 @@ impl OperationHandle {
         view.reason = reason;
         view.ended_at_ms = Some(crate::session::unix_epoch_ms());
         let _ = self.operations.persist(&view);
+        *lock(&self.live.view) = view;
     }
 }
 
@@ -221,7 +327,7 @@ impl Drop for OperationHandle {
             Some("The operation ended without a result".into()),
         );
         let id = lock(&self.live.view).operation_id.clone();
-        lock(&self.operations.live).remove(&id);
+        self.operations.remove(&id);
         self.operations.report_work();
     }
 }
@@ -378,5 +484,210 @@ mod tests {
             drop(handle);
             let _ = fs::remove_dir_all(root);
         }
+    }
+    #[test]
+    fn intent_io_releases_admission_while_provisional_work_blocks_stop() {
+        use crate::runtime::state::{ManagedActivityObservation, ManagedKernelQuiescenceGate};
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let root = scratch();
+        let store =
+            crate::durable_state::DurableKernelStateStore::open(root.join("activity.sqlite"))
+                .unwrap();
+        let gate =
+            ManagedKernelQuiescenceGate::restore(store, "kernel".into(), Arc::new(Mutex::new(())))
+                .unwrap();
+        let operations = EnvironmentOperations::new(&root);
+        let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(|| {});
+        operations.link_managed_kernel(gate.clone(), Arc::downgrade(&callback));
+        gate.confirm_activity_report(
+            1,
+            1,
+            ManagedActivityObservation {
+                working_agent_count: 0,
+                changed_at_ms: 1,
+            },
+        );
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        *lock(&operations.before_persist) = Some(Arc::new(move || {
+            entered_tx.send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }));
+        let starting = {
+            let operations = operations.clone();
+            std::thread::spawn(move || operations.begin(view("provisional")))
+        };
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (admitted_tx, admitted_rx) = mpsc::channel();
+        let probing = {
+            let gate = gate.clone();
+            std::thread::spawn(move || {
+                let _admission = gate.admission_guard().unwrap();
+                admitted_tx.send(()).unwrap();
+            })
+        };
+        let acquired = admitted_rx.recv_timeout(Duration::from_millis(250)).is_ok();
+        let (counted_tx, counted_rx) = mpsc::channel();
+        let counting = {
+            let operations = operations.clone();
+            std::thread::spawn(move || counted_tx.send(operations.has_running_work()).unwrap())
+        };
+        let counted = counted_rx.recv_timeout(Duration::from_millis(250)).ok();
+        let (stopped_tx, stopped_rx) = mpsc::channel();
+        let stopping = {
+            let gate = gate.clone();
+            let operations = operations.clone();
+            std::thread::spawn(move || {
+                stopped_tx
+                    .send(
+                        gate.reserve_if_current(
+                            crate::runtime::state::ManagedKernelQuiescenceChallenge {
+                                challenge_id: "intent-stop".into(),
+                                account_id: "account".into(),
+                                environment_id: "environment".into(),
+                                machine_id: "machine".into(),
+                                kernel_id: "kernel".into(),
+                                desired_revision: 1,
+                                idle_sequence: 1,
+                                idle_deadline_at: "2026-11-05T00:00:00.000Z".into(),
+                                stop_operation_id: "stop".into(),
+                                nonce: "nonce".into(),
+                            },
+                            || {
+                                Ok((
+                                    1,
+                                    ManagedActivityObservation {
+                                        working_agent_count: u8::from(
+                                            operations.has_running_work(),
+                                        ),
+                                        changed_at_ms: 1,
+                                    },
+                                ))
+                            },
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap()
+            })
+        };
+        let rejected = stopped_rx.recv_timeout(Duration::from_millis(250)).ok() == Some(false);
+        assert!(
+            EnvironmentOperations::new(&root)
+                .get("provisional")
+                .unwrap()
+                .is_none(),
+            "a crash before the intent commit has no runnable operation to replay"
+        );
+        release_tx.send(()).unwrap();
+        let begun = starting.join().unwrap().unwrap();
+        probing.join().unwrap();
+        counting.join().unwrap();
+        stopping.join().unwrap();
+        assert!(
+            rejected,
+            "Stop must reject the provisional owner without waiting for disk"
+        );
+        assert!(
+            acquired,
+            "MP-08/09/10/11: intent disk IO must not hold admission"
+        );
+        assert_eq!(
+            counted,
+            Some(true),
+            "provisional intent must remain authoritative busy work"
+        );
+        let Begun::Started(handle) = begun else {
+            panic!("new operation")
+        };
+        assert_eq!(
+            ManagedActivityObservation {
+                working_agent_count: u8::from(operations.has_running_work()),
+                changed_at_ms: 1
+            }
+            .working_agent_count,
+            1
+        );
+        drop(handle);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn failed_intent_publication_retracts_the_owner_and_allows_retry() {
+        let root = scratch();
+        let operations = EnvironmentOperations::new(&root);
+        let blocked_directory = operations.root.clone();
+        *lock(&operations.before_persist) = Some(Arc::new(move || {
+            fs::write(&blocked_directory, b"injected disk failure").unwrap();
+        }));
+        assert!(operations.begin(view("failed")).is_err());
+        assert!(
+            !operations.has_running_work(),
+            "failed persistence left an orphan owner"
+        );
+        fs::remove_file(&operations.root).unwrap();
+        assert!(operations.get("failed").unwrap().is_none());
+        let Begun::Started(handle) = operations.begin(view("failed")).unwrap() else {
+            panic!("rollback must permit a new owner")
+        };
+        drop(handle);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn duplicate_ids_wait_for_one_durable_intent_owner() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let root = scratch();
+        let operations = EnvironmentOperations::new(&root);
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        *lock(&operations.before_persist) = Some(Arc::new(move || {
+            entered_tx.send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+        }));
+        let first = {
+            let operations = operations.clone();
+            std::thread::spawn(move || operations.begin(view("duplicate")).unwrap())
+        };
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (duplicate_tx, duplicate_rx) = mpsc::channel();
+        let second = {
+            let operations = operations.clone();
+            std::thread::spawn(move || {
+                duplicate_tx
+                    .send(operations.begin(view("duplicate")))
+                    .unwrap()
+            })
+        };
+        let exposed = duplicate_rx
+            .recv_timeout(Duration::from_millis(100))
+            .is_ok();
+        release_tx.send(()).unwrap();
+        let first = first.join().unwrap();
+        let second_result = duplicate_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        second.join().unwrap();
+        assert!(!exposed, "a duplicate exposed an uncommitted operation");
+        assert!(matches!(second_result, Begun::Existing(_)));
+        let Begun::Started(handle) = first else {
+            panic!("one owner")
+        };
+        assert_eq!(fs::read_dir(&operations.root).unwrap().count(), 1);
+        operations.cancel("duplicate").unwrap();
+        assert!(handle.is_stopped());
+        drop(handle);
+        fs::remove_dir_all(root).unwrap();
     }
 }
