@@ -926,9 +926,20 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
                     let accepted = accepted.clone();
                     readers.spawn(async move {
                         let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return; };
-                        if accepted.send(()).await.is_err() { return; }
                         let (_, mut read) = socket.split();
-                        while read.next().await.is_some() {}
+                        let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
+                        let mut announced = false;
+                        while let Some(Ok(message)) = read.next().await {
+                            let Message::Text(payload) = message else { continue; };
+                            let Ok((Some(payload), _)) = frames.receive(&payload) else { continue; };
+                            if !announced && matches!(serde_json::from_str::<RelayEnvelope>(&payload), Ok(RelayEnvelope::DaemonHeartbeat { .. })) {
+                                // Registration becomes visible before the read loop
+                                // is armed. Its first heartbeat proves that the idle
+                                // deadline exists before virtual time advances.
+                                if accepted.send(()).await.is_err() { return; }
+                                announced = true;
+                            }
+                        }
                     });
                 }
             }
