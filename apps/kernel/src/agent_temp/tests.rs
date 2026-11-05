@@ -23,6 +23,44 @@ fn a_bound_unix_socket_survives_a_sweep_and_accepts_new_connections() {
     listener.accept().unwrap();
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_unix_socket_bound_by_relative_name_survives_a_sweep() {
+    use std::io::Read;
+    use std::os::unix::net::UnixStream;
+    use std::process::{Command, Stdio};
+    let scratch = Scratch::new("relative-socket");
+    let folder = agent_folder(&scratch);
+    // A server that changes to its folder and binds a bare name: the kernel
+    // keeps `live.sock` as given, and its descriptor names no path.
+    let mut server = Command::new("python3")
+        .current_dir(&folder)
+        .args([
+            "-I",
+            "-c",
+            "import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.bind('live.sock')\ns.listen()\nprint('ready',flush=True)\ntime.sleep(120)",
+        ])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("python3 starts");
+    let mut ready = [0u8; 5];
+    server
+        .stdout
+        .take()
+        .unwrap()
+        .read_exact(&mut ready)
+        .unwrap();
+    let held = held_paths().expect("Linux can inspect held paths");
+    trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
+    let connection = UnixStream::connect(folder.join("live.sock"));
+    let _ = server.kill();
+    let _ = server.wait();
+    assert!(
+        connection.is_ok(),
+        "the sweep unlinked a live Unix socket bound by a relative name: {connection:?}"
+    );
+}
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(name: &str) -> Self {

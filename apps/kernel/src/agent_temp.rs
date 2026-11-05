@@ -3,7 +3,7 @@
 //! TEMP of everything the kernel starts for the agent. The folder is cleared by
 //! inactivity, item by item, and never while a process has the item open or
 //! works inside it. The kernel only deletes here, never in a workspace.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -124,7 +124,7 @@ pub(crate) struct Trimmed {
 #[cfg(target_os = "linux")]
 pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
     let mut held = BTreeSet::new();
-    let mut networks = BTreeSet::new();
+    let mut tables = BTreeMap::<PathBuf, BTreeMap<u64, PathBuf>>::new();
     for process in std::fs::read_dir("/proc").ok()?.flatten() {
         let name = process.file_name();
         if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
@@ -135,27 +135,47 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
             held.insert(cwd);
         }
         if let Ok(fds) = std::fs::read_dir(base.join("fd")) {
-            let mut sockets = false;
-            for target in fds
+            let targets = fds
                 .flatten()
                 .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+                .collect::<Vec<_>>();
+            if targets
+                .iter()
+                .any(|target| target.to_string_lossy().starts_with("socket:["))
             {
-                sockets |= target.to_string_lossy().starts_with("socket:[");
-                held.insert(target);
-            }
-            if sockets {
-                if let Ok(network) = std::fs::read_link(base.join("ns/net")) {
-                    if networks.insert(network) {
-                        match std::fs::read_to_string(base.join("net/unix")) {
-                            Ok(table) => held.extend(bound_socket_paths(&table)),
-                            Err(_) if !base.exists() => {}
-                            Err(_) => return None,
+                match std::fs::read_link(base.join("ns/net")) {
+                    Ok(network) => {
+                        if !tables.contains_key(&network) {
+                            match std::fs::read_to_string(base.join("net/unix")) {
+                                Ok(table) => {
+                                    held.extend(bound_socket_paths(&table).filter_map(
+                                        |(_, path)| path.is_absolute().then_some(path),
+                                    ));
+                                    tables.insert(network.clone(), relative_socket_names(&table));
+                                }
+                                Err(_) if !base.exists() => {}
+                                Err(_) => return None,
+                            }
+                        }
+                        // A name bound relatively is kept in the table as
+                        // given: it lives where the holder was when it bound.
+                        if let (Some(names), Some(cwd)) = (
+                            tables.get(&network),
+                            std::fs::read_link(base.join("cwd")).ok(),
+                        ) {
+                            for target in &targets {
+                                if let Some(name) = socket_inode(target).and_then(|i| names.get(&i))
+                                {
+                                    held.insert(cwd.join(name));
+                                }
+                            }
                         }
                     }
-                } else if base.exists() {
-                    return None;
+                    Err(_) if base.exists() => return None,
+                    Err(_) => {}
                 }
             }
+            held.extend(targets);
         }
         if let Ok(maps) = std::fs::read_to_string(base.join("maps")) {
             held.extend(
@@ -168,18 +188,48 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
     Some(held)
 }
 
+/// The inode and file-system name of each bound socket in a `/proc/net/unix`
+/// table.
 #[cfg(target_os = "linux")]
-fn bound_socket_paths(table: &str) -> impl Iterator<Item = PathBuf> + '_ {
+fn bound_socket_paths(table: &str) -> impl Iterator<Item = (u64, PathBuf)> + '_ {
     table.lines().filter_map(|line| {
         let mut rest = line;
-        // Seven fixed fields precede the path; preserve spaces inside the path.
-        for _ in 0..7 {
+        let mut inode = None;
+        // Seven fixed fields precede the path (the seventh is the inode);
+        // preserve spaces inside the path.
+        for field in 0..7 {
             rest = rest.trim_start();
-            rest = &rest[rest.find(char::is_whitespace)?..];
+            let end = rest.find(char::is_whitespace)?;
+            if field == 6 {
+                inode = rest[..end].parse().ok();
+            }
+            rest = &rest[end..];
         }
         let path = rest.trim_start();
-        path.starts_with('/').then(|| PathBuf::from(path))
+        // An abstract name (`@...`) is not in the file system.
+        if path.is_empty() || path.starts_with('@') {
+            return None;
+        }
+        Some((inode?, PathBuf::from(path)))
     })
+}
+
+/// The names sockets were bound with that do not start at the root, by inode.
+#[cfg(target_os = "linux")]
+fn relative_socket_names(table: &str) -> BTreeMap<u64, PathBuf> {
+    bound_socket_paths(table)
+        .filter(|(_, path)| path.is_relative())
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn socket_inode(target: &Path) -> Option<u64> {
+    target
+        .to_str()?
+        .strip_prefix("socket:[")?
+        .strip_suffix(']')?
+        .parse()
+        .ok()
 }
 
 #[cfg(not(target_os = "linux"))]
