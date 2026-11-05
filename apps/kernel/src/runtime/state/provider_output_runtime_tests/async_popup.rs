@@ -738,7 +738,7 @@ async fn async_popup_review_wait_deadline_follows_the_latest_question() {
 
 /// MP-09: a managed kernel counts the unresolved cards as work. Answering one records that change after the
 /// Room is updated; recording it while the Room store is still locked waited for the answerer itself, so the
-/// kernel stopped heartbeating (found creating the Vault on a rented machine).
+/// kernel stopped heartbeating (found creating the Vault on a remote machine).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn answering_a_card_on_a_managed_kernel_does_not_wait_for_itself() {
     let f = fixture("managed-answer", true).await;
