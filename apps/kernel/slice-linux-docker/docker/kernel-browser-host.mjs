@@ -77,6 +77,8 @@ const TAB_LIMIT = 128;
 // A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
 export const PERSON_IDLE_MS = 2000;
 const SHOW_TAB_WAIT_MS = 1000;
+// The answer to a Show tab carries the state read if it finishes in time; a busy renderer of another Tab never holds it.
+const SHOW_TAB_OBSERVE_MS = 500;
 // How often the focus emulation of the Tabs agents work in behind the shown one is asserted again.
 const BACKGROUND_KEEP_MS = 1500;
 // A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
@@ -824,6 +826,13 @@ export class KernelBrowserHost {
     if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
     return tab;
   }
+  /** The Tab this host already owns under that generation: activating it needs no read of the other Tabs' renderers. */
+  ownedTab(command) {
+    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
+    const tab = this.tabs.get(command.tab_id);
+    if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
+    return tab;
+  }
   async mirrorTarget(command) {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const stored = this.tabs.get(command.tab_id);
@@ -1121,7 +1130,8 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor'].includes(command.op)
-      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
+      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS))
+      : command.op === 'show_tab' ? this.ownedTab(command) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
     // An agent's Tab runs at full speed behind the shown one; the person's own input to it goes first.
@@ -1179,14 +1189,15 @@ export class KernelBrowserHost {
       if (agentRequest) throw new UserDomainRefusal("not_granted");
       await this.retireNativeForeground(tab.target_id);
       await this.tabGroups?.personSelection?.();
-      await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id });
+      try { await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id }); }
+      catch (error) { throw /no target/i.test(error?.message) ? new UserDomainRefusal("stale_reference", "display_retired") : error; }
       this.pendingActive = null;
       // The answer names the Tab Chrome now shows: wait (bounded) until its own report agrees.
       for (const end = performance.now() + (this.tabGroups ? SHOW_TAB_WAIT_MS : 0); performance.now() < end;) {
         if (await this.nativeFront(tab).catch(() => true)) break;
         await delay(20);
       }
-      return this.observe(await this.reconcile(), null, scope);
+      return this.observe(await withinMs(this.reconcile(), SHOW_TAB_OBSERVE_MS) ?? this.tabState(), null, scope);
     }
     if (command.op === "navigate") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);
