@@ -669,6 +669,19 @@ test("with two other kernels M chooses the source", async () => {
   assert.match(h.text(), /Update from b3 builder/)
 })
 
+test("a machine without an Environment record offers Update from another kernel and starts the import", async () => {
+  const h = harness(environment({ exists: false, revision: 0, setup: { script: "" }, variables: "", secrets: [], files: [] }), MAC)
+  await h.open()
+  await h.settle()
+  assert.match(h.text(), /Update from Miguel's Mac\s+Update/)
+  assert.match(h.text(), /Draft with agent/)
+  h.focusOn("Update from")
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ entries: [] }) } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac" } })
+})
+
 test("an Environment that does not exist yet offers Draft with agent; it runs on the kernel and the record follows", async () => {
   const h = harness(environment({ exists: false, revision: 0, setup: { script: "" }, variables: "", secrets: [], files: [] }))
   await h.open()

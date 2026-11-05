@@ -82,7 +82,7 @@ export function environmentFocusables(environment: ProjectEnvironmentView | null
   if (!environment) return []
   return [
     { kind: "run" },
-    ...(hasSources && environment.exists ? [{ kind: "update" } as const] : []),
+    ...(hasSources ? [{ kind: "update" } as const] : []),
     { kind: "script" },
     ...(environment.exists ? [{ kind: "check" } as const] : [{ kind: "draft" } as const]),
     { kind: "variables" },
@@ -212,7 +212,7 @@ function hint(model: EnvironmentDialogModel): string {
   if (input) return "Enter confirm • Esc cancel"
   const environment = model.environment
   if (!environment) return "Esc close"
-  const imports = model.sources.length > 0 && environment.exists
+  const imports = model.sources.length > 0
   const focus = model.focus
   const missingRegistration = (entries: readonly ProjectEnvironmentExtension[], index: number) => entries[index]?.source.kind === "registration" && entries[index]?.presence === "missing"
   const importable = imports && ((focus.kind === "secret" && environment.secrets[focus.index]?.presence === "missing") || (focus.kind === "file" && environment.files[focus.index]?.presence === "missing") || (focus.kind === "mcp" && missingRegistration(environment.mcps, focus.index)) || (focus.kind === "skill" && missingRegistration(environment.skills, focus.index)))
@@ -272,7 +272,7 @@ export function environmentDialogView(model: EnvironmentDialogModel, width: numb
   }
 
   // One line for Update: it names where the entries would come from, and while it runs it shows the progress and Stop.
-  if (model.sources.length > 0 && environment.exists) {
+  if (model.sources.length > 0) {
     const failed = model.transfer?.kind === "import" && model.transfer.state === "failed" && model.transfer.entries.length === 0 ? model.transfer.reason : null
     const label = updating ?? failed ?? `Update from ${chosen ?? model.sources[0]!.label}`
     rows.push(row(twoColumns(label, updating ? "Stop" : "Update", width), failed ? "warning" : "text", focused("update"), true))
