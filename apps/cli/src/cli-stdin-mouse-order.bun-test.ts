@@ -114,3 +114,48 @@ test("MP-08 / MP-10 wrapped paragraph selection excludes adjacent panel and curs
     assert.equal(harness.renderer.getSelection()?.getSelectedText(), content)
   } finally { harness.renderer.destroy() }
 })
+
+for (const drag of [false, true]) for (const paste of [false, true]) {
+  test(`MP-08 / MP-10 overlay composition restores prompt focus before coalesced ${drag ? "drag" : "click"} release and ${paste ? "paste" : "typing"}`, async () => {
+    const { createRoot } = await import("solid-js")
+    const { createCliOverlayInteractionComposition } = await import("./cli-overlay-interaction-composition.js")
+    const { createPromptInputRefController } = await import("./prompt-input-ref-controller.js")
+    const harness = await createTestRenderer({ width: 80, height: 8, useThread: false })
+    const text = new TextRenderable(harness.renderer, { content: "retained transcript", width: 40, height: 1 })
+    const pane = new ScrollBoxRenderable(harness.renderer, { width: 40, height: 1, focusable: true })
+    const prompt = new TextareaRenderable(harness.renderer, { width: 40, height: 2 })
+    pane.add(text); harness.renderer.root.add(pane); harness.renderer.root.add(prompt)
+    const ref = createPromptInputRefController<TextareaRenderable>()
+    ref.assignInput(prompt); ref.focus()
+    const noop = () => {}, off = () => false, empty = () => []
+    let dispose!: () => void
+    const controller = createRoot(cleanup => {
+      dispose = cleanup
+      return createCliOverlayInteractionComposition({
+        renderer: harness.renderer, promptInputRefController: ref, isAttached: () => true,
+        dimensions: () => ({ width: 80, height: 8 }), sessionState: () => ({ processes: [], agents: [] }),
+        scheduleTimer: setTimeout, retainPromptFocus: () => { setTimeout(ref.focus, 0) },
+        options: {}, client: { send: async () => { throw Error("Unexpected kernel request") } },
+        formatError: String, debugLogsEnabled: false, appLogger: null,
+        currentFocusedRenderable: () => harness.renderer.currentFocusedRenderable, describeRenderableDebug: String,
+        availableSessions: empty, waitingRoomProjects: empty, sessionBrowserIndex: () => 0,
+        waitingRoomState: () => ({ focus: "launch-action" }), providerCatalogState: () => ({}),
+        waitingRoomRemoteState: () => ({}), themeRegistryState: () => ({}),
+        hotkeysOpen: off, terminalPairingOpen: off, sessionBrowserOpen: off, managedMachineDialogOpen: off,
+        terminalPairingState: () => null, terminalPairingQrLines: empty, loadSessions: async () => {},
+        setHotkeysOpen: noop, setTerminalPairingOpen: noop, setTerminalPairingState: noop,
+        setTerminalPairingQrLines: noop, setSessionBrowserOpen: noop, setSessionBrowserIndex: noop,
+        setManagedMachineDialogOpen: noop, reconcileWaitingRoom: noop, flashFooter: noop,
+        attachBinding: noop, applyWaitingRoomSessionLifecycleAction: noop,
+      } as unknown as Parameters<typeof createCliOverlayInteractionComposition>[0])
+    })
+    text.onMouseUp = controller.handlePromptSelectionSurfaceMouseUp
+    await harness.renderOnce()
+    try {
+      const move = drag ? "\x1b[<32;9;1M" : ""
+      const edit = paste ? "\x1b[200~z\x1b[201~" : "z"
+      harness.renderer.stdin.emit("data", `\x1b[<0;1;1M${move}\x1b[<0;9;1m${edit}`)
+      assert.equal(prompt.plainText, "z", "a release followed by an edit cannot wait for deferred focus")
+    } finally { dispose(); harness.renderer.destroy() }
+  })
+}

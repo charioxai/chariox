@@ -44,6 +44,7 @@ export type CliOverlayInteractionCompositionDeps = {
   promptInputRefController: {
     current: AnyFn
     currentOrNull: AnyFn
+    focus: () => void
   }
   describeRenderableDebug: AnyFn
   scheduleTimer: AnyFn
@@ -68,7 +69,6 @@ export type CliOverlayInteractionCompositionDeps = {
   flashFooter: AnyFn
   attachBinding: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
-  retainPromptFocus: AnyFn
 }
 
 export function createCliOverlayInteractionComposition(deps: CliOverlayInteractionCompositionDeps) {
@@ -238,7 +238,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     scheduleTimer: deps.scheduleTimer,
     isPrimaryButton: (event: { button: MouseButton; isDragging?: boolean }) => event.button === MouseButton.LEFT,
     copyText: clipboardController.copyTextWithFeedback,
-    retainPromptFocus: deps.retainPromptFocus,
+    retainPromptFocus: () => deps.promptInputRefController.focus(),
   })
 
   const onSelection = (selection: Selection) => promptSurfaceMouseController.handleSelection(selection.getSelectedText())

@@ -626,7 +626,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     options,
     flashFooter: (message, tone) => flashFooter(message, tone),
     attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),
-    applyWaitingRoomSessionLifecycleAction, retainPromptFocus,
+    applyWaitingRoomSessionLifecycleAction,
   })
   const captureSelectionKey = (event: import("@opentui/core").KeyEvent) => captureCopyKey(event)
   const captureSelectionPaste = () => capturePaste()
