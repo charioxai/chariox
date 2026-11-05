@@ -76,3 +76,13 @@ pipe. It requires every byte of 8 MiB stdout and 1 MiB stderr to match their
 SHA-256 hashes and the CLI to return the producer's exit 23. The CLI renews
 the lease every minute while local writes are pending, acknowledging only
 bytes already consumed locally. No lease is shortened for this drill.
+
+The MP-08 / MP-09 / MP-10 / MP-11 pre-spawn regression uses `pre-spawn.mjs`
+with the same arguments. It seeds the ordinary learned-peak cache with an
+impossible prediction before the real kernel starts. The old kernel executes
+the marker immediately; the corrected kernel holds the original argv before
+spawn. The native CLI supplies binary input while queued. Cancel leaves no
+marker; Start now executes once and preserves every stdin/stdout byte, stderr
+and exit23; revoking the original grant prevents queued execution. This is a
+focused local-kernel regression, separate from selected-kernel placement,
+paid-VM placement, hosted Web DPR1/2 and remote recovery acceptance.

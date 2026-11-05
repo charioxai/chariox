@@ -5862,7 +5862,7 @@ Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
 
 
-### Binary Room exec (local 632 / peer 235)
+### Binary Room exec (local 995 / peer 434)
 
 MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
 The existing Room owner, external-grant and worker-lease checks apply unchanged;
@@ -5870,8 +5870,26 @@ a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
 advertises this additive contract. The relay still carries opaque encrypted
 requests and responses, using its existing bounded framing and flow control.
 
-- `exec_open { command: [program, ...args] }` starts argv directly in the Room's
-  project directory; `exec_opened { exec_id }` identifies the running command.
+- `exec_open { command: [program, ...args] }` validates the original argv and
+  canonical Room directory, then allocates `exec_opened { exec_id }` before
+  spawning a user program. Its immutable intent contains only the launch ID,
+  Room/owner/acting-agent identity, argv and cwd. It contains no resolved Vault
+  values, inherited environment, provider account configuration or descriptors.
+- MP-08 / MP-09 / MP-10 / MP-11: resource admission holds a binary launch before
+  spawn when its predicted memory or disk need does not fit. Concurrent binary
+  decisions reserve capacity in the existing resource pool. `exec_list` returns
+  tagged `queued { wait }`, `starting`, `running` or `finished` state, the original
+  command and its owner. `exec_start_now { exec_id }` admits only queued work;
+  cancellation before dispatch never starts the user program. The original
+  authority is checked again immediately before spawn. Queueing preserves the
+  same bounded stdin offsets, stdout/stderr cursors, cancellation and reader
+  lease. Queued work counts as busy for the managed shutdown fence.
+- Observed process `held` and `paused` states still describe programs that have
+  already executed. Their existing Run anyway control continues the same
+  process. They cannot be converted into new launch intents or placed elsewhere.
+  Selected-kernel placement, VM acquisition, verified context transfer and
+  durable remote claim/results remain separate unfinished work; this protocol
+  change does not advertise them.
 - `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
   has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
   It uses the same Room authority and worker forwarding as all exec operations.

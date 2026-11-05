@@ -6,10 +6,27 @@ use super::*;
 use crate::local::{RoomTerminalOperation, RoomTerminalResult};
 
 impl KernelRuntimeState {
+    pub(crate) fn authorize_queued_exec(
+        &self,
+        intent: &crate::room_exec::LaunchIntent,
+    ) -> Result<(), DaemonError> {
+        self.authorize_current_external_command()?;
+        self.ensure_room_running(&intent.session_id)?;
+        let session = self.owned.session_store.get_session(&intent.session_id)?;
+        if session.owner_user_id() != intent.owner_user_id {
+            return Err(crate::room_exec::error(
+                "exec_owner_changed",
+                "Room ownership changed before the command started",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) async fn run_room_exec_operation(
         &self,
         session_id: &str,
         cwd: &Path,
+        actor: crate::room_terminal::TerminalActor,
         operation: RoomTerminalOperation,
     ) -> Result<RoomTerminalResult, DaemonError> {
         let service = &self.owned.room_execs;
@@ -19,11 +36,28 @@ impl KernelRuntimeState {
             },
             RoomTerminalOperation::ExecOpen { command } => {
                 self.ensure_room_running(session_id)?;
-                let exec_id = service.open(session_id, cwd, &command)?;
+                self.authorize_current_external_command()?;
+                let session = self.owned.session_store.get_session(session_id)?;
+                let exec_id = service.open_as(
+                    session_id,
+                    session.owner_user_id(),
+                    cwd,
+                    &command,
+                    Some(self.clone()),
+                    match actor {
+                        crate::room_terminal::TerminalActor::User => None,
+                        crate::room_terminal::TerminalActor::Agent(id) => Some(id),
+                    },
+                )?;
                 if let Err(ended) = self.ensure_room_running(session_id) {
                     service.end_session(session_id);
                     return Err(ended);
                 }
+                RoomTerminalResult::ExecOpened { exec_id }
+            }
+            RoomTerminalOperation::ExecStartNow { exec_id } => {
+                self.authorize_current_external_command()?;
+                service.start_now(session_id, &exec_id)?;
                 RoomTerminalResult::ExecOpened { exec_id }
             }
             RoomTerminalOperation::ExecWrite {

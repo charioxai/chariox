@@ -16,7 +16,7 @@ const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
 const SETTLE: Duration = Duration::from_secs(1);
 
 pub(super) struct Pool {
-    ceiling: u64,
+    pub(super) ceiling: u64,
     /// Pressure starts when less than this is left under the ceiling.
     margin: u64,
     /// The host's own free memory counts too (the kernel's shared pool).
@@ -25,8 +25,10 @@ pub(super) struct Pool {
     budget: Mutex<Weak<cgroup::Budget>>,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
     stopped_at: Mutex<BTreeMap<String, Instant>>,
-    ledger: Mutex<admission::Ledger>,
-    volume: Box<admission::Volume>,
+    pub(super) ledger: Mutex<admission::Ledger>,
+    pub(super) launches: Mutex<BTreeMap<String, super::launch::Reservation>>,
+    pub(super) launch_generation: std::sync::atomic::AtomicU64,
+    pub(super) volume: Box<admission::Volume>,
 }
 
 /// One command of a workload: the root's own process or a subtree under it.
@@ -72,6 +74,8 @@ impl Pool {
             members: Mutex::default(),
             stopped_at: Mutex::default(),
             ledger: Mutex::new(admission::Ledger::new(peaks)),
+            launches: Mutex::default(),
+            launch_generation: std::sync::atomic::AtomicU64::new(0),
             volume,
         }
     }
@@ -134,7 +138,7 @@ impl Pool {
             .collect()
     }
 
-    fn members(&self) -> Vec<Arc<Mutex<Observation>>> {
+    pub(super) fn members(&self) -> Vec<Arc<Mutex<Observation>>> {
         self.members
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -168,6 +172,13 @@ impl Pool {
             }
         }
         let (memory, growing) = self.room(&members);
+        let reserved = self
+            .launches
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .fold(0u64, |sum, launch| sum.saturating_add(launch.memory));
+        let memory = memory.saturating_sub(reserved);
         let room = admission::Room {
             memory,
             tight: memory < self.margin.max(growing),
@@ -187,7 +198,7 @@ impl Pool {
     /// Memory left under the pressure line, and how fast running commands
     /// grow together (bytes per second): admission pauses before the line.
     /// Waiting commands do not count as growing.
-    fn room(&self, members: &[Arc<Mutex<Observation>>]) -> (u64, u64) {
+    pub(super) fn room(&self, members: &[Arc<Mutex<Observation>>]) -> (u64, u64) {
         let (outside_cgroup, growing) = members
             .iter()
             .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()))

@@ -1,7 +1,6 @@
 use std::io;
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +16,7 @@ use crate::runtime::owned_process_signals::OwnedProcessSignals;
 pub(super) struct Process {
     child: Child,
     signals: OwnedProcessSignals,
+    _domain: crate::runtime::process_resources::ProcessDomain,
 }
 
 impl Drop for Process {
@@ -27,10 +27,22 @@ impl Drop for Process {
     }
 }
 
-pub(super) fn spawn(cwd: &Path, argv: &[String]) -> Result<Process, DaemonError> {
-    let mut command = crate::process_spawn::async_command(&argv[0]);
+pub(super) fn spawn(
+    cwd: &Path,
+    argv: &[String],
+    permit: &crate::runtime::process_resources::LaunchPermit,
+    intent: &super::LaunchIntent,
+) -> Result<Process, DaemonError> {
+    let prepared = permit.prepare().map_err(|failure| {
+        error(
+            "exec_spawn_failed",
+            format!("cannot prepare command resource domain: {failure}"),
+        )
+    })?;
+    let (program, args) = prepared.command(argv[0].clone(), argv[1..].to_vec());
+    let mut command = crate::process_spawn::async_command(program);
     command
-        .args(&argv[1..])
+        .args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -54,7 +66,7 @@ pub(super) fn spawn(cwd: &Path, argv: &[String]) -> Result<Process, DaemonError>
             format!("cannot start command: {failure}; check the program and Room directory"),
         )
     })?;
-    let signals = match OwnedProcessSignals::for_tokio_session_child(&child) {
+    let mut signals = match OwnedProcessSignals::for_tokio_session_child(&child) {
         Ok(signals) => signals,
         Err(failure) => {
             let _ = child.start_kill();
@@ -64,7 +76,25 @@ pub(super) fn spawn(cwd: &Path, argv: &[String]) -> Result<Process, DaemonError>
             ));
         }
     };
-    Ok(Process { child, signals })
+    let domain = match prepared.start(child.id().expect("owned child")) {
+        Ok(domain) => domain,
+        Err(failure) => {
+            let _ = signals.kill_group();
+            let _ = signals.kill_owned_processes();
+            let _ = child.start_kill();
+            return Err(error(
+                "exec_spawn_failed",
+                format!("cannot watch command resources: {failure}"),
+            ));
+        }
+    };
+    domain.bind_key(permit.id());
+    domain.list_as(&intent.session_id, intent.process_owner());
+    Ok(Process {
+        child,
+        signals,
+        _domain: domain,
+    })
 }
 
 async fn cancelled(cancel: &mut watch::Receiver<Option<CancelReason>>) -> CancelReason {
@@ -130,6 +160,7 @@ pub(super) fn run(
     mut input: mpsc::Receiver<Option<Vec<u8>>>,
     mut cancel: watch::Receiver<Option<CancelReason>>,
     service: RoomExecService,
+    mut permit: crate::runtime::process_resources::LaunchPermit,
 ) {
     let mut stdin = process.child.stdin.take().expect("piped stdin");
     let stdout = process.child.stdout.take().expect("piped stdout");
@@ -158,7 +189,7 @@ pub(super) fn run(
         }
     });
     tokio::spawn(async move {
-        let outcome = supervise(&mut process, &mut cancel).await;
+        let outcome = supervise(&mut process, &mut cancel, &mut permit).await;
         writer.abort();
         let _ = writer.await;
         let (out, err) = tokio::join!(out, err);
@@ -183,23 +214,29 @@ pub(super) fn run(
             }
         };
         // Only the reaped process and settled pipes publish the final outcome.
-        record.output.lock().expect("exec output poisoned").outcome = Some(outcome);
-        record.changed.notify_waiters();
-        service.inner.running.fetch_sub(1, Ordering::AcqRel);
-        service.report_work();
+        // Stop the resource watch outside the async executor: its Drop joins a thread.
+        let _ = tokio::task::spawn_blocking(move || drop(process)).await;
+        drop(permit);
+        service.finish(&record, outcome);
     });
 }
 
 async fn supervise(
     process: &mut Process,
     cancel: &mut watch::Receiver<Option<CancelReason>>,
+    permit: &mut crate::runtime::process_resources::LaunchPermit,
 ) -> ExecOutcome {
     // Observe exit without reaping first: the root's birth still witnesses its
     // complete private session when descendants must be cleaned up.
+    let mut sampled = std::time::Instant::now();
     let failure = loop {
         tokio::select! {
             _ = cancelled(cancel) => break None,
             _ = tokio::time::sleep(Duration::from_millis(25)) => {},
+        }
+        if sampled.elapsed() >= Duration::from_millis(250) {
+            permit.observe();
+            sampled = std::time::Instant::now();
         }
         match exited(&process.child) {
             Ok(true) => break None,

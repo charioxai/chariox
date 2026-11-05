@@ -58,7 +58,7 @@ pub(super) struct Peak {
 #[derive(Clone)]
 pub(super) struct Seen {
     pid: u32,
-    key: String,
+    pub(super) key: String,
     pub line: String,
     cwd: Option<PathBuf>,
 }
@@ -215,7 +215,7 @@ pub(super) struct Ledger {
     /// The owner whose command started last for each reason: the next one in
     /// line is the following owner's.
     served: BTreeMap<u8, String>,
-    peaks: Peaks,
+    pub(super) peaks: Peaks,
 }
 
 /// The volume holding a path: which one it is, its free bytes and its size.
@@ -246,6 +246,28 @@ impl Ledger {
             served: BTreeMap::new(),
             peaks: Peaks::load(file),
         }
+    }
+
+    /// Future growth already admitted by the observed-command side of this ledger.
+    pub(super) fn reserved_memory(&self, members: &[Arc<Mutex<Observation>>], light: u64) -> u64 {
+        members
+            .iter()
+            .map(|member| {
+                member
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .admission
+                    .values()
+                    .filter(|entry| entry.admitted && entry.wait.is_none())
+                    .filter_map(|entry| {
+                        entry
+                            .expected
+                            .filter(|peak| peak.memory >= light)
+                            .map(|peak| peak.memory.saturating_sub(entry.resident))
+                    })
+                    .fold(0u64, u64::saturating_add)
+            })
+            .fold(0u64, u64::saturating_add)
     }
 
     /// Records the current workload's commands: new ones arrive, ended ones
@@ -763,9 +785,13 @@ fn recognise(pid: u32) -> Option<Seen> {
     if argv.is_empty() {
         return None;
     }
+    Some(seen_argv(pid, &argv, cwd))
+}
+
+pub(super) fn seen_argv(pid: u32, argv: &[String], cwd: Option<PathBuf>) -> Seen {
     use sha2::Digest;
     let mut hash = sha2::Sha256::new();
-    for argument in &argv {
+    for argument in argv {
         hash.update(normalize(argument).as_bytes());
         hash.update([0]);
     }
@@ -778,12 +804,12 @@ fn recognise(pid: u32) -> Option<Seen> {
         .take(16)
         .map(|byte| format!("{byte:02x}"))
         .collect();
-    Some(Seen {
+    Seen {
         pid,
         key,
-        line: display(&argv),
+        line: display(argv),
         cwd,
-    })
+    }
 }
 
 fn normalize(argument: &str) -> String {
@@ -932,7 +958,7 @@ pub(super) fn written(pid: u32) -> u64 {
 }
 
 /// Expected peaks by command key, kept across kernel restarts.
-struct Peaks {
+pub(super) struct Peaks {
     known: BTreeMap<String, Peak>,
     file: Option<PathBuf>,
 }
@@ -946,22 +972,29 @@ impl Peaks {
         Self { known, file }
     }
 
-    fn get(&self, key: &str) -> Option<Peak> {
+    pub(super) fn get(&self, key: &str) -> Option<Peak> {
         self.known.get(key).copied()
     }
 
     /// Light runs of an unknown command are not worth remembering.
-    fn record(&mut self, key: &str, peak: Peak, light: u64) {
+    pub(super) fn remember(&mut self, key: &str, peak: Peak, light: u64) -> bool {
         if peak.memory < light && peak.writes < light && !self.known.contains_key(key) {
-            return;
+            return false;
         }
         if self.known.len() >= REMEMBERED && !self.known.contains_key(key) {
             let Some(first) = self.known.keys().next().cloned() else {
-                return;
+                return false;
             };
             self.known.remove(&first);
         }
         self.known.insert(key.to_string(), peak);
+        true
+    }
+
+    pub(super) fn record(&mut self, key: &str, peak: Peak, light: u64) {
+        if !self.remember(key, peak, light) {
+            return;
+        }
         if let Some(file) = &self.file {
             let written = serde_json::to_vec(&self.known)
                 .map_err(std::io::Error::other)

@@ -1,5 +1,21 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 binary pre-spawn admission (995/434)
+
+Ordinary and managed kernels use the same immutable binary launch intent and
+shared resource pool before a user program is spawned. A queued launch owns its
+existing stdin/output offsets and reader lease without a PID. Local Start now
+and cancel keep that exec identity. Dispatch rechecks the original authority
+and Room ownership; already-observed held/paused processes retain their current
+process controls. Queued work participates in the existing managed activity
+fence. No shutdown trigger, Cloud authority or provider launch path changes.
+
+Focused regressions are `room_exec::queue_tests` and the real native-client drill
+`scripts/e2e-stack/room-exec/pre-spawn.mjs`. They do not close selected-kernel or
+paid-VM placement, verified context transfer, durable remote result recovery,
+hosted Web DPR1/2 or the broader MP parity matrix. Those requirements remain
+unfinished; no old direct-exec S3 result is relabeled as queue placement proof.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

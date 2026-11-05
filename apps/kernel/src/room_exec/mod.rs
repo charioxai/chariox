@@ -1,12 +1,15 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
+mod launch;
 mod lease;
 mod process;
+#[cfg(test)]
+mod queue_tests;
 #[cfg(test)]
 mod tests;
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,6 +21,7 @@ use tokio::sync::{mpsc, watch, Notify};
 
 use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
+use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 
 pub const CHUNK_BYTES: usize = crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize;
@@ -32,11 +36,35 @@ pub enum ExecOutcome {
     Failed { message: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExecState {
+    Queued { wait: LaunchWait },
+    Starting,
     Running,
     Finished,
+}
+
+/// Original intent only. Process state, credentials and inherited environment
+/// belong to execution and are never part of a queued launch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchIntent {
+    pub exec_id: String,
+    pub session_id: String,
+    pub owner_user_id: String,
+    pub acting_agent: Option<String>,
+    pub cwd: PathBuf,
+    pub command: Vec<String>,
+}
+
+impl LaunchIntent {
+    pub(crate) fn process_owner(&self) -> crate::runtime::process_resources::SessionProcessOwner {
+        use crate::runtime::process_resources::SessionProcessOwner;
+        self.acting_agent.as_ref().map_or_else(
+            || SessionProcessOwner::Terminal(self.exec_id.clone()),
+            |agent| SessionProcessOwner::Agent(agent.clone()),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +73,8 @@ pub struct ExecSummary {
     pub state: ExecState,
     pub age_ms: u64,
     pub buffered_bytes: usize,
+    pub command: Vec<String>,
+    pub owner: crate::runtime::process_resources::SessionProcessOwner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +105,9 @@ enum CancelReason {
 }
 
 pub(super) struct Record {
-    session_id: String,
+    intent: LaunchIntent,
+    state: Mutex<ExecState>,
+    force: watch::Sender<bool>,
     created_at: tokio::time::Instant,
     reader_deadline: watch::Sender<tokio::time::Instant>,
     input: Mutex<Input>,
@@ -108,6 +140,7 @@ struct Inner {
     records: Mutex<BTreeMap<String, Arc<Record>>>,
     managed: ManagedWork,
     running: AtomicUsize,
+    admission: LaunchAdmission,
 }
 
 impl RoomExecService {
@@ -133,6 +166,25 @@ impl RoomExecService {
         cwd: &Path,
         command: &[String],
     ) -> Result<String, DaemonError> {
+        self.open_as(
+            session_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            cwd,
+            command,
+            None,
+            None,
+        )
+    }
+
+    pub(crate) fn open_as(
+        &self,
+        session_id: &str,
+        owner_user_id: &str,
+        cwd: &Path,
+        command: &[String],
+        authority: Option<crate::runtime::state::KernelRuntimeState>,
+        acting_agent: Option<String>,
+    ) -> Result<String, DaemonError> {
         if command.is_empty()
             || command.len() > 64
             || command[0].is_empty()
@@ -145,13 +197,28 @@ impl RoomExecService {
                 "command must contain 1-64 arguments, each at most 4096 bytes",
             ));
         }
+        let cwd = cwd.canonicalize().map_err(|failure| {
+            error(
+                "exec_invalid",
+                format!("cannot resolve Room directory: {failure}"),
+            )
+        })?;
+        if !cwd.is_dir() {
+            return Err(error("exec_invalid", "Room directory is not a directory"));
+        }
+        crate::runtime::process_resources::validate_executable(
+            &command[0],
+            Some(&cwd),
+            std::env::var_os("PATH").as_deref(),
+        )
+        .map_err(|failure| error("exec_spawn_failed", failure.to_string()))?;
         let admission = self.inner.managed.admission()?;
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         if records.len() >= MAX_PER_KERNEL
             || self.inner.running.load(Ordering::Acquire) >= MAX_PER_KERNEL
             || records
                 .values()
-                .filter(|record| record.session_id == session_id)
+                .filter(|record| record.intent.session_id == session_id)
                 .count()
                 >= MAX_PER_ROOM
         {
@@ -164,8 +231,19 @@ impl RoomExecService {
         let (cancel, cancelled) = watch::channel(None);
         let created_at = tokio::time::Instant::now();
         let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
+        let exec_id = format!("exec-{:032x}", rand::random::<u128>());
+        let (force, forced) = watch::channel(false);
         let record = Arc::new(Record {
-            session_id: session_id.to_owned(),
+            intent: LaunchIntent {
+                exec_id: exec_id.clone(),
+                session_id: session_id.to_owned(),
+                owner_user_id: owner_user_id.to_owned(),
+                acting_agent,
+                cwd,
+                command: command.to_vec(),
+            },
+            state: Mutex::new(ExecState::Starting),
+            force,
             created_at,
             reader_deadline,
             input: Mutex::new(Input {
@@ -178,12 +256,10 @@ impl RoomExecService {
             space: Notify::new(),
             cancel,
         });
-        let child = process::spawn(cwd, command)?;
-        let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         records.insert(exec_id.clone(), record.clone());
         self.inner.running.fetch_add(1, Ordering::AcqRel);
         lease::start(exec_id.clone(), Arc::downgrade(&self.inner), deadline);
-        process::run(child, record, receiver, cancelled, self.clone());
+        launch::start(record, receiver, cancelled, forced, self.clone(), authority);
         drop(records);
         drop(admission);
         self.report_work();
@@ -196,18 +272,16 @@ impl RoomExecService {
             .lock()
             .expect("exec records poisoned")
             .iter()
-            .filter(|(_, record)| record.session_id == session_id)
+            .filter(|(_, record)| record.intent.session_id == session_id)
             .map(|(exec_id, record)| {
                 let output = record.output.lock().expect("exec output poisoned");
                 ExecSummary {
                     exec_id: exec_id.clone(),
-                    state: if output.outcome.is_some() {
-                        ExecState::Finished
-                    } else {
-                        ExecState::Running
-                    },
+                    state: record.state.lock().expect("exec state poisoned").clone(),
                     age_ms: record.created_at.elapsed().as_millis() as u64,
                     buffered_bytes: output.retained_bytes(),
+                    command: record.intent.command.clone(),
+                    owner: record.intent.process_owner(),
                 }
             })
             .collect()
@@ -219,7 +293,7 @@ impl RoomExecService {
             .lock()
             .expect("exec records poisoned")
             .get(exec_id)
-            .filter(|record| record.session_id == session_id)
+            .filter(|record| record.intent.session_id == session_id)
             .cloned()
             .ok_or_else(|| {
                 error(
@@ -339,10 +413,23 @@ impl RoomExecService {
         }
     }
 
+    pub fn start_now(&self, session_id: &str, exec_id: &str) -> Result<(), DaemonError> {
+        let record = self.record(session_id, exec_id)?;
+        let state = record.state.lock().expect("exec state poisoned");
+        if !matches!(*state, ExecState::Queued { .. }) {
+            return Err(error(
+                "exec_not_queued",
+                "only a launch held before start can be started now",
+            ));
+        }
+        record.force.send_replace(true);
+        Ok(())
+    }
+
     pub fn cancel(&self, session_id: &str, exec_id: &str) -> Result<(), DaemonError> {
-        self.record(session_id, exec_id)?
-            .cancel
-            .send_replace(Some(CancelReason::Canceled));
+        let record = self.record(session_id, exec_id)?;
+        let _state = record.state.lock().expect("exec state poisoned");
+        record.cancel.send_replace(Some(CancelReason::Canceled));
         Ok(())
     }
 
@@ -350,7 +437,7 @@ impl RoomExecService {
         let mut records = self.inner.records.lock().expect("exec records poisoned");
         if records
             .get(exec_id)
-            .is_some_and(|record| record.session_id != session_id)
+            .is_some_and(|record| record.intent.session_id != session_id)
         {
             return Err(error("exec_not_found", "this Room has no such exec"));
         }
@@ -363,11 +450,20 @@ impl RoomExecService {
     }
 
     pub fn end_session(&self, session_id: &str) {
-        self.remove_where(|record| record.session_id == session_id);
+        self.remove_where(|record| record.intent.session_id == session_id);
     }
 
     pub fn shutdown(&self) {
         self.remove_where(|_| true);
+    }
+
+    fn finish(&self, record: &Record, outcome: ExecOutcome) {
+        record.output.lock().expect("exec output poisoned").outcome = Some(outcome);
+        *record.state.lock().expect("exec state poisoned") = ExecState::Finished;
+        record.input.lock().expect("exec input poisoned").sender = None;
+        record.changed.notify_waiters();
+        self.inner.running.fetch_sub(1, Ordering::AcqRel);
+        self.report_work();
     }
 
     fn remove_where(&self, predicate: impl Fn(&Record) -> bool) {
