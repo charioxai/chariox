@@ -108,3 +108,15 @@ original exec ID must report an explicit unknown/incomplete outcome and must not
 replay the program. This drill is known-red on the base and the r2 foundation:
 both lose the receipt and return `exec_not_found`. It is separate from the passing
 origin-connection-loss drill and is not a claim of durable recovery.
+
+The MP-08 / MP-09 / MP-10 / MP-11 `reservation-domains.mjs` drill takes
+those same binary/home/evidence arguments. It requires a private cgroup and
+uses a 10 GiB budget. A binary with a learned 4 GiB peak starts a separately
+learned 4 GiB descendant after the launch window; a second 4 GiB binary must
+start while both remain alive. Add `--disk` for the real filesystem case:
+the fixture creates and mounts its own sparse 32 GiB ext4 image, starts a
+12 GiB predicted writer, waits for 10 GiB of actual output and fsync, then
+requires an 8 GiB predicted binary to start before the writer exits. Mount,
+image, private cgroups and fixture processes are removed after each run.
+These are focused native accounting regressions; they do not claim the hosted
+or ordinary-versus-managed acceptance matrix.

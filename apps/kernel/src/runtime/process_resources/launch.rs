@@ -19,8 +19,9 @@ pub struct LaunchWait {
 
 pub(super) struct Reservation {
     pub(super) memory: u64,
-    writes: u64,
-    volume: u64,
+    /// Predicted writes not yet consumed by this domain.
+    pub(super) writes: u64,
+    pub(super) volume: u64,
 }
 
 #[derive(Clone)]
@@ -92,12 +93,29 @@ impl LaunchPermit {
         let samples = super::samples_for_key(&self.id);
         self.observed |= !samples.is_empty();
         let memory = samples.iter().map(|sample| sample.resident_set_bytes).sum();
-        let writes = samples
+        let writes: u64 = samples
             .iter()
             .map(|sample| admission::written(sample.pid))
             .sum();
         self.peak.memory = self.peak.memory.max(memory);
+        let consumed = writes.saturating_sub(self.peak.writes);
         self.peak.writes = self.peak.writes.max(writes);
+        if consumed > 0 {
+            let mut launches = self
+                .admission
+                .0
+                .launches
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(reservation) = launches.get_mut(&self.id) {
+                reservation.writes = reservation.writes.saturating_sub(consumed);
+                // A free-space read preceding this consumption cannot credit it.
+                self.admission
+                    .0
+                    .launch_generation
+                    .fetch_add(1, Ordering::AcqRel);
+            }
+        }
     }
 }
 
@@ -129,23 +147,26 @@ impl LaunchAdmission {
             let generation = pool.launch_generation.load(Ordering::Acquire);
             let members = pool.members();
             let room = pool.room(&members);
-            let disk = (pool.volume)(cwd);
-            // Observations and filesystem reads happen outside this lock. The reservation
-            // check and insertion are one transaction across all binary callers.
+            // Checking and inserting reservations is one transaction across binary
+            // callers and observed-command admission.
             let ledger = pool.ledger.lock().unwrap_or_else(|e| e.into_inner());
             let expected = ledger.peaks.get(&seen.key).unwrap_or_default();
             let memory = expected.memory.max(16 * MIB);
-            let reserved = ledger.reserved_memory(&members, admission::light(pool.ceiling));
             let mut launches = pool.launches.lock().unwrap_or_else(|e| e.into_inner());
-            // A completion can consume reserved disk space. Do not use a free-space
-            // sample taken before that reservation disappeared.
+            let light = admission::light(pool.ceiling);
+            let launch_memory = room.remaining(&launches);
+            let reserved = ledger.reserved_memory(&members, light, &launch_memory);
+            let disk_reserved = ledger.reserved_disk(&members, light, &launches, &*pool.volume);
+            // Consumption is observed before free space. A completion or write
+            // observation since the memory sample requires a fresh snapshot.
+            let disk = (pool.volume)(cwd);
             if generation != pool.launch_generation.load(Ordering::Acquire) {
                 continue;
             }
             let free = room
                 .memory
                 .saturating_sub(reserved)
-                .saturating_sub(room.reserved(&launches));
+                .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
             if !force && memory > free {
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
@@ -159,7 +180,8 @@ impl LaunchAdmission {
                     launches
                         .values()
                         .filter(|r| r.volume == disk.id)
-                        .fold(0u64, |sum, r| sum.saturating_add(r.writes)),
+                        .fold(0u64, |sum, r| sum.saturating_add(r.writes))
+                        .saturating_add(disk_reserved.get(&disk.id).copied().unwrap_or(0)),
                 );
                 if !force && (disk.free <= floor || expected.writes > free) {
                     return Err(LaunchWait {

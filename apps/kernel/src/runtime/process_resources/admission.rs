@@ -91,6 +91,22 @@ pub(super) struct Entry {
 }
 impl Entry {
     #[cfg(test)]
+    pub(super) fn predicted(pid: u32, peak: Peak, admitted: bool, cwd: &Path) -> Self {
+        Self {
+            admitted,
+            holdable: true,
+            expected: Some(peak),
+            seen: Some(Seen {
+                pid,
+                key: format!("test-{pid}"),
+                line: "child".into(),
+                cwd: Some(cwd.into()),
+            }),
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn holdable(&self) -> bool {
         self.holdable
     }
@@ -236,6 +252,10 @@ pub(super) struct Room<'a> {
     pub light: u64,
     pub growth_room: u64,
     pub volume: &'a Volume,
+    /// Remaining binary predictions cover the whole domain. Descendant entries
+    /// reserve only growth beyond them, independently for each resource.
+    pub launches: &'a BTreeMap<String, super::launch::Reservation>,
+    pub launch_memory: BTreeMap<String, u64>,
 }
 
 impl Ledger {
@@ -248,26 +268,81 @@ impl Ledger {
         }
     }
 
-    /// Future growth already admitted by the observed-command side of this ledger.
-    pub(super) fn reserved_memory(&self, members: &[Arc<Mutex<Observation>>], light: u64) -> u64 {
-        members
+    /// Growth beyond each domain's already-reserved binary prediction.
+    pub(super) fn reserved_memory(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launch_memory: &BTreeMap<String, u64>,
+    ) -> u64 {
+        let mut units = BTreeMap::<String, u64>::new();
+        for member in members {
+            let member = member.lock().unwrap_or_else(|e| e.into_inner());
+            let reserved = units.entry(member.unit.clone()).or_default();
+            for entry in member
+                .admission
+                .values()
+                .filter(|entry| entry.admitted && entry.wait.is_none())
+            {
+                *reserved = reserved.saturating_add(
+                    entry
+                        .expected
+                        .filter(|peak| peak.memory >= light)
+                        .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
+                );
+            }
+        }
+        units
             .iter()
-            .map(|member| {
-                member
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .admission
-                    .values()
-                    .filter(|entry| entry.admitted && entry.wait.is_none())
-                    .filter_map(|entry| {
-                        entry
-                            .expected
-                            .filter(|peak| peak.memory >= light)
-                            .map(|peak| peak.memory.saturating_sub(entry.resident))
-                    })
-                    .fold(0u64, u64::saturating_add)
+            .map(|(unit, reserved)| {
+                reserved.saturating_sub(launch_memory.get(unit).copied().unwrap_or(0))
             })
-            .fold(0u64, u64::saturating_add)
+            .fold(0, u64::saturating_add)
+    }
+
+    /// Read consumed writes before the caller samples filesystem free space.
+    pub(super) fn reserved_disk(
+        &self,
+        members: &[Arc<Mutex<Observation>>],
+        light: u64,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+        volume: &Volume,
+    ) -> BTreeMap<u64, u64> {
+        let mut units = BTreeMap::<(String, u64), u64>::new();
+        for member in members {
+            let member = member.lock().unwrap_or_else(|e| e.into_inner());
+            for entry in member
+                .admission
+                .values()
+                .filter(|entry| entry.admitted && entry.wait.is_none())
+            {
+                let writes = entry
+                    .expected
+                    .filter(|peak| peak.writes >= light)
+                    .map_or(0, |peak| peak.writes.saturating_sub(entry.writes));
+                if writes == 0 {
+                    continue;
+                }
+                if let Some(space) = entry
+                    .seen
+                    .as_ref()
+                    .and_then(|seen| volume(seen.cwd.as_deref()?))
+                {
+                    let total = units.entry((member.unit.clone(), space.id)).or_default();
+                    *total = total.saturating_add(writes);
+                }
+            }
+        }
+        let mut reserved = BTreeMap::<u64, u64>::new();
+        for ((unit, volume), writes) in units {
+            let covered = launches
+                .get(&unit)
+                .filter(|launch| launch.volume == volume)
+                .map_or(0, |launch| launch.writes);
+            let total = reserved.entry(volume).or_default();
+            *total = total.saturating_add(writes.saturating_sub(covered));
+        }
+        reserved
     }
 
     /// Records the current workload's commands: new ones arrive, ended ones
@@ -358,9 +433,8 @@ impl Ledger {
         room: &Room,
     ) -> bool {
         let mut state = State::read(members, room);
-        let mut available = room.memory.saturating_sub(state.reserved);
         let mut changed = Vec::new();
-        self.hold(current, room, &mut state, &mut available);
+        self.hold(current, room, &mut state);
         let mut may_stop = false;
         if room.tight {
             match self.pause(members, WaitReason::Memory, |entry, command| {
@@ -372,13 +446,7 @@ impl Ledger {
                 Some(owner) => changed.push(owner),
                 None => may_stop = true,
             }
-        } else if let Some(owner) = self.resume(
-            members,
-            WaitReason::Memory,
-            &mut state,
-            room,
-            &mut available,
-        ) {
+        } else if let Some(owner) = self.resume(members, WaitReason::Memory, &mut state, room) {
             changed.push(owner);
         }
         let full = |entry: &Entry| entry.disk(room).is_some_and(|disk| disk.free < disk.floor);
@@ -387,19 +455,11 @@ impl Ledger {
         }) {
             changed.push(owner);
         }
-        if let Some(owner) =
-            self.resume(members, WaitReason::Disk, &mut state, room, &mut available)
-        {
+        if let Some(owner) = self.resume(members, WaitReason::Disk, &mut state, room) {
             changed.push(owner);
         }
         let state = State::read(members, room);
-        number(
-            members,
-            &self.served,
-            room,
-            &state,
-            room.memory.saturating_sub(state.reserved),
-        );
+        number(members, &self.served, room, &state);
         for owner in changed {
             if !Arc::ptr_eq(&owner, current) {
                 let control = owner
@@ -417,14 +477,9 @@ impl Ledger {
 
     /// New commands of `current` with a known heavy peak start only with room
     /// for it; otherwise they are held before they grow.
-    fn hold(
-        &mut self,
-        current: &Arc<Mutex<Observation>>,
-        room: &Room,
-        state: &mut State,
-        available: &mut u64,
-    ) {
+    fn hold(&mut self, current: &Arc<Mutex<Observation>>, room: &Room, state: &mut State) {
         let mut observation = current.lock().unwrap_or_else(|e| e.into_inner());
+        let unit = observation.unit.clone();
         for entry in observation.admission.values_mut() {
             if entry.admitted || entry.forced || entry.wait.is_some() {
                 continue;
@@ -434,23 +489,26 @@ impl Ledger {
                 entry.admitted = entry.resident >= room.light;
                 continue;
             };
-            let need = expected.memory.saturating_sub(entry.resident);
+            let need = entry.memory_ahead(room);
             let disk = entry.disk(room);
             let ahead = entry.writes_ahead(room);
             entry.wait = if !entry.holdable {
                 None
-            } else if expected.memory >= room.light && need > *available && state.heavy_running {
+            } else if expected.memory >= room.light
+                && need > state.memory_room(&unit, room)
+                && state.heavy_running
+            {
                 Some(Wait::Held(WaitReason::Memory))
-            } else if disk.is_some_and(|disk| ahead > state.spare(disk)) {
+            } else if disk.is_some_and(|disk| ahead > state.spare(disk, &unit, room)) {
                 Some(Wait::Held(WaitReason::Disk))
             } else {
                 None
             };
             if entry.wait.is_none() {
                 entry.admitted = true;
-                *available = available.saturating_sub(need);
+                state.reserve_memory(&unit, need, room);
                 if let Some(disk) = disk {
-                    state.reserve(disk, ahead);
+                    state.reserve_disk(disk, ahead, &unit, room);
                 }
                 state.running(entry, room);
             }
@@ -508,7 +566,6 @@ impl Ledger {
         reason: WaitReason,
         state: &mut State,
         room: &Room,
-        available: &mut u64,
     ) -> Option<Arc<Mutex<Observation>>> {
         if self
             .resumed_at
@@ -521,6 +578,7 @@ impl Ledger {
             .into_iter()
             .next()?;
         let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+        let unit = observation.unit.clone();
         let entry = observation.admission.get_mut(&pid)?;
         // Both resources must have room now: what it waited for, and the
         // other one for the peak it is known to reach.
@@ -529,18 +587,14 @@ impl Ledger {
             WaitReason::Disk => (entry.memory_ahead(room), need(entry, reason, room)),
         };
         let volume = entry.disk(room);
-        let fits = (memory <= *available || !state.heavy_running)
-            && volume.is_none_or(|volume| disk <= state.spare(volume));
+        let fits = (memory <= state.memory_room(&unit, room) || !state.heavy_running)
+            && volume.is_none_or(|volume| disk <= state.spare(volume, &unit, room));
         if !fits {
             return None;
         }
-        *available = available.saturating_sub(
-            entry
-                .expected
-                .map_or(0, |peak| peak.memory.saturating_sub(entry.resident)),
-        );
+        state.reserve_memory(&unit, entry.memory_ahead(room), room);
         if let Some(volume) = volume {
-            state.reserve(volume, entry.writes_ahead(room));
+            state.reserve_disk(volume, entry.writes_ahead(room), &unit, room);
         }
         entry.wait = None;
         entry.admitted = true;
@@ -563,19 +617,63 @@ struct State {
     heavy_running: bool,
     /// Writes admitted commands still have ahead, by volume.
     disk: BTreeMap<u64, u64>,
+    memory_by_unit: BTreeMap<String, u64>,
+    writes_by_unit: BTreeMap<(String, u64), u64>,
 }
 impl State {
-    /// What a volume has above its floor, less what admitted commands will
-    /// still write there.
-    fn spare(&self, disk: Disk) -> u64 {
-        disk.above_floor()
-            .saturating_sub(self.disk.get(&disk.id).copied().unwrap_or(0))
+    fn memory_credit(&self, unit: &str, room: &Room) -> u64 {
+        room.launch_memory
+            .get(unit)
+            .copied()
+            .unwrap_or(0)
+            .saturating_sub(self.memory_by_unit.get(unit).copied().unwrap_or(0))
     }
 
-    fn reserve(&mut self, disk: Disk, bytes: u64) {
-        if bytes > 0 {
-            *self.disk.entry(disk.id).or_default() += bytes;
-        }
+    fn memory_room(&self, unit: &str, room: &Room) -> u64 {
+        room.memory
+            .saturating_sub(self.reserved.saturating_sub(self.memory_credit(unit, room)))
+    }
+
+    fn disk_credit(&self, volume: u64, unit: &str, room: &Room) -> u64 {
+        room.launches
+            .get(unit)
+            .filter(|launch| launch.volume == volume)
+            .map_or(0, |launch| launch.writes)
+            .saturating_sub(
+                self.writes_by_unit
+                    .get(&(unit.to_string(), volume))
+                    .copied()
+                    .unwrap_or(0),
+            )
+    }
+
+    /// Available space includes the requesting domain's unused reservation.
+    fn spare(&self, disk: Disk, unit: &str, room: &Room) -> u64 {
+        disk.above_floor().saturating_sub(
+            self.disk
+                .get(&disk.id)
+                .copied()
+                .unwrap_or(0)
+                .saturating_sub(self.disk_credit(disk.id, unit, room)),
+        )
+    }
+
+    fn reserve_memory(&mut self, unit: &str, bytes: u64, room: &Room) {
+        let extra = bytes.saturating_sub(self.memory_credit(unit, room));
+        self.reserved = self.reserved.saturating_add(extra);
+        let total = self.memory_by_unit.entry(unit.to_string()).or_default();
+        *total = total.saturating_add(bytes);
+    }
+
+    fn reserve_disk(&mut self, disk: Disk, bytes: u64, unit: &str, room: &Room) {
+        let extra = bytes.saturating_sub(self.disk_credit(disk.id, unit, room));
+        let total = self.disk.entry(disk.id).or_default();
+        *total = total.saturating_add(extra);
+        let total = self
+            .writes_by_unit
+            .entry((unit.to_string(), disk.id))
+            .or_default();
+        *total = total.saturating_add(bytes);
     }
 
     /// Notes a command that runs now: the rest of the pass must see it as the
@@ -594,11 +692,24 @@ impl State {
 
     fn read(members: &[Arc<Mutex<Observation>>], room: &Room) -> Self {
         let mut state = State {
-            reserved: 0,
+            reserved: room
+                .launch_memory
+                .values()
+                .copied()
+                .fold(0, u64::saturating_add),
             oldest: None,
-            heavy_running: false,
+            heavy_running: room
+                .launches
+                .values()
+                .any(|launch| launch.memory >= room.light),
             disk: BTreeMap::new(),
+            memory_by_unit: BTreeMap::new(),
+            writes_by_unit: BTreeMap::new(),
         };
+        for launch in room.launches.values() {
+            let total = state.disk.entry(launch.volume).or_default();
+            *total = total.saturating_add(launch.writes);
+        }
         for member in members {
             let observation = member.lock().unwrap_or_else(|e| e.into_inner());
             for entry in observation.admission.values() {
@@ -606,12 +717,10 @@ impl State {
                     continue;
                 }
                 if entry.admitted {
-                    state.reserved += entry
-                        .expected
-                        .map_or(0, |peak| peak.memory.saturating_sub(entry.resident));
+                    state.reserve_memory(&observation.unit, entry.memory_ahead(room), room);
                     let ahead = entry.writes_ahead(room);
                     if let Some(disk) = entry.disk(room).filter(|_| ahead > 0) {
-                        state.reserve(disk, ahead);
+                        state.reserve_disk(disk, ahead, &observation.unit, room);
                     }
                 }
                 state.running(entry, room);
@@ -692,12 +801,12 @@ fn number(
     served: &BTreeMap<u8, String>,
     room: &Room,
     state: &State,
-    available: u64,
 ) {
     for reason in [WaitReason::Memory, WaitReason::Disk] {
         let line = line(members, reason, served.get(&(reason as u8)));
         for (position, (member, pid)) in line.into_iter().enumerate() {
             let mut observation = member.lock().unwrap_or_else(|e| e.into_inner());
+            let unit = observation.unit.clone();
             let Some(entry) = observation.admission.get_mut(&pid) else {
                 continue;
             };
@@ -708,8 +817,10 @@ fn number(
                 _ => entry.resident + room.growth_room,
             };
             entry.free = match reason {
-                WaitReason::Memory => available,
-                WaitReason::Disk => entry.disk(room).map_or(0, |disk| state.spare(disk)),
+                WaitReason::Memory => state.memory_room(&unit, room),
+                WaitReason::Disk => entry
+                    .disk(room)
+                    .map_or(0, |disk| state.spare(disk, &unit, room)),
             };
         }
     }

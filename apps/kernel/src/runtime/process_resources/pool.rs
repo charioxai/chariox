@@ -62,14 +62,21 @@ pub(super) struct MemoryRoom {
 }
 
 impl MemoryRoom {
-    pub(super) fn reserved(&self, launches: &BTreeMap<String, super::launch::Reservation>) -> u64 {
-        launches.iter().fold(0u64, |sum, (id, launch)| {
-            sum.saturating_add(
-                launch
-                    .memory
-                    .saturating_sub(self.observed.get(id).copied().unwrap_or(0)),
-            )
-        })
+    pub(super) fn remaining(
+        &self,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+    ) -> BTreeMap<String, u64> {
+        launches
+            .iter()
+            .map(|(id, launch)| {
+                (
+                    id.clone(),
+                    launch
+                        .memory
+                        .saturating_sub(self.observed.get(id).copied().unwrap_or(0)),
+                )
+            })
+            .collect()
     }
 }
 
@@ -194,16 +201,21 @@ impl Pool {
         let sampled = self.room(&members);
         let growing = sampled.growing;
         let launches = self.launches.lock().unwrap_or_else(|e| e.into_inner());
-        let memory = sampled.memory.saturating_sub(sampled.reserved(&launches));
-        drop(launches);
+        let launch_memory = sampled.remaining(&launches);
+        let memory = sampled
+            .memory
+            .saturating_sub(launch_memory.values().copied().fold(0, u64::saturating_add));
         let room = admission::Room {
-            memory,
+            memory: sampled.memory,
             tight: memory < self.margin.max(growing),
             light,
             growth_room: admission::growth_room(self.ceiling),
             volume: &*self.volume,
+            launches: &launches,
+            launch_memory,
         };
         let may_stop = ledger.pass(&members, current, &room);
+        drop(launches);
         drop(ledger);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.

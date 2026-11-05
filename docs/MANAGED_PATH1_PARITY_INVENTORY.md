@@ -14,10 +14,20 @@ changed admission anchors are `state/gateway_requester.rs`, gateway
 their current process controls. Queued work participates in the existing managed activity
 fence. No shutdown trigger, Cloud authority or provider launch path changes.
 
-Binary reservations cover only predicted memory that the pool has not already
-observed for that launch. Admission and enforcement use the same observation
-snapshot; cgroup credit comes from that domain's charge and is bounded by the
-pool's sampled charge. Reservation checking and insertion remain atomic.
+A binary's reservation covers its entire process domain. For each resource,
+reserved growth is the prediction minus observed consumption, counted once per
+domain. The domain reserves the larger of the remaining binary prediction and
+its descendants' remaining predictions, independently for memory and each disk
+volume. Descendant growth beyond the binary prediction still counts. Admission,
+enforcement and resumption all let a descendant use its domain's unused
+reservation; learning and pressure controls stay active. Ordinary commands and
+binary launches account for each other's remaining predictions.
+
+Memory admission and enforcement use the same observation snapshot; cgroup
+credit comes from that domain's charge and is bounded by the pool's sampled
+charge. Disk reservations decrease by observed cumulative writes, retaining the
+high-water mark when a writer exits. Write consumption is fixed before reading
+filesystem free space; reservation checking and insertion remain atomic.
 Completion saves observed binary peaks through the ordinary cache writer in the
 blocking cleanup task, before publishing the final outcome. Queue-only agent
 owners have no process-only Kill all menu; their queued commands retain Start
@@ -30,7 +40,10 @@ hosted Web DPR1/2 or the broader MP parity matrix. Those requirements remain
 unfinished; no old direct-exec S3 result is relabeled as queue placement proof.
 `scripts/e2e-stack/room-exec/reservation-peaks.mjs` additionally checks native
 concurrent admission and actual binary learning, cache reload and automatic
-admission after reservation pressure clears.
+admission after reservation pressure clears. `reservation-domains.mjs` covers
+a learned parent and child alongside another native binary, plus actual output
+on an isolated filesystem while its writer remains alive. Focused regressions
+also cover ordinary/binary disk predictions in both admission directions.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

@@ -5,6 +5,8 @@ use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const GIB: u64 = 1024 * MIB;
+static EMPTY_LAUNCHES: std::sync::LazyLock<BTreeMap<String, super::super::launch::Reservation>> =
+    std::sync::LazyLock::new(BTreeMap::new);
 
 /// A 100 GiB volume (floor 10 GiB) with `free` bytes left.
 fn volume(free: &Arc<AtomicU64>) -> Box<Volume> {
@@ -25,6 +27,8 @@ fn room<'a>(memory: u64, tight: bool, volume: &'a Volume) -> Room<'a> {
         light: 512 * MIB,
         growth_room: GIB,
         volume,
+        launches: std::sync::LazyLock::force(&EMPTY_LAUNCHES),
+        launch_memory: BTreeMap::new(),
     }
 }
 
