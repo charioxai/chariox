@@ -210,6 +210,65 @@ impl OwnedProcessSignals {
         Ok(())
     }
 
+    /// The launched leader's PID and birth, for a record that outlives this kernel.
+    pub(crate) fn root_birth(&self) -> (u32, String) {
+        (
+            self.root,
+            self.owned.get(&self.root).cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Ends what remains of a tree an earlier kernel launched in its own session with `claim`
+    /// in its environment. Ok(true): nothing of it is left. Ok(false): its members were just
+    /// signalled; ask again. An error means some member could not be inspected, so it may live.
+    pub(crate) fn end_claimed_tree(claim: &str, leader: Option<(u32, &str)>) -> io::Result<bool> {
+        Self::end_claimed_tree_with(claim, leader, snapshot, read_environment, send_signal)
+    }
+
+    fn end_claimed_tree_with(
+        claim: &str,
+        leader: Option<(u32, &str)>,
+        mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
+        environment: impl Fn(u32) -> io::Result<Option<Vec<u8>>>,
+        send: impl FnMut(i32, Signal) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        if claim.is_empty() {
+            return Err(io::Error::other("the launch claim is missing"));
+        }
+        let marker = format!("{CLAIM_VARIABLE}={claim}").into_bytes();
+        let rows = inspect()?;
+        let mut owned = BTreeMap::new();
+        for row in rows.iter().filter(|row| row.pid > 1) {
+            let named_by_launch = leader.is_some_and(|(pid, birth)| {
+                (row.pid == pid && row.start == birth) || (row.session == pid && pid > 1)
+            });
+            let marked = match environment(row.pid)? {
+                Some(bytes) => bytes.split(|byte| *byte == 0).any(|entry| entry == marker),
+                None if named_by_launch => {
+                    return Err(io::Error::other("an earlier Setup process is unreadable"))
+                }
+                None => false,
+            };
+            if !marked {
+                continue;
+            }
+            if row.start.is_empty() {
+                return Err(io::Error::other("an earlier Setup process has no birth"));
+            }
+            owned.insert(row.pid, row.start.clone());
+        }
+        let Some(root) = owned.keys().next().copied() else {
+            return Ok(true);
+        };
+        let mut guard = Self {
+            root,
+            exclusive_session: None,
+            owned,
+        };
+        guard.kill_owned_with(inspect, send)?;
+        Ok(false)
+    }
+
     pub(crate) fn kill_child(&mut self) -> io::Result<bool> {
         let rows = snapshot()?;
         let Some(row) = rows.iter().find(|row| row.pid == self.root) else {
@@ -221,6 +280,27 @@ impl OwnedProcessSignals {
         send_signal(self.root as i32, Signal::Kill)?;
         Ok(true)
     }
+}
+
+/// Names the run a process belongs to; every descendant inherits it.
+pub(crate) const CLAIM_VARIABLE: &str = "CHARIOX_SETUP_CLAIM";
+
+/// Ok(None): the process cannot be read (another user's or hidden), so it proves nothing.
+#[cfg(target_os = "linux")]
+fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            Ok(Some(Vec::new()))
+        }
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+/// No environment is readable here: only the launch witnesses can show the tree is gone.
+#[cfg(not(target_os = "linux"))]
+fn read_environment(_: u32) -> io::Result<Option<Vec<u8>>> {
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -594,6 +674,56 @@ mod tests {
             .unwrap();
         use Signal::{Kill, Stop};
         assert_eq!(signalled, [(41, Stop), (43, Stop), (41, Kill), (43, Kill)]);
+    }
+
+    #[test]
+    fn an_earlier_kernels_claimed_tree_is_frozen_then_ended_and_unreadable_members_keep_it_alive() {
+        let mut leader = row(41, 1, 41, "leader");
+        leader.session = 41;
+        let mut child = row(42, 41, 41, "child");
+        child.session = 41;
+        let mut reused = row(43, 1, 43, "reused");
+        reused.session = 43;
+        let rows = vec![leader, child, reused];
+        let environment = |pid: u32| {
+            Ok(Some(match pid {
+                41 | 42 => b"PATH=/bin\0CHARIOX_SETUP_CLAIM=abc\0".to_vec(),
+                _ => b"CHARIOX_SETUP_CLAIM=abcd\0".to_vec(),
+            }))
+        };
+        let mut sent = Vec::new();
+        let ended = OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((41, "leader")),
+            || Ok(rows.clone()),
+            environment,
+            |pid, signal| {
+                sent.push((pid, signal));
+                Ok(())
+            },
+        )
+        .unwrap();
+        use Signal::{Kill, Stop};
+        assert!(!ended);
+        assert_eq!(sent, [(41, Stop), (42, Stop), (41, Kill), (42, Kill)]);
+        // Nothing carries the claim and the saved leader birth names another process.
+        assert!(OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((43, "earlier")),
+            || Ok(vec![rows[2].clone()]),
+            environment,
+            |_, _| panic!("a reused PID was signalled"),
+        )
+        .unwrap());
+        // A member of the launched session that cannot be read may still be the script.
+        assert!(OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((41, "leader")),
+            || Ok(rows.clone()),
+            |pid| Ok((pid != 42).then(Vec::new)),
+            |_, _| panic!("an unproven tree was signalled"),
+        )
+        .is_err());
     }
 
     #[test]
