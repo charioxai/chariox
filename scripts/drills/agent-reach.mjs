@@ -45,7 +45,7 @@ const tokenFile = flags.get("--claude-token-file") ?? "/root/.claude-lanes/oauth
 const codexScope = flags.get("--codex-scope") ?? "/root/.chariox/dev/worker-k/home/state/provider-accounts/local/codex/kaissandra-ai-reviewer-login-esqv7b7c/codex"
 const opencodeAuth = flags.get("--opencode-auth") ?? "/root/.chariox/dev/provider-runtimes/fleet-accounts/opencode-home/.local/share/opencode/auth.json"
 const scenarios = new Set((flags.get("--scenarios") ?? (provider === "claude" ? "reach,sudo,acquisition,acquisition-sudo,response-loss,tools,events,multiwait,driver,history,view,humanonly,lineage,newrooms,inherit,workday,recall" : "tools,events,multiwait,driver,history,view")).split(","))
-assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history"].includes(name)), "only the tools, view, events, multiwait, driver and history scenarios run with Codex or OpenCode")
+assert(provider === "claude" || [...scenarios].every(name => ["tools", "view", "events", "multiwait", "driver", "history", "newrooms"].includes(name)), "only the tools, view, events, multiwait, driver, history and newrooms scenarios run with Codex or OpenCode")
 const agentScenarios = ["events", "multiwait", "driver", "history"].some(name => scenarios.has(name))
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must be lane-owned")
 assert(!evidence.startsWith(fileURLToPath(new URL("../../", import.meta.url))), "evidence must be outside the repository")
@@ -297,6 +297,16 @@ async function main() {
   // Claude and OpenCode put the server in the tool name; Codex names the server in the call's title.
   const reachName = call => /chariox[-_]reach/.test(call.tool) ? call.tool.replace(/^.*chariox[-_]reach[._-]*/, "") : /chariox[-_]reach/.test(call.title ?? "") ? call.tool : null
 
+  // A tool answer is the payload itself (Claude, OpenCode) or an MCP result wrapping it as text (Codex).
+  const json = text => {
+    const from = text.indexOf("{"), to = text.lastIndexOf("}")
+    let value
+    try { value = JSON.parse(text.slice(from, to + 1)) } catch { return null }
+    const wrapped = value?.content?.[0]?.text
+    if (typeof wrapped !== "string") return value
+    try { return JSON.parse(wrapped) } catch { return null }
+  }
+
   if (scenarios.has("reach")) {
     note("scenario", { which: "reach" })
     await sendPrompt([
@@ -451,15 +461,6 @@ async function main() {
     // The wait that was open when the record was published returned `lag` ms later. A record published while the agent was between two
     // calls (thinking) is no wake and gives null: the drill keeps the driven agent busy long enough for the follower to be waiting.
     const kernelLag = at => { const done = reachFinishes().filter(x => x.tool === "events_wait" && x.ts >= at - 50 && x.ts - x.elapsed_ms <= at + 25).sort((p, q) => p.ts - q.ts)[0]; return done ? done.ts - at : null }
-    // A tool answer is the payload itself (Claude, OpenCode) or an MCP result wrapping it as text (Codex).
-    const json = text => {
-      const from = text.indexOf("{"), to = text.lastIndexOf("}")
-      let value
-      try { value = JSON.parse(text.slice(from, to + 1)) } catch { return null }
-      const wrapped = value?.content?.[0]?.text
-      if (typeof wrapped !== "string") return value
-      try { return JSON.parse(wrapped) } catch { return null }
-    }
     // The records a wait call returned, with the call's own timing.
     const waited = reach => reach.filter(call => call.tool === "events_wait" && call.status === "completed").map(call => ({ ...call, batch: json(call.output)?.EventsListed ?? null }))
     const cardsAnywhere = async () => {
@@ -696,10 +697,21 @@ async function main() {
     // Creating a Room is room-level: no /sudo, on the agent's own kernel and on another one.
     const create = (kernelArg, r, alias, no_subscribe = false) => call(kernelArg, { CreateSession: { workspace_id: join(r.dir, "work"), worktree_id: join(r.dir, "work"), alias, slice_ref: null, no_subscribe } })
     const aliasesOf = async r => (await r.rpc({ ListSessions: null })).SessionsListed.sessions.map(x => x.alias)
-    const since = startedAt, skip = reachAnswers(since).length
-    await sendPrompt(drillPrompt([`1. Call \`request\` with exactly: ${create(null, a, "made-at-home")}`, `2. Call \`request\` with exactly: ${create(target, b, "made-on-the-other-kernel")}`, `3. Call \`request\` with exactly: ${create(null, a, "unfollowed-created-room", true)}`, "Then reply with the words NEWROOMS and DONE joined by an underscore."]), "NEWROOMS_DONE")
-    const codes = codesOf(since, skip)
-    check("the agent created a Room on its own kernel and on another one without /sudo", codes.join() === "ok,ok,ok" && (await aliasesOf(a)).includes("made-at-home") && (await aliasesOf(b)).includes("made-on-the-other-kernel"), { codes })
+    const newRoomTurn = async (prompt, marker) => {
+      const before = (await turnOf(a, roomA.session.id, agentA)).id
+      await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, prompt, []))
+      let turn
+      await until(async () => {
+        await a.rpc({PumpTerminalOutput: {session_id: roomA.session.id, attachment_id: attached}})
+        turn = await turnOf(a, roomA.session.id, agentA)
+        return turn.id !== before && turn.done && turn.answer.includes(marker)
+      }, `new Room drill turn (${marker})`, 180000)
+      return turn
+    }
+    const made = await newRoomTurn(drillPrompt([`1. Call \`request\` with exactly: ${create(null, a, "made-at-home")}`, `2. Call \`request\` with exactly: ${create(target, b, "made-on-the-other-kernel")}`, `3. Call \`request\` with exactly: ${create(null, a, "unfollowed-created-room", true)}`, "Then reply with the words NEWROOMS and DONE joined by an underscore."]), "NEWROOMS_DONE")
+    const responses = made.calls.filter(call => reachName(call) === "request").map(call => json(String(call.output ?? "")))
+    check("the agent created a Room on its own kernel and on another one without /sudo", responses.length === 3 && responses.every(response => response?.SessionCreated) && (await aliasesOf(a)).includes("made-at-home") && (await aliasesOf(b)).includes("made-on-the-other-kernel"))
+    writeFileSync(join(evidence, "created-rooms.json"), JSON.stringify({calls: made.calls}, null, 2))
     const created = []
     for (const [r, alias] of [[a, "made-at-home"], [b, "made-on-the-other-kernel"], [a, "unfollowed-created-room"]]) {
       const session = (await r.rpc({ListSessions: null})).SessionsListed.sessions.find(session => session.alias === alias)
@@ -707,26 +719,25 @@ async function main() {
       created.push(session.id)
       await r.rpc({EndSession: {session_id: session.id}})
     }
-    await sendPrompt([
+    const waited = await newRoomTurn([
       "Use only chariox-reach events_wait, without events_subscribe: the Rooms you created should already be followed.",
       `Wait with timeout_seconds 20, since 0. Continue with since set to next_cursor until the ended session events for BOTH ${created[0]} and ${created[1]} arrive (at most 3 waits).`,
       "Then reply with the words CREATEDWAIT and DONE joined by an underscore. Do not subscribe or use any other tools.",
     ].join("\n"), "CREATEDWAIT_DONE")
-    const waited = await turnOf(a, roomA.session.id, agentA)
     const waitCalls = waited.calls.filter(call => reachName(call) === "events_wait")
-    const outputs = waitCalls.map(call => String(call.output ?? "")).join("\n")
-    check("a wait receives the end of each automatically followed local and remote created Room", waitCalls.length > 0 && created.slice(0, 2).every(id => outputs.includes(id)) && /"state"\s*:\s*"ended"/.test(outputs), { sessions: created.slice(0, 2), waits: waitCalls.length })
-    check("no_subscribe keeps the third created Room out of the inbox", !outputs.includes(created[2]))
+    const events = waitCalls.flatMap(call => json(String(call.output ?? ""))?.EventsListed?.events ?? [])
+    const ended = new Set(events.filter(event => event.type === "session" && event.value.state === "ended").map(event => event.session_id))
+    check("a wait receives the end of each automatically followed local and remote created Room", created.slice(0, 2).every(id => ended.has(id)), { sessions: created.slice(0, 2), waits: waitCalls.length })
+    check("no_subscribe keeps the third created Room out of the inbox", !events.some(event => event.session_id === created[2]))
     writeFileSync(join(evidence, "created-room-waits.json"), JSON.stringify({sessions: created, calls: waitCalls}, null, 2))
 
-    await sendPrompt([
+    const malformed = await newRoomTurn([
       "Use only chariox-reach request. Send these two malformed requests exactly once each; do not repair or retry them:",
       '{"request":{"CreateSesion":{}}}',
       '{"request":{"CreateSession":{"workspace_id":"/room"}}}',
       "Then reply with the words PARSER and DONE joined by an underscore.",
     ].join("\n"), "PARSER_DONE")
-    const malformed = await turnOf(a, roomA.session.id, agentA)
-    const diagnostics = malformed.calls.filter(call => reachName(call) === "request").map(call => String(call.output ?? call.error ?? "")).join("\n")
+    const diagnostics = JSON.stringify(malformed.calls.filter(call => reachName(call) === "request"))
     check("reach parser errors tell the real agent the unknown variant and missing required field", diagnostics.includes("unknown variant `CreateSesion`") && diagnostics.includes("missing field `worktree_id`"))
     writeFileSync(join(evidence, "parser-diagnostics.json"), JSON.stringify({calls: malformed.calls}, null, 2))
   }
