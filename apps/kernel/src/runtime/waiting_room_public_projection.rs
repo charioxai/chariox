@@ -1640,7 +1640,7 @@ mod tests {
         );
         assert!(session.assign_project_id("project-1"));
         session.touch();
-        let initial_activity_at_ms = session.last_used_at_ms();
+        let initial_activity_at_ms = Some(session.last_activity_at_ms());
         let mut project = RuntimeProject::new(
             "project-1",
             crate::session::DEFAULT_LOCAL_USER_ID,
