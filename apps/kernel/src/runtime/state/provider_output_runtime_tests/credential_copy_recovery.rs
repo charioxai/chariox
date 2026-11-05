@@ -98,7 +98,9 @@ async fn isolated_case(recovery: RecoveryCase) {
                 ),
             )
             .env("RUST_MIN_STACK", "16777216")
-            .bounded_output()
+            // Login, the 60s relaunch deadline, queued readiness and the late
+            // spawn check have separate budgets inside the isolated fixture.
+            .output_with_deadline(Duration::from_secs(180))
             .unwrap();
         std::fs::remove_dir_all(root).unwrap();
         output
