@@ -6,7 +6,6 @@ use super::*;
 use crate::runtime::process_resources::{self, SessionProcess, SessionProcessOwner};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::time::Instant;
 
 const CHECK_EVERY: Duration = Duration::from_secs(5);
@@ -14,6 +13,7 @@ const TRIM_EVERY: Duration = Duration::from_secs(60);
 /// Under pressure an item nothing wrote for this long goes, however long the
 /// usual window is.
 const PRESSURE_IDLE: Duration = Duration::from_secs(60);
+const ASK_TIMEOUT: Duration = Duration::from_secs(90);
 const ASK_AGAIN_AFTER: Duration = Duration::from_secs(600);
 /// Agents asked at once, the biggest holders first.
 const ASKED_AT_ONCE: usize = 3;
@@ -23,16 +23,48 @@ const FOLDERS_NAMED: usize = 5;
 
 #[derive(Default)]
 struct Pace {
-    checked: Option<Instant>,
     trimmed: Option<Instant>,
     asked: BTreeMap<(String, String), Instant>,
 }
 
-static PACE: Mutex<Pace> = Mutex::new(Pace {
-    checked: None,
-    trimmed: None,
-    asked: BTreeMap::new(),
-});
+/// A blocking syscall already in progress may finish after shutdown; it must
+/// not begin another scan or trim once the owning maintenance task is gone.
+struct ScanCancellation(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for ScanCancellation {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+struct PendingDiskPrompt<'a> {
+    state: &'a KernelRuntimeState,
+    session: &'a str,
+    prompt: Option<String>,
+}
+
+impl Drop for PendingDiskPrompt<'_> {
+    fn drop(&mut self) {
+        if let Some(prompt) = self.prompt.take() {
+            let result = self
+                .state
+                .owned
+                .durable_state_store
+                .agent_task(&prompt)
+                .and_then(|task| {
+                    if task.is_some() {
+                        self.state.owned.withdraw_agent_task(&prompt)
+                    } else {
+                        Ok(())
+                    }
+                });
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not withdraw cancelled disk-pressure admission");
+            }
+            self.state.publish_task_change(self.session);
+        }
+    }
+}
 
 fn due(slot: &mut Option<Instant>, every: Duration) -> bool {
     if slot.is_some_and(|at| at.elapsed() < every) {
@@ -147,62 +179,92 @@ pub(crate) fn ask_text(holding: &Holding, free: u64, floor: u64) -> String {
 }
 
 impl KernelRuntimeState {
-    /// Once per scheduler tick: trims idle temp folders on a timer and, when a
-    /// volume is below its floor, asks the agents that hold the most.
-    pub(super) async fn tend_disk(&self) {
-        let (check, trim) = {
-            let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
-            (
-                due(&mut pace.checked, CHECK_EVERY),
-                due(&mut pace.trimmed, TRIM_EVERY),
-            )
-        };
-        if trim {
-            // Reading every process's open files is blocking work.
-            tokio::task::spawn_blocking(|| Self::trim_temp(agent_temp_idle()));
+    fn disk_volume_floor(&self) -> fn(&std::path::Path) -> Option<(u64, u64, u64)> {
+        #[cfg(test)]
+        if let Some(probe) = self.disk_volume_probe {
+            return probe;
         }
-        if !check {
-            return;
-        }
-        let state = self.clone();
-        let Ok(pressured) = tokio::task::spawn_blocking(move || {
-            state.pressured_agents(process_resources::volume_floor)
-        })
-        .await
-        else {
-            return;
-        };
-        if pressured.is_empty() {
-            return;
-        }
-        // Idle scratch goes before anyone is asked.
-        let trimmed = tokio::task::spawn_blocking(|| Self::trim_temp(PRESSURE_IDLE)).await;
-        if trimmed.is_ok_and(|trimmed| trimmed.bytes > 0) {
-            return;
-        }
-        self.ask_pressured_agents(pressured).await;
+        process_resources::volume_floor
     }
 
-    async fn ask_pressured_agents(&self, pressured: Vec<(Holding, u64, u64)>) {
-        for (holding, free, floor) in pressured {
-            {
-                let mut pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
-                let key = (holding.session_id.clone(), holding.agent_id.clone());
-                if pace
-                    .asked
-                    .get(&key)
-                    .is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER)
-                {
-                    continue;
-                }
-                pace.asked.insert(key, Instant::now());
+    /// One pass at a time, paced from completion rather than its start. A slow
+    /// scan or an unanswered launch interaction never accumulates more work.
+    pub(super) async fn run_disk_maintenance(&self) {
+        let mut pace = Pace::default();
+        loop {
+            pace.asked.retain(|_, at| at.elapsed() < ASK_AGAIN_AFTER);
+            self.tend_disk(&mut pace).await;
+            tokio::time::sleep(CHECK_EVERY).await;
+        }
+    }
+
+    async fn tend_disk(&self, pace: &mut Pace) {
+        let trim = due(&mut pace.trimmed, TRIM_EVERY);
+        let state = self.clone();
+        let asked = pace.asked.clone();
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let _cancel_scan = ScanCancellation(cancelled.clone());
+        // All filesystem work shares one awaited blocking job. In particular,
+        // periodic trims cannot overlap the pressure scan or another pass.
+        let pressured = tokio::task::spawn_blocking(move || {
+            if cancelled.load(Ordering::Acquire) {
+                return Vec::new();
             }
-            let text = ask_text(&holding, free, floor);
-            if let Err(error) = self
-                .ask_agent(&holding.session_id, &holding.agent_id, text)
-                .await
+            if trim {
+                Self::trim_temp(agent_temp_idle());
+            }
+            let volume_floor = state.disk_volume_floor();
+            let pressured = state.pressured_agents(
+                |path| {
+                    (!cancelled.load(Ordering::Acquire))
+                        .then(|| volume_floor(path))
+                        .flatten()
+                },
+                &asked,
+            );
+            if cancelled.load(Ordering::Acquire)
+                || pressured.is_empty()
+                || Self::trim_temp(PRESSURE_IDLE).bytes > 0
             {
-                tracing::warn!(%error, agent = %holding.agent_id, "the disk-pressure ask was not delivered");
+                Vec::new()
+            } else {
+                pressured
+            }
+        })
+        .await;
+        match pressured {
+            Ok(pressured) => self.ask_pressured_agents(pressured, pace).await,
+            Err(error) => {
+                tracing::warn!(%error, "disk maintenance scan failed; retrying next pass")
+            }
+        }
+    }
+
+    async fn ask_pressured_agents(&self, pressured: Vec<(Holding, u64, u64)>, pace: &mut Pace) {
+        for (holding, free, floor) in pressured {
+            let key = (holding.session_id.clone(), holding.agent_id.clone());
+            if pace
+                .asked
+                .get(&key)
+                .is_some_and(|at| at.elapsed() < ASK_AGAIN_AFTER)
+            {
+                continue;
+            }
+            pace.asked.insert(key, Instant::now());
+            let text = ask_text(&holding, free, floor);
+            match tokio::time::timeout(
+                ASK_TIMEOUT,
+                self.ask_agent(&holding.session_id, &holding.agent_id, text),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, agent = %holding.agent_id, "the disk-pressure ask was not delivered")
+                }
+                Err(_) => {
+                    tracing::warn!(agent = %holding.agent_id, "disk-pressure prompt admission timed out; retrying after the cooldown")
+                }
             }
         }
     }
@@ -220,6 +282,7 @@ impl KernelRuntimeState {
     fn pressured_agents(
         &self,
         volume_floor: impl Fn(&std::path::Path) -> Option<(u64, u64, u64)>,
+        asked: &BTreeMap<(String, String), Instant>,
     ) -> Vec<(Holding, u64, u64)> {
         let mut found = Vec::new();
         let mut volumes = BTreeMap::<u64, (u64, u64)>::new();
@@ -269,9 +332,8 @@ impl KernelRuntimeState {
                 workspace,
             ));
         }
-        let pace = PACE.lock().unwrap_or_else(|e| e.into_inner());
         found.retain(|(_, session, agent, ..)| {
-            pace.asked
+            asked
                 .get(&(session.clone(), agent.clone()))
                 .is_none_or(|at| at.elapsed() >= ASK_AGAIN_AFTER)
         });
@@ -340,6 +402,11 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_prompt_origin(crate::session::PromptOrigin::Notification);
+        let mut pending = PendingDiskPrompt {
+            state: self,
+            session: session_id,
+            prompt: Some(prompt.id().to_string()),
+        };
         let mut submission = self
             .submit_prepared_agent_trigger_prompt(
                 crate::app::KernelPreparedPromptSubmission {
@@ -351,6 +418,7 @@ impl KernelRuntimeState {
                 None,
             )
             .await?;
+        pending.prompt = None;
         if let (
             crate::session::PromptSubmissionOutcome::Started { prompt },
             Some(runtime_dispatch),

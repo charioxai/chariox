@@ -1,5 +1,18 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
+
+Disk maintenance runs separately from the shared wake ticks. One paced pass
+owns scanning, trimming and notification admission, including cold provider
+launches that need the owner's Vault unlock. Filesystem jobs are awaited
+serially, prompt admission has a bounded wait, and scheduler shutdown cancels
+the maintenance task. No pacing lock spans a scan or a prompt interaction.
+The regression leaves a real encrypted-Vault cold-launch interaction unanswered
+while another Room's timer fires, checks that another maintenance pass does not
+start, and verifies cancellation removes the pending unlock. This focused proof
+does not close the broader ordinary/managed parity matrix.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 remembered output volumes (2026-11-05)
 
 Ordinary and managed admission remember a sampled writer's resolved output

@@ -208,6 +208,8 @@ pub(crate) struct KernelRuntimeState {
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
     #[cfg(test)]
+    disk_volume_probe: Option<fn(&std::path::Path) -> Option<(u64, u64, u64)>>,
+    #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
@@ -1024,6 +1026,8 @@ impl KernelRuntimeState {
             forwarded_peer_binding: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            disk_volume_probe: None,
             #[cfg(test)]
             queue_promotion_exit_probe: None,
             app,
