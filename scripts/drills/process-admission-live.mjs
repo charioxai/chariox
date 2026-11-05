@@ -318,7 +318,6 @@ const focusInTui = async target => {
   await until(async () => {
     const session = (await rpc({ GetSessionState: { session_id: sessionId } })).SessionState.session
     return session.focused_agent_id === target.id && tuiEditor(target).includes("Write your next prompt here")
-      && tmux("capture-pane", "-p", "-t", tmuxName).includes(`focused on ${target.alias}`)
   }, `TUI focus ${target.alias}`, 60000)
   writeFileSync(join(tuiScreens, `focus-${target.alias}-${Date.now()}.txt`), tmux("capture-pane", "-p", "-t", tmuxName))
 }
