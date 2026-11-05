@@ -433,14 +433,20 @@ async fn import_entry<S: EnvironmentSource>(
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
-            target
+            // A value saved while the pull was pending wins over the imported one.
+            let stored = target
                 .vault
-                .set_secret(
+                .set_secret_if_absent(
                     &project_environment_vault_service(target.project_id),
                     &entry.name,
                     &value,
                 )
-                .map_err(vault_failure)
+                .map_err(vault_failure)?;
+            if stored {
+                Ok(())
+            } else {
+                Err(ImportFailure::Entry("Already in the Vault".into()))
+            }
         }
         EnvironmentEntryKind::Mcp | EnvironmentEntryKind::Skill => {
             let held = if entry.kind == EnvironmentEntryKind::Mcp {
@@ -642,6 +648,8 @@ mod tests {
         pulls: Mutex<Vec<String>>,
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
+        /// A secret pull waits for this, so a test can act while the pull is pending.
+        secret_gate: Option<Arc<tokio::sync::Notify>>,
         slice_bytes: usize,
         /// A pull holds this long, so slices requested ahead overlap.
         pull_delay: Duration,
@@ -684,6 +692,9 @@ mod tests {
             name: &str,
         ) -> Result<Option<Zeroizing<String>>, SourceError> {
             self.pulls.lock().unwrap().push(name.into());
+            if let Some(gate) = &self.secret_gate {
+                gate.notified().await;
+            }
             if self.offline_after_read {
                 return Err(SourceError::Offline);
             }
@@ -743,6 +754,7 @@ mod tests {
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,
+            secret_gate: None,
             slice_bytes: usize::MAX / 2,
             pull_delay: Duration::ZERO,
             in_flight: Default::default(),
@@ -1287,5 +1299,37 @@ mod tests {
         let service = project_environment_vault_service("p");
         assert!(rig.vault.find_secret(&service, "A_KEY").unwrap().is_some());
         assert!(!rig.checkout.join("slow").exists());
+    }
+
+    #[tokio::test]
+    async fn a_secret_saved_while_its_import_is_pending_is_kept() {
+        let rig = Rig::new();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut from = source(Some(record(1, &["LATE"], &[])), &["LATE"], &[]);
+        from.secret_gate = Some(gate.clone());
+        let service = project_environment_vault_service("p");
+        let running = rig.import("seven", &from, None);
+        let saver = async {
+            while from.pulls.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            rig.vault
+                .set_secret(&service, "LATE", "typed-locally")
+                .unwrap();
+            gate.notify_one();
+        };
+        let (view, ()) = tokio::join!(running, saver);
+        assert_eq!(
+            view.entries[0].state,
+            EnvironmentOperationEntryState::Failed
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("Already in the Vault")
+        );
+        assert_eq!(
+            rig.vault.find_secret(&service, "LATE").unwrap().as_deref(),
+            Some("typed-locally")
+        );
     }
 }
