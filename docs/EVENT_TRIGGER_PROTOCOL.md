@@ -356,6 +356,6 @@ catalog, revision and writer checks. Archiving an agent also detaches its App
 subscriptions immediately, including when its App worker is stopped.
 
 
-Source-side listeners (998/437): `WorkflowNotifications.listeners` reports durable subscriptions to enabled sources in the requested producer Room, including workflow and agent targets in other Rooms or kernels. `subscriptions` remains the inventory of bindings whose target is the requested Room on this kernel. Both projections are kernel-owned; clients must not infer source listeners from target bindings.
+Source-side listeners (998/437): `WorkflowNotifications.listeners` reports durable subscriptions to enabled sources in the requested producer Room, including workflow and agent targets in other Rooms or kernels. `subscriptions` remains the inventory of bindings whose target is the requested Room on this kernel. The profile owner can inspect source listeners across Rooms and kernels. Room agents, collaborators and grant-bound callers receive listener details only for targets in their current Room on the current kernel. Both projections are kernel-owned; clients must not infer source listeners from target bindings.
 
 An agent notification keeps its original deadline in kernel-owned durable prompt metadata. Ordinary prompt edits cannot extend it. Recovery restores it, and queue promotion and manual Steer expire undelivered notifications before dispatch. App admission failures defer only that receipt while independent subscribers continue; deferral preserves the original deadline.

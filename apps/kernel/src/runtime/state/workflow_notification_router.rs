@@ -282,12 +282,15 @@ impl KernelRuntimeState {
                         let listeners = subscriptions
                             .iter()
                             .filter(|subscription| {
-                                sources.iter().any(|source| {
-                                    source.enabled
-                                        && source.kernel_id == home
-                                        && source.session_id == request.session_id
-                                        && source.source_id == subscription.source_id
-                                })
+                                (!(shared_access || room_member)
+                                    || (subscription.target_kernel_id == home
+                                        && subscription.session_id == request.session_id))
+                                    && sources.iter().any(|source| {
+                                        source.enabled
+                                            && source.kernel_id == home
+                                            && source.session_id == request.session_id
+                                            && source.source_id == subscription.source_id
+                                    })
                             })
                             .cloned()
                             .collect();
@@ -684,6 +687,42 @@ mod tests {
                 .len(),
             0,
             "the consumer cannot claim another Room's listeners"
+        );
+        let mut source_room = runtime
+            .owned
+            .session_store
+            .get_session(&producer_room)
+            .unwrap();
+        source_room.add_member(
+            "guest",
+            Some("local".into()),
+            crate::session::CollaborationLevel::Full,
+        );
+        runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(source_room);
+        let guest = serde_json::to_value(
+            runtime
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: producer_room.clone(),
+                        },
+                    ),
+                    "guest",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            guest["WorkflowNotifications"]["listeners"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "a source-Room guest must not learn about the owner's other Rooms or kernels"
         );
         cleanup(f);
     }
