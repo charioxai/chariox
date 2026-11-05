@@ -1332,9 +1332,9 @@ mod snapshot_stall_tests {
 #[cfg(all(test, unix))]
 mod stop_tests {
     use super::*;
-    use std::time::{Duration, Instant};
     use crate::runtime::bounded_process::BoundedChildExt as _;
     use std::io::{BufRead, Write};
+    use std::time::{Duration, Instant};
 
     /// A shell that forks `sleep` only after it is told to, so a process table
     /// read before that cannot contain the child.
