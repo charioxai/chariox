@@ -27,6 +27,7 @@ impl From<io::Error> for CaptureError {
 }
 
 pub(crate) fn capture(mut command: Command, timeout: Duration) -> Result<Output, CaptureError> {
+    command.stdin(Stdio::null());
     capture_command_with_limit(&mut command, timeout, OUTPUT_LIMIT)
 }
 
@@ -43,10 +44,9 @@ fn capture_command_with_limit(
     output_limit: usize,
 ) -> Result<Output, CaptureError> {
     let deadline = Instant::now() + timeout;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    // General commands may carry a pinned input file. Provider probes select
+    // null stdin explicitly in capture(), rather than replacing caller input.
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let process = platform::Process::spawn(command)?;
     capture_process(process, deadline, output_limit)
 }
