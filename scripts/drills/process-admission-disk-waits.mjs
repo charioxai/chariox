@@ -48,6 +48,7 @@ open("writer-done", "w").write("DONE")
     rmSync(join(work, "held-space"))
     await until(() => results.every(path => existsSync(path)), "both writers to finish after both volumes recover", 45000)
     check("both writers finish after their own volumes recover", true)
+    assert(resumed, "the recovered later writer remained blocked")
   } finally {
     // Free only this run's filler files before the harness stops its owners.
     for (const root of volumes) rmSync(join(root, "held-space"), {force: true})
