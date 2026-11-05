@@ -796,7 +796,7 @@ impl DurableKernelStateStore {
     ) -> Result<Option<Vec<String>>, DaemonError> {
         let db = self.lock_connection("workflow.notifications.ancestry")?;
         let mut query = db.prepare(
-            "SELECT json_extract(invocation_json,'$.ancestry') FROM app_outbox WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND (queued_prompt_id=?2 OR json_extract(invocation_json,'$.steered_into_prompt_id')=?2)",
+            "SELECT CASE source_kind WHEN 'workflow_completion' THEN json_extract(invocation_json,'$.ancestry') ELSE '[]' END FROM app_outbox WHERE source_kind IN ('workflow_completion','app_event') AND queued_session_id=?1 AND (queued_prompt_id=?2 OR json_extract(invocation_json,'$.steered_into_prompt_id')=?2)",
         ).map_err(sql)?;
         let rows = query
             .query_map(params![session, prompt], |row| {

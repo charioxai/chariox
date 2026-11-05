@@ -758,6 +758,112 @@ async fn notification_lineage_follows_a_steered_prompt() {
     assert_eq!(ancestry.last().unwrap(), &format!("agent:{}", rig.agent_id));
 }
 
+impl Rig {
+    /// An App event notifies the agent; its prompt is queued by the App agent router.
+    async fn app_notification(&self) {
+        use crate::durable_state::app_state::{AppStateOperation, AppStateOutcome};
+        use chariox_app_runtime::app_outbox::{Invocation, Occurrence};
+        let store = &self.runtime.owned.durable_state_store;
+        let catalog = crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+        let mut request = self.request("unused");
+        request.source = AgentTriggerSourceRequest::Notification {
+            source: AgentTriggerNotificationSource::App {
+                installation_id: catalog.installation_id().into(),
+                event_name: "changed".into(),
+            },
+        };
+        let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = self
+            .runtime
+            .create_agent_trigger(request, "local")
+            .await
+            .unwrap()
+        else {
+            panic!()
+        };
+        let now = crate::session::unix_epoch_ms();
+        let occurrence = Occurrence {
+            automation_id: notification_subscription_id(&trigger).unwrap().into(),
+            occurrence_id: chariox_app_runtime::app_outbox::occurrence_id("issue", now).unwrap(),
+            event_version: 1,
+            occurred_at_ms: now,
+            schedule_revision: None,
+            payload: serde_json::json!({"text":"issue"}),
+            invocation: Invocation {
+                prompt: "App hint".into(),
+                artifacts: Vec::new(),
+            },
+        };
+        let AppStateOutcome::Receipt(_) = store
+            .execute_app_state(
+                "local",
+                catalog.clone(),
+                AppStateOperation::Emit(occurrence),
+                crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(|| false),
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        self.runtime
+            .route_app_agent_installation("local", catalog)
+            .await
+            .unwrap();
+    }
+
+    fn lineage_of_the_active_agent(&self) -> Vec<String> {
+        let invocation = self
+            .runtime
+            .owned
+            .inherit_agent_notification_ancestry(Some(&self.agent_id), "entry", None)
+            .unwrap()
+            .expect("the active prompt came from a notification");
+        serde_json::from_value(invocation.input["ancestry"].clone()).unwrap()
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: an App-notified agent is part of the lineage of the workflows it invokes.
+#[tokio::test]
+async fn an_app_notified_agent_cannot_be_notified_back_through_a_workflow_it_invoked() {
+    let rig = rig().await;
+    rig.app_notification().await;
+    let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
+    let state = &rig.runtime.owned.prompt_state_owner;
+    state.complete_active_prompt_only(&room, &rig.agent_id).unwrap();
+    state.activate_next_queued_prompt(&room, &rig.agent_id, None).unwrap();
+    assert_eq!(rig.lineage_of_the_active_agent(), vec![format!("agent:{}", rig.agent_id)]);
+    let workflow = rig.workflow_with_exit("reply");
+    let source = rig.register(&workflow);
+    rig.runtime.create_agent_trigger(rig.request(&source), "local").await.unwrap();
+    let invocation = rig
+        .runtime
+        .owned
+        .inherit_agent_notification_ancestry(Some(&rig.agent_id), "entry", None)
+        .unwrap();
+    rig.complete_with_invocation(&workflow, "cycle", "done", invocation.clone());
+    rig.pass().await;
+    assert!(rig.queued_prompts().is_empty(), "A -> W -> A must be dropped");
+    let mut unrelated = invocation.unwrap();
+    unrelated.input["ancestry"] = serde_json::json!(["agent:someone-else"]);
+    rig.complete_with_invocation(&workflow, "unrelated", "done", Some(unrelated));
+    rig.pass().await;
+    assert_eq!(rig.queued_prompts().len(), 1, "another lineage is still notified");
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: an App notification steered into a running turn joins that turn's lineage.
+#[tokio::test]
+async fn an_app_notification_steered_into_a_turn_keeps_the_agent_in_its_lineage() {
+    let rig = rig().await;
+    rig.app_notification().await;
+    let room = rig.runtime.owned.session_store.get_session(&rig.session_id).unwrap();
+    let (_, queued) = rig.runtime.owned.prompt_state_owner.state_parts(&room, &rig.agent_id);
+    let prompt = queued[0].id().to_owned();
+    rig.runtime
+        .owned
+        .steer_queued_prompt(&rig.session_id, &rig.agent_id, &rig.attachment_id, &prompt)
+        .unwrap();
+    assert_eq!(rig.lineage_of_the_active_agent(), vec![format!("agent:{}", rig.agent_id)]);
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: the picker cannot expose another Room's Apps to a guest.
 #[tokio::test]
 async fn room_app_source_listing_is_member_scoped() {

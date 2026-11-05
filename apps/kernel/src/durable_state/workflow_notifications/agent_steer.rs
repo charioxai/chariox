@@ -30,8 +30,8 @@ pub(super) fn bind_in(
     target: &str,
 ) -> rusqlite::Result<()> {
     tx.execute(
-        "UPDATE app_outbox SET invocation_json=json_set(invocation_json,'$.steered_into_prompt_id',?3)
-         WHERE source_kind='workflow_completion' AND queued_session_id=?1 AND queued_prompt_id=?2",
+        "UPDATE app_outbox SET invocation_json=json_set(coalesce(invocation_json,'{}'),'$.steered_into_prompt_id',?3)
+         WHERE source_kind IN ('workflow_completion','app_event') AND queued_session_id=?1 AND queued_prompt_id=?2",
         params![session, notification_prompt, target],
     )?;
     Ok(())
