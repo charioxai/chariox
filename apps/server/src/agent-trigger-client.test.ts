@@ -132,3 +132,29 @@ test("#1263 P2 workspace pictures use the session defaults for absent agent over
     assert.deepEqual(read && [read.workspace_id, read.worktree_id, read.path], [overrides.workspace_id ?? "/work/default", overrides.worktree_id ?? "/work/default-wt", "charts/cost.png"])
   }
 })
+
+test("#1263 P2 workspace image reads share redraws, invalidate on completion and discard late old blobs", async t => {
+  const { AgentTriggerImages } = await import("@chariox/agent-trigger-gateway/images")
+  const revoked: string[] = []
+  t.mock.method(URL, "revokeObjectURL", (src: string) => { revoked.push(src) })
+  type Image = Awaited<ReturnType<InstanceType<typeof AgentTriggerImages>["load"]>>
+  const pending: Array<(image: Image) => void> = []
+  const images = new AgentTriggerImages(() => new Promise(resolve => { pending.push(resolve) }))
+  const element = {} as HTMLElement
+  const first = images.load(element, "cost.png")
+  assert.ok(first === images.load(element, "cost.png"), "concurrent redraws share the read")
+  const turn = { id: "turn", agentId: "agent", startedAtMs: 1, lastEntryAtMs: 1, kernelObservedActive: true, expanded: false }
+  images.refresh([turn])
+  assert.ok(first === images.load(element, "cost.png"), "an open turn does not cause another read")
+  images.refresh([{ ...turn, completedAtMs: 2, kernelSettled: true }])
+  const second = images.load(element, "cost.png")
+  assert.ok(second !== first, "completion starts a new read")
+  pending[0]!({ kind: "loaded", src: "blob:old", sizeBytes: 10 })
+  assert.equal((await first).kind, "unavailable")
+  pending[1]!({ kind: "loaded", src: "blob:new", sizeBytes: 20 })
+  assert.equal((await second).kind, "loaded")
+  images.refresh([{ ...turn, completedAtMs: 2, kernelSettled: true }])
+  assert.ok(second === images.load(element, "cost.png"), "the unchanged completion reuses its blob")
+  images.clear()
+  assert.deepEqual(revoked, ["blob:old", "blob:new"])
+})

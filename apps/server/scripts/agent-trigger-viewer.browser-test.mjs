@@ -62,3 +62,18 @@ test("a protocol-shaped session loads a workspace PNG through the served convers
   assert.equal(f.reads, 1)
 }, "workspace-image"))
 
+
+test("redraws share a picture, and a second completed reply reloads its changed bytes and releases the old blob", () => withViewer(async (f, page) => {
+  await page.waitForFunction(() => document.querySelector('[data-md-image="workspace"] img')?.naturalWidth === 2)
+  const original = await page.locator('[data-md-image="workspace"] img').getAttribute("src")
+  f.refresh()
+  await page.waitForTimeout(200)
+  assert.equal(f.reads, 1, "an unchanged snapshot reuses the picture")
+  f.revise()
+  await page.waitForFunction(() => {
+    const images = [...document.querySelectorAll('[data-md-image="workspace"] img')]
+    return images.length === 2 && images.every(image => image.complete && image.naturalWidth === 1)
+  }, null, { timeout: 5_000 })
+  assert.equal(f.reads, 2, "both replies share one fresh read")
+  assert.deepEqual(await page.evaluate(() => window.revokedImages), [original])
+}, "revised-image"))
