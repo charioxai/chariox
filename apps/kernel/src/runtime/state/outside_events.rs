@@ -57,7 +57,7 @@ impl KernelRuntimeState {
                 ));
             }
             let session = self.owned.session_store.get_session(&target.session_id).map_err(|_| crate::durable_state::agent_lifecycle::outside::refused("event target session was not found; use ListSessions to choose a session ID"))?;
-            if !owner.is_some_and(|owner| session.has_member(owner)) {
+            if !owner.is_some_and(|owner| self.is_room_member(&session, owner)) {
                 return Err(crate::durable_state::agent_lifecycle::outside::refused(
                     "event target session is not owned by this user",
                 ));

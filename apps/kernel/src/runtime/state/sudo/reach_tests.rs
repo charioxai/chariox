@@ -150,6 +150,41 @@ async fn ordinary_reach_reads_pre_enrollment_rooms_as_their_member() {
             .owner_user_id(),
         "local"
     );
+    let subscribed = f
+        .router
+        .dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "events_subscribe",
+            json!({"kernel": "local", "session_id": legacy.id(), "agent_id": agent.id()}),
+        )
+        .await
+        .unwrap();
+    assert!(subscribed.ok, "{subscribed:?}");
+    f.state.start_active_turn_with_trace_id(
+        legacy.id(),
+        agent.id(),
+        "legacy-prompt",
+        "legacy-run",
+        "legacy-trace",
+    );
+    let waited = f
+        .router
+        .dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "events_wait",
+            json!({"timeout_seconds": 1}),
+        )
+        .await
+        .unwrap();
+    assert!(waited.ok, "{waited:?}");
+    assert!(
+        waited.payload["EventsListed"]["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["agent_id"] == agent.id()),
+        "{waited:?}"
+    );
     // Membership/view mapping must not replace the authenticated identity or widen authority.
     assert_eq!(
         f.state
@@ -187,4 +222,15 @@ async fn ordinary_reach_reads_pre_enrollment_rooms_as_their_member() {
         !result.ok,
         "the owner's mapping does not admit another user's room"
     );
+    let refused = f
+        .router
+        .dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "events_subscribe",
+            json!({"kernel": "local", "session_id": other.id()}),
+        )
+        .await
+        .unwrap();
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.payload["code"], "events_refused");
 }

@@ -238,7 +238,7 @@ async function main() {
     const before = (await turnOf()).id
     let submitted
     if (home.legacy && photoCommand) {
-      writeFileSync(join(evidence, "legacy-ui.json"), JSON.stringify({origin, relay: home.status.relay_url, kernelId: home.status.daemon_id, sessionId: room.session.id, agentId: agent, prompt: text}))
+      writeFileSync(join(evidence, "legacy-ui.json"), JSON.stringify({origin, relay: home.status.relay_url, kernelId: home.status.daemon_id, sessionId: room.session.id, agentId: agent, legacyId: home.legacy.session.id, prompt: text}))
       assert(photograph("legacy-submit"), "the web prompt must be submitted before waiting for a turn")
       submitted = Promise.resolve()
     } else submitted = home.rpc(submitPromptRequest(room.session.id, attached, agent, text, []))
@@ -277,16 +277,38 @@ async function main() {
     const legacyId = home.legacy.session.id, legacyAgent = legacyState.agents.find(agent => agent.owner_user_id === "local")?.id
     assert.ok(legacyAgent, "the reopened room has its local member's agent")
     note("legacy-room-reopened", {room: legacyId, agent: legacyAgent, owner: legacyState.owner_user_id})
-    const rows = await turn([
-      "This is a regression drill. Use only chariox-reach MCP tools. No sudo. Call each request exactly once, including if an earlier call fails.",
-      `1. request with ${request({GetSessionState: {session_id: legacyId}})}.`,
-      `2. request with ${request({ListAgents: {session_id: legacyId}})}.`,
-      "Finish with LEGACY_DONE and the results. Do not use other tools or attempt a workaround.",
-    ].join("\n"), "LEGACY_DONE")
+    let ending = false, ended = false
+    // The owner archives the followed room through the web after the agent has subscribed.
+    const archive = setInterval(async () => {
+      if (ending || ended) return
+      ending = true
+      try {
+        const subscribed = (await turnOf()).rows.some(row => row.answer?.includes("EventSubscription") && row.answer.includes(legacyId))
+        if (subscribed) {
+          if (photoCommand) assert(photograph("legacy-end"), "the owner archives the followed room")
+          else await home.ownerRpc({EndSession: {session_id: legacyId}})
+          ended = true
+        }
+      } catch (error) { note("legacy-end-error", {message: String(error.message).slice(0, 200)}) }
+      finally { ending = false }
+    }, 1000)
+    let rows
+    try {
+      rows = await turn([
+        "This is a regression drill. Use only chariox-reach MCP tools. No sudo. Call each tool exactly once, even if an earlier call fails.",
+        `1. request with ${request({GetSessionState: {session_id: legacyId}})}.`,
+        `2. request with ${request({ListAgents: {session_id: legacyId}})}.`,
+        `3. events_subscribe with ${JSON.stringify({kernel: "local", session_id: legacyId})}.`,
+        '4. events_wait with {"timeout_seconds": 30}. The owner will archive the followed room; report its event.',
+        "Finish with LEGACY_DONE and the results. Do not use other tools or attempt a workaround.",
+      ].join("\n"), "LEGACY_DONE", 240000)
+    } finally { clearInterval(archive) }
     saveToolLog()
     const answers = rows.filter(row => row.answer).map(row => row.answer)
     check("the enrolled owner's reach reads the pre-enrollment room", answers.some(answer => answer.includes("SessionState") && answer.includes(legacyAgent)))
     check("the enrolled owner's reach lists its local-owned agent", answers.some(answer => answer.includes("AgentsListed") && answer.includes(legacyAgent)))
+    check("the enrolled owner's reach follows its pre-enrollment room", answers.some(answer => answer.includes("EventSubscription") && answer.includes(legacyId)))
+    check("the enrolled owner's reach receives the archived room event", ended && answers.some(answer => answer.includes("EventsListed") && answer.includes(legacyId) && /ended/i.test(answer)))
     photograph("legacy-done")
     return
   }
