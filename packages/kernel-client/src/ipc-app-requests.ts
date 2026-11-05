@@ -96,8 +96,8 @@ export function controlAppWorkerRequest(installationId: string, action: "start" 
   return { ControlAppWorker: { installation_id: installationId, action } }
 }
 
-export function listAppAutomationsRequest(installationId: string) {
-  return { ListAppAutomations: { installation_id: installationId } }
+export function listAppAutomationsRequest(installationId: string, sessionId?: string) {
+  return { ListAppAutomations: { installation_id: installationId, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
 /** Expected revision zero creates the automation; replacements name the current revision. */
@@ -113,8 +113,8 @@ export function configureAppAutomationRequest(options: {
   } }
 }
 
-export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number) {
-  return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision } }
+export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number, sessionId?: string) {
+  return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
 /** An event generator connection an inbox route subscribes to (protocol 358). */

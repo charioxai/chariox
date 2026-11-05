@@ -311,6 +311,14 @@ pub struct AppWorkerSummary {
     pub updated_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListAppAutomationsRequest {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
 /// Protocol 345: App automations route one App event to one workflow endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -329,6 +337,8 @@ pub struct ConfigureAppAutomationRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisableAppAutomationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub installation_id: String,
     pub automation_id: String,
     pub expected_revision: u64,

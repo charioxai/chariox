@@ -273,12 +273,12 @@ pub use api::{
     ControlAppWorkerRequest, CreateAppInboxRouteRequest, DeploymentAppsConsent,
     DeploymentAppsConsentStatus, DisableAppAutomationRequest, GetAppLogsRequest, GetAppSetRequest,
     GrantAppConnectionRequest, GrantAppFileRequest, InspectAppViewRequest,
-    ListAppInstallationsRequest, ListUserAppViewsRequest, OpenAppViewRequest,
-    OpenUserAppViewRequest, PrepareDeploymentAppsRequest, PreviewDeploymentAppsRequest,
-    RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest, RevokeAppFileGrantsRequest,
-    SaveAppFileExportRequest, SetAppViewPanelRequest, SubscribeUserAppViewsRequest,
-    TestAppInboxRouteRequest, UninstallAppRequest, UserAppView, UserAppViewBrowser,
-    UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
+    ListAppAutomationsRequest, ListAppInstallationsRequest, ListUserAppViewsRequest,
+    OpenAppViewRequest, OpenUserAppViewRequest, PrepareDeploymentAppsRequest,
+    PreviewDeploymentAppsRequest, RestoreAppDataSnapshotRequest, RevokeAppConnectionRequest,
+    RevokeAppFileGrantsRequest, SaveAppFileExportRequest, SetAppViewPanelRequest,
+    SubscribeUserAppViewsRequest, TestAppInboxRouteRequest, UninstallAppRequest, UserAppView,
+    UserAppViewBrowser, UserAppViewHost, UserAppViewRequest, APP_SET_SCHEMA,
 };
 pub use api::{
     AppDevPushFailureCode, AppDevPushRequest, AppInstallOperationPhase, AppInstallOperationRequest,

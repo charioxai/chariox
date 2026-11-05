@@ -169,6 +169,34 @@ impl KernelRuntimeState {
             Ok(owner) => owner,
             Err(code) => return Some(failed(code)),
         };
+        let scoped_room = match request {
+            LocalDaemonRequest::ListAppAutomations(request) => request.session_id.as_deref(),
+            LocalDaemonRequest::DisableAppAutomation(request) => request.session_id.as_deref(),
+            _ => None,
+        };
+        if let Some(room_id) = scoped_room {
+            let Ok(room) = self.owned.session_store.get_session(room_id) else {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            };
+            if !room.has_member(&caller)
+                || room.status() == crate::session::SessionStatus::Ended
+                || ((caller != room.owner_user_id() || self.room_provider_origin.is_some())
+                    && !self.room_notification_apps(room_id).contains(installation))
+            {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            return Some(
+                self.scoped_app_automation_response(
+                    &caller,
+                    room.owner_user_id(),
+                    room_id,
+                    installation,
+                    request,
+                )
+                .await
+                .unwrap_or_else(failed),
+            );
+        }
         let owner = if let LocalDaemonRequest::ConfigureAppAutomation(configure) = request {
             let Ok(room) = self.owned.session_store.get_session(&configure.session_id) else {
                 return Some(failed(AppRequestErrorCode::NotFound));
@@ -677,7 +705,7 @@ fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
 
-fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
+pub(super) fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
     AppAutomationSummary {
         target_kind: match value.target.kind {
             chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow => {

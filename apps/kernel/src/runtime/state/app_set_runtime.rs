@@ -83,8 +83,13 @@ impl KernelRuntimeState {
             let installation = || AppWorkerRequest {
                 installation_id: installation_id.clone(),
             };
-            let LocalDaemonResponse::AppAutomations { automations, .. } =
-                read(LocalDaemonRequest::ListAppAutomations(installation())).await?
+            let LocalDaemonResponse::AppAutomations { automations, .. } = read(
+                LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+                    installation_id: installation_id.clone(),
+                    session_id: None,
+                }),
+            )
+            .await?
             else {
                 return Err(AppRequestErrorCode::StorageUnavailable);
             };

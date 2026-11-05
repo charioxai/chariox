@@ -821,3 +821,105 @@ async fn room_app_source_listing_is_member_scoped() {
         })
     ));
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a Room context grants no control of another member's App binding.
+#[tokio::test]
+async fn guest_app_automation_listing_and_removal_keep_target_ownership() {
+    let rig = rig().await;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
+        &rig.runtime.owned.durable_state_store,
+        "local",
+    );
+    rig.runtime
+        .owned
+        .agent_store
+        .grant_extension(
+            &rig.agent_id,
+            crate::extension::ExtensionGrant::app(catalog.installation_id()),
+        )
+        .unwrap();
+    let mut room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    room.add_member(
+        "guest",
+        Some("local".into()),
+        crate::session::CollaborationLevel::Full,
+    );
+    rig.runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(room);
+    let mut create = rig.request("unused");
+    create.source = AgentTriggerSourceRequest::Notification {
+        source: AgentTriggerNotificationSource::App {
+            installation_id: catalog.installation_id().into(),
+            event_name: "changed".into(),
+        },
+    };
+    rig.runtime
+        .create_agent_trigger(create, "local")
+        .await
+        .unwrap();
+    let list = LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+        installation_id: catalog.installation_id().into(),
+        session_id: Some(rig.session_id.clone()),
+    });
+    let mut command = crate::runtime::command::KernelCommand::from_local_request(
+        "scoped-app-bindings",
+        None,
+        None,
+        &list,
+    );
+    command.caller.user_id = Some("guest".into());
+    let Some(LocalDaemonResponse::AppAutomations { automations, .. }) = rig
+        .runtime
+        .execute_app_control_request(&command, &list)
+        .await
+    else {
+        panic!("expected a scoped list")
+    };
+    assert!(automations.is_empty());
+    command.caller.user_id = Some("local".into());
+    let Some(LocalDaemonResponse::AppAutomations { automations, .. }) = rig
+        .runtime
+        .execute_app_control_request(&command, &list)
+        .await
+    else {
+        panic!("expected owner's binding")
+    };
+    assert_eq!(automations.len(), 1);
+    let row = &automations[0];
+    let disable =
+        LocalDaemonRequest::DisableAppAutomation(crate::local::DisableAppAutomationRequest {
+            session_id: Some(rig.session_id.clone()),
+            installation_id: catalog.installation_id().into(),
+            automation_id: row.automation_id.clone(),
+            expected_revision: row.revision,
+        });
+    command.caller.user_id = Some("guest".into());
+    assert!(matches!(
+        rig.runtime
+            .execute_app_control_request(&command, &disable)
+            .await,
+        Some(LocalDaemonResponse::AppRequestFailed {
+            code: crate::local::AppRequestErrorCode::Unauthorized
+        })
+    ));
+    command.caller.user_id = Some("local".into());
+    let Some(LocalDaemonResponse::AppAutomation { automation, .. }) = rig
+        .runtime
+        .execute_app_control_request(&command, &disable)
+        .await
+    else {
+        panic!("owner can disable their binding")
+    };
+    assert_eq!(
+        automation.status,
+        crate::local::AppAutomationStatus::Disabled
+    );
+}

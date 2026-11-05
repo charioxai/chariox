@@ -375,6 +375,7 @@ fn a_release_after_its_last_app_is_removed_records_an_empty_plan() {
     harness
         .dispatch(LocalDaemonRequest::DisableAppAutomation(
             crate::local::DisableAppAutomationRequest {
+                session_id: None,
                 installation_id: "installed".into(),
                 automation_id: "reminders".into(),
                 expected_revision: 1,

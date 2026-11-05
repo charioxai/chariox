@@ -772,6 +772,7 @@ impl KernelRuntimeState {
                 owner,
                 &copy.installation_id,
                 LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+                    session_id: None,
                     installation_id: copy.installation_id.clone(),
                     automation_id: current.automation_id.clone(),
                     expected_revision: current.revision,

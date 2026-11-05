@@ -190,7 +190,8 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             installation_id: "todo".into(),
             action: AppWorkerAction::Restart,
         }),
-        LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
+        LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+            session_id: None,
             installation_id: "todo".into(),
         }),
         LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
@@ -204,6 +205,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             scheduled: true,
         }),
         LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+            session_id: None,
             installation_id: "todo".into(),
             automation_id: "reminders".into(),
             expected_revision: 1,

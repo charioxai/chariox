@@ -357,7 +357,8 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         failed(AppRequestErrorCode::NotFound)
     );
     // Automations are durable configuration: no running worker is needed.
-    let list = LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
+    let list = LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+        session_id: None,
         installation_id: "installed".into(),
     });
     assert_eq!(
@@ -374,6 +375,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
     // Errors keep their meaning instead of collapsing into Conflict.
     let disable = |expected_revision| {
         LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+            session_id: None,
             installation_id: "installed".into(),
             automation_id: "missing".into(),
             expected_revision,

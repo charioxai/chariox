@@ -22,6 +22,21 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::ListAppInstallations(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::ListAppAutomations(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::DisableAppAutomation(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::ConfigureAppAutomation(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::StopSessionProcesses(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
@@ -697,14 +712,10 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::PutAppPackageUploadChunk(_)
         | LocalDaemonRequest::GetAppPackageUpload(_)
         | LocalDaemonRequest::AbortAppPackageUpload(_)
-        | LocalDaemonRequest::ListAppInstallations(_)
         | LocalDaemonRequest::GetAppInstallation(_)
         | LocalDaemonRequest::GetAppInstallationJournal(_)
         | LocalDaemonRequest::GetAppWorker(_)
         | LocalDaemonRequest::ControlAppWorker(_)
-        | LocalDaemonRequest::ListAppAutomations(_)
-        | LocalDaemonRequest::ConfigureAppAutomation(_)
-        | LocalDaemonRequest::DisableAppAutomation(_)
         | LocalDaemonRequest::UninstallApp(_)
         | LocalDaemonRequest::GetAppLogs(_)
         | LocalDaemonRequest::CreateAppInboxRoute(_)

@@ -111,6 +111,107 @@ impl KernelRuntimeState {
         })
     }
 
+    pub(super) async fn scoped_app_automation_response(
+        &self,
+        caller: &str,
+        owner: &str,
+        room_id: &str,
+        installation: &str,
+        request: &crate::local::LocalDaemonRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, crate::local::AppRequestErrorCode> {
+        use crate::local::{
+            AppRequestErrorCode as Code, LocalDaemonRequest as Request,
+            LocalDaemonResponse as Response,
+        };
+        let catalog = self.app_catalog(owner, installation).await?;
+        let (caller, owner, room_id, installation, request) = (
+            caller.to_owned(),
+            owner.to_owned(),
+            room_id.to_owned(),
+            installation.to_owned(),
+            request.clone(),
+        );
+        let owned = self.owned.clone();
+        let actor = self
+            .room_provider_origin
+            .as_ref()
+            .map(|(agent, _)| agent.clone());
+        let permit = self.app_control().try_admit()?;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let sessions = owned.session_store.read();
+            let room = sessions
+                .get_session(&room_id)
+                .map_err(|_| Code::Unauthorized)?;
+            if !room.has_member(&caller) || room.status() == crate::session::SessionStatus::Ended {
+                return Err(Code::Unauthorized);
+            }
+            if let Some(agent) = actor.as_deref() {
+                if !owned
+                    .agent_store
+                    .get_agent(agent)
+                    .is_ok_and(|agent| agent.session_id() == room_id)
+                {
+                    return Err(Code::Unauthorized);
+                }
+            }
+            let configs = owned
+                .list_app_automations(&owner, catalog.clone(), budget())
+                .map_err(|_| Code::StorageUnavailable)?;
+            let allowed = |config: &chariox_app_runtime::app_outbox::AutomationConfiguration| {
+                if config.target.session_id != room_id {
+                    return false;
+                }
+                if config.target.kind == AutomationTargetKind::Agent {
+                    return room.agent_triggers().iter().any(|trigger| {
+                        trigger.id() == config.target.publication_id
+                            && trigger.created_by_user_id() == Some(caller.as_str())
+                            && actor.as_deref().is_none_or(|id| id == trigger.agent_id())
+                    });
+                }
+                sessions
+                    .resolve_workflow_publication_ref(&room_id, &config.target.publication_id)
+                    .is_ok_and(|publication| {
+                        caller == owner || publication.created_by_user_id() == caller
+                    })
+            };
+            match request {
+                Request::ListAppAutomations(_) => Ok(Response::AppAutomations {
+                    installation_id: installation,
+                    automations: configs
+                        .iter()
+                        .filter(|config| allowed(config))
+                        .map(super::app_control_requests::summary)
+                        .collect(),
+                }),
+                Request::DisableAppAutomation(request) => {
+                    if !configs.iter().any(|config| {
+                        config.automation_id == request.automation_id && allowed(config)
+                    }) {
+                        return Err(Code::Unauthorized);
+                    }
+                    let disabled = owned
+                        .deactivate_app_automation(
+                            &owner,
+                            catalog,
+                            request.automation_id,
+                            request.expected_revision,
+                            AutomationStatus::Disabled,
+                            budget(),
+                        )
+                        .map_err(|_| Code::Conflict)?;
+                    Ok(Response::AppAutomation {
+                        installation_id: installation,
+                        automation: super::app_control_requests::summary(&disabled),
+                    })
+                }
+                _ => Err(Code::InvalidRequest),
+            }
+        })
+        .await
+        .map_err(|_| Code::StorageUnavailable)?
+    }
+
     pub(super) async fn resolve_app_notification_source(
         &self,
         owner: &str,
