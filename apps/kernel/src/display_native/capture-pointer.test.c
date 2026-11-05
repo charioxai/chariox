@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-11 (review #893 P2): actual private X server. A top-level window over
  * part of the owned window (a Chromium bubble/popup outside the capture)
  * must not receive native pointer input: the click/wheel is refused. */

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: the owned-surface fence on a real X server. A steady readback sends only the
  * image read; every change the binding depends on (PID, state, insets, size, mapping of the window or
  * an ancestor, destruction) is reported by the server and refuses the next readback. */

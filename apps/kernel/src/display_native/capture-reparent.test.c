@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* MP-08/MP-10/MP-11: real X reparenting, PID admission and visible root pixels.
  * Supplementary native regression; hosted/public-site acceptance is separate. */
 #include <assert.h>
