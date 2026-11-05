@@ -672,8 +672,7 @@ async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
     else {
         panic!()
     };
-    let payload =
-        serde_json::json!({"source_id":source,"occurrence_id":"receipt-retry","output":"released"});
+    let payload = serde_json::json!({"source_id":source,"occurrence_id":"receipt-retry","output":"released","deadline_ms":crate::session::unix_epoch_ms()+crate::local::NOTIFICATION_RETENTION_MS});
     let first = rig
         .runtime
         .queue_agent_notification_input(&rig.session_id, trigger.id(), payload.clone())

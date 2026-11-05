@@ -78,7 +78,7 @@ fn external_response_preserves_workflow_notification_metadata() {
         serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
         serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
         serde_json::json!({"WorkflowNotifications":{
-            "sources":[], "subscriptions":[subscription],
+            "sources":[], "subscriptions":[subscription], "listeners":[subscription],
             "diagnostics":[{"source_id":"source", "occurrence_id":"occurrence", "code":"expired"}]
         }}),
     ] {
@@ -425,7 +425,7 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
         serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
         serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
         serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
-        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"diagnostics":[]}}),
+        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"listeners":[],"diagnostics":[]}}),
         serde_json::json!({"KernelSudoExtended":{"turn":turn}}),
     ];
     for reply in replies {
