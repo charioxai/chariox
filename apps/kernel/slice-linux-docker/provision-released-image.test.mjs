@@ -152,3 +152,16 @@ test("a default start without a shipped image refuses instead of building", () =
   assert.ok(!(await dockerCalls(root)).includes("BUILD"))
   assert.match(result.stderr, /prebuilt runtime image is missing/)
 }))
+
+test("the kernel build-image action has no source-build fallback", () => withRoot(async root => {
+  const result = run(root, await install(root, {withImage: false}))
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /prebuilt runtime image is missing/)
+  assert.ok(!(await dockerCalls(root)).includes("BUILD"))
+}))
+
+test("only the explicit release-builder action can construct image layers", () => withRoot(async root => {
+  const result = run(root, await install(root, {withImage: false}), {action: "build-source-image"})
+  assert.notEqual(result.status, 0)
+  assert.ok((await dockerCalls(root)).includes("BUILD"))
+}))

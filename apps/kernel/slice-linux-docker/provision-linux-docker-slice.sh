@@ -99,6 +99,7 @@ SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_EXPLICIT_SOURCE_BUILD=0
 SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
 SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
@@ -910,7 +911,7 @@ build_image() {
     || fail "could not fingerprint the kernel and relay runtime source"
   if released_image_directory >/dev/null; then
     load_released_image "$SLICE_BASE_IMAGE"
-  elif [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" ]]; then
+  elif [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" && "$SLICE_EXPLICIT_SOURCE_BUILD" != 1 ]]; then
     fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
   fi
   case "$SLICE_BUILD_IMAGE" in
@@ -1939,9 +1940,13 @@ main() {
     -h|--help|help)
       usage
       ;;
-    build-image)
+    build-source-image)
       require_docker
       SLICE_EXPLICIT_SOURCE_BUILD=1
+      build_image
+      ;;
+    build-image)
+      require_docker
       build_image
       ;;
     provision)
