@@ -15,10 +15,21 @@ pub struct UserKernelAccessConfig {
     pub grant_max_minutes: u32,
     pub grant_extend_notice_minutes: u32,
     pub request_timeout_minutes: u32,
-    /// Development standing grants, edited by hand in the config file only (see
-    /// `standing_holders`). Kept raw so one malformed entry never stops the kernel booting.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub standing_holders: Vec<serde_json::Value>,
+    /// Accepts the hand-edited `standing_holders` list so the file loads. The list never lives
+    /// in memory or in a client response: `read_standing_holders` reads it from the file and
+    /// `persist_user_config` carries it through every other config write.
+    #[serde(skip_serializing)]
+    standing_holders: FileOwnedList,
+}
+
+/// Placeholder for a config key that the file owns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct FileOwnedList;
+
+impl<'de> Deserialize<'de> for FileOwnedList {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| Self)
+    }
 }
 
 /// A holder that an owner pre-approved for `until-exit` access: the agent harness and the
@@ -33,17 +44,7 @@ pub struct StandingHolder {
 /// Reads `[[kernel_access.standing_holders]]` from the user config file on every call, so adding
 /// or removing an entry needs no restart. An unreadable file or a malformed entry grants nothing.
 pub(crate) fn read_standing_holders(path: &Path) -> Vec<StandingHolder> {
-    let Ok(payload) = super::read_user_config(&path.to_path_buf()) else {
-        return Vec::new();
-    };
-    let entries = match toml::from_str::<toml::Table>(&payload) {
-        Ok(table) => table
-            .get("kernel_access")
-            .and_then(|section| section.get("standing_holders"))
-            .and_then(|entries| entries.as_array().cloned())
-            .unwrap_or_default(),
-        Err(_) => return Vec::new(),
-    };
+    let entries = standing_holder_entries(path);
     let total = entries.len();
     let holders: Vec<StandingHolder> = entries
         .into_iter()
@@ -59,6 +60,23 @@ pub(crate) fn read_standing_holders(path: &Path) -> Vec<StandingHolder> {
     holders
 }
 
+/// The raw `[[kernel_access.standing_holders]]` entries of the file, empty when it is missing or
+/// does not parse.
+pub(super) fn standing_holder_entries(path: &Path) -> Vec<toml::Value> {
+    let Ok(payload) = super::read_user_config(&path.to_path_buf()) else {
+        return Vec::new();
+    };
+    toml::from_str::<toml::Table>(&payload)
+        .ok()
+        .and_then(
+            |table| match table.get("kernel_access")?.get("standing_holders")? {
+                toml::Value::Array(entries) => Some(entries.clone()),
+                _ => None,
+            },
+        )
+        .unwrap_or_default()
+}
+
 impl Default for UserKernelAccessConfig {
     fn default() -> Self {
         Self {
@@ -66,7 +84,7 @@ impl Default for UserKernelAccessConfig {
             grant_max_minutes: GRANT_MAX_MINUTES,
             grant_extend_notice_minutes: 5,
             request_timeout_minutes: 10,
-            standing_holders: Vec::new(),
+            standing_holders: FileOwnedList,
         }
     }
 }
