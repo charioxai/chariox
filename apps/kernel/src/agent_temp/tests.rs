@@ -3,6 +3,26 @@ use std::fs;
 
 const HOUR: Duration = Duration::from_secs(3600);
 
+#[cfg(target_os = "linux")]
+#[test]
+fn a_bound_unix_socket_survives_a_sweep_and_accepts_new_connections() {
+    use std::os::unix::net::{UnixListener, UnixStream};
+    let scratch = Scratch::new("socket");
+    let folder = agent_folder(&scratch);
+    let socket = folder.join("live.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::write(folder.join("stale.txt"), b"disposable").unwrap();
+    let held = held_paths().expect("Linux can inspect held paths");
+    trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
+    assert!(!folder.join("stale.txt").exists());
+    let connection = UnixStream::connect(&socket);
+    assert!(
+        connection.is_ok(),
+        "the sweep unlinked a live Unix socket: {connection:?}"
+    );
+    listener.accept().unwrap();
+}
+
 struct Scratch(PathBuf);
 impl Scratch {
     fn new(name: &str) -> Self {
@@ -61,8 +81,8 @@ fn stale_items_go_and_fresh_ones_stay() {
     assert_eq!(trimmed.items, 2);
     assert!(trimmed.bytes >= 4096);
     assert!(
-        !folder.exists(),
-        "an agent folder left empty goes with its last item"
+        folder.is_dir(),
+        "an empty TMPDIR remains available until the Room ends"
     );
     // Now: nothing is older than the window.
     let folder = agent_folder(&scratch);

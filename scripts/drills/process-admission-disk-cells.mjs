@@ -47,6 +47,50 @@ export async function runDiskCells(ctx) {
     }
   }
 
+  if (scenario === "trim-live") {
+    // Odd agents first use an inherited empty TMPDIR after a sweep; even
+    // agents keep a real listener open while stale siblings are removed.
+    writeFileSync(join(work, "trim-live.py"), `import os, pathlib, socket, sys, tempfile, time
+n = int(sys.argv[1])
+root = pathlib.Path(os.environ["TMPDIR"])
+answer = pathlib.Path.cwd() / ("answer-trim-live-b%d.txt" % n)
+try:
+    listener = None
+    if n % 2 == 0:
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(str(root / "live.sock"))
+        listener.listen(1)
+        listener.settimeout(5)
+    stale = root / "stale.txt"
+    stale.write_text("disposable")
+    deadline = time.monotonic() + 180
+    while stale.exists() and time.monotonic() < deadline:
+        time.sleep(1)
+    assert not stale.exists(), "the sweep did not run"
+    if listener:
+        client = socket.socket(socket.AF_UNIX)
+        client.connect(str(root / "live.sock"))
+        connection, _ = listener.accept()
+        connection.close()
+        client.close()
+        listener.close()
+    else:
+        fd, path = tempfile.mkstemp(dir=root)
+        os.close(fd)
+        os.unlink(path)
+    answer.write_text("PASS DONE")
+except Exception as error:
+    answer.write_text("FAIL %s DONE" % error)
+`)
+    await say("Run exactly python3 trim-live.py {N} in the current directory. Report its result without changing the script or retrying it.", "trim-live")
+    await waitAnswers("trim-live", 240)
+    for (const [i] of agents.entries()) {
+      const result = readFileSync(answer("trim-live", i + 1), "utf8")
+      check(`${providerOf(i + 1)} ${i + 1}: ${i % 2 ? "bound socket accepts after sweep" : "inherited TMPDIR accepts its first later use"}`, result === "PASS DONE", { result })
+    }
+    assert(checks.every(c => c.ok), "the live scratch regression failed")
+  }
+
   if (scenario === "trim") {
     // OF-39: stale scratch goes; an open file, a busy folder and a freshly written item stay; the ended Room clears.
     const prompt = `Run exactly this one shell command and nothing else: sh -c 'W=$PWD; cd "$TMPDIR" && echo old > stale.txt && mkdir -p busy && (cd busy && setsid nohup sleep 3000 > /dev/null 2>&1 &) ; (setsid nohup python3 -c "import time; f=open(\\"open.txt\\",\\"w\\"); f.write(\\"x\\"); f.flush(); time.sleep(3000)" > /dev/null 2>&1 &) ; echo DONE > $W/answer-trim-b{N}.txt'`

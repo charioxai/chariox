@@ -4,6 +4,34 @@ use crate::runtime::process_resources::{ProcessSample, SessionProcessState};
 const MIB: u64 = 1024 * 1024;
 const GIB: u64 = 1024 * MIB;
 
+#[tokio::test]
+async fn a_live_agent_can_first_use_its_temp_root_after_a_sweep() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let state = crate::test_support::allocation::runtime_with_rooms(1);
+    let room = state.owned.session_store.list_all_sessions().pop().unwrap();
+    let agent = state
+        .owned
+        .agent_store
+        .get_session_agents(room.id())
+        .pop()
+        .unwrap();
+    let environment = crate::agent_temp::environment(room.id(), agent.id());
+    let path = PathBuf::from(&environment[0].1);
+    std::fs::write(path.join("stale"), b"disposable").unwrap();
+    KernelRuntimeState::trim_temp(Duration::ZERO);
+    assert!(
+        !path.join("stale").exists(),
+        "live agents' idle contents are trimmed"
+    );
+    let first = std::fs::File::create(path.join("first-later-use"));
+    assert!(
+        first.is_ok(),
+        "a live agent's inherited TMPDIR was removed: {first:?}"
+    );
+}
+
 fn row(pid: u32, command: &str, written: u64, deleted_open: u64, outlived: bool) -> SessionProcess {
     SessionProcess {
         owner: SessionProcessOwner::Agent("agent-1".into()),

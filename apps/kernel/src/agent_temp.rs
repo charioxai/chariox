@@ -118,6 +118,7 @@ pub(crate) struct Trimmed {
 #[cfg(target_os = "linux")]
 pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
     let mut held = BTreeSet::new();
+    let mut networks = BTreeSet::new();
     for process in std::fs::read_dir("/proc").ok()?.flatten() {
         let name = process.file_name();
         if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
@@ -128,10 +129,27 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
             held.insert(cwd);
         }
         if let Ok(fds) = std::fs::read_dir(base.join("fd")) {
-            held.extend(
-                fds.flatten()
-                    .filter_map(|fd| std::fs::read_link(fd.path()).ok()),
-            );
+            let mut sockets = false;
+            for target in fds
+                .flatten()
+                .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+            {
+                sockets |= target.to_string_lossy().starts_with("socket:[");
+                held.insert(target);
+            }
+            if sockets {
+                if let Ok(network) = std::fs::read_link(base.join("ns/net")) {
+                    if networks.insert(network) {
+                        match std::fs::read_to_string(base.join("net/unix")) {
+                            Ok(table) => held.extend(bound_socket_paths(&table)),
+                            Err(_) if !base.exists() => {}
+                            Err(_) => return None,
+                        }
+                    }
+                } else if base.exists() {
+                    return None;
+                }
+            }
         }
         if let Ok(maps) = std::fs::read_to_string(base.join("maps")) {
             held.extend(
@@ -142,6 +160,20 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
         }
     }
     Some(held)
+}
+
+#[cfg(target_os = "linux")]
+fn bound_socket_paths(table: &str) -> impl Iterator<Item = PathBuf> + '_ {
+    table.lines().filter_map(|line| {
+        let mut rest = line;
+        // Seven fixed fields precede the path; preserve spaces inside the path.
+        for _ in 0..7 {
+            rest = rest.trim_start();
+            rest = &rest[rest.find(char::is_whitespace)?..];
+        }
+        let path = rest.trim_start();
+        path.starts_with('/').then(|| PathBuf::from(path))
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -171,8 +203,8 @@ fn in_use(item: &Path, held: &BTreeSet<PathBuf>) -> bool {
 }
 
 /// Clears the items of every agent folder under `root` that nothing wrote for
-/// `idle` and no process in `held` has open or works in. A folder left empty
-/// goes with its last item.
+/// `idle` and no process in `held` has open or works in. Roots stay until the
+/// Room ends: a process may first use its inherited TMPDIR much later.
 pub(crate) fn trim(
     root: &Path,
     now: SystemTime,
@@ -214,10 +246,6 @@ pub(crate) fn trim(
                     trimmed.items += 1;
                     trimmed.bytes += bytes;
                 }
-            }
-            // remove_dir only removes an empty folder.
-            if !in_use(&agent, held) && std::fs::remove_dir(&agent).is_ok() {
-                let _ = std::fs::remove_dir(&room);
             }
         }
     }
