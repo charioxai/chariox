@@ -82,13 +82,11 @@ pub(crate) use claude::{
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
+#[cfg(test)]
+pub(crate) use claude_runtime::initialize_claude_runtime;
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub(crate) use claude_runtime::{begin_claude_runtime_tool_wait, ClaudeRuntimeToolWait};
 pub(crate) use claude_runtime::{bounded_result, bounded_result_images};
-#[cfg(test)]
-pub(crate) use claude_runtime::{
-    drain_claude_events, initialize_claude_runtime, submit_claude_prompt,
-};
 pub(crate) use claude_runtime::{hand_over_claude_runtime, ClaudeHandover};
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
