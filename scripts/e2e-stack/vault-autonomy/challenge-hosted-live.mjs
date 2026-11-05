@@ -176,12 +176,25 @@ try {
       await viewer.screenshot({path:path.join(evidence,cell.id+'-second-viewer-ready.png')})
       row.concurrent_owner_viewer=true
     }
-    await frame.locator('#issue').click()
+    // Aim real owner input at the displayed surface, including during mirror/video handover.
+    const physicalClick=async id=>{
+      const response=await fixture.send({KernelBrowser:{command:{op:'snapshot',tab_id:live.view.browser_region.tab_id,generation:live.view.browser_region.generation}}})
+      const snapshot=response.KernelBrowser.result.snapshot
+      const node=snapshot.dom_nodes.find(node=>node.attributes.id===id)
+      assert.ok(node?.bounds?.width>0&&node.bounds.height>0,'the source field is visible: '+id)
+      const box=await popup.locator('.interaction-region-page').evaluate(element=>{const r=element.getBoundingClientRect();return{x:r.x,y:r.y,scale:r.width/parseFloat(element.style.width)}})
+      const mode=await popup.locator('.kernel-browser-page-surface').getAttribute('data-paint-mode')
+      row.physical_input_modes??=[];row.physical_input_modes.push({id,mode});await save()
+      await page.mouse.click(box.x+(node.bounds.x+node.bounds.width/2)*box.scale,box.y+(node.bounds.y+node.bounds.height/2)*box.scale)
+    }
+    if(segmented) {
+      await physicalClick('issue')
+      await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).issued,'the physical Send Code click reaches the site')
+    } else await frame.locator('#issue').click()
     const enterCode=async (target,code)=>{
-      if(segmented) {
-        for(const i of [5,0,3,1,4,2]) {const field=target.locator('#code'+i);await field.click();await field.press('ControlOrMeta+A');await field.pressSequentially(code[i],{delay:50})}
-        await target.locator('#code2').press('Enter')
-      } else {const field=target.locator('#code');await field.click();await field.press('ControlOrMeta+A');await field.pressSequentially(code,{delay:50});await field.press('Enter')}
+      if(!segmented) {const field=target.locator('#code');await field.click();await field.press('ControlOrMeta+A');await field.pressSequentially(code,{delay:50});await field.press('Enter');return}
+      for(const i of [5,0,3,1,4,2]) {await physicalClick('code'+i);await page.keyboard.press('ControlOrMeta+A');await page.keyboard.type(code[i],{delay:50})}
+      await page.keyboard.press('Enter')
     }
     await enterCode(frame,'000000')
     await waitFor(async()=>(await(await fetch(challenge.url+'/status')).json()).events.some(e=>e.result==='rejected'),'server rejection')
@@ -191,7 +204,7 @@ try {
     await page.screenshot({path:path.join(evidence,cell.id+'-rejected.png')})
     assert.equal(row.rejection_card_retained,true,'a site rejection keeps the same card')
     await popup.waitFor()
-    await frame.getByRole('alert').filter({hasText:'That code was not accepted'}).waitFor()
+    if(!segmented)await frame.getByRole('alert').filter({hasText:'That code was not accepted'}).waitFor()
     let retryFrame=frame
     if(expected==='green'&&!segmented) {
       await popup.getByRole('button',{name:'Open full tab',exact:true}).click()
