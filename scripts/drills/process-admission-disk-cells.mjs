@@ -2,6 +2,7 @@
 // OF-42 runaway). Each flow gives real agents real work through their own tools, then checks the kernel's
 // side on the real machine: files, processes and the session's process rows. Nothing here talks to a provider.
 import { runDiskWaits } from "./process-admission-disk-waits.mjs"
+import { runDiskReplay } from "./process-admission-disk-replay.mjs"
 import assert from "node:assert/strict"
 import { createServer } from "node:net"
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs"
@@ -28,6 +29,7 @@ export async function runDiskCells(ctx) {
   const rowsOf = agent => latestRows().filter(p => p.owner?.id === agent.id)
 
   if (scenario === "disk-waits") await runDiskWaits(ctx, check)
+  if (scenario === "disk-replay") await runDiskReplay(ctx, check)
 
   if (scenario === "room-isolation") {
     await say(`Run exactly sh -c 'printf "%s" "$TMPDIR" > answer-room-path-b{N}.txt; echo keep > "$TMPDIR/room-keep.txt"; echo DONE > answer-room-ready-b{N}.txt' in the current directory. Do not change or retry it.`, "room-ready")
@@ -88,9 +90,11 @@ try:
     listener = None
     if n % 2 == 0:
         listener = socket.socket(socket.AF_UNIX)
-        listener.bind(str(root / "live.sock"))
+        os.chdir(root)
+        listener.bind("live.sock")
         listener.listen(1)
         listener.settimeout(5)
+        os.chdir("/")
     stale = root / "stale.txt"
     stale.write_text("disposable")
     deadline = time.monotonic() + 180
@@ -116,7 +120,7 @@ except Exception as error:
     await waitAnswers("trim-live", 240)
     for (const [i] of agents.entries()) {
       const result = readFileSync(answer("trim-live", i + 1), "utf8")
-      check(`${providerOf(i + 1)} ${i + 1}: ${i % 2 ? "bound socket accepts after sweep" : "inherited TMPDIR accepts its first later use"}`, result === "PASS DONE", { result })
+      check(`${providerOf(i + 1)} ${i + 1}: ${i % 2 ? "relative-bound socket accepts after chdir and sweep" : "inherited TMPDIR accepts its first later use"}`, result === "PASS DONE", { result })
     }
     assert(checks.every(c => c.ok), "the live scratch regression failed")
   }

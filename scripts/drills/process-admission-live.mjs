@@ -6,7 +6,7 @@
 // trim (idle scratch goes, what is open or busy stays, an ended Room clears at once), ask (agents under disk pressure
 // are asked, naming what they hold, and free it), runaway (the orphaned writer filling the disk is attributed and
 // stopped, other owners' builds are never paused).
-// Usage: node process-admission-live.mjs --scenario memory|disk|temp|room-isolation|trim|trim-live|disk-volumes|disk-waits|stop-cycles|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
+// Usage: node process-admission-live.mjs --scenario memory|disk|temp|room-isolation|trim|trim-live|disk-volumes|disk-waits|disk-replay|stop-cycles|ask|runaway --kernel-binary K --state-root DIR --evidence-dir DIR
 //   --login-file F [--agents 5] [--mem 7G] [--disk-gb 12] [--task a.txt:marker,b.txt:marker2] [--tui 1]
 //   [--codex-agents 5 --codex-profile-dir DIR] [--work-dir DIR] [--seed-peaks FILE]
 //   [--opencode-agents 3 --opencode-profile-dir DIR --opencode-model M] [--temp-idle-s 20]
@@ -30,7 +30,7 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { assert.equal(typeof flags.get(key), "string", `${key} is required`); return flags.get(key) }
 const scenario = need("--scenario")
-assert(["memory", "disk", "temp", "room-isolation", "trim", "trim-live", "disk-volumes", "disk-waits", "stop-cycles", "ask", "runaway", "ui"].includes(scenario), "unknown scenario")
+assert(["memory", "disk", "temp", "room-isolation", "trim", "trim-live", "disk-volumes", "disk-waits", "disk-replay", "stop-cycles", "ask", "runaway", "ui"].includes(scenario), "unknown scenario")
 const kernelBinary = resolve(need("--kernel-binary")), stateRoot = resolve(need("--state-root")), evidence = resolve(need("--evidence-dir"))
 const loginFile = resolve(need("--login-file"))
 const builds = Number(flags.get("--builds") ?? 5), memoryLimit = flags.get("--mem") ?? "7G"
@@ -456,7 +456,7 @@ try {
     writeFileSync(handoff, JSON.stringify({ url: `ws://127.0.0.1:${ports[0]}/kernel`, kernelEnv, sessionId, alias, work, agents: agents.map(a => a.id), attachment_id: att.attachment.id }, null, 1))
     note("ui-handoff", { handoff })
     await until(() => existsSync(handoff + ".done"), "the browser drill to finish", Number(flags.get("--ui-wait-s") ?? 3600) * 1000)
-  } else if (["temp", "room-isolation", "trim", "trim-live", "disk-volumes", "disk-waits", "stop-cycles", "ask", "runaway"].includes(scenario)) {
+  } else if (["temp", "room-isolation", "trim", "trim-live", "disk-volumes", "disk-waits", "disk-replay", "stop-cycles", "ask", "runaway"].includes(scenario)) {
     await runDiskCells({ scenario, agents, ask, note, until, work, dir, sessionId, siblingId: sibling?.session.id, attachmentId: att.attachment.id, rpc, report, flags, transcripts, providerOf, execFileSync, osProcesses, latestRows: () => latestRows })
   } else
   // --task a.txt:marker,b.txt:marker2: every agent gets the prompt with {N} = its number; the round ends when each
