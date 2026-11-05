@@ -200,6 +200,9 @@ impl ProviderProcessServiceStore {
     ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
         let service = self.read();
         let current = service.get_run(expected.id())?;
+        // Native and leased workflow launches can coexist with an older run
+        // during handoff. Agent selection ranks Running above Starting, so it
+        // cannot decide whether this specific run is still allowed to spawn.
         if !matches!(
             expected.state(),
             crate::provider::ProviderRunState::Starting
@@ -207,11 +210,6 @@ impl ProviderProcessServiceStore {
         ) || current.state() != expected.state()
             || current.started_at_ms() != expected.started_at_ms()
             || current.agent_instance_id() != expected.agent_instance_id()
-            || expected.agent_instance_id().is_some_and(|agent| {
-                service
-                    .get_run_for_agent(expected.session_id(), agent)
-                    .is_none_or(|run| run.id() != expected.id())
-            })
         {
             return Ok(None);
         }
