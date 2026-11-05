@@ -22,7 +22,7 @@ fi
 
 unset IFS
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
 # The Path-1 extension helper supplies only its pinned local socket. Caller
 # Docker config and credential helpers remain available after it drops UID.
@@ -813,7 +813,51 @@ docker_build() {
   fail "Docker Buildx is required to build the slice runtime image"
 }
 
+released_image_directory() {
+  [[ -d "$REPO_ROOT/../slice-image" ]] || return 1
+  (cd "$REPO_ROOT/../slice-image" && pwd)
+}
+
+released_image_loaded() {
+  local tag="$1" layers="$2" image_id="$3" loaded
+  loaded="$(docker image inspect -f '{{range .RootFS.Layers}}{{.}},{{end}}' "$tag" 2>/dev/null)" || return 1
+  [[ "$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null)" == "$image_id" && "$loaded" == "$layers," ]] && image_runtime_compatible "$tag" && image_selkies_capable "$tag"
+}
+
+load_released_image() {
+  local image="$1" directory description tag archive size sha256 layers image_id
+  directory="$(released_image_directory)" || return 1
+  description="$(python3 "$SCRIPT_DIR/released-slice-image.py" describe "$directory" \
+    "$SLICE_RUNTIME_SOURCE_REVISION" "$SLICE_RELAY_PEER_PROTOCOL_VERSION" "$(docker_target_arch)")" || exit 1
+  IFS=$'\t' read -r tag archive size sha256 layers image_id <<<"$description"
+  python3 "$SCRIPT_DIR/released-slice-image.py" verify "$archive" "$size" "$sha256" || exit 1
+  if released_image_loaded "$tag" "$layers" "$image_id"; then
+    log "release runtime image $tag is already loaded"
+  else
+    log "loading the signed release's runtime image ($size bytes); no build is needed"
+    if ! { python3 "$SCRIPT_DIR/released-slice-image.py" stream "$archive" \
+      | run_guarded_command unbounded -- docker load -q; }; then
+      fail "docker load of the release runtime image failed. Free disk space for Docker (about $((size * 3 / 1000000000 + 1)) GB) and start the slice again."
+    fi
+    if ! released_image_loaded "$tag" "$layers" "$image_id"; then
+      docker rmi "$tag" >/dev/null 2>&1 || true
+      fail "the loaded release runtime image does not match the signed release; it was removed. Reinstall the Chariox release bundle."
+    fi
+  fi
+  docker tag "$tag" "$image"
+  if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+  fi
+  log "release runtime image ready as $image (protocol $SLICE_RELAY_PEER_PROTOCOL_VERSION, runtime $SLICE_RUNTIME_SOURCE_REVISION)"
+}
+
 build_standard_runtime_image() {
+  if released_image_directory >/dev/null; then
+    load_released_image "$1"
+    return
+  fi
+  [[ "${SLICE_EXPLICIT_SOURCE_BUILD:-0}" == 1 ]] || fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+
   local image="$1"
   local target_arch
   target_arch="$(docker_target_arch)"
@@ -864,6 +908,11 @@ build_image() {
     || fail "could not read relay peer protocol version from the kernel source"
   [[ -n "$SLICE_RUNTIME_SOURCE_REVISION" ]] \
     || fail "could not fingerprint the kernel and relay runtime source"
+  if released_image_directory >/dev/null; then
+    load_released_image "$SLICE_BASE_IMAGE"
+  elif [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" ]]; then
+    fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+  fi
   case "$SLICE_BUILD_IMAGE" in
     auto|always|never) ;;
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
@@ -1892,6 +1941,7 @@ main() {
       ;;
     build-image)
       require_docker
+      SLICE_EXPLICIT_SOURCE_BUILD=1
       build_image
       ;;
     provision)

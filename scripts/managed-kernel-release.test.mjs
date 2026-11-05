@@ -9,6 +9,8 @@ import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { test } from "node:test"
 
+import { prepareSliceBuildContext } from "./package-managed-kernel-release.mjs"
+
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const managedBuildHistoryId = "blix8xemjjxks864hv4fmtwj0"
 const packager = join(repositoryRoot, "scripts/package-managed-kernel-release.mjs")
@@ -189,6 +191,7 @@ function packagerArguments({
   relay,
   appPackage,
   appWasmWorker,
+  sliceImage,
   builderAttestation,
   builderAttestationSignature,
   trustedBuilderPublicKey,
@@ -204,6 +207,7 @@ function packagerArguments({
     "--relay", relay,
     "--app-package", appPackage,
     "--app-wasm-worker", appWasmWorker,
+    "--slice-image", sliceImage,
     "--builder-attestation", builderAttestation,
     "--builder-attestation-signature", builderAttestationSignature,
     "--trusted-builder-public-key", trustedBuilderPublicKey,
@@ -441,9 +445,22 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
   await writeFile(trustedBuilderPublicKey, rawPublicKey(builderKeys.publicKey).toString("base64"), {
     mode: 0o600,
   })
+  const contextOutput = join(root, "prepared-context")
+  const contextDigest = await prepareSliceBuildContext({kernel, relay,
+    "source-repository": sourceRepository, "source-commit": sourceCommit, output: contextOutput})
+  const sliceImage = join(root, "slice-image")
+  await mkdir(sliceImage)
+  const archive = Buffer.from("signed slice image fixture\n")
+  await writeFile(join(sliceImage, "chariox-slice-linux.tar.gz"), archive)
+  await writeFile(join(sliceImage, "slice-image.json"), JSON.stringify({schema: "chariox.slice-image.v1",
+    architecture: "amd64", imageId: `sha256:${"c".repeat(64)}`, tag: "chariox-slice-release:fixture",
+    runtimeSourceRevision: contextDigest, relayPeerProtocolVersion: "1",
+    rootfsLayers: [`sha256:${"d".repeat(64)}`], archive: {name: "chariox-slice-linux.tar.gz",
+      size: archive.length, sha256: createHash("sha256").update(archive).digest("hex")}}))
   return {
     kernel,
     kernelContents,
+    sliceImage,
     supervisor,
     relay,
     relayContents,
@@ -632,6 +649,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         name: "chariox-slice-broker.service",
         path: "/etc/systemd/system/chariox-slice-broker.service",
         sha256: digest(fixture.sliceBrokerServiceBytes),
+      },
+      {
+        name: "chariox-slice-image",
+        path: "/usr/lib/chariox/slice-image",
+        sha256: await treeDigest(join(releaseRoot, "usr/lib/chariox/slice-image")),
       },
       {
         name: "chariox-slice-build-context",

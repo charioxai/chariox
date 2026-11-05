@@ -194,6 +194,9 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
   }
   if (builderKeys) {
+    const imageRoot = join(rootfs, "usr/lib/chariox/slice-image")
+    await put(join(imageRoot, "chariox-slice-linux.tar.gz"), "signed image fixture")
+    artifactSpecs.push(["chariox-slice-image", "/usr/lib/chariox/slice-image", imageRoot, "tree"])
     const path = "/etc/systemd/system/chariox-path1-managed-bootstrap.service"
     const source = join(rootfs, path)
     await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")))

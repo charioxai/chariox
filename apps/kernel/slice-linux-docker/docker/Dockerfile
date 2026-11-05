@@ -5,7 +5,7 @@ RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc
 FROM rust:1.99.1-bookworm@sha256:9181b56c2a21ab1d5e73cffe04fc762426d30aa7fac3c91141dd033f49a7fc8b AS rust-builder
 WORKDIR /opt/chariox-source
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
+RUN printf '%s\n' 'deb https://deb.debian.org/debian bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
@@ -27,6 +27,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY fixtures fixtures
 COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
@@ -102,7 +103,7 @@ ENV CHARIOX_SLICE_DISPLAY_SERVER=Xorg
 # Keep every libpulse client away from legacy runtime symlinks in durable home.
 ENV PULSE_RUNTIME_PATH=/tmp/chariox-pulse-runtime
 COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20260701T000000Z bookworm main' > /etc/apt/sources.list \
+RUN printf '%s\n' 'deb https://deb.debian.org/debian bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends --allow-downgrades \
@@ -132,7 +133,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libpixman-1-0 \
     libpulse0 \
     libseccomp-dev \
-    libssl3=3.0.20-1~deb12u1 \
+    libssl3 \
     libssl-dev \
     libva2 \
     libva-drm2 \
@@ -359,7 +360,7 @@ ARG CHARIOX_SELKIES_VERSION=0.0.0.dev0
 ARG CHARIOX_SELKIES_REVISION=3f87241fcd6abc44e205b22f6596e78ef4946670
 LABEL io.chariox.relay-peer-protocol-version="${CHARIOX_RELAY_PEER_PROTOCOL_VERSION}"
 LABEL io.chariox.runtime-source-revision="${CHARIOX_RUNTIME_SOURCE_REVISION}"
-LABEL io.chariox.debian-snapshot="20260701T000000Z"
+LABEL io.chariox.debian-source="bookworm-release-builder"
 LABEL io.chariox.selkies-version="${CHARIOX_SELKIES_VERSION}"
 LABEL io.chariox.selkies-source-revision="${CHARIOX_SELKIES_REVISION}"
 LABEL io.chariox.selkies-license="MPL-2.0"

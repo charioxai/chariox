@@ -572,6 +572,9 @@ if [ ! -e "$published_release" ]; then
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
+  if path_exists "$image_root/usr/lib/chariox/slice-image"; then
+    (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-image" "$pending_release/usr/lib/chariox/slice-image")
+  fi
   verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"

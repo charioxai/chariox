@@ -53,6 +53,7 @@ const EXPECTED_ARTIFACTS = new Map([
     "chariox-slice-build-context",
     { path: "/usr/lib/chariox/slice-build-context", type: "tree" },
   ],
+  ["chariox-slice-image", { path: "/usr/lib/chariox/slice-image", type: "tree" }],
   ["chariox-build-attestation", { path: "/usr/lib/chariox/build-attestation.json", type: "file" }],
   ["chariox-build-attestation-signature", { path: "/usr/lib/chariox/build-attestation.sig", type: "file" }],
   ["chariox-builder-public-key", { path: "/usr/lib/chariox/builder-public-key", type: "file" }],
@@ -395,7 +396,12 @@ async function verifyImageRelease(
   if (selectedTopology === "path1" && !hasDataVolumeAdmission) {
     fail("Path-1 releases must include data-volume admission and both ordering drop-ins")
   }
+  const hasSliceImage = manifest.artifacts.some((artifact) => artifact?.name === "chariox-slice-image")
+  if (selectedTopology === "path1" && !hasSliceImage) {
+    fail("Path-1 release is missing its signed prebuilt slice image; install a complete release")
+  }
   const expectedArtifactCount = EXPECTED_ARTIFACTS.size
+    - (hasSliceImage ? 0 : 1)
     - (hasWorkerService ? 0 : 1)
     - (hasPath1Service ? 0 : 1)
     - (hasDataVolumeAdmission ? 0 : dataVolumeArtifactNames.length)

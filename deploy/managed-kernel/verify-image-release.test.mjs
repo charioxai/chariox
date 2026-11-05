@@ -28,6 +28,7 @@ const ARTIFACTS = [
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file"],
   ...PATH1_DATA_VOLUME_ARTIFACTS.map(({ name, path }) => [name, path, "file"]),
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file"],
+  ["chariox-slice-image", "/usr/lib/chariox/slice-image", "tree"],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree"],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file"],
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file"],
@@ -128,6 +129,7 @@ async function createReleaseFixture(context, {
     Buffer.from(workerService),
   )
 
+  await put(rootfs, "/usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz", "image fixture")
   const treeRoot = join(rootfs, "usr/lib/chariox/slice-build-context")
   const relayPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
   const kernelPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-kernel")
