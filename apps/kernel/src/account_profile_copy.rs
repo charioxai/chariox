@@ -175,6 +175,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
+                transferred_from: None,
             });
         }
         next.account_copies[operation].phase = AccountCopyPhase::Installed;

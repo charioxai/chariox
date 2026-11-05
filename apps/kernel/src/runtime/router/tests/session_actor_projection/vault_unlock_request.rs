@@ -5,19 +5,21 @@ use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
 use crate::local::{KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 
-const PASSPHRASE: &str = "correct horse battery";
+pub(super) const PASSPHRASE: &str = "correct horse battery";
 const WRONG: &str = "tr0ub4dor&3";
 const SENTINEL: &str = "sentinel-passphrase-5f1c";
 
-struct Fixture {
-    router: CommandRouter,
-    vault: std::path::PathBuf,
+pub(super) struct Fixture {
+    pub(super) router: CommandRouter,
+    pub(super) vault: std::path::PathBuf,
     session: String,
     agent: String,
+    pub(super) kernel_id: String,
+    pub(super) relay_public_key: String,
 }
 
 impl Fixture {
-    fn new(policy: CredentialVaultUnlockPolicy, create_vault: bool) -> Self {
+    pub(super) fn new(policy: CredentialVaultUnlockPolicy, create_vault: bool) -> Self {
         Self::build(
             CredentialVaultBackend::CharioxEncrypted,
             policy,
@@ -38,6 +40,9 @@ impl Fixture {
             crate::secret::create_chariox_encrypted_vault_for_test(&vault, PASSPHRASE).unwrap();
         }
         let mut config = DaemonConfig::for_tests();
+        config.daemon_id = format!("vault-kernel-{:016x}", rand::random::<u64>());
+        let (kernel_id, relay_public_key) =
+            (config.daemon_id.clone(), config.relay_public_key.clone());
         config.user_config.credential_vault.backend = backend;
         config.user_config.credential_vault.path = vault.display().to_string();
         config.user_config.credential_vault.unlock_policy = policy;
@@ -71,20 +76,25 @@ impl Fixture {
             vault,
             session: session_id,
             agent,
+            kernel_id,
+            relay_public_key,
         }
     }
 
-    fn locked() -> Self {
+    pub(super) fn locked() -> Self {
         Self::new(CredentialVaultUnlockPolicy::Ttl, true)
     }
 
-    async fn send(&self, request: LocalDaemonRequest) -> Result<LocalDaemonResponse, DaemonError> {
+    pub(super) async fn send(
+        &self,
+        request: LocalDaemonRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
             .with_connection_class(KernelConnectionClass::Terminal);
         self.send_as(caller, request).await
     }
 
-    async fn send_as(
+    pub(super) async fn send_as(
         &self,
         caller: KernelCaller,
         request: LocalDaemonRequest,
@@ -100,7 +110,10 @@ impl Fixture {
         self.router.dispatch(command, request).await
     }
 
-    async fn unlock(&self, passphrase: &str) -> Result<LocalDaemonResponse, DaemonError> {
+    pub(super) async fn unlock(
+        &self,
+        passphrase: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         self.send(LocalDaemonRequest::UnlockCredentialVault(
             UnlockCredentialVaultRequest {
                 passphrase: VaultPassphrase::new(passphrase),
@@ -109,7 +122,7 @@ impl Fixture {
         .await
     }
 
-    async fn status(&self) -> crate::secret::CharioxVaultUnlockStatus {
+    pub(super) async fn status(&self) -> crate::secret::CharioxVaultUnlockStatus {
         match self
             .send(LocalDaemonRequest::GetCredentialVaultStatus(
                 crate::local::GetCredentialVaultStatusRequest,
@@ -167,7 +180,7 @@ impl Fixture {
     }
 }
 
-fn code_of(result: Result<LocalDaemonResponse, DaemonError>) -> (String, String) {
+pub(super) fn code_of(result: Result<LocalDaemonResponse, DaemonError>) -> (String, String) {
     let error = result.expect_err("the request should be refused");
     let mapped = crate::transport::kernel_protocol::map_kernel_error(&error);
     (mapped.code, mapped.message)

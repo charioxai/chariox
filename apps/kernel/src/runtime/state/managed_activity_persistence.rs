@@ -12,8 +12,30 @@ const MAX_PENDING_ACTIVITY_TRANSITIONS: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManagedActivityObservation {
-    pub(crate) running_agent_count: u8,
+    /// Agents running a turn, or idle but woken by something they registered.
+    pub(crate) working_agent_count: u8,
     pub(crate) changed_at_ms: u64,
+}
+
+/// One sample of the working agents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedActivityCounts {
+    pub(crate) working_agent_count: u8,
+    /// The part of the count whose every change passes a mutation boundary:
+    /// agents with a turn, prompt, decision or owned process in flight. The
+    /// rest are registrations, which nothing marks when they change.
+    pub(crate) in_flight_agent_count: u8,
+}
+
+#[cfg(test)]
+impl ManagedActivityCounts {
+    /// `count` agents, all of them in flight.
+    pub(crate) fn in_flight(count: u8) -> Self {
+        Self {
+            working_agent_count: count,
+            in_flight_agent_count: count,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -21,7 +43,7 @@ pub(crate) struct ManagedActivityObservation {
 struct PersistedManagedActivityTransition {
     kernel_id: String,
     transition_sequence: u64,
-    running_agent_count: u8,
+    working_agent_count: u8,
     activity_changed_at_ms: u64,
 }
 
@@ -49,8 +71,10 @@ struct ManagedActivityTransitionInner {
     pending_journal_dirty: bool,
     last_runtime_sequence: u64,
     // Active-turn retries are also runtime-only. Keep every turn's finish,
-    // even when another retained turn keeps the binary aggregate busy.
+    // even when another retained turn keeps the aggregate busy.
     latest_prompt_finish_at_ms: u64,
+    // The in-flight count of the last sample taken at a mutation boundary.
+    recorded_in_flight_agent_count: Option<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,15 +137,40 @@ impl ManagedActivityTransitionState {
     fn record_transition(
         &self,
         runtime_sequence: u64,
-        running_agent_count: u8,
+        working_agent_count: u8,
         changed_at_ms: u64,
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
-        self.record_current_transition(|| (runtime_sequence, running_agent_count, changed_at_ms))
+        self.record_current_transition(|| {
+            (
+                runtime_sequence,
+                ManagedActivityCounts::in_flight(working_agent_count),
+                changed_at_ms,
+            )
+        })
     }
 
     pub(super) fn record_current_transition(
         &self,
-        sample: impl FnOnce() -> (u64, u8, u64),
+        sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
+    ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
+        self.record_sampled_transition(sample, false)
+    }
+
+    /// Registrations change the count with nothing to mark the boundary. Records
+    /// such a change alone: when the in-flight agents differ from the last
+    /// boundary sample a mutation went unrecorded, and reporting fails until its
+    /// own boundary records it.
+    pub(super) fn record_registration_change(
+        &self,
+        sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
+    ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
+        self.record_sampled_transition(sample, true)
+    }
+
+    fn record_sampled_transition(
+        &self,
+        sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
+        registrations_only: bool,
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
         let Some(kernel_id) = self.kernel_id() else {
             return Ok(None);
@@ -133,12 +182,7 @@ impl ManagedActivityTransitionState {
         // Sample while holding the same lock as persistence. Sampling first permits
         // a delayed caller to append stale busy state after a newer idle transition,
         // even at the same projection sequence.
-        let (runtime_sequence, running_agent_count, changed_at_ms) = sample();
-        if running_agent_count > 1 {
-            return Err(activity_state_error(
-                "managed activity running-agent count is not binary",
-            ));
-        }
+        let (runtime_sequence, counts, changed_at_ms) = sample();
         self.restore_locked(&kernel_id, &mut inner)?;
         if runtime_sequence < inner.last_runtime_sequence {
             return Ok(inner
@@ -148,12 +192,18 @@ impl ManagedActivityTransitionState {
                 .or(inner.latest_durable));
         }
         inner.last_runtime_sequence = runtime_sequence;
-        if inner
-            .pending
-            .back()
-            .map(|entry| entry.observation)
-            .or(inner.latest_durable)
-            .is_some_and(|latest| latest.running_agent_count == running_agent_count)
+        let boundary_unrecorded = registrations_only
+            && inner.recorded_in_flight_agent_count != Some(counts.in_flight_agent_count);
+        if !registrations_only {
+            inner.recorded_in_flight_agent_count = Some(counts.in_flight_agent_count);
+        }
+        if boundary_unrecorded
+            || inner
+                .pending
+                .back()
+                .map(|entry| entry.observation)
+                .or(inner.latest_durable)
+                .is_some_and(|latest| latest.working_agent_count == counts.working_agent_count)
         {
             self.flush_pending_locked(&kernel_id, &mut inner)?;
             return Ok(inner
@@ -179,7 +229,7 @@ impl ManagedActivityTransitionState {
         inner.pending.push_back(PendingManagedActivityTransition {
             transition_sequence,
             observation: ManagedActivityObservation {
-                running_agent_count,
+                working_agent_count: counts.working_agent_count,
                 changed_at_ms,
             },
         });
@@ -191,15 +241,15 @@ impl ManagedActivityTransitionState {
     #[cfg(test)]
     pub(super) fn current_observation(
         &self,
-        running_agent_count: u8,
+        working_agent_count: u8,
     ) -> Result<ManagedActivityObservation, DaemonError> {
-        self.current_observation_with_sequence(running_agent_count)
+        self.current_observation_with_sequence(working_agent_count)
             .map(|(_, observation)| observation)
     }
 
     pub(super) fn current_observation_with_sequence(
         &self,
-        running_agent_count: u8,
+        working_agent_count: u8,
     ) -> Result<(u64, ManagedActivityObservation), DaemonError> {
         let kernel_id = self.kernel_id().ok_or_else(|| {
             activity_state_error("managed activity tracking is not enabled for this kernel")
@@ -213,7 +263,7 @@ impl ManagedActivityTransitionState {
         let observation = inner.latest_durable.ok_or_else(|| {
             activity_state_error("managed activity has no durable initial observation")
         })?;
-        if observation.running_agent_count != running_agent_count {
+        if observation.working_agent_count != working_agent_count {
             return Err(activity_state_error(
                 "managed activity changed without a durable mutation-boundary transition",
             ));
@@ -252,7 +302,6 @@ impl ManagedActivityTransitionState {
                         })?;
                 if persisted.kernel_id != kernel_id
                     || persisted.transition_sequence == 0
-                    || persisted.running_agent_count > 1
                     || persisted.activity_changed_at_ms == 0
                 {
                     return Err(activity_state_error(
@@ -262,7 +311,7 @@ impl ManagedActivityTransitionState {
                 Ok((
                     persisted.transition_sequence,
                     ManagedActivityObservation {
-                        running_agent_count: persisted.running_agent_count,
+                        working_agent_count: persisted.working_agent_count,
                         changed_at_ms: persisted.activity_changed_at_ms,
                     },
                 ))
@@ -291,9 +340,7 @@ impl ManagedActivityTransitionState {
                 if journal.kernel_id != kernel_id
                     || journal.observations.len() > MAX_PENDING_ACTIVITY_TRANSITIONS
                     || journal.observations.iter().any(|entry| {
-                        entry.transition_sequence == 0
-                            || entry.observation.running_agent_count > 1
-                            || entry.observation.changed_at_ms == 0
+                        entry.transition_sequence == 0 || entry.observation.changed_at_ms == 0
                     })
                     || journal
                         .observations
@@ -392,7 +439,7 @@ impl ManagedActivityTransitionState {
                 serde_json::to_value(PersistedManagedActivityTransition {
                     kernel_id: kernel_id.to_string(),
                     transition_sequence: entry.transition_sequence,
-                    running_agent_count: observation.running_agent_count,
+                    working_agent_count: observation.working_agent_count,
                     activity_changed_at_ms: observation.changed_at_ms,
                 })
                 .map_err(|error| {
@@ -433,11 +480,21 @@ mod tests {
                     state.inner.try_lock().is_err(),
                     "sample must not precede the persistence lock"
                 );
-                (0, 1, 1_000)
+                (
+                    0,
+                    crate::runtime::state::ManagedActivityCounts::in_flight(1),
+                    1_000,
+                )
             })
             .expect("busy sample");
         state
-            .record_current_transition(|| (0, 0, 2_000))
+            .record_current_transition(|| {
+                (
+                    0,
+                    crate::runtime::state::ManagedActivityCounts::in_flight(0),
+                    2_000,
+                )
+            })
             .expect("same-sequence idle sample");
         assert_eq!(
             state
@@ -461,7 +518,7 @@ mod tests {
         assert_eq!(
             state.record_transition(0, 0, 1_000).expect("baseline"),
             Some(ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             })
         );
@@ -481,7 +538,7 @@ mod tests {
         assert_eq!(
             state.current_observation(0).expect("current idle state"),
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 3_000,
             }
         );
@@ -528,7 +585,7 @@ mod tests {
         assert_eq!(
             state.current_observation(0).expect("recover original idle"),
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 3_000
             }
         );
@@ -559,21 +616,21 @@ mod tests {
                 PendingManagedActivityTransition {
                     transition_sequence: 1,
                     observation: ManagedActivityObservation {
-                        running_agent_count: 0,
+                        working_agent_count: 0,
                         changed_at_ms: 1_000,
                     },
                 },
                 PendingManagedActivityTransition {
                     transition_sequence: 2,
                     observation: ManagedActivityObservation {
-                        running_agent_count: 1,
+                        working_agent_count: 1,
                         changed_at_ms: 2_000,
                     },
                 },
                 PendingManagedActivityTransition {
                     transition_sequence: 3,
                     observation: ManagedActivityObservation {
-                        running_agent_count: 0,
+                        working_agent_count: 0,
                         changed_at_ms: 3_000,
                     },
                 },
@@ -677,7 +734,7 @@ mod tests {
         assert_eq!(
             events
                 .iter()
-                .map(|event| event.payload["runningAgentCount"].as_u64().unwrap())
+                .map(|event| event.payload["workingAgentCount"].as_u64().unwrap())
                 .collect::<Vec<_>>(),
             vec![0, 1, 0],
             "equal observation values must not acknowledge uncommitted transitions"
@@ -709,7 +766,7 @@ mod tests {
                 .map(|sequence| {
                     serde_json::json!({
                         "transitionSequence": sequence,
-                        "runningAgentCount": 0,
+                        "workingAgentCount": 0,
                         "changedAtMs": 1_000,
                     })
                 })
@@ -750,8 +807,8 @@ mod tests {
             &serde_json::to_vec(&serde_json::json!({
                 "kernelId": "kernel-conflict",
                 "observations": [
-                    {"transitionSequence": 1, "runningAgentCount": 1, "changedAtMs": 2_000},
-                    {"transitionSequence": 2, "runningAgentCount": 0, "changedAtMs": 3_000},
+                    {"transitionSequence": 1, "workingAgentCount": 1, "changedAtMs": 2_000},
+                    {"transitionSequence": 2, "workingAgentCount": 0, "changedAtMs": 3_000},
                 ],
             }))
             .unwrap(),
@@ -788,7 +845,7 @@ mod tests {
                         serde_json::json!({
                             "kernelId": "kernel-malformed",
                             "transitionSequence": sequence,
-                            "runningAgentCount": 0,
+                            "workingAgentCount": 0,
                             "activityChangedAtMs": 1_000,
                         }),
                     )
@@ -825,7 +882,7 @@ mod tests {
             assert_eq!(
                 state.current_observation(0).expect("reporter restart"),
                 ManagedActivityObservation {
-                    running_agent_count: 0,
+                    working_agent_count: 0,
                     changed_at_ms: 20_000,
                 }
             );
@@ -838,7 +895,7 @@ mod tests {
             assert_eq!(
                 restored.current_observation(0).expect("restored idle"),
                 ManagedActivityObservation {
-                    running_agent_count: 0,
+                    working_agent_count: 0,
                     changed_at_ms: 20_000,
                 }
             );

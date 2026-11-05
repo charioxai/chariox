@@ -138,6 +138,72 @@ test("leaving a field without a change sends nothing", async () => {
   assert.equal(h.requests.length, 1)
 })
 
+for (const dialog of ["open", "closed", "reopened", "another Project"]) {
+  for (const nextEdit of ["variables", "same script", "original script"]) {
+    test(`autosave keeps a pending ${nextEdit} edit with the dialog ${dialog}`, async () => {
+      const h = harness()
+      await h.open()
+      let firstReply!: (value: unknown) => void
+      let secondReply!: (value: unknown) => void
+      h.replies.push(new Promise((resolve) => { firstReply = resolve }))
+      h.key("down")
+      h.key("return")
+      h.type(" && make test")
+      h.key("escape")
+      assert.equal(h.requests.length, 2)
+
+      if (nextEdit === "variables") h.key("down")
+      h.key("return")
+      if (nextEdit === "original script") {
+        for (let i = 0; i < " && make test".length; i++) h.key("backspace")
+      } else h.type(nextEdit === "variables" ? "&DEBUG=1" : " && make lint")
+      h.key("escape")
+      assert.equal(h.requests.length, 2, "the second save waits for the first revision")
+
+      if (dialog !== "open") {
+        h.key("escape")
+        assert.equal(h.controller.isOpen(), false)
+        if (dialog === "reopened") await h.controller.open("project-1")
+        else if (dialog === "another Project") {
+          h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", setup: { script: "other setup" } }) } })
+          await h.controller.open("project-2")
+        }
+      }
+
+      const expectedScript = nextEdit === "variables" ? "make setup && make test"
+        : nextEdit === "same script" ? "make setup && make test && make lint" : "make setup"
+      const expectedVariables = nextEdit === "variables" ? "PORT=3000&DEBUG=1" : "PORT=3000"
+      h.replies.push(new Promise((resolve) => { secondReply = resolve }))
+      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+      await h.settle()
+      if (dialog !== "another Project") {
+        assert(h.text().includes(expectedScript), "the first reply keeps newer script text")
+        assert(h.text().includes(expectedVariables), "the first reply keeps newer variables")
+      } else assert(h.text().includes("other setup"), "the first Project cannot overwrite the second")
+      const expectedRequests = dialog === "another Project" ? 4 : 3
+      assert.equal(h.requests.length, expectedRequests, "a follow-up save sends the retained edit")
+      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment, {
+        projectId: "project-1", expectedRevision: 3, setup: { script: expectedScript }, variables: expectedVariables,
+        secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
+      })
+      if (dialog !== "another Project") assert(h.text().includes("Unsaved"), "the newer edit waits for its own acknowledgement")
+      secondReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables }) } })
+      await h.settle()
+      assert(!h.text().includes("Unsaved"))
+      assert.equal(h.requests.length, expectedRequests)
+      const saved = environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables })
+      if (dialog !== "open") {
+        h.controller.close()
+        h.replies.push({ ProjectEnvironment: { environment: saved } })
+        await h.controller.open("project-1")
+        assert(h.text().includes(expectedScript))
+        assert(h.text().includes(expectedVariables))
+        assert(!h.text().includes("Unsaved"))
+      }
+    })
+  }
+}
+
 test("a stale revision reloads the record and keeps the typed text for another save", async () => {
   const h = harness()
   await h.open()
@@ -351,3 +417,41 @@ test("a reopened dialog shows the output of the last finished run once", async (
   assert.match(h.text(), /pnpm install failed/)
   assert.equal(h.scheduled.length, 0, "a finished run is not polled")
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11: row edits wait for the acknowledged revision.
+for (const section of ["secret", "file"] as const) {
+  for (const edit of ["add", "remove"] as const) {
+    test(`a pending text save retains a ${section} row ${edit}`, async () => {
+      const h = harness()
+      await h.open()
+      let firstReply!: (value: unknown) => void
+      h.replies.push(new Promise(resolve => { firstReply = resolve }))
+      h.key("down")
+      h.key("return")
+      h.type(" && make test")
+      h.key("escape")
+      assert.equal(h.requests.length, 2)
+      const value = section === "secret" ? "NEW_KEY" : "config/local.json"
+      if (edit === "add") {
+        h.focusOn(section === "secret" ? "+ Add secret" : "+ Add file")
+        h.key("return")
+        h.type(value)
+        h.key("return")
+        assert(h.text().includes(value), "the entered name stays visible while its save is queued")
+      } else {
+        h.focusOn(section === "secret" ? "DB_URL" : ".env.local")
+        h.key("x")
+      }
+      assert.equal(h.requests.length, 2, "row saves wait for the first revision")
+      const secrets = edit === "add" ? [...environment().secrets, { name: value, presence: "missing" as const }] : environment().secrets.slice(0, 1)
+      const files = edit === "add" ? [...environment().files, { path: value, presence: "missing" as const, sizeBytes: null }] : environment().files.slice(1)
+      h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, ...(section === "secret" ? { secrets } : { files }) }) } })
+      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+      await h.settle()
+      assert.equal(h.requests.length, 3, "the queued row edit is submitted")
+      assert.equal(h.requests.at(-1)!.SaveProjectEnvironment.expectedRevision, 3)
+      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment[section === "secret" ? "secrets" : "files"], section === "secret" ? secrets.map(({ name }) => ({ name })) : files.map(({ path }) => ({ path })))
+      if (section === "secret" && edit === "add") assert.match(h.text(), /NEW_KEY\s+Value ▏/)
+    })
+  }
+}

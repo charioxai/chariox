@@ -29,3 +29,9 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     }
     chariox_kernel::managed_bootstrap::run_from_env()
 }
+
+enum Step {
+    Supervise,
+    DisposableWorker,
+    RedeemGrant,
+}

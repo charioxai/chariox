@@ -15,12 +15,14 @@ impl owned::OwnedRemoteAgentProfileUpdate {
         &self,
         home_agent_id: &str,
         leased_agent: &crate::execution_lease::LeasedAgent,
+        // The worker's profile for the account: its own id when it already held the login.
+        account_profile: &str,
     ) -> Result<(), DaemonError> {
         if leased_agent.id != self.leased_agent_id
             || leased_agent.lease_id != self.execution_lease_id
             || leased_agent.home_agent_id != home_agent_id
             || leased_agent.provider != self.provider
-            || leased_agent.account_profile != self.account_profile
+            || leased_agent.account_profile != account_profile
             || leased_agent.model != self.model
             || leased_agent.effort != self.effort
         {

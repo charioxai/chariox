@@ -267,6 +267,8 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::OwnerVault(_)
                 | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
                 | LocalDaemonRequest::UnlockCredentialVault(_)
+                | LocalDaemonRequest::CreateCredentialVault(_)
+                | LocalDaemonRequest::SealCredentialVaultKey(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
                 | LocalDaemonRequest::ListCredentials(_)

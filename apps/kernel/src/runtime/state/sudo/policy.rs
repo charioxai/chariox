@@ -235,6 +235,8 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::OwnerVault(_)
             | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
+            | LocalDaemonRequest::CreateCredentialVault(_)
+            | LocalDaemonRequest::SealCredentialVaultKey(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)

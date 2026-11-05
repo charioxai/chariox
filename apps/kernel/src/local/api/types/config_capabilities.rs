@@ -101,6 +101,39 @@ pub struct UnlockCredentialVaultRequest {
     pub passphrase: VaultPassphrase,
 }
 
+/// Creates this kernel's Vault from the owner's own client, with no session or agent. It never replaces one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateCredentialVaultRequest {
+    pub origin: CredentialVaultOrigin,
+}
+
+/// What the new Vault opens with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum CredentialVaultOrigin {
+    /// A passphrase the owner typed for this kernel.
+    Passphrase { passphrase: VaultPassphrase },
+    /// The passphrase of another kernel's Vault, sealed to this kernel by `SealCredentialVaultKey` there.
+    Seed {
+        seed: Box<crate::secret::VaultKeySeed>,
+    },
+}
+
+/// Seals the key of this kernel's unlocked Vault to another kernel, so the owner can have that kernel create a Vault
+/// that opens with the same passphrase. The passphrase and the key stay on the kernels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SealCredentialVaultKeyRequest {
+    pub target_kernel_id: String,
+    pub target_public_key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManageCredentialVaultRequest {
     pub session_id: String,

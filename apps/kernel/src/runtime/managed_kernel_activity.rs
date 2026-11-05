@@ -36,7 +36,7 @@ struct ManagedKernelActivityBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct AcceptedActivity {
     sequence: u32,
-    running_agent_count: u8,
+    working_agent_count: u8,
     activity_changed_at_ms: u64,
 }
 
@@ -58,7 +58,7 @@ struct SignedActivity<'a> {
     kernel_id: &'a str,
     machine_id: &'a str,
     activity_changed_at: &'a str,
-    running_agent_count: u8,
+    working_agent_count: u8,
     sequence: u32,
 }
 
@@ -66,7 +66,7 @@ struct SignedActivity<'a> {
 #[serde(rename_all = "camelCase")]
 struct ReportActivityResponse {
     accepted_sequence: u32,
-    running_agent_count: u8,
+    working_agent_count: u8,
 }
 
 impl ManagedKernelActivityReporter {
@@ -126,7 +126,7 @@ impl ManagedKernelActivityReporter {
                                 accepted.sequence,
                                 confirmed_transition_sequence,
                                 crate::runtime::state::ManagedActivityObservation {
-                                    running_agent_count: report.running_agent_count,
+                                    working_agent_count: report.working_agent_count,
                                     changed_at_ms: report.activity_changed_at_ms,
                                 },
                             );
@@ -139,7 +139,7 @@ impl ManagedKernelActivityReporter {
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": accepted.sequence,
-                                "running_agent_count": accepted.running_agent_count,
+                                "working_agent_count": accepted.working_agent_count,
                             }),
                         );
                         let Some(snapshot) = self
@@ -221,7 +221,7 @@ impl ManagedKernelActivityReporter {
                                 "machine_id": self.binding.machine_id,
                                 "kernel_id": self.binding.kernel_id,
                                 "sequence": report.sequence,
-                                "running_agent_count": report.running_agent_count,
+                                "working_agent_count": report.working_agent_count,
                                 "retry_delay_ms": retry_delay.as_millis(),
                                 "error": error.to_string(),
                             }),
@@ -357,13 +357,13 @@ impl ManagedKernelActivityReporter {
         let signature = activity_signature(
             &self.binding,
             report.sequence,
-            report.running_agent_count,
+            report.working_agent_count,
             &activity_changed_at,
         )?;
         let mut payload = signed_activity_value(
             &self.binding,
             report.sequence,
-            report.running_agent_count,
+            report.working_agent_count,
             &activity_changed_at,
         )?;
         payload["machineCredential"] = self.binding.machine_credential.clone().into();
@@ -444,11 +444,11 @@ impl ActivityCursor {
         let report = match self.accepted {
             None => AcceptedActivity {
                 sequence: 1,
-                running_agent_count: observation.running_agent_count,
+                working_agent_count: observation.working_agent_count,
                 activity_changed_at_ms: observation.changed_at_ms,
             },
             Some(accepted)
-                if accepted.running_agent_count == observation.running_agent_count
+                if accepted.working_agent_count == observation.working_agent_count
                     && accepted.activity_changed_at_ms == observation.changed_at_ms
                     && local_transition_sequence.is_none_or(|sequence| {
                         self.accepted_local_transition_sequence == Some(sequence)
@@ -459,7 +459,7 @@ impl ActivityCursor {
             }
             Some(accepted) if accepted.sequence < MAX_ACTIVITY_SEQUENCE => AcceptedActivity {
                 sequence: accepted.sequence + 1,
-                running_agent_count: observation.running_agent_count,
+                working_agent_count: observation.working_agent_count,
                 activity_changed_at_ms: observation.changed_at_ms,
             },
             Some(_) => return Err(activity_error("managed activity sequence is exhausted")),
@@ -478,7 +478,6 @@ impl ActivityCursor {
         })?;
         if response.accepted_sequence < pending.sequence
             || response.accepted_sequence > MAX_ACTIVITY_SEQUENCE
-            || response.running_agent_count > 1
         {
             return Err(activity_error(
                 "Cloud returned an invalid managed activity result",
@@ -486,11 +485,11 @@ impl ActivityCursor {
         }
         let accepted = AcceptedActivity {
             sequence: response.accepted_sequence,
-            running_agent_count: response.running_agent_count,
+            working_agent_count: response.working_agent_count,
             activity_changed_at_ms: pending.activity_changed_at_ms,
         };
         if response.accepted_sequence == pending.sequence
-            && response.running_agent_count == pending.running_agent_count
+            && response.working_agent_count == pending.working_agent_count
         {
             self.confirmed_local_transition_sequence = self.pending_local_transition_sequence;
             self.accepted_local_transition_sequence = self.pending_local_transition_sequence;
@@ -508,7 +507,7 @@ impl ActivityCursor {
 fn signed_activity_value(
     binding: &ManagedKernelActivityBinding,
     sequence: u32,
-    running_agent_count: u8,
+    working_agent_count: u8,
     activity_changed_at: &str,
 ) -> Result<serde_json::Value, DaemonError> {
     let value = serde_json::to_value(&SignedActivity {
@@ -517,7 +516,7 @@ fn signed_activity_value(
         kernel_id: &binding.kernel_id,
         machine_id: &binding.machine_id,
         activity_changed_at,
-        running_agent_count,
+        working_agent_count,
         sequence,
     })
     .map_err(|error| activity_error(format!("could not encode managed activity: {error}")))?;
@@ -527,10 +526,10 @@ fn signed_activity_value(
 fn activity_signature(
     binding: &ManagedKernelActivityBinding,
     sequence: u32,
-    running_agent_count: u8,
+    working_agent_count: u8,
     activity_changed_at: &str,
 ) -> Result<String, DaemonError> {
-    let value = signed_activity_value(binding, sequence, running_agent_count, activity_changed_at)?;
+    let value = signed_activity_value(binding, sequence, working_agent_count, activity_changed_at)?;
     // Sort explicitly so the signature does not depend on serde_json's map feature flags.
     let fields: std::collections::BTreeMap<_, _> = value
         .as_object()
@@ -589,11 +588,11 @@ mod tests {
     }
 
     fn observation(
-        running_agent_count: u8,
+        working_agent_count: u8,
         changed_at_ms: u64,
     ) -> crate::runtime::state::ManagedActivityObservation {
         crate::runtime::state::ManagedActivityObservation {
-            running_agent_count,
+            working_agent_count,
             changed_at_ms,
         }
     }
@@ -609,7 +608,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: report.sequence,
-                running_agent_count: 1,
+                working_agent_count: 1,
             })
             .expect("Cloud response should be accepted");
         assert_eq!(cursor.take_confirmed_local_transition_sequence(), None);
@@ -622,7 +621,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: report.sequence,
-                running_agent_count: report.running_agent_count,
+                working_agent_count: report.working_agent_count,
             })
             .expect("exact Cloud response should be accepted");
         assert_eq!(cursor.take_confirmed_local_transition_sequence(), Some(7));
@@ -635,7 +634,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: report.sequence + 1,
-                running_agent_count: report.running_agent_count,
+                working_agent_count: report.working_agent_count,
             })
             .expect("Cloud may report a newer accepted sequence");
         assert_eq!(cursor.take_confirmed_local_transition_sequence(), None);
@@ -654,16 +653,16 @@ mod tests {
                 kernel_id: "kernel-1",
                 machine_id: "machine-1",
                 activity_changed_at: "1970-01-01T00:00:01.000Z",
-                running_agent_count: 1,
+                working_agent_count: 3,
                 sequence: 7,
             })
             .expect("activity should serialize"),
-            "{\"accountId\":\"acct-1\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"activityChangedAt\":\"1970-01-01T00:00:01.000Z\",\"runningAgentCount\":1,\"sequence\":7}"
+            "{\"accountId\":\"acct-1\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"activityChangedAt\":\"1970-01-01T00:00:01.000Z\",\"workingAgentCount\":3,\"sequence\":7}"
         );
         assert_eq!(
-            activity_signature(&binding(), 7, 1, "1970-01-01T00:00:01.000Z")
+            activity_signature(&binding(), 7, 3, "1970-01-01T00:00:01.000Z")
                 .expect("activity should sign"),
-            "sha256:2e4cc0ff504b4222281a8bc3e08349cc78b9591fec4d0abd08ff14f1a1598351"
+            "sha256:4df64b916da61a9c4f93925088e2fc19c1739a708cd2e2cc856a29c900992045"
         );
     }
 
@@ -674,28 +673,28 @@ mod tests {
             cursor.next_report(observation(1, 1_000)).expect("report"),
             Some(AcceptedActivity {
                 sequence: 1,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 1_000,
             })
         );
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 9,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("stale response should synchronize");
         assert_eq!(
             cursor.next_report(observation(1, 1_000)).expect("report"),
             Some(AcceptedActivity {
                 sequence: 10,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 1_000,
             })
         );
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 10,
-                running_agent_count: 1,
+                working_agent_count: 1,
             })
             .expect("transition should synchronize");
         assert_eq!(
@@ -713,14 +712,14 @@ mod tests {
                 .expect("restart report"),
             Some(AcceptedActivity {
                 sequence: 1,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 1_000,
             })
         );
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 1,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("stored Cloud cursor should synchronize");
         assert_eq!(
@@ -729,7 +728,7 @@ mod tests {
                 .expect("corrective report"),
             Some(AcceptedActivity {
                 sequence: 2,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 1_000,
             })
         );
@@ -744,14 +743,14 @@ mod tests {
                 .expect("restart report"),
             Some(AcceptedActivity {
                 sequence: 1,
-                running_agent_count: 0,
+                working_agent_count: 0,
                 activity_changed_at_ms: 1_000,
             })
         );
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 51,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("stored Cloud cursor should synchronize");
         assert_eq!(
@@ -760,7 +759,7 @@ mod tests {
                 .expect("post-start confirmation"),
             Some(AcceptedActivity {
                 sequence: 52,
-                running_agent_count: 0,
+                working_agent_count: 0,
                 activity_changed_at_ms: 1_000,
             }),
             "a replayed restart report must be followed by a fresh report even when the count is unchanged"
@@ -787,7 +786,7 @@ mod tests {
                 &mut first_stream,
                 &serde_json::json!({
                     "acceptedSequence": 51,
-                    "runningAgentCount": 0,
+                    "workingAgentCount": 0,
                 }),
             );
 
@@ -797,7 +796,7 @@ mod tests {
                 &mut second_stream,
                 &serde_json::json!({
                     "acceptedSequence": 52,
-                    "runningAgentCount": 1,
+                    "workingAgentCount": 1,
                 }),
             );
             second_request_tx
@@ -827,7 +826,7 @@ mod tests {
             .expect("first activity fixture should stay available");
         let first_body = http_request_body(&first_request);
         assert_eq!(first_body["sequence"], 1);
-        assert_eq!(first_body["runningAgentCount"], 0);
+        assert_eq!(first_body["workingAgentCount"], 0);
 
         runtime.start_active_turn_with_trace_id(
             "session-1",
@@ -849,7 +848,7 @@ mod tests {
         let second_body = http_request_body(&second_request);
         assert_eq!(second_body["sequence"], 52);
         assert_eq!(
-            second_body["runningAgentCount"], 1,
+            second_body["workingAgentCount"], 1,
             "the confirmation must use activity observed while the restart report was in flight"
         );
 
@@ -879,7 +878,7 @@ mod tests {
                 &mut first_stream,
                 &serde_json::json!({
                     "acceptedSequence": 1,
-                    "runningAgentCount": 1,
+                    "workingAgentCount": 1,
                 }),
             );
 
@@ -889,7 +888,7 @@ mod tests {
                 &mut idle_stream,
                 &serde_json::json!({
                     "acceptedSequence": 2,
-                    "runningAgentCount": 0,
+                    "workingAgentCount": 0,
                 }),
             );
             idle_request_tx
@@ -930,13 +929,13 @@ mod tests {
             .await
             .expect("active report should arrive")
             .expect("activity fixture should stay available");
-        assert_eq!(first_request["runningAgentCount"], 1);
+        assert_eq!(first_request["workingAgentCount"], 1);
 
         runtime.clear_prompt_activity_for_managed_activity_test("provider-run-1");
         let (_, idle_observation) = runtime
             .managed_activity_report_snapshot()
             .expect("idle transition should already be durable");
-        assert_eq!(idle_observation.running_agent_count, 0);
+        assert_eq!(idle_observation.working_agent_count, 0);
         let expected_changed_at =
             canonical_activity_timestamp(idle_observation.changed_at_ms).expect("canonical T0");
         release_first_tx
@@ -948,7 +947,7 @@ mod tests {
             .expect("idle report should arrive")
             .expect("activity fixture should stay available");
         assert_eq!(idle_request["sequence"], 2);
-        assert_eq!(idle_request["runningAgentCount"], 0);
+        assert_eq!(idle_request["workingAgentCount"], 0);
         assert_eq!(idle_request["activityChangedAt"], expected_changed_at);
 
         shutdown_tx.send(true).expect("stop activity reporter");
@@ -973,7 +972,7 @@ mod tests {
                 &mut initial_stream,
                 &serde_json::json!({
                     "acceptedSequence": 1,
-                    "runningAgentCount": 0,
+                    "workingAgentCount": 0,
                 }),
             );
             initial_request_tx
@@ -986,7 +985,7 @@ mod tests {
                 &mut recovered_stream,
                 &serde_json::json!({
                     "acceptedSequence": 2,
-                    "runningAgentCount": 1,
+                    "workingAgentCount": 1,
                 }),
             );
             recovered_request_tx
@@ -1015,7 +1014,7 @@ mod tests {
             .await
             .expect("initial report should arrive")
             .expect("activity fixture should stay available");
-        assert_eq!(initial_request["runningAgentCount"], 0);
+        assert_eq!(initial_request["workingAgentCount"], 0);
 
         let database = rusqlite::Connection::open(state_path)
             .expect("durable database should open for failure injection");
@@ -1054,7 +1053,7 @@ mod tests {
             .await
             .expect("recovered report should arrive")
             .expect("activity fixture should stay available");
-        assert_eq!(recovered_request["runningAgentCount"], 1);
+        assert_eq!(recovered_request["workingAgentCount"], 1);
         let recovered_changed_at = chrono::DateTime::parse_from_rfc3339(
             recovered_request["activityChangedAt"]
                 .as_str()
@@ -1129,7 +1128,7 @@ mod tests {
                     &mut stream,
                     &serde_json::json!({
                         "acceptedSequence": accepted_sequence,
-                        "runningAgentCount": 0,
+                        "workingAgentCount": 0,
                     }),
                 );
             }
@@ -1205,7 +1204,7 @@ mod tests {
                 &mut recovered_stream,
                 &serde_json::json!({
                     "acceptedSequence": 51,
-                    "runningAgentCount": 0,
+                    "workingAgentCount": 0,
                 }),
             );
             let accepted_at = std::time::Instant::now();
@@ -1216,7 +1215,7 @@ mod tests {
                 &mut confirmation_stream,
                 &serde_json::json!({
                     "acceptedSequence": 52,
-                    "runningAgentCount": 0,
+                    "workingAgentCount": 0,
                 }),
             );
             confirmation_tx
@@ -1244,7 +1243,7 @@ mod tests {
                 .expect("recovered confirmation should arrive")
                 .expect("activity fixture should stay available");
         assert_eq!(confirmation["sequence"], 52);
-        assert_eq!(confirmation["runningAgentCount"], 0);
+        assert_eq!(confirmation["workingAgentCount"], 0);
         assert!(
             confirmation_delay < Duration::from_millis(1_800),
             "transport failures must not inflate the first successful confirmation delay: {confirmation_delay:?}"
@@ -1274,7 +1273,7 @@ mod tests {
                     &mut stream,
                     &serde_json::json!({
                         "acceptedSequence": accepted_sequence,
-                        "runningAgentCount": 0,
+                        "workingAgentCount": 0,
                     }),
                 );
             }
@@ -1284,7 +1283,7 @@ mod tests {
                 &mut stream,
                 &serde_json::json!({
                     "acceptedSequence": 71,
-                    "runningAgentCount": 1,
+                    "workingAgentCount": 1,
                 }),
             );
             transition_confirmation_tx
@@ -1334,7 +1333,7 @@ mod tests {
             .expect("real activity transition should wake confirmation backoff")
             .expect("activity fixture should stay available");
         assert_eq!(confirmation["sequence"], 71);
-        assert_eq!(confirmation["runningAgentCount"], 1);
+        assert_eq!(confirmation["workingAgentCount"], 1);
 
         shutdown_tx.send(true).expect("stop activity reporter");
         tokio::time::timeout(Duration::from_secs(2), reporter_task)
@@ -1399,7 +1398,7 @@ mod tests {
         let mut cursor = ActivityCursor::default();
         let initial = AcceptedActivity {
             sequence: 1,
-            running_agent_count: 0,
+            working_agent_count: 0,
             activity_changed_at_ms: 1_000,
         };
         assert_eq!(
@@ -1418,7 +1417,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 1,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("initial report should be acknowledged");
         assert_eq!(
@@ -1427,7 +1426,7 @@ mod tests {
                 .expect("new transition"),
             Some(AcceptedActivity {
                 sequence: 2,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 2_000,
             })
         );
@@ -1442,13 +1441,13 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 1,
-                running_agent_count: 1,
+                working_agent_count: 1,
             })
             .expect("initial report should be acknowledged");
 
         let idle = AcceptedActivity {
             sequence: 2,
-            running_agent_count: 0,
+            working_agent_count: 0,
             activity_changed_at_ms: 2_000,
         };
         assert_eq!(
@@ -1467,7 +1466,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 2,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("idle report should be acknowledged");
         assert_eq!(
@@ -1476,7 +1475,7 @@ mod tests {
                 .expect("active correction"),
             Some(AcceptedActivity {
                 sequence: 3,
-                running_agent_count: 1,
+                working_agent_count: 1,
                 activity_changed_at_ms: 3_000,
             })
         );
@@ -1504,7 +1503,7 @@ mod tests {
         cursor
             .accept_response(ReportActivityResponse {
                 accepted_sequence: 1,
-                running_agent_count: 0,
+                working_agent_count: 0,
             })
             .expect("first idle should be acknowledged");
         assert_eq!(
@@ -1513,7 +1512,7 @@ mod tests {
                 .expect("later idle transition"),
             Some(AcceptedActivity {
                 sequence: 2,
-                running_agent_count: 0,
+                working_agent_count: 0,
                 activity_changed_at_ms: 3_000,
             }),
             "the intervening busy cycle must reset the idle transition clock"
@@ -1553,4 +1552,5 @@ mod tests {
         config.host_machine_id = "different-machine".to_string();
         assert!(ManagedKernelActivityReporter::from_runtime(&config, Some(&registration)).is_err());
     }
+    mod working_agents;
 }

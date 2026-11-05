@@ -12,6 +12,7 @@ use crate::local::{
     EnvironmentOperationEntryState, EnvironmentOperationState,
 };
 use crate::secret::CredentialVaultStore;
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -36,6 +37,7 @@ pub(crate) struct SourceSnapshot {
 /// One slice of a source file and the size of the whole file.
 pub(crate) struct FileSlice {
     pub size_bytes: u64,
+    pub sha256: String,
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
@@ -81,7 +83,7 @@ pub(crate) struct ImportTarget<'a> {
     pub checkout: &'a Path,
     pub store: &'a ProjectEnvironmentStore,
     pub vault: &'a dyn CredentialVaultStore,
-    /// Called with the record after a newer one was adopted, so the Files rules follow it.
+    /// Called with the effective record before planning, so the Files rules follow it.
     pub on_record: &'a (dyn Fn(&ProjectEnvironmentRecord) + Send + Sync),
 }
 
@@ -262,41 +264,33 @@ pub(crate) async fn run_import<S: EnvironmentSource>(
         }
     };
     handle.update(|view| view.source_label = Some(snapshot.label.clone()));
-    let local = match target.store.load(target.project_id) {
-        Ok(local) => local,
+    // Choose under the store's write lock: a Save may have advanced the local record
+    // while the source snapshot was in flight. File rules and imports use that same choice.
+    let record = match snapshot.record.clone() {
+        Some(source_record) => target
+            .store
+            .adopt(target.project_id, source_record)
+            .map(Some),
+        None => target.store.load(target.project_id),
+    };
+    let record = match record {
+        Ok(Some(record)) => record,
+        Ok(None) => {
+            handle.finish(
+                EnvironmentOperationState::Failed,
+                Some(format!(
+                    "{} has no Environment for this Project",
+                    snapshot.label
+                )),
+            );
+            return;
+        }
         Err(error) => {
             handle.finish(EnvironmentOperationState::Failed, Some(error.to_string()));
             return;
         }
     };
-    let local_revision = local.as_ref().map_or(0, |record| record.revision);
-    let record = match snapshot.record.clone() {
-        Some(source_record) if source_record.revision > local_revision => {
-            match target.store.adopt(target.project_id, source_record.clone()) {
-                Ok(()) => {
-                    (target.on_record)(&source_record);
-                    source_record
-                }
-                Err(error) => {
-                    handle.finish(EnvironmentOperationState::Failed, Some(error.to_string()));
-                    return;
-                }
-            }
-        }
-        _ => match local {
-            Some(local) => local,
-            None => {
-                handle.finish(
-                    EnvironmentOperationState::Failed,
-                    Some(format!(
-                        "{} has no Environment for this Project",
-                        snapshot.label
-                    )),
-                );
-                return;
-            }
-        },
-    };
+    (target.on_record)(&record);
     let planned = plan(&record, requested.as_deref(), &target);
     handle.update(|view| {
         view.entries = planned.iter().map(|(entry, _)| entry.clone()).collect();
@@ -399,14 +393,19 @@ async fn import_entry<S: EnvironmentSource>(
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
-            target
+            let inserted = target
                 .vault
-                .set_secret(
+                .insert_secret_if_absent(
                     &project_environment_vault_service(target.project_id),
                     &entry.name,
                     &value,
                 )
-                .map_err(vault_failure)
+                .map_err(vault_failure)?;
+            if inserted {
+                Ok(())
+            } else {
+                Err(ImportFailure::Entry("Already in the Vault".into()))
+            }
         }
         EnvironmentEntryKind::File => {
             if !snapshot.files.contains(&entry.name) {
@@ -417,6 +416,8 @@ async fn import_entry<S: EnvironmentSource>(
             }
             let mut writer: Option<FileWriter> = None;
             let mut written = 0_u64;
+            let mut expected: Option<(u64, String)> = None;
+            let mut digest = Sha256::new();
             loop {
                 let slice = source
                     .pull_file(target.project_id, &entry.name, written)
@@ -428,6 +429,15 @@ async fn import_entry<S: EnvironmentSource>(
                 {
                     return Err(ImportFailure::Entry("Too large to import".into()));
                 }
+                if let Some((size, sha256)) = &expected {
+                    if slice.size_bytes != *size || slice.sha256 != *sha256 {
+                        return Err(ImportFailure::Entry(
+                            "The file changed while it was imported".into(),
+                        ));
+                    }
+                } else {
+                    expected = Some((slice.size_bytes, slice.sha256));
+                }
                 let writer = match &mut writer {
                     Some(writer) => writer,
                     empty => empty.insert(
@@ -436,6 +446,7 @@ async fn import_entry<S: EnvironmentSource>(
                     ),
                 };
                 writer.append(&slice.bytes).map_err(ImportFailure::Entry)?;
+                digest.update(&slice.bytes);
                 written += slice.bytes.len() as u64;
                 if written >= slice.size_bytes {
                     if written != slice.size_bytes {
@@ -450,6 +461,11 @@ async fn import_entry<S: EnvironmentSource>(
                         "The file changed while it was imported".into(),
                     ));
                 }
+            }
+            if format!("{:x}", digest.finalize()) != expected.expect("at least one slice").1 {
+                return Err(ImportFailure::Entry(
+                    "The file changed while it was imported".into(),
+                ));
             }
             writer
                 .expect("a file with at least one slice")
@@ -546,6 +562,21 @@ mod tests {
                 .insert((service.into(), key.into()), value.into());
             Ok(())
         }
+        fn insert_secret_if_absent(
+            &self,
+            service: &str,
+            key: &str,
+            value: &str,
+        ) -> Result<bool, DaemonError> {
+            use std::collections::hash_map::Entry;
+            match self.0.lock().unwrap().entry((service.into(), key.into())) {
+                Entry::Occupied(_) => Ok(false),
+                Entry::Vacant(entry) => {
+                    entry.insert(value.into());
+                    Ok(true)
+                }
+            }
+        }
         fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
             self.0.lock().unwrap().remove(&(service.into(), key.into()));
             Ok(())
@@ -558,7 +589,10 @@ mod tests {
         pulls: Mutex<Vec<String>>,
         offline_after_read: bool,
         gate: Option<Arc<tokio::sync::Notify>>,
+        secret_gate: Option<Arc<tokio::sync::Notify>>,
         slice_bytes: usize,
+        rewrite_after_first_slice: bool,
+        corrupt_bytes: bool,
     }
 
     impl EnvironmentSource for FakeSource {
@@ -574,6 +608,9 @@ mod tests {
             if self.offline_after_read {
                 return Err(SourceError::Offline);
             }
+            if let Some(gate) = &self.secret_gate {
+                gate.notified().await;
+            }
             Ok(Some(Zeroizing::new(format!("synthetic-{name}"))))
         }
         async fn pull_file(
@@ -586,11 +623,19 @@ mod tests {
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
-            let content = format!("content of {path}").into_bytes();
+            let mut content = format!("content of {path}").into_bytes();
+            if self.rewrite_after_first_slice && offset > 0 {
+                content.fill(b'x');
+            }
             let end = content.len().min(offset as usize + self.slice_bytes);
+            let mut bytes = content[offset as usize..end].to_vec();
+            if self.corrupt_bytes && !bytes.is_empty() {
+                bytes[0] ^= 1;
+            }
             Ok(Some(FileSlice {
                 size_bytes: content.len() as u64,
-                bytes: Zeroizing::new(content[offset as usize..end].to_vec()),
+                sha256: format!("{:x}", Sha256::digest(&content)),
+                bytes: Zeroizing::new(bytes),
             }))
         }
     }
@@ -610,7 +655,10 @@ mod tests {
             pulls: Mutex::default(),
             offline_after_read: false,
             gate: None,
+            secret_gate: None,
             slice_bytes: usize::MAX / 2,
+            rewrite_after_first_slice: false,
+            corrupt_bytes: false,
         }
     }
 
@@ -632,7 +680,7 @@ mod tests {
         store: ProjectEnvironmentStore,
         vault: MemoryVault,
         operations: Arc<EnvironmentOperations>,
-        adopted: Mutex<Vec<u64>>,
+        registered: Mutex<Vec<u64>>,
     }
 
     impl Rig {
@@ -647,7 +695,7 @@ mod tests {
                 store: ProjectEnvironmentStore::new(&root.join("state")),
                 operations: EnvironmentOperations::new(&root.join("state")),
                 vault: MemoryVault::default(),
-                adopted: Mutex::default(),
+                registered: Mutex::default(),
                 checkout,
                 root,
             }
@@ -681,7 +729,7 @@ mod tests {
             requested: Option<Vec<EnvironmentEntryRef>>,
         ) -> EnvironmentOperationView {
             let on_record = |record: &ProjectEnvironmentRecord| {
-                self.adopted.lock().unwrap().push(record.revision)
+                self.registered.lock().unwrap().push(record.revision)
             };
             run_import(
                 self.begin(id),
@@ -713,6 +761,70 @@ mod tests {
             .iter()
             .map(|entry| (entry.name.clone(), entry.state, entry.reason.clone()))
             .collect()
+    }
+
+    #[tokio::test]
+    async fn secret_entered_while_import_is_fetching_survives() {
+        use crate::secret::{
+            create_chariox_encrypted_vault_for_test, unlock_chariox_encrypted_vault,
+            VaultUnlockLease,
+        };
+        let rig = Rig::new();
+        let path = rig.root.join("vault");
+        create_chariox_encrypted_vault_for_test(&path, "test-passphrase").unwrap();
+        unlock_chariox_encrypted_vault(&path, "test-passphrase", VaultUnlockLease::KernelShutdown)
+            .unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.path = path.to_string_lossy().into_owned();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        let vault = crate::secret::project_environment_vault(&config).unwrap();
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut from = source(Some(record(1, &["KEY"], &[])), &["KEY"], &[]);
+        from.secret_gate = Some(gate.clone());
+        let handle = rig.begin("racing-secret");
+        let on_record = |_: &ProjectEnvironmentRecord| {};
+        let import = run_import(
+            handle,
+            &from,
+            ImportTarget {
+                project_id: "p",
+                checkout: &rig.checkout,
+                store: &rig.store,
+                vault: vault.as_ref(),
+                on_record: &on_record,
+            },
+            None,
+        );
+        let save = async {
+            while from.pulls.lock().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            vault
+                .set_secret(
+                    &project_environment_vault_service("p"),
+                    "KEY",
+                    "owner-entered",
+                )
+                .unwrap();
+            gate.notify_one();
+        };
+        tokio::join!(import, save);
+        assert_eq!(
+            vault
+                .get_secret(&project_environment_vault_service("p"), "KEY")
+                .unwrap(),
+            "owner-entered"
+        );
+        let view = rig.operations.get("racing-secret").unwrap().unwrap();
+        assert_eq!(
+            view.entries[0].state,
+            EnvironmentOperationEntryState::Failed
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("Already in the Vault")
+        );
     }
 
     #[tokio::test]
@@ -749,7 +861,7 @@ mod tests {
         );
         assert_eq!(view.state, EnvironmentOperationState::Failed);
         assert_eq!(rig.store.load("p").unwrap().unwrap().revision, 2);
-        assert_eq!(*rig.adopted.lock().unwrap(), vec![2]);
+        assert_eq!(*rig.registered.lock().unwrap(), vec![2]);
         let service = project_environment_vault_service("p");
         assert_eq!(
             rig.vault.find_secret(&service, "A_KEY").unwrap().as_deref(),
@@ -806,6 +918,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn same_length_source_rewrite_between_chunks_is_not_published() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &[".env"])), &[], &[".env"]);
+        from.slice_bytes = 5;
+        from.rewrite_after_first_slice = true;
+        let view = rig.import("rewritten", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Failed);
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join(".env").exists());
+        assert_eq!(
+            std::fs::read_dir(&rig.checkout).unwrap().count(),
+            0,
+            "partial bytes removed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_consistent_source_digest_must_match_the_assembled_file() {
+        let rig = Rig::new();
+        let mut from = source(Some(record(1, &[], &[".env"])), &[], &[".env"]);
+        from.slice_bytes = 5;
+        from.corrupt_bytes = true;
+        let view = rig.import("damaged", &from, None).await;
+        assert_eq!(view.state, EnvironmentOperationState::Failed);
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join(".env").exists());
+        assert_eq!(std::fs::read_dir(&rig.checkout).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
     async fn a_folder_that_links_out_of_the_checkout_is_not_written_into() {
         let rig = Rig::new();
         let outside = rig.root.join("outside");
@@ -840,6 +988,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_retained_local_record_drives_both_import_planning_and_export_rules() {
+        use super::super::{environment_file_rules, register_environment_files};
+        let rig = Rig::new();
+        rig.store.save("p", 0, record(0, &[], &[])).unwrap();
+        let initially_read = rig.store.load("p").unwrap().unwrap();
+        let from = source(
+            Some(record(2, &["SOURCE"], &["source.json"])),
+            &["SOURCE", "SAVED"],
+            &["source.json", "saved.json"],
+        );
+        // A local edit overtakes the source snapshot before Import adopts it.
+        rig.store
+            .save(
+                "p",
+                initially_read.revision,
+                record(0, &["SAVED"], &["saved.json"]),
+            )
+            .unwrap();
+        let observed = Mutex::new(None);
+        let on_record = |record: &ProjectEnvironmentRecord| {
+            register_environment_files(std::slice::from_ref(&rig.checkout), &record.files);
+            *observed.lock().unwrap() = Some(record.clone());
+        };
+        run_import(
+            rig.begin("saved-before-adoption"),
+            &from,
+            ImportTarget {
+                project_id: "p",
+                checkout: &rig.checkout,
+                store: &rig.store,
+                vault: &rig.vault,
+                on_record: &on_record,
+            },
+            None,
+        )
+        .await;
+        let view = rig
+            .operations
+            .get("saved-before-adoption")
+            .unwrap()
+            .unwrap();
+        let rules = environment_file_rules(&rig.checkout);
+        register_environment_files(std::slice::from_ref(&rig.checkout), &[]);
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(
+            view.entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SAVED", "saved.json"]
+        );
+        let retained = rig.store.load("p").unwrap().unwrap();
+        assert_eq!(*observed.lock().unwrap(), Some(retained));
+        assert_eq!(rules, vec!["!saved.json"]);
+        assert!(rig.checkout.join("saved.json").exists());
+        assert!(!rig.checkout.join("source.json").exists());
+    }
+
+    #[tokio::test]
     async fn an_older_source_record_does_not_replace_this_kernels_newer_one() {
         let rig = Rig::new();
         rig.store.adopt("p", record(5, &["LOCAL"], &[])).unwrap();
@@ -849,7 +1056,7 @@ mod tests {
             rig.store.load("p").unwrap().unwrap().secrets,
             vec!["LOCAL".to_string()]
         );
-        assert!(rig.adopted.lock().unwrap().is_empty());
+        assert_eq!(*rig.registered.lock().unwrap(), vec![5]);
         assert_eq!(states(&view)[0].0, "LOCAL");
     }
 

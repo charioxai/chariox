@@ -2,6 +2,7 @@ mod cloud;
 mod context_plan;
 mod data_volume_observation;
 mod freshness;
+pub mod grant_redemption;
 mod provider_path;
 mod release;
 mod state;
@@ -338,7 +339,6 @@ fn prepare_managed_kernel_with_documents(
         (Some(receipt), envelope) => {
             if let Some(value) = envelope.as_ref() {
                 validate_envelope_receipt_compatibility(value, &receipt)?;
-                reconcile_legacy_confirmed_grant_binding(config, cloud, value, &receipt)?;
             }
             resume_registration(config, envelope.as_ref(), receipt, &identity, &release)?
         }
@@ -468,6 +468,7 @@ fn validate_envelope_receipt_compatibility(
     // have been updated in place; its installed release is verified against the
     // receipt instead.
     if envelope.environment_id != receipt.environment_id
+        || envelope.is_redeemed() && receipt.status != BootstrapReceiptStatus::Confirmed
         || receipt.status == BootstrapReceiptStatus::Exchanged
             && envelope.runtime_release_digest != receipt.runtime_release_digest
         || envelope_repository_root != receipt_repository_root
@@ -490,6 +491,11 @@ fn begin_registration(
     identity: &ManagedRuntimeIdentity,
     release: &VerifiedRelease,
 ) -> Result<Option<PendingConfirmation>, DaemonError> {
+    if envelope.is_redeemed() {
+        return Err(bootstrap_error(
+            "managed bootstrap grant was already redeemed and cannot start a registration",
+        ));
+    }
     if envelope.expires_at()? <= now {
         return Err(bootstrap_error(
             "managed bootstrap token expired before exchange",
@@ -1100,13 +1106,6 @@ fn validate_receipt_envelope_grant_binding(
     let expected = ManagedBootstrapGrantBinding::for_receipt(envelope, receipt);
     match ManagedBootstrapGrantBinding::read_for_receipt(&config.receipt_path)? {
         Some(binding) if binding == expected => Ok(()),
-        // A schema 1 binding of this exact receipt predates in-place updates;
-        // rebind it by identity.
-        Some(binding)
-            if binding == ManagedBootstrapGrantBinding::legacy_for_receipt(envelope, receipt) =>
-        {
-            expected.persist_for_receipt(&config.receipt_path)
-        }
         Some(binding)
             if receipt.status == BootstrapReceiptStatus::Exchanged
                 && binding.grant_binding_digest == expected.grant_binding_digest

@@ -53,26 +53,45 @@ fn skipped(path: &str) -> bool {
 
 /// Names of files Git ignores in `checkout`; empty for a folder that is not a Git checkout.
 fn ignored_files(checkout: &Path) -> Vec<String> {
-    let Ok(output) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(checkout)
-        .args([
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "--directory",
-        ])
-        .output()
-    else {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mut command = std::process::Command::new("git");
+    command.arg("-C").arg(checkout).args([
+        "ls-files",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "-z",
+        "--",
+        ".",
+    ]);
+    // Exclude generated trees in Git's traversal, before they can fill the name budget.
+    for folder in SKIPPED_FOLDERS {
+        command.arg(format!(":(exclude,glob)**/{folder}/**"));
+    }
+    let Ok(mut child) = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
         return Vec::new();
     };
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|path| !path.ends_with('/') && !skipped(path))
-        .take(LISTED_NAMES)
-        .map(str::to_owned)
-        .collect()
+    let mut names = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        for path in BufReader::new(stdout).split(0) {
+            let Ok(path) = path else { break };
+            let path = String::from_utf8_lossy(&path).into_owned();
+            if !skipped(&path) {
+                names.push(path);
+                if names.len() == LISTED_NAMES {
+                    break;
+                }
+            }
+        }
+    }
+    // The bounded list is complete; do not let Git enumerate the rest of a large checkout.
+    if child.id() > 1 {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+    names
 }
 
 fn top_level_names(checkout: &Path) -> Vec<String> {
@@ -226,6 +245,80 @@ mod tests {
         assert!(!prompt.contains("synthetic-private-value"));
         assert!(!prompt.contains("x.js"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn draft_and_check_list_files_inside_ignored_directories_and_prune_generated_folders() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.join("config/private/node_modules")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+        std::fs::write(
+            dir.join(".gitignore"),
+            "config/private/\n.env\nnode_modules/\n",
+        )
+        .unwrap();
+        for name in [
+            ".env",
+            "config/private/settings.json",
+            "config/private/with space.json",
+            "config/private/line\nbreak.json",
+            "config/private/node_modules/skip.json",
+            "node_modules/skip.json",
+        ] {
+            std::fs::write(dir.join(name), "synthetic-private-contents").unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let expected = vec![
+            ".env",
+            "config/private/line\nbreak.json",
+            "config/private/settings.json",
+            "config/private/with space.json",
+        ];
+        let names = ignored_files(&dir);
+        let facts = draft_facts(&dir);
+        let draft = draft_prompt(&dir);
+        let check = super::super::check_prompt(&facts, &ProjectEnvironmentRecord::default());
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(names, expected);
+        for prompt in [draft, check] {
+            assert!(prompt.contains("config/private/settings.json"));
+            assert!(!prompt.contains("skip.json"));
+            assert!(!prompt.contains("synthetic-private-contents"));
+        }
+    }
+
+    #[test]
+    fn ignored_file_enumeration_keeps_the_name_bound_inside_an_ignored_directory() {
+        let dir = scratch();
+        std::fs::create_dir_all(dir.join("private/node_modules")).unwrap();
+        std::fs::write(dir.join(".gitignore"), "private/\n").unwrap();
+        for index in 0..(LISTED_NAMES + 10) {
+            std::fs::write(dir.join(format!("private/{index:03}.json")), "").unwrap();
+            std::fs::write(
+                dir.join(format!("private/node_modules/{index:03}.json")),
+                "",
+            )
+            .unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let names = ignored_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+        assert_eq!(names.len(), LISTED_NAMES);
+        assert_eq!(names[0], "private/000.json");
+        assert_eq!(names[LISTED_NAMES - 1], "private/119.json");
+        assert!(names.iter().all(|name| !name.contains("node_modules")));
     }
 
     #[test]

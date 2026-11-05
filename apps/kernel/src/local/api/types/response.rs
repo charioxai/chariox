@@ -255,6 +255,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultUnlocked { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
+    CredentialVaultKeySealed { seed: crate::secret::VaultKeySeed, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ProviderAccountPortabilityPreflightPassed {},
     ManagedEnvironmentPreReimageObserved { acknowledgement: ManagedEnvironmentPreReimageObservationAcknowledgement, },

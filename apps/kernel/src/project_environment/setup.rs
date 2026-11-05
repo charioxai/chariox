@@ -1,6 +1,7 @@
 //! Setup runs: the Project's script executed once per machine and checkout, with its output kept
 //! under the field, a Stop that ends the process, and an honest result after a kernel restart.
 use super::environment_error;
+use super::setup_output::{SetupOutput, READ_BYTES};
 use crate::error::DaemonError;
 use crate::local::{
     EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
@@ -12,11 +13,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
 const DIRECTORY: &str = "project-environment-setup";
-/// The output a run keeps; older lines are dropped first.
+/// The output a run keeps; older text is dropped first.
 const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
 /// How long output may still arrive after the script exited.
 const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -57,6 +58,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct SetupRuns {
     root: PathBuf,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
+    managed: crate::room_terminal::managed_work::ManagedWork,
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -73,7 +75,25 @@ impl SetupRuns {
         Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
             live: Mutex::new(HashMap::new()),
+            managed: Default::default(),
         })
+    }
+
+    pub(crate) fn link_managed_kernel(
+        &self,
+        gate: Arc<crate::runtime::state::ManagedKernelQuiescenceGate>,
+        callback: std::sync::Weak<dyn Fn() + Send + Sync>,
+    ) {
+        self.managed.link(gate, callback);
+    }
+
+    pub(crate) fn has_running_work(&self) -> bool {
+        // Keep cancelled runs counted until the child is reaped and its output has drained.
+        !lock(&self.live).is_empty()
+    }
+
+    fn report_work(&self) {
+        self.managed.report(|| self.has_running_work());
     }
 
     fn run_path(&self, operation_id: &str) -> PathBuf {
@@ -111,29 +131,33 @@ impl SetupRuns {
         }
     }
 
-    /// A run recorded as running with no live process was cut off by a kernel restart.
-    fn settle_orphan(&self, mut run: StoredRun) -> Result<StoredRun, DaemonError> {
-        if run.view.state == EnvironmentOperationState::Running
-            && !lock(&self.live).contains_key(&run.view.operation_id)
-        {
+    pub(crate) fn get(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        self.get_with_live(operation_id, &lock(&self.live))
+    }
+
+    fn get_with_live(
+        &self,
+        operation_id: &str,
+        live: &HashMap<String, Arc<LiveRun>>,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        if let Some(run) = live.get(operation_id) {
+            return Ok(Some(lock(&run.run).view.clone()));
+        }
+        let Some(mut run) = self.load(operation_id)? else {
+            return Ok(None);
+        };
+        // Admission holds the same lock until the persisted run is live. Only a restart can
+        // leave a running record without its reservation when a reader acquires the lock.
+        if run.view.state == EnvironmentOperationState::Running {
             run.view.state = EnvironmentOperationState::Failed;
             run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
             run.view.reason = Some("Kernel restarted".into());
             self.persist(&run)?;
         }
-        Ok(run)
-    }
-
-    pub(crate) fn get(
-        &self,
-        operation_id: &str,
-    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        if let Some(live) = lock(&self.live).get(operation_id) {
-            return Ok(Some(lock(&live.run).view.clone()));
-        }
-        self.load(operation_id)?
-            .map(|run| self.settle_orphan(run).map(|run| run.view))
-            .transpose()
+        Ok(Some(run.view))
     }
 
     pub(crate) fn state_for(
@@ -184,7 +208,10 @@ impl SetupRuns {
         self: &Arc<Self>,
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
-        if let Some(existing) = self.get(&spec.operation_id)? {
+        let _admission = self.managed.admission()?;
+        // Serialize competing operation ids and keep readers out until publication is complete.
+        let mut live_runs = lock(&self.live);
+        if let Some(existing) = self.get_with_live(&spec.operation_id, &live_runs)? {
             if existing.project_id != spec.project_id {
                 return Err(environment_error(
                     "this operation id belongs to another Project",
@@ -192,9 +219,11 @@ impl SetupRuns {
             }
             return Ok(existing);
         }
-        if let ProjectEnvironmentSetupState::Running { .. } =
-            self.state_for(&spec.project_id, &spec.checkout, &spec.script_digest)?
-        {
+        if live_runs.values().any(|live| {
+            let run = lock(&live.run);
+            run.view.state == EnvironmentOperationState::Running
+                && Path::new(&run.view.checkout_path) == spec.checkout
+        }) {
             return Err(environment_error("Setup is already running here"));
         }
         let view = EnvironmentOperationView {
@@ -216,17 +245,23 @@ impl SetupRuns {
             script_digest: spec.script_digest.clone(),
         };
         self.persist(&stored)?;
-        fs::write(
+        if fs::write(
             self.last_path(&spec.project_id, &spec.checkout),
             &spec.operation_id,
         )
-        .map_err(|_| environment_error("saving the Setup run failed"))?;
+        .is_err()
+        {
+            let _ = fs::remove_file(self.run_path(&spec.operation_id));
+            return Err(environment_error("saving the Setup run failed"));
+        }
         let live = Arc::new(LiveRun {
             run: Mutex::new(stored),
             pid: Mutex::new(None),
             cancelled: std::sync::atomic::AtomicBool::new(false),
         });
-        lock(&self.live).insert(spec.operation_id.clone(), Arc::clone(&live));
+        live_runs.insert(spec.operation_id.clone(), Arc::clone(&live));
+        drop(live_runs);
+        self.report_work();
         let runs = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runs.execute(&live, &spec).await;
@@ -297,23 +332,24 @@ impl SetupRuns {
         let secrets = Arc::clone(secrets);
         let runs_root = self.root.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(pipe).lines();
+            let mut pipe = pipe;
+            let mut bytes = Zeroizing::new([0_u8; READ_BYTES]);
+            let mut output = SetupOutput::default();
             let mut persisted = std::time::Instant::now();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut line = line;
-                for (name, value) in secrets.iter() {
-                    if !value.is_empty() {
-                        line = line.replace(value.as_str(), &format!("[{name}]"));
-                    }
-                }
+            loop {
+                let count = pipe.read(bytes.as_mut()).await.unwrap_or(0);
+                let text = output.push(&bytes[..count], &secrets, count == 0);
                 let snapshot = {
                     let mut run = lock(&live.run);
-                    append_tail(&mut run.view.output_tail, &line);
+                    append_tail(&mut run.view.output_tail, &text);
                     (persisted.elapsed() >= PERSIST_INTERVAL).then(|| run.clone())
                 };
                 if let Some(snapshot) = snapshot {
                     persisted = std::time::Instant::now();
                     let _ = write_run(&runs_root, &snapshot);
+                }
+                if count == 0 {
+                    break;
                 }
             }
         })
@@ -346,6 +382,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
+        self.report_work();
     }
 
     /// Ends the run's process tree by its exact PID; the run then settles as cancelled.
@@ -376,9 +413,8 @@ fn write_run(root: &Path, run: &StoredRun) -> std::io::Result<()> {
     result
 }
 
-fn append_tail(tail: &mut String, line: &str) {
-    tail.push_str(line);
-    tail.push('\n');
+fn append_tail(tail: &mut String, text: &str) {
+    tail.push_str(text);
     if tail.len() > OUTPUT_TAIL_BYTES {
         let mut cut = tail.len() - OUTPUT_TAIL_BYTES;
         while !tail.is_char_boundary(cut) {
@@ -433,6 +469,101 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         panic!("the Setup run did not finish");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_admissions_start_only_one_script_and_never_settle_a_live_run_as_restarted()
+    {
+        for _ in 0..16 {
+            let dir = scratch();
+            let runs = SetupRuns::new(&dir.0);
+            let barrier = Arc::new(std::sync::Barrier::new(3));
+            let script = "echo started >> starts; while [ ! -e release ]; do sleep 0.01; done";
+            let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut threads = Vec::new();
+            for id in ["op-a", "op-b"] {
+                let runs = Arc::clone(&runs);
+                let barrier = Arc::clone(&barrier);
+                let completed = Arc::clone(&completed);
+                let spec = spec(&dir, id, script);
+                let runtime = tokio::runtime::Handle::current();
+                threads.push(std::thread::spawn(move || {
+                    let _entered = runtime.enter();
+                    barrier.wait();
+                    let result = runs.start(spec);
+                    completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    result
+                }));
+            }
+            barrier.wait();
+            let mut polled = Vec::new();
+            while completed.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                for id in ["op-a", "op-b"] {
+                    if let Some(view) = runs.get(id).unwrap() {
+                        polled.push(view);
+                    }
+                }
+                std::thread::yield_now();
+            }
+            let results: Vec<_> = threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect();
+            let accepted: Vec<_> = results
+                .iter()
+                .filter_map(|result| result.as_ref().ok())
+                .collect();
+            let observed: Vec<_> = accepted
+                .iter()
+                .map(|view| runs.get(&view.operation_id).unwrap().unwrap())
+                .collect();
+            let state = runs
+                .state_for("project", &dir.0.join("checkout"), &digest(&[script]))
+                .unwrap();
+            // Always let every admitted script finish, including on the unfixed implementation.
+            fs::write(dir.0.join("checkout/release"), "").unwrap();
+            for view in &accepted {
+                finished(&runs, &view.operation_id).await;
+            }
+            assert!(
+                polled
+                    .iter()
+                    .all(|view| view.state == EnvironmentOperationState::Running
+                        && view.reason.is_none()),
+                "a poll falsely settled a live run"
+            );
+            assert_eq!(
+                accepted.len(),
+                1,
+                "competing requests admitted more than one Setup"
+            );
+            assert!(observed
+                .iter()
+                .all(|view| view.state == EnvironmentOperationState::Running
+                    && view.reason.is_none()));
+            assert!(matches!(
+                state,
+                ProjectEnvironmentSetupState::Running { .. }
+            ));
+            assert_eq!(
+                fs::read_to_string(dir.0.join("checkout/starts"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unpublished_run_is_removed_when_the_checkout_pointer_cannot_be_saved() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        let spec = spec(&dir, "op-unpublished", "echo should-not-start");
+        fs::create_dir_all(runs.last_path(&spec.project_id, &spec.checkout)).unwrap();
+        assert!(runs.start(spec).is_err());
+        assert!(runs.get("op-unpublished").unwrap().is_none());
+        assert!(lock(&runs.live).is_empty());
     }
 
     #[tokio::test]
@@ -564,11 +695,52 @@ mod tests {
         drop(live);
     }
 
+    #[tokio::test]
+    async fn split_secret_values_and_utf8_are_preserved_as_masked_streamed_output() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        let script = "printf 'synthetic-'; sleep 0.05; printf 'token-value'; printf '\\303'; sleep 0.05; printf '\\251'; printf '\\rcomplete'";
+        runs.start(spec(&dir, "op-split", script)).unwrap();
+        let view = finished(&runs, "op-split").await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(view.output_tail, "[NOTION_TOKEN]é\rcomplete");
+    }
+
+    #[tokio::test]
+    async fn newline_free_output_is_bounded_and_visible_before_the_script_exits() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0);
+        // A real pipe must drain well past its capacity, without a newline or EOF.
+        let script = "head -c 4194304 /dev/zero | tr '\\0' x; printf '\\rprogress!'; touch emitted; while [ ! -e release ]; do sleep 0.01; done";
+        runs.start(spec(&dir, "op-stream", script)).unwrap();
+        let emitted = dir.0.join("checkout/emitted");
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let view = runs.get("op-stream").unwrap().unwrap();
+                assert!(view.output_tail.len() <= OUTPUT_TAIL_BYTES);
+                if emitted.exists() && view.output_tail.ends_with("\rprogress!") {
+                    break view;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        // Release even when this assertion fails on the old line reader.
+        fs::write(dir.0.join("checkout/release"), "").unwrap();
+        let view = finished(&runs, "op-stream").await;
+        let observed =
+            observed.expect("output must be visible while the newline-free script is running");
+        assert_eq!(observed.state, EnvironmentOperationState::Running);
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
+        assert_eq!(view.output_tail.len(), OUTPUT_TAIL_BYTES);
+        assert!(view.output_tail.ends_with("\rprogress!"));
+    }
+
     #[test]
     fn the_output_tail_drops_the_oldest_text_on_a_character_boundary() {
         let mut tail = String::new();
         for _ in 0..OUTPUT_TAIL_BYTES {
-            append_tail(&mut tail, "é");
+            append_tail(&mut tail, "é\n");
         }
         assert!(tail.len() <= OUTPUT_TAIL_BYTES);
         assert!(tail.ends_with("é\n"));

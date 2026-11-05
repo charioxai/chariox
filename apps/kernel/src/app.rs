@@ -1234,3 +1234,6 @@ mod tests {
         let _ = std::fs::remove_file(state_path);
     }
 }
+
+#[cfg(test)]
+mod project_environment_managed_tests;

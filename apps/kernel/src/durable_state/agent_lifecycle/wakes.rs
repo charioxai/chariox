@@ -11,7 +11,7 @@ use types::{AgentWake, WakeEnd};
 pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
 /// Per-agent bound on retained finished wakes (the projection shows 64).
 const FINISHED_WAKES_RETAINED: i64 = 64;
-const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
+pub(super) const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
 const FINISHED: &str = "('fired','exited','lost','cancelled')";
 /// Kinds the ledger itself produces; a driver cannot report them.
 const LEDGER_KINDS: &[&str] = &[

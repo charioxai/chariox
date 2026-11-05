@@ -107,7 +107,7 @@ export type ManagedEnvironmentSummary = {
   readonly contextManifestDigest: string | null
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
   readonly runtimeStartedAt?: string | null
-  readonly runningAgentCount?: 0 | 1 | null
+  readonly workingAgentCount?: 0 | 1 | null
   readonly lastActivityReportedAt?: string | null
   readonly lastActivityChangedAt?: string | null
   readonly autoStopWarningAt?: string | null

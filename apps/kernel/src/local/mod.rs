@@ -99,7 +99,7 @@ pub use api::{
     RoomWorkflowRunControlOutcome, RoomWorkflowRunControlResult, RunAgentUtilityRequest,
     RunProjectEnvironmentSetupRequest, RunRemoteProjectEnvironmentSetupRequest,
     RunShellCapabilityRequest, RunWorkflowCodeArtifactRequest, RunWorkflowCodeRequest,
-    RunWorkflowRegistryEntryRequest, SaveProjectEnvironmentRequest,
+    RunWorkflowRegistryEntryRequest, SaveProjectEnvironmentRequest, SealCredentialVaultKeyRequest,
     SearchEventGeneratorCatalogRequest, SearchMetaagentCommandsRequest, SearchRecallRequest,
     SearchWorkspaceDirectoriesRequest, SemanticRecallMatch, SemanticRecallSearchUtilityInput,
     SemanticSearchRecallMode, SemanticSearchRecallRequest, SendProviderLoginInputRequest,

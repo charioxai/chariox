@@ -1254,6 +1254,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
             control_plane_url: "https://cloud.example.test".to_string(),
             environment_id: "environment-1".to_string(),
             token: format!("mkboot_{}", "b".repeat(40)),
+            redeemed_grant_binding_digest: None,
             expires_at: "2026-09-23T00:00:00Z".to_string(),
             runtime_release_digest: runtime_release_digest.to_string(),
             managed_repository_root: None,

@@ -16,8 +16,8 @@ fn signed_activity_contract() -> (String, String) {
         ("environmentId", json!("env-1")),
         ("kernelId", json!("kernel-1")),
         ("machineId", json!("machine-1")),
-        ("runningAgentCount", json!(1)),
         ("sequence", json!(7)),
+        ("workingAgentCount", json!(1)),
     ]);
     let canonical = serde_json::to_string(&fields).expect("activity should serialize");
     let mut mac = Hmac::<Sha256>::new_from_slice(MACHINE_CREDENTIAL.as_bytes())
@@ -37,11 +37,11 @@ fn managed_activity_http_signed_contract_is_versioned() {
     let (managed, managed_signature) = signed_activity_contract();
     assert_eq!(
         managed,
-        "{\"accountId\":\"acct-1\",\"activityChangedAt\":\"1970-01-01T00:00:01.000Z\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"runningAgentCount\":1,\"sequence\":7}"
+        "{\"accountId\":\"acct-1\",\"activityChangedAt\":\"1970-01-01T00:00:01.000Z\",\"environmentId\":\"env-1\",\"kernelId\":\"kernel-1\",\"machineId\":\"machine-1\",\"sequence\":7,\"workingAgentCount\":1}"
     );
     assert_eq!(
         managed_signature,
-        "sha256:2e4cc0ff504b4222281a8bc3e08349cc78b9591fec4d0abd08ff14f1a1598351"
+        "sha256:9138aec2ee27abc792554b6a7480804f232e4cac12bcfed7bb1f01d15409afb4"
     );
 }
 

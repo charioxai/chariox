@@ -416,6 +416,8 @@ impl CommandRouter {
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
+            | LocalDaemonRequest::CreateCredentialVault(_)
+            | LocalDaemonRequest::SealCredentialVaultKey(_)
             | LocalDaemonRequest::ManageCredentialVault(_)) => boxed_handler(|| async move {
                 execute_user_config_request(
                     &self.config_projection,

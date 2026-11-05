@@ -900,7 +900,14 @@ fn import_provider_accounts(
                         materialization,
                     )
                     .and_then(|receipt| {
-                        accounts.push(receipt);
+                        accounts.push(receipt.clone());
+                        // A lease from the source kernel later finds this copy instead of making a second one.
+                        target.registry.record_transfer_origin(
+                            &target.owner_user_id,
+                            &receipt,
+                            &request.expected_binding.source_kernel_id,
+                            &materialization.profile.profile_id,
+                        )?;
                         target.registry.record_credential_copy(
                             &target.owner_user_id,
                             materialization,

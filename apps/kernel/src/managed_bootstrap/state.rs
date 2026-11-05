@@ -45,7 +45,11 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,
     pub(super) control_plane_url: String,
     pub(super) environment_id: String,
+    /// Empty once the grant is redeemed: root blanks it once the control plane confirmed the enrollment.
     pub(super) token: String,
+    /// The grant binding digest the blanked token had, so the binding survives the blanking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) redeemed_grant_binding_digest: Option<String>,
     pub(super) expires_at: String,
     pub(super) runtime_release_digest: String,
     #[serde(default)]
@@ -241,7 +245,7 @@ impl ManagedBootstrapEnvelope {
         if !(matches!(self.schema_version, 1 | 2) && !protected_storage_input
             || matches!(self.schema_version, 3 | 4) && protected_storage_input)
             || !valid_identifier(&self.environment_id)
-            || !valid_secret(&self.token, "mkboot_")
+            || !self.grant_state_is_valid(protected_storage_input)
             || !valid_digest(&self.runtime_release_digest)
             || managed_repository_root_for_schema(
                 self.schema_version,
@@ -272,9 +276,35 @@ impl ManagedBootstrapEnvelope {
         )
     }
 
+    fn grant_state_is_valid(&self, protected_storage_input: bool) -> bool {
+        match self.redeemed_grant_binding_digest.as_deref() {
+            None => valid_secret(&self.token, "mkboot_"),
+            Some(digest) => {
+                protected_storage_input && self.token.is_empty() && valid_digest(digest)
+            }
+        }
+    }
+
+    pub(super) fn is_redeemed(&self) -> bool {
+        self.redeemed_grant_binding_digest.is_some()
+    }
+
+    /// The same envelope without its bearer token, for a grant Cloud has confirmed.
+    pub(super) fn redeemed(&self) -> Self {
+        Self {
+            token: String::new(),
+            redeemed_grant_binding_digest: Some(self.grant_binding_digest()),
+            ..self.clone()
+        }
+    }
+
     /// Bind every envelope field, including the bearer token, without
-    /// persisting or formatting the token itself.
+    /// persisting or formatting the token itself. A redeemed envelope keeps
+    /// the digest its token produced.
     pub(super) fn grant_binding_digest(&self) -> String {
+        if let Some(digest) = self.redeemed_grant_binding_digest.as_deref() {
+            return digest.to_string();
+        }
         let mut digest = Sha256::new();
         digest.update(b"chariox/managed-bootstrap-grant-binding/v1\0");
         update_binding_component(&mut digest, &self.schema_version.to_be_bytes());
@@ -339,32 +369,6 @@ impl ManagedBootstrapGrantBinding {
             ),
             generation: Some(receipt.generation),
             receipt_binding_digest: Some(receipt_binding_digest(receipt)),
-        }
-    }
-
-    /// A schema 1 binding, as written before in-place updates: it hashed the
-    /// installed release into both digests. That release was the envelope's
-    /// provisioned one, which the upgrader's staged receipt no longer carries.
-    pub(super) fn legacy_for_receipt(
-        envelope: &ManagedBootstrapEnvelope,
-        receipt: &BootstrapReceipt,
-    ) -> Self {
-        Self {
-            schema_version: 1,
-            envelope_schema_version: envelope.schema_version,
-            grant_binding_digest: envelope.grant_binding_digest(),
-            exchange_identity_digest: exchange_identity_digest(
-                &receipt.environment_id,
-                &receipt.machine_id,
-                &receipt.kernel_id,
-                &receipt.relay_public_key,
-                &envelope.runtime_release_digest,
-            ),
-            generation: Some(receipt.generation),
-            receipt_binding_digest: Some(legacy_receipt_binding_digest(
-                receipt,
-                &envelope.runtime_release_digest,
-            )),
         }
     }
 
@@ -451,23 +455,6 @@ fn receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
     update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
     update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
-    update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
-    format!("sha256:{:x}", digest.finalize())
-}
-
-fn legacy_receipt_binding_digest(
-    receipt: &BootstrapReceipt,
-    runtime_release_digest: &str,
-) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"chariox/managed-bootstrap-receipt-binding/v1\0");
-    update_binding_component(&mut digest, &receipt.schema_version.to_be_bytes());
-    update_binding_component(&mut digest, receipt.environment_id.as_bytes());
-    update_binding_component(&mut digest, receipt.machine_id.as_bytes());
-    update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
-    update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
-    update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
-    update_binding_component(&mut digest, runtime_release_digest.as_bytes());
     update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
     format!("sha256:{:x}", digest.finalize())
 }

@@ -18,6 +18,9 @@ use crate::error::DaemonError;
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_crypto;
 
+mod key_seed;
+pub use key_seed::{create_vault_from_key_seed, export_vault_key_seed, VaultKeySeed};
+
 const VAULT_FILE_VERSION: u32 = 1;
 const VAULT_CIPHER: &str = "aes-256-gcm";
 const VAULT_KDF: &str = "argon2id";
@@ -95,6 +98,17 @@ pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
         self.get_secret(service, key).map(Some)
     }
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
+    /// Atomically preserve any value saved before this commit. False means it already exists.
+    fn insert_secret_if_absent(
+        &self,
+        _service: &str,
+        _key: &str,
+        _value: &str,
+    ) -> Result<bool, DaemonError> {
+        Err(secret_error(
+            "this Vault backend does not support atomic insertion".to_owned(),
+        ))
+    }
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError>;
 }
 
@@ -177,6 +191,34 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
         )
     }
 
+    fn insert_secret_if_absent(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        let _write = vault_write_lock()?;
+        let vault_key = unlocked_vault_key(&self.path)?;
+        let mut plaintext = if self.path.exists() {
+            read_vault_plaintext(&self.path, vault_key.as_ref())?
+        } else {
+            VaultPlaintext::default()
+        };
+        let secrets = plaintext.secrets.entry(service.to_owned()).or_default();
+        let std::collections::btree_map::Entry::Vacant(entry) = secrets.entry(key.to_owned())
+        else {
+            return Ok(false);
+        };
+        entry.insert(value.to_owned());
+        write_vault_plaintext(
+            &self.path,
+            vault_key.as_ref(),
+            &plaintext,
+            &self.kdf_profile,
+        )?;
+        Ok(true)
+    }
+
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
         let _write = vault_write_lock()?;
         let vault_key = unlocked_vault_key(&self.path)?;
@@ -225,6 +267,25 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
                 Zeroizing::new(value.to_string()),
             );
         Ok(())
+    }
+
+    fn insert_secret_if_absent(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        use std::collections::btree_map::Entry;
+        let mut secrets = process_memory_vault().lock().map_err(|error| {
+            secret_error(format!("process memory vault lock poisoned: {error}"))
+        })?;
+        match secrets.entry((service.to_owned(), key.to_owned())) {
+            Entry::Occupied(_) => Ok(false),
+            Entry::Vacant(entry) => {
+                entry.insert(Zeroizing::new(value.to_owned()));
+                Ok(true)
+            }
+        }
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {

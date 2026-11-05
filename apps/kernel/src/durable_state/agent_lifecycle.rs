@@ -43,6 +43,7 @@ mod types;
 pub(crate) use types::{DelegateGoneReason, ReplyOutcome};
 #[cfg(test)]
 mod wake_tests;
+mod wakeable;
 mod wakes;
 mod workflow_tasks;
 use super::{DurableKernelStateStore, DurableWriterRequest};

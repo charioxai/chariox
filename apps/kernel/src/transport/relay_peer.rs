@@ -1258,6 +1258,8 @@ pub enum RelayPeerResponse {
     ProjectEnvironmentFilePulled {
         /// The whole file's size, so the receiver knows when it has everything.
         size_bytes: u64,
+        /// SHA-256 of the complete source byte stream, binding every chunk to its contents.
+        sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
         content: Option<RemoteEnvironmentFileBytes>,
     },

@@ -244,6 +244,8 @@ pub enum LocalDaemonRequest {
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
     LockCredentialVault(LockCredentialVaultRequest),
     UnlockCredentialVault(UnlockCredentialVaultRequest),
+    CreateCredentialVault(CreateCredentialVaultRequest),
+    SealCredentialVaultKey(SealCredentialVaultKeyRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     ControlPlane(ControlPlaneRequest),

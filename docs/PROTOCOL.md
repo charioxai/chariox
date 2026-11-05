@@ -2699,7 +2699,7 @@ Workflow trigger and deployment direction:
   delivery, retries, reporter restart, and kernel restart. A later transition,
   including a rapid busy-to-idle cycle, receives its own later timestamp.
   Managed-environment signatures cover `accountId`, `activityChangedAt`,
-  `environmentId`, `kernelId`, `machineId`, `runningAgentCount`, and `sequence`;
+  `environmentId`, `kernelId`, `machineId`, `workingAgentCount`, and `sequence`;
   disposable-worker signatures replace `environmentId` with `allocationId`.
   Cloud receivers for both routes MUST accept, validate, and persist this signed
   field before protocol-340 kernels are rolled out; producer and receiver must
@@ -6293,6 +6293,24 @@ quiescence routes lost `auto-stop`: `/v1/managed-kernels/quiescence/poll`, `/ack
 before this change do not talk to each other on those routes.
 
 
+### A new machine's own Vault — local 973
+
+`CreateCredentialVault { origin }` gives this kernel a Vault from the owner's own client, with no session or
+agent (the same callers and refusals as `UnlockCredentialVault`). `origin` is
+`{ kind: "passphrase", passphrase }` (typed for this kernel) or `{ kind: "seed", seed }`, a `VaultKeySeed` that
+another kernel sealed for this one with `SealCredentialVaultKey { targetKernelId, targetPublicKey }`
+(`CredentialVaultKeySealed { seed }`, refused with `vault_locked` while that Vault is locked). The seed holds the
+unlocked Vault key sealed to the target's relay key (the transferred-Vault sealing, bound to both kernel ids and
+to the KDF parameters and salt of the Vault file) and those parameters; the target writes its own, empty Vault
+under that key. The same passphrase therefore opens both Vaults, each kernel keeps its own file, and neither the
+passphrase nor the key is sent in the clear. Both answer `CredentialVaultUnlocked { status, action: "created" }`
+with the Vault open for the owner's lease and the critical-approval verifier pinned like an unlock. An existing
+Vault is never replaced (`vault_exists`); a kernel that keeps its secrets outside a Chariox Vault refuses with
+`vault_not_chariox_encrypted`. A seed sealed for another kernel creates nothing. A managed-machine launch sends
+the seal to the kernel the Project is on and the create to the new kernel before the Project is sent, so the
+Environment's Secrets and secret-looking Files are written into the new Vault. Focused checks:
+`cargo test -p chariox-kernel --lib vault_creation` and `credential_vault_creation_973_shapes_are_pinned`.
+
 ### Apps v2 — local 966 / relay peer 415
 
 One allocation carries the whole Apps v2 Stage 1 line. Local requests: `BeginAppInstall` and
@@ -6531,7 +6549,8 @@ is capped at that size plus 64 KiB for framing overhead. There is no legacy
 plain-snapshot decoding path and no change to the 15-second peer response bound.
 
 
-### Environments — local 973 / relay peer 422
+
+### Environments — local 990 / relay peer 429
 
 A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
 Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
@@ -6563,7 +6582,11 @@ its own Vault under the Project scope, so presence differs per machine and is co
   the peer channel's end-to-end encryption, are never logged and never appear in a view. A File is at most
   64 MiB (128 MiB per operation), travels in 4 MiB slices (`PullProjectEnvironmentFile` carries the offset;
   a message is encoded twice on the way and must stay under the relay's bound) into a private temporary file
-  that appears under its name only when complete, and lands with mode 0600.
+  that appears under its name only when complete, and lands with mode 0600. Every response
+  includes the SHA-256 of its complete source byte stream; Import requires identical sizes and digests
+  across chunks and checks the assembled digest before publication. A source change fails that row
+  without publishing partial contents. Secret imports use an atomic insert-if-absent in the target
+  Vault, preserving a value entered while a fetch was pending.
 - `DraftProjectEnvironment { projectId, operationId }` runs an idle agent of the Project on this kernel
   on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
   files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
@@ -6587,3 +6610,16 @@ its own Vault under the Project scope, so presence differs per machine and is co
   `ProjectEnvironmentSetup` agent utility, the Project's stored setup definition, the Move setup step and the
   relay peer `*LeasedProjectEnvironment*` requests. Schema 1 Project environments are deleted at start.
   The development layer of managed contexts and moves no longer carries a Project environment.
+
+
+### Working agents in the managed activity report — carried by local 973 / relay peer 422
+
+The signed managed activity report carries `workingAgentCount` (0–255) in place of the binary
+`runningAgentCount`. An agent counts as working when it runs a turn, has a prompt, decision or owned
+process in flight, or is idle but something it registered can wake it: an enabled agent trigger, an
+armed wake (timer, watched process, terminal), a live completion subscription, a waiting task or a
+task blocked on an owner decision. Zero means the machine has nothing to wait for, so Cloud's
+auto-stop counts down only at zero. Work no agent owns (a terminal command, a workflow run) counts as
+one. Kernels older than 970 are re-provisioned. The managed-upgrade list is [629, 636, 970]. Focused
+checks: `cargo test -p chariox-kernel --lib managed_working_agents` and
+`node --test scripts/protocol-versions.test.mjs`.

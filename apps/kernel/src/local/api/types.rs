@@ -463,6 +463,7 @@ pub use workspace::*;
 /// Environments 972 replace the Project Environment requests with one saved record per Project,
 /// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
 /// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
+/// Protocol 990 binds Environment file chunks to their complete content digest (peer 429).
 /// MP-08 / MP-09 / MP-10 / MP-11: 996 carries bounded lossless peer snapshots.
 /// Protocol 987 adds exact owner cancellation of retained agent tasks and timers.
 /// MP-08/MP-09/MP-10/MP-11: 986 adds the person-only kernel browser `show_tab` op (peer415).

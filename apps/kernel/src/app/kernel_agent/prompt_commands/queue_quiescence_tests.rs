@@ -71,7 +71,7 @@ fn fixture(label: &str) -> Fixture {
     let (_, observation, local_transition_sequence) = runtime
         .managed_activity_report_snapshot_with_transition()
         .expect("idle activity should be readable");
-    assert_eq!(observation.running_agent_count, 0);
+    assert_eq!(observation.working_agent_count, 0);
 
     let challenge = ManagedKernelQuiescenceChallenge {
         challenge_id: format!("challenge-{label}"),
