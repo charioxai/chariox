@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { abortAppPackageUploadRequest, beginAppPackageUploadRequest, getAppPackageUploadRequest, putAppPackageUploadChunkRequest, getAppInstallationJournalRequest, getAppInstallationRequest, listAppInstallationsRequest } from "./ipc-app-requests.js"
+import { abortAppPackageUploadRequest, beginAppPackageUploadRequest, getAppPackageUploadRequest, putAppPackageUploadChunkRequest, getAppInstallationJournalRequest, getAppInstallationRequest, listAppInstallationsRequest, listAppAutomationsRequest, disableAppAutomationRequest } from "./ipc-app-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 import { beginAppInstallRequest, beginAppUpdateRequest, getAppInstallOperationRequest, cancelAppInstallOperationRequest } from "./ipc-app-requests.js"
 import { beginAppPublisherEnrollmentRequest, getAppPublisherEnrollmentRequest, cancelAppPublisherEnrollmentRequest } from "./ipc-app-requests.js"
@@ -209,8 +209,13 @@ test("protocol 418 kernel browser fallback is explicit; the native default stays
 })
 
 
- test("a collaborator's App picker names its Room", () => {
+test("a collaborator's App picker names its Room", () => {
   assert.deepEqual(listAppInstallationsRequest({ sessionId: "room" }), {
     ListAppInstallations: { after: null, limit: null, session_id: "room" },
   })
+})
+
+test("App subscription controls can be scoped to the caller's Room", () => {
+  assert.deepEqual(listAppAutomationsRequest("app", "room"), { ListAppAutomations: { installation_id: "app", session_id: "room" } })
+  assert.deepEqual(disableAppAutomationRequest("app", "binding", 2, "room"), { DisableAppAutomation: { installation_id: "app", automation_id: "binding", expected_revision: 2, session_id: "room" } })
 })

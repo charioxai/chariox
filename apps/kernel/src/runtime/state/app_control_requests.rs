@@ -56,9 +56,7 @@ impl KernelRuntimeState {
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
         if let LocalDaemonRequest::ListAppInstallations(list) = request {
-            let Some(room_id) = list.session_id.as_deref() else {
-                return None;
-            };
+            let room_id = list.session_id.as_deref()?;
             let caller = match crate::runtime::app_control::owner(command) {
                 Ok(owner) => owner,
                 Err(code) => return Some(failed(code)),

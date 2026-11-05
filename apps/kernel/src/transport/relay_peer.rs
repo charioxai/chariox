@@ -182,7 +182,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 409 carries the final integrated local 960 Vault and Machines contract.
 /// Peer 412 carries local963 one-use Vault capture bindings.
 /// Peer 414 carries local965 integrated Vault and machine contracts.
-/// Peer 433 carries local973 per-exit notification sources and agent notification subscriptions.
+/// Peer 433 carries local994 per-exit sources, App agent targets and blocked-task notifications.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 433;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

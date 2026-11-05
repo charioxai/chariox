@@ -348,3 +348,9 @@ to list another Room. Pagination remains `after` / `limit`.
 The AX subscribe/unsubscribe result contains `trigger_id`, `source`, and `enabled`;
 it does not include the Room snapshot. A notification manually steered into an
 existing turn contributes its ancestry to that turn before the provider write.
+
+`ListAppAutomations` and `DisableAppAutomation` accept the same optional Room
+context. Collaborators may list and remove their own Room targets; naming an
+owner's automation does not confer control. Both routes keep the existing App
+catalog, revision and writer checks. Archiving an agent also detaches its App
+subscriptions immediately, including when its App worker is stopped.
