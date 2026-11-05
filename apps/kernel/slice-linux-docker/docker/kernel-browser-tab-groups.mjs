@@ -108,7 +108,7 @@ globalThis.charioxTabs = {
   revision: 8,
   favicon,
   // Physical Chrome input and show_tab announce the person's choice before dispatch.
-  personSelection() { for (const tab of made.values()) tab.initial = false; agentOpeners.clear(); },
+  personSelection() { for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
   // Capture the actor before dispatch; Chrome retains transient opening activation for five seconds.
   // The next person's page or Chrome input retires it, even when they are watching an agent's Tab.
   async openingInput(target, agent) {

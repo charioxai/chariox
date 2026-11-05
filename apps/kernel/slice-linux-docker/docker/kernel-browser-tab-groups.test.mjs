@@ -347,3 +347,16 @@ test('BTAB-01 an agent popup from the shown tab folds behind it; a later person 
   await new Promise(resolve => setTimeout(resolve, 10));
   assert.deepEqual(calls, [['move', 8, { windowId: 10, index: -1 }], ['update', 8, { active: true }], ['focus', 10, { focused: true }]]);
 });
+
+test('BTAB-01 person Chrome input retires the actor of an earlier popup before another fold', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }] });
+  await worker.charioxTabs.openingInput('target-1', true);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  calls.length = 0;
+  // The person's Chrome action can move this tab to another window later.
+  await worker.charioxTabs.personSelection();
+  await listeners.attached(9);
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }], ['update', 9, { active: true }], ['focus', 10, { focused: true }]]);
+});
