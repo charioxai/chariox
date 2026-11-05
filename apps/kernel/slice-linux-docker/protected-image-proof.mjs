@@ -11,7 +11,8 @@ function identity(imageId) {
 }
 
 // Called by the signed provisioner immediately after its standard Dockerfile
-// build. Existing tags, labels, custom extensions and user-supplied images are
+// build or signed archive verification and exact image-ID/layer checks.
+// Existing tags, labels, custom extensions and user-supplied images are
 // not enough to mint this proof. No image environment or layer data is retained.
 export function recordManagedImageProof(root, sourceDigest, inspect, kernelHash) {
   if (!/^sha256:[a-f0-9]{64}$/.test(sourceDigest)) refuse()

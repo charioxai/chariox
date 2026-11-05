@@ -6,18 +6,23 @@ import { BrowserSnapshotError } from "./browser-controller-snapshot.mjs";
 import { MAX_BROWSER_ARTIFACT_BYTES } from "./browser-controller-artifacts.mjs";
 
 // MP-08/MP-11: screenshot artifacts use the same exact fill targets as video.
-export async function captureProtectedBrowserImage({connection,sessionId,targetId,documentId,viewport,protectedValues,fillTargets=[]}) {
+export async function captureProtectedBrowserImage({connection,sessionId,targetId,documentId,viewport,geometry,protectedValues,fillTargets=[]}) {
+  // Browser chrome and scrollbars reduce the page area; capture and masks
+  // must use its observed size rather than the whole desktop.
+  const width=geometry.clientWidth*viewport.device_scale_factor;
+  const height=geometry.clientHeight*viewport.device_scale_factor;
+  if(![width,height].every(value=>Number.isSafeInteger(value)&&value>0&&value<=4096)||width>viewport.css_width*viewport.device_scale_factor||height>viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser content geometry must map to bounded image pixels');
   return withBrowserFrames(connection,sessionId,targetId,documentId,async frames=>{
   const {captureProtectedPage}=await import('./kernel-browser-pixels.mjs');
   const browser={fillTargets:new Map(fillTargets.map((t,i)=>[i,t])),async resolvePageTarget(){return {connection,sessionId};}};
   let redaction='none';
   const data=await captureProtectedPage(browser,{target_id:targetId,document_id:documentId},[...protectedValues],fillTargets,async()=>{
-    const captured=await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true},sessionId);
+    const captured=await connection.send('Page.captureScreenshot',{format:'png',captureBeyondViewport:false,fromSurface:true,clip:{x:geometry.pageX,y:geometry.pageY,width:geometry.clientWidth,height:geometry.clientHeight,scale:1}},sessionId);
     return captured.data;
   },viewport.device_scale_factor,null,regions=>{redaction=regions.length?'fill_targets':'none';},
-  {width:viewport.css_width*viewport.device_scale_factor,height:viewport.css_height*viewport.device_scale_factor,maxBytes:MAX_BROWSER_ARTIFACT_BYTES});
+  {width,height,maxBytes:MAX_BROWSER_ARTIFACT_BYTES});
   const bytes=Buffer.from(data,'base64');
-  if(bytes.length<24||bytes.readUInt32BE(16)!==viewport.css_width*viewport.device_scale_factor||bytes.readUInt32BE(20)!==viewport.css_height*viewport.device_scale_factor)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the canonical viewport');
+  if(bytes.length<24||bytes.readUInt32BE(16)!==width||bytes.readUInt32BE(20)!==height)throw new BrowserSnapshotError('browser_artifact_invalid','Browser capture dimensions differ from the observed content');
   await assertBrowserFramesUnchanged(connection,frames);
   return {bytes,redaction};
   },{strict:true});

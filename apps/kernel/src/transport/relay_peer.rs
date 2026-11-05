@@ -1,3 +1,6 @@
+#[path = "room_browser_snapshot_wire.rs"]
+mod snapshot_wire;
+
 use serde::{Deserialize, Serialize};
 
 use crate::agent::GitWorktreePlacement;
@@ -184,6 +187,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 414 carries local965 integrated Vault and machine contracts.
 /// Peer432 carries local993 workspace artifact read pagination.
 /// Peer415 carries local966 WASM Apps plus Landing965 contracts.
+/// MP-08 / MP-09 / MP-10 / MP-11: 435 carries bounded lossless Browser snapshots.
 /// OSS boundary: 416 pairs the embedded local union with local 967 (retired Cloud controls removed).
 /// Allocated 424 carries local983 (the waiting-command row and the outside `process` event).
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 430;
@@ -1304,6 +1308,7 @@ pub enum RelayPeerResponse {
     RoomBrowserController {
         session_id: String,
         slice_id: String,
+        #[serde(with = "snapshot_wire")]
         result: super::room_browser_controller::RoomBrowserControllerResult,
     },
     RoomSharedDisplay {

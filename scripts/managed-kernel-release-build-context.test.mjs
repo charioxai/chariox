@@ -4,6 +4,7 @@ import { chmod, glob, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "nod
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { prepareSliceBuildContext } from "./package-managed-kernel-release.mjs"
 import { spawnSync } from "node:child_process"
 import test from "node:test"
 
@@ -35,6 +36,7 @@ test("managed release stages every local Dockerfile COPY source", async (context
       "--source-repository", repositoryRoot,
       "--source-commit", sourceCommit,
       "--output", output,
+      "--slice-image", artifacts.sliceImage,
     ],
     {
       encoding: "utf8",
@@ -194,6 +196,7 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
   const builderKeys = generateKeyPairSync("ed25519")
   const releaseKeys = generateKeyPairSync("ed25519")
   const digest = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`
+  const sliceImage = await makeSliceImage(root, paths, sourceCommit)
   const attestation = Buffer.from(JSON.stringify({
     schemaVersion: 1,
     sourceCommit,
@@ -216,7 +219,37 @@ async function makeArtifacts(root, sourceCommit, sourceTree) {
   await writeFile(trustedBuilderPublicKey, rawPublicKey(builderKeys.publicKey).toString("base64"))
   await writeFile(signingKey, releaseKeys.privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 })
   await chmod(signingKey, 0o600)
-  return { ...paths, builderAttestation, builderAttestationSignature, trustedBuilderPublicKey, signingKey }
+  return { ...paths, sliceImage, builderAttestation, builderAttestationSignature, trustedBuilderPublicKey, signingKey }
+}
+
+// The packager only accepts an image built from the very build context it stages.
+async function makeSliceImage(root, paths, sourceCommit) {
+  const contextDigest = await prepareSliceBuildContext({
+    kernel: paths.kernel,
+    relay: paths.relay,
+    "source-repository": repositoryRoot,
+    "source-commit": sourceCommit,
+    output: join(root, "prepared-context"),
+  })
+  const sliceImage = join(root, "slice-image")
+  await mkdir(sliceImage)
+  const archive = Buffer.from("signed slice image fixture\n")
+  await writeFile(join(sliceImage, "chariox-slice-linux.tar.gz"), archive)
+  await writeFile(join(sliceImage, "slice-image.json"), JSON.stringify({
+    schema: "chariox.slice-image.v1",
+    architecture: "amd64",
+    imageId: `sha256:${"c".repeat(64)}`,
+    tag: "chariox-slice-release:fixture",
+    runtimeSourceRevision: contextDigest,
+    relayPeerProtocolVersion: relayPeerProtocolVersion(sourceCommit),
+    rootfsLayers: [`sha256:${"d".repeat(64)}`],
+    archive: { name: "chariox-slice-linux.tar.gz", size: archive.length, sha256: createHash("sha256").update(archive).digest("hex") },
+  }))
+  return sliceImage
+}
+
+function relayPeerProtocolVersion(sourceCommit) {
+  return git(["show", `${sourceCommit}:apps/kernel/src/transport/relay_peer.rs`]).match(/pub const RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+);/)[1]
 }
 
 function rawPublicKey(publicKey) {

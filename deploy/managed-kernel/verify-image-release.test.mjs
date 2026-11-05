@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -25,6 +25,7 @@ const ARTIFACTS = [
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file"],
   ...PATH1_DATA_VOLUME_ARTIFACTS.map(({ name, path }) => [name, path, "file"]),
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file"],
+  ["chariox-slice-image", "/usr/lib/chariox/slice-image", "tree"],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree"],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file"],
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file"],
@@ -119,6 +120,7 @@ async function createReleaseFixture(context, {
     Buffer.from(path1Service),
   )
 
+  await put(rootfs, "/usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz", "image fixture")
   const treeRoot = join(rootfs, "usr/lib/chariox/slice-build-context")
   const relayPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
   const kernelPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-kernel")
@@ -238,6 +240,42 @@ test("signed release manifests retain legacy schema 2 and require schema 3 capab
   }
 })
 
+
+for (const path of [
+  "/extra",
+  "/usr/local/bin/extra",
+  "/usr/lib/chariox/extra",
+  "/etc/systemd/system/chariox-path1-managed-bootstrap.service.d/99-extra.conf",
+  "/etc/systemd/system/chariox-rootless-docker.service.d/99-extra.conf",
+]) {
+  test(`Path-1 closed inventory rejects an undeclared file at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await put(fixture.rootfs, path, "undeclared\n")
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release root contains an undeclared entry/)
+  })
+}
+
+for (const path of ["empty", "usr/local/bin/empty", "usr/lib/chariox/empty"]) {
+  test(`Path-1 closed inventory rejects an undeclared empty directory at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await mkdir(join(fixture.rootfs, path))
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release root contains an undeclared entry/)
+  })
+}
+
+for (const path of ["extra", "usr/local/bin/extra", "usr/lib/chariox/extra"]) {
+  test(`Path-1 closed inventory rejects a symbolic link at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await symlink("/usr/local/bin/chariox-kernel", join(fixture.rootfs, path))
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /contains a symbolic link/)
+  })
+}
 
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
   const fixture = await createReleaseFixture(context)

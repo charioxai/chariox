@@ -464,6 +464,7 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
 /// 971 replaces AddSshMachine/RemoveSshMachine with IssueOwnMachineEnrollment (peer420).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
+/// MP-08 / MP-09 / MP-10 / MP-11: 996 carries bounded lossless peer snapshots.
 /// Protocol 987 adds exact owner cancellation of retained agent tasks and timers.
 /// MP-08/MP-09/MP-10/MP-11: 986 adds the person-only kernel browser `show_tab` op (peer415).
 /// OSS boundary: 967 removes the 25 retired Cloud controls (human session invites and collaborators, relay pairing,

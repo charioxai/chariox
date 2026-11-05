@@ -122,7 +122,7 @@ esac
   assert.match(stale.stderr, /Path-1 service chariox-path1-managed-bootstrap\.service needs systemd daemon-reload/)
 })
 
-test("repository release policy admits the target and two retained releases", async (context) => {
+test("repository release policy admits the target and the retained current release", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -133,8 +133,8 @@ test("repository release policy admits the target and two retained releases", as
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-08/MP-09/MP-10/MP-11: the target and current and previous releases are reciprocal.
-  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  // MP-08/MP-09/MP-10/MP-11: signed A3 (966) and the new target are reciprocal.
+  assert.deepEqual(admittedPredecessorProtocols, [966])
   const admittedProtocols = [...admittedPredecessorProtocols, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,

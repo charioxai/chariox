@@ -6493,3 +6493,16 @@ falls through to parked work. Owner task cancellation records a durable inbox
 notice, included in the agent's next ordinary task context until it is handled.
 It does not create a provider turn that revives stopped work. Relay frame shapes
 are unchanged.
+
+### MP-08 / MP-09 / MP-10 / MP-11: peer Browser snapshot encoding
+
+Local 996 / peer 435 changes only the private `RoomBrowserControllerResult::Snapshot.snapshot`
+wire field. A present snapshot is `{decoded_bytes, zlib_base64}`; an absent
+snapshot remains null. The decoded JSON is the same complete structured Browser
+observation. The sender compresses after observation scrubbing and before peer
+encryption. The receiver authenticates/decrypts normally, checks the encoded and
+decoded byte limits, expands at most the declared size plus one byte, requires
+the exact declared size and complete zlib stream, and then applies the existing
+Browser snapshot validation. Decoded data is capped at 32 MiB; compressed data
+is capped at that size plus 64 KiB for framing overhead. There is no legacy
+plain-snapshot decoding path and no change to the 15-second peer response bound.

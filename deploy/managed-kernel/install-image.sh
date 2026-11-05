@@ -532,14 +532,11 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/usr" \
     "$pending_release/usr/local" \
     "$pending_release/usr/local/bin" \
-    "$pending_release/usr/libexec" \
     "$pending_release/usr/lib" \
     "$pending_release/usr/lib/chariox" \
     "$pending_release/etc" \
     "$pending_release/etc/systemd" \
-    "$pending_release/etc/systemd/system" \
-    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
-    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
+    "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
@@ -560,12 +557,18 @@ if [ ! -e "$published_release" ]; then
   # older shared-host releases omit the set and remain installable.
   if [ "$managed_provider_topology" = path1 ] \
     || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
+    install -d -o root -g root -m 0755 \
+      "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+      "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
+  if path_exists "$image_root/usr/lib/chariox/slice-image"; then
+    (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-image" "$pending_release/usr/lib/chariox/slice-image")
+  fi
   verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"

@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process"
 import { constants, createReadStream } from "node:fs"
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, utimes, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { pathToFileURL } from "node:url"
+import { validateSliceImage } from "./slice-image-archive.mjs"
 
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const REQUIRED_OPTIONS = [
@@ -20,6 +22,7 @@ const REQUIRED_OPTIONS = [
   "source-repository",
   "source-commit",
   "output",
+  "slice-image",
 ]
 const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const SLICE_BUILD_CONTEXT_PATH = "/usr/lib/chariox/slice-build-context"
@@ -46,10 +49,10 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
 const SLICE_RUNTIME_SOURCE_ROOTS = "apps/kernel/slice-linux-docker/runtime-source-roots.txt"
 
 function usage() {
-  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-wasm-worker <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
+  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --app-package <path> --app-wasm-worker <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory> --slice-image <directory>"
 }
 
-function parseOptions(argv) {
+function parseOptions(argv, requiredOptions = REQUIRED_OPTIONS) {
   const options = new Map()
   for (let index = 0; index < argv.length; index += 2) {
     const option = argv[index]
@@ -58,12 +61,12 @@ function parseOptions(argv) {
       throw new Error(usage())
     }
     const name = option.slice(2)
-    if (!REQUIRED_OPTIONS.includes(name) || options.has(name)) {
+    if (!requiredOptions.includes(name) || options.has(name)) {
       throw new Error(usage())
     }
     options.set(name, name === "source-commit" ? value : resolve(value))
   }
-  if (options.size !== REQUIRED_OPTIONS.length) {
+  if (options.size !== requiredOptions.length) {
     throw new Error(usage())
   }
   return Object.fromEntries(options)
@@ -355,6 +358,18 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
   return { attestationBytes, signature, trustedBuilderRawKey }
 }
 
+export async function prepareSliceBuildContext(options) {
+  const identity = resolveSourceIdentity(options["source-repository"], options["source-commit"])
+  await prepareOutput(options.output)
+  await installSliceBuildContext(options["source-repository"], options.output, identity.commit)
+  const prebuilt = join(options.output, "apps/kernel/slice-linux-docker/prebuilt")
+  await replaceFile(options.kernel, join(prebuilt, "chariox-kernel"), 0o755)
+  await replaceFile(options.relay, join(prebuilt, "chariox-relay"), 0o755)
+  await installBytes(Buffer.from("builder-attested\n"), join(prebuilt, ".managed-release"), 0o644)
+  await normalizeTree(options.output, sourceDateEpoch())
+  return sha256Tree(options.output)
+}
+
 async function packageRelease(options) {
   await requireRegularFile(options.kernel, "kernel binary")
   await requireRegularFile(options.supervisor, "bootstrap supervisor")
@@ -482,15 +497,8 @@ async function packageRelease(options) {
   await installBytes(rootlessDataVolumeDropInBytes, rootlessDataVolumeDropInDestination, 0o644)
   await installBytes(quotaAllocatorDataVolumeDropInBytes, quotaAllocatorDataVolumeDropInDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
-  await installSliceBuildContext(repositoryRoot, sliceBuildContext, sourceIdentity.commit)
-  await replaceFile(options.kernel, sliceKernelDestination, 0o755)
-  await replaceFile(options.relay, sliceRelayDestination, 0o755)
-  await installBytes(
-    Buffer.from("builder-attested\n"),
-    join(slicePrebuiltRoot, ".managed-release"),
-    0o644,
-  )
-  await normalizeTree(sliceBuildContext, timestamp)
+  await prepareSliceBuildContext({kernel: options.kernel, relay: options.relay,
+    "source-repository": repositoryRoot, "source-commit": sourceIdentity.commit, output: sliceBuildContext})
   const sourceKernelDigest = await sha256File(options.kernel)
   const packagedKernelDigest = await sha256File(kernelDestination)
   if (sourceKernelDigest !== packagedKernelDigest) {
@@ -548,6 +556,22 @@ async function packageRelease(options) {
     throw new Error("slice Docker broker service changed while the release was packaged")
   }
   const packagedSliceBuildContextDigest = await sha256Tree(sliceBuildContext)
+  const imageDescriptor = await validateSliceImage(options["slice-image"], "amd64")
+  const peerSource = await readFile(join(sliceBuildContext, "apps/kernel/src/transport/relay_peer.rs"), "utf8")
+  const peerProtocol = peerSource.match(/pub const RELAY_PEER_PROTOCOL_VERSION: u32 = (\d+);/)?.[1]
+  if (!peerProtocol || imageDescriptor.relayPeerProtocolVersion !== peerProtocol) {
+    throw new Error("slice image relay protocol does not match its signed build context")
+  }
+
+  if (imageDescriptor.runtimeSourceRevision !== packagedSliceBuildContextDigest) {
+    throw new Error("slice image was built from a different signed slice build context")
+  }
+  const sliceImageRoot = join(releaseDirectory, "slice-image")
+  await installFile(join(options["slice-image"], "slice-image.json"), join(sliceImageRoot, "slice-image.json"), 0o644)
+  await installFile(join(options["slice-image"], "chariox-slice-linux.tar.gz"), join(sliceImageRoot, "chariox-slice-linux.tar.gz"), 0o644)
+  await normalizeTree(sliceImageRoot, timestamp)
+  const packagedSliceImageDigest = await sha256Tree(sliceImageRoot)
+
   const builderAttestation = await verifyBuilderAttestation(options, sourceIdentity, {
     kernel: packagedKernelDigest,
     supervisor: packagedSupervisorDigest,
@@ -646,6 +670,11 @@ async function packageRelease(options) {
           sha256: packagedSliceBrokerServiceDigest,
         },
         {
+          name: "chariox-slice-image",
+          path: "/usr/lib/chariox/slice-image",
+          sha256: packagedSliceImageDigest,
+        },
+        {
           name: "chariox-slice-build-context",
           path: SLICE_BUILD_CONTEXT_PATH,
           sha256: packagedSliceBuildContextDigest,
@@ -700,10 +729,17 @@ async function packageRelease(options) {
   process.stdout.write(`${releaseDigest}\n`)
 }
 
-try {
-  await packageRelease(parseOptions(process.argv.slice(2)))
-} catch (error) {
-  const message = error instanceof Error ? error.message : String(error)
-  process.stderr.write(`${basename(process.argv[1])}: ${message}\n`)
-  process.exitCode = 1
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  try {
+    if (process.argv[2] === "prepare-context") {
+      const options = parseOptions(process.argv.slice(3), ["kernel", "relay", "source-repository", "source-commit", "output"])
+      process.stdout.write(`${await prepareSliceBuildContext(options)}\n`)
+    } else {
+      await packageRelease(parseOptions(process.argv.slice(2)))
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`${basename(process.argv[1])}: ${message}\n`)
+    process.exitCode = 1
+  }
 }

@@ -3,7 +3,7 @@
 import { createHash, createPublicKey, verify } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
-import { basename, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import { parseUnitSections, verifyPath1ServicePolicy } from "./path1-service-policy.mjs"
 
@@ -49,6 +49,7 @@ const EXPECTED_ARTIFACTS = new Map([
     "chariox-slice-build-context",
     { path: "/usr/lib/chariox/slice-build-context", type: "tree" },
   ],
+  ["chariox-slice-image", { path: "/usr/lib/chariox/slice-image", type: "tree" }],
   ["chariox-build-attestation", { path: "/usr/lib/chariox/build-attestation.json", type: "file" }],
   ["chariox-build-attestation-signature", { path: "/usr/lib/chariox/build-attestation.sig", type: "file" }],
   ["chariox-builder-public-key", { path: "/usr/lib/chariox/builder-public-key", type: "file" }],
@@ -89,6 +90,36 @@ async function rejectLinkedOrSpecialEntries(current, label) {
       fail(`${label} contains an unsupported file type`)
     }
   }
+}
+
+// Tree artifacts already authenticate all their descendants.
+// Outside them the release contains only declared artifacts, signature metadata,
+// and the directories needed to reach those entries.
+async function verifyReleaseRootInventory(rootfs, artifacts, treePaths) {
+  const files = new Set([
+    "usr/lib/chariox/release-manifest.json",
+    "usr/lib/chariox/release-manifest.sig",
+    "usr/lib/chariox/release-public-key",
+    ...artifacts.map((artifact) => artifact.path.slice(1)),
+  ])
+  const trees = new Set(treePaths.map((path) => path.slice(1)))
+  const directories = new Set(trees)
+  for (const path of files) {
+    for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) {
+      directories.add(parent)
+    }
+  }
+  async function inspect(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory() && directories.has(path)) {
+        if (!trees.has(path)) await inspect(join(directory, entry.name), path)
+      } else if (!entry.isFile() || !files.has(path) || trees.has(path)) {
+        fail(`release root contains an undeclared entry: ${path}`)
+      }
+    }
+  }
+  await inspect(rootfs)
 }
 
 async function sha256File(path) {
@@ -370,7 +401,12 @@ async function verifyImageRelease(
   if (selectedTopology === "path1" && !hasDataVolumeAdmission) {
     fail("Path-1 releases must include data-volume admission and both ordering drop-ins")
   }
+  const hasSliceImage = manifest.artifacts.some((artifact) => artifact?.name === "chariox-slice-image")
+  if (selectedTopology === "path1" && !hasSliceImage) {
+    fail("Path-1 release is missing its signed prebuilt slice image; install a complete release")
+  }
   const expectedArtifactCount = EXPECTED_ARTIFACTS.size
+    - (hasSliceImage ? 0 : 1)
     - (hasPath1Service ? 0 : 1)
     - (hasDataVolumeAdmission ? 0 : dataVolumeArtifactNames.length)
     - (hasAppArtifacts ? 0 : APP_ARTIFACT_NAMES.length)
@@ -423,6 +459,13 @@ async function verifyImageRelease(
     seen.add(artifact.name)
     verifiedArtifactDigests.set(artifact.name, actualDigest)
   }
+
+  await verifyReleaseRootInventory(
+    rootfs,
+    manifest.artifacts,
+    manifest.artifacts.filter((artifact) => EXPECTED_ARTIFACTS.get(artifact.name).type === "tree")
+      .map((artifact) => artifact.path),
+  )
 
   if (selectedTopology === "path1") {
     await verifyPath1BuilderAttestation(

@@ -1,13 +1,15 @@
 import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, rmdir, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 import { spawnSync } from "node:child_process"
 import { once } from "node:events"
 import { test } from "node:test"
+
+import { prepareSliceBuildContext } from "./package-managed-kernel-release.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url))
 const managedBuildHistoryId = "blix8xemjjxks864hv4fmtwj0"
@@ -188,6 +190,7 @@ function packagerArguments({
   relay,
   appPackage,
   appWasmWorker,
+  sliceImage,
   builderAttestation,
   builderAttestationSignature,
   trustedBuilderPublicKey,
@@ -203,6 +206,7 @@ function packagerArguments({
     "--relay", relay,
     "--app-package", appPackage,
     "--app-wasm-worker", appWasmWorker,
+    "--slice-image", sliceImage,
     "--builder-attestation", builderAttestation,
     "--builder-attestation-signature", builderAttestationSignature,
     "--trusted-builder-public-key", trustedBuilderPublicKey,
@@ -439,9 +443,22 @@ async function makeFixture(root, variant = "", { dockerfileContents, omitQuotaAs
   await writeFile(trustedBuilderPublicKey, rawPublicKey(builderKeys.publicKey).toString("base64"), {
     mode: 0o600,
   })
+  const contextOutput = join(root, "prepared-context")
+  const contextDigest = await prepareSliceBuildContext({kernel, relay,
+    "source-repository": sourceRepository, "source-commit": sourceCommit, output: contextOutput})
+  const sliceImage = join(root, "slice-image")
+  await mkdir(sliceImage)
+  const archive = Buffer.from("signed slice image fixture\n")
+  await writeFile(join(sliceImage, "chariox-slice-linux.tar.gz"), archive)
+  await writeFile(join(sliceImage, "slice-image.json"), JSON.stringify({schema: "chariox.slice-image.v1",
+    architecture: "amd64", imageId: `sha256:${"c".repeat(64)}`, tag: "chariox-slice-release:fixture",
+    runtimeSourceRevision: contextDigest, relayPeerProtocolVersion: "1",
+    rootfsLayers: [`sha256:${"d".repeat(64)}`], archive: {name: "chariox-slice-linux.tar.gz",
+      size: archive.length, sha256: createHash("sha256").update(archive).digest("hex")}}))
   return {
     kernel,
     kernelContents,
+    sliceImage,
     supervisor,
     relay,
     relayContents,
@@ -627,6 +644,11 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         name: "chariox-slice-broker.service",
         path: "/etc/systemd/system/chariox-slice-broker.service",
         sha256: digest(fixture.sliceBrokerServiceBytes),
+      },
+      {
+        name: "chariox-slice-image",
+        path: "/usr/lib/chariox/slice-image",
+        sha256: await treeDigest(join(releaseRoot, "usr/lib/chariox/slice-image")),
       },
       {
         name: "chariox-slice-build-context",
@@ -967,6 +989,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     (artifact) => !dataVolumeArtifactNames.has(artifact.name),
   )
   for (const relativePath of dataVolumeArtifactPaths) await rm(join(releaseRoot, relativePath))
+  for (const relativePath of dataVolumeArtifactPaths.slice(1)) await rmdir(dirname(join(releaseRoot, relativePath)))
   const noVolumeManifestBytes = Buffer.from(JSON.stringify(noVolumeManifest))
   await writeFile(manifestPath, noVolumeManifestBytes)
   await writeFile(signaturePath, sign(null, noVolumeManifestBytes, fixture.releasePrivateKey).toString("base64"))
@@ -1028,6 +1051,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     }
   }
   for (const [relativePath, contents] of originalDataVolumeArtifacts) {
+    await mkdir(dirname(join(releaseRoot, relativePath)), { recursive: true })
     await writeFile(join(releaseRoot, relativePath), contents)
   }
   await writeFile(manifestPath, originalManifestBytes)
@@ -2093,6 +2117,11 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(badDigest.status, 1)
   assert.match(badDigest.stderr, /release manifest digest does not match/)
   assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  const extraEntry = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(extraEntry.status, 1)
+  assert.match(extraEntry.stderr, /release root contains an undeclared entry: usr\/local\/bin\/unsigned-extra/)
+  assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  await rm(join(output, "rootfs/usr/local/bin/unsigned-extra"))
   const brokerWantsLink = join(
     harness.installRoot,
     "etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service",

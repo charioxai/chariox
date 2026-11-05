@@ -79,7 +79,8 @@ test('MP-08/MP-10/MP-11: real headed page footer remains inside the desktop belo
           `a fresh CDP session inherited emulated content: ${resumed.css_width}x${resumed.css_height} from ${stable.css_width}x${stable.css_height}`);
       } finally { replacement.memory.close(); replacement.rendererRecovery.close(); }
       const documentId = browser.documentIdsByTarget.get(targetId);
-      await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport: browser.layoutViewport(targetId, source), protectedValues: new Set() });
+      await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport: browser.layoutViewport(targetId, source),
+        geometry: (await connection.send('Page.getLayoutMetrics', {}, sessionId)).cssVisualViewport, protectedValues: new Set() });
     }
   } finally {
     await chrome?.close();
