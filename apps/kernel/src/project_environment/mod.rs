@@ -8,6 +8,7 @@ mod presence;
 mod proposals;
 mod record;
 mod setup;
+mod setup_output;
 mod store;
 mod transfer;
 
