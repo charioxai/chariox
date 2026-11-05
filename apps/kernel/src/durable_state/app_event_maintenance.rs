@@ -1,4 +1,5 @@
 //! Timer-owned bounded receipt maintenance and classification on the sole writer.
+pub(super) mod agent;
 mod workflow;
 pub(super) use workflow::{record_queue_removals_in, record_workflow_transition_in};
 

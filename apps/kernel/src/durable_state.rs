@@ -1919,6 +1919,10 @@ fn commit_durable_write_batch(
                             payload_json,
                         )?;
                         trigger_resends::record_prompt_state_in(&transaction, payload_json)?;
+                        app_event_maintenance::agent::record_prompt_state_in(
+                            &transaction,
+                            payload_json,
+                        )?;
                     }
                     if kind == "session.updated"
                         && payload_json.contains("\"settled_trigger_prompt_id\"")

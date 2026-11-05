@@ -24,9 +24,9 @@ impl ReceiptState {
     }
 }
 
-/// Provisional until the transaction producing it has committed. A queued
-/// receipt proves workflow queue insertion only when the kernel composes that
-/// insertion and mark_queued_in inside the same committing writer transaction.
+/// Provisional until the transaction producing it has committed. The kernel
+/// corroborates a queued receipt against its durable workflow or agent prompt
+/// admission; an App cannot assert that admission itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     pub receipt_id: String,
@@ -72,7 +72,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             payload_json TEXT, invocation_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('accepted','queued','delivered','retryable','failed','expired')),
             revision INTEGER NOT NULL CHECK(revision>0), attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
-            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT,
+            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT, queued_agent_id TEXT,
             UNIQUE(owner_id,installation_id,automation_id,event_version,occurrence_id,schedule_revision)
          );
          CREATE INDEX IF NOT EXISTS app_outbox_pending
@@ -328,8 +328,8 @@ pub(super) fn pending(
 }
 
 impl AppOutbox {
-    /// Call only in the writer transaction that inserts the matching existing
-    /// workflow queue item and workflow receipt. This method never dispatches.
+    /// The trusted kernel writer must corroborate the matching durable queue
+    /// admission in this transaction. This method never dispatches.
     pub fn mark_queued_in(
         tx: &Transaction<'_>,
         automation: &VerifiedAutomation,

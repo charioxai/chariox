@@ -108,7 +108,16 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
     AppOutbox::initialize(connection).map_err(|error| DaemonError::LocalTransport {
         operation: "durable_state.migrate_app_automations",
         message: error.to_string(),
-    })
+    })?;
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_outbox') WHERE name='queued_agent_id')", [], |row| row.get(0)).map_err(storage)?;
+    if !exists {
+        connection
+            .execute_batch("ALTER TABLE app_outbox ADD COLUMN queued_agent_id TEXT;")
+            .map_err(storage)?;
+    }
+    connection.execute_batch("CREATE INDEX IF NOT EXISTS app_outbox_queued_agent ON app_outbox(queued_session_id,queued_agent_id,queued_prompt_id) WHERE state='queued' AND queued_agent_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS app_agent_prompt_history ON durable_state_events(subject_id,json_extract(payload_json,'$.agent_id'),sequence) WHERE kind='session.prompt_state.updated';").map_err(storage)?;
+    Ok(())
 }
 fn apply(
     connection: &mut Connection,
@@ -177,6 +186,10 @@ fn apply(
                 &receipt.automation_id,
                 receipt.automation_revision,
             )?;
+            let config = AppOutbox::configuration_in(&tx, catalog, owner, &receipt.automation_id)?;
+            if config.target.kind != chariox_app_runtime::app_outbox::AutomationTargetKind::Agent {
+                return Err(OutboxError::Invalid.into());
+            }
             AppOutbox::mark_queued_in(
                 &tx,
                 &automation,
@@ -185,6 +198,9 @@ fn apply(
                 &prompt_id,
                 crate::session::unix_epoch_ms(),
             )?;
+            tx.execute("UPDATE app_outbox SET queued_agent_id=?1 WHERE receipt_id=?2 AND owner_id=?3 AND installation_id=?4",
+                rusqlite::params![config.target.endpoint_id,receipt.receipt_id,owner,catalog.installation_id()])?;
+            super::app_event_maintenance::agent::reconcile_prompt_in(&tx, &receipt.receipt_id)?;
             AppAutomationOutcome::Queued
         }
         AppAutomationMutation::List => {
