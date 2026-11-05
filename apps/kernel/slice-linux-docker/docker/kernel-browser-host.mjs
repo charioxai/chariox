@@ -1193,10 +1193,13 @@ export class KernelBrowserHost {
       catch (error) { throw /no target/i.test(error?.message) ? new UserDomainRefusal("stale_reference", "display_retired") : error; }
       this.pendingActive = null;
       // The answer names the Tab Chrome now shows: wait (bounded) until its own report agrees.
+      let confirmed = false;
       for (const end = performance.now() + (this.tabGroups ? SHOW_TAB_WAIT_MS : 0); performance.now() < end;) {
-        if (await this.nativeFront(tab).catch(() => true)) break;
+        if (confirmed = await this.nativeFront(tab).catch(() => true)) break;
         await delay(20);
       }
+      // Chrome's own report is the active identity, whether or not the page read below finishes; a reconcile begun earlier cannot undo it.
+      if (confirmed) { this.activeTarget = tab.target_id; this.observed = ++this.observations; }
       return this.observe(await withinMs(this.reconcile(), SHOW_TAB_OBSERVE_MS) ?? this.tabState(), null, scope);
     }
     if (command.op === "navigate") {

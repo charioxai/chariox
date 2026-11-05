@@ -3151,8 +3151,9 @@ test('show_tab makes Chrome activate exactly that Tab for a person, and an agent
 test('show_tab activates through the scheduled host path while another Tab\'s renderer does not answer, and input follows', { timeout: 8000 }, () => using(async ({ host, sent }) => {
   const first = await host.request({ op: 'open', url: 'https://example.com/a' });
   const second = await host.request({ op: 'open', url: 'https://example.com/b' });
-  const tab = first.tabs[0];
+  const tab = first.tabs[0], previous = second.tabs.find(other => other.tab_id !== tab.tab_id);
   host.tabGroups = { personSelection: async () => {}, active: async () => host.tabs.get(tab.tab_id).target_id, close() {} };
+  host.activeTarget = host.tabs.get(previous.tab_id).target_id;
   const input = new PassThrough(), output = new PassThrough();
   const lines = readline.createInterface({ input: output }), waiters = new Map();
   lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
@@ -3170,6 +3171,7 @@ test('show_tab activates through the scheduled host path while another Tab\'s re
   try {
     const shown = await limit(rpc(1, { op: 'show_tab', tab_id: tab.tab_id, generation: second.generation }));
     assert.ok(shown?.ok, 'Show tab waited for the renderer that does not answer: ' + JSON.stringify(shown));
+    assert.equal(shown.result.active_tab_id, tab.tab_id, 'the answer names the Tab Chrome confirmed, not the previous one');
     assert.deepEqual(sent.filter(call => call.method === 'Target.activateTarget').map(call => call.params.targetId), [host.tabs.get(tab.tab_id).target_id]);
     const typed = await limit(rpc(2, { op: 'input', tab_id: tab.tab_id, generation: second.generation, document_id: tab.document_id, input: { kind: 'text', text: 'a' } }));
     assert.ok(typed?.ok, 'input queued behind the Show tab refresh: ' + JSON.stringify(typed));
