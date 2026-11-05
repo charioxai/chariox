@@ -3,7 +3,7 @@
 import { createHash, createPublicKey, verify } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
-import { basename, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import { parseUnitSections, verifyPath1ServicePolicy } from "./path1-service-policy.mjs"
 
@@ -88,6 +88,36 @@ async function rejectLinkedOrSpecialEntries(current, label) {
       fail(`${label} contains an unsupported file type`)
     }
   }
+}
+
+// Tree artifacts already authenticate all their descendants.
+// Outside them the release contains only declared artifacts, signature metadata,
+// and the directories needed to reach those entries.
+async function verifyReleaseRootInventory(rootfs, artifacts, treePaths) {
+  const files = new Set([
+    "usr/lib/chariox/release-manifest.json",
+    "usr/lib/chariox/release-manifest.sig",
+    "usr/lib/chariox/release-public-key",
+    ...artifacts.map((artifact) => artifact.path.slice(1)),
+  ])
+  const trees = new Set(treePaths.map((path) => path.slice(1)))
+  const directories = new Set(trees)
+  for (const path of files) {
+    for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) {
+      directories.add(parent)
+    }
+  }
+  async function inspect(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory() && directories.has(path)) {
+        if (!trees.has(path)) await inspect(join(directory, entry.name), path)
+      } else if (!entry.isFile() || !files.has(path) || trees.has(path)) {
+        fail(`release root contains an undeclared entry: ${path}`)
+      }
+    }
+  }
+  await inspect(rootfs)
 }
 
 async function sha256File(path) {
@@ -427,6 +457,13 @@ async function verifyImageRelease(
     seen.add(artifact.name)
     verifiedArtifactDigests.set(artifact.name, actualDigest)
   }
+
+  await verifyReleaseRootInventory(
+    rootfs,
+    manifest.artifacts,
+    manifest.artifacts.filter((artifact) => EXPECTED_ARTIFACTS.get(artifact.name).type === "tree")
+      .map((artifact) => artifact.path),
+  )
 
   if (selectedTopology === "path1") {
     await verifyPath1BuilderAttestation(

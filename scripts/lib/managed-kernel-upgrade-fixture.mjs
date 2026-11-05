@@ -289,12 +289,6 @@ async function makeHarness(context, {
   await chmod(dirname(releases), 0o755)
   await chmod(releases, 0o755)
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
-  if (!runtimeUnitsChange) {
-    // As upgrade-image.sh stages every release it installs.
-    for (const unit of ["chariox-rootless-docker", "chariox-slice-disk-quota-allocator"]) {
-      await mkdir(join(currentRelease, `etc/systemd/system/${unit}.service.d`), { mode: 0o755 })
-    }
-  }
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
   if (path1Release) {

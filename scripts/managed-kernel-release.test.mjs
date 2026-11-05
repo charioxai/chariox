@@ -1,7 +1,7 @@
 import { spawnOwned, signalOwnedProcessGroup } from "../apps/kernel/slice-linux-docker/owned-process-signals.mjs"
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign, verify } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, rmdir, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, posix, relative, sep } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -996,6 +996,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     (artifact) => !dataVolumeArtifactNames.has(artifact.name),
   )
   for (const relativePath of dataVolumeArtifactPaths) await rm(join(releaseRoot, relativePath))
+  for (const relativePath of dataVolumeArtifactPaths.slice(1)) await rmdir(dirname(join(releaseRoot, relativePath)))
   const noVolumeManifestBytes = Buffer.from(JSON.stringify(noVolumeManifest))
   await writeFile(manifestPath, noVolumeManifestBytes)
   await writeFile(signaturePath, sign(null, noVolumeManifestBytes, fixture.releasePrivateKey).toString("base64"))
@@ -1057,6 +1058,7 @@ test("Path-1 bootstrap and data-volume artifacts are signed and selected by imag
     }
   }
   for (const [relativePath, contents] of originalDataVolumeArtifacts) {
+    await mkdir(dirname(join(releaseRoot, relativePath)), { recursive: true })
     await writeFile(join(releaseRoot, relativePath), contents)
   }
   await writeFile(manifestPath, originalManifestBytes)
@@ -2149,6 +2151,11 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(badDigest.status, 1)
   assert.match(badDigest.stderr, /release manifest digest does not match/)
   assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  const extraEntry = spawnSync(installer, args, { encoding: "utf8", env })
+  assert.equal(extraEntry.status, 1)
+  assert.match(extraEntry.stderr, /release root contains an undeclared entry: usr\/local\/bin\/unsigned-extra/)
+  assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  await rm(join(output, "rootfs/usr/local/bin/unsigned-extra"))
   const brokerWantsLink = join(
     harness.installRoot,
     "etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service",
