@@ -1867,14 +1867,8 @@ mod tests {
             "kernel",
         );
         let notification = |id| {
-            PromptQueueItem::new(
-                id,
-                "attachment",
-                "agent",
-                "notification",
-                PromptStatus::Queued,
-            )
-            .with_notification_deadline(1)
+            PromptQueueItem::new(id, "attachment", "agent", id, PromptStatus::Queued)
+                .with_notification_deadline(1)
         };
         let reserved = notification("reserved");
         let hold = reserved.reserve_remote_steer().unwrap();
@@ -1896,7 +1890,7 @@ mod tests {
         assert_eq!(owner.expire_queued_notifications(&session, "agent", 2), 1);
         let (_, queue) = owner.state_parts(&session, "agent");
         assert_eq!(
-            queue.iter().map(|p| p.id()).collect::<Vec<_>>(),
+            queue.iter().map(|p| p.prompt()).collect::<Vec<_>>(),
             vec!["reserved", "ordinary"]
         );
         assert!(reserved.release_remote_steer(hold));

@@ -1236,6 +1236,10 @@ async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
         .session_store
         .write()
         .restore_session(room.clone());
+    rig.runtime
+        .owned
+        .prompt_state_owner
+        .restore_session_state(&room);
     let mut request = rig.request("unused");
     request.agent_id = other.id().into();
     request.source = AgentTriggerSourceRequest::Notification {
@@ -1297,7 +1301,17 @@ async fn r6_full_app_subscriber_does_not_starve_an_available_subscriber() {
 async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_and_steer() {
     for app in [false, true] {
         for steer in [false, true] {
-            let rig = rig().await;
+            let config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+                "r6-notification-expiry",
+            );
+            let (root, runtime, session_id, agent_id, attachment_id, _, _) = super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(config.clone(), &[]).await;
+            let mut rig = Rig {
+                _root: root,
+                runtime,
+                session_id,
+                agent_id,
+                attachment_id,
+            };
             let expected_deadline = if app {
                 let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
                     &rig.runtime.owned.durable_state_store,
@@ -1364,11 +1378,41 @@ async fn r6_notification_deadline_survives_queue_recovery_and_blocks_promotion_a
                 .owned
                 .session_store
                 .write()
-                .restore_session(room);
+                .restore_session(room.clone());
             rig.runtime
                 .owned
                 .prompt_state_owner
-                .remove_agent(&rig.session_id, &rig.agent_id);
+                .restore_session_state(&room);
+            rig.runtime
+                .owned
+                .persist_prompt_session_state(&room, &rig.agent_id)
+                .unwrap();
+            if steer {
+                rig.runtime
+                    .with_app_side_effect(|app| app.save_durable_state_snapshot())
+                    .await
+                    .unwrap();
+            }
+            let mut restart_config = config.clone();
+            let restart_path =
+                super::super::agent_trigger_runtime_state::tests::durable_state_config(
+                    "r6-notification-expiry-restart",
+                )
+                .user_config
+                .state
+                .path
+                .unwrap();
+            rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
+                .unwrap()
+                .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
+                .unwrap();
+            restart_config.user_config.state.path = Some(restart_path);
+            let app = crate::app::DaemonApp::bootstrap(restart_config).unwrap();
+            rig.runtime = super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(
+                &std::sync::Arc::new(tokio::sync::Mutex::new(app)),
+            )
+            .await;
+            assert_eq!(rig.queued_prompts().len(), 1, "the real kernel bootstrap restores the expired queued item and its private metadata");
             if steer {
                 assert!(
                     rig.runtime
