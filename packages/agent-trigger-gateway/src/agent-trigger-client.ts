@@ -86,11 +86,11 @@ export class AgentTriggerClient {
    */
   async workspaceImage(reference: string): Promise<{ mime: string; bytes: Buffer } | null> {
     if (!this.agentId) await this.metadata()
-    type Agent = { id: string; directory?: string | null; worktree_id?: string | null }
-    const state = await this.kernel.send<{ SessionState?: { session?: { directory?: string | null; agents?: Agent[] } } }>({ GetSessionState: { session_id: this.sessionId } })
+    type Agent = { id: string; workspace_id?: string | null; worktree_id?: string | null }
+    const state = await this.kernel.send<{ SessionState?: { session?: { workspace_id: string; worktree_id: string; agents: Agent[] } } }>({ GetSessionState: { session_id: this.sessionId } })
     const session = state.SessionState?.session, agent = session?.agents?.find(item => item.id === this.agentId)
-    const workspace = agent?.directory?.trim() || session?.directory?.trim()
-    const worktree = agent?.worktree_id?.trim() || workspace
+    const workspace = agent?.workspace_id?.trim() || session?.workspace_id.trim()
+    const worktree = agent?.worktree_id?.trim() || session?.worktree_id.trim()
     const path = workspace && worktree ? workspaceImagePath(reference, worktree) : null
     if (!workspace || !worktree || !path) return null
     const response = await this.kernel.send<{ WorkspaceFileContent?: { content?: { content_base64?: string | null; truncated?: boolean; size_bytes?: number } } }>({
