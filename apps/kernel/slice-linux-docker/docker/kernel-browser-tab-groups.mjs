@@ -41,6 +41,9 @@ const keepShown = (tab, previous, agent) => {
 // MP-08/MP-10: page popups and second windows stay inside the shared browser.
 // The kernel identifies its internal keepalive before popup folding is enabled.
 let keepaliveTab = null;
+// Counts the person's selections: a fold decides its foreground before an asynchronous move, and a selection made
+// meanwhile is newer than that decision.
+let selectionEpoch = 0;
 const fold = async (id, tries = 100) => {
   if (id === keepaliveTab) return;
   const tab = await chrome.tabs.get(id);
@@ -52,16 +55,17 @@ const fold = async (id, tries = 100) => {
   // that existing page instead of leaving a popup without a tabbed window.
   if (!main) { await chrome.windows.create({ tabId: id, type: "normal", focused: true }); return; }
   if (tab.windowId === main.id) return;
-  const previous = shown.get(main.id), watched = !made.get(id)?.agent && tab.openerTabId !== undefined && tab.openerTabId === previous;
+  const previous = shown.get(main.id), watched = !made.get(id)?.agent && tab.openerTabId !== undefined && tab.openerTabId === previous, epoch = selectionEpoch;
   try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
   catch (error) {
     if (!tries || !/dragging/.test(error?.message)) throw error;
     await new Promise(resolve => setTimeout(resolve, 100));
     return fold(id, tries - 1);
   }
+  if (epoch !== selectionEpoch) return;
   if (watched) {
     await chrome.tabs.update(id, { active: true });
-    await chrome.windows.update(main.id, { focused: true });
+    if (epoch === selectionEpoch) await chrome.windows.update(main.id, { focused: true });
   } else if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
 };
 chrome.tabs.onCreated.addListener(tab => { const agent = Date.now() <= (agentOpeners.get(tab.openerTabId) ?? 0); made.set(tab.id, { opener: tab.openerTabId, agent, initial: true, at: Date.now() }); if (made.size > 64) made.delete(made.keys().next().value); keepShown(tab, shown.get(tab.windowId), agent); fold(tab.id).catch(() => {}); });
@@ -108,7 +112,7 @@ globalThis.charioxTabs = {
   revision: 8,
   favicon,
   // Physical Chrome input and show_tab announce the person's choice before dispatch.
-  personSelection() { for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
+  personSelection() { selectionEpoch++; for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
   // Capture the actor before dispatch; Chrome retains transient opening activation for five seconds.
   // The next person's page or Chrome input retires it, even when they are watching an agent's Tab.
   async openingInput(target, agent) {

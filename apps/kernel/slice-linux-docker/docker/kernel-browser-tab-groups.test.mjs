@@ -216,7 +216,7 @@ test('MP-08/MP-10 real headless favicon cache does not require metadata headers'
 });
 
 // Miguel 11-04: agents never change the Tab the person sees.
-const activation = async ({ tabs, shown, windows }) => {
+const activation = async ({ tabs, shown, windows, move }) => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-activation-'));
   const source = await readFile(path.join(await writeTabGroupsExtension(root), 'sw.js'), 'utf8');
   await rm(root, { recursive: true, force: true });
@@ -228,7 +228,7 @@ const activation = async ({ tabs, shown, windows }) => {
       onCreated: { addListener: fn => { listeners.created = fn; } }, onAttached: { addListener: fn => { listeners.attached = fn; } },
       onActivated: { addListener: fn => { listeners.activated = fn; } },
       query: async () => shown.map(([windowId, id]) => ({ id, windowId, active: true })),
-      get: async id => tabs.get(id), move: async (id, value) => calls.push(['move', id, value]),
+      get: async id => tabs.get(id), move: async (id, value) => { await move?.(); calls.push(['move', id, value]); },
       update: async (id, value) => calls.push(['update', id, value]),
     },
   };
@@ -359,4 +359,32 @@ test('BTAB-01 person Chrome input retires the actor of an earlier popup before a
   await worker.charioxTabs.personSelection();
   await listeners.attached(9);
   assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }], ['update', 9, { active: true }], ['focus', 10, { focused: true }]]);
+});
+
+test('BTAB-01 a person selection made while a popup fold is moving is not undone when the move finishes', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }], move: () => held });
+  await worker.charioxTabs.openingInput('target-1', true);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  // The person picks B while the agent popup is still being moved.
+  await worker.charioxTabs.personSelection();
+  listeners.activated({ tabId: 2, windowId: 10 });
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]], 'the finished move activates and focuses nothing');
+});
+
+test('BTAB-01 a watched popup does not take the view back from a person selection made during its fold', async () => {
+  const tabs = new Map([[1, { id: 1, windowId: 10 }], [2, { id: 2, windowId: 10 }], [9, { id: 9, windowId: 11, active: true, openerTabId: 1 }]]);
+  let release; const held = new Promise(resolve => { release = resolve; });
+  const { listeners, calls, worker } = await activation({ tabs, shown: [[10, 1]], windows: [{ id: 10, type: 'normal' }, { id: 11, type: 'popup' }], move: () => held });
+  await worker.charioxTabs.openingInput('target-1', false);
+  listeners.created(tabs.get(9));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  await worker.charioxTabs.personSelection();
+  release();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(calls, [['move', 9, { windowId: 10, index: -1 }]]);
 });
