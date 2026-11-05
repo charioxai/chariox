@@ -1,6 +1,5 @@
-//! Protocol 345 owner-scoped App worker control and automation configuration.
-//! The owner comes from the authenticated caller; requests name only an
-//! installation. Automation targets are resolved under workflow ownership.
+//! Caller-scoped App worker control and automation configuration.
+//! Room collaborators configure only targets they control, under the Room's App owner.
 use super::{app_automation_owned_state::ConfigureAppAutomation, KernelRuntimeState};
 use crate::{
     durable_state::app_worker_lifecycle::{StartGate, WorkerPhase, WorkerStatus},
@@ -209,22 +208,9 @@ impl KernelRuntimeState {
             {
                 return Some(failed(AppRequestErrorCode::Unauthorized));
             }
-            if room.owner_user_id() != caller {
-                let Ok(publication) = self
-                    .owned
-                    .session_store
-                    .read()
-                    .resolve_workflow_publication_ref(room.id(), &configure.publication_ref)
-                else {
-                    return Some(failed(AppRequestErrorCode::NotFound));
-                };
-                if publication.created_by_user_id() != caller {
-                    return Some(failed(AppRequestErrorCode::Unauthorized));
-                }
-            }
             room.owner_user_id().to_owned()
         } else {
-            caller
+            caller.clone()
         };
         if installation.is_empty()
             || installation.len() > 128
@@ -250,15 +236,20 @@ impl KernelRuntimeState {
             return Some(
                 self.app_control()
                     .execute_once(&owner, command, request, move || async move {
-                        Box::pin(state.app_control_response(execute_owner, installation, input))
-                            .await
-                            .unwrap_or_else(failed)
+                        Box::pin(state.app_control_response(
+                            execute_owner,
+                            caller,
+                            installation,
+                            input,
+                        ))
+                        .await
+                        .unwrap_or_else(failed)
                     })
                     .await,
             );
         }
         Some(
-            Box::pin(self.app_control_response(owner, installation, request.clone()))
+            Box::pin(self.app_control_response(owner, caller, installation, request.clone()))
                 .await
                 .unwrap_or_else(failed),
         )
@@ -267,6 +258,7 @@ impl KernelRuntimeState {
     pub(super) async fn app_control_response(
         &self,
         owner: String,
+        caller: String,
         installation: String,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
@@ -326,6 +318,7 @@ impl KernelRuntimeState {
                         &owner,
                         catalog,
                         ConfigureAppAutomation {
+                            caller_user_id: caller,
                             automation_id: request.automation_id,
                             expected_revision: request.expected_revision,
                             event_name: request.event_name,
@@ -740,6 +733,7 @@ fn automation_error(
         E::Stopped(_) => AppRequestErrorCode::Busy,
         E::Outbox(O::Conflict) | E::TargetChanged => AppRequestErrorCode::Conflict,
         E::Outbox(O::NotFound) | E::NotOwner => AppRequestErrorCode::NotFound,
+        E::Unauthorized => AppRequestErrorCode::Unauthorized,
         E::Outbox(O::Limit | O::Full) => AppRequestErrorCode::LimitExceeded,
         E::Outbox(O::Invalid | O::Schema | O::Catalog(_) | O::Inactive | O::TooOld)
         | E::InvalidTarget => AppRequestErrorCode::InvalidRequest,

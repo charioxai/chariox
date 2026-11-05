@@ -298,6 +298,7 @@ impl KernelRuntimeState {
                     &owner,
                     catalog,
                     AppAutomationMutation::Configure {
+                        previous_target: None,
                         automation_id,
                         expected_revision: 0,
                         event_name,

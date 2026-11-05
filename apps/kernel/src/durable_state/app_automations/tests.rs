@@ -160,6 +160,7 @@ fn workflow() -> (SessionService, String, String) {
 }
 fn mutation(target: WorkflowAutomationTarget, expected: u64) -> AppAutomationMutation {
     AppAutomationMutation::Configure {
+        previous_target: None,
         automation_id: "automation".into(),
         expected_revision: expected,
         event_name: "changed".into(),
@@ -535,4 +536,78 @@ fn a_served_publication_still_matches_its_durable_target() {
         )
         .unwrap();
     assert_eq!(revision(configured), 1);
+}
+
+#[test]
+fn replacement_rechecks_the_authorized_existing_publication_on_the_writer() {
+    let fixture = Fixture::new();
+    let store = fixture.open();
+    let (mut sessions, session, publication) = workflow();
+    let workflow = sessions.get_session(&session).unwrap().workflows()[0].clone();
+    let next = sessions
+        .create_workflow_publication(
+            &session,
+            workflow.id(),
+            workflow.endpoints()[0].id(),
+            Some("default".into()),
+            Some("next-events".into()),
+            Some("event_based".into()),
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "local".into(),
+        )
+        .unwrap();
+    store
+        .persist_workflow_runtime_transition(
+            &sessions.get_session(&session).unwrap(),
+            "replacement fixture",
+        )
+        .unwrap();
+    let previous =
+        WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None)
+            .unwrap();
+    store
+        .mutate_app_automation(
+            "local",
+            fixture.catalog.clone(),
+            mutation(previous, 0),
+            budget(),
+        )
+        .unwrap();
+    let previous = WorkflowAutomationTarget::authorize_existing(
+        &sessions,
+        "local",
+        "local",
+        WorkflowAutomationTarget::resolve(&sessions, "local", &session, &publication, None)
+            .unwrap()
+            .target()
+            .clone(),
+    )
+    .unwrap();
+    let target =
+        WorkflowAutomationTarget::resolve(&sessions, "local", &session, next.id(), None).unwrap();
+    let connection = Connection::open(store.path()).unwrap();
+    connection.execute("UPDATE durable_workflow_hot_entities SET payload_json=json_set(payload_json,'$.created_by_user_id','other') WHERE session_id=?1 AND entity_kind='publication' AND entity_id=?2", rusqlite::params![session,publication]).unwrap();
+    let mut change = mutation(target, 1);
+    let AppAutomationMutation::Configure {
+        previous_target, ..
+    } = &mut change
+    else {
+        unreachable!()
+    };
+    *previous_target = Some(previous);
+    assert!(
+        matches!(
+            store.mutate_app_automation("local", fixture.catalog.clone(), change, budget()),
+            Err(AppAutomationError::TargetChanged)
+        ),
+        "the existing target's authorization must still match inside the configuration transaction"
+    );
 }

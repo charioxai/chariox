@@ -144,6 +144,7 @@ fn configure(state: &KernelRuntimeState, session: &str, publication: &str, autom
             "local",
             catalog,
             super::app_automation_owned_state::ConfigureAppAutomation {
+                caller_user_id: "local".into(),
                 automation_id: automation.into(),
                 expected_revision: 0,
                 event_name: "changed".into(),

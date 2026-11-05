@@ -33,6 +33,7 @@ fn setup(fixture: &Fixture) -> (DurableKernelStateStore, SessionService, String,
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
+                previous_target: None,
                 automation_id: "automation".into(),
                 expected_revision: 0,
                 event_name: "changed".into(),
@@ -731,6 +732,7 @@ fn d1_opaque_app_fixture(generator: &str) {
             "local",
             fixture.catalog.clone(),
             AppAutomationMutation::Configure {
+                previous_target: None,
                 automation_id: "github-fixture".into(),
                 expected_revision: 0,
                 event_name: event.into(),

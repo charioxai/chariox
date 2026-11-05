@@ -20,6 +20,8 @@ pub(crate) enum NotificationTargetError {
     InvalidTarget,
     #[error("app_automation_not_owner")]
     NotOwner,
+    #[error("app_automation_unauthorized")]
+    Unauthorized,
 }
 impl From<rusqlite::Error> for NotificationTargetError {
     fn from(error: rusqlite::Error) -> Self {
@@ -133,6 +135,41 @@ impl WorkflowNotificationTarget {
                 queue_id: "agent".into(),
             },
             entities: Vec::new(),
+        })
+    }
+    /// Authorization of an existing binding does not require its publication to
+    /// remain runnable. Its exact publication ownership must still match on commit.
+    pub(crate) fn authorize_existing(
+        sessions: &SessionService,
+        owner: &str,
+        caller: &str,
+        target: AutomationTarget,
+    ) -> Result<Self, NotificationTargetError> {
+        if target.kind != chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow {
+            return Err(NotificationTargetError::Unauthorized);
+        }
+        let session = sessions.get_session(&target.session_id)?;
+        if session.owner_user_id() != owner
+            || !session.has_member(caller)
+            || session.status() == crate::session::SessionStatus::Ended
+        {
+            return Err(NotificationTargetError::Unauthorized);
+        }
+        let publication = sessions
+            .resolve_workflow_publication_ref(&target.session_id, &target.publication_id)
+            .map_err(|_| NotificationTargetError::Unauthorized)?;
+        if publication.created_by_user_id() != caller {
+            return Err(NotificationTargetError::Unauthorized);
+        }
+        Ok(Self {
+            owner: owner.into(),
+            durable_owner: session.host_daemon_id().into(),
+            entities: vec![(
+                "publication",
+                publication.id().into(),
+                encode(&publication.without_runtime_state())?,
+            )],
+            target,
         })
     }
     pub(crate) fn target(&self) -> &AutomationTarget {

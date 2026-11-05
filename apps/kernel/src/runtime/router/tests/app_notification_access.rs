@@ -228,4 +228,23 @@ async fn guest_cannot_replace_another_members_automation_through_router() {
         ),
         "a guest must authorize the existing binding as well as the proposed one"
     );
+    let mut own = configure(publication.id(), 0);
+    let LocalDaemonRequest::ConfigureAppAutomation(body) = &mut own else {
+        unreachable!()
+    };
+    body.automation_id = "guest-binding".into();
+    assert!(matches!(
+        request(&router, "guest", own.clone()).await,
+        LocalDaemonResponse::AppAutomation { .. }
+    ));
+    let LocalDaemonRequest::ConfigureAppAutomation(body) = &mut own else {
+        unreachable!()
+    };
+    body.expected_revision = 1;
+    let LocalDaemonResponse::AppAutomation { automation, .. } =
+        request(&router, "guest", own).await
+    else {
+        panic!("guest may replace their own target")
+    };
+    assert_eq!(automation.revision, 2);
 }

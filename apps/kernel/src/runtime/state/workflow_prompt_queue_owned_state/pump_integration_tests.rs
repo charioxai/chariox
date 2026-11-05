@@ -103,6 +103,7 @@ fn configure_automation(
             "alice",
             catalog.clone(),
             AppAutomationMutation::Configure {
+                previous_target: None,
                 automation_id: "automation".into(),
                 expected_revision: 0,
                 event_name: "changed".into(),

@@ -78,7 +78,12 @@ impl KernelRuntimeState {
         let mut set = Vec::with_capacity(active.len());
         for (installation_id, app_id, release) in active {
             let read = |request: LocalDaemonRequest| {
-                self.app_control_response(owner.to_owned(), installation_id.clone(), request)
+                self.app_control_response(
+                    owner.to_owned(),
+                    owner.to_owned(),
+                    installation_id.clone(),
+                    request,
+                )
             };
             let installation = || AppWorkerRequest {
                 installation_id: installation_id.clone(),

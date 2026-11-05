@@ -641,10 +641,15 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         what: &str,
     ) -> Result<(), DaemonError> {
-        Box::pin(self.app_control_response(owner.to_owned(), installation_id.to_owned(), request))
-            .await
-            .map(|_| ())
-            .map_err(|code| app_error(what, code))
+        Box::pin(self.app_control_response(
+            owner.to_owned(),
+            owner.to_owned(),
+            installation_id.to_owned(),
+            request,
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|code| app_error(what, code))
     }
 
     /// The copy's agents use the copies of the Apps their source agents use.

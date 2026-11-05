@@ -22,6 +22,7 @@ pub(crate) enum AppAutomationMutation {
         event_name: String,
         target: WorkflowAutomationTarget,
         scheduled: bool,
+        previous_target: Option<WorkflowAutomationTarget>,
     },
     AgentQueued {
         receipt: chariox_app_runtime::app_outbox::Receipt,
@@ -128,8 +129,16 @@ fn apply(
             event_name,
             target,
             scheduled,
+            previous_target,
         } => {
             target.require_current(&tx, owner)?;
+            if let Some(previous_target) = previous_target {
+                let current = AppOutbox::configuration_in(&tx, catalog, owner, &automation_id)?;
+                previous_target.require_current(&tx, owner)?;
+                if &current.target != previous_target.target() {
+                    return Err(AppAutomationError::Unauthorized);
+                }
+            }
             budget.check()?;
             AppOutbox::configure_in(
                 &tx,
