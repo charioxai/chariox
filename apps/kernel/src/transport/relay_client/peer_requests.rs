@@ -353,14 +353,7 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
-            | RelayPeerRequest::ReadProjectEnvironment { .. }
-            | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
-            | RelayPeerRequest::PullProjectEnvironmentFile { .. }
-            | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
-            | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
-            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
-            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
-    );
+    ) || project_environment_request(&request);
     if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
@@ -403,7 +396,12 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         }
-        let Some(owner) = router.same_owner_peer_user_id(identity) else {
+        let owner = if project_environment_request(&request) {
+            router.environment_peer_user_id(identity)
+        } else {
+            router.same_owner_peer_user_id(identity)
+        };
+        let Some(owner) = owner else {
             return RelayRequestOutcome {
                 display_event: None,
                 encrypted_response: None,
@@ -418,16 +416,7 @@ pub(super) async fn handle_daemon_peer_request(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
         );
-        let outcome = if matches!(
-            &request,
-            RelayPeerRequest::ReadProjectEnvironment { .. }
-                | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
-                | RelayPeerRequest::PullProjectEnvironmentFile { .. }
-                | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
-                | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
-                | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
-                | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
-        ) {
+        let outcome = if project_environment_request(&request) {
             router.relay_project_environment(&owner, request)
         } else {
             router.relay_workflow_notification(
@@ -2517,6 +2506,28 @@ fn lease_worker_peer_request_allowed(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::CreateExecutionLease { .. }
             | RelayPeerRequest::AgentMove { .. }
     ) || lease_resource(request).is_some()
+        || project_environment_setup_request(request)
+}
+
+/// Starting, watching and stopping a Setup run is how the selected home prepares its worker.
+fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
+    )
+}
+
+fn project_environment_request(request: &RelayPeerRequest) -> bool {
+    project_environment_setup_request(request)
+        || matches!(
+            request,
+            RelayPeerRequest::ReadProjectEnvironment { .. }
+                | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+                | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+                | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
+        )
 }
 
 fn scoped_unbound_kernel_subject(identity: Option<&RelayCallerIdentity>) -> Option<String> {
@@ -2544,6 +2555,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 #[cfg(test)]
 mod tests {
     mod agent_move;
+    mod environment_setup_worker;
     mod signed_slice;
 
     use super::*;

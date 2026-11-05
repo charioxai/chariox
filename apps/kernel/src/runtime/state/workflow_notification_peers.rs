@@ -39,11 +39,45 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Environment requests also run on a leased worker and on its selected home, so only a
+    /// slice, which has no Cloud profile, is outside the same-owner channel.
+    fn ensure_environment_peer_kernel(&self) -> Result<(), DaemonError> {
+        if self
+            .owned
+            .config_projection
+            .snapshot()
+            .daemon_id
+            .starts_with("slice:")
+        {
+            return Err(store::error(
+                "Environment requests between kernels need a home kernel or a worker",
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
         self.ensure_notification_home_role().ok()?;
+        self.authenticated_owner_of(identity)
+    }
+
+    /// The owner of an Environment request, home or leased worker. A worker additionally pins its
+    /// selected home, which the peer admission checks before this runs.
+    pub(crate) fn environment_peer_user_id(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
+        self.ensure_environment_peer_kernel().ok()?;
+        self.authenticated_owner_of(identity)
+    }
+
+    fn authenticated_owner_of(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
         if identity.subject.starts_with("slice:") {
             return None;
         }
@@ -64,6 +98,7 @@ impl KernelRuntimeState {
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        self.ensure_notification_home_role()?;
         self.send_same_owner_peer_request(owner, kernel, request, TIMEOUT)
             .await
     }
@@ -76,7 +111,7 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
         timeout: Duration,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        self.ensure_notification_home_role()?;
+        self.ensure_environment_peer_kernel()?;
         let config = self.owned.config_projection.snapshot();
         if config
             .cloud_relay
@@ -751,6 +786,74 @@ mod tests {
             )
             .is_err());
     }
+    fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
+        chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "wfnotify-fixture".into(),
+            subject: subject.into(),
+            subject_kind: RelaySubjectKind::Machine,
+            expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+            token_id: None,
+            user_id: Some("local".into()),
+            public_key_thumbprint: None,
+        }
+    }
+
+    // Environment Import runs on a leased worker and asks the source kernel itself.
+    #[tokio::test]
+    async fn environment_import_reaches_the_source_from_a_leased_worker() {
+        let mut f = Fixture::for_kernel("environment-worker");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        runtime.owned.config_projection.update(config);
+        let error = runtime
+            .send_same_owner_peer_request(
+                "local",
+                "source-kernel",
+                RelayPeerRequest::ReadProjectEnvironment {
+                    project_id: "project".into(),
+                },
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("home kernel"),
+            "the worker refused to ask: {error}"
+        );
+        let identity = machine_identity("home-machine");
+        assert_eq!(
+            runtime.environment_peer_user_id(&identity).as_deref(),
+            Some("local")
+        );
+        // Notifications keep their home-only restriction.
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
+    }
+
+    #[tokio::test]
+    async fn environment_peer_path_stays_closed_to_slices() {
+        let mut f = Fixture::for_kernel("environment-slice");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        assert!(runtime
+            .environment_peer_user_id(&machine_identity("slice:child"))
+            .is_none());
+        config.daemon_id = "slice:child".into();
+        runtime.owned.config_projection.update(config);
+        assert!(runtime
+            .environment_peer_user_id(&machine_identity("home-machine"))
+            .is_none());
+        assert!(runtime
+            .send_same_owner_peer_request(
+                "local",
+                "source-kernel",
+                RelayPeerRequest::ReadProjectEnvironment {
+                    project_id: "project".into(),
+                },
+                Duration::from_millis(500),
+            )
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn security_f9_member_cannot_refresh_profile_owner_inventory() {
         let mut f = Fixture::for_kernel("notification-home");
