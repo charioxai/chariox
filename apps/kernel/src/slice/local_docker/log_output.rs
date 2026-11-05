@@ -1,12 +1,16 @@
 //! Bounded log tails from regular descriptors and concurrently drained commands.
-use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::VecDeque;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::time::{Duration, Instant};
 
 pub(super) const MAX_LOG_BYTES: usize = 65536;
+/// How long a running log command may take; a remote Docker context or a busy
+/// engine answers in seconds. Shutdown of a command that missed it is bounded
+/// separately by `child_shutdown`.
+const LOG_COMMAND_DEADLINE: Duration = Duration::from_secs(30);
 
 pub(super) fn tail_file(path: &Path, maximum: usize) -> io::Result<(String, bool)> {
     let mut options = OpenOptions::new();
@@ -80,21 +84,38 @@ impl BoundedLogOutput {
 }
 
 pub(super) trait LogCommandOutput {
-    fn bounded_log_output(&mut self) -> io::Result<BoundedLogOutput>;
+    fn bounded_log_output(&mut self) -> io::Result<BoundedLogOutput> {
+        self.bounded_log_output_within(LOG_COMMAND_DEADLINE)
+    }
+    fn bounded_log_output_within(&mut self, deadline: Duration) -> io::Result<BoundedLogOutput>;
+}
+
+/// Waits for a running command until `deadline`, then stops and reaps it.
+fn wait_for_log_command(child: &mut Child, deadline: Duration) -> io::Result<ExitStatus> {
+    let deadline = Instant::now() + deadline;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            crate::runtime::child_shutdown::stop(child, "docker_log_deadline")?;
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the log command did not finish before its deadline",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 impl LogCommandOutput for Command {
-    fn bounded_log_output(&mut self) -> io::Result<BoundedLogOutput> {
+    fn bounded_log_output_within(&mut self, deadline: Duration) -> io::Result<BoundedLogOutput> {
         let mut child = self.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
         let output = std::thread::spawn(move || drain(stdout, MAX_LOG_BYTES / 2));
         let diagnostic = std::thread::spawn(move || drain(stderr, MAX_LOG_BYTES / 2));
-        let status = child.bounded_wait();
-        if status.is_err() {
-            let _ = child.kill();
-            let _ = child.bounded_wait();
-        }
+        let status = wait_for_log_command(&mut child, deadline);
         let (stdout, out_truncated) = output.join().map_err(|_| io::ErrorKind::Other)??;
         let (stderr, err_truncated) = diagnostic.join().map_err(|_| io::ErrorKind::Other)??;
         Ok(BoundedLogOutput {
@@ -121,5 +142,46 @@ mod tests {
         assert!(output.status.success());
         assert!(output.truncated);
         assert!(output.stdout.len() + output.stderr.len() <= MAX_LOG_BYTES);
+    }
+
+    #[test]
+    fn a_log_command_slower_than_the_reap_limit_still_returns_its_tail() {
+        let started = Instant::now();
+        let output = crate::process_spawn::command("sh")
+            .args(["-c", "sleep 2; echo tail"])
+            .bounded_log_output()
+            .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        assert!(output.status.success());
+        assert_eq!(output.text().trim(), "tail");
+    }
+
+    #[test]
+    fn a_hung_log_command_is_stopped_and_reaped_at_the_deadline() {
+        let started = Instant::now();
+        let mut command = crate::process_spawn::command("sleep");
+        command.arg("300");
+        let error = match command.bounded_log_output_within(Duration::from_millis(300)) {
+            Err(error) => error,
+            Ok(_) => panic!("a hung command cannot succeed"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_hung_log_command_process_is_gone_after_the_deadline() {
+        let pid_file = std::env::temp_dir().join(format!("log-hang-{}", std::process::id()));
+        let script = format!("echo $$ > {}; exec sleep 300", pid_file.display());
+        let mut command = crate::process_spawn::command("sh");
+        command.args(["-c", &script]);
+        let _ = command.bounded_log_output_within(Duration::from_millis(500));
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        let _ = std::fs::remove_file(&pid_file);
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "the timed-out log command must be reaped"
+        );
     }
 }
