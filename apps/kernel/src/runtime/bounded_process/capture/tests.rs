@@ -205,6 +205,11 @@ mod escaped {
             );
             return;
         }
+        // The shutdown watchdog is one persistent kernel thread, initialized
+        // lazily by the first timeout. Include it in the baseline; every later
+        // timeout must still leave the thread count unchanged.
+        let error = capture(shell("sleep 30"), Duration::from_millis(10)).unwrap_err();
+        assert!(matches!(error, CaptureError::TimedOut));
         let before = std::fs::read_dir("/proc/self/task").unwrap().count();
         for _ in 0..10 {
             let error = capture(shell("sleep 30"), Duration::from_millis(10)).unwrap_err();
