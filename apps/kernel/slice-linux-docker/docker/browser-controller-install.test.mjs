@@ -41,7 +41,8 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
     const documentId = (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree.frame.loaderId;
     const { captureProtectedBrowserImage } = await import(pathToFileURL(path.join(root, 'browser-controller-image.mjs')));
     const image = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId,
-      viewport: { css_width: 1280, css_height: 800, device_scale_factor: 1 }, protectedValues: [] });
+      viewport: { css_width: 1280, css_height: 800, device_scale_factor: 1 },
+      geometry: (await connection.send('Page.getLayoutMetrics', {}, sessionId)).cssVisualViewport, protectedValues: [] });
     assert.equal(image.redaction, 'none');
     assert.equal(image.bytes.readUInt32BE(16), 1280);
     assert.equal(image.bytes.readUInt32BE(20), 800);
