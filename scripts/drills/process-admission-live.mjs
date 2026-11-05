@@ -413,6 +413,14 @@ const cleanup = async () => {
         homeMatches = readFileSync(`/proc/${pid}/environ`, "utf8").split("\0").includes(`CHARIOX_HOME=${kernelEnv.CHARIOX_HOME}`)
           || readlinkSafe(`/proc/${pid}/cwd`)?.startsWith(dir + "/")
       } catch { continue }
+      if (startTime(pid) !== start || !members(poolCgroup).includes(pid)) continue
+      if (!homeMatches) {
+        // Exiting processes lose environ/cwd before their final /proc entry.
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
+          if (["Z", "X"].includes(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0])) continue
+        } catch { continue }
+      }
       assert(homeMatches, `unrecognized process in this drill's cgroup: ${pid}`)
       if (startTime(pid) !== start || !members(poolCgroup).includes(pid)) continue
       const signal = attempt < 5 ? "SIGTERM" : "SIGKILL"
