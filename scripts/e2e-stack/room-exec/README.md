@@ -90,6 +90,17 @@ and target gateway revocation. It does not move a queued launch to another kerne
 Post-hold placement, paid-VM placement, hosted Web DPR1/2 and durable remote claim
 recovery remain separate acceptance work.
 
+The MP-08 / MP-09 / MP-10 / MP-11 `reservation-peaks.mjs` drill takes the same
+arguments. Run it on Linux with permission to create a private cgroup below
+`/sys/fs/cgroup`. It bounds the kernels' actual delegated workload parent to
+6 GiB and removes that cgroup after stopping its processes. The native CLI
+starts a 1536 MiB binary with a 2048 MiB prediction, then requires a second
+2048 MiB launch to start while the first remains resident. A separate binary
+learns a real 640 MiB peak. After kernel restart, that same argv/cwd must queue
+under a 4608 MiB reservation and start automatically once the reservation ends.
+`--only-reservations` and `--only-peaks` isolate the fail-first cases. These are
+focused binary-admission checks, not the full managed/ordinary parity matrix.
+
 The MP-08 / MP-09 / MP-10 / MP-11 `target-restart.mjs` contract drill uses the
 same arguments. It starts a binary on the selected peer, observes its marker,
 SIGKILLs that owned target kernel and restarts it with the same state. Reading the

@@ -14,11 +14,23 @@ changed admission anchors are `state/gateway_requester.rs`, gateway
 their current process controls. Queued work participates in the existing managed activity
 fence. No shutdown trigger, Cloud authority or provider launch path changes.
 
+Binary reservations cover only predicted memory that the pool has not already
+observed for that launch. Admission and enforcement use the same observation
+snapshot; cgroup credit comes from that domain's charge and is bounded by the
+pool's sampled charge. Reservation checking and insertion remain atomic.
+Completion saves observed binary peaks through the ordinary cache writer in the
+blocking cleanup task, before publishing the final outcome. Queue-only agent
+owners have no process-only Kill all menu; their queued commands retain Start
+now and Cancel.
+
 Focused regressions are `room_exec::queue_tests` and the real native-client drill
 `scripts/e2e-stack/room-exec/pre-spawn.mjs`. They do not close selected-kernel or
 paid-VM placement, verified context transfer, durable remote result recovery,
 hosted Web DPR1/2 or the broader MP parity matrix. Those requirements remain
 unfinished; no old direct-exec S3 result is relabeled as queue placement proof.
+`scripts/e2e-stack/room-exec/reservation-peaks.mjs` additionally checks native
+concurrent admission and actual binary learning, cache reload and automatic
+admission after reservation pressure clears.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

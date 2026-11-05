@@ -53,6 +53,26 @@ pub(super) enum Cause {
     Cap(u64),
 }
 
+/// Headroom and launch consumption from the same sample: a newer observation
+/// must not release memory that this headroom has not yet charged.
+pub(super) struct MemoryRoom {
+    pub memory: u64,
+    pub growing: u64,
+    observed: BTreeMap<String, u64>,
+}
+
+impl MemoryRoom {
+    pub(super) fn reserved(&self, launches: &BTreeMap<String, super::launch::Reservation>) -> u64 {
+        launches.iter().fold(0u64, |sum, (id, launch)| {
+            sum.saturating_add(
+                launch
+                    .memory
+                    .saturating_sub(self.observed.get(id).copied().unwrap_or(0)),
+            )
+        })
+    }
+}
+
 impl Pool {
     #[cfg(test)]
     pub(super) fn new(ceiling: u64, host: bool) -> Self {
@@ -171,14 +191,11 @@ impl Pool {
                 self.stop_one(&members, Some(&unit), Cause::Cap(cap));
             }
         }
-        let (memory, growing) = self.room(&members);
-        let reserved = self
-            .launches
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .values()
-            .fold(0u64, |sum, launch| sum.saturating_add(launch.memory));
-        let memory = memory.saturating_sub(reserved);
+        let sampled = self.room(&members);
+        let growing = sampled.growing;
+        let launches = self.launches.lock().unwrap_or_else(|e| e.into_inner());
+        let memory = sampled.memory.saturating_sub(sampled.reserved(&launches));
+        drop(launches);
         let room = admission::Room {
             memory,
             tight: memory < self.margin.max(growing),
@@ -198,18 +215,28 @@ impl Pool {
     /// Memory left under the pressure line, and how fast running commands
     /// grow together (bytes per second): admission pauses before the line.
     /// Waiting commands do not count as growing.
-    pub(super) fn room(&self, members: &[Arc<Mutex<Observation>>]) -> (u64, u64) {
+    pub(super) fn room(&self, members: &[Arc<Mutex<Observation>>]) -> MemoryRoom {
+        let mut observed = BTreeMap::<String, u64>::new();
+        #[cfg(target_os = "linux")]
+        let mut cgroup_observed = BTreeMap::<String, u64>::new();
         let (outside_cgroup, growing) = members
             .iter()
             .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()))
             .fold((0u64, 0u64), |(outside, growing), member| {
+                let resident = member.resident();
+                if member.in_cgroup {
+                    #[cfg(target_os = "linux")]
+                    if let Some(charged) = member.cgroup.as_deref().and_then(cgroup::unreclaimable)
+                    {
+                        let memory = cgroup_observed.entry(member.unit.clone()).or_default();
+                        *memory = memory.saturating_add(charged);
+                    }
+                } else {
+                    let memory = observed.entry(member.unit.clone()).or_default();
+                    *memory = memory.saturating_add(resident);
+                }
                 (
-                    outside
-                        + if member.in_cgroup {
-                            0
-                        } else {
-                            member.resident()
-                        },
+                    outside + if member.in_cgroup { 0 } else { resident },
                     growing
                         + member
                             .commands
@@ -233,6 +260,17 @@ impl Pool {
             .map_or(0, |budget| budget.used());
         #[cfg(not(target_os = "linux"))]
         let charged: u64 = 0;
+        // Never credit more domain charge than the aggregate headroom included.
+        #[cfg(target_os = "linux")]
+        {
+            let mut remaining = charged;
+            for (unit, memory) in cgroup_observed {
+                let credited = memory.min(remaining);
+                remaining -= credited;
+                let memory = observed.entry(unit).or_default();
+                *memory = memory.saturating_add(credited);
+            }
+        }
         let mut room = self
             .ceiling
             .saturating_sub(self.margin)
@@ -242,7 +280,11 @@ impl Pool {
                 room = room.min(host);
             }
         }
-        (room, growing)
+        MemoryRoom {
+            memory: room,
+            growing,
+            observed,
+        }
     }
 
     fn pressed(&self, members: &[Arc<Mutex<Observation>>]) -> bool {

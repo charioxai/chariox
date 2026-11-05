@@ -215,8 +215,11 @@ pub(super) fn run(
         };
         // Only the reaped process and settled pipes publish the final outcome.
         // Stop the resource watch outside the async executor: its Drop joins a thread.
-        let _ = tokio::task::spawn_blocking(move || drop(process)).await;
-        drop(permit);
+        let _ = tokio::task::spawn_blocking(move || {
+            drop(process);
+            drop(permit);
+        })
+        .await;
         service.finish(&record, outcome);
     });
 }

@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{admission, pool::Pool, MIB};
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LaunchWait {
     pub reason: admission::WaitReason,
@@ -59,7 +62,7 @@ impl Drop for LaunchPermit {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .peaks
-                .remember(
+                .record(
                     &self.key,
                     self.peak,
                     admission::light(self.admission.0.ceiling),
@@ -125,7 +128,7 @@ impl LaunchAdmission {
         loop {
             let generation = pool.launch_generation.load(Ordering::Acquire);
             let members = pool.members();
-            let (room, _) = pool.room(&members);
+            let room = pool.room(&members);
             let disk = (pool.volume)(cwd);
             // Observations and filesystem reads happen outside this lock. The reservation
             // check and insertion are one transaction across all binary callers.
@@ -139,11 +142,10 @@ impl LaunchAdmission {
             if generation != pool.launch_generation.load(Ordering::Acquire) {
                 continue;
             }
-            let free = room.saturating_sub(reserved).saturating_sub(
-                launches
-                    .values()
-                    .fold(0u64, |sum, r| sum.saturating_add(r.memory)),
-            );
+            let free = room
+                .memory
+                .saturating_sub(reserved)
+                .saturating_sub(room.reserved(&launches));
             if !force && memory > free {
                 return Err(LaunchWait {
                     reason: admission::WaitReason::Memory,
