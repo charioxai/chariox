@@ -15,15 +15,19 @@ fn contains(state: &DurablePromptStateEventPayload, id: &str) -> bool {
 fn terminal_state(
     tx: &Transaction<'_>,
     session: &str,
+    agent: &str,
     prompt: &PromptQueueItem,
     active: bool,
 ) -> rusqlite::Result<&'static str> {
     let steered: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM durable_trigger_firings WHERE session_id=?1 AND prompt_id=?2)",
-        params![session, prompt.id()],
+        "SELECT EXISTS(SELECT 1 FROM durable_trigger_firings WHERE session_id=?1 AND prompt_id=?2)
+         OR EXISTS(SELECT 1 FROM durable_state_events WHERE kind='session.prompt.steered'
+           AND subject_id=?1 AND json_extract(payload_json,'$.agent_id')=?3
+           AND json_extract(payload_json,'$.prompt_id')=?2)",
+        params![session, prompt.id(), agent],
         |row| row.get(0),
     )?;
-    Ok(if steered || (active) {
+    Ok(if steered || active {
         "delivered"
     } else {
         "failed"
@@ -76,7 +80,7 @@ pub(in crate::durable_state) fn record_prompt_state_in(
                 &current.session_id,
                 &current.agent_id,
                 prompt.id(),
-                terminal_state(tx, &current.session_id, prompt, active)?,
+                terminal_state(tx, &current.session_id, &current.agent_id, prompt, active)?,
             )?;
         }
     }
@@ -124,7 +128,7 @@ pub(in crate::durable_state) fn reconcile_prompt_in(
                 &session,
                 &agent,
                 &prompt,
-                terminal_state(tx, &session, item, active)?,
+                terminal_state(tx, &session, &agent, item, active)?,
             )?;
         }
     }

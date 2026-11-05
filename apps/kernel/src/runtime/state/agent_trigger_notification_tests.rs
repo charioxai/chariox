@@ -1597,3 +1597,99 @@ async fn r7_remote_notification_lineage_precedes_a_lost_steer_acknowledgement() 
     );
 }
 
+#[tokio::test]
+async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
+    use crate::durable_state::app_automations::AppAutomationMutation;
+    use chariox_app_runtime::app_outbox::ReceiptState;
+    for mode in ["local", "remote", "remote_recovered"] {
+        for late_association in [false, true] {
+            let rig = rig().await;
+            let store = &rig.runtime.owned.durable_state_store;
+            let catalog =
+                crate::durable_state::app_state::fixture_room_event_catalog(store, "local");
+            let trigger = rig.app_trigger(&catalog).await;
+            let emitted = rig.emit_app(catalog.clone(), &trigger, "general-steer");
+            let queued = if late_association {
+                rig.runtime.queue_agent_notification_input(&rig.session_id, trigger.id(), serde_json::json!({"installation_id":catalog.installation_id(),"event_name":"changed","occurrence_id":emitted.occurrence_id,"occurred_at_ms":emitted.occurred_at_ms,"deadline_ms":emitted.expires_at_ms,"payload":{"text":"general-steer"}})).await.unwrap().unwrap()
+            } else {
+                rig.runtime
+                    .route_app_agent_installation("local", catalog.clone())
+                    .await
+                    .unwrap();
+                store
+                    .app_event_candidate("local", catalog.clone(), &emitted.receipt_id)
+                    .unwrap()
+                    .receipt()
+                    .queued_prompt_id
+                    .clone()
+                    .unwrap()
+            };
+            if mode == "local" {
+                let prepared = rig
+                    .runtime
+                    .owned
+                    .prepare_local_queued_prompt_steer(
+                        &rig.session_id,
+                        &rig.agent_id,
+                        &rig.attachment_id,
+                        &queued,
+                    )
+                    .unwrap();
+                let sequence = rig
+                    .runtime
+                    .owned
+                    .record_local_queued_prompt_steer(&prepared)
+                    .unwrap();
+                rig.runtime
+                    .owned
+                    .finish_local_queued_prompt_steer(&prepared, sequence)
+                    .unwrap();
+            } else {
+                let (prepared, reservation) = rig.remote_steer_intent(&queued);
+                if mode == "remote" {
+                    rig.runtime
+                        .owned
+                        .finish_remote_queued_prompt_steer(
+                            &rig.session_id,
+                            &rig.agent_id,
+                            &rig.attachment_id,
+                            &prepared,
+                            &prepared.remote_execution,
+                            reservation,
+                            &prepared.provider_run_id,
+                        )
+                        .unwrap();
+                } else {
+                    prepared.prompt.release_remote_steer(reservation);
+                    let receipt = crate::transport::relay_peer::LeasedPromptReceipt {
+                        home_prompt_id: queued.clone(),
+                        worker_provider_run_id: prepared.provider_run_id.clone(),
+                        phase:
+                            crate::transport::relay_peer::LeasedPromptReceiptPhase::SteerAccepted,
+                        target_home_prompt_id: Some(prepared.target_active_prompt_id.clone()),
+                        execution_lease_id: Some(
+                            prepared.remote_execution.execution_lease_id.clone(),
+                        ),
+                    };
+                    assert!(matches!(rig.runtime.owned.reconcile_remote_queued_prompt_steer_receipt(&rig.session_id, &rig.agent_id, &queued, &receipt).unwrap(), super::prompt_queue_owned_state::RemoteQueuedPromptSteerReceiptSettlement::Accepted));
+                }
+            }
+            if late_association {
+                store
+                    .mutate_app_automation(
+                        "local",
+                        catalog.clone(),
+                        AppAutomationMutation::AgentQueued {
+                            receipt: emitted.clone(),
+                            prompt_id: queued,
+                        },
+                        crate::runtime::app_operation_budget::AppOperationBudget::from_supervisor(
+                            || false,
+                        ),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(store.app_event_candidate("local", catalog.clone(), &emitted.receipt_id).unwrap().receipt().state, ReceiptState::Delivered, "general Steer delivered the App notification ({mode}, late_association={late_association})");
+        }
+    }
+}

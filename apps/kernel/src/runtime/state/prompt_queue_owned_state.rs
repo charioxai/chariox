@@ -1172,6 +1172,27 @@ impl KernelRuntimeOwnedState {
         persisted
     }
 
+    // Receipt settlement must distinguish a handoff from queued cancellation,
+    // including when the receipt is associated after the prompt leaves the queue.
+    fn persist_queued_prompt_steer_handoff(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        target_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.append_event(
+            "session.prompt.steered",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "prompt_id": prompt_id,
+                "target_prompt_id": target_prompt_id,
+            }),
+        )?;
+        Ok(())
+    }
+
     fn commit_queued_prompt_steer(
         &self,
         session_id: &str,
@@ -1200,6 +1221,12 @@ impl KernelRuntimeOwnedState {
                 context.queued_prompt.prompt_origin(),
             )?,
         };
+        self.persist_queued_prompt_steer_handoff(
+            session_id,
+            agent_id,
+            prompt_id,
+            &target_active_prompt_id,
+        )?;
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&context.session, agent_id, prompt_id)
@@ -1667,6 +1694,12 @@ impl KernelRuntimeOwnedState {
             prepared.prompt.attachments(),
             prepared.prompt.prompt_origin(),
         )?;
+        self.persist_queued_prompt_steer_handoff(
+            session_id,
+            agent_id,
+            prepared.prompt.id(),
+            &prepared.target_active_prompt_id,
+        )?;
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&session, agent_id, prepared.prompt.id())
@@ -1824,6 +1857,12 @@ impl KernelRuntimeOwnedState {
                     queued_prompt.prompt(),
                     queued_prompt.attachments(),
                     queued_prompt.prompt_origin(),
+                )?;
+                self.persist_queued_prompt_steer_handoff(
+                    session_id,
+                    agent_id,
+                    queued_prompt_id,
+                    target_home_prompt_id,
                 )?;
                 self.prompt_state_owner
                     .remove_queued_prompt(&session, agent_id, queued_prompt_id)
