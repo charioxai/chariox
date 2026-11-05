@@ -253,7 +253,18 @@ impl KernelRuntimeOwnedState {
         let any_work = work_in_flight(active_turn_count, &sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
             .max(u8::from(self.room_execs.has_running_work()))
+            .max(u8::from(
+                self.active_file_operations
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0,
+            ))
             .max(u8::from(self.project_environment_setups.has_running_work()));
+        // Capability expiry is sampled like a registered wake, rather than
+        // being an in-flight mutation that requires its own completion event.
+        let pending_transfer = u8::from(
+            self.managed_context_transfers
+                .has_pending_transfer(crate::session::unix_epoch_ms()),
+        );
 
         let mut in_flight: BTreeSet<(&str, &str)> = BTreeSet::new();
         for turn in active_turns.values() {
@@ -301,7 +312,12 @@ impl KernelRuntimeOwnedState {
         // agent, so zero always means the machine has nothing to wait for.
         let count = |agents: usize, floor: u8| u8::try_from(agents).unwrap_or(u8::MAX).max(floor);
         ManagedActivityCounts {
-            working_agent_count: count(working.len(), any_work.max(u8::from(awaiting.is_err()))),
+            working_agent_count: count(
+                working.len(),
+                any_work
+                    .max(pending_transfer)
+                    .max(u8::from(awaiting.is_err())),
+            ),
             in_flight_agent_count: count(in_flight.len(), any_work),
         }
     }

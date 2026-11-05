@@ -155,6 +155,24 @@ pub(crate) struct ManagedContextTransferStore {
 }
 
 impl ManagedContextTransferStore {
+    /// An interrupted upload remains work until its existing capability expires.
+    /// Do not wait on a file operation's registry lock while sampling activity.
+    pub(crate) fn has_pending_transfer(&self, now_ms: u64) -> bool {
+        let Ok(state) = self.state.try_lock() else {
+            return true;
+        };
+        state.entries.values().any(|entry| {
+            entry.expires_at_ms > now_ms
+                && matches!(
+                    entry.phase,
+                    ManagedContextTransferPhase::Armed
+                        | ManagedContextTransferPhase::Receiving
+                        | ManagedContextTransferPhase::ReadyToImport
+                        | ManagedContextTransferPhase::Importing
+                )
+        })
+    }
+
     pub(crate) fn has_incomplete_import(&self) -> bool {
         self.lock_state().entries.values().any(|entry| {
             matches!(

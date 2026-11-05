@@ -5,6 +5,49 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+fn pending_context_transfer_blocks_idle_between_chunks_and_after_restart() {
+    let root = test_root("pending-activity");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(!store.has_pending_transfer(now));
+    let armed = store
+        .arm(arm_request(b"archive", now + 10_000), now)
+        .unwrap();
+    assert!(store.has_pending_transfer(now));
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now)
+        .unwrap();
+    assert!(store.has_pending_transfer(now + 1));
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(store.has_pending_transfer(now + 1));
+    assert!(!store.has_pending_transfer(now + 10_000));
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: b"archive",
+                sha256: &sha256_bytes(b"archive"),
+            },
+            now + 2,
+        )
+        .unwrap();
+    store
+        .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 2)
+        .unwrap();
+    store
+        .retire_import(&armed.transfer_id, "test_failed", now + 2)
+        .unwrap();
+    assert!(!store.has_pending_transfer(now + 3));
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn plain_workspace_launch_target_survives_transfer_store_restart() {
     use crate::managed_context::development::DevelopmentWorkspaceKind;
     let root = test_root("plain-launch-target");

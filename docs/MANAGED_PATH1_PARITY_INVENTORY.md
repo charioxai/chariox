@@ -1,5 +1,20 @@
 # Managed Path-1 parity inventory (MP-11)
 
+## MP-08 / MP-09 / MP-10 / MP-11 transfer-aware shutdown admission
+
+Kernel-file requests and managed-context import disk tasks hold activity until the
+actual blocking task finishes, including after their requesting future is cancelled.
+They acquire the existing managed stop admission fence before starting; a stop
+reservation refuses new file work. Managed-context capabilities also count as
+pending work between chunks until completion/failure or their existing expiry.
+Publication and its Cloud receipt remain work across async gaps. The existing
+signed activity count and quiescence contract carry these observations unchanged;
+no public serialized shape or protocol number changes. General file reads/writes
+remain ordinary resumable chunk requests; a home agent should select manual or a
+time limit for a sequence of calls with long gaps. Focused regressions and isolated
+live drills are separate evidence; this entry does not close the three-hour or
+production-signed paid acceptance rows.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process

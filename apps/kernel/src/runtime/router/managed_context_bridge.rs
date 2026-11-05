@@ -65,6 +65,29 @@ pub(crate) struct RelayManagedContextChunkRequest {
 }
 
 impl CommandRouter {
+    async fn transfer_io<T: Send + 'static>(
+        &self,
+        task: impl FnOnce() -> Result<T, DaemonError> + Send + 'static,
+    ) -> Result<T, DaemonError> {
+        let operation = self.runtime_state.begin_file_operation()?;
+        run_blocking(move || {
+            let _operation = operation;
+            task()
+        })
+        .await
+    }
+
+    async fn import_io<T: Send + 'static>(
+        &self,
+        task: impl FnOnce() -> Result<T, DaemonError> + Send + 'static,
+    ) -> Result<T, DaemonError> {
+        let operation = self.runtime_state.begin_file_operation()?;
+        run_import_blocking(move || {
+            let _operation = operation;
+            task()
+        })
+        .await
+    }
     #[cfg(test)]
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
@@ -193,27 +216,28 @@ impl CommandRouter {
         let now_ms = crate::session::unix_epoch_ms();
         let expires_at_ms = now_ms.saturating_add(TRANSFER_TTL.as_millis() as u64);
         let store = self.managed_context_transfers.clone();
-        let armed = run_blocking(move || {
-            store.arm(
-                ArmManagedContextTransfer {
-                    plan,
-                    target_environment_id,
-                    target_kernel_id,
-                    target_key_thumbprint,
-                    source_kernel_id: caller.kernel_id,
-                    source_key_thumbprint: caller.key_thumbprint,
-                    owner_user_id: caller.owner_user_id,
-                    realm_id: caller.realm_id,
-                    capability,
-                    archive_sha256,
-                    archive_size_bytes,
-                    destination_parent,
-                    expires_at_ms,
-                },
-                now_ms,
-            )
-        })
-        .await?;
+        let armed = self
+            .transfer_io(move || {
+                store.arm(
+                    ArmManagedContextTransfer {
+                        plan,
+                        target_environment_id,
+                        target_kernel_id,
+                        target_key_thumbprint,
+                        source_kernel_id: caller.kernel_id,
+                        source_key_thumbprint: caller.key_thumbprint,
+                        owner_user_id: caller.owner_user_id,
+                        realm_id: caller.realm_id,
+                        capability,
+                        archive_sha256,
+                        archive_size_bytes,
+                        destination_parent,
+                        expires_at_ms,
+                    },
+                    now_ms,
+                )
+            })
+            .await?;
         Ok(RelayPeerResponse::ManagedContextImportArmed {
             transfer_id: armed.transfer_id,
             capability: RelayManagedContextCapability::new(armed.capability),
@@ -256,15 +280,16 @@ impl CommandRouter {
             disposable_home_caller,
         )?;
         let store = self.managed_context_transfers.clone();
-        let status = run_blocking(move || {
-            store.begin(
-                &transfer_id,
-                &capability,
-                &caller,
-                crate::session::unix_epoch_ms(),
-            )
-        })
-        .await?;
+        let status = self
+            .transfer_io(move || {
+                store.begin(
+                    &transfer_id,
+                    &capability,
+                    &caller,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
         relay_status_response(status)
     }
 
@@ -298,20 +323,21 @@ impl CommandRouter {
             disposable_home_caller,
         )?;
         let store = self.managed_context_transfers.clone();
-        let status = run_blocking(move || {
-            store.upload_chunk(
-                &transfer_id,
-                &capability,
-                &caller,
-                ManagedContextTransferChunk {
-                    offset,
-                    bytes: &bytes,
-                    sha256: &chunk_sha256,
-                },
-                crate::session::unix_epoch_ms(),
-            )
-        })
-        .await?;
+        let status = self
+            .transfer_io(move || {
+                store.upload_chunk(
+                    &transfer_id,
+                    &capability,
+                    &caller,
+                    ManagedContextTransferChunk {
+                        offset,
+                        bytes: &bytes,
+                        sha256: &chunk_sha256,
+                    },
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
         relay_status_response(status)
     }
 
@@ -348,15 +374,16 @@ impl CommandRouter {
             disposable_home_caller,
         )?;
         let store = self.managed_context_transfers.clone();
-        let status = run_blocking(move || {
-            store.get_status(
-                &transfer_id,
-                &capability,
-                &caller,
-                crate::session::unix_epoch_ms(),
-            )
-        })
-        .await?;
+        let status = self
+            .transfer_io(move || {
+                store.get_status(
+                    &transfer_id,
+                    &capability,
+                    &caller,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
         relay_status_response(status)
     }
 
@@ -392,6 +419,9 @@ impl CommandRouter {
             &source_kernel_id,
             disposable_home_caller,
         )?;
+        // Keep the transfer busy through the Cloud receipt and publication,
+        // including gaps between its blocking disk operations.
+        let _transfer = self.runtime_state.begin_file_operation()?;
         let registration = self.managed_kernel_registration.clone();
         let completion_config = self.config_projection.snapshot();
         let provider_account_target = ManagedContextProviderAccountImportTarget {
@@ -406,15 +436,16 @@ impl CommandRouter {
         let claim_transfer_id = transfer_id.clone();
         let claim_capability = capability.clone();
         let claim_caller = caller.clone();
-        let ready = run_blocking(move || {
-            claim_store.prepare_and_claim_import(
-                &claim_transfer_id,
-                &claim_capability,
-                &claim_caller,
-                crate::session::unix_epoch_ms(),
-            )
-        })
-        .await?;
+        let ready = self
+            .transfer_io(move || {
+                claim_store.prepare_and_claim_import(
+                    &claim_transfer_id,
+                    &claim_capability,
+                    &claim_caller,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
         let ready = match ready {
             ManagedContextImportClaim::Claimed(ready) => ready,
             ManagedContextImportClaim::InProgress(status)
@@ -458,7 +489,8 @@ impl CommandRouter {
             Err(error) => {
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
-                run_blocking(move || release_store.release_import(&release_transfer_id)).await?;
+                self.transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await?;
                 return Err(error);
             }
         };
@@ -508,21 +540,23 @@ impl CommandRouter {
             let rollback_provider_account_target = provider_account_target.clone();
             let rollback_git_credential_target = git_credential_target.clone();
             let rollback_development_root = ready.destination_root.clone();
-            if let Err(rollback_error) = run_import_blocking(move || {
-                rollback_persisted_managed_context_publication(
-                    rollback_request,
-                    &rollback_development_root,
-                    &rollback_private_key,
-                    Some(&rollback_provider_account_target),
-                    rollback_git_credential_target.as_ref(),
-                )
-            })
-            .await
+            if let Err(rollback_error) = self
+                .import_io(move || {
+                    rollback_persisted_managed_context_publication(
+                        rollback_request,
+                        &rollback_development_root,
+                        &rollback_private_key,
+                        Some(&rollback_provider_account_target),
+                        rollback_git_credential_target.as_ref(),
+                    )
+                })
+                .await
             {
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
-                let _ =
-                    run_blocking(move || release_store.release_import(&release_transfer_id)).await;
+                let _ = self
+                    .transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await;
                 return Err(managed_context_unavailable(format!(
                     "roll back recovered managed context publication: {rollback_error}"
                 )));
@@ -533,27 +567,28 @@ impl CommandRouter {
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
         let environment_target = Some(completion_config.clone());
-        let imported = run_import_blocking(move || {
-            apply_managed_context_package(ManagedContextPackageApplicationRequest {
-                transfer_id: ready.transfer_id,
-                package_path: ready.archive_path,
-                expected_package_sha256: ready.archive_sha256,
-                expected_binding: ManagedContextPackageBinding {
-                    plan: ready.plan,
-                    target_environment_id: ready.target_environment_id,
-                    source_kernel_id: ready.source_kernel_id,
-                    source_key_thumbprint: ready.source_key_thumbprint,
-                    target_kernel_id: ready.target_kernel_id,
-                    target_key_thumbprint: ready.target_key_thumbprint,
-                },
-                development_destination_root: ready.destination_root,
-                target_private_key,
-                context_import_target: environment_target,
-                provider_account_target: Some(import_provider_account_target),
-                git_credential_target: import_git_credential_target,
+        let imported = self
+            .import_io(move || {
+                apply_managed_context_package(ManagedContextPackageApplicationRequest {
+                    transfer_id: ready.transfer_id,
+                    package_path: ready.archive_path,
+                    expected_package_sha256: ready.archive_sha256,
+                    expected_binding: ManagedContextPackageBinding {
+                        plan: ready.plan,
+                        target_environment_id: ready.target_environment_id,
+                        source_kernel_id: ready.source_kernel_id,
+                        source_key_thumbprint: ready.source_key_thumbprint,
+                        target_kernel_id: ready.target_kernel_id,
+                        target_key_thumbprint: ready.target_key_thumbprint,
+                    },
+                    development_destination_root: ready.destination_root,
+                    target_private_key,
+                    context_import_target: environment_target,
+                    provider_account_target: Some(import_provider_account_target),
+                    git_credential_target: import_git_credential_target,
+                })
             })
-        })
-        .await;
+            .await;
         let receipt = match imported {
             Ok(receipt) => receipt,
             Err(import_error) => {
@@ -561,10 +596,10 @@ impl CommandRouter {
                 let failure_store = store.clone();
                 let failure_transfer_id = transfer_id.clone();
                 if retryable {
-                    run_blocking(move || failure_store.release_import(&failure_transfer_id))
+                    self.transfer_io(move || failure_store.release_import(&failure_transfer_id))
                         .await?;
                 } else {
-                    run_blocking(move || {
+                    self.transfer_io(move || {
                         failure_store.retire_import(
                             &failure_transfer_id,
                             failure_code,
@@ -581,7 +616,8 @@ impl CommandRouter {
             Err(error) => {
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
-                run_blocking(move || release_store.release_import(&release_transfer_id)).await?;
+                self.transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await?;
                 return Err(managed_context_error(format!(
                     "serialize managed context import receipt: {error}"
                 )));
@@ -592,7 +628,8 @@ impl CommandRouter {
             Err(error) => {
                 let release_store = store.clone();
                 let release_transfer_id = transfer_id.clone();
-                run_blocking(move || release_store.release_import(&release_transfer_id)).await?;
+                self.transfer_io(move || release_store.release_import(&release_transfer_id))
+                    .await?;
                 return Err(error);
             }
         };
@@ -613,21 +650,22 @@ impl CommandRouter {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
-                if let Err(rollback_error) = run_import_blocking(move || {
-                    rollback_managed_context_package_application(
-                        &rollback_receipt,
-                        &rollback_private_key,
-                        Some(&rollback_provider_account_target),
-                        rollback_git_credential_target.as_ref(),
-                    )
-                })
-                .await
+                if let Err(rollback_error) = self
+                    .import_io(move || {
+                        rollback_managed_context_package_application(
+                            &rollback_receipt,
+                            &rollback_private_key,
+                            Some(&rollback_provider_account_target),
+                            rollback_git_credential_target.as_ref(),
+                        )
+                    })
+                    .await
                 {
                     let release_store = store.clone();
                     let release_transfer_id = transfer_id.clone();
-                    let _ =
-                        run_blocking(move || release_store.release_import(&release_transfer_id))
-                            .await;
+                    let _ = self
+                        .transfer_io(move || release_store.release_import(&release_transfer_id))
+                        .await;
                     return Err(managed_context_unavailable(format!(
                         "{publication_error}; roll back managed context package: {rollback_error}"
                     )));
@@ -674,25 +712,27 @@ impl CommandRouter {
             let failure_store = store.clone();
             let failure_transfer_id = transfer_id.clone();
             if retryable {
-                let _ =
-                    run_blocking(move || failure_store.release_import(&failure_transfer_id)).await;
+                let _ = self
+                    .transfer_io(move || failure_store.release_import(&failure_transfer_id))
+                    .await;
             } else {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
-                if let Err(rollback_error) = run_import_blocking(move || {
-                    rollback_managed_context_package_application(
-                        &rollback_receipt,
-                        &rollback_private_key,
-                        Some(&rollback_provider_account_target),
-                        rollback_git_credential_target.as_ref(),
-                    )
-                })
-                .await
+                if let Err(rollback_error) = self
+                    .import_io(move || {
+                        rollback_managed_context_package_application(
+                            &rollback_receipt,
+                            &rollback_private_key,
+                            Some(&rollback_provider_account_target),
+                            rollback_git_credential_target.as_ref(),
+                        )
+                    })
+                    .await
                 {
-                    let _ =
-                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
-                            .await;
+                    let _ = self
+                        .transfer_io(move || failure_store.release_import(&failure_transfer_id))
+                        .await;
                     return Err(managed_context_unavailable(format!(
                         "roll back rejected managed context import: {rollback_error}"
                     )));
@@ -702,10 +742,9 @@ impl CommandRouter {
                         .runtime_state
                         .remove_managed_context_project(launch_target, &caller.owner_user_id)
                     {
-                        let _ = run_blocking(move || {
-                            failure_store.release_import(&failure_transfer_id)
-                        })
-                        .await;
+                        let _ = self
+                            .transfer_io(move || failure_store.release_import(&failure_transfer_id))
+                            .await;
                         return Err(managed_context_unavailable(format!(
                             "roll back rejected managed context Project: {project_rollback_error}"
                         )));
@@ -722,27 +761,29 @@ impl CommandRouter {
         }
         let commit_store = store.clone();
         let commit_transfer_id = transfer_id.clone();
-        if let Err(commit_error) = run_blocking(move || {
-            if is_git_credential_enrollment {
-                commit_store.commit_credential_import(
-                    &commit_transfer_id,
-                    &receipt_json,
-                    crate::session::unix_epoch_ms(),
-                )
-            } else {
-                commit_store.commit_import(
-                    &commit_transfer_id,
-                    &receipt_json,
-                    crate::session::unix_epoch_ms(),
-                )
-            }
-        })
-        .await
+        if let Err(commit_error) = self
+            .transfer_io(move || {
+                if is_git_credential_enrollment {
+                    commit_store.commit_credential_import(
+                        &commit_transfer_id,
+                        &receipt_json,
+                        crate::session::unix_epoch_ms(),
+                    )
+                } else {
+                    commit_store.commit_import(
+                        &commit_transfer_id,
+                        &receipt_json,
+                        crate::session::unix_epoch_ms(),
+                    )
+                }
+            })
+            .await
         {
             let release_store = store.clone();
             let release_transfer_id = transfer_id.clone();
-            if let Err(release_error) =
-                run_blocking(move || release_store.release_import(&release_transfer_id)).await
+            if let Err(release_error) = self
+                .transfer_io(move || release_store.release_import(&release_transfer_id))
+                .await
             {
                 return Err(managed_context_error(format!(
                     "{commit_error}; release import claim: {release_error}"
@@ -797,15 +838,16 @@ impl CommandRouter {
             self.runtime_state.record_waiting_room_change();
         }
         let final_store = store;
-        let final_status = run_blocking(move || {
-            final_store.get_status(
-                &transfer_id,
-                &capability,
-                &caller,
-                crate::session::unix_epoch_ms(),
-            )
-        })
-        .await?;
+        let final_status = self
+            .transfer_io(move || {
+                final_store.get_status(
+                    &transfer_id,
+                    &capability,
+                    &caller,
+                    crate::session::unix_epoch_ms(),
+                )
+            })
+            .await?;
         relay_status_response(final_status)
     }
 }
