@@ -234,7 +234,6 @@ fn a_disk_wait_does_not_resume_onto_memory_another_build_took() {
                 volume: Some("/scratch/output".into()),
                 volume_writes: GIB,
                 exact: 0,
-                ..Peak::default()
             },
         )
     };
@@ -272,7 +271,6 @@ fn a_memory_wait_does_not_resume_onto_a_disk_that_filled() {
                 volume: Some("/scratch/output".into()),
                 volume_writes: 6 * GIB,
                 exact: 0,
-                ..Peak::default()
             },
         )
     };
@@ -346,7 +344,6 @@ fn two_builds_waiting_for_different_resources_do_not_resume_onto_the_same_memory
                 volume: Some("/scratch/output".into()),
                 volume_writes: GIB,
                 exact: 0,
-                ..Peak::default()
             },
         )
     };
