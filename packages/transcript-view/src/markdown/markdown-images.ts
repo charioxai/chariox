@@ -51,7 +51,10 @@ export function renderMarkdownImage(rawSrc: string, alt: string, escapeHtml: (va
   }
   if (source.kind === "workspace") {
     scheduleMarkdownImageScan()
-    return `<span class="freeform-md-image" data-md-image="workspace" data-md-image-state="pending" data-md-image-path="${escapeHtml(source.path)}"><span class="freeform-md-image-card"><span class="freeform-md-image-alt">${escapeHtml(label)}</span><span class="freeform-md-image-meta">workspace · ${escapeHtml(source.file)}</span><span class="freeform-md-image-status">loading…</span></span></span>`
+    // A reader without a workspace loader (the trigger viewer, a terminal) names the file; "loading…" would never end there.
+    // The card stays pending, so a loader set later still fills it.
+    const status = imageState().workspaceImageLoader ? `<span class="freeform-md-image-status">loading…</span>` : ""
+    return `<span class="freeform-md-image" data-md-image="workspace" data-md-image-state="pending" data-md-image-path="${escapeHtml(source.path)}"><span class="freeform-md-image-card"><span class="freeform-md-image-alt">${escapeHtml(label)}</span><span class="freeform-md-image-meta">workspace · ${escapeHtml(source.file)}</span>${status}</span></span>`
   }
   return `<span class="freeform-md-image" data-md-image="unsupported" data-md-image-state="unsupported"><span class="freeform-md-image-card"><span class="freeform-md-image-alt">${escapeHtml(label)}</span><span class="freeform-md-image-meta">${escapeHtml(source.src || "no source")}</span></span></span>`
 }

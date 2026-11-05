@@ -1425,6 +1425,45 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.
+    #[test]
+    fn mp08_runtime_instructions_say_the_pane_renders_images() {
+        let root = temp_prompt_root("pane-images-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Chart the costs",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        for expected in [
+            "renders Markdown inline",
+            "`![alt](path)`",
+            "write it to a PNG file",
+            "about 800 px wide with text at least 14 px high",
+            "also say in words what it shows",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "missing {expected}"
+            );
+        }
+        // Every client's Markdown renderer draws PNG, JPEG, GIF and WebP files; SVG files and
+        // fences or Mermaid would reach some of them as source text or an unsupported card.
+        for unsupported in ["svg", "SVG", "Mermaid"] {
+            assert!(
+                !envelope.hidden_system_context.contains(unsupported),
+                "the hint promises {unsupported}"
+            );
+        }
+        assert!(!envelope.visible_user_prompt.contains("![alt](path)"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
     // inbox admission and request no reply unless asked.
     #[test]

@@ -213,9 +213,9 @@ pub(super) fn claude_user_prompt(value: &Value) -> Option<String> {
     text_from_content(message.get("content")?)
         .and_then(clean_provider_prompt)
         .filter(|prompt| {
-            prompt.trim() != "[Request interrupted by user]"
-                && !crate::provider::ExternalProviderObservationPolicy::for_provider("claude")
-                    .user_prompt_is_compaction_control(prompt)
+            let policy = crate::provider::ExternalProviderObservationPolicy::for_provider("claude");
+            !policy.user_prompt_is_interrupt_marker(prompt)
+                && !policy.user_prompt_is_compaction_control(prompt)
         })
 }
 

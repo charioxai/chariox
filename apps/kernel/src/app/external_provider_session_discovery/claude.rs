@@ -279,9 +279,9 @@ pub(super) fn claude_user_observed_turns(
         _ => {}
     }
     let prompt = prompt_parts.join("\n");
-    if prompt.trim() == "[Request interrupted by user]"
-        || crate::provider::ExternalProviderObservationPolicy::for_provider("claude")
-            .user_prompt_is_compaction_control(&prompt)
+    let policy = crate::provider::ExternalProviderObservationPolicy::for_provider("claude");
+    if policy.user_prompt_is_interrupt_marker(&prompt)
+        || policy.user_prompt_is_compaction_control(&prompt)
     {
         return turns;
     }

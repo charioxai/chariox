@@ -532,6 +532,40 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     event.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") || !is_runtime_tool
 }
 
+/// A permission request in the person's words, about the file it touches: "Allow Claude to write hello.txt?".
+/// The tool's own name and the call's input stay in the prompt text.
+pub(crate) fn claude_permission_title(event: &Value) -> String {
+    let tool_name = event.get("tool_name").and_then(Value::as_str);
+    let field = |key: &str| {
+        event
+            .get("tool_input")
+            .and_then(|input| input.get(key))
+            .and_then(Value::as_str)
+            .map(|value| value.trim().trim_end_matches('/'))
+            .filter(|value| !value.is_empty())
+    };
+    let file = field("file_path")
+        .or_else(|| field("notebook_path"))
+        .map(|path| path.rsplit('/').next().unwrap_or(path));
+    let action = match (tool_name, file) {
+        (Some("Write"), Some(file)) => format!("write {file}"),
+        (Some("Edit" | "MultiEdit" | "NotebookEdit"), Some(file)) => format!("edit {file}"),
+        (Some("Read"), Some(file)) => format!("read {file}"),
+        (Some("Bash"), _) => "run a command".to_string(),
+        (Some("WebFetch"), _) => "open a web page".to_string(),
+        (Some("WebSearch"), _) => "search the web".to_string(),
+        (Some("Glob" | "Grep"), _) => "search files".to_string(),
+        (Some(name), _) if !name.trim().is_empty() => format!(
+            "use {}",
+            name.trim_start_matches("mcp__")
+                .replace("__", " ")
+                .replace('_', " ")
+        ),
+        _ => "use a tool".to_string(),
+    };
+    format!("Allow Claude to {action}?")
+}
+
 pub(crate) fn format_claude_permission_message(event: &Value) -> String {
     let tool_name = event
         .get("tool_name")
@@ -935,5 +969,41 @@ mod workspace_trust_selection_tests {
         ] {
             assert!(claude_workspace_trust_approval_input(frame).is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod permission_title_tests {
+    use super::claude_permission_title;
+    use serde_json::json;
+
+    #[test]
+    fn a_permission_title_names_the_action_and_its_file_not_the_tool() {
+        let title = |tool: &str, input| {
+            claude_permission_title(&json!({ "tool_name": tool, "tool_input": input }))
+        };
+        assert_eq!(
+            title(
+                "Write",
+                json!({ "file_path": "/root/.chariox/tmp/chariox-external-access-5lrv12/workspace/hello.txt" })
+            ),
+            "Allow Claude to write hello.txt?"
+        );
+        assert_eq!(
+            title("Edit", json!({ "file_path": "src/a.rs" })),
+            "Allow Claude to edit a.rs?"
+        );
+        assert_eq!(
+            title("Bash", json!({ "command": "ls" })),
+            "Allow Claude to run a command?"
+        );
+        assert_eq!(
+            title("mcp__chariox__chariox_room_overview", json!({})),
+            "Allow Claude to use chariox chariox room overview?"
+        );
+        assert_eq!(
+            claude_permission_title(&json!({})),
+            "Allow Claude to use a tool?"
+        );
     }
 }

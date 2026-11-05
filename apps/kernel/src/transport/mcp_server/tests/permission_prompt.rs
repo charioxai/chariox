@@ -223,7 +223,7 @@ async fn prompt_and_answer(
         crate::session::RuntimeInteractionKind::Permission
     );
     assert_eq!(interaction.agent_id(), Some(agent_id));
-    assert_eq!(interaction.title(), Some("Approve Claude Code Bash?"));
+    assert_eq!(interaction.title(), Some("Allow Claude to run a command?"));
     assert!(interaction.message().contains("touch approved.txt"));
     router
         .runtime_state()

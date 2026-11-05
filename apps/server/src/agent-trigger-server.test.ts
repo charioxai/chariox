@@ -16,6 +16,7 @@ async function fixture() {
     async subscribe() {}, async close() {}, onChange() { return () => {} },
     async resend(promptId: string) { if (promptId === "gone") throw Error("already sent again"); resends.push(promptId) },
     async invoke(payload: unknown): Promise<Invocation> { invocations.push(payload); return { status: "accepted", prompt_id: `prompt-${invocations.length}`, outcome: "started" } },
+    async workspaceImage(path: string) { return path === "charts/cost.png" ? { mime: "image/png", bytes: Buffer.from("png-bytes") } : null },
     async conversation(): Promise<Conversation> { return { alias: "Test agent", online, busy: false, enabled: trigger.enabled, entries: [
       { key: "1", role: "user", agentId: "agent-test", text: "conversation before trigger creation </script><script>bad()</script>" },
     ], turns: [], nextCursor: null, unconfirmed } },
@@ -131,5 +132,18 @@ test("MP-08/MP-10: the trigger page lists an unconfirmed firing and resends it o
     const gone = await f.app.inject({ method: "POST", url: "/local-test/resend", payload: { prompt_id: "gone" }, headers: { accept: "application/json" } })
     assert.equal(gone.statusCode, 409)
     assert.match(gone.body, /no longer waiting/)
+  } finally { await f.app.close() }
+})
+
+test("#1263 P2 the trigger page serves a workspace picture a reply references, and nothing it cannot read", async () => {
+  const f = await fixture()
+  try {
+    const image = await f.app.inject({ method: "GET", url: "/local-test/workspace-image?path=charts%2Fcost.png" })
+    assert.equal(image.statusCode, 200)
+    assert.equal(image.headers["content-type"], "image/png")
+    assert.equal(image.headers["x-content-type-options"], "nosniff")
+    assert.equal(image.body, "png-bytes")
+    assert.equal((await f.app.inject({ method: "GET", url: "/local-test/workspace-image?path=..%2Fsecret.png" })).statusCode, 404)
+    assert.equal((await f.app.inject({ method: "GET", url: "/local-test/workspace-image" })).statusCode, 400)
   } finally { await f.app.close() }
 })

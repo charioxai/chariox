@@ -10,6 +10,7 @@
     "./raw-body-parsers": "./dist/publication-raw-body-parsers.js",
     "./types": "./dist/types.js",
     "./live": "./dist/agent-trigger-live.js",
+    "./images": "./dist/agent-trigger-images.js",
     "./unconfirmed": "./dist/agent-trigger-unconfirmed.js",
     "./origin-guard": "./dist/agent-trigger-origin-guard.js"
   },

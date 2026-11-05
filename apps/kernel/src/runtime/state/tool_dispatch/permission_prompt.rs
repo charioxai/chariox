@@ -186,7 +186,7 @@ fn claude_permission_prompt_interaction(
         agent_id.to_string(),
         RuntimeInteractionKind::Permission,
         RuntimeInteractionLevel::Warning,
-        Some(format!("Approve Claude Code {}?", args.tool_name)),
+        Some(crate::app::claude_permission_title(&event)),
         message,
         choices,
         None,
