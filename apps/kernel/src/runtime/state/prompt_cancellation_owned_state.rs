@@ -693,8 +693,9 @@ impl KernelRuntimeState {
             provider_run_id.as_deref(),
         )?;
         let response = cancellation.cancellation.clone();
-        self.finish_agent_task_settlement(settlement, &prompt)
-            .await?;
+        if let Some(settlement) = settlement {
+            self.finish_stopped_agent_task(settlement, &prompt).await;
+        }
         self.start_queue_head_after_cancellation(session_id, target_agent_id, cancellation)
             .await;
         Ok(crate::app::KernelPromptCancellation {
