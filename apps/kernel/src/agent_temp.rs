@@ -3,7 +3,8 @@
 //! TEMP of everything the kernel starts for the agent. The folder is cleared by
 //! inactivity, item by item, and never while a process has the item open or
 //! works inside it. The kernel only deletes here, never in a workspace.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -119,12 +120,19 @@ pub(crate) struct Trimmed {
     pub bytes: u64,
 }
 
-/// Paths some process has open, works in or maps. An item with one inside it
-/// is in use. `None` where the platform cannot tell: nothing is then removed.
+/// Paths some process has open, works in or maps, and socket names whose bind
+/// directory is unknown. Matching endpoints remain in use wherever they live.
+#[derive(Default)]
+pub(crate) struct HeldPaths {
+    paths: BTreeSet<PathBuf>,
+    relative_socket_names: BTreeSet<OsString>,
+}
+
+/// `None` where the platform cannot tell: nothing is then removed.
 #[cfg(target_os = "linux")]
-pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
-    let mut held = BTreeSet::new();
-    let mut tables = BTreeMap::<PathBuf, BTreeMap<u64, PathBuf>>::new();
+pub(crate) fn held_paths() -> Option<HeldPaths> {
+    let mut held = HeldPaths::default();
+    let mut tables = BTreeSet::new();
     for process in std::fs::read_dir("/proc").ok()?.flatten() {
         let name = process.file_name();
         if !name.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
@@ -132,7 +140,7 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
         }
         let base = process.path();
         if let Ok(cwd) = std::fs::read_link(base.join("cwd")) {
-            held.insert(cwd);
+            held.paths.insert(cwd);
         }
         if let Ok(fds) = std::fs::read_dir(base.join("fd")) {
             let targets = fds
@@ -145,29 +153,22 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
             {
                 match std::fs::read_link(base.join("ns/net")) {
                     Ok(network) => {
-                        if !tables.contains_key(&network) {
+                        if !tables.contains(&network) {
                             match std::fs::read_to_string(base.join("net/unix")) {
                                 Ok(table) => {
-                                    held.extend(bound_socket_paths(&table).filter_map(
-                                        |(_, path)| path.is_absolute().then_some(path),
-                                    ));
-                                    tables.insert(network.clone(), relative_socket_names(&table));
+                                    for (_, path) in bound_socket_paths(&table) {
+                                        if path.is_absolute() {
+                                            held.paths.insert(path);
+                                        } else if let Some(name) = path.file_name() {
+                                            // The holder can change cwd or inherit the
+                                            // descriptor, so its cwd cannot locate this.
+                                            held.relative_socket_names.insert(name.to_owned());
+                                        }
+                                    }
+                                    tables.insert(network);
                                 }
                                 Err(_) if !base.exists() => {}
                                 Err(_) => return None,
-                            }
-                        }
-                        // A name bound relatively is kept in the table as
-                        // given: it lives where the holder was when it bound.
-                        if let (Some(names), Some(cwd)) = (
-                            tables.get(&network),
-                            std::fs::read_link(base.join("cwd")).ok(),
-                        ) {
-                            for target in &targets {
-                                if let Some(name) = socket_inode(target).and_then(|i| names.get(&i))
-                                {
-                                    held.insert(cwd.join(name));
-                                }
                             }
                         }
                     }
@@ -175,10 +176,11 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
                     Err(_) => {}
                 }
             }
-            held.extend(targets);
+            held.paths
+                .extend(targets.into_iter().filter(|path| path.is_absolute()));
         }
         if let Ok(maps) = std::fs::read_to_string(base.join("maps")) {
-            held.extend(
+            held.paths.extend(
                 maps.lines()
                     .filter_map(|line| line.split_once('/'))
                     .map(|(_, path)| PathBuf::from(format!("/{path}"))),
@@ -188,8 +190,7 @@ pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
     Some(held)
 }
 
-/// The inode and file-system name of each bound socket in a `/proc/net/unix`
-/// table.
+/// The inode and reported name of each bound socket in a `/proc/net/unix` table.
 #[cfg(target_os = "linux")]
 fn bound_socket_paths(table: &str) -> impl Iterator<Item = (u64, PathBuf)> + '_ {
     table.lines().filter_map(|line| {
@@ -206,46 +207,43 @@ fn bound_socket_paths(table: &str) -> impl Iterator<Item = (u64, PathBuf)> + '_ 
             rest = &rest[end..];
         }
         let path = rest.trim_start();
-        // An abstract name (`@...`) is not in the file system.
-        if path.is_empty() || path.starts_with('@') {
+        // `@...` can name an abstract socket or a relative filesystem socket.
+        // Preserve matching filesystem endpoints when the table is ambiguous.
+        if path.is_empty() {
             return None;
         }
         Some((inode?, PathBuf::from(path)))
     })
 }
 
-/// The names sockets were bound with that do not start at the root, by inode.
-#[cfg(target_os = "linux")]
-fn relative_socket_names(table: &str) -> BTreeMap<u64, PathBuf> {
-    bound_socket_paths(table)
-        .filter(|(_, path)| path.is_relative())
-        .collect()
-}
-
-#[cfg(target_os = "linux")]
-fn socket_inode(target: &Path) -> Option<u64> {
-    target
-        .to_str()?
-        .strip_prefix("socket:[")?
-        .strip_suffix(']')?
-        .parse()
-        .ok()
-}
-
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn held_paths() -> Option<BTreeSet<PathBuf>> {
+pub(crate) fn held_paths() -> Option<HeldPaths> {
     None
 }
 
 /// The newest write below `path` (its own time for a file), or `None` when
-/// the tree is too big to look through: such an item is treated as busy.
-fn last_written(path: &Path, budget: &mut usize) -> Option<SystemTime> {
+/// the tree is too big to look through or contains a possibly live socket:
+/// such an item is treated as busy.
+fn last_written(path: &Path, budget: &mut usize, held: &HeldPaths) -> Option<SystemTime> {
     *budget = budget.checked_sub(1)?;
     let meta = std::fs::symlink_metadata(path).ok()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if meta.file_type().is_socket()
+            && path
+                .file_name()
+                .is_some_and(|name| held.relative_socket_names.contains(name))
+        {
+            // Without the bind directory, a matching stale socket is
+            // indistinguishable from the live endpoint. Keep both until closed.
+            return None;
+        }
+    }
     let mut newest = meta.modified().ok()?;
     if meta.is_dir() {
         for child in std::fs::read_dir(path).ok()?.flatten() {
-            newest = newest.max(last_written(&child.path(), budget)?);
+            newest = newest.max(last_written(&child.path(), budget, held)?);
         }
     }
     Some(newest)
@@ -261,12 +259,7 @@ fn in_use(item: &Path, held: &BTreeSet<PathBuf>) -> bool {
 /// Clears the items of every agent folder under `root` that nothing wrote for
 /// `idle` and no process in `held` has open or works in. Roots stay until the
 /// Room ends: a process may first use its inherited TMPDIR much later.
-pub(crate) fn trim(
-    root: &Path,
-    now: SystemTime,
-    idle: Duration,
-    held: &BTreeSet<PathBuf>,
-) -> Trimmed {
+pub(crate) fn trim(root: &Path, now: SystemTime, idle: Duration, held: &HeldPaths) -> Trimmed {
     let mut trimmed = Trimmed::default();
     let directories = |path: &Path| -> Vec<PathBuf> {
         std::fs::read_dir(path)
@@ -284,11 +277,11 @@ pub(crate) fn trim(
             };
             for item in items.flatten().map(|item| item.path()) {
                 let mut budget = SCAN_LIMIT;
-                let Some(written) = last_written(&item, &mut budget) else {
+                let Some(written) = last_written(&item, &mut budget, held) else {
                     continue;
                 };
                 let idle_for = now.duration_since(written).unwrap_or_default();
-                if idle_for < idle || in_use(&item, held) {
+                if idle_for < idle || in_use(&item, &held.paths) {
                     continue;
                 }
                 let mut sizing = SCAN_LIMIT;

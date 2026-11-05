@@ -25,40 +25,67 @@ fn a_bound_unix_socket_survives_a_sweep_and_accepts_new_connections() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn a_unix_socket_bound_by_relative_name_survives_a_sweep() {
+fn a_unix_socket_bound_by_relative_name_survives_its_holder_changing_cwd() {
     use std::io::Read;
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::process::{Command, Stdio};
-    let scratch = Scratch::new("relative-socket");
-    let folder = agent_folder(&scratch);
-    // A server that changes to its folder and binds a bare name: the kernel
-    // keeps `live.sock` as given, and its descriptor names no path.
-    let mut server = Command::new("python3")
-        .current_dir(&folder)
-        .args([
-            "-I",
-            "-c",
-            "import socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.bind('live.sock')\ns.listen()\nprint('ready',flush=True)\ntime.sleep(120)",
-        ])
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("python3 starts");
-    let mut ready = [0u8; 5];
-    server
-        .stdout
-        .take()
-        .unwrap()
-        .read_exact(&mut ready)
-        .unwrap();
-    let held = held_paths().expect("Linux can inspect held paths");
-    trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
-    let connection = UnixStream::connect(folder.join("live.sock"));
-    let _ = server.kill();
-    let _ = server.wait();
-    assert!(
-        connection.is_ok(),
-        "the sweep unlinked a live Unix socket bound by a relative name: {connection:?}"
-    );
+    for (nested, prefix) in [(false, "live"), (true, "live"), (false, "@live")] {
+        let scratch = Scratch::new("rel");
+        let folder = agent_folder(&scratch);
+        let name = format!("{prefix}-{}.sock", std::process::id());
+        let (bind_dir, bind_name, socket) = if nested {
+            (
+                folder.join("binder"),
+                format!("../tree/{name}"),
+                folder.join("tree").join(&name),
+            )
+        } else {
+            (folder.clone(), name.clone(), folder.join(&name))
+        };
+        fs::create_dir_all(&bind_dir).unwrap();
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        fs::write(folder.join("stale.txt"), b"disposable").unwrap();
+        let stale_socket = folder.join("closed.sock");
+        drop(UnixListener::bind(&stale_socket).unwrap());
+        // The socket table retains the bind name after the holder changes cwd.
+        let mut server = Command::new("python3")
+            .current_dir(&bind_dir)
+            .env("TMPDIR", &folder)
+            .args([
+                "-I",
+                "-c",
+                "import os,socket,sys,time\ns=socket.socket(socket.AF_UNIX)\ns.bind(sys.argv[1])\ns.listen()\nos.chdir('/')\nprint('ready',flush=True)\ntime.sleep(120)",
+                &bind_name,
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("python3 starts");
+        let mut ready = [0u8; 5];
+        server
+            .stdout
+            .take()
+            .unwrap()
+            .read_exact(&mut ready)
+            .unwrap();
+        let held = held_paths().expect("Linux can inspect held paths");
+        trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
+        let connection = UnixStream::connect(&socket);
+        let _ = server.kill();
+        let _ = server.wait();
+        assert!(
+            connection.is_ok(),
+            "the sweep unlinked a live Unix socket bound by {bind_name:?}: {connection:?}"
+        );
+        assert!(!folder.join("stale.txt").exists());
+        assert!(
+            !stale_socket.exists(),
+            "an unrelated closed socket stays disposable"
+        );
+        drop(connection);
+        let held = held_paths().expect("Linux can inspect held paths after the holder exits");
+        trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
+        assert!(!socket.exists(), "the closed endpoint becomes disposable");
+    }
 }
 
 struct Scratch(PathBuf);
@@ -114,7 +141,7 @@ fn stale_items_go_and_fresh_ones_stay() {
         &scratch.0.join("t"),
         later(2 * HOUR),
         HOUR,
-        &BTreeSet::new(),
+        &HeldPaths::default(),
     );
     assert_eq!(trimmed.items, 2);
     assert!(trimmed.bytes >= 4096);
@@ -129,7 +156,7 @@ fn stale_items_go_and_fresh_ones_stay() {
         &scratch.0.join("t"),
         later(Duration::ZERO),
         HOUR,
-        &BTreeSet::new(),
+        &HeldPaths::default(),
     );
     assert_eq!(trimmed, Trimmed::default());
     assert!(folder.join("fresh.txt").exists());
@@ -143,7 +170,10 @@ fn an_item_a_process_has_open_or_works_in_is_never_removed() {
     fs::create_dir_all(folder.join("busy/deep")).unwrap();
     fs::write(folder.join("busy/deep/out"), b"x").unwrap();
     fs::write(folder.join("stale.txt"), b"x").unwrap();
-    let held = BTreeSet::from([folder.join("open.sock"), folder.join("busy/deep")]);
+    let held = HeldPaths {
+        paths: BTreeSet::from([folder.join("open.sock"), folder.join("busy/deep")]),
+        ..HeldPaths::default()
+    };
     let trimmed = trim(&scratch.0.join("t"), later(2 * HOUR), HOUR, &held);
     assert_eq!(trimmed.items, 1, "only the stale item goes");
     assert!(
@@ -170,7 +200,7 @@ fn a_symlink_is_removed_but_never_followed() {
         &scratch.0.join("t"),
         later(2 * HOUR),
         HOUR,
-        &BTreeSet::new(),
+        &HeldPaths::default(),
     );
     assert!(
         outside.join("keep.rs").exists(),
