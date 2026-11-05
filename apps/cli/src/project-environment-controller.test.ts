@@ -400,6 +400,57 @@ test("adding a file path saves it", async () => {
   assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment.files.at(-1), { path: "config/local.json" })
 })
 
+// A list entry completed while a text save is pending belongs to the next save, like the text does.
+async function pendingTextSave(h: ReturnType<typeof harness>) {
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  return () => finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+}
+
+test("a secret name completed during a pending save is saved after it and then asks for its value", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.key("return")
+  await h.settle()
+  const saved = environment({ revision: 4, setup: { script: "make setup && make test" }, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: saved } })
+  finishTextSave()
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.deepEqual(saves[1].secrets, [{ name: "API_KEY" }, { name: "DB_URL" }, { name: "NEW_TOKEN" }])
+  assert.match(h.text(), /NEW_TOKEN\s+Value /)
+})
+
+test("a file path completed during a pending save is saved after it", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add file")
+  h.key("return")
+  h.type("config/local.json")
+  h.key("return")
+  await h.settle()
+  const saved = environment({ revision: 4, setup: { script: "make setup && make test" }, files: [...environment().files, { path: "config/local.json", presence: "missing", sizeBytes: null }] })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: saved } })
+  finishTextSave()
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.deepEqual(saves[1].files.at(-1), { path: "config/local.json" })
+  assert.equal(saves[1].setup.script, "make setup && make test")
+})
+
 test("Run setup starts an operation, follows it with held reads and shows the output tail", async () => {
   const h = harness()
   await h.open()

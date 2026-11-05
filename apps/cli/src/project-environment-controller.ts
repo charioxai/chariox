@@ -38,6 +38,18 @@ type Input =
   | { readonly kind: "line"; readonly target: "secretName" | "filePath"; readonly buffer: TextBuffer }
   | { readonly kind: "secretValue"; readonly name: string; readonly buffer: TextBuffer }
 
+type EnvironmentLists = { secretNames: string[]; filePaths: string[]; mcps: EnvironmentExtension[]; skills: EnvironmentExtension[] }
+/** A change to the lists, applied to the latest saved ones when it is sent. */
+type ListEdit = (lists: EnvironmentLists) => Partial<EnvironmentLists>
+type QueuedEdit = { edit: ListEdit; saved: () => void }
+
+const listsOf = (environment: ProjectEnvironmentView): EnvironmentLists => ({
+  secretNames: environment.secrets.map((secret) => secret.name),
+  filePaths: environment.files.map((file) => file.path),
+  mcps: environment.mcps.map(({ name, source }) => ({ name, source })),
+  skills: environment.skills.map(({ name, source }) => ({ name, source })),
+})
+
 export type ProjectEnvironmentControllerDeps = {
   send: (request: unknown) => Promise<unknown>
   /** The user's other connected kernels, from the same Cloud directory the web lists; none when it cannot be read. */
@@ -67,9 +79,12 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     typed: { script?: string; variables?: string }
     busy: boolean
     saveTextPending: boolean
+    // List edits completed while a request was pending; they save together at the next revision.
+    queuedEdits: QueuedEdit[]
   }
   const editors = new Map<string, Editor>()
-  let editor: Editor = { projectId: "", environment: null, typed: {}, busy: false, saveTextPending: false }
+  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveTextPending: false, queuedEdits: [] })
+  let editor: Editor = newEditor("")
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
@@ -127,10 +142,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     } finally {
       target.busy = false
       if (mine === generation) deps.render()
-      if (target.saveTextPending) {
-        target.saveTextPending = false
-        void saveTypedText(target)
-      }
+      flushQueued(target)
     }
   }
 
@@ -194,20 +206,27 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     void follow(known)
   }
 
-  const save = async (patch: { secretNames?: string[]; filePaths?: string[]; mcps?: EnvironmentExtension[]; skills?: EnvironmentExtension[] }, target = editor) => {
+  /** Saves the lists with `edit` applied; while a request is pending the edit waits for the next save. Resolves once the edit was sent. */
+  const save = async (edit: ListEdit, target = editor): Promise<void> => {
+    if (target.busy) {
+      await new Promise<void>((saved) => { target.queuedEdits.push({ edit, saved }) })
+      return
+    }
+    await send(edit, target)
+  }
+
+  const send = async (edit: ListEdit, target: Editor, settled: readonly QueuedEdit[] = []) => {
     const current = target.environment
-    if (!current || target.busy) return
+    if (!current) { settled.forEach(({ saved }) => saved()); return }
     const submitted = { script: script(target), variables: variables(target) }
     target.busy = true
     try {
+      const lists = { ...listsOf(current), ...edit(listsOf(current)) }
       const outcome = projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
         projectId: target.projectId,
         expectedRevision: current.revision,
         ...submitted,
-        secretNames: patch.secretNames ?? current.secrets.map((secret) => secret.name),
-        filePaths: patch.filePaths ?? current.files.map((file) => file.path),
-        mcps: patch.mcps ?? current.mcps.map(({ name, source }) => ({ name, source })),
-        skills: patch.skills ?? current.skills.map(({ name, source }) => ({ name, source })),
+        ...lists,
       })))
       target.environment = outcome.environment
       if (outcome.kind === "saved") {
@@ -216,6 +235,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       } else {
         // A later edit may retry; edits already queued must not overwrite this revision.
         target.saveTextPending = false
+        target.queuedEdits.splice(0).forEach(({ saved }) => saved())
       }
       if (target === editor) {
         setEnvironment(outcome.environment)
@@ -225,12 +245,21 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (target === editor) message = failureText(error)
     } finally {
       target.busy = false
+      settled.forEach(({ saved }) => saved())
       if (target === editor && open) deps.render()
-      if (target.saveTextPending) {
-        target.saveTextPending = false
-        void saveTypedText(target)
-      }
+      flushQueued(target)
     }
+  }
+
+  // One save carries every list edit and the text that waited for the request that just ended.
+  const flushQueued = (target: Editor) => {
+    const edits = target.queuedEdits
+    target.queuedEdits = []
+    const textPending = target.saveTextPending
+    target.saveTextPending = false
+    if (edits.length > 0) {
+      void send((lists) => edits.reduce((latest, { edit }) => ({ ...latest, ...edit({ ...lists, ...latest }) }), {}), target, edits)
+    } else if (textPending) void saveTypedText(target)
   }
 
   const hasUnsavedText = (target = editor) => target.environment !== null && (script(target) !== target.environment.setup.script || variables(target) !== target.environment.variables)
@@ -238,7 +267,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const saveTypedText = async (target = editor) => {
     if (target.busy) { target.saveTextPending = true; return }
     if (!hasUnsavedText(target)) return
-    await save({}, target)
+    await save(() => ({}), target)
   }
 
   const sendSecret = async (name: string, value: string) => {
@@ -345,14 +374,14 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (target === "secretName") {
       const existing = editor.environment.secrets.find((secret) => secret.name === value)
       if (existing) { input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }; return }
-      void save({ secretNames: [...editor.environment.secrets.map((secret) => secret.name), value] }).then(() => {
+      void save(({ secretNames }) => ({ secretNames: secretNames.includes(value) ? secretNames : [...secretNames, value] })).then(() => {
         if (open && editor.environment?.secrets.some((secret) => secret.name === value) && !input) {
           input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
           deps.render()
         }
       })
     } else if (!editor.environment.files.some((file) => file.path === value)) {
-      void save({ filePaths: [...editor.environment.files.map((file) => file.path), value] })
+      void save(({ filePaths }) => ({ filePaths: filePaths.includes(value) ? filePaths : [...filePaths, value] }))
     }
   }
 
@@ -367,17 +396,17 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const current = editor.environment
     if (!current) return
     if (focus.kind === "secret") {
-      const index = focus.index
-      void save({ secretNames: current.secrets.filter((_, at) => at !== index).map((secret) => secret.name) })
+      const name = current.secrets[focus.index]?.name
+      if (name !== undefined) void save(({ secretNames }) => ({ secretNames: secretNames.filter((other) => other !== name) }))
     } else if (focus.kind === "file") {
-      const index = focus.index
-      void save({ filePaths: current.files.filter((_, at) => at !== index).map((file) => file.path) })
+      const path = current.files[focus.index]?.path
+      if (path !== undefined) void save(({ filePaths }) => ({ filePaths: filePaths.filter((other) => other !== path) }))
     } else if (focus.kind === "mcp") {
-      const index = focus.index
-      void save({ mcps: current.mcps.filter((_, at) => at !== index).map(({ name, source }) => ({ name, source })) })
+      const name = current.mcps[focus.index]?.name
+      if (name !== undefined) void save(({ mcps }) => ({ mcps: mcps.filter((other) => other.name !== name) }))
     } else if (focus.kind === "skill") {
-      const index = focus.index
-      void save({ skills: current.skills.filter((_, at) => at !== index).map(({ name, source }) => ({ name, source })) })
+      const name = current.skills[focus.index]?.name
+      if (name !== undefined) void save(({ skills }) => ({ skills: skills.filter((other) => other.name !== name) }))
     } else if (focus.kind === "proposal") void resolveProposal(focus.index, false)
   }
 
@@ -430,7 +459,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       open = true
       projectId = project
       loading = true
-      editor = editors.get(project) ?? { projectId: project, environment: null, typed: {}, busy: false, saveTextPending: false }
+      editor = editors.get(project) ?? newEditor(project)
       editors.set(project, editor)
       focus = { kind: "run" }
       input = null
