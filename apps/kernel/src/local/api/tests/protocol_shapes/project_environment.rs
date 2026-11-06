@@ -441,7 +441,7 @@ fn project_environment_peer_wire_and_redaction() {
     };
     let file = RelayPeerResponse::ProjectEnvironmentFilePulled {
         size_bytes: 14,
-        content_sha256: "0f".into(),
+        sha256: Some("0f".into()),
         content: Some(RemoteEnvironmentFileBytes::encode(b"synthetic-file")),
     };
     assert_eq!(
@@ -450,7 +450,7 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "content_sha256": "0f", "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "0f", "content": "c3ludGhldGljLWZpbGU="})
     );
     let registration = RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
         registration: Some(crate::transport::relay_peer::RemoteProjectRegistration(

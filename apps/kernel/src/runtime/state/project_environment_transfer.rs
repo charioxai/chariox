@@ -132,15 +132,16 @@ impl EnvironmentSource for PeerSource {
         {
             RelayPeerResponse::ProjectEnvironmentFilePulled {
                 size_bytes,
-                content_sha256,
+                sha256,
                 content,
             } => content
                 .map(|content| {
                     content
                         .decode()
-                        .map(|bytes| FileSlice {
+                        .zip(sha256)
+                        .map(|(bytes, sha256)| FileSlice {
                             size_bytes,
-                            content_sha256,
+                            sha256,
                             bytes,
                         })
                         .ok_or_else(|| SourceError::Refused("The file arrived damaged".into()))
@@ -352,7 +353,7 @@ impl KernelRuntimeState {
             let absent = || {
                 Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
                     size_bytes: 0,
-                    content_sha256: String::new(),
+                    sha256: None,
                     content: None,
                 })
             };
@@ -370,7 +371,7 @@ impl KernelRuntimeState {
             };
             return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
                 size_bytes: slice.size_bytes,
-                content_sha256: slice.content_sha256,
+                sha256: Some(slice.sha256),
                 content: Some(RemoteEnvironmentFileBytes::encode(&slice.bytes)),
             });
         }

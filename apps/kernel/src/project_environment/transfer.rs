@@ -46,7 +46,7 @@ pub(crate) struct FileSlice {
     pub size_bytes: u64,
     /// Every slice names the content it belongs to; the receiver publishes the file only when
     /// what it assembled has this digest.
-    pub content_sha256: String,
+    pub sha256: String,
     pub bytes: Zeroizing<Vec<u8>>,
 }
 
@@ -63,7 +63,7 @@ pub(crate) fn read_file_slice(path: &Path, offset: u64) -> std::io::Result<FileS
     file.take(IMPORT_CHUNK_BYTES).read_to_end(&mut bytes)?;
     Ok(FileSlice {
         size_bytes,
-        content_sha256: format!("{:x}", hash.finalize()),
+        sha256: format!("{:x}", hash.finalize()),
         bytes,
     })
 }
@@ -534,7 +534,7 @@ async fn import_entry<S: EnvironmentSource>(
             while let Some((offset, slice)) = slices.next().await {
                 let slice = slice?;
                 if slice.size_bytes != size
-                    || slice.content_sha256 != first.content_sha256
+                    || slice.sha256 != first.sha256
                     || slice.bytes.len() as u64 != step.min(size - offset)
                 {
                     return Err(changed());
@@ -545,7 +545,7 @@ async fn import_entry<S: EnvironmentSource>(
             }
             drop(slices);
             // Slices read before and after a same-size replacement agree on size but not content.
-            if format!("{:x}", assembled.finalize()) != first.content_sha256 {
+            if format!("{:x}", assembled.finalize()) != first.sha256 {
                 return Err(changed());
             }
             writer.finish().map_err(ImportFailure::Entry)?;
@@ -876,7 +876,7 @@ mod tests {
             let end = content.len().min(offset as usize + self.slice_bytes);
             Ok(Some(FileSlice {
                 size_bytes: content.len() as u64,
-                content_sha256: format!("{:x}", Sha256::digest(&content)),
+                sha256: format!("{:x}", Sha256::digest(&content)),
                 bytes: Zeroizing::new(content[offset as usize..end].to_vec()),
             }))
         }
