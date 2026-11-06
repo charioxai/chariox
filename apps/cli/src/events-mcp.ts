@@ -7,8 +7,13 @@ import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
 import type { EventQuestion, EventsBatch, OutsideEvent } from "@chariox/kernel-client/kernel-types"
 import { respondToInteractionRequest } from "./ipc-requests.js"
+import { followSource, listSources, unfollowSource } from "./events-command.js"
 
 const TOOL = "chariox_next_choice"
+const NEXT_NOTIFICATION = "chariox_next_notification"
+const LIST_SOURCES = "chariox_notification_sources"
+const FOLLOW_SOURCE = "chariox_follow_notification_source"
+const UNFOLLOW_SOURCE = "chariox_unfollow_notification_source"
 const DEFAULT_WAIT_SECONDS = 540
 const MAX_WAIT_SECONDS = 900
 const REPLY = "reply"
@@ -29,6 +34,9 @@ const INVALID_PARAMS = -32602
 
 type Json = Record<string, unknown>
 type Interaction = Extract<OutsideEvent, { type: "interaction" }>
+// What a followed source or the kernel's own drop of unread records leaves in the inbox for the model to read.
+type Notice = Extract<OutsideEvent, { type: "notification" | "gap" }>
+function notice(event: OutsideEvent): event is Notice { return event.type === "notification" || event.type === "gap" }
 
 // Where an answer goes: the inbox is read and acknowledged on this computer's kernel, a decision is answered on the
 // kernel that raised it.
@@ -41,6 +49,9 @@ function pendingDecision(event: OutsideEvent): event is Interaction {
   return event.type === "interaction" && event.value.state === "pending"
 }
 
+// A notification or gap is read once by chariox_next_notification, so nothing past it leaves the inbox before then.
+function noticeKey(event: Notice): string { return `notice:${event.cursor}` }
+
 // The same decision on the same kernel and session, whichever record (pending or resolved) names it.
 function decisionKey(event: Interaction): string {
   return JSON.stringify([event.kernel, event.session_id, event.refs.interaction_id ?? ""])
@@ -51,7 +62,8 @@ function decisionKey(event: Interaction): string {
 class Ledger {
   private entries: { cursor: number; key: string | null; settled: boolean }[] = []
   add(event: OutsideEvent): void {
-    this.entries.push({ cursor: event.cursor, key: pendingDecision(event) ? decisionKey(event) : null, settled: !pendingDecision(event) })
+    const key = pendingDecision(event) ? decisionKey(event) : notice(event) ? noticeKey(event) : null
+    this.entries.push({ cursor: event.cursor, key, settled: key === null })
   }
   settle(key: string): void { for (const entry of this.entries) if (entry.key === key) entry.settled = true }
   ackable(): number | null {
@@ -127,6 +139,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
 
   // The decisions this process has read and not yet handled; a restarted process reads them again from the inbox.
   const open = new Map<string, Interaction>()
+  const notices = new Map<string, Notice>()
   // Decisions a call is asking right now: overlapping calls skip them, and the call frees one when it ends, whatever the outcome.
   const inFlight = new Set<string>()
   const ledger = new Ledger()
@@ -166,6 +179,7 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
       ingested = event.cursor
       ledger.add(event)
       if (event.type === "subscription_ended") ended = true
+      if (notice(event)) notices.set(noticeKey(event), event)
       if (event.type !== "interaction") continue
       const key = decisionKey(event)
       if (pendingDecision(event)) open.set(key, event)
@@ -225,6 +239,30 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
       await read("WaitEvents", wait * 1000)
       if (ended) return text({ ended: true })
       await acknowledge()
+    }
+    return text(call.cancelled ? { cancelled: true } : { timed_out: true })
+  }
+
+  // The oldest notification or gap not yet served. It leaves the inbox once it is the model's, and the result is
+  // written without another await in between, so a cancelled call never takes one.
+  async function nextNotification(seconds: number, call: Call): Promise<Json> {
+    const deadline = Date.now() + seconds * 1000
+    while (Date.now() < deadline && !call.cancelled) {
+      await drain()
+      const first = notices.entries().next().value
+      if (first && !call.cancelled) {
+        const [key, event] = first
+        notices.delete(key)
+        ledger.settle(key)
+        void acknowledge().catch(() => undefined)
+        return text(event.type === "gap"
+          ? { type: "gap", kernel: event.kernel, session_id: event.session_id, dropped: event.value.dropped, from: event.value.from, to: event.value.to, summary: event.summary }
+          : { type: "notification", kernel: event.kernel, session_id: event.session_id, source_id: event.value.source_id, source_kind: event.value.source_kind, display_name: event.value.display_name,
+              occurrence_id: event.value.occurrence_id, message: event.value.output.message, artifacts: event.value.output.artifacts ?? [], deadline_ms: event.value.deadline_ms, refs: event.refs, summary: event.summary })
+      }
+      if (ended) return text({ ended: true })
+      const wait = Math.max(1, Math.min(Math.ceil((deadline - Date.now()) / 1000), WAIT_SLICE_SECONDS))
+      await read("WaitEvents", wait * 1000)
     }
     return text(call.cancelled ? { cancelled: true } : { timed_out: true })
   }
@@ -325,19 +363,47 @@ export async function runEventsMcp(send: SendRequest, input: Readable, output: W
         name: TOOL,
         description: "Wait for the next pending Chariox decision a person may answer and show it with this client's own chooser; sends the person's answer to the kernel. Acknowledges a decision only once it is answered or closed. Needs `chariox events subscribe` first.",
         inputSchema: { type: "object", properties: { timeout_s: { type: "number", description: `Seconds to wait (default ${DEFAULT_WAIT_SECONDS}, at most ${MAX_WAIT_SECONDS})` } } },
+      }, {
+        name: NEXT_NOTIFICATION,
+        description: "Wait for the next notification of a source you follow (a workflow finished, or an agent needs the person's action) or a gap marker saying unread records were dropped. Returns it once and acknowledges it. Follow a source first with chariox_follow_notification_source.",
+        inputSchema: { type: "object", properties: { timeout_s: { type: "number", description: `Seconds to wait (default ${DEFAULT_WAIT_SECONDS}, at most ${MAX_WAIT_SECONDS})` } } },
+      }, {
+        name: LIST_SOURCES,
+        description: "List the notification sources this grant can follow on this kernel: workflow exits and \"Agent needs your action\".",
+        inputSchema: { type: "object", properties: {} },
+      }, {
+        name: FOLLOW_SOURCE,
+        description: "Follow one notification source by source_id or display name; each occurrence is then returned once by chariox_next_notification. Following does not poll.",
+        inputSchema: { type: "object", properties: { source: { type: "string", description: "source_id or display name from chariox_notification_sources" } }, required: ["source"] },
+      }, {
+        name: UNFOLLOW_SOURCE,
+        description: "Stop following one notification source by source_id or display name, or all of them with \"all\".",
+        inputSchema: { type: "object", properties: { source: { type: "string", description: "source_id, display name, or all" } }, required: ["source"] },
       }] } })
     }
     if (method === "tools/call") {
-      if (body.name !== TOOL) return fail(id, INVALID_PARAMS, `unknown tool ${String(body.name)}`)
+      if (![TOOL, NEXT_NOTIFICATION, LIST_SOURCES, FOLLOW_SOURCE, UNFOLLOW_SOURCE].includes(body.name as string)) return fail(id, INVALID_PARAMS, `unknown tool ${String(body.name)}`)
       const args = body.arguments
       if (args !== undefined && (typeof args !== "object" || args === null || Array.isArray(args))) return fail(id, INVALID_PARAMS, "arguments is an object")
+      if (body.name === LIST_SOURCES || body.name === FOLLOW_SOURCE || body.name === UNFOLLOW_SOURCE) {
+        const source = (args as { source?: unknown } | undefined)?.source
+        if (body.name !== LIST_SOURCES && (typeof source !== "string" || source === "")) return write({ id, result: text({ error: "invalid_source", message: "source is a source_id, a display name or all" }, true) })
+        try {
+          const result = body.name === LIST_SOURCES ? { sources: await exclusive(() => listSources(send)) }
+            : await exclusive(() => (body.name === FOLLOW_SOURCE ? followSource : unfollowSource)(send, source as string))
+          write({ id, result: text(result) })
+        } catch (error) {
+          write({ id, result: text({ error: error instanceof CommandFailure ? error.code : "request_failed", message: error instanceof CommandFailure ? error.message : undefined }, true) })
+        }
+        return
+      }
       const wanted = (args as { timeout_s?: unknown } | undefined)?.timeout_s
       if (wanted !== undefined && (typeof wanted !== "number" || !Number.isFinite(wanted))) return write({ id, result: text({ error: "invalid_timeout_s", message: "timeout_s is a number of seconds" }, true) })
       const seconds = Math.min(Math.max(wanted ?? DEFAULT_WAIT_SECONDS, 1), MAX_WAIT_SECONDS)
       const call: Call = { cancelled: false }
       calls.set(id, call)
       try {
-        const result = await nextChoice(seconds, call)
+        const result = await (body.name === NEXT_NOTIFICATION ? nextNotification : nextChoice)(seconds, call)
         if (!call.cancelled) write({ id, result })
       } catch (error) {
         if (!call.cancelled) write({ id, result: text({ error: error instanceof CommandFailure ? error.code : "request_failed" }, true) })
