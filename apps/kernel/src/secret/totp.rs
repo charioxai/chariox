@@ -15,6 +15,18 @@ fn invalid_input() -> DaemonError {
     )
 }
 
+/// What may sit between the groups of a key as shown or copied: any Unicode whitespace (tab,
+/// NBSP, thin space, ...), dashes of every kind, and invisible characters that pages and copying
+/// leave behind. The one definition of a gap inside a key: `normalize` drops these characters and
+/// `locate` joins words across them, so a key one accepts is the key the other captures whole.
+fn is_key_separator(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '-' | '\u{2010}'..='\u{2015}' | '\u{2212}' | '\u{ad}' | '\u{200b}'..='\u{200d}' | '\u{2060}' | '\u{feff}'
+        )
+}
+
 /// URI parameters are provisioning metadata, never part of a model-bound result.
 /// Persist the canonical seed and the resulting non-secret configuration together.
 pub(super) fn normalize(
@@ -66,7 +78,7 @@ pub(super) fn normalize(
     config.validate()?;
     let canonical = Zeroizing::new(
         seed.chars()
-            .filter(|c| !c.is_ascii_whitespace())
+            .filter(|c| !is_key_separator(*c))
             .map(|c| c.to_ascii_uppercase())
             .collect::<String>(),
     );
@@ -89,7 +101,7 @@ fn decode_seed(seed: &str) -> Result<Zeroizing<Vec<u8>>, DaemonError> {
 
 /// A page shows its setup key inside a sentence ("Or enter the secret: ABCD EFGH …"), so a
 /// captured element is not always the bare key. Finds the key in such text: an `otpauth://` URI,
-/// or the one run of base32 words that only spaces, dashes and line breaks join. A run ends at the
+/// or the one run of base32 words that only key separators (whitespace, dashes, invisible characters) join. A run ends at the
 /// edge of the text, at punctuation or at a word with a non-base32 character; a base32 label word
 /// ("Seed", "CODE") joined by a space is part of the run, so the run is no key unless it is one
 /// unseparated word or has a standard secret size (16 or 32 characters), and a run before a colon
@@ -120,7 +132,7 @@ pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
     }
 }
 
-/// Base32 words joined only by spaces, dashes and line breaks, separators removed.
+/// Base32 words joined only by key separators, separators removed.
 struct KeyRun {
     key: Zeroizing<String>,
     words: usize,
@@ -138,10 +150,9 @@ fn key_word(word: &str) -> bool {
 }
 
 /// The maximal runs of key words in `text`. A word is a maximal run of alphanumeric characters
-/// (`=` counts, for padding); anything between two words other than spaces, dashes and line
-/// breaks ends a run, as does a word that is not base32.
+/// (`=` counts, for padding); anything between two words other than key separators ends a run, as does a word that is not base32.
 fn key_runs(text: &str) -> Vec<KeyRun> {
-    let joins = |gap: &str| gap.chars().all(|c| matches!(c, ' ' | '-' | '\n' | '\r'));
+    let joins = |gap: &str| gap.chars().all(is_key_separator);
     let mut runs = Vec::new();
     let mut current: Option<KeyRun> = None;
     let mut gap_start = 0;
@@ -218,6 +229,33 @@ pub(super) fn code(
 mod tests {
     use super::*;
 
+    /// Every gap a page or a copy can leave between key groups: ASCII whitespace, dashes, mixed
+    /// runs, the spaces web pages copy out as non-ASCII whitespace and invisible characters.
+    const SEPARATORS: [&str; 22] = [
+        " ",
+        "-",
+        "\n",
+        " - ",
+        "\r\n",
+        "\t",
+        "\u{b}",
+        "\u{c}",
+        " \t ",
+        "\t\t",
+        "\r\n\t",
+        " \u{b}\u{c} ",
+        "\u{a0}",
+        "\u{202f}",
+        "\u{2009}",
+        "\u{3000}",
+        "\u{a0} \u{2009}",
+        "\u{200b}",
+        "\u{ad}",
+        "\u{2011}",
+        " \u{2013} ",
+        "\u{feff}\t",
+    ];
+
     /// Fixed-seed xorshift, so a failing case is reproducible.
     struct Cases(u64);
 
@@ -246,7 +284,7 @@ mod tests {
             let group = [0, 4, 4, 8, 2 + self.below(6)][self.below(5)];
             for (index, c) in key.chars().enumerate() {
                 if group > 0 && index > 0 && index % group == 0 {
-                    shown.push_str([" ", "-", "\n", " - ", "\r\n"][self.below(5)]);
+                    shown.push_str(SEPARATORS[self.below(SEPARATORS.len())]);
                 }
                 shown.push(if self.below(2) == 0 {
                     c.to_ascii_lowercase()
@@ -300,7 +338,7 @@ mod tests {
     fn a_key_inside_labels_is_captured_exactly_or_refused() {
         // (before, after, delimited): punctuation and words with a non-base32 character end a run;
         // base32 words joined by a space or dash are part of it, so the capture is refused.
-        let labels: [(&str, &str, bool); 16] = [
+        let labels: [(&str, &str, bool); 24] = [
             ("", "", true),
             ("Your seed: ", "", true),
             ("Key: ", ".", true),
@@ -317,6 +355,14 @@ mod tests {
             ("Or enter the secret: ", "\nAnd enter the passcode:", false),
             ("Manual entry key ", " (spaces optional)", false),
             ("Key 2FA ", " and", false),
+            ("Key:\t", "\t", true),
+            ("Key:\u{b}", "\u{c}", true),
+            ("Key:\u{a0}", "\u{a0}", true),
+            ("Key:\u{202f}", "\u{2009}", true),
+            ("Key:\r\n\t ", " \t\r\n", true),
+            ("Key\t", "", false),
+            ("Seed\u{a0}", "\u{202f}Code", false),
+            ("Code\t-\t", "\t-\tHere", false),
         ];
         let mut cases = Cases(0x5eed_0002);
         let mut captured = 0;
@@ -338,6 +384,32 @@ mod tests {
             }
         }
         assert!(captured >= 300 * 6, "{captured} captures");
+    }
+
+    #[test]
+    fn a_key_split_by_any_whitespace_is_the_whole_key_or_refused() {
+        // The RFC 6238 SHA-1 key as 32 characters: two identical 16-character halves must never
+        // be stored as one half, whatever whitespace or dash sits between them.
+        let config = TotpConfig {
+            digits: 8,
+            ..TotpConfig::default()
+        };
+        let half = "GEZD GNBV GY3T QOJQ";
+        for gap in [
+            "\t", "\u{b}", "\u{c}", "\r", "\n", " \t ", "\t\t", "\u{a0}", "\u{202f}", "\u{2009}",
+            "\u{2003}", "\u{3000}", "\u{200b}", "\u{ad}", "-", "\u{2011}", "\u{2212}",
+        ] {
+            let shown = format!("{half}{gap}{half}");
+            let located = locate(&shown).unwrap_or_else(|| panic!("no key in {shown:?}"));
+            let (stored, _) = normalize(&located, &config).unwrap();
+            assert!(
+                stored.as_str() == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+                "{shown:?} stored another seed"
+            );
+            assert_eq!(code(&stored, &config, 59).unwrap(), "94287082", "{shown:?}");
+            let (typed, _) = normalize(&shown, &config).unwrap();
+            assert!(typed.as_str() == stored.as_str(), "{shown:?}");
+        }
     }
 
     #[test]
