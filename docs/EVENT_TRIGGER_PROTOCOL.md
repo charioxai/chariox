@@ -73,7 +73,10 @@ identity public key), the `public_key` and a `signature` over the nonce and id. 
 whose id is not the key's fingerprint, whose signature does not verify, or that answers
 another connection's nonce is refused with `invalid_kernel_credentials`; an operator
 admission policy (`open` with per-kernel caps, or an `allowlist` of kernel ids) may refuse
-with `kernel_not_admitted`. Peers that do not advertise version 4 are rejected.
+with `kernel_not_admitted`. Open admission is also capped for the gateway as a whole; the
+refusals are retryable `gateway_rate_limited` (the connection is closed) and
+`gateway_route_capacity` (claims over the cap are not accepted). Peers that do not advertise
+version 4 are rejected.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
 sends its stable kernel/environment identity, route claims, and an optional resume

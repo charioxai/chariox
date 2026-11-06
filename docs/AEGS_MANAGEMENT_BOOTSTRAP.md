@@ -47,7 +47,9 @@ The operator chooses who may use the AEGS at all, with the same code for everyon
 (`CHARIOX_AEGS_ADMISSION`): `open` (any kernel that signs, with per-kernel caps:
 `CHARIOX_AEGS_OPEN_MAX_OWNERS_PER_KERNEL`, `CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE`) or
 `allowlist` (`CHARIOX_AEGS_ALLOWLIST_FILE`, a JSON object keyed by kernel id, read on every
-request). A non-loopback AEGS must choose explicitly. Admission never decides who sees which
+request). `open` also caps the gateway as a whole (`CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL`,
+`CHARIOX_AEGS_OPEN_MAX_MEMBERSHIPS_TOTAL`, the kernel and owner pairs): the refusals are the typed
+codes `gateway_rate_limited` (429) and `gateway_capacity` (503). A non-loopback AEGS must choose explicitly. Admission never decides who sees which
 events: that is the owner id and the per-connection audience.
 
 ## What is gone
