@@ -196,6 +196,13 @@ impl LocalRouterTestHarness {
             .block_on(self.router.refresh_ready_event_connections())
     }
 
+    pub(crate) fn load_imported_event_connections(&self, owner_user_id: &str, ids: &[String]) {
+        self.runtime.block_on(
+            self.router
+                .load_imported_event_connections(owner_user_id, ids),
+        );
+    }
+
     pub(crate) fn transport_runtime_pump_interval_ms(
         &self,
         active_interval_ms: u64,

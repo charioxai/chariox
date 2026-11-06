@@ -503,6 +503,56 @@ pub(crate) async fn refresh_ready_event_connection(
     Ok(left_ready)
 }
 
+/// Reads a connection a transfer just created from the event service: its
+/// status and metadata, then its scopes and resources. An unreachable service
+/// is an error and leaves what the import wrote.
+pub(crate) async fn load_imported_event_connection(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
+    caller_user_id: &str,
+    connection: &crate::local::EventConnection,
+) -> Result<(), DaemonError> {
+    refresh_ready_event_connection(
+        runtime_state,
+        config_projection,
+        management_client,
+        caller_user_id,
+        connection,
+    )
+    .await?;
+    let registry = runtime_state.event_connection_registry();
+    let owner_id = registry
+        .connection_event_owner_id(caller_user_id, &connection.connection_id)?
+        .ok_or_else(|| connection_error("event connection was not found".to_string()))?;
+    let targets = resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config_projection.snapshot(),
+        caller_user_id,
+        std::slice::from_ref(&owner_id),
+        &LocalDaemonRequest::GetEventConnection(crate::local::GetEventConnectionRequest {
+            connection_id: connection.connection_id.clone(),
+        }),
+    )
+    .await?;
+    let management_client = management_client.signing_as(&config_projection.snapshot());
+    let generator_id = connection.generator_id.clone();
+    let connection_id = connection.connection_id.clone();
+    let inspection = blocking_aegs(move || {
+        inspect_aegs_connection(
+            &management_client,
+            &targets,
+            &owner_id,
+            &generator_id,
+            &connection_id,
+        )
+    })
+    .await?;
+    registry.apply_inspection(caller_user_id, inspection)?;
+    Ok(())
+}
+
 /// What the event service knows of one connection under its owner; `None`
 /// when it does not list it.
 async fn query_connection_summary(

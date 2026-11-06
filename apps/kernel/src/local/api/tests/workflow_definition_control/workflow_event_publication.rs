@@ -726,6 +726,105 @@ fn the_local_cli_and_the_owners_cloud_clients_manage_the_same_event_connections(
     assert!(list_connection_ids(&harness, local).is_empty());
 }
 
+fn connection_of(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+) -> crate::local::EventConnection {
+    match harness
+        .dispatch(LocalDaemonRequest::GetEventConnection(
+            GetEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+            },
+        ))
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnection { connection } => connection,
+        response => panic!("unexpected response: {response:?}"),
+    }
+}
+
+#[test]
+fn an_imported_connection_shows_the_sources_state_right_after_the_import() {
+    let server = ReadyConnectionServer::start();
+    let harness_with_target = || {
+        let mut config = crate::DaemonConfig::for_tests();
+        config
+            .event_generator_management_targets
+            .insert("dev.chariox.dummy".to_string(), server.target());
+        LocalRouterTestHarness::with_config(config)
+    };
+    let source = harness_with_target();
+    register_ready_connection(&source);
+    let target = harness_with_target();
+    // The transfer's own export and import code moves the record.
+    let selection =
+        crate::managed_context::package::ManagedContextEventConnectionSelection::Selected {
+            connection_ids: vec!["connection-local".to_string()],
+        };
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let records = crate::managed_context::event_connections::export_selected(
+        &selection,
+        source.runtime_state().event_connection_registry(),
+        local,
+    )
+    .unwrap();
+    crate::managed_context::event_connections::import(
+        &crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget {
+            registry: target.runtime_state().event_connection_registry().clone(),
+            owner_user_id: local.to_string(),
+        },
+        &records,
+    )
+    .unwrap();
+    let before = connection_of(&target);
+    assert!(before.scopes.is_empty() && before.metadata.is_null());
+
+    target.load_imported_event_connections(local, &["connection-local".to_string()]);
+
+    let (copy, original) = (connection_of(&target), connection_of(&source));
+    assert_eq!(copy.status, original.status);
+    assert_eq!(copy.lifecycle_state, original.lifecycle_state);
+    assert_eq!(copy.metadata, original.metadata);
+    assert_eq!(copy.scopes, original.scopes);
+    assert_eq!(copy.resources, original.resources);
+    assert!(!copy.scopes.is_empty());
+}
+
+#[test]
+fn an_unreachable_event_service_leaves_an_imported_connection_as_imported() {
+    let server = ReadyConnectionServer::start();
+    let harness_with_target = || {
+        let mut config = crate::DaemonConfig::for_tests();
+        config
+            .event_generator_management_targets
+            .insert("dev.chariox.dummy".to_string(), server.target());
+        LocalRouterTestHarness::with_config(config)
+    };
+    let (source, target) = (harness_with_target(), harness_with_target());
+    register_ready_connection(&source);
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let records = crate::managed_context::event_connections::export_selected(
+        &crate::managed_context::package::ManagedContextEventConnectionSelection::Selected {
+            connection_ids: vec!["connection-local".to_string()],
+        },
+        source.runtime_state().event_connection_registry(),
+        local,
+    )
+    .unwrap();
+    crate::managed_context::event_connections::import(
+        &crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget {
+            registry: target.runtime_state().event_connection_registry().clone(),
+            owner_user_id: local.to_string(),
+        },
+        &records,
+    )
+    .unwrap();
+    server.unavailable.store(true, Ordering::Relaxed);
+    target.load_imported_event_connections(local, &["connection-local".to_string()]);
+    let kept = connection_of(&target);
+    assert_eq!(kept.status, crate::local::EventConnectionStatus::Ready);
+    assert!(kept.scopes.is_empty());
+}
+
 #[test]
 fn a_copy_notices_a_revoked_connection_without_being_queried() {
     let server = ReadyConnectionServer::start();

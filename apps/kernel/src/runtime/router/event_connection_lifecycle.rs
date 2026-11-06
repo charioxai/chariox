@@ -8,7 +8,8 @@ use tokio::time::{Duration, MissedTickBehavior};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::event_catalog_control::{
-    execute_event_catalog_request_with_client, refresh_ready_event_connection,
+    execute_event_catalog_request_with_client, load_imported_event_connection,
+    refresh_ready_event_connection,
 };
 
 use super::CommandRouter;
@@ -170,6 +171,56 @@ impl CommandRouter {
             }
         }
         summary
+    }
+
+    /// Fills in connections a transfer just created from the event service,
+    /// so the copy shows the source's real state without waiting for the next
+    /// refresh. A failed question keeps what the import wrote.
+    pub(crate) async fn load_imported_event_connections(
+        &self,
+        owner_user_id: &str,
+        connection_ids: &[String],
+    ) {
+        for connection_id in connection_ids {
+            let _connection_guard = self
+                .event_connection_lanes
+                .lock(owner_user_id, connection_id)
+                .await;
+            let connection = match self
+                .runtime_state
+                .event_connection_registry()
+                .get(owner_user_id, connection_id)
+            {
+                Ok(Some(connection)) => connection,
+                Ok(None) => continue,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_connection_reconciliation",
+                        "imported event connection could not be read",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                    continue;
+                }
+            };
+            if let Err(error) = load_imported_event_connection(
+                &self.runtime_state,
+                &self.config_projection,
+                &self.aegs_management_http_client,
+                owner_user_id,
+                &connection,
+            )
+            .await
+            {
+                crate::logging::warn_with_fields(
+                    "daemon.event_connection_reconciliation",
+                    "imported event connection could not be loaded",
+                    serde_json::json!({
+                        "generator_id": connection.generator_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
     }
 
     pub(crate) async fn run_ready_event_connection_refresher(

@@ -777,6 +777,28 @@ impl CommandRouter {
             }
         }
 
+        // A copied connection starts with only its id, owner and status: read
+        // the rest from the event service now, not at the next refresh.
+        if let crate::managed_context::package::ManagedContextImportedEventConnections::Selected {
+            connections,
+        } = &receipt.event_connections
+        {
+            let created = connections
+                .iter()
+                .filter(|connection| connection.created)
+                .map(|connection| connection.connection_id.clone())
+                .collect::<Vec<_>>();
+            if !created.is_empty() {
+                let router = self.clone();
+                let owner_user_id = event_connection_target.owner_user_id.clone();
+                tokio::spawn(async move {
+                    router
+                        .load_imported_event_connections(&owner_user_id, &created)
+                        .await;
+                });
+            }
+        }
+
         if receipt.destination.is_some() {
             // MP-08/MP-11: target readiness must re-probe its own profiles.
             self.runtime_state
