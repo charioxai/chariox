@@ -134,7 +134,7 @@ async fn fixture(name: &str, running_prompt: bool) -> Fixture {
         lost: AtomicBool::new(false),
         stall: Default::default(),
     });
-    runtime.register_wake_driver(driver.clone());
+    runtime.register_wake_driver(Arc::downgrade(&driver) as std::sync::Weak<dyn WakeDriver>);
     Fixture {
         runtime,
         driver,
@@ -251,6 +251,27 @@ impl Fixture {
             .collect::<Vec<_>>()
             .join("\n")
     }
+}
+
+// A fixture kernel must end with its test. Its open decisions stay in the process-wide
+// interaction store while it lives, so a later test kernel raising the same `prompt-1`
+// decision was refused as already pending.
+#[test]
+fn a_fixture_kernel_ends_with_its_test() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let kernel = runtime.block_on(async {
+        let f = fixture("fixture-kernel-lifetime", true).await;
+        f.runtime.owned.session_store.weak_identity()
+    });
+    drop(runtime);
+    assert_eq!(
+        kernel.strong_count(),
+        0,
+        "the fixture kernel outlived its test"
+    );
 }
 
 #[tokio::test]
