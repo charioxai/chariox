@@ -197,3 +197,23 @@ async fn shared_access_notification_remote_detach_rejects_before_mutation() {
     drop(runtime);
     cleanup(f);
 }
+
+#[tokio::test]
+async fn a_remote_attach_the_source_kernel_does_not_answer_leaves_no_subscription() {
+    let (f, runtime, _source, publication) = setup();
+    let request = attach(&f, "remote-source", &publication);
+    assert!(runtime
+        .execute_workflow_notification_command(request, "local")
+        .await
+        .is_err());
+    assert!(
+        f.store
+            .notification_inventory("local")
+            .unwrap()
+            .1
+            .is_empty(),
+        "the refused attach left an active subscription the source kernel never installed"
+    );
+    drop(runtime);
+    cleanup(f);
+}

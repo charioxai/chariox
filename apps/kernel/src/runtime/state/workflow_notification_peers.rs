@@ -332,6 +332,14 @@ impl KernelRuntimeState {
                     .await;
                 if !matches!(&response,Ok(RelayPeerResponse::WorkflowNotificationSubscribed {subscription:s}) if *s==subscription)
                 {
+                    // The source kernel never installed it, so the refused attach keeps nothing.
+                    self.owned
+                        .durable_state_store
+                        .notify(NotificationOperation::Detach {
+                            subscription_id: subscription.subscription_id.clone(),
+                            owner: owner.into(),
+                            kernel: subscription.target_kernel_id.clone(),
+                        })?;
                     let mut sources = self
                         .owned
                         .durable_state_store
