@@ -80,6 +80,8 @@ pub(crate) async fn execute_event_catalog_request_with_client(
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let config = config_projection.snapshot();
+    let caller_user_id =
+        &crate::event_connection::event_connection_user_id(&config, caller_user_id);
     if matches!(request, LocalDaemonRequest::GetEventDeliveryStatus(_)) {
         return Ok(LocalDaemonResponse::EventDeliveryStatus {
             status: crate::transport::event_delivery_client::event_delivery_status(

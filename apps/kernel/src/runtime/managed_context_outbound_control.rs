@@ -32,10 +32,16 @@ pub(crate) fn execute_managed_context_outbound_request(
                 (None, Some(selection)) if request.interactive => {
                     // Refuse an event connection that cannot be copied before the
                     // transfer asks Cloud for authority.
+                    let source =
+                        crate::managed_context::outbound_service::EventConnectionSource::new(
+                            runtime.event_connection_registry().clone(),
+                            &config,
+                            caller_user_id,
+                        );
                     crate::managed_context::event_connections::export_selected(
                         &selection.context_selection.event_connections,
-                        runtime.event_connection_registry(),
-                        caller_user_id,
+                        &source.registry,
+                        &source.owner_user_id,
                     )?;
                     let relay = relay_state.try_read().map_err(|_| {
                         crate::managed_context::owner_managed::admission_error(
@@ -230,7 +236,7 @@ mod tests {
         runtime
             .event_connection_registry()
             .upsert(
-                "owner",
+                crate::session::DEFAULT_LOCAL_USER_ID,
                 "event-owner-secret-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),

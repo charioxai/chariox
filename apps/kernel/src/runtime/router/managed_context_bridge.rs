@@ -398,10 +398,11 @@ impl CommandRouter {
                 &caller.owner_user_id,
             ),
         };
-        let event_connection_target = ManagedContextEventConnectionImportTarget {
-            registry: self.runtime_state.event_connection_registry().clone(),
-            owner_user_id: caller.owner_user_id.clone(),
-        };
+        let event_connection_target = ManagedContextEventConnectionImportTarget::new(
+            self.runtime_state.event_connection_registry().clone(),
+            &completion_config,
+            &caller.owner_user_id,
+        );
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();

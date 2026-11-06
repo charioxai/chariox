@@ -29,6 +29,18 @@ where
     String::deserialize(deserializer).map(|value| canonical_event_generator_id(&value))
 }
 
+/// The user an event connection is recorded under. Like provider accounts,
+/// connections belong to the person operating the kernel: the local CLI's
+/// `local` and the configured Cloud user are one, so a connection made by one
+/// is managed by the other and a copy lands where the target's `local` CLI
+/// finds it. Other users keep their own space.
+pub(crate) fn event_connection_user_id(
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+) -> String {
+    crate::account_profile::provider_account_authority_owner_user_id(config, caller_user_id)
+}
+
 #[derive(Clone)]
 pub(crate) struct EventConnectionRegistry {
     durable_state: DurableKernelStateStore,

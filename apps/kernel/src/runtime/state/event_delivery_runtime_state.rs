@@ -44,13 +44,17 @@ impl KernelRuntimeState {
         &self,
     ) -> Result<Vec<(chariox_app_runtime::app_inbox::InboxRoute, String)>, String> {
         let registry = self.event_connection_registry();
+        let config = self.owned.config_projection.snapshot();
         let mut bound = Vec::new();
         for route in self.app_event_routes()? {
             let Some(source) = route.source.as_ref() else {
                 continue;
             };
             let owner = registry
-                .connection_event_owner_id(&route.owner_id, &source.connection_id)
+                .connection_event_owner_id(
+                    &crate::event_connection::event_connection_user_id(&config, &route.owner_id),
+                    &source.connection_id,
+                )
                 .map_err(|error| format!("event connection owners could not be read: {error}"))?;
             if let Some(owner) = owner {
                 bound.push((route, owner));

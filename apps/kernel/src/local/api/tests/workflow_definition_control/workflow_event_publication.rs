@@ -612,6 +612,120 @@ fn connection_status(
         .status
 }
 
+fn list_connection_ids(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+    user_id: &str,
+) -> Vec<String> {
+    match harness
+        .dispatch_as_user(
+            user_id,
+            LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+                generator_id: None,
+                cursor: None,
+                limit: 50,
+            }),
+        )
+        .unwrap()
+    {
+        LocalDaemonResponse::EventConnectionsPage { page } => page
+            .connections
+            .into_iter()
+            .map(|connection| connection.connection_id)
+            .collect(),
+        response => panic!("unexpected response: {response:?}"),
+    }
+}
+
+#[test]
+fn the_local_cli_and_the_owners_cloud_clients_manage_the_same_event_connections() {
+    let server = ReadyConnectionServer::start();
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), server.target());
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".to_string(),
+        ..Default::default()
+    });
+    config.event_registry_url = Some("https://registry.test".to_string());
+    let harness = LocalRouterTestHarness::with_config(config);
+    let registry = harness.runtime_state().event_connection_registry().clone();
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    // Made through the local CLI, listed by the owner's Cloud client and back.
+    registry
+        .upsert(
+            local,
+            "event-owner-test",
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+    assert_eq!(list_connection_ids(&harness, local), ["connection-local"]);
+    assert_eq!(
+        list_connection_ids(&harness, "cloud-owner"),
+        ["connection-local"]
+    );
+    // Another user of the kernel has their own space.
+    assert!(list_connection_ids(&harness, "collaborator").is_empty());
+    // The owner's Cloud client manages the record the local CLI made.
+    let refreshed = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::RefreshEventConnection(
+                crate::local::RefreshEventConnectionRequest {
+                    connection_id: "connection-local".to_string(),
+                },
+            ),
+        )
+        .expect("the Cloud client refreshes the local CLI's connection");
+    assert!(matches!(
+        refreshed,
+        LocalDaemonResponse::EventConnection { .. }
+    ));
+    // A connection the Cloud client starts is the local CLI's too.
+    let LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::InstallEventConnection(
+                crate::local::InstallEventConnectionRequest {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    return_url: None,
+                },
+            ),
+        )
+        .unwrap()
+    else {
+        panic!("expected a started authorization")
+    };
+    assert!(registry
+        .authorization(local, &authorization.authorization_id)
+        .unwrap()
+        .is_some());
+    assert!(registry
+        .authorization("cloud-owner", &authorization.authorization_id)
+        .unwrap()
+        .is_none());
+    let LocalDaemonResponse::EventConnectionRemoved { .. } = harness
+        .dispatch_as_user(
+            "cloud-owner",
+            LocalDaemonRequest::RemoveEventConnection(crate::local::RemoveEventConnectionRequest {
+                connection_id: "connection-local".to_string(),
+                confirm: true,
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("expected the connection to be removed")
+    };
+    assert!(list_connection_ids(&harness, local).is_empty());
+}
+
 #[test]
 fn a_copy_notices_a_revoked_connection_without_being_queried() {
     let server = ReadyConnectionServer::start();

@@ -545,9 +545,12 @@ pub(crate) fn start_managed_context_outbound_operation(
         let task_config = config.clone();
         let task_ticket = authoritative_ticket.clone();
         let task_provider_account_profiles = provider_account_profiles.clone();
-        let task_event_connections = caller.map(|caller| EventConnectionSource {
-            registry: caller.runtime.event_connection_registry().clone(),
-            owner_user_id: caller.user_id,
+        let task_event_connections = caller.map(|caller| {
+            EventConnectionSource::new(
+                caller.runtime.event_connection_registry().clone(),
+                &config,
+                &caller.user_id,
+            )
         });
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
@@ -761,6 +764,22 @@ fn prepare_managed_context_package(
 pub(crate) struct EventConnectionSource {
     pub registry: crate::event_connection::EventConnectionRegistry,
     pub owner_user_id: String,
+}
+
+impl EventConnectionSource {
+    pub(crate) fn new(
+        registry: crate::event_connection::EventConnectionRegistry,
+        config: &DaemonConfig,
+        caller_user_id: &str,
+    ) -> Self {
+        Self {
+            registry,
+            owner_user_id: crate::event_connection::event_connection_user_id(
+                config,
+                caller_user_id,
+            ),
+        }
+    }
 }
 
 fn prepare_managed_context_package_for_ticket(

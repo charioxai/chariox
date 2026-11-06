@@ -38,7 +38,13 @@ impl KernelRuntimeState {
                 }
                 let event_owner_id = self
                     .event_connection_registry()
-                    .connection_event_owner_id(&owner, &request.connection_id)
+                    .connection_event_owner_id(
+                        &crate::event_connection::event_connection_user_id(
+                            &self.owned.config_projection.snapshot(),
+                            &owner,
+                        ),
+                        &request.connection_id,
+                    )
                     .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
                     .ok_or(AppRequestErrorCode::NotFound)?;
                 Some(ConnectionGrantCommand::Grant {

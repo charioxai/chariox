@@ -53,6 +53,19 @@ pub(crate) struct ManagedContextEventConnectionImportTarget {
     pub owner_user_id: String,
 }
 
+impl ManagedContextEventConnectionImportTarget {
+    pub(crate) fn new(
+        registry: EventConnectionRegistry,
+        config: &crate::config::DaemonConfig,
+        owner_user_id: &str,
+    ) -> Self {
+        Self {
+            registry,
+            owner_user_id: crate::event_connection::event_connection_user_id(config, owner_user_id),
+        }
+    }
+}
+
 impl std::fmt::Debug for ManagedContextEventConnectionImportTarget {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter

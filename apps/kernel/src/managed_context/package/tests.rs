@@ -1414,6 +1414,135 @@ fn event_connections_need_an_owner_managed_destination() {
     fixture.cleanup();
 }
 
+fn config_of_cloud_user(cloud_user_id: &str) -> crate::DaemonConfig {
+    let mut config = crate::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: cloud_user_id.to_string(),
+        ..Default::default()
+    });
+    config
+}
+
+/// Copies one ready connection from `from` to `to` the way the transfer does:
+/// the source resolves the caller, the target resolves the owner it imports for.
+fn copy_connection(
+    fixture: &PackageFixture,
+    package_name: &str,
+    from: (
+        &crate::event_connection::EventConnectionRegistry,
+        &crate::DaemonConfig,
+        &str,
+    ),
+    to: (
+        &crate::event_connection::EventConnectionRegistry,
+        &crate::DaemonConfig,
+        &str,
+    ),
+) {
+    let source = crate::managed_context::outbound_service::EventConnectionSource::new(
+        from.0.clone(),
+        from.1,
+        from.2,
+    );
+    let records = event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &source.registry,
+        &source.owner_user_id,
+    )
+    .expect("export the record");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.event_connections = ManagedContextPackageEventConnections::Selected { records };
+    export.package_path = fixture.root.join(package_name);
+    let exported = export_managed_context_package(export).expect("package the record");
+    let mut request = event_apply_request(fixture, &exported, to.0);
+    request.event_connection_target = Some(ManagedContextEventConnectionImportTarget::new(
+        to.0.clone(),
+        to.1,
+        to.2,
+    ));
+    apply_managed_context_package(request).expect("import the record");
+}
+
+#[test]
+fn a_copy_between_kernels_of_different_cloud_ids_stays_the_local_users_connection() {
+    let fixture = event_connection_fixture("event-alias", &["connection-a"]);
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (config_a, config_b) = (
+        config_of_cloud_user("cloud-a"),
+        config_of_cloud_user("cloud-b"),
+    );
+    let (kernel_a, kernel_b) = (
+        event_registry(&fixture.root, "kernel-a"),
+        event_registry(&fixture.root, "kernel-b"),
+    );
+    // Made through the local CLI on A (the `local` user), moved by A's Cloud
+    // owner, it is the `local` user's connection on B.
+    seed_connection(
+        &kernel_a,
+        local,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    copy_connection(
+        &fixture,
+        "a-to-b.chariox",
+        (&kernel_a, &config_a, "cloud-a"),
+        (&kernel_b, &config_b, "cloud-b"),
+    );
+    let on_b = kernel_b
+        .get(local, "connection-a")
+        .expect("read B")
+        .expect("the local CLI on B lists the copy");
+    assert_eq!(on_b.status, crate::local::EventConnectionStatus::Ready);
+    assert_eq!(
+        kernel_b
+            .connection_event_owner_id(local, "connection-a")
+            .unwrap()
+            .as_deref(),
+        Some("event-owner-secret-a")
+    );
+    assert!(
+        kernel_b.get("cloud-b", "connection-a").unwrap().is_none()
+            && kernel_b.get("cloud-a", "connection-a").unwrap().is_none(),
+        "the record is not kept under any Cloud id"
+    );
+    // The reverse: made on B, moved back by the local CLI of B to A.
+    seed_connection(
+        &kernel_b,
+        local,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    assert!(kernel_a.remove(local, "connection-a").unwrap());
+    copy_connection(
+        &fixture,
+        "b-to-a.chariox",
+        (&kernel_b, &config_b, local),
+        (&kernel_a, &config_a, "cloud-a"),
+    );
+    assert!(kernel_a.get(local, "connection-a").unwrap().is_some());
+    // Another user of the kernel is not the owner, so it neither exports nor holds it.
+    let outsider = crate::managed_context::outbound_service::EventConnectionSource::new(
+        kernel_b.clone(),
+        &config_b,
+        "collaborator",
+    );
+    assert!(event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &outsider.registry,
+        &outsider.owner_user_id,
+    )
+    .is_err());
+    assert!(kernel_b
+        .get("collaborator", "connection-a")
+        .unwrap()
+        .is_none());
+    fixture.cleanup();
+}
+
 /// Driven by the two-kernel proof (`GHOWNER.md` section 4): kernel A installs a
 /// connection at a loopback event service through its own handler, the record
 /// moves to kernel B through the real package export and import, and the owner
