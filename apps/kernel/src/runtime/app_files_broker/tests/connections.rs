@@ -100,7 +100,6 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
             owner_scoped: None,
         },
     )]);
-    let daemon_id = config.daemon_id.clone();
     let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();
     assert!(event_config
         .set(crate::runtime::projection::DaemonConfigProjectionStore::new(config))
