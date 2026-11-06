@@ -1,3 +1,4 @@
+import { getRelayStatus } from "./relay-api.js"
 import { createSessionProcessController } from "./session-process-controller.js"
 import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
 import { createProjectEnvironmentController } from "./project-environment-controller.js"
@@ -109,6 +110,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
   })
   const environmentController = createProjectEnvironmentController({
     client: () => deps.client.currentClient(),
+    kernelId: async client => (await getRelayStatus(client as Parameters<typeof getRelayStatus>[0])).daemon_id,
     otherKernels: deps.environmentSourceKernels,
     pageSize: () => dialogPageSize(deps.dimensions().height),
     textWidth: () => dialogTextWidth(deps.dimensions().width),

@@ -29,6 +29,8 @@ import {
 import { applyEditKey, bufferAtEnd, cleanPastedText, insertText, type EditKey, type TextBuffer } from "./text-edit-buffer.js"
 
 const OPERATION_RETRY_MS = 1000
+/** Environment state is kept for this many kernels, the most recently opened ones; one person reaches few kernels from one terminal. */
+const RETAINED_KERNELS = 8
 
 type EnvironmentKey = EditKey & { readonly eventType?: string | undefined }
 
@@ -51,12 +53,14 @@ const listsOf = (environment: ProjectEnvironmentView): EnvironmentLists => ({
   skills: environment.skills.map(({ name, source }) => ({ name, source })),
 })
 
-/** The connection to one kernel; a different object is a different connection. */
+/** One connection to a kernel; returning to a kernel opens a new one. */
 export type KernelClient = { send: (request: unknown) => Promise<unknown> }
 
 export type ProjectEnvironmentControllerDeps = {
   /** The connection the terminal is using now; it changes when the user switches kernels. */
   client: () => KernelClient
+  /** The identity of the kernel behind a connection, the same for every connection to that kernel. */
+  kernelId: (client: KernelClient) => Promise<string>
   /** The user's other connected kernels, from the same Cloud directory the web lists; none when it cannot be read. */
   otherKernels: () => Promise<readonly EnvironmentSourceKernel[]>
   render: () => void
@@ -76,8 +80,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   let open = false
   let generation = 0
   let loading = false
-  // Edits, saves and operations belong to the Project on one kernel, even while its dialog is closed. Every request of an editor goes through its own client, so a kernel switch can neither show nor reach it; a closed connection takes its editors with it.
+  // Edits, saves and operations belong to the Project on one kernel, even while its dialog is closed, and survive leaving that kernel and coming back through a new connection. Each request goes through the client of its editor's kernel when it is sent, so another kernel can neither show nor reach them.
   type Editor = {
+    /** The latest connection to the editor's kernel. */
     client: KernelClient
     projectId: string
     environment: ProjectEnvironmentView | null
@@ -90,7 +95,17 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     // Completed list edits not yet acknowledged by the kernel. Every save carries all of them; a conflict or failure keeps them for the next explicit save.
     listDrafts: ListDraft[]
   }
-  const editors = new WeakMap<KernelClient, Map<string, Editor>>()
+  /** Editors per kernel identity, most recently opened kernel last; only the last `RETAINED_KERNELS` are kept. */
+  const editors = new Map<string, Map<string, Editor>>()
+  const kernelIds = new WeakMap<KernelClient, Promise<string>>()
+  const kernelIdOf = (client: KernelClient): Promise<string> => {
+    const known = kernelIds.get(client)
+    if (known) return known
+    const asked = deps.kernelId(client)
+    kernelIds.set(client, asked)
+    asked.catch(() => kernelIds.delete(client))
+    return asked
+  }
   const newEditor = (client: KernelClient, project: string): Editor => ({ client, projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [], transfer: null, draft: null })
   let editor: Editor = newEditor({ send: async () => { throw new Error("No Environment open") } }, "")
   let focus: EnvironmentFocus = { kind: "run" }
@@ -465,11 +480,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       open = true
       loading = true
       const client = deps.client()
-      const onKernel = editors.get(client) ?? new Map<string, Editor>()
-      editors.set(client, onKernel)
-      const target = onKernel.get(project) ?? newEditor(client, project)
-      onKernel.set(project, target)
-      editor = target
+      // Nothing of the previous kernel shows while this one says who it is.
+      editor = newEditor(client, project)
       focus = { kind: "run" }
       input = null
       operation = null
@@ -480,6 +492,16 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       deps.render()
       void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})
       try {
+        const kernelId = await kernelIdOf(client)
+        if (mine !== generation) return
+        const onKernel = editors.get(kernelId) ?? new Map<string, Editor>()
+        editors.delete(kernelId)
+        editors.set(kernelId, onKernel)
+        if (editors.size > RETAINED_KERNELS) editors.delete(editors.keys().next().value!)
+        const target = onKernel.get(project) ?? editor
+        target.client = client
+        onKernel.set(project, target)
+        editor = target
         const next = projectEnvironmentFromResponse(await client.send(getProjectEnvironmentRequest(project)))
         if (mine !== generation) return
         if (next.projectId !== project) throw new Error("Environment unavailable for this Project")

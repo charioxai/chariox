@@ -37,8 +37,10 @@ function operation(patch: Partial<EnvironmentOperationView> = {}): EnvironmentOp
 type Reply = unknown | Error | (() => unknown)
 
 function harness(initial: ProjectEnvironmentView = environment(), kernels: readonly { id: string; label: string }[] | (() => Promise<readonly { id: string; label: string }[]>) = []) {
-  // Each kernel is its own connection with its own queue of replies and held reads.
-  const kernel = () => {
+  // Each connection has its own queue of replies and held reads; a new connection to the same kernel shares its `id`.
+  const identities = new WeakMap<object, string>()
+  let connections = 0
+  const kernel = (id = `kernel-${++connections}`) => {
     const requests: Record<string, any>[] = []
     const replies: Reply[] = []
     // Reads the kernel holds until the operation changes: they answer when the test calls `release`.
@@ -54,9 +56,10 @@ function harness(initial: ProjectEnvironmentView = environment(), kernels: reado
         return value
       },
     }
+    identities.set(client, id)
     return { client, requests, replies, held }
   }
-  const first = kernel()
+  const first = kernel("A")
   let connected = first
   const { requests, replies, held } = first
   const scheduled: Array<{ callback: () => void; delayMs: number }> = []
@@ -65,6 +68,7 @@ function harness(initial: ProjectEnvironmentView = environment(), kernels: reado
   const controller = createProjectEnvironmentController({
     otherKernels: async () => typeof kernels === "function" ? kernels() : kernels,
     client: () => connected.client,
+    kernelId: async client => identities.get(client)!,
     render: () => { renders++ },
     schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs }) },
     newOperationId: () => `op-${++operationIds}`,
@@ -1170,3 +1174,41 @@ test("returning to a kernel shows its own Environment again", async () => {
   assert.match(h.text(), /make a-setup/)
   assert.ok(!h.text().includes("Mac B"), h.text())
 })
+
+// The Waiting Room opens a new connection each time it returns to a kernel; the kernel is the same.
+for (const kind of ["import", "draft", "check"] as const) {
+  test(`${kind} on kernel A survives a switch to B and a return to A through a new connection, and Stop ends the original ID there`, async () => {
+    const initial = environment({ exists: kind !== "draft" })
+    const h = harness(initial, MAC)
+    await h.open()
+    const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+    h.replies.push({ EnvironmentOperation: { operation: running } })
+    if (kind === "check") h.key("c")
+    else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+    await h.settle()
+    h.key("escape")
+    const b = h.kernel("B")
+    h.connect(b)
+    b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+    await h.controller.open("project-1")
+    await h.settle()
+    assert.doesNotMatch(h.text(), /Stop|Updating from|Drafting|Checking/, "kernel B shows nothing of kernel A's operation")
+    assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation), "kernel B was asked for kernel A's operation")
+    h.key("escape")
+    const a2 = h.kernel("A")
+    h.connect(a2)
+    a2.replies.push({ ProjectEnvironment: { environment: initial } }, { EnvironmentOperation: { operation: running } })
+    await h.controller.open("project-1")
+    await h.settle()
+    assert.match(h.text(), /Stop/, "the original operation keeps its progress and Stop")
+    assert.ok(a2.requests.some((request) => request.GetEnvironmentOperation?.operationId === running.operationId), "the new connection to A follows the original operation")
+    a2.replies.push({ EnvironmentOperation: { operation: { ...running, state: "cancelled", updates: 2, endedAtMs: NOW + 1 } } }, { ProjectEnvironment: { environment: initial } })
+    h.focusOn(kind === "import" ? "Stop" : kind === "draft" ? "Drafting" : "Checking")
+    h.key("return")
+    await h.settle()
+    assert.deepEqual(a2.requests.find((request) => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+    assert.ok(b.requests.every((request) => !request.CancelEnvironmentOperation))
+    const starts = [...h.requests, ...a2.requests, ...b.requests].filter((request) => request.ImportProjectEnvironmentEntries || request.DraftProjectEnvironment || request.CheckProjectEnvironment)
+    assert.equal(starts.length, 1, "no replacement operation starts")
+  })
+}
