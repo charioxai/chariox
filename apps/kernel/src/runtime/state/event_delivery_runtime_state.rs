@@ -15,20 +15,23 @@ impl KernelRuntimeState {
         &self,
         kernel_id: &str,
         environment_id: &str,
-    ) -> Result<
-        BTreeMap<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>,
-        String,
-    > {
+    ) -> Result<BTreeMap<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>, String>
+    {
         // One claim set per generator and record owner, each reconciled under
         // that owner; a record no route uses still gets its (empty) set so a
         // removed route stops being delivered.
-        let mut sets = BTreeMap::<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
+        let mut sets =
+            BTreeMap::<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
         for (generator_id, owner_id) in self
             .event_connection_registry()
             .claimable_generator_owners()
             .map_err(|error| format!("event connection owners could not be read: {error}"))?
         {
-            sets.entry(EventClaimSet { generator_id, owner_id }).or_default();
+            sets.entry(EventClaimSet {
+                generator_id,
+                owner_id,
+            })
+            .or_default();
         }
         for (route, event_owner_id) in self.bound_app_event_routes()? {
             let binding_id =

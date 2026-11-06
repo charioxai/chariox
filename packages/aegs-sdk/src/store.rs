@@ -1911,7 +1911,6 @@ mod tests {
         assert_eq!(ready.owner_id, "owner-a");
         assert_eq!(ready.status, "ready");
     }
-
 }
 
 #[cfg(test)]

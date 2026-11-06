@@ -184,7 +184,9 @@ impl EventConnectionRegistry {
             .lock_state()?
             .connections
             .get(&(owner_user_id.to_string(), connection_id.to_string()))
-            .filter(|record| record.connection.status != crate::local::EventConnectionStatus::Revoked)
+            .filter(|record| {
+                record.connection.status != crate::local::EventConnectionStatus::Revoked
+            })
             .map(|record| record.event_owner_id.clone()))
     }
 
@@ -195,8 +197,15 @@ impl EventConnectionRegistry {
             .lock_state()?
             .connections
             .values()
-            .filter(|record| record.connection.status != crate::local::EventConnectionStatus::Revoked)
-            .map(|record| (record.connection.generator_id.clone(), record.event_owner_id.clone()))
+            .filter(|record| {
+                record.connection.status != crate::local::EventConnectionStatus::Revoked
+            })
+            .map(|record| {
+                (
+                    record.connection.generator_id.clone(),
+                    record.event_owner_id.clone(),
+                )
+            })
             .collect::<Vec<_>>();
         pairs.sort();
         pairs.dedup();

@@ -2,8 +2,7 @@ use std::collections::HashMap;
 
 use chariox_event_protocol::{
     AegsAuthorizationFlow, AegsConnectionInspection, AegsConnectionLifecycleState,
-    AegsProviderResourcePage,
-    AegsProviderResourceQuery,
+    AegsProviderResourcePage, AegsProviderResourceQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

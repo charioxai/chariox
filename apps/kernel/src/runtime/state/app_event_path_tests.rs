@@ -428,8 +428,8 @@ async fn exercise(fanout: bool) {
         ));
     }
     // Bindings are named after the kernel's identity key, which is what the connector signs with.
-    let kernel_id = crate::transport::gateway_identity::GatewayIdentity::from_config(&config)
-        .kernel_id();
+    let kernel_id =
+        crate::transport::gateway_identity::GatewayIdentity::from_config(&config).kernel_id();
     let resumes = state
         .event_delivery_resumes(&kernel_id, &config.event_delivery_environment_id)
         .unwrap();

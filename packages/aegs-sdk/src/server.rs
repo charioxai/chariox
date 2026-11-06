@@ -10,8 +10,7 @@ use chariox_event_protocol::{
     AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
     AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
     AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
-    AegsConnectionTestEventResponse, AegsProviderResourceQuery,
-    PublishEventRequest,
+    AegsConnectionTestEventResponse, AegsProviderResourceQuery, PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -2015,7 +2014,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-                scope_cache: Default::default(),
+            scope_cache: Default::default(),
         });
         (server, store)
     }
@@ -2958,7 +2957,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-                scope_cache: Default::default(),
+            scope_cache: Default::default(),
         });
 
         let publishing = tokio::spawn(signed_webhook(server));
@@ -3035,7 +3034,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&earlier.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-                scope_cache: Default::default(),
+            scope_cache: Default::default(),
         });
         let publishing = tokio::spawn(signed_webhook(server));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -3100,7 +3099,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-                scope_cache: Default::default(),
+            scope_cache: Default::default(),
         });
         assert_eq!(
             signed_webhook(server.clone()).await["matched_interest_count"],

@@ -1162,7 +1162,9 @@ mod tests {
                 let header = |name: &str| {
                     head.lines().find_map(|line| {
                         let (key, value) = line.split_once(':')?;
-                        key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                        key.trim()
+                            .eq_ignore_ascii_case(name)
+                            .then(|| value.trim().to_string())
                     })
                 };
                 let parsed: chariox_event_protocol::AegsSubscriptionReconcileRequest =
@@ -1244,7 +1246,11 @@ mod tests {
             )
             .unwrap();
         for (connection_id, owner, status) in [
-            ("connection-a", OWNER_A, chariox_event_protocol::AegsConnectionStatus::Ready),
+            (
+                "connection-a",
+                OWNER_A,
+                chariox_event_protocol::AegsConnectionStatus::Ready,
+            ),
             ("connection-b", OWNER_B, second_status),
         ] {
             runtime_state
@@ -1336,7 +1342,10 @@ mod tests {
         let error = reconcile_aegs_subscriptions(&runtime_state, &config)
             .await
             .expect_err("the refused owner is reported");
-        assert!(!error.contains(OWNER_B), "the owner id is a secret: {error}");
+        assert!(
+            !error.contains(OWNER_B),
+            "the owner id is a secret: {error}"
+        );
         assert_eq!(seen.lock().unwrap().len(), 2);
         // A revoked record stops being claimed.
         let (url, seen) = aegs_for_owners(Vec::new());
