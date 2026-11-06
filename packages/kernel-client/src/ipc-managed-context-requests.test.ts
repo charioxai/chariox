@@ -65,3 +65,19 @@ test("MP-08 MP-11 owner-managed admission is interactive and carries inventory s
   })
   assert.equal("ticket" in startOwnerManagedContextTransferRequest(ownerManaged).StartManagedContextTransfer, false)
 })
+
+test("owner-managed admission carries an event connection selection by connection id only", () => {
+  const ownerManaged = {
+    target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
+    contextSelection: {
+      kernelContext: "empty" as const,
+      developmentSetup: { kind: "empty" as const },
+      eventConnections: { kind: "selected" as const, connectionIds: ["connection-a", "connection-b"] },
+    },
+  }
+  assert.deepEqual(startOwnerManagedContextTransferRequest(ownerManaged), {
+    StartManagedContextTransfer: { interactive: true, ownerManaged },
+  })
+  const selected = startOwnerManagedContextTransferRequest(ownerManaged).StartManagedContextTransfer.ownerManaged
+  assert.deepEqual(Object.keys(selected.contextSelection.eventConnections ?? {}).sort(), ["connectionIds", "kind"])
+})

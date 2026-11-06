@@ -54,6 +54,12 @@ export type OwnerManagedDestination = {
   readonly kernelId: string
 }
 
+// Event connection records carry no provider credential, so an owner-managed copy may move them
+// between a user's kernels. Provider accounts and Git credentials stay out of this selection.
+export type OwnerManagedEventConnections =
+  | { readonly kind: "none" }
+  | { readonly kind: "selected"; readonly connectionIds: readonly string[] }
+
 export type OwnerManagedContextTransfer = {
   readonly target: {
     readonly relayRealmId: string
@@ -64,6 +70,7 @@ export type OwnerManagedContextTransfer = {
   }
   readonly contextSelection: {
     readonly kernelContext: "empty" | "source_kernel_without_credentials"
+    readonly eventConnections?: OwnerManagedEventConnections
     readonly developmentSetup:
       | { readonly kind: "empty" }
       | {
