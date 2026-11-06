@@ -52,16 +52,12 @@ impl KernelRuntimeState {
         let page_full = page.len() >= ledger::INBOX_PAGE;
         let open: Vec<InboxEvent> = page.into_iter().filter(is_open).collect();
         let more = open.len() > limit || page_full;
-        let events: Vec<serde_json::Value> = open
+        let shown: Vec<&InboxEvent> = open.iter().take(limit).collect();
+        let events: Vec<serde_json::Value> = shown
             .iter()
-            .take(limit)
             .map(|event| self.inbox_event_view(room, event))
             .collect();
-        let next_after = open
-            .iter()
-            .take(limit)
-            .last()
-            .map_or(after, |event| event.sequence);
+        let next_after = shown.last().map_or(after, |event| event.sequence);
         Ok(serde_json::json!({
             "untrusted": true,
             "notice": UNTRUSTED_NOTICE,
