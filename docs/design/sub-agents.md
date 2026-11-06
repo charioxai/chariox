@@ -116,10 +116,10 @@ There are no App grants in this design; every installed App is available to ever
 
 > **In plain words (for the owner).** A sub-agent can never be given more authority than the agent that started it. The kernel checks it when the sub-agent starts and again every time it acts, against the parent's *current* settings, so lowering the parent lowers the whole team at once. Each limited thing, with one example:
 > - **Permission level and mode:** a parent that must ask you before it runs a shell command cannot start a child that runs commands freely; a parent in read-only Plan mode cannot start a child in Build mode.
-> - **Tools and secrets it may use** (MCP servers, skills, scripts, connectors, Vault items): *waiting for your answer, section 11*; for example a parent without the "bank" Vault item could not start a child that has it.
 > - **Folders it may touch:** a parent working in `~/work/app` can start a child in a worktree of that project, not one in `~/private`.
 > - **Deadline:** a parent with two hours left gives a child at most two hours, and the child ends when the parent does.
 > - **Where it runs:** a parent allowed only on this machine cannot start a child on another one; renting a machine stays your decision.
+> - **Tools are not limited:** a sub-agent has the tools of the kernel it runs on, like any agent there; a child on another kernel may use a Vault that is open there, which is fine.
 
 **Rule.** The kernel stores what the child asked for and computes `effective(agent) = min(own, effective(parent))` at the moment of use, so lowering a parent constrains the whole subtree at once (T3 idea). Spawn refuses a request above it.
 
@@ -128,14 +128,14 @@ There are no App grants in this design; every installed App is available to ever
 | Dimension | Today | Rule | Status |
 |---|---|---|---|
 | Permission level (`Required` < `Yolo`) and mode (`Plan` < `Build`) | `provider/launch_contract.rs:601,636` | child ≤ parent | **keep**: the core safety bound; also the base of the skip rule (4.3) |
-| MCP, skill, script and connector grants and Vault handles | `ExtensionGrant` (`extension.rs:280`) | child's grants ⊆ parent's, safety ≤ | **recommended, open question (section 11)**: otherwise a child could hold a credential its parent does not |
-| Workspace and worktree | `worktree_id`, `workspace_id`, `ProviderWriteAccessMode` (`launch_contract.rs:671`) | a child's worktree lies inside the parent's workspace root | **keep**: file reach (verify in A5) |
+| MCP, skill, script and connector grants and Vault handles | `ExtensionGrant` (`extension.rs:280`) | none | **not limited** (Miguel, 11-06 16:13Z: "the agent is bound to the tools in its kernel"): a child has the tools of the kernel it runs on, an open Vault there included |
+| Workspace and worktree | `worktree_id`, `workspace_id`, `ProviderWriteAccessMode` (`launch_contract.rs:671`) | a child's worktree lies inside the parent's workspace root | **keep**: file reach. Enforceable, but a new check: today an explicit `--dir` is only tested to exist (`prepare_local_agent_worktree_placement`, `session_lifecycle_runtime_state.rs:615-650`); A5 adds the root test |
 | Deadline | `AgentDeadline`, shorten only (`docs/AGENT_DEADLINES.md`) | child ≤ parent; the parent's deadline ends the subtree | **keep**: makes the subtree end in time without a budget |
 | Placement and renting | `MoveAgentToRemote`, `ControlPlane` acquire (`room_agent_admission.rs:127-148`) | placed only where the parent may; renting stays a user decision (4.3, row 6) | **keep** |
 | Account profile | profiles belong to the owner (`runtime/agent_account_admission.rs:6`) | none | **dropped** (Miguel, "Q2 yes drop it"): a profile is cost, not authority |
 | Usage | only observed | **none in v1**: the agent decides | dropped (owner: "nothing") |
 
-Network and sandbox follow the level (`codex_client/permission.rs:307`). Caps (2.1) bound fan-out. Apps are not limited: every installed App is available to every agent.
+Network and sandbox follow the level (`codex_client/permission.rs:307`). Caps (2.1) bound fan-out. Nothing else is limited: not tools or secrets, not Apps, not the account profile, not usage. The limit is four things: permission level and mode, folders, deadline and where it runs.
 
 ## 6. Parent control without /sudo
 
@@ -213,6 +213,6 @@ AgentTree { root: agent_id, rev, totals: { live, running, needs_user },
 
 **M1 = a room agent spawns a sub-agent, steers, reads and stops it, gets the finish wake and answers its decision, with the user seeing the sub-agents only in the stripe, the card and the sub-view (status only) and every user-held decision card only in the room agent's panel.** Slice order (details, red-first tests, drills in `SUBAGENTS_SLICES.md`): **A1** inbox shape (M, none) -> **A2** tree edge, parent control, child-finished steer, spawn fixes (L, local number) -> **A3** one-card decision routing (L, local number) -> **A4** hidden projection and cascade (M, local number) -> **A5** authority limit at use (M) -> **mock gate** -> **A6** stripe and card, **A7** sub-view. **M2** peers and remote sub-agents (P1 peers on one kernel, P2 across kernels, P3 retire old reach). **M3** the rest.
 
-## 11. The one open question for the owner
+## 11. Open questions for the owner
 
-**Should a sub-agent be limited to the MCP servers, skills, scripts, connectors and Vault items its parent may use?** Recommended: **yes**, because otherwise a parent that has no access to a Vault item (or a connector) could start a child that does, and so reach it by the back door. Apps are not limited either way: every installed App is available to every agent. (The account-profile limit is dropped, as you decided.)
+None. Miguel's answers of 11-06 (16:05Z and 16:13Z) closed the last two: no tool limit, no account-profile limit.
