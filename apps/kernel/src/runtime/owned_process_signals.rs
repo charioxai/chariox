@@ -176,13 +176,6 @@ impl OwnedProcessSignals {
     }
 
     #[cfg(target_os = "linux")]
-    pub(crate) fn pin_owned_processes(&mut self) -> io::Result<OwnedProcessHandles> {
-        let mut handles = OwnedProcessHandles::default();
-        self.pin_owned_processes_into(&mut handles)?;
-        Ok(handles)
-    }
-
-    #[cfg(target_os = "linux")]
     pub(crate) fn pin_owned_processes_into(
         &mut self,
         handles: &mut OwnedProcessHandles,
@@ -545,7 +538,8 @@ mod tests {
             .spawn()
             .unwrap();
         let mut owner = OwnedProcessSignals::for_child(&child).unwrap();
-        let mut handles = owner.pin_owned_processes().unwrap();
+        let mut handles = OwnedProcessHandles::default();
+        owner.pin_owned_processes_into(&mut handles).unwrap();
         let before: Vec<_> = handles
             .0
             .iter()
