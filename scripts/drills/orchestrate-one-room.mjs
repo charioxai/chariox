@@ -222,7 +222,18 @@ the exact answer. Never use shell sleeps or poll in a loop.
 12. When w1 and w2 are done (or ended) and the owner answered: copy w2's result.txt through the kernel file requests: kernel_request {"ReadKernelFile":{"path":"${join(root, "wt/w2/result.txt")}","offset":0,"length":4096}}, then {"WriteKernelFile":{"path":"${join(work, "collected-w2.txt")}","offset":0,"data_base64":"<the base64 you read>","total_size":<size>,"sha256":null}}.
 13. Write ${join(work, "orchestrator-report.json")}: one entry per step with ok, tool and exact answer, and per wake what woke you. Delete the workers with \`agent delete wN\`. Reply ORCHDONE.
 `
-  const brief = scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  // A 30-minute heartbeat and a worker turn that really fails: what wakes a parked orchestrator, and what it can read about the failure.
+  const heartbeatBrief = `# Orchestrator brief (drill, heartbeat scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never use shell sleeps or poll in a loop.
+Keep ${join(work, "orchestrator-state.json")} updated after every step and every wake.
+1. Spawn w1 with room command \`agent spawn w1 --provider claude --model claude-no-such-model-1 --effort low --worktree ${join(root, "wt/w1")} --branch w1\` and w2 with \`agent spawn w2 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w2")} --branch w2\`. Record the answers.
+2. Prompt both (room \`prompt\`): "Write the single word DONE into result.txt in your current working directory."
+3. Subscribe to both workers (chariox events_subscribe with the agent id) and arm a heartbeat: chariox events_timer with label 'heartbeat', delay_ms 1800000 and interval_ms 1800000.
+4. Yield on ALL your registrations (events_subscriptions lists them) with a deadline 45 minutes ahead and END YOUR TURN.
+5. On each wake: append to the state file the time, what woke you and, for a worker, every failure field you can read (the wake payload, chariox history turn of that worker, get_session_agent): outcome kind, retryable, reason, error text. Ack and yield again on all registrations.
+6. On the first heartbeat wake: cancel the heartbeat (events_cancel_wake), write ${join(work, "orchestrator-report.json")} (every wake with its time and cause, and the failure fields of w1), delete both workers (\`agent delete wN\`) and reply ORCHDONE.
+`
+  const brief = scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only your own Chariox tools:
 the room tools (chariox room run_command / commands docs / list_session_agents / send_agent_message / history), the chariox events tools
 (subscribe, timer, yield, inbox, ack) and the chariox-reach tools (kernels, sessions, request, events_subscribe, events_wait, events_ack, guide).
