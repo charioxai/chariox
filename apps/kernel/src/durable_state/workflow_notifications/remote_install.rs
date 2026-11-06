@@ -100,6 +100,17 @@ pub(super) fn undo_in(
     Ok(())
 }
 
+/// A detach ends whatever install or reconciliation was still pending for the subscription, so
+/// neither a late settlement nor a retry can bring the follow back.
+pub(super) fn supersede_in(
+    tx: &Transaction<'_>,
+    owner: &str,
+    subscription_id: &str,
+) -> Result<(), DaemonError> {
+    tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id]).map_err(sql)?;
+    Ok(())
+}
+
 /// A detach the source kernel did not confirm leaves a row there that must still go.
 pub(super) fn mark_detach_in(
     tx: &Transaction<'_>,

@@ -410,3 +410,56 @@ async fn an_install_left_unsettled_by_a_stopped_kernel_restores_the_prior_follow
     drop(runtime);
     cleanup(f);
 }
+
+/// A repeat attach is cut off after its local commit, the kernel restarts inside the grace
+/// period and the user detaches: the later settlement must not bring the follow back.
+async fn detach_after_an_interrupted_repeat_attach(attempt_differs: bool) {
+    let (f, runtime, source, publication) = setup();
+    let working = working_remote_follow(&f, &runtime, &source, &publication, |s| {
+        s.workflow_id = "workflow-the-first-attach-named".into();
+    })
+    .await;
+    let mut attempt = working.clone();
+    if attempt_differs {
+        attempt.workflow_id = publication.clone();
+    }
+    f.store
+        .notify(NotificationOperation::AttachToRemoteSource {
+            subscription: attempt.clone(),
+        })
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now: 0 })
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::Detach {
+            subscription_id: working.subscription_id.clone(),
+            owner: "local".into(),
+            kernel: working.target_kernel_id.clone(),
+        })
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now: u64::MAX / 2 })
+        .unwrap();
+    let (_, active, _) = f.store.notification_inventory("local").unwrap();
+    assert!(
+        !active.contains(&working) && !active.contains(&attempt),
+        "the settlement of the interrupted install restored a follow the user detached"
+    );
+    assert!(
+        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        "the detach left install work that would subscribe the source again"
+    );
+    drop(runtime);
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn a_detach_supersedes_an_interrupted_repeat_attach_that_changed_the_follow() {
+    detach_after_an_interrupted_repeat_attach(true).await;
+}
+
+#[tokio::test]
+async fn a_detach_supersedes_an_interrupted_repeat_attach_that_matched_the_follow() {
+    detach_after_an_interrupted_repeat_attach(false).await;
+}

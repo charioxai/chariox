@@ -664,7 +664,10 @@ fn apply(
             owner,
             kernel,
         } => {
-            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
+            let detached = tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
+            if detached != 0 {
+                remote_install::supersede_in(tx, &owner, &subscription_id)?;
+            }
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Acknowledge {
