@@ -191,6 +191,11 @@ pub(crate) enum NotificationOperation {
         grant: String,
         attach: Box<NotificationOperation>,
     },
+    /// A grant follows several sources in one commit: a limit that refuses one refuses them all.
+    FollowSources {
+        grant: String,
+        subscriptions: Vec<WorkflowNotificationSubscription>,
+    },
     /// The accepted occurrence becomes one event in the subscribed grant's own stream, and
     /// its receipt is settled, in one commit.
     AppendToGrantInbox {
@@ -540,6 +545,21 @@ fn apply(
                 .map_err(sql)?;
             }
             Ok(outcome)
+        }
+        NotificationOperation::FollowSources {
+            grant,
+            subscriptions,
+        } => {
+            for subscription in subscriptions {
+                apply(
+                    tx,
+                    NotificationOperation::Granted {
+                        grant: grant.clone(),
+                        attach: Box::new(NotificationOperation::RemoteAttach { subscription }),
+                    },
+                )?;
+            }
+            Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::RetireGrants {
             grant,

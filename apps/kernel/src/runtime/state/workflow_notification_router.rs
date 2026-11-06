@@ -567,6 +567,8 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+mod outside_agent_follow_tests;
+#[cfg(test)]
 mod outside_agent_listing_tests;
 #[cfg(test)]
 mod outside_agent_tests;

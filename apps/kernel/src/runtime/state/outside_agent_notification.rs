@@ -59,18 +59,15 @@ impl KernelRuntimeState {
                         trigger_id: None,
                     });
                 }
-                for subscription in subscriptions {
-                    match self
-                        .owned
-                        .durable_state_store
-                        .notify(NotificationOperation::Granted {
-                            grant: grant.into(),
-                            attach: Box::new(NotificationOperation::RemoteAttach { subscription }),
-                        }) {
-                        Ok(NotificationOutcome::Subscription(_)) => {}
-                        Ok(_) => return Err(refused("unexpected notification response")),
-                        Err(error) => return Err(public_follow_error(error)),
-                    }
+                match self
+                    .owned
+                    .durable_state_store
+                    .notify(NotificationOperation::FollowSources {
+                        grant: grant.into(),
+                        subscriptions,
+                    }) {
+                    Ok(_) => {}
+                    Err(error) => return Err(public_follow_error(error)),
                 }
                 Ok(())
             })?;
