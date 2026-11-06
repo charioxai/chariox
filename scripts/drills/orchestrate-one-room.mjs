@@ -223,7 +223,7 @@ Never retry a refused call more than once; record the exact refusal instead. Nev
 2. Prompt them (room command \`prompt <alias> "<text>"\` (not \`agent prompt\`)):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
    w2: "Write the single word BETA into result.txt in your current working directory. End your reply with W2DONE."
-   w3: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w3 hold', message 'Continue?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns, write the single word GAMMA into result.txt in your current working directory. End your reply with W3DONE."
+   w3: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w3 hold', message 'Continue?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns, write the single word GAMMA into result.txt in your current working directory. End your reply with W3DONE."
 Keep ${join(work, "orchestrator-state.json")} updated after every step (what is done, what you wait for) so you can recover if you lose your context.
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id) and yield on ALL your registrations (chariox events_subscriptions lists them; a yield must cover every open obligation) with a deadline 20 minutes ahead, then END YOUR TURN. The kernel wakes you with a new turn per event.
 4. On the FIRST wake, steer w3 while it is still busy: chariox send_agent_message to w3 with urgent true: "When you continue, also write the word DELTA into steer.txt in your working directory." Then ack the event and yield again on all registrations.
@@ -238,9 +238,9 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). There is NO /sudo 
 Do not ask the owner anything except in step 8. Never retry a refused call more than once; record the exact answer. Never use shell sleeps or poll in a loop.
 1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN --permission yolo --command-id spawn-wN\`. Spawn w1 a SECOND time with the identical command and record whether you got the same agent id.
 2. Prompt them with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
-   w1: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w1 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write ALPHA into result.txt in your working directory. End with W1DONE."
+   w1: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w1 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write ALPHA into result.txt in your working directory. End with W1DONE."
    w2: "Write BETA into result.txt in your working directory. End with W2DONE."
-   w3: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w3 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write GAMMA into result.txt. End with W3DONE."
+   w3: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w3 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write GAMMA into result.txt. End with W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id).
 4. Run \`agent deadline set w1 3m\` and then \`agent deadline get w1\`. Run \`agent children\`.
 5. Run \`agent profiles\` and \`agent usage\`.
@@ -323,9 +323,9 @@ Steps:
 4. Spawn w5 on kernel B: \`agent spawn w5 --provider claude --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w5")}\`. Record the exact answer, even a refusal. Then go on: a refused spawn must not stop you from yielding in step 7.
 5. Give tasks with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
-   w2: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w2 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write BETA into result.txt in your current working directory. End your reply with W2DONE."
+   w2: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w2 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write BETA into result.txt in your current working directory. End your reply with W2DONE."
    w3: "Reply with the word hello."
-   w4: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w4 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write DELTA into result.txt. End your reply with W4DONE."
+   w4: "Call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 900, title 'w4 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns write DELTA into result.txt. End your reply with W4DONE."
 6. Run \`agent deadline set w2 90s\` and \`agent deadline get w2\`, then \`agent children\`. Record the answers.
 7. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 15 minutes ahead and END YOUR TURN. The kernel wakes you with a new turn per event.
 8. In each wake read the event (chariox events_inbox): for a child_finished event note the child, outcome.kind, success and deadline_reached. When w4 is still running after the first wake, steer it (send_agent_message to w4, urgent true: "Also write the word GAMMA into steer.txt") and then stop its turn with \`agent cancel w4\`. Ack and yield again on all registrations until w1, w2, w3 and w4 have each finished.
