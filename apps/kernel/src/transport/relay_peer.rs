@@ -1285,6 +1285,9 @@ pub enum RelayPeerResponse {
     ProjectEnvironmentFilePulled {
         /// The whole file's size, so the receiver knows when it has everything.
         size_bytes: u64,
+        /// The whole file's SHA-256, so slices of different contents never assemble into one
+        /// file; empty when the file is not there.
+        content_sha256: String,
         /// The slice at the requested offset; absent when the file is not there.
         content: Option<RemoteEnvironmentFileBytes>,
     },

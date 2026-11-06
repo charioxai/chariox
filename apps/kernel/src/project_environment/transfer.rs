@@ -14,6 +14,7 @@ use crate::local::{
 };
 use crate::secret::CredentialVaultStore;
 use futures_util::StreamExt;
+use sha2::{Digest, Sha256};
 use std::future::Future;
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -40,10 +41,31 @@ pub(crate) struct SourceSnapshot {
     pub skills: Vec<String>,
 }
 
-/// One slice of a source file and the size of the whole file.
+/// One slice of a source file, with the size and SHA-256 of the whole file it was read from.
 pub(crate) struct FileSlice {
     pub size_bytes: u64,
+    /// Every slice names the content it belongs to; the receiver publishes the file only when
+    /// what it assembled has this digest.
+    pub content_sha256: String,
     pub bytes: Zeroizing<Vec<u8>>,
+}
+
+/// Up to one slice of the file at `offset`, with the size and digest of the whole file read
+/// through the same open file.
+pub(crate) fn read_file_slice(path: &Path, offset: u64) -> std::io::Result<FileSlice> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let size_bytes = file.metadata()?.len();
+    let mut hash = Sha256::new();
+    std::io::copy(&mut (&mut file).take(size_bytes), &mut hash)?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(IMPORT_CHUNK_BYTES).read_to_end(&mut bytes)?;
+    Ok(FileSlice {
+        size_bytes,
+        content_sha256: format!("{:x}", hash.finalize()),
+        bytes,
+    })
 }
 
 /// Why the source gave nothing: it could not be reached, or it answered that it will not.
@@ -494,6 +516,8 @@ async fn import_entry<S: EnvironmentSource>(
             let mut writer =
                 FileWriter::create(target.checkout, &entry.name).map_err(ImportFailure::Entry)?;
             writer.append(&first.bytes).map_err(ImportFailure::Entry)?;
+            let mut assembled = Sha256::new();
+            assembled.update(&first.bytes);
             let mut written = step;
             if written < size && step == 0 {
                 return Err(changed());
@@ -509,13 +533,21 @@ async fn import_entry<S: EnvironmentSource>(
                 .buffered(SLICES_IN_FLIGHT);
             while let Some((offset, slice)) = slices.next().await {
                 let slice = slice?;
-                if slice.size_bytes != size || slice.bytes.len() as u64 != step.min(size - offset) {
+                if slice.size_bytes != size
+                    || slice.content_sha256 != first.content_sha256
+                    || slice.bytes.len() as u64 != step.min(size - offset)
+                {
                     return Err(changed());
                 }
                 writer.append(&slice.bytes).map_err(ImportFailure::Entry)?;
+                assembled.update(&slice.bytes);
                 written += slice.bytes.len() as u64;
             }
             drop(slices);
+            // Slices read before and after a same-size replacement agree on size but not content.
+            if format!("{:x}", assembled.finalize()) != first.content_sha256 {
+                return Err(changed());
+            }
             writer.finish().map_err(ImportFailure::Entry)?;
             *landed_bytes += written;
             Ok(())
@@ -666,6 +698,9 @@ mod tests {
         in_flight: std::sync::atomic::AtomicUsize,
         most_in_flight: std::sync::atomic::AtomicUsize,
         registrations: Vec<(EnvironmentEntryKind, String, Registration)>,
+        /// Files come from this checkout, and each is replaced by different bytes of the same size
+        /// once its first slice was read.
+        replaced_checkout: Option<std::path::PathBuf>,
     }
 
     /// The registrations of the kernel under test, in memory.
@@ -821,6 +856,15 @@ mod tests {
             offset: u64,
         ) -> Result<Option<FileSlice>, SourceError> {
             self.pulls.lock().unwrap().push(format!("{path}@{offset}"));
+            if let Some(checkout) = &self.replaced_checkout {
+                let file = checkout.join(path);
+                let slice = read_file_slice(&file, offset).unwrap();
+                if offset == 0 {
+                    let size = std::fs::metadata(&file).unwrap().len() as usize;
+                    std::fs::write(&file, vec![b'b'; size]).unwrap();
+                }
+                return Ok(Some(slice));
+            }
             if let Some(gate) = &self.gate {
                 gate.notified().await;
             }
@@ -832,6 +876,7 @@ mod tests {
             let end = content.len().min(offset as usize + self.slice_bytes);
             Ok(Some(FileSlice {
                 size_bytes: content.len() as u64,
+                content_sha256: format!("{:x}", Sha256::digest(&content)),
                 bytes: Zeroizing::new(content[offset as usize..end].to_vec()),
             }))
         }
@@ -861,6 +906,7 @@ mod tests {
             pull_delay: Duration::ZERO,
             in_flight: Default::default(),
             most_in_flight: Default::default(),
+            replaced_checkout: None,
         }
     }
 
@@ -1251,6 +1297,35 @@ mod tests {
             (2..=SLICES_IN_FLIGHT).contains(&most),
             "slices in flight at once: {most}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_replaced_by_same_size_content_between_slices_fails_and_is_not_published() {
+        let rig = Rig::new();
+        let checkout = rig.root.join("source-checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::fs::write(
+            checkout.join("big.bin"),
+            vec![b'a'; 2 * IMPORT_CHUNK_BYTES as usize + 10],
+        )
+        .unwrap();
+        let mut from = source(Some(record(1, &[], &["big.bin"])), &[], &["big.bin"]);
+        from.replaced_checkout = Some(checkout);
+        let view = rig.import("replaced", &from, None).await;
+        assert_eq!(
+            from.pulls.lock().unwrap()[..2],
+            [
+                "big.bin@0".to_string(),
+                format!("big.bin@{IMPORT_CHUNK_BYTES}")
+            ]
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("The file changed while it was imported")
+        );
+        assert!(!rig.checkout.join("big.bin").exists());
+        let leftovers = std::fs::read_dir(&rig.checkout).unwrap().flatten().count();
+        assert_eq!(leftovers, 0);
     }
 
     #[tokio::test]

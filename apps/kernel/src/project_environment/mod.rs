@@ -36,8 +36,8 @@ pub(crate) use registrations::{
 pub(crate) use setup::{SetupRuns, SetupSpec};
 pub(crate) use store::{remove_schema_1_state, ProjectEnvironmentStore, SaveOutcome};
 pub(crate) use transfer::{
-    run_import, source_holdings, EnvironmentSource, FileSlice, ImportTarget, SourceError,
-    SourceSnapshot, IMPORT_CHUNK_BYTES, MAX_IMPORT_FILE_BYTES,
+    read_file_slice, run_import, source_holdings, EnvironmentSource, FileSlice, ImportTarget,
+    SourceError, SourceSnapshot, MAX_IMPORT_FILE_BYTES,
 };
 
 /// The Vault service that holds a Project's Secret values on this kernel; the key is the name.
