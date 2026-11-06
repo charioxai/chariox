@@ -2159,7 +2159,7 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
     let (prepared, reservation) = rig.remote_steer_intent(&notification);
     let target = prepared.target_active_prompt_id.clone();
     // Only the durable rejection lands; nothing runs after it, as in a crash.
-    let (active, mut queued) = rig
+    let (active, queued) = rig
         .runtime
         .owned
         .prompt_state_owner
