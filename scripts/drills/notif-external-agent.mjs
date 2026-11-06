@@ -21,6 +21,11 @@
 // turn: Claude Haiku on the drill kernel's own Vault, or Codex gpt-6-luna low on a linked profile): a driven agent
 // reports through its `chariox.events.blocked` tool that its task needs the owner; the holder, following "Agent needs
 // your action" and not polling, is woken by one notification that names the task and the decision, and answers it.
+// `--scenario workflow-runs` (ON-17, retiring a 60-s poll of workflow runs): the coordinator's replacement client
+// scripts/reviewer/reviewer-wait-events.mjs, run in the holder's process tree against a workflow with webhook-style
+// invocation prompts: a completed run and a failed run wake it within seconds with the right line, a burst of runs is
+// printed once each and in order, a run that ended while the kernel restarted is not lost, a missing notification is
+// covered by the fallback listing, and a stopped kernel or a revoked grant ends the wait with the unreachable line.
 // Usage: node notif-external-agent.mjs --kernel-binary K --state-root DIR --evidence-dir DIR [--cli apps/cli/dist/index.js]
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
@@ -140,11 +145,11 @@ async function stop(k) {
 }
 
 // A workflow whose single node is an exit: the dev-stub provider submits its output as soon as it is invoked.
-async function reviewerWorkflow(k, alias) {
+async function reviewerWorkflow(k, alias, agentId = k.agent.id) {
   const send = request => k.client.send(request)
   const variant = (r, name) => { assert(r[name], `${name}: ${JSON.stringify(r).slice(0, 200)}`); return r[name] }
   const workflow = variant(await send(createWorkflowRequest(k.sessionId, alias)), "WorkflowCreated").workflow
-  const node = variant(await send(addWorkflowNodeRequest(k.sessionId, workflow.id, k.agent.id)), "WorkflowNodeAdded").node
+  const node = variant(await send(addWorkflowNodeRequest(k.sessionId, workflow.id, agentId)), "WorkflowNodeAdded").node
   variant(await send(setWorkflowNodeCanCompleteRunRequest(k.sessionId, workflow.id, node.id, true)), "WorkflowNodeCanCompleteRunUpdated")
   const endpoint = variant(await send(createWorkflowEndpointRequest(k.sessionId, workflow.id, node.id, `${alias}-entry`)), "WorkflowEndpointCreated").endpoint
   const source = variant(await send({ RegisterWorkflowNotificationSource: { session_id: k.sessionId, workflow_ref: workflow.id, exit_node_id: node.id, enabled: true } }), "WorkflowNotificationSourceRegistered").source
@@ -228,7 +233,7 @@ const notifications = h => h.records().filter(e => e.type === "notification")
 
 const results = {}
 const scenario = flags.get("--scenario") ?? "main"
-assert(["main", "owner-action"].includes(scenario), "unknown scenario")
+assert(["main", "owner-action", "workflow-runs"].includes(scenario), "unknown scenario")
 const home = await kernelHome("home"), other = await kernelHome("other")
 
 // AT-40: a real driven agent blocks its task; the holder is woken by the owner-action source and answers the decision.
@@ -285,6 +290,148 @@ sleep 600
   results.ownerAction = { provider, model: agentDefaults.model, wake_after_prompt_ms: woke - sent, interaction_id: event.refs.interaction_id, task_id: event.refs.task_id, summary: event.summary, answer: "cancel", answered_rc: 0 }
   for (const f of ["calls.log", "wait-1.out", "answer.rc", "answer.err", "follow.out"]) if (file(f) !== null) writeFileSync(join(evidence, `holder-owner-action-${f}`), file(f))
   note("owner-action", results.ownerAction)
+}
+
+// ON-17: the coordinator's wait on workflow runs, without polling.
+const waitScript = join(repo, "scripts/reviewer/reviewer-wait-events.mjs")
+const PR_HEAD = n => `${randomBytes(20).toString("hex").slice(0, 38)}${String(n).padStart(2, "0")}`
+const promptOf = (n, head) => `Handle GitHub pull_request.synchronize for charioxai/chariox #${n} at head ${head}.`
+async function workflowRuns() {
+  await start(home)
+  const w = await reviewerWorkflow(home, "reviewer-gate")
+  await home.rpc({ ApplyWorkflowDesignOp: { session_id: home.sessionId, origin_client_id: "notif-drill", op_id: "notif-concurrency", op: { kind: "workflow_update", workflow_id: w.workflow.id, patch: { max_concurrent: 4 } } } })
+  const hdir = join(dir, "holder-runs"); mkdirSync(hdir)
+  const script = join(hdir, "holder.sh")
+  // The holder runs the wait script over and over, as the coordinator does: each invocation ends at its first finished
+  // run(s). Control files: `pause` (no new invocation, the one in flight is ended), `fast` (a 6 s fallback), `stop`.
+  writeFileSync(script, `#!/bin/bash
+cd "$(dirname "$0")"
+log() { echo "$(date +%s%3N) $*" >> calls.log; }
+chariox access request --until-exit > grant.out 2> grant.err || exit 2
+touch granted
+( while [ ! -e stop ]; do [ -e unfollow ] && { rm -f unfollow; chariox events unsubscribe --source all > unfollow.out 2> unfollow.err; echo $? > unfollow.rc; }; sleep 0.2; done ) &
+n=0
+while [ ! -e stop ]; do
+  while [ -e pause ]; do sleep 0.2; done
+  n=$((n+1)); fb=10; [ -e fast ] && fb=0.1
+  log "start rw-$n"
+  node ${JSON.stringify(waitScript)} --window-minutes 4 --fallback-minutes $fb --state state.json --chariox "$(command -v chariox)" > rw-$n.out 2> rw-$n.err & pid=$!
+  while kill -0 $pid 2>/dev/null; do [ -e pause ] && kill $pid 2>/dev/null; sleep 0.1; done
+  wait $pid; rc=$?
+  echo $rc > rw-$n.rc; cat rw-$n.out >> lines.log; log "end rw-$n rc=$rc"
+  [ $rc -ne 0 ] && sleep 2
+done
+sleep 600
+`, { mode: 0o755 })
+  const child = spawn("bash", ["-c", `bash ${script}; true`], { env: home.env, stdio: "ignore" })
+  own(child)
+  const file = f => (existsSync(join(hdir, f)) ? readFileSync(join(hdir, f), "utf8") : null)
+  const calls = () => (file("calls.log") ?? "").split("\n").filter(Boolean).map(l => { const [t, kind, name, rc] = l.split(" "); return { t: Number(t), kind, name, rc: rc?.replace("rc=", "") } })
+  const lines = () => (file("lines.log") ?? "").split("\n").filter(Boolean)
+  const ctl = (f, on = true) => (on ? writeFileSync(join(hdir, f), "") : rmSync(join(hdir, f), { force: true }))
+  await until(() => file("granted") !== null, "the holder's grant", 120000)
+  await until(() => calls().some(c => c.kind === "start" && c.name === "rw-1"), "first wait running", 30000)
+  await delay(3000)
+  const list = (await home.rpc({ ListNotificationSources: {} }).catch(() => null))
+  // A run through the workflow: provider turn, webhook-style prompt, terminal state. `fail` runs without a provider turn.
+  const invoke = async text => (await home.rpc(invokeWorkflowEndpointRequest(home.sessionId, w.workflow.id, w.endpoint.id, text))).WorkflowRunInvoked.workflow_run
+  const finished = async (run, want) => until(async () => {
+    const r = (await home.rpc({ GetWorkflowRun: { session_id: home.sessionId, workflow_run_ref: run.id } })).WorkflowRun.workflow_run
+    return ["Completed", "Failed", "Stopped"].includes(r.status) ? r : null
+  }, `run ${run.id} ${want}`, 90000)
+  const okRun = async (n, head) => { await launchReviewer(home); const at = ms(); const run = await invoke(promptOf(n, head)); const done = await finished(run, "completed"); assert.equal(done.status, "Completed"); return { id: run.id, n, head, invoked_at: at, finished_at: ms() } }
+  // A run that fails: a second workflow, on the same agent, whose run output must carry a verdict the dev-stub never gives.
+  const broken = await reviewerWorkflow(home, "reviewer-strict")
+  await home.rpc({ ApplyWorkflowDesignOp: { session_id: home.sessionId, origin_client_id: "notif-drill", op_id: "notif-schema", op: { kind: "schema_add", workflow_id: broken.workflow.id, schema: { id: "verdict", schema: { type: "object", required: ["verdict"] } } } } })
+  await home.rpc({ ApplyWorkflowDesignOp: { session_id: home.sessionId, origin_client_id: "notif-drill", op_id: "notif-strict", op: { kind: "workflow_update", workflow_id: broken.workflow.id, patch: { run_output_schema_ref: "verdict" } } } })
+  const failRun = async (n, head) => { await launchReviewer(home); const at = ms(); const run = (await home.rpc(invokeWorkflowEndpointRequest(home.sessionId, broken.workflow.id, broken.endpoint.id, promptOf(n, head)))).WorkflowRunInvoked.workflow_run; const done = await finished(run, "failed"); assert.equal(done.status, "Failed", `a run whose output breaks the schema fails: ${done.status}`); return { id: run.id, n, head, invoked_at: at, finished_at: ms(), message: done.failure_events?.[0]?.message } }
+  const ended = name => calls().find(c => c.kind === "end" && c.name === name)
+  const line = (status, n, head, tail = "") => new RegExp(`^\\d\\d:\\d\\dZ review ${status} charioxai/chariox #${n} @${head.slice(0, 10)}${tail}$`)
+
+  // ---- completed ------------------------------------------------------------------------------------------------
+  const r1 = await okRun(1301, PR_HEAD(1))
+  await until(() => ended("rw-1"), "the wait returned", 30000)
+  assert.equal(ended("rw-1").rc, "0")
+  assert.match(file("rw-1.out").trim(), line("Completed", r1.n, r1.head), `line: ${file("rw-1.out")}`)
+  results.completed = { line: file("rw-1.out").trim(), wake_after_finish_ms: ended("rw-1").t - r1.finished_at }
+  assert(results.completed.wake_after_finish_ms < 15000, "seconds, not a 60 s poll")
+  note("completed", results.completed)
+
+  // ---- failed ---------------------------------------------------------------------------------------------------
+  await until(() => calls().some(c => c.kind === "start" && c.name === "rw-2"), "next wait running", 30000)
+  await delay(1500)
+  const r2 = await failRun(1302, PR_HEAD(2))
+  await until(() => ended("rw-2"), "the wait returned on the failure", 30000)
+  const failedLine = file("rw-2.out").trim()
+  assert.match(failedLine, line("Failed", r2.n, r2.head, ": .+"), `line: ${failedLine}`)
+  results.failed = { line: failedLine, failure: r2.message, wake_after_finish_ms: ended("rw-2").t - r2.finished_at }
+  assert(results.failed.wake_after_finish_ms < 15000)
+  note("failed", results.failed)
+
+  // ---- burst ----------------------------------------------------------------------------------------------------
+  const before = lines().length
+  const burst = []
+  for (let i = 0; i < 5; i++) burst.push(await okRun(1310 + i, PR_HEAD(10 + i)))
+  await until(() => lines().length >= before + 5, "all five lines", 60000)
+  await delay(3000)
+  const got = lines().slice(before)
+  assert.equal(got.length, 5, `each run once: ${got.join(" | ")}`)
+  burst.forEach((r, i) => assert.match(got[i], line("Completed", r.n, r.head), `in order: ${got[i]}`))
+  results.burst = { lines: got, last_wake_after_finish_ms: Date.now() - burst.at(-1).finished_at }
+  note("burst", results.burst)
+
+  // ---- restart --------------------------------------------------------------------------------------------------
+  ctl("pause"); await delay(1500)
+  const r3 = await okRun(1320, PR_HEAD(20))
+  await delay(1500)
+  await stop(home); await start(home)
+  const base = lines().length
+  ctl("pause", false)
+  await until(() => lines().length > base, "the run that ended before the restart", 60000)
+  await delay(3000)
+  assert.equal(lines().length, base + 1, "once")
+  assert.match(lines().at(-1), line("Completed", r3.n, r3.head))
+  results.restart = { line: lines().at(-1) }
+  note("restart", results.restart)
+
+  // ---- fallback: a notification that never arrives ----------------------------------------------------------------
+  ctl("pause"); await delay(1500); ctl("fast"); ctl("pause", false)
+  const startedAt = ms()
+  await until(() => calls().filter(c => c.kind === "start").length > calls().filter(c => c.kind === "end").length, "the fallback wait running", 30000)
+  await delay(1500) // it has followed; now the follow is removed behind its back
+  ctl("unfollow")
+  await until(() => file("unfollow.rc") !== null, "the follow removed", 30000)
+  note("unfollow", { rc: file("unfollow.rc").trim() })
+  const base2 = lines().length
+  const r4 = await okRun(1330, PR_HEAD(30))
+  await until(() => lines().length > base2, "the fallback listing found the run", 60000)
+  results.fallback = { line: lines().at(-1), found_after_finish_ms: Date.now() - r4.finished_at, since_start_ms: Date.now() - startedAt }
+  assert.match(lines().at(-1), line("Completed", r4.n, r4.head))
+  note("fallback", results.fallback)
+  ctl("fast", false)
+
+  // ---- unreachable and revoked ----------------------------------------------------------------------------------------
+  await until(() => calls().filter(c => c.kind === "start").length > calls().filter(c => c.kind === "end").length, "a wait running", 30000)
+  await delay(2000)
+  await stop(home)
+  await until(() => lines().some(l => l === "reviewer kernel unreachable"), "unreachable line", 60000)
+  results.unreachable = { line: "reviewer kernel unreachable", waits_ended_rc: calls().filter(c => c.kind === "end").slice(-2).map(c => c.rc) }
+  note("unreachable", results.unreachable)
+  // The kernel is back, the holder's grant survived it, and the owner revokes the grant while a wait runs.
+  await start(home)
+  await until(() => lines().length > 0 && calls().filter(c => c.kind === "start").length > calls().filter(c => c.kind === "end").length, "a wait running again", 60000)
+  await delay(2000)
+  const grants = (await home.rpc({ ListKernelAccessGrants: {} })).KernelAccessGrantsListed.grants
+  assert.equal(grants.length, 1, "one grant")
+  const baseRevoke = lines().length
+  await home.rpc({ RevokeKernelAccessGrant: { grant_id: grants[0].grant_id } })
+  await until(() => lines().length > baseRevoke, "the wait ended by the revoke", 30000)
+  results.revoke = { line: lines()[baseRevoke], more_lines_in_2s: await delay(2000).then(() => lines().length - baseRevoke - 1) }
+  note("revoke", results.revoke)
+  ctl("stop")
+  results.sources = (list?.NotificationSources?.sources ?? []).map(x => ({ kind: x.kind, display_name: x.display_name }))
+  for (const f of ["calls.log", "lines.log", "state.json"]) if (file(f) !== null) writeFileSync(join(evidence, `holder-runs-${f}`), file(f))
+  for (const f of readdirSync(hdir)) if (/^rw-\d+\.(out|err|rc)$/.test(f)) copyFileSync(join(hdir, f), join(evidence, `holder-runs-${f}`))
 }
 // The lifecycle proofs: follow, twice, restart, expire, revoke and refused.
 async function lifecycle() {
@@ -417,8 +564,8 @@ async function lifecycle() {
   note("result", results)
 }
 try {
-  await (scenario === "owner-action" ? ownerAction() : lifecycle())
-  if (scenario === "owner-action") note("result", results)
+  await (scenario === "owner-action" ? ownerAction() : scenario === "workflow-runs" ? workflowRuns() : lifecycle())
+  if (scenario !== "main") note("result", results)
 } catch (error) {
   results.failure = String(error.message ?? error).slice(0, 400)
   note("failure", { failure: results.failure })
