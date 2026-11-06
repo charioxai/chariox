@@ -256,8 +256,8 @@ export type ProviderAccountProfile = {
   services?: ProviderAccountService[]
   usage: ProviderAccountUsageSnapshot
   materializations?: ProviderAccountMaterializationStatus[]
-  /** Absent means a managed Machine's context transfer can carry the login. */
-  context_transfer?: "available" | "vault_credential"
+  /** Absent means a managed Machine's context transfer can carry the login, a Vault login included. */
+  context_transfer?: "available" | "unavailable"
 }
 
 export type ProviderAccountMaterializationStatus = {

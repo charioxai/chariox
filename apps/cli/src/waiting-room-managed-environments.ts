@@ -494,12 +494,12 @@ function managedProviderAccountSelectionKey(
 export function managedProviderAccountIsTransferable(
   profile: NonNullable<WaitingRoomRemoteState["providerAccounts"]>[number],
 ): boolean {
-  return profile.auth_state === "authenticated" && profile.context_transfer !== "vault_credential"
+  return profile.auth_state === "authenticated" && profile.context_transfer !== "unavailable"
 }
 
-/** The short label a Machine setup row shows for a login it cannot carry. */
+/** The short label a Machine setup row shows for a login whose Vault cannot be sealed for the new Machine. */
 export function managedProviderAccountUnavailableLabel(
   profile: NonNullable<WaitingRoomRemoteState["providerAccounts"]>[number],
 ): string {
-  return profile.context_transfer === "vault_credential" ? "Vault token" : profile.auth_state
+  return profile.context_transfer === "unavailable" ? "Vault token" : profile.auth_state
 }

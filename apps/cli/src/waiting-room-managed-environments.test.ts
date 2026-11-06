@@ -798,7 +798,7 @@ function remote(): WaitingRoomRemoteState {
   }
 }
 
-test("managed Machine setup leaves out a login that moves through the Vault", () => {
+function remoteWithVaultLogin(contextTransfer: "available" | "unavailable") {
   const vaultRemote = remote()
   vaultRemote.providerAccounts = [
     ...(vaultRemote.providerAccounts ?? []),
@@ -810,10 +810,36 @@ test("managed Machine setup leaves out a login that moves through the Vault", ()
       origin: "chariox_created",
       is_default: false,
       auth_state: "authenticated",
-      context_transfer: "vault_credential",
+      ...(contextTransfer === "unavailable" ? { context_transfer: contextTransfer } : {}),
       usage: { profile_id: "claude-token", provider: "claude", availability: "unavailable", source: "test" },
     },
   ]
+  return vaultRemote
+}
+
+test("managed Machine setup selects a Vault login by default", () => {
+  const vaultRemote = remoteWithVaultLogin("available")
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+    managedKernelContext: "source_kernel",
+    managedProviderAccountSource: "selected_account",
+    focus: "managed-provider-account",
+  }, [], catalog(), undefined, vaultRemote)
+
+  const selected = managedEnvironmentContextPlanInput(state, vaultRemote).providerAccounts
+  assert.ok(
+    selected.kind === "selected" && selected.accounts.some((account) => account.accountProfile === "claude-token"),
+    "a Vault login is carried to the new Machine, so the default form selects it",
+  )
+  const row = waitingRoomManagedMachineDialogRows(state, vaultRemote)
+    .find((candidate) => candidate.id === "managed-provider-account:claude:claude-token")
+  assert.ok(row && !/Unavailable/.test(row.value), "and the row does not mark it unavailable")
+})
+
+test("managed Machine setup leaves out a login whose Vault cannot be sealed for the Machine", () => {
+  const vaultRemote = remoteWithVaultLogin("unavailable")
   const state = normalizeWaitingRoomState({
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
