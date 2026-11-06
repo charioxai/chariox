@@ -978,10 +978,11 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
     config.user_config.state.path = Some(test_root.0.join("state.db").display().to_string());
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            &test_root_path,
-            &test_root_path,
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new(&test_root_path, &test_root_path)
+                // App automation targets are authorized for the session owner.
+                .with_owner_user_id("alice"),
+        )
         .expect("session should be created");
     let agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
