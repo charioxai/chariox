@@ -3,7 +3,10 @@
 //! The decision holder is slice A3's; until it exists the rule is: a pending
 //! interaction of a sub-agent, or a turn blocked on its owner, leaves that
 //! node `waiting` (an ancestor or the user will answer it), and an interaction
-//! of the root itself, which the user alone holds, counts as `needs_user`.
+//! of the root itself is its panel's own card and no node's. A node whose
+//! interaction is pending is the user's to answer (`needs_user`): until the
+//! holder exists nothing else could answer it. A turn blocked without an
+//! interaction is `waiting` only.
 //! A node is `running` while its turn lives (processing, or a task working or
 //! parked on a wait or on its children); its `outcome` is how its latest turn
 //! ended and is null while it runs or before it ever ran.
@@ -68,6 +71,7 @@ pub(crate) fn project_agent_tree(
         };
         depth.insert(agent.id().to_owned(), parent_depth + 1);
         let turn = turn_of(agent.id());
+        let state = node_state(agent, pending(agent.id()), turn);
         nodes.push(AgentTreeNode {
             agent_id: agent.id().to_owned(),
             parent_agent_id: Some(parent.to_owned()),
@@ -76,8 +80,10 @@ pub(crate) fn project_agent_tree(
             provider: agent.provider().to_owned(),
             model: agent.model().map(str::to_owned),
             depth: parent_depth + 1,
-            state: node_state(agent, pending(agent.id()), turn),
+            state,
             outcome: turn.and_then(|turn| turn.outcome),
+            needs_user: pending(agent.id())
+                && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
             deadline_ms: deadline_ms(agent.id()),
             created_at_ms: agent.created_at_ms(),
         });
@@ -91,7 +97,7 @@ pub(crate) fn project_agent_tree(
             .iter()
             .filter(|node| node.state == AgentTreeState::Running)
             .count() as u32,
-        needs_user: u32::from(pending(root)),
+        needs_user: nodes.iter().filter(|node| node.needs_user).count() as u32,
     };
     Some(AgentTree {
         root: root.to_owned(),
@@ -152,6 +158,56 @@ mod tests {
         assert!(
             project_agent_tree(&session, session.agents(), "missing", &|_| None, &|_| None)
                 .is_none()
+        );
+    }
+
+    fn ask(agent_id: &str) -> crate::session::RuntimeInteraction {
+        use crate::session::{
+            RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionKind,
+            RuntimeInteractionLevel,
+        };
+        RuntimeInteraction::new(
+            format!("ask-{agent_id}"),
+            "room",
+            RuntimeInteractionKind::Permission,
+            RuntimeInteractionLevel::Warning,
+            None,
+            "Allow?",
+            vec![RuntimeInteractionChoice::new("ok", "OK", "ok", None)],
+            None,
+            None,
+            None,
+        )
+        .with_agent_id(agent_id)
+    }
+
+    // A node the user holds a decision of says so; the root's own decision is no node's.
+    #[test]
+    fn needs_user_marks_the_nodes_whose_decision_waits_for_the_user() {
+        let mut session = session(vec![
+            agent("root", None, 1),
+            agent("c1", Some("root"), 2),
+            agent("c2", Some("root"), 3),
+        ]);
+        session.add_active_interaction(ask("c1"));
+        session.add_active_interaction(ask("root"));
+        let tree =
+            project_agent_tree(&session, session.agents(), "root", &|_| None, &|_| None).unwrap();
+        let held = tree
+            .nodes
+            .iter()
+            .map(|node| (node.agent_id.as_str(), node.needs_user, node.state))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            held,
+            vec![
+                ("c1", true, AgentTreeState::Waiting),
+                ("c2", false, AgentTreeState::Idle)
+            ]
+        );
+        assert_eq!(
+            tree.totals.needs_user, 1,
+            "the count of nodes with needs_user"
         );
     }
 

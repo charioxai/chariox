@@ -41,6 +41,8 @@ pub struct AgentTreeNode {
     pub depth: u32,
     pub state: AgentTreeState,
     pub outcome: Option<crate::provider::TurnOutcomeKind>,
+    /// The user currently holds a pending decision of this node; no holder, path or card.
+    pub needs_user: bool,
     pub deadline_ms: Option<u64>,
     pub created_at_ms: u64,
 }
