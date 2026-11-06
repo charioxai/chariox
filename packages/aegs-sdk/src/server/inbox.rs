@@ -128,6 +128,10 @@ impl AegsServer {
             return Ok(None);
         };
         let accepted_connection_id = subscription.connection_id.clone();
+        // Read under the delivery guard: a subscription revoked since the selection is not in it.
+        let audience = self
+            .store
+            .audience_for_interest(&self.producer_id, &subscription.event_interest_key)?;
         let response = self
             .publisher
             .publish(PublishEventRequest {
@@ -142,6 +146,7 @@ impl AegsServer {
                 metadata: normalized.metadata.clone(),
                 reply_context: normalized.reply_context.clone(),
                 ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                audience,
             })
             .await?;
         // AEDS has the event, so a failed health stamp must not turn it into a retry.

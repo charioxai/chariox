@@ -186,6 +186,27 @@ pub struct AegsSubscriptionReconcileRequest {
 pub struct AegsSubscriptionReconcileResponse {
     pub accepted_binding_ids: Vec<String>,
     pub authoritative: bool,
+    /// Claims the AEGS did not take, each with the typed reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<AegsRefusedSubscription>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AegsSubscriptionRefusal {
+    /// No connection with that id exists at the AEGS.
+    ConnectionNotFound,
+    /// The connection exists but is revoked, expired or still awaiting authorization.
+    ConnectionNotReady,
+    /// The connection does not give access to the scope: a subscription would read events of a
+    /// resource the connection's owner cannot see.
+    ScopeNotInConnection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsRefusedSubscription {
+    pub binding_id: String,
+    pub reason: AegsSubscriptionRefusal,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -701,6 +722,15 @@ pub struct EventRouteConflict {
     pub existing_publication_id: String,
 }
 
+/// One route an occurrence may reach: the binding a kernel holds an active subscription for at
+/// the producer. AEDS delivers only to routes the producer names, because an interest key is
+/// derivable from public names and any kernel can claim it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventRouteAudience {
+    pub kernel_id: String,
+    pub binding_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishEventRequest {
     pub producer_id: String,
@@ -718,6 +748,10 @@ pub struct PublishEventRequest {
     pub reply_context: Option<Value>,
     #[serde(default = "default_delivery_ttl_seconds")]
     pub ttl_seconds: u64,
+    /// The routes this occurrence may reach. AEDS refuses a publication whose JSON has no
+    /// `audience` array; an empty one delivers to nobody.
+    #[serde(default)]
+    pub audience: Vec<EventRouteAudience>,
 }
 
 impl PublishEventRequest {
@@ -725,6 +759,10 @@ impl PublishEventRequest {
         require_opaque_id("producer_id", &self.producer_id)?;
         require_opaque_id("event_interest_key", &self.event_interest_key)?;
         require_opaque_id("occurrence_id", &self.occurrence_id)?;
+        for route in &self.audience {
+            require_opaque_id("audience kernel_id", &route.kernel_id)?;
+            require_opaque_id("audience binding_id", &route.binding_id)?;
+        }
         if self.event_type.trim().is_empty() {
             return Err("event_type is required".to_string());
         }

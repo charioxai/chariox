@@ -529,6 +529,17 @@ async fn reconcile_aegs_subscriptions(
                     "AEGS {generator_id} did not accept authoritative reconciliation"
                 ));
             }
+            for refused in &response.refused {
+                crate::logging::warn_with_fields(
+                    "daemon.event_delivery",
+                    "AEGS refused a subscription",
+                    serde_json::json!({
+                        "generator_id": generator_id,
+                        "binding_id": refused.binding_id,
+                        "reason": refused.reason,
+                    }),
+                );
+            }
             Ok::<(), String>(())
         })
         .await

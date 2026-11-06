@@ -66,7 +66,7 @@ impl Services {
                             let request: AegsSubscriptionReconcileRequest = serde_json::from_value(body).unwrap();
                             assert_eq!(request.owner_id, "daemon-test");
                             let accepted_binding_ids = store.reconcile(&request.owner_id, &request.generator_id, &request.subscriptions).unwrap();
-                            serde_json::to_value(AegsSubscriptionReconcileResponse { accepted_binding_ids, authoritative: true }).unwrap()
+                            serde_json::to_value(AegsSubscriptionReconcileResponse { accepted_binding_ids, authoritative: true, refused: Vec::new() }).unwrap()
                         }
                         "/v1/connections/query" => {
                             assert_eq!(body["owner_id"], super::FIXTURE_EVENT_OWNER);

@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use chariox_event_protocol::AegsProviderActionResponse;
+use chariox_event_protocol::{AegsProviderActionResponse, EventRouteAudience};
 
 mod inbox;
 pub use inbox::{
@@ -89,6 +89,17 @@ pub struct AegsStore {
     connection: Arc<Mutex<Connection>>,
     delivery_gate: Arc<tokio::sync::RwLock<()>>,
 }
+
+/// A subscription may receive events only while its connection is ready and its authority
+/// (connection owner, provider and generation) is the one recorded when it was reconciled.
+const SUBSCRIPTION_AUTHORIZED: &str = "(NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
+    OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
+      AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
+      AND EXISTS (SELECT 1 FROM subscription_authorities a
+        JOIN connection_generations g ON g.connection_id = c.connection_id
+        WHERE a.binding_id = subscriptions.binding_id
+          AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
+          AND a.generation = g.generation)))";
 
 impl AegsStore {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
@@ -440,6 +451,7 @@ impl AegsStore {
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let mut statement = connection
             .prepare(
+                &format!(
                 "
                 SELECT binding_id, generator_id, connection_id, connection_scope,
                        event_interest_key, event_type, event_type_version, filter_json,
@@ -447,16 +459,10 @@ impl AegsStore {
                 FROM subscriptions
                 WHERE generator_id = ?1 AND event_type = ?2
                   AND connection_scope = ?3 AND active = 1
-                  AND (NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
-                    OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
-                      AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
-                      AND EXISTS (SELECT 1 FROM subscription_authorities a
-                        JOIN connection_generations g ON g.connection_id = c.connection_id
-                        WHERE a.binding_id = subscriptions.binding_id
-                          AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
-                          AND a.generation = g.generation)))
+                  AND {SUBSCRIPTION_AUTHORIZED}
                 ORDER BY binding_id
-                ",
+                "
+                ),
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -473,6 +479,34 @@ impl AegsStore {
                     filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
                     revision: row.get::<_, i64>(8)? as u64,
                     active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Every kernel that holds an authorized, active subscription for `event_interest_key`: the
+    /// routes AEDS may deliver an occurrence of that interest to.
+    pub fn audience_for_interest(
+        &self,
+        generator_id: &str,
+        event_interest_key: &str,
+    ) -> Result<Vec<EventRouteAudience>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT owner_id, binding_id FROM subscriptions
+                 WHERE generator_id = ?1 AND event_interest_key = ?2 AND active = 1
+                   AND {SUBSCRIPTION_AUTHORIZED}
+                 ORDER BY binding_id"
+            ))
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![generator_id, event_interest_key], |row| {
+                Ok(EventRouteAudience {
+                    kernel_id: row.get(0)?,
+                    binding_id: row.get(1)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -498,7 +532,7 @@ impl AegsStore {
             .collect()
     }
 
-    fn connection_generation(&self, connection_id: &str) -> Result<Option<i64>, String> {
+    pub(crate) fn connection_generation(&self, connection_id: &str) -> Result<Option<i64>, String> {
         self.connection
             .lock()
             .map_err(|_| "AEGS store lock was poisoned".to_string())?

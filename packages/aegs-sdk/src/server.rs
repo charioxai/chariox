@@ -29,6 +29,7 @@ use crate::{
 };
 
 mod inbox;
+mod scopes;
 use inbox::InboxAttempt;
 
 fn action_receipt_is_durable(action_id: &str) -> bool {
@@ -49,6 +50,7 @@ struct AegsServer {
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
     action_locks: ActionLockMap,
+    scope_cache: scopes::ScopeCache,
 }
 
 enum ManagementAuthorization {
@@ -148,6 +150,7 @@ where
         store,
         provider,
         action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        scope_cache: Default::default(),
     };
     if server.provider.authorization_configured() {
         spawn_subscription_maintenance(Arc::clone(&server.provider));
@@ -318,11 +321,24 @@ impl AegsServer {
                     ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
                     ManagementAuthorization::Static => None,
                 };
+                let (subscriptions, refused) =
+                    match self.vet_subscription_claims(&reconcile.subscriptions).await {
+                        Ok(vetted) => vetted,
+                        Err(message) => {
+                            return error(
+                                StatusCode::BAD_GATEWAY,
+                                "scope_check_unavailable",
+                                format!(
+                                    "the connection's resources could not be listed; stored subscriptions are unchanged: {message}"
+                                ),
+                            )
+                        }
+                    };
                 match self.store.reconcile_scoped(
                     &reconcile.owner_id,
                     allowed_connection_owners,
                     &reconcile.generator_id,
-                    &reconcile.subscriptions,
+                    &subscriptions,
                 ) {
                     Ok(accepted_binding_ids) => {
                         let provider = Arc::clone(&self.provider);
@@ -356,6 +372,7 @@ impl AegsServer {
                             serde_json::json!({
                                 "accepted_binding_ids": accepted_binding_ids,
                                 "authoritative": true,
+                                "refused": refused,
                             }),
                         )
                     }
@@ -1191,7 +1208,7 @@ impl AegsServer {
                     Ok(body) => body,
                     Err(response) => return response,
                 };
-                let event: PublishEventRequest = match serde_json::from_slice(&body) {
+                let mut event: PublishEventRequest = match serde_json::from_slice(&body) {
                     Ok(event) => event,
                     Err(error_value) => {
                         return error(
@@ -1199,6 +1216,17 @@ impl AegsServer {
                             "invalid_json",
                             error_value.to_string(),
                         )
+                    }
+                };
+                // A direct emission reaches the kernels subscribed to its interest, never a
+                // route the caller names.
+                event.audience = match self
+                    .store
+                    .audience_for_interest(&self.producer_id, &event.event_interest_key)
+                {
+                    Ok(audience) => audience,
+                    Err(message) => {
+                        return error(StatusCode::INTERNAL_SERVER_ERROR, "store_error", message)
                     }
                 };
                 match self.publisher.publish(event).await {
@@ -2251,6 +2279,7 @@ mod mp11_delivery_http_tests {
             store: store.clone(),
             provider: Arc::new(SignedProvider),
             action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         (server, store)
     }
@@ -3081,6 +3110,7 @@ mod mp11_delivery_http_tests {
             store: store.clone(),
             provider: Arc::new(SignedProvider),
             action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
 
         let publishing = tokio::spawn(signed_webhook(server));
@@ -3162,6 +3192,7 @@ mod mp11_delivery_http_tests {
             store: store.clone(),
             provider: Arc::new(SignedProvider),
             action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         let publishing = tokio::spawn(signed_webhook(server));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -3231,6 +3262,7 @@ mod mp11_delivery_http_tests {
             store: store.clone(),
             provider: Arc::new(SignedProvider),
             action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         assert_eq!(
             signed_webhook(server.clone()).await["matched_interest_count"],
