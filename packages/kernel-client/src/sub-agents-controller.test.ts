@@ -6,7 +6,7 @@ import { SubAgentsController } from "./sub-agents-controller.js"
 
 const node = (id: string, parent: string, state: AgentTreeState, n: number, extra: Partial<AgentTreeNode> = {}): AgentTreeNode => ({
   agent_id: id, parent_agent_id: parent, kernel_id: null, alias: id, provider: "p", model: null, depth: 1, state, outcome: null,
-  deadline_ms: null, created_at_ms: n, ...extra,
+  deadline_ms: null, created_at_ms: n, needs_user: false, ...extra,
 })
 const tree = (rev: number, nodes: AgentTreeNode[], root = "room"): AgentTree => ({
   root, rev, nodes, totals: { live: nodes.filter(x => ["starting", "running", "waiting", "unreachable"].includes(x.state)).length, running: 0, needs_user: nodes.filter(x => x.needs_user).length },

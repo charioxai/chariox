@@ -6,7 +6,7 @@ import { subAgentPanels, subAgentRows, subAgentStripe, visibleSubAgentRows } fro
 
 const node = (id: string, parent: string | null, state: AgentTreeState, extra: Partial<AgentTreeNode> = {}): AgentTreeNode => ({
   agent_id: id, parent_agent_id: parent ?? "room-agent", kernel_id: null, alias: id, provider: "p", model: null,
-  depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: Number(id.replace(/\D/g, "")) || 0, ...extra,
+  depth: 1, state, outcome: null, deadline_ms: null, created_at_ms: Number(id.replace(/\D/g, "")) || 0, needs_user: false, ...extra,
 })
 const tree = (nodes: AgentTreeNode[]): AgentTree => ({
   root: "room-agent", rev: 1, nodes,
@@ -39,7 +39,7 @@ test("AO-UI-01 needs you leads, then running, waiting and done; plural of need",
   assert.equal(subAgentStripe(tree([node("a1", null, "ended"), node("a2", null, "error"), node("a3", null, "idle")]))!.text, "3 agents done")
 })
 
-test("AO-UI-01 needs you comes from the node flag only: an ancestor-held wait reads waiting; absent flag = false", () => {
+test("AO-UI-01 needs you comes from the node flag only: an ancestor-held wait reads waiting", () => {
   const t = tree([node("a1", null, "waiting", { needs_user: true }), node("a2", "a1", "waiting", { depth: 2 }), node("a3", null, "waiting")])
   assert.deepEqual(subAgentRows(t).flatMap(function walk(row): string[] { return [`${row.id}:${row.word}`, ...row.children.flatMap(walk)] }), ["a1:needs you", "a2:waiting", "a3:waiting"])
   assert.equal(subAgentStripe(t)!.text, "1 agent needs you · 2 waiting")
