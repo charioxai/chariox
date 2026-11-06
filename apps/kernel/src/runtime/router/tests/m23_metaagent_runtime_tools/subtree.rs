@@ -26,7 +26,10 @@ async fn room_command(world: &World, who: &str, command: &str) -> RuntimeToolRes
 }
 
 fn error_text(result: &RuntimeToolResult) -> String {
-    result.payload["error"].as_str().unwrap_or_default().to_owned()
+    result.payload["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
 /// A refusal by the tree policy, not a failure of the command itself.
@@ -79,21 +82,46 @@ async fn world(label: &str) -> World {
         ids: Default::default(),
         _env: env,
     };
-    world.tokens.insert("a", launch(&app, room.id(), a.id()).await);
-    world.tokens.insert("peer", launch(&app, room.id(), peer.id()).await);
-    world.tokens.insert("q", launch(&app, other.id(), q.id()).await);
+    world
+        .tokens
+        .insert("a", launch(&app, room.id(), a.id()).await);
+    world
+        .tokens
+        .insert("peer", launch(&app, room.id(), peer.id()).await);
+    world
+        .tokens
+        .insert("q", launch(&app, other.id(), q.id()).await);
     world.ids.insert("a", a.id().to_owned());
     world.ids.insert("peer", peer.id().to_owned());
     for child in ["b", "s"] {
-        let spawned = room_command(&world, "a", &format!("agent spawn {child} --provider dev-stub")).await;
+        let spawned = room_command(
+            &world,
+            "a",
+            &format!("agent spawn {child} --provider dev-stub"),
+        )
+        .await;
         assert!(spawned.ok, "{spawned:?}");
-        world.ids.insert(child, spawned.payload["response"]["agent"]["id"].as_str().unwrap().to_owned());
+        world.ids.insert(
+            child,
+            spawned.payload["response"]["agent"]["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
     }
     let b = world.ids["b"].clone();
-    world.tokens.insert("b", launch(&app, &world.room, &b).await);
+    world
+        .tokens
+        .insert("b", launch(&app, &world.room, &b).await);
     let spawned = room_command(&world, "b", "agent spawn d --provider dev-stub").await;
     assert!(spawned.ok, "{spawned:?}");
-    world.ids.insert("d", spawned.payload["response"]["agent"]["id"].as_str().unwrap().to_owned());
+    world.ids.insert(
+        "d",
+        spawned.payload["response"]["agent"]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+    );
     world
 }
 
@@ -121,20 +149,37 @@ async fn command_table() {
     // (caller, target): a child and a grandchild are controlled by their ancestors.
     let allowed = [("a", "b"), ("a", "d"), ("b", "d")];
     // sibling, peer, upward, peer to a child, another room.
-    let refused = [("b", "s"), ("a", "peer"), ("b", "a"), ("peer", "b"), ("q", "b")];
+    let refused = [
+        ("b", "s"),
+        ("a", "peer"),
+        ("b", "a"),
+        ("peer", "b"),
+        ("q", "b"),
+    ];
     for verb in verbs {
         for (caller, target) in allowed {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
-            assert!(!refused_by_policy(&result), "{caller} -> {target}: {verb}: {result:?}");
+            assert!(
+                !refused_by_policy(&result),
+                "{caller} -> {target}: {verb}: {result:?}"
+            );
         }
         for (caller, target) in refused {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
-            assert!(refused_by_policy(&result), "{caller} -> {target}: {verb}: {result:?}");
+            assert!(
+                refused_by_policy(&result),
+                "{caller} -> {target}: {verb}: {result:?}"
+            );
         }
     }
     let deadline = room_command(&world, "a", "agent deadline get d").await;
     assert!(deadline.ok, "{deadline:?}");
-    assert!(deadline.payload["response"]["deadline"]["deadline_ms"].as_u64().is_some(), "the grandchild's deadline was armed by its grandparent");
+    assert!(
+        deadline.payload["response"]["deadline"]["deadline_ms"]
+            .as_u64()
+            .is_some(),
+        "the grandchild's deadline was armed by its grandparent"
+    );
     // A caller that is not a Room agent has no tools at all.
     assert!(world
         .router
@@ -172,7 +217,14 @@ async fn set_parent() {
             world
                 .router
                 .runtime_state
-                .authorize_room_agent_request(&world.ids.get(who).cloned().unwrap_or_else(|| world.ids["a"].clone()), &request)
+                .authorize_room_agent_request(
+                    &world
+                        .ids
+                        .get(who)
+                        .cloned()
+                        .unwrap_or_else(|| world.ids["a"].clone()),
+                    &request
+                )
                 .is_err(),
             "{who} must not reparent anyone"
         );
@@ -182,9 +234,17 @@ async fn set_parent() {
         .caller
         .with_connection_class(crate::local::KernelConnectionClass::Terminal);
     let response = world.router.dispatch(command, request).await.unwrap();
-    assert!(matches!(response, LocalDaemonResponse::AgentParentChanged { .. }));
-    assert!(refused_by_policy(&room_command(&world, "a", "agent children d").await), "d left a's subtree");
-    assert!(!refused_by_policy(&room_command(&world, "peer", "agent children d").await));
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::AgentParentChanged { .. }
+    ));
+    assert!(
+        refused_by_policy(&room_command(&world, "a", "agent children d").await),
+        "d left a's subtree"
+    );
+    assert!(!refused_by_policy(
+        &room_command(&world, "peer", "agent children d").await
+    ));
     // Nobody can be placed under itself or under its own descendant.
     let cycle = LocalDaemonRequest::SetAgentParent(crate::local::SetAgentParentRequest {
         session_id: world.room.clone(),
@@ -212,22 +272,45 @@ async fn spawn_level() {
             .spawn_agent(
                 CreateAgentRequest::new(&world.room, "dev-stub")
                     .with_alias("careful")
-                    .with_permission_level_override(crate::provider::AgentPermissionLevel::Required),
+                    .with_permission_level_override(
+                        crate::provider::AgentPermissionLevel::Required,
+                    ),
             )
             .unwrap()
     };
     let mut world = world;
     let token = launch(&world.app, &world.room, careful.id()).await;
     world.tokens.insert("careful", token);
-    let above = room_command(&world, "careful", "agent spawn bold --provider dev-stub --permission yolo").await;
-    assert!(!above.ok && error_text(&above).contains("more authority than its parent"), "{above:?}");
-    let same = room_command(&world, "careful", "agent spawn calm --provider dev-stub --permission required").await;
+    let above = room_command(
+        &world,
+        "careful",
+        "agent spawn bold --provider dev-stub --permission yolo",
+    )
+    .await;
+    assert!(
+        !above.ok && error_text(&above).contains("more authority than its parent"),
+        "{above:?}"
+    );
+    let same = room_command(
+        &world,
+        "careful",
+        "agent spawn calm --provider dev-stub --permission required",
+    )
+    .await;
     assert!(same.ok, "{same:?}");
     let inherited = room_command(&world, "careful", "agent spawn heir --provider dev-stub").await;
     assert!(inherited.ok, "{inherited:?}");
-    let agents = world.app.lock().await.agents().get_session_agents(&world.room);
+    let agents = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(&world.room);
     for alias in ["calm", "heir"] {
-        let child = agents.iter().find(|agent| agent.alias() == Some(alias)).unwrap();
+        let child = agents
+            .iter()
+            .find(|agent| agent.alias() == Some(alias))
+            .unwrap();
         assert_eq!(
             child.permission_level_override(),
             Some(crate::provider::AgentPermissionLevel::Required),
@@ -236,7 +319,12 @@ async fn spawn_level() {
         assert_eq!(child.parent_agent_id(), Some(careful.id()));
     }
     // A parent that runs freely may start a child that asks.
-    let lower = room_command(&world, "a", "agent spawn lower --provider dev-stub --permission required").await;
+    let lower = room_command(
+        &world,
+        "a",
+        "agent spawn lower --provider dev-stub --permission required",
+    )
+    .await;
     assert!(lower.ok, "{lower:?}");
 }
 
@@ -247,14 +335,46 @@ fn a_retried_spawn_with_the_same_command_id_is_one_agent() {
 
 async fn command_id() {
     let world = world("subtree-spawn-command-id").await;
-    let first = room_command(&world, "a", "agent spawn once --provider dev-stub --command-id retry-1").await;
-    let second = room_command(&world, "a", "agent spawn once --provider dev-stub --command-id retry-1").await;
+    let first = room_command(
+        &world,
+        "a",
+        "agent spawn once --provider dev-stub --deadline 30m --command-id retry-1",
+    )
+    .await;
+    let second = room_command(
+        &world,
+        "a",
+        "agent spawn once --provider dev-stub --deadline 30m --command-id retry-1",
+    )
+    .await;
     assert!(first.ok && second.ok, "{first:?} {second:?}");
-    assert_eq!(first.payload["response"]["agent"]["id"], second.payload["response"]["agent"]["id"]);
-    let agents = world.app.lock().await.agents().get_session_agents(&world.room);
-    assert_eq!(agents.iter().filter(|agent| agent.alias() == Some("once")).count(), 1);
-    let other = room_command(&world, "a", "agent spawn twice --provider dev-stub --command-id retry-2").await;
-    assert_ne!(first.payload["response"]["agent"]["id"], other.payload["response"]["agent"]["id"]);
+    assert_eq!(
+        first.payload["response"]["agent"]["id"],
+        second.payload["response"]["agent"]["id"]
+    );
+    let agents = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(&world.room);
+    assert_eq!(
+        agents
+            .iter()
+            .filter(|agent| agent.alias() == Some("once"))
+            .count(),
+        1
+    );
+    let other = room_command(
+        &world,
+        "a",
+        "agent spawn twice --provider dev-stub --command-id retry-2",
+    )
+    .await;
+    assert_ne!(
+        first.payload["response"]["agent"]["id"],
+        other.payload["response"]["agent"]["id"]
+    );
 }
 
 #[test]
@@ -264,9 +384,16 @@ fn a_spawn_deadline_is_armed_and_never_later_than_the_parents() {
 
 async fn spawn_deadline() {
     let world = world("subtree-spawn-deadline").await;
-    let timed = room_command(&world, "a", "agent spawn timed --provider dev-stub --deadline 30m").await;
+    let timed = room_command(
+        &world,
+        "a",
+        "agent spawn timed --provider dev-stub --deadline 30m",
+    )
+    .await;
     assert!(timed.ok, "{timed:?}");
-    let deadline = room_command(&world, "a", "agent deadline get timed").await.payload["response"]["deadline"]["deadline_ms"]
+    let deadline = room_command(&world, "a", "agent deadline get timed")
+        .await
+        .payload["response"]["deadline"]["deadline_ms"]
         .as_u64()
         .unwrap();
     let in_half_an_hour = crate::session::unix_epoch_ms() + 30 * 60_000;
@@ -281,12 +408,22 @@ async fn spawn_deadline() {
             deadline_ms: crate::session::unix_epoch_ms() + 10 * 60_000,
         })
         .unwrap();
-    let bounded = room_command(&world, "a", "agent spawn bounded --provider dev-stub --deadline 2h").await;
+    let bounded = room_command(
+        &world,
+        "a",
+        "agent spawn bounded --provider dev-stub --deadline 2h",
+    )
+    .await;
     assert!(bounded.ok, "{bounded:?}");
-    let child = room_command(&world, "a", "agent deadline get bounded").await.payload["response"]["deadline"]["deadline_ms"]
+    let child = room_command(&world, "a", "agent deadline get bounded")
+        .await
+        .payload["response"]["deadline"]["deadline_ms"]
         .as_u64()
         .unwrap();
-    assert!(child <= crate::session::unix_epoch_ms() + 10 * 60_000 + 1_000, "{child}");
+    assert!(
+        child <= crate::session::unix_epoch_ms() + 10 * 60_000 + 1_000,
+        "{child}"
+    );
 }
 
 #[test]
@@ -297,7 +434,10 @@ fn deleting_an_agent_with_sub_agents_is_refused_until_they_are_gone() {
 async fn delete_with_children() {
     let world = world("subtree-delete-with-children").await;
     let refused = room_command(&world, "a", "agent delete b").await;
-    assert!(!refused.ok && error_text(&refused).contains("sub-agents"), "{refused:?}");
+    assert!(
+        !refused.ok && error_text(&refused).contains("sub-agents"),
+        "{refused:?}"
+    );
     assert!(room_command(&world, "a", "agent delete d").await.ok);
     assert!(room_command(&world, "a", "agent delete b").await.ok);
 }
@@ -317,8 +457,13 @@ async fn remote_refusal() {
         crate::runtime::room_dispatch_registration::register(
             &store,
             &actor,
-            app.providers().get_run_for_agent(&world.room, actor.id()).as_ref().map(|run| run.id()),
-            session.active_prompt_for_agent(actor.id()).map(|prompt| prompt.id()),
+            app.providers()
+                .get_run_for_agent(&world.room, actor.id())
+                .as_ref()
+                .map(|run| run.id()),
+            session
+                .active_prompt_for_agent(actor.id())
+                .map(|prompt| prompt.id()),
             "delegate",
             None,
         )
@@ -344,8 +489,13 @@ async fn remote_refusal() {
             message: "relay token does not allow requested action".into(),
         },
     );
-    assert!(error.to_string().contains("does not allow requested action"));
-    assert!(!unresolved(&refused), "ORCH-11: a definite refusal settles the obligation");
+    assert!(error
+        .to_string()
+        .contains("does not allow requested action"));
+    assert!(
+        !unresolved(&refused),
+        "ORCH-11: a definite refusal settles the obligation"
+    );
     // Any other failure may have created the agent: the obligation stays for inspection.
     let uncertain = register();
     let error = crate::app::settle_remote_spawn_failure(

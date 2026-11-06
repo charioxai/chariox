@@ -220,7 +220,7 @@ async function main() {
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a team inside THIS Room using only your own Chariox tools. Do not ask the owner anything.
 Never retry a refused call more than once; record the exact refusal instead. Never use shell sleeps or poll in a loop.
 1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
-2. Prompt them (room \`prompt\` command):
+2. Prompt them (room command \`prompt <alias> "<text>"\` (not \`agent prompt\`)):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
    w2: "Write the single word BETA into result.txt in your current working directory. End your reply with W2DONE."
    w3: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w3 hold', message 'Continue?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns, write the single word GAMMA into result.txt in your current working directory. End your reply with W3DONE."
@@ -237,7 +237,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step (what is 
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). There is NO /sudo and no kernel_request: use only your room commands and the chariox events tools.
 Do not ask the owner anything except in step 8. Never retry a refused call more than once; record the exact answer. Never use shell sleeps or poll in a loop.
 1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN --permission yolo --command-id spawn-wN\`. Spawn w1 a SECOND time with the identical command and record whether you got the same agent id.
-2. Prompt them (room \`prompt\`):
+2. Prompt them with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Run the shell command sleep 240. Then write ALPHA into result.txt in your working directory. End with W1DONE."
    w2: "Write BETA into result.txt in your working directory. End with W2DONE."
    w3: "Run the shell command sleep 240. Then write GAMMA into result.txt. End with W3DONE."
@@ -321,7 +321,7 @@ Steps:
 2. Spawn worker w1 with its OWN git worktree: \`agent spawn w1 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1 --permission yolo --account-profile default --deadline 20m --command-id spawn-w1\`. Run the identical command a second time and record whether the same agent id came back.
 3. Spawn worker w2 (same flags, worktree ${join(root, "wt/w2")}, branch w2) and worker w4 (worktree ${join(root, "wt/w4")}, branch w4). Spawn worker w3 with the model claude-no-such-model-1 (worktree ${join(root, "wt/w3")}, branch w3).
 4. Spawn w5 on kernel B: \`agent spawn w5 --provider claude --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w5")}\`. Record the exact answer, even a refusal. Then go on: a refused spawn must not stop you from yielding in step 7.
-5. Give tasks with the room \`prompt\` command:
+5. Give tasks with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
    w2: "Run the shell command sleep 300. Then write BETA into result.txt in your current working directory. End your reply with W2DONE."
    w3: "Reply with the word hello."

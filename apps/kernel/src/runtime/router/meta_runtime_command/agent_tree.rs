@@ -1,6 +1,6 @@
 //! Room commands for the agent tree: a parent reads and controls the agents below it.
-use super::result::{meta_command_error, meta_command_failure_result};
 use super::request::meta_kernel_command;
+use super::result::{meta_command_error, meta_command_failure_result};
 use super::*;
 
 /// `agent children` lists at most this many descendants.
@@ -22,10 +22,18 @@ impl CommandRouter {
         let args = tokens.get(2..).unwrap_or_default();
         Ok(match tokens.get(1).map(String::as_str) {
             Some("cancel") => Some(
-                self.dispatch_meta_agent_cancel_command(provider_run, session, caller, command, args)
-                    .await?,
+                self.dispatch_meta_agent_cancel_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    args,
+                )
+                .await?,
             ),
-            Some("children") => Some(self.meta_agent_children_result(session, caller, command, args)),
+            Some("children") => {
+                Some(self.meta_agent_children_result(session, caller, command, args))
+            }
             _ => None,
         })
     }
@@ -53,25 +61,36 @@ impl CommandRouter {
         {
             deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
         }
+        // A retried spawn finds its child already bounded; a deadline only ever shortens.
+        if let LocalDaemonResponse::AgentDeadline {
+            deadline: Some(current),
+        } = self
+            .runtime_state
+            .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
+                session_id: session.id().to_string(),
+                agent_id: child.id().to_string(),
+            })?
+        {
+            if current.deadline_ms <= deadline_ms {
+                return Ok(());
+            }
+        }
         let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
             session_id: session.id().to_string(),
             agent_id: child.id().to_string(),
             deadline_ms,
         });
-        if let Err(error) = Box::pin(self.dispatch(
-            meta_kernel_command(provider_run, parent, &request),
-            request,
-        ))
-        .await
+        if let Err(error) =
+            Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
+                .await
         {
             let destroy = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: child.id().to_string(),
             });
-            let _ = Box::pin(self.dispatch(
-                meta_kernel_command(provider_run, parent, &destroy),
-                destroy,
-            ))
+            let _ = Box::pin(
+                self.dispatch(meta_kernel_command(provider_run, parent, &destroy), destroy),
+            )
             .await;
             return Err(error);
         }
@@ -107,17 +126,15 @@ impl CommandRouter {
             Ok(id) => id,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
-            session_id: session.id().to_string(),
-            attachment_id,
-            target_agent_id: Some(target.id().to_string()),
-            expected_prompt_id: None,
-        });
-        match Box::pin(self.dispatch(
-            meta_kernel_command(provider_run, parent, &request),
-            request,
-        ))
-        .await
+        let request =
+            LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+                session_id: session.id().to_string(),
+                attachment_id,
+                target_agent_id: Some(target.id().to_string()),
+                expected_prompt_id: None,
+            });
+        match Box::pin(self.dispatch(meta_kernel_command(provider_run, parent, &request), request))
+            .await
         {
             Ok(response) => Ok(super::result::meta_command_success_result(
                 command,
@@ -150,9 +167,9 @@ impl CommandRouter {
                 {
                     Ok(root) if root.id() == caller.id() => root,
                     Ok(root) => {
-                        if let Err(error) = crate::runtime::room_tool_admission::in_subtree(
-                            caller, &root, &agents,
-                        ) {
+                        if let Err(error) =
+                            crate::runtime::room_tool_admission::in_subtree(caller, &root, &agents)
+                        {
                             return meta_command_failure_result(command, error);
                         }
                         root
