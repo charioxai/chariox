@@ -5,7 +5,10 @@ import type {
   SessionConfigState,
   TranscriptEntry,
 } from "./cli-types.js"
+import { chooseNotificationSource } from "@chariox/kernel-client/notification-source-reference"
+import type { AgentTriggerNotificationSource, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
 import {
+  createAgentNotificationTriggerRequest,
   createAgentScheduleTriggerRequest,
   deleteAgentTriggerRequest,
   updateAgentTriggerRequest,
@@ -147,6 +150,7 @@ type CommandActionDeps =
   focusedAgentId: () => string | null
   /** Sends a trigger change and returns the session it answers with. */
   sendAgentTriggerRequest?: (request: Record<string, unknown>) => Promise<{ session: RuntimeSession }>
+  listNotificationSources?: () => Promise<WorkflowNotificationSourceSummary[]>
   runWorkflowRegistryEntry?: (
     name: string,
     endpointRef: string,
@@ -507,7 +511,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         ? "No triggers on this agent. Add one with /trigger every <minutes> [--steer] <prompt>."
         : ["Triggers", ...triggers.map((trigger) => [
           `${trigger.id}  ${trigger.label} · ${trigger.busyPolicy}`,
-          trigger.enabled ? trigger.localUrl ?? `next ${new Date(trigger.nextRunAtMs ?? 0).toLocaleTimeString()}` : "off",
+          trigger.enabled ? trigger.localUrl ?? (trigger.nextRunAtMs === null ? "listening" : `next ${new Date(trigger.nextRunAtMs).toLocaleTimeString()}`) : "off",
           `${trigger.fired} fired`,
           trigger.lastError ? `last error: ${trigger.lastError}` : "",
         ].filter(Boolean).join(" · ")), ...deliveries.map(delivery => [
@@ -519,6 +523,22 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     }
     if (!deps.sendAgentTriggerRequest) {
       deps.flashFooter("agent triggers are unavailable in this kernel", "error")
+      return
+    }
+    if (action.type === "notification") {
+      const choice = deps.listNotificationSources
+        ? chooseNotificationSource(action.words, await deps.listNotificationSources())
+        : { error: "notification triggers are unavailable in this kernel" }
+      if ("error" in choice) {
+        deps.flashFooter(choice.error, "error")
+        return
+      }
+      const created = await deps.sendAgentTriggerRequest(
+        createAgentNotificationTriggerRequest({ sessionId, agentId, source: choice.source, prompt: choice.prompt }),
+      )
+      deps.applySessionState(created.session)
+      await deps.refreshAgentPanes(created.session)
+      deps.flashFooter("trigger on a notification", "info")
       return
     }
     const request = action.type === "create"

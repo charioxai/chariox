@@ -152,6 +152,7 @@ impl KernelRuntimeState {
                         .terminal_stream
                         .notify_terminal_projection_change(&task.room_id);
                 }
+                self.owned.emit_task_owner_notification(&task, &id)?;
                 return Ok(());
             }
             // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
@@ -194,6 +195,7 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
+        let notification = self.owned.emit_task_owner_notification(&task, &id);
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
@@ -209,6 +211,7 @@ impl KernelRuntimeState {
                 state.resolve_agent_task_owner_action(&task, action).await;
             }
         });
+        notification?;
         Ok(())
     }
 

@@ -24,6 +24,8 @@ export type AppInstallationSummary = {
   dev_room_id: string | null
   installation_id: string
   app_id: string
+  /** Outgoing events declared by the active verified release. */
+  events?: { name: string; label: string }[]
   /** Opaque decimal generation, never convert to a JavaScript number. */
   generation: string
   active_release: AppReleaseSummary | null
@@ -79,6 +81,7 @@ export type AppWorkerSummary = {
 
 /** Protocol 345: one App event routed to one workflow endpoint and queue. */
 export type AppAutomationSummary = {
+  target_kind: "workflow_endpoint" | "agent";
   automation_id: string
   revision: number
   event_name: string
@@ -88,7 +91,6 @@ export type AppAutomationSummary = {
   endpoint_id: string
   queue_id: string
   scheduled: boolean
-  delivery_mode: "queue" | "inject"
   status: "active" | "paused" | "broken" | "disabled"
 }
 

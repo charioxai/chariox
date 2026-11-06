@@ -24,9 +24,9 @@ impl ReceiptState {
     }
 }
 
-/// Provisional until the transaction producing it has committed. A queued
-/// receipt proves workflow queue insertion only when the kernel composes that
-/// insertion and mark_queued_in inside the same committing writer transaction.
+/// Provisional until the transaction producing it has committed. The kernel
+/// corroborates a queued receipt against its durable workflow or agent prompt
+/// admission; an App cannot assert that admission itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
     pub receipt_id: String,
@@ -72,7 +72,7 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
             payload_json TEXT, invocation_json TEXT, accepted_at_ms INTEGER NOT NULL, expires_at_ms INTEGER NOT NULL,
             state TEXT NOT NULL CHECK(state IN ('accepted','queued','delivered','retryable','failed','expired')),
             revision INTEGER NOT NULL CHECK(revision>0), attempts INTEGER NOT NULL CHECK(attempts>=0 AND attempts<=8),
-            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT,
+            next_attempt_at_ms INTEGER NOT NULL, queued_prompt_id TEXT, queued_session_id TEXT, queued_agent_id TEXT,
             UNIQUE(owner_id,installation_id,automation_id,event_version,occurrence_id,schedule_revision)
          );
          CREATE INDEX IF NOT EXISTS app_outbox_pending
@@ -125,8 +125,8 @@ pub(super) fn initialize(connection: &Connection) -> Result<()> {
         ("app_automations", "notification_json", "TEXT"),
         (
             "app_automations",
-            "delivery_mode",
-            "TEXT NOT NULL DEFAULT 'queue' CHECK(delivery_mode IN ('queue','inject'))",
+            "target_kind",
+            "TEXT NOT NULL DEFAULT 'workflow' CHECK(target_kind IN ('workflow','agent'))",
         ),
         (
             "app_outbox",
@@ -304,14 +304,23 @@ pub(super) fn pending(
     installation: &str,
     now: u64,
     limit: usize,
+    target: Option<AutomationTargetKind>,
 ) -> Result<Vec<Receipt>> {
     let mut statement=tx.prepare(&format!("SELECT {COLUMNS} FROM app_outbox
-        WHERE owner_id=?1 AND installation_id=?2 AND state IN ('accepted','retryable') AND next_attempt_at_ms<=?3
+        WHERE owner_id=?1 AND installation_id=?2 AND source_kind='app_event' AND state IN ('accepted','retryable') AND next_attempt_at_ms<=?3
         AND NOT EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
           AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.status='paused')
-        ORDER BY sequence LIMIT ?4"))?;
+        AND (?5 IS NULL OR EXISTS (SELECT 1 FROM app_automations a WHERE a.owner_id=app_outbox.owner_id
+          AND a.installation_id=app_outbox.installation_id AND a.automation_id=app_outbox.automation_id AND a.target_kind=?5))
+        ORDER BY CASE WHEN ?5='agent' THEN next_attempt_at_ms ELSE 0 END,sequence LIMIT ?4"))?;
     let rows = statement.query_map(
-        params![owner, installation, time(now)?, limit as i64],
+        params![
+            owner,
+            installation,
+            time(now)?,
+            limit as i64,
+            target.map(AutomationTargetKind::name)
+        ],
         decode,
     )?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -319,8 +328,8 @@ pub(super) fn pending(
 }
 
 impl AppOutbox {
-    /// Call only in the writer transaction that inserts the matching existing
-    /// workflow queue item and workflow receipt. This method never dispatches.
+    /// The trusted kernel writer must corroborate the matching durable queue
+    /// admission in this transaction. This method never dispatches.
     pub fn mark_queued_in(
         tx: &Transaction<'_>,
         automation: &VerifiedAutomation,

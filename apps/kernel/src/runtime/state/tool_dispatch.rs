@@ -20,6 +20,7 @@ mod extension_registration_tool;
 mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
+mod notification;
 mod popup;
 pub(in crate::runtime::state) use popup::{
     blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,
@@ -218,8 +219,9 @@ impl KernelRuntimeState {
                     .into_iter()
                     .filter(|spec| {
                         room_tools
-                            || spec.name
+                            || (spec.name
                                 != crate::transport::runtime_tools::META_HISTORY_SEARCH_TOOL
+                                && !spec.name.starts_with("chariox.notification_"))
                     }),
             );
             specs.extend(crate::transport::runtime_tools::agent_messaging_runtime_tool_specs());

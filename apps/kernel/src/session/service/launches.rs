@@ -771,7 +771,6 @@ impl SessionService {
             .iter()
             .filter(|item| {
                 item.status() == WorkflowQueuedPromptStatus::Queued
-                    && !item.notification_injection_pending()
                     && !item.notification_expired_at(crate::session::types::unix_epoch_ms())
             })
             .filter_map(|item| {

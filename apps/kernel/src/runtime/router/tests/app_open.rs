@@ -91,6 +91,7 @@ async fn app_open_drill() {
     let listed = request(
         &router,
         LocalDaemonRequest::ListAppInstallations(crate::local::ListAppInstallationsRequest {
+            session_id: None,
             after: None,
             limit: None,
         }),
@@ -400,6 +401,7 @@ done
     let listed = request(
         &router,
         LocalDaemonRequest::ListAppInstallations(crate::local::ListAppInstallationsRequest {
+            session_id: None,
             after: None,
             limit: None,
         }),

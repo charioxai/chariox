@@ -1,7 +1,5 @@
-//! Explicit App automation configuration through existing workflow ownership.
-//! Protocol 345 exposes these operations to the authenticated App owner only:
-//! the kernel derives the owner from the caller, never from request data, and
-//! workflow targets resolve under that owner's existing workflow ownership.
+//! Explicit App automation configuration retains Room and publication authority
+//! through the durable writer's exact-target and revision fences.
 
 use super::KernelRuntimeOwnedState;
 use crate::durable_state::app_automations::{
@@ -14,6 +12,7 @@ use chariox_app_runtime::app_outbox::{
 use std::sync::Arc;
 
 pub(super) struct ConfigureAppAutomation {
+    pub caller_user_id: String,
     pub automation_id: String,
     pub expected_revision: u64,
     pub event_name: String,
@@ -21,7 +20,6 @@ pub(super) struct ConfigureAppAutomation {
     pub publication_ref: String,
     pub queue_ref: Option<String>,
     pub scheduled: bool,
-    pub delivery_mode: crate::local::NotificationDeliveryMode,
 }
 impl KernelRuntimeOwnedState {
     /// Blocking ownership operation; execute on the existing bounded kernel
@@ -50,6 +48,43 @@ impl KernelRuntimeOwnedState {
                         &request.publication_ref,
                         request.queue_ref.as_deref(),
                     )?;
+                    // The read guard protects both targets through the writer's CAS.
+                    // A caller replacing a binding must also own its current target.
+                    let previous_target = if request.caller_user_id != trusted_owner {
+                        let room = sessions.get_session(&request.session_id)?;
+                        let publication = sessions.resolve_workflow_publication_ref(
+                            &request.session_id,
+                            &request.publication_ref,
+                        )?;
+                        if !room.has_member(&request.caller_user_id)
+                            || room.status() == crate::session::SessionStatus::Ended
+                            || publication.created_by_user_id() != request.caller_user_id
+                        {
+                            return Err(AppAutomationError::Unauthorized);
+                        }
+                        let previous = self
+                            .list_app_automations(
+                                trusted_owner,
+                                catalog.clone(),
+                                budget.fork(|| false),
+                            )?
+                            .into_iter()
+                            .find(|value| value.automation_id == request.automation_id);
+                        match previous {
+                            Some(previous) => Some(WorkflowAutomationTarget::authorize_existing(
+                                &sessions,
+                                trusted_owner,
+                                &request.caller_user_id,
+                                previous.target,
+                            )?),
+                            None if request.expected_revision != 0 => {
+                                return Err(AppAutomationError::Unauthorized)
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
                     let result = self.durable_state_store.mutate_app_automation(
                         trusted_owner,
                         catalog,
@@ -59,7 +94,7 @@ impl KernelRuntimeOwnedState {
                             event_name: request.event_name,
                             target,
                             scheduled: request.scheduled,
-                            delivery_mode: request.delivery_mode,
+                            previous_target,
                         },
                         budget,
                     )?;

@@ -20,10 +20,7 @@ test("workflow run listing exposes bounded cursor pagination", () => {
   )
 })
 
-test("held notification retry adds retry_delivery only when requested", () => {
-  assert.deepEqual(updateQueuedWorkflowPromptRequest("s", "q", { retryDelivery: true }), {
-    UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true },
-  })
+test("queued workflow prompt update carries only the prompt and queue", () => {
   assert.deepEqual(updateQueuedWorkflowPromptRequest("s", "q", { prompt: "x" }), {
     UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null },
   })

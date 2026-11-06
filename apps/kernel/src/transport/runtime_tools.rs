@@ -246,3 +246,8 @@ pub struct RuntimeToolResult {
 
 mod room_tool_names;
 pub(crate) use room_tool_names::{canonical_room_tool_name, room_name, room_runtime_tool_specs};
+
+mod notification_tools;
+pub use notification_tools::{
+    notification_tool_specs, NOTIFICATION_SOURCES, NOTIFICATION_SUBSCRIBE, NOTIFICATION_UNSUBSCRIBE,
+};

@@ -163,7 +163,7 @@ fn envelope(
         artifacts,
         mode: None,
         caller: serde_json::json!({"kind":"app_event","installation_id":candidate.catalog.installation_id(),
-            "owner_id":candidate.owner,"automation_id":receipt.automation_id,"automation_revision":receipt.automation_revision,"delivery_mode":candidate.configuration.delivery_mode}),
+            "owner_id":candidate.owner,"automation_id":receipt.automation_id,"automation_revision":receipt.automation_revision}),
     })
 }
 

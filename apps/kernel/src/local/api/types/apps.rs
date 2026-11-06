@@ -119,6 +119,9 @@ pub struct AppInstallOperationSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListAppInstallationsRequest {
+    /// A collaborator sees only Apps bound to this Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub after: Option<String>,
     pub limit: Option<u32>,
 }
@@ -204,6 +207,17 @@ pub struct AppInstallationSummary {
     /// Protocol 363: an uninstalled installation that still holds its data; an
     /// update of it reinstalls the App into that data.
     pub data_kept: bool,
+    /// The outgoing events its active release declares, so a notification picker can list them.
+    /// Filled by `ListAppInstallations` and `GetAppInstallation`; empty without an active release.
+    #[serde(default)]
+    pub events: Vec<AppEventSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppEventSummary {
+    pub name: String,
+    /// The payload schema's title, or the event name.
+    pub label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -297,6 +311,14 @@ pub struct AppWorkerSummary {
     pub updated_at_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListAppAutomationsRequest {
+    pub installation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
 /// Protocol 345: App automations route one App event to one workflow endpoint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -310,13 +332,13 @@ pub struct ConfigureAppAutomationRequest {
     pub publication_ref: String,
     pub queue_ref: Option<String>,
     pub scheduled: bool,
-    #[serde(default)]
-    pub delivery_mode: NotificationDeliveryMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DisableAppAutomationRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub installation_id: String,
     pub automation_id: String,
     pub expected_revision: u64,
@@ -617,6 +639,7 @@ pub enum AppAutomationStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppAutomationSummary {
+    pub target_kind: super::WorkflowNotificationTargetKind,
     pub automation_id: String,
     pub revision: u64,
     pub event_name: String,
@@ -627,7 +650,6 @@ pub struct AppAutomationSummary {
     pub queue_id: String,
     pub scheduled: bool,
     pub status: AppAutomationStatus,
-    pub delivery_mode: NotificationDeliveryMode,
 }
 
 /// Protocol 409: a human accepts one pending clipboard/link request. The

@@ -15,6 +15,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     };
     let requests = vec![
         LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+            session_id: None,
             after: None,
             limit: Some(50),
         }),
@@ -35,6 +36,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
                 channel: chariox_app_runtime::installation::channel::InstallationChannel::Release,
                 dev_room_id: None,
                 installation_id: "todo".into(),
+                events: vec![],
                 app_id: "com.chariox.todo".into(),
                 generation: "9223372036854775807".into(),
                 active_release: Some(release.clone()),
@@ -77,7 +79,7 @@ fn app_installation_protocol_shapes_are_versioned_and_preserve_generations() {
     let encoded = serde_json::to_vec(&snapshot).unwrap();
     assert_eq!(
         format!("{:x}", Sha256::digest(&encoded)),
-        "6515133774bc4cd6f5a943abefef81a966a44a0d7d082e6c0d2aa0d6ca912991"
+        "1de1a2038844df42db6b357f2b5d94a0b2a6fc02e581e2ed8191aa4c3de8ae05"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ListAppInstallations": {"owner_id": "other"}})
@@ -188,11 +190,11 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             installation_id: "todo".into(),
             action: AppWorkerAction::Restart,
         }),
-        LocalDaemonRequest::ListAppAutomations(AppWorkerRequest {
+        LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+            session_id: None,
             installation_id: "todo".into(),
         }),
         LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
-            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             installation_id: "todo".into(),
             automation_id: "reminders".into(),
             expected_revision: 0,
@@ -203,13 +205,14 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
             scheduled: true,
         }),
         LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+            session_id: None,
             installation_id: "todo".into(),
             automation_id: "reminders".into(),
             expected_revision: 1,
         }),
     ];
     let automation = AppAutomationSummary {
-        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
+        target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
         automation_id: "reminders".into(),
         revision: 1,
         event_name: "todo_due".into(),
@@ -274,7 +277,7 @@ fn app_worker_control_and_automation_shapes_are_versioned_and_owner_free() {
     );
     assert_eq!(
         digest,
-        "d6ef051ad7e4cda125c1ac1f3db9fd2e082056a697e0de681b777eec0ce81a06"
+        "9ea2bbcdba53e4c30e31956db712266fda91f2db40b4abd6810cf3fb1b41cb45"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlAppWorker": {"installation_id": "todo", "action": "start", "owner_id": "other"}})

@@ -53,7 +53,7 @@ pub enum LocalDaemonRequest {
     GetAppInstallationJournal(AppInstallationRequest),
     GetAppWorker(AppWorkerRequest),
     ControlAppWorker(ControlAppWorkerRequest),
-    ListAppAutomations(AppWorkerRequest),
+    ListAppAutomations(ListAppAutomationsRequest),
     ConfigureAppAutomation(ConfigureAppAutomationRequest),
     DisableAppAutomation(DisableAppAutomationRequest),
     OpenAppView(OpenAppViewRequest),

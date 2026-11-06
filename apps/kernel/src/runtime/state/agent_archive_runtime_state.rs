@@ -181,13 +181,15 @@ impl KernelRuntimeState {
             }
         }
         // An archived agent keeps nothing that fires prompts into it.
-        if !owned
+        let triggers = owned
             .session_store
             .write()
-            .remove_agent_triggers_for_agent(room, agent_id)?
-            .is_empty()
-        {
+            .remove_agent_triggers_for_agent(room, agent_id)?;
+        if !triggers.is_empty() {
             owned.persist_agent_trigger_session(room, "agent_archived_triggers_removed")?;
+            for trigger in triggers {
+                self.detach_deleted_notification_trigger(&trigger).await;
+            }
         }
         let agent = owned.agent_store.get_agent(agent_id)?;
         if agent.remote_execution().is_some() {

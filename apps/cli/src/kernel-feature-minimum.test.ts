@@ -71,14 +71,6 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
-test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 670", () => {
-  const request = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true } }
-  assert.throws(() => requireKernelFeatureProtocol(request, 669), /Held notification retry needs protocol ≥670/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 670))
-  const edit = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null } }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
-})
-
 test("integration received-event listing and replay require protocol 911", () => {
   for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
     { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
@@ -113,17 +105,6 @@ test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })
 
-test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{}}, 490))
-  assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 490), /needs protocol ≥491/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 491))
-})
-
-test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
-  for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
-})
-
-// MP-08/MP-10/MP-11: only the allocated resume contract may cross transport.
 test("MP-08/MP-10/MP-11 display resumption refuses unknown and pre-525 kernels", () => {
   for (const op of ["display_suspend", "display_resume"]) {
     const request = { KernelBrowser: { command: { op, subscription_id: "old", generation: 7 } } }

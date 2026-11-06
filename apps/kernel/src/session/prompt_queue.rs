@@ -184,6 +184,8 @@ pub(crate) struct DurablePromptPrivateState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) agent_trigger_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    notification_deadline_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_client_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source_user_id: Option<String>,
@@ -226,6 +228,7 @@ pub(crate) struct DurablePromptPrivateState {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromptPrivateMetadata {
     agent_trigger_id: Option<String>,
+    notification_deadline_ms: Option<u64>,
     source_client_id: Option<String>,
     source_user_id: Option<String>,
     owner_request: bool,
@@ -269,6 +272,7 @@ impl DurablePromptPrivateState {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
             agent_trigger_id: metadata.agent_trigger_id,
+            notification_deadline_ms: metadata.notification_deadline_ms,
             source_client_id: metadata.source_client_id,
             source_user_id: metadata.source_user_id,
             owner_request: metadata.owner_request,
@@ -488,6 +492,21 @@ impl PromptQueueItem {
             .is_some_and(|metadata| metadata.owner_request)
             && self.workflow_run_id.is_none()
             && self.agent_trigger_id().is_none()
+    }
+
+    /// Only notification admission sets this; prompt text and client edits cannot extend it.
+    pub(crate) fn with_notification_deadline(mut self, deadline_ms: u64) -> Self {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .notification_deadline_ms = Some(deadline_ms);
+        self
+    }
+
+    pub(crate) fn notification_expired(&self, now: u64) -> bool {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.notification_deadline_ms)
+            .is_some_and(|deadline| now >= deadline)
     }
 
     pub(crate) fn with_agent_trigger(mut self, trigger_id: impl Into<String>) -> Self {
@@ -948,6 +967,7 @@ impl PromptQueueItem {
     pub(crate) fn restore_durable_private_state(&mut self, private: &DurablePromptPrivateState) {
         if private.hidden_system_context.is_empty()
             && private.agent_trigger_id.is_none()
+            && private.notification_deadline_ms.is_none()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
             && !private.delivery_reconciliation_pending
@@ -964,6 +984,7 @@ impl PromptQueueItem {
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
             agent_trigger_id: private.agent_trigger_id.clone(),
+            notification_deadline_ms: private.notification_deadline_ms,
             source_client_id: private.source_client_id.clone(),
             source_user_id: private.source_user_id.clone(),
             owner_request: private.owner_request,

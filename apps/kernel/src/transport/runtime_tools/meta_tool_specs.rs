@@ -1,7 +1,7 @@
 use super::*;
 
 pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
-    vec![
+    let mut specs = vec![
         RuntimeToolSpec {
             name: META_HISTORY_SEARCH_TOOL.into(),
             description: "Search sanitized public prompts, answers and normalized tool records in this room using literal full-text terms. Returns bounded snippets, opaque event_ref values for chariox.history.read, a scoped cursor, and explicit redaction/index coverage. Unknown legacy/private history is excluded; no file or attachment indexing. Limited to the caller room, even under /sudo; read another session with chariox_kernel_request.".into(),
@@ -788,5 +788,7 @@ pub fn meta_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
-    ]
+    ];
+    specs.extend(notification_tool_specs());
+    specs
 }

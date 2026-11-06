@@ -1,4 +1,5 @@
 //! Timer-owned bounded receipt maintenance and classification on the sole writer.
+pub(super) mod agent;
 mod workflow;
 pub(super) use workflow::{record_queue_removals_in, record_workflow_transition_in};
 
@@ -147,9 +148,32 @@ impl DurableKernelStateStore {
         now: u64,
         limit: usize,
     ) -> Result<Vec<Receipt>> {
+        self.pending_app_events_for_target(
+            owner,
+            catalog,
+            now,
+            limit,
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow,
+        )
+    }
+    pub(crate) fn pending_app_events_for_target(
+        &self,
+        owner: &str,
+        catalog: &EventCatalog,
+        now: u64,
+        limit: usize,
+        target: chariox_app_runtime::app_outbox::AutomationTargetKind,
+    ) -> Result<Vec<Receipt>> {
         let mut connection = self.lock_connection("app.events.pending")?;
         let tx = connection.transaction()?;
-        Ok(AppOutbox::pending_in(&tx, catalog, owner, now, limit)?)
+        Ok(AppOutbox::pending_for_target_in(
+            &tx,
+            catalog,
+            owner,
+            now,
+            limit,
+            Some(target),
+        )?)
     }
 }
 pub(super) fn execute(connection: &mut Connection, request: AppEventMaintenanceRequest) {

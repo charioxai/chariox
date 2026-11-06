@@ -78,13 +78,23 @@ impl KernelRuntimeState {
         let mut set = Vec::with_capacity(active.len());
         for (installation_id, app_id, release) in active {
             let read = |request: LocalDaemonRequest| {
-                self.app_control_response(owner.to_owned(), installation_id.clone(), request)
+                self.app_control_response(
+                    owner.to_owned(),
+                    owner.to_owned(),
+                    installation_id.clone(),
+                    request,
+                )
             };
             let installation = || AppWorkerRequest {
                 installation_id: installation_id.clone(),
             };
-            let LocalDaemonResponse::AppAutomations { automations, .. } =
-                read(LocalDaemonRequest::ListAppAutomations(installation())).await?
+            let LocalDaemonResponse::AppAutomations { automations, .. } = read(
+                LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
+                    installation_id: installation_id.clone(),
+                    session_id: None,
+                }),
+            )
+            .await?
             else {
                 return Err(AppRequestErrorCode::StorageUnavailable);
             };
@@ -120,7 +130,13 @@ impl KernelRuntimeState {
                 app_id,
                 release,
                 capabilities,
-                automations,
+                automations: automations
+                    .into_iter()
+                    .filter(|automation| {
+                        automation.target_kind
+                            == crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint
+                    })
+                    .collect(),
                 inbox_routes: routes,
                 connections,
             });

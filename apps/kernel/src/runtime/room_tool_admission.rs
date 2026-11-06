@@ -107,6 +107,15 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         {
             Ok(())
         }
+        // An agent subscribes itself; the request carries no agent argument.
+        Some("trigger")
+            if matches!(
+                tokens.get(1).map(String::as_str),
+                Some("notification" | "remove")
+            ) =>
+        {
+            Ok(())
+        }
         // MP-08/MP-11 A05: App bindings on the user's request or as a child subset.
         Some("extension" | "extensions")
             if matches!(tokens.get(1).map(String::as_str), Some("grant" | "revoke"))

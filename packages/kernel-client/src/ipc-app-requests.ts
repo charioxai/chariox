@@ -9,8 +9,8 @@ export const appHostActionMinimumProtocolVersion = 409
 export const appFileRevokeMinimumProtocolVersion = 394
 export const appDataSnapshotRestoreMinimumProtocolVersion = 410
 
-export function listAppInstallationsRequest(options: { after?: string; limit?: number } = {}) {
-  return { ListAppInstallations: { after: options.after ?? null, limit: options.limit ?? null } }
+export function listAppInstallationsRequest(options: { after?: string; limit?: number; sessionId?: string } = {}) {
+  return { ListAppInstallations: { after: options.after ?? null, limit: options.limit ?? null, ...(options.sessionId ? { session_id: options.sessionId } : {}) } }
 }
 
 export function beginAppPublisherEnrollmentRequest(options: {
@@ -96,26 +96,25 @@ export function controlAppWorkerRequest(installationId: string, action: "start" 
   return { ControlAppWorker: { installation_id: installationId, action } }
 }
 
-export function listAppAutomationsRequest(installationId: string) {
-  return { ListAppAutomations: { installation_id: installationId } }
+export function listAppAutomationsRequest(installationId: string, sessionId?: string) {
+  return { ListAppAutomations: { installation_id: installationId, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
 /** Expected revision zero creates the automation; replacements name the current revision. */
 export function configureAppAutomationRequest(options: {
   installationId: string; automationId: string; expectedRevision: number; eventName: string;
-  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean; deliveryMode?: "queue" | "inject";
+  sessionId: string; publicationRef: string; queueRef?: string; scheduled?: boolean;
 }) {
   return { ConfigureAppAutomation: {
     installation_id: options.installationId, automation_id: options.automationId,
     expected_revision: options.expectedRevision, event_name: options.eventName,
     session_id: options.sessionId, publication_ref: options.publicationRef,
     queue_ref: options.queueRef ?? null, scheduled: options.scheduled ?? false,
-    ...(options.deliveryMode === "inject" ? { delivery_mode: "inject" as const } : {}),
   } }
 }
 
-export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number) {
-  return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision } }
+export function disableAppAutomationRequest(installationId: string, automationId: string, expectedRevision: number, sessionId?: string) {
+  return { DisableAppAutomation: { installation_id: installationId, automation_id: automationId, expected_revision: expectedRevision, ...(sessionId ? { session_id: sessionId } : {}) } }
 }
 
 /** An event generator connection an inbox route subscribes to (protocol 358). */

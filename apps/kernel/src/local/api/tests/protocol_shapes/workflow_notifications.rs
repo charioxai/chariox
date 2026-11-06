@@ -12,39 +12,37 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
             session_id: "s".into(),
             workflow_ref: "w".into(),
             enabled: true,
-            output_fields: None,
+            exit_node_id: "exit-1".into(),
         },
     );
     let attach =
         LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-            delivery_mode: crate::local::NotificationDeliveryMode::Queue,
             session_id: "t".into(),
             source_id: "src".into(),
             publication_ref: "p".into(),
-            queue_ref: None,
-            ttl_days: 7,
-            events: WorkflowNotificationEvents::Both,
-            filters: serde_json::Value::Null,
         });
     let list = LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
         session_id: "t".into(),
     });
     let source = WorkflowNotificationSource {
+        kind: crate::local::NotificationSourceKind::WorkflowExit,
         source_id: "src".into(),
         owner_user_id: "u".into(),
         kernel_id: "k".into(),
         session_id: "s".into(),
         workflow_id: "w".into(),
+        exit_node_id: "node-2".into(),
         enabled: true,
         available: true,
         name: "reviewer".into(),
-        output_fields: vec![],
+        exit_ordinal: 2,
+        display_name: "reviewer-2".into(),
     };
     let sub = WorkflowNotificationSubscription {
-        delivery_mode: crate::local::NotificationDeliveryMode::Queue,
         subscription_id: "sub".into(),
         source_id: "src".into(),
         owner_user_id: "u".into(),
+        created_by_user_id: "u".into(),
         target_kernel_id: "k".into(),
         target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
         session_id: "t".into(),
@@ -52,19 +50,26 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         publication_id: "p".into(),
         endpoint_id: "e".into(),
         queue_id: "q".into(),
-        ttl_days: 7,
         source_available: true,
         source_kernel_id: "k".into(),
-        events: WorkflowNotificationEvents::Both,
-        filters: serde_json::Value::Null,
+        agent_id: None,
+        trigger_id: None,
+    };
+    let agent_sub = WorkflowNotificationSubscription {
+        subscription_id: "agent-sub".into(),
+        target_kind: WorkflowNotificationTargetKind::Agent,
+        workflow_id: String::new(),
+        publication_id: "trigger".into(),
+        endpoint_id: "agent".into(),
+        agent_id: Some("agent".into()),
+        trigger_id: Some("trigger".into()),
+        ..sub.clone()
     };
     let env = WorkflowNotificationEnvelope {
         source_id: "src".into(),
+        display_name: "reviewer-2".into(),
         occurrence_id: "run".into(),
-        output: Some(crate::session::WorkflowOutputPayload::new("output", vec![])),
-        status: WorkflowNotificationStatus::Success,
-        subject: None,
-        fields: serde_json::json!({"status":"success"}),
+        output: crate::session::WorkflowOutputPayload::new("output", vec![]),
         ancestry: vec!["[\"k\",\"s\",\"w\"]".into()],
         deadline_ms: 604800001,
     };
@@ -80,16 +85,19 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         },
         LocalDaemonResponse::WorkflowNotifications {
             sources: vec![crate::local::WorkflowNotificationSourceSummary {
+                kind: crate::local::NotificationSourceKind::WorkflowExit,
                 source_id: source.source_id,
                 kernel_id: source.kernel_id,
                 session_id: source.session_id,
                 workflow_id: source.workflow_id,
+                exit_node_id: source.exit_node_id,
+                exit_ordinal: source.exit_ordinal,
                 name: source.name,
-                events: WorkflowNotificationEvents::Both,
-                fields: vec![],
+                display_name: source.display_name,
                 available: true,
             }],
-            subscriptions: vec![sub],
+            subscriptions: vec![sub.clone(), agent_sub],
+            listeners: vec![sub],
             diagnostics: vec![WorkflowNotificationDiagnostic {
                 source_id: "src".into(),
                 occurrence_id: "run".into(),
@@ -97,10 +105,10 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
             }],
         },
     ];
-    let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::Filtered,WorkflowNotificationAck::LoopDropped]});
+    let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::LoopDropped]});
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "fc9a63afb17e25eb759afa6ab4872d6cb55a21bca7dc3a8bfa4d9e9fc3cf466d"
+        "56864f4ded54b2efa2692e303e71bc5ca9487136540bffd84932b43640d1326c"
     );
     for field in ["owner_user_id", "ancestry", "output"] {
         let mut request =
@@ -111,15 +119,29 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         )
         .is_err());
     }
-    let injection: LocalDaemonRequest = serde_json::from_value(serde_json::json!({"AttachWorkflowNotification":{"session_id":"t","source_id":"src","publication_ref":"p","delivery_mode":"inject"}})).unwrap();
-    assert!(matches!(
-        injection,
-        LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-            delivery_mode: NotificationDeliveryMode::Inject,
-            events: WorkflowNotificationEvents::Success,
-            ..
-        })
-    ));
+    // A subscription has no options: every former option field is an unknown field.
+    for (field, value) in [
+        ("delivery_mode", serde_json::json!("inject")),
+        ("events", serde_json::json!("both")),
+        ("filters", serde_json::json!({})),
+        ("ttl_days", serde_json::json!(7)),
+        ("queue_ref", serde_json::json!("q")),
+    ] {
+        let mut request =
+            serde_json::json!({"session_id":"t","source_id":"src","publication_ref":"p"});
+        request[field] = value;
+        assert!(
+            serde_json::from_value::<LocalDaemonRequest>(
+                serde_json::json!({"AttachWorkflowNotification":request})
+            )
+            .is_err(),
+            "{field} must be refused"
+        );
+    }
+    assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+        "RegisterWorkflowNotificationSource":{"session_id":"t","workflow_ref":"w","exit_node_id":"exit-1","enabled":true,"output_fields":["a"]}
+    }))
+    .is_err());
     assert!(
         serde_json::from_value::<WorkflowNotificationTargetKind>(serde_json::json!(
             "agent_session"
@@ -129,9 +151,6 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     let decoded:LocalDaemonRequest=serde_json::from_value(serde_json::json!({"AttachWorkflowNotification":{"session_id":"t","source_id":"src","publication_ref":"p"}})).unwrap();
     assert!(matches!(
         decoded,
-        LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-            ttl_days: 7,
-            ..
-        })
+        LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest { .. })
     ));
 }

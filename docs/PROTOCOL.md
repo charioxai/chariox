@@ -6449,6 +6449,27 @@ minimum for these requests: a kernel older than 966 refuses an unknown variant, 
 stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 966]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
 
+### Notification subscriptions — local 994 / relay peer 433
+
+Each exit of a workflow is its own notification source. `RegisterWorkflowNotificationSource` takes an
+`exit_node_id` (a node id or `exit-N`) and no `output_fields`; source summaries carry
+`exit_node_id`, `exit_ordinal`, `name` and `display_name` (`<name>`, or `<name>-<ordinal>` when more
+than one exit of the workflow notifies). `AttachWorkflowNotification` is `{session_id, source_id,
+publication_ref}`: `events`, `filters`, `ttl_days`, `queue_ref` and `delivery_mode` are refused as unknown
+fields, as is `delivery_mode` on `ConfigureAppAutomation`. `ListWorkflowNotifications` answers a room member and
+a member's agent with this room's sources only. `AppInstallationSummary.events` lists the active
+release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
+output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
+`CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
+now optional on the request, a notification trigger refuses a value, and the trigger summary is
+`{kind:"notification", source, subscription_id, display_name}`. Prompts of this kind carry
+origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
+carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
+`UpdateQueuedWorkflowPrompt.retry_delivery` field and the inject delivery path are gone. Clients carry no
+separate minimum: a kernel older than 994 refuses the unknown shapes, and development stage kernels are
+re-provisioned. See `docs/EVENT_TRIGGER_PROTOCOL.md`. Focused checks:
+`cargo test -p chariox-kernel --lib notification` and `node --test scripts/protocol-versions.test.mjs`.
+
 ### Opaque reimage provider id: local 924 / relay peer 375
 
 The managed-environment reimage preflight carries `desiredRelease.providerId`. It was a
@@ -6784,3 +6805,17 @@ existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
 subject to the same Cloud admission and revision checks.
 
 Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
+
+Local 994 / peer 433 also identifies kernel notification sources with
+`kind: workflow_exit | owner_action`. The Room's **Agent needs your action**
+source uses the same notification subscriptions, reduced envelope, receipt
+admission and queued agent delivery as an exit source. One blocked revision emits
+one locator-only occurrence; the existing owner interaction retains approval
+authority. This does not add a Cloud push/email/webhook service.
+
+Room agents use `chariox.notification_sources {}` to discover this Room's sources,
+`chariox.notification_subscribe {source,prompt?}` to subscribe themselves and
+`chariox.notification_unsubscribe {trigger_id}` to remove their own notification
+trigger. No target agent or busy policy is accepted. App automation summaries
+carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
+current catalog, signer, automation revision and agent target before queueing.

@@ -210,6 +210,7 @@ fn saved_snapshot_restore_overwrites_deletes_preserves_neighbour_and_authority()
         0,
         "changed",
         &chariox_app_runtime::app_outbox::AutomationTarget {
+            kind: chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow,
             session_id: "room".into(),
             publication_id: "publication".into(),
             endpoint_id: "endpoint".into(),

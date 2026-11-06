@@ -66,10 +66,6 @@ export function kernelFeatureMinimum(request: unknown): FeatureMinimum | undefin
     feature = { feature: "MP-08 owned Computer desktop", minimum: requests.kernelComputerMinimumProtocolVersion }
   } else if (name === "KernelBrowser" && ["grant_leased_computer", "revoke_leased_computer"].includes(String(record(payload?.command)?.op))) {
     feature = { feature: "MP-08 leased Computer grant", minimum: requests.leasedComputerMinimumProtocolVersion }
-  } else if (name === "ConfigureAppAutomation" && payload?.delivery_mode === "inject") {
-    feature = { feature: "App automation injection", minimum: 491 }
-  } else if (name === "UpdateQueuedWorkflowPrompt" && payload?.retry_delivery === true) {
-    feature = { feature: "Held notification retry", minimum: requests.queuedNotificationRetryMinimumProtocolVersion }
   } else if (name === "CancelActivePrompt" && payload?.expected_prompt_id != null) {
     feature = { feature: "Exact prompt cancellation", minimum: requests.exactPromptCancellationMinimumProtocolVersion }
   } else if (name === "MoveAgentToLocal" && payload?.abort_pending === true) {

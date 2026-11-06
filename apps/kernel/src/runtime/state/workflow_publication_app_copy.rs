@@ -640,10 +640,15 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         what: &str,
     ) -> Result<(), DaemonError> {
-        Box::pin(self.app_control_response(owner.to_owned(), installation_id.to_owned(), request))
-            .await
-            .map(|_| ())
-            .map_err(|code| app_error(what, code))
+        Box::pin(self.app_control_response(
+            owner.to_owned(),
+            owner.to_owned(),
+            installation_id.to_owned(),
+            request,
+        ))
+        .await
+        .map(|_| ())
+        .map_err(|code| app_error(what, code))
     }
 
     /// The copy's agents use the copies of the Apps their source agents use.
@@ -730,16 +735,6 @@ impl KernelRuntimeState {
             let automation_id = text(automation, "automation_id");
             let queue_id = text(automation, "queue_id");
             let scheduled = automation["scheduled"].as_bool().unwrap_or_default();
-            let delivery_mode = serde_json::from_value(
-                automation
-                    .get("delivery_mode")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!("queue")),
-            )
-            .map_err(|_| DaemonError::LocalTransport {
-                operation: "copy App automation",
-                message: "invalid delivery mode".into(),
-            })?;
             let current = copy
                 .automations
                 .iter()
@@ -751,7 +746,6 @@ impl KernelRuntimeState {
                     && current.queue_id == queue_id
                     && current.event_name == text(automation, "event_name")
                     && current.scheduled == scheduled
-                    && current.delivery_mode == delivery_mode
             }) {
                 continue;
             }
@@ -767,7 +761,6 @@ impl KernelRuntimeState {
                     publication_ref: publication_id.to_owned(),
                     queue_ref: Some(queue_id.to_owned()),
                     scheduled,
-                    delivery_mode,
                 }),
                 "an App automation could not be configured for the copy",
             )
@@ -783,6 +776,7 @@ impl KernelRuntimeState {
                 owner,
                 &copy.installation_id,
                 LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
+                    session_id: None,
                     installation_id: copy.installation_id.clone(),
                     automation_id: current.automation_id.clone(),
                     expected_revision: current.revision,
