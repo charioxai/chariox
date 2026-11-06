@@ -17,10 +17,15 @@ Steps, from installing the App to the first delivery:
 ```sh
 node --test examples/apps/github-events/test/*.test.mjs
 cargo test -p chariox-app-package --test developer github_events
+# the real component under Wasmtime (build it first, see the build guide)
+node packages/app-sdk-tools/build-js.mjs examples/apps/github-events/app.ts "$TMPDIR/github-events.wasm"
+CHARIOX_GITHUB_EVENTS_COMPONENT="$TMPDIR/github-events.wasm" \
+  cargo test -p chariox-app-sdk-tools --features component-drills --test github-events-drill
 ```
 
 The Node tests inject the state and event imports into `createApp`; the Rust test
-packs and validates the real bundle with a stand-in component. The kernel side is
+packs and validates the real bundle with a stand-in component; the drill runs the
+built component with in-memory state and event fixtures. The kernel side is
 covered by `app_event_path_tests::event_path_one_delivery_runs_a_workflow_and_an_agent_once`.
 Build the WASM component with the pinned SDK tools
 ([build guide](../../../packages/app-sdk-tools/README.md)).

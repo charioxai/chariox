@@ -38,3 +38,8 @@ required-features = ["component-drills"]
 name = "excalidraw-files-drill"
 path = "../../examples/apps/excalidraw/test/files-drill.rs"
 required-features = ["component-drills"]
+
+[[test]]
+name = "github-events-drill"
+path = "../../examples/apps/github-events/test/component-drill.rs"
+required-features = ["component-drills"]
