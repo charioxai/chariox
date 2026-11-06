@@ -8,20 +8,29 @@ use crate::durable_state::agent_lifecycle::{
 };
 
 fn waiting_task(f: &Fixture, prompt: &str) -> AgentTaskExecution {
-    let store = &f.state.owned.durable_state_store;
-    let now = crate::session::unix_epoch_ms();
     let room = &f.request.session_id;
     let agent = f.request.target_agent_id.as_deref().unwrap();
-    store
+    f.state
+        .owned
+        .durable_state_store
         .agent_lifecycle(Operation::Begin {
             owner: "local".into(),
             room: room.clone(),
             agent: agent.into(),
             prompt: prompt.into(),
             run: Some(f.run.id().into()),
-            now,
+            now: crate::session::unix_epoch_ms(),
         })
         .unwrap();
+    park_task(f, prompt)
+}
+
+/// Parks a begun task on a timer and settles its turn: the state a task is in while it waits.
+pub(super) fn park_task(f: &Fixture, prompt: &str) -> AgentTaskExecution {
+    let store = &f.state.owned.durable_state_store;
+    let now = crate::session::unix_epoch_ms();
+    let room = &f.request.session_id;
+    let agent = f.request.target_agent_id.as_deref().unwrap();
     let wake_id = format!("timer-{prompt}");
     let registration_id = format!("completion-{wake_id}");
     let wake: AgentWake = serde_json::from_value(serde_json::json!({

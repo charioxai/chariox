@@ -1,4 +1,5 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A1: the short wake prompt and the batch it carries.
+use super::parked_task_tests::park_task;
 use super::tests::{fixture_with_options, Fixture};
 use super::window_tests::open;
 use crate::durable_state::agent_lifecycle::{self as ledger, InboxEvent, Operation, Outcome};
@@ -265,4 +266,50 @@ async fn a_sudo_window_never_steers_and_its_deferred_rows_run_as_one_turn_after_
     assert_eq!(batch[0].sequence, first.sequence);
     assert_eq!(batch[1].sequence, unrelated.sequence);
     assert_eq!(batch[2].sequence, second.sequence);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 A04-S06: the elevated turn parked its task and ended, the window is still open,
+// and the delegate's correlated result wakes the original task without a new passkey; an unrelated message waits.
+// (A wake only starts for a task that is Waiting: the kernel binds the wake prompt to it when it admits the attempt.)
+#[tokio::test]
+async fn a_correlated_wake_inside_an_open_window_runs_and_an_unrelated_message_waits() {
+    let f = fixture_with_options(None, true);
+    let window = open(&f, None).await;
+    let (room, agent) = (window.session_id.clone(), window.agent_id.clone());
+    let work = window.task_id.clone().unwrap();
+    let unrelated = occur(&f, "u", "message", serde_json::json!({"message": "later"}));
+    let result = occur(&f, "w1", "peer_event", serde_json::json!({"task_id": work}));
+    let session = f.state.owned.session_store.get_session(&room).unwrap();
+    f.state
+        .owned
+        .prompt_state_owner
+        .cancel_active_prompt_only(&session, &agent)
+        .unwrap();
+    park_task(&f, &work);
+    assert!(
+        f.state.owned.sudo_work_task(&room, &agent).is_some(),
+        "the window stays open"
+    );
+    f.state.deliver_agent_inbox(&room, &agent).await.unwrap();
+    let prompt = active_prompt(&f)
+        .expect("the correlated result wakes the original work inside the window")
+        .id()
+        .to_owned();
+    let batch = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_events_for_prompt(&room, &agent, &prompt)
+        .unwrap();
+    assert_eq!(
+        batch.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        vec![result.sequence],
+        "{batch:?}"
+    );
+    let all = rows(&f);
+    let waiting = all
+        .iter()
+        .find(|e| e.sequence == unrelated.sequence)
+        .unwrap();
+    assert_eq!(waiting.state, "pending", "{all:?}");
 }
