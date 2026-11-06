@@ -64,10 +64,16 @@ out declared outgoing occurrences to workflow targets.
 
 ## Delivery
 
-The kernel/AEDS event-delivery wire protocol is version 3. Version 3 carries the
+The kernel/AEDS event-delivery wire protocol is version 4. Version 3 carried the
 optional provider-owned `reply_context` through `PublishEventRequest` and
-`EventDeliveryEnvelope`; peers that do not advertise version 3 are rejected rather
-than silently dropping reply capability.
+`EventDeliveryEnvelope`; version 4 replaces the bearer token of the connection with a
+challenge: AEDS opens every WebSocket with `{"type":"challenge","nonce":...}` (fresh and
+single-use), and the kernel's `hello` carries its `kernel_id` (the fingerprint of its
+identity public key), the `public_key` and a `signature` over the nonce and id. A hello
+whose id is not the key's fingerprint, whose signature does not verify, or that answers
+another connection's nonce is refused with `invalid_kernel_credentials`; an operator
+admission policy (`open` with per-kernel caps, or an `allowlist` of kernel ids) may refuse
+with `kernel_not_admitted`. Peers that do not advertise version 4 are rejected.
 
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
 sends its stable kernel/environment identity, route claims, and an optional resume
@@ -224,20 +230,15 @@ mapping from an event interest to a kernel. Each AEGS owns provider authorizatio
 upstream webhook/subscription resources, and the mapping from an incoming provider
 event to an `event_interest_key`.
 
-The kernel reconciles each configured AEGS through its operator endpoint with a
-separate scoped management capability. Hosted kernels obtain this capability from
-the Cloud API after authenticating their persisted Cloud session or machine
-credential; the registry-provided HTTPS management URL is checked against the
-published generator digest before a token is issued. The capability is a short-lived
-Ed25519-signed bearer token scoped to one generator, manifest digest, kernel identity,
-an exact set of allowed owner identities, and management audience. AEGS SDK servers verify it locally with the configured
-Chariox Cloud public key, so provider credentials and publisher private keys never
-enter the kernel, AEDS, or catalog. Self-hosted deployments may continue using a
-static operator token. `PUT /v1/subscriptions/reconcile` is
-authoritative for one `owner_id` and `generator_id` pair and carries
+The kernel reconciles each configured AEGS through its operator endpoint, signing every
+request with its identity key and naming the secret owner id of the connections it acts for
+(see `AEGS_MANAGEMENT_BOOTSTRAP.md`). No token is issued by Cloud or by the operator, so
+provider credentials and publisher private keys never enter the kernel, AEDS, or catalog.
+`PUT /v1/subscriptions/reconcile` is
+authoritative for the calling kernel's bindings under one `owner_id` and `generator_id` pair and carries
 App-route binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.
-An omitted binding becomes inactive only when it is still owned by that owner.
+An omitted binding becomes inactive only when it is still held by that kernel.
 A higher revision can transfer a logical App route to a new owner; equal or older
 cross-owner writes are fenced. This is not workflow notification transfer. AEGS credentials are never reused as AEDS
 credentials.
@@ -275,10 +276,10 @@ therefore never decides who receives an occurrence. The producer does:
   connection and authorization generation.
 
 One AEGS and one AEDS enforce this the same way for Cloud and self-hosted
-operators: no signature, ticket or Cloud account takes part.
+operators: no ticket or Cloud account takes part.
 
 Provider credentials never transit the kernel. The kernel starts authorization with
-the AEGS management capability at `POST /v1/authorizations`; the response is either a
+a signed request at `POST /v1/authorizations`; the response is either a
 ready opaque `connection_id` or a user-action URL/device code. It then pages
 provider-owned repositories, projects, workspaces, or equivalent scopes through
 `POST /v1/resources/query`. The resource response supplies a display identity and the

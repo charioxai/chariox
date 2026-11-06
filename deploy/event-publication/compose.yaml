@@ -12,12 +12,11 @@ services:
       CHARIOX_AEDS_KERNEL_ADDR: 0.0.0.0:43130
       CHARIOX_AEDS_PRODUCER_ADDR: 0.0.0.0:43131
       CHARIOX_AEDS_DATABASE_PATH: /var/lib/chariox/aeds/aeds.db
-      CHARIOX_AEDS_KERNEL_TOKENS_FILE: /run/secrets/aeds_kernel_tokens
+      CHARIOX_AEDS_ADMISSION: open
       CHARIOX_AEDS_PRODUCER_CAPABILITIES_FILE: /run/secrets/aeds_producer_capabilities
       CHARIOX_AEDS_RETRY_MS: "250"
       CHARIOX_AEDS_HEARTBEAT_MS: "1000"
     secrets:
-      - aeds_kernel_tokens
       - aeds_producer_capabilities
     volumes:
       - aeds-data:/var/lib/chariox/aeds
@@ -55,12 +54,11 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.dummy
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/dummy_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/dummy_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - dummy_aegs_producer_token
-      - dummy_aegs_management_token
     volumes:
       - dummy-aegs-data:/var/lib/chariox/aegs
     networks:
@@ -98,13 +96,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.github
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/github_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/github_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/github_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - github_aegs_producer_token
-      - github_aegs_management_token
       - github_aegs_webhook_secret
     volumes:
       - github-aegs-data:/var/lib/chariox/aegs
@@ -143,13 +140,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.jira-cloud
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/jira_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/jira_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/jira_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - jira_aegs_producer_token
-      - jira_aegs_management_token
       - jira_aegs_webhook_secret
     volumes:
       - jira-aegs-data:/var/lib/chariox/aegs
@@ -188,13 +184,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.linear
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/linear_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/linear_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/linear_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - linear_aegs_producer_token
-      - linear_aegs_management_token
       - linear_aegs_webhook_secret
     volumes:
       - linear-aegs-data:/var/lib/chariox/aegs
@@ -233,13 +228,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.gitlab
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/gitlab_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/gitlab_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/gitlab_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - gitlab_aegs_producer_token
-      - gitlab_aegs_management_token
       - gitlab_aegs_webhook_secret
     volumes:
       - gitlab-aegs-data:/var/lib/chariox/aegs
@@ -278,13 +272,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.sentry
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/sentry_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/sentry_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/sentry_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - sentry_aegs_producer_token
-      - sentry_aegs_management_token
       - sentry_aegs_webhook_secret
     volumes:
       - sentry-aegs-data:/var/lib/chariox/aegs
@@ -323,13 +316,12 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.slack
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/slack_aegs_producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/slack_aegs_management_token
+      CHARIOX_AEGS_ADMISSION: open
       CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/slack_aegs_webhook_secret
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - slack_aegs_producer_token
-      - slack_aegs_management_token
       - slack_aegs_webhook_secret
     volumes:
       - slack-aegs-data:/var/lib/chariox/aegs
@@ -371,47 +363,31 @@ volumes:
   slack-aegs-data:
 
 secrets:
-  aeds_kernel_tokens:
-    file: ./secrets/aeds-kernel-tokens.json
   aeds_producer_capabilities:
     file: ./secrets/aeds-producer-capabilities.json
   dummy_aegs_producer_token:
     file: ./secrets/dummy-aegs-producer-token
-  dummy_aegs_management_token:
-    file: ./secrets/dummy-aegs-management-token
   github_aegs_producer_token:
     file: ./secrets/github-aegs-producer-token
-  github_aegs_management_token:
-    file: ./secrets/github-aegs-management-token
   github_aegs_webhook_secret:
     file: ./secrets/github-aegs-webhook-secret
   jira_aegs_producer_token:
     file: ./secrets/jira-aegs-producer-token
-  jira_aegs_management_token:
-    file: ./secrets/jira-aegs-management-token
   jira_aegs_webhook_secret:
     file: ./secrets/jira-aegs-webhook-secret
   linear_aegs_producer_token:
     file: ./secrets/linear-aegs-producer-token
-  linear_aegs_management_token:
-    file: ./secrets/linear-aegs-management-token
   linear_aegs_webhook_secret:
     file: ./secrets/linear-aegs-webhook-secret
   gitlab_aegs_producer_token:
     file: ./secrets/gitlab-aegs-producer-token
-  gitlab_aegs_management_token:
-    file: ./secrets/gitlab-aegs-management-token
   gitlab_aegs_webhook_secret:
     file: ./secrets/gitlab-aegs-webhook-secret
   sentry_aegs_producer_token:
     file: ./secrets/sentry-aegs-producer-token
-  sentry_aegs_management_token:
-    file: ./secrets/sentry-aegs-management-token
   sentry_aegs_webhook_secret:
     file: ./secrets/sentry-aegs-webhook-secret
   slack_aegs_producer_token:
     file: ./secrets/slack-aegs-producer-token
-  slack_aegs_management_token:
-    file: ./secrets/slack-aegs-management-token
   slack_aegs_webhook_secret:
     file: ./secrets/slack-aegs-webhook-secret

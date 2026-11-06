@@ -218,7 +218,7 @@ async fn connect_once(
     mut shutdown: watch::Receiver<bool>,
     delivery_queue: &DeliveryAcceptanceQueue,
 ) -> Result<(), String> {
-    let mut request = url
+    let request = url
         .into_client_request()
         .map_err(|error| format!("invalid AEDS URL: {error}"))?;
     let (websocket, _) = crate::outbound_dial::connect_websocket(request)

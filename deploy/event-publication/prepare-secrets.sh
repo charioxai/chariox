@@ -60,86 +60,54 @@ ensure_secret() {
   chmod 600 "${path}"
 }
 
-kernel_token_file="${secrets_dir}/local-kernel-token"
 producer_token_file="${secrets_dir}/dummy-aegs-producer-token"
-management_token_file="${secrets_dir}/dummy-aegs-management-token"
 github_producer_token_file="${secrets_dir}/github-aegs-producer-token"
-github_management_token_file="${secrets_dir}/github-aegs-management-token"
 github_webhook_secret_file="${secrets_dir}/github-aegs-webhook-secret"
 jira_producer_token_file="${secrets_dir}/jira-aegs-producer-token"
-jira_management_token_file="${secrets_dir}/jira-aegs-management-token"
 jira_webhook_secret_file="${secrets_dir}/jira-aegs-webhook-secret"
 linear_producer_token_file="${secrets_dir}/linear-aegs-producer-token"
-linear_management_token_file="${secrets_dir}/linear-aegs-management-token"
 linear_webhook_secret_file="${secrets_dir}/linear-aegs-webhook-secret"
 gitlab_producer_token_file="${secrets_dir}/gitlab-aegs-producer-token"
-gitlab_management_token_file="${secrets_dir}/gitlab-aegs-management-token"
 gitlab_webhook_secret_file="${secrets_dir}/gitlab-aegs-webhook-secret"
 sentry_producer_token_file="${secrets_dir}/sentry-aegs-producer-token"
-sentry_management_token_file="${secrets_dir}/sentry-aegs-management-token"
 sentry_webhook_secret_file="${secrets_dir}/sentry-aegs-webhook-secret"
 slack_producer_token_file="${secrets_dir}/slack-aegs-producer-token"
-slack_management_token_file="${secrets_dir}/slack-aegs-management-token"
 slack_webhook_secret_file="${secrets_dir}/slack-aegs-webhook-secret"
 for secret_file in \
-  "${kernel_token_file}" \
   "${producer_token_file}" \
-  "${management_token_file}" \
   "${github_producer_token_file}" \
-  "${github_management_token_file}" \
   "${github_webhook_secret_file}" \
   "${jira_producer_token_file}" \
-  "${jira_management_token_file}" \
   "${jira_webhook_secret_file}" \
   "${linear_producer_token_file}" \
-  "${linear_management_token_file}" \
   "${linear_webhook_secret_file}" \
   "${gitlab_producer_token_file}" \
-  "${gitlab_management_token_file}" \
   "${gitlab_webhook_secret_file}" \
   "${sentry_producer_token_file}" \
-  "${sentry_management_token_file}" \
   "${sentry_webhook_secret_file}" \
   "${slack_producer_token_file}" \
-  "${slack_management_token_file}" \
   "${slack_webhook_secret_file}"
 do
   ensure_secret "${secret_file}"
 done
 
-kernel_token="$(tr -d '\r\n' < "${kernel_token_file}")"
 producer_token="$(tr -d '\r\n' < "${producer_token_file}")"
-management_token="$(tr -d '\r\n' < "${management_token_file}")"
 github_producer_token="$(tr -d '\r\n' < "${github_producer_token_file}")"
-github_management_token="$(tr -d '\r\n' < "${github_management_token_file}")"
 jira_producer_token="$(tr -d '\r\n' < "${jira_producer_token_file}")"
-jira_management_token="$(tr -d '\r\n' < "${jira_management_token_file}")"
 linear_producer_token="$(tr -d '\r\n' < "${linear_producer_token_file}")"
-linear_management_token="$(tr -d '\r\n' < "${linear_management_token_file}")"
 gitlab_producer_token="$(tr -d '\r\n' < "${gitlab_producer_token_file}")"
-gitlab_management_token="$(tr -d '\r\n' < "${gitlab_management_token_file}")"
 sentry_producer_token="$(tr -d '\r\n' < "${sentry_producer_token_file}")"
-sentry_management_token="$(tr -d '\r\n' < "${sentry_management_token_file}")"
 slack_producer_token="$(tr -d '\r\n' < "${slack_producer_token_file}")"
-slack_management_token="$(tr -d '\r\n' < "${slack_management_token_file}")"
-printf '{"local-container-kernel":"%s"}\n' "${kernel_token}" \
-  > "${secrets_dir}/aeds-kernel-tokens.json"
 printf '{"dev.chariox.dummy":{"token":"%s","event_types":["dummy.test"]},"dev.chariox.github":{"token":"%s","event_types":["pull_request.opened","pull_request.synchronize","pull_request.review_requested","issues.opened","workflow_run.completed"]},"dev.chariox.jira-cloud":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","issue.transitioned"]},"dev.chariox.linear":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","project.updated"]},"dev.chariox.gitlab":{"token":"%s","event_types":["merge_request.opened","merge_request.updated","issue.created","pipeline.completed"]},"dev.chariox.sentry":{"token":"%s","event_types":["issue.created","issue.resolved"]},"dev.chariox.slack":{"token":"%s","event_types":["app.mentioned","message.channels","reaction.added"]}}\n' \
   "${producer_token}" "${github_producer_token}" "${jira_producer_token}" \
   "${linear_producer_token}" "${gitlab_producer_token}" "${sentry_producer_token}" \
   "${slack_producer_token}" \
   > "${secrets_dir}/aeds-producer-capabilities.json"
-printf '{"dev.chariox.dummy":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.github":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.jira-cloud":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.linear":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.gitlab":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.sentry":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.slack":{"url":"http://127.0.0.1:%s","token":"%s"}}\n' \
-  "${dummy_aegs_port}" "${management_token}" \
-  "${github_aegs_port}" "${github_management_token}" \
-  "${jira_aegs_port}" "${jira_management_token}" \
-  "${linear_aegs_port}" "${linear_management_token}" \
-  "${gitlab_aegs_port}" "${gitlab_management_token}" \
-  "${sentry_aegs_port}" "${sentry_management_token}" \
-  "${slack_aegs_port}" "${slack_management_token}" \
+printf '{"dev.chariox.dummy":{"url":"http://127.0.0.1:%s"},"dev.chariox.github":{"url":"http://127.0.0.1:%s"},"dev.chariox.jira-cloud":{"url":"http://127.0.0.1:%s"},"dev.chariox.linear":{"url":"http://127.0.0.1:%s"},"dev.chariox.gitlab":{"url":"http://127.0.0.1:%s"},"dev.chariox.sentry":{"url":"http://127.0.0.1:%s"},"dev.chariox.slack":{"url":"http://127.0.0.1:%s"}}\n' \
+  "${dummy_aegs_port}" "${github_aegs_port}" "${jira_aegs_port}" "${linear_aegs_port}" \
+  "${gitlab_aegs_port}" "${sentry_aegs_port}" "${slack_aegs_port}" \
   > "${secrets_dir}/kernel-aegs-management-targets.json"
 chmod 600 \
-  "${secrets_dir}/aeds-kernel-tokens.json" \
   "${secrets_dir}/aeds-producer-capabilities.json" \
   "${secrets_dir}/kernel-aegs-management-targets.json"
 

@@ -70,7 +70,6 @@ impl Drop for Aegs {
 }
 
 struct Kernel {
-    signing: p256::ecdsa::SigningKey,
     private: String,
     public: String,
 }
@@ -93,7 +92,6 @@ impl Kernel {
         let public = STANDARD.encode(signing.verifying_key().to_encoded_point(false).as_bytes());
         Self {
             private: STANDARD.encode(signing.to_bytes()),
-            signing,
             public,
         }
     }
