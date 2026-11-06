@@ -797,3 +797,49 @@ function remote(): WaitingRoomRemoteState {
     }],
   }
 }
+
+test("managed Machine setup leaves out a login that moves through the Vault", () => {
+  const vaultRemote = remote()
+  vaultRemote.providerAccounts = [
+    ...(vaultRemote.providerAccounts ?? []),
+    {
+      owner_user_id: "user-1",
+      provider: "claude",
+      profile_id: "claude-token",
+      label: "Claude token",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      context_transfer: "vault_credential",
+      usage: { profile_id: "claude-token", provider: "claude", availability: "unavailable", source: "test" },
+    },
+  ]
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+    managedKernelContext: "source_kernel",
+    managedProviderAccountSource: "selected_account",
+    focus: "managed-provider-account",
+  }, [], catalog(), undefined, vaultRemote)
+
+  const selected = managedEnvironmentContextPlanInput(state, vaultRemote).providerAccounts
+  assert.ok(
+    selected.kind === "none" || !selected.accounts.some((account) => account.accountProfile === "claude-token"),
+    "the default form must not select a login its transfer cannot carry",
+  )
+  assert.equal(
+    waitingRoomManagedMachineDialogRows(state, vaultRemote)
+      .find((row) => row.id === "managed-provider-account:claude:claude-token")?.value,
+    "Claude · Unavailable, Vault token",
+  )
+  const focused = cycleWaitingRoomValue({
+    ...state,
+    focus: "managed-provider-account",
+    managedProviderAccountIndex: (vaultRemote.providerAccounts?.length ?? 1) - 1,
+  }, [], catalog(), 1, undefined, vaultRemote)
+  assert.ok(
+    !(focused.managedProviderAccountSelection ?? []).some((account) => account.accountProfile === "claude-token"),
+    "a Vault login cannot be switched on by hand either",
+  )
+})
