@@ -261,11 +261,22 @@ impl Services {
         metadata: &Value,
         discard_ack: bool,
     ) -> usize {
+        self.generate_in("default", deliveries, metadata, discard_ack)
+            .await
+    }
+    /// The same publication for one connection scope (a repository for GitHub).
+    pub async fn generate_in(
+        &self,
+        scope: &str,
+        deliveries: Vec<EventDeliveryEnvelope>,
+        metadata: &Value,
+        discard_ack: bool,
+    ) -> usize {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         let subscriptions = loop {
             let claims = self
                 .subscriptions
-                .matching(GENERATOR, "dummy.test", "default")
+                .matching(GENERATOR, "dummy.test", scope)
                 .unwrap();
             if !claims.is_empty() {
                 break claims;

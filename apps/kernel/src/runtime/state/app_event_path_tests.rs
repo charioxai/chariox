@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use std::{path::PathBuf, time::Duration};
 use tokio::sync::{watch, Mutex};
 mod services;
+mod workflow_and_agent;
 use services::{Services, GENERATOR};
 
 struct Scratch(PathBuf);
@@ -54,6 +55,14 @@ async fn route(
     id: &str,
     filter: Value,
 ) -> Result<LocalDaemonResponse, crate::error::DaemonError> {
+    route_in(router, id, "default", filter).await
+}
+async fn route_in(
+    router: &CommandRouter,
+    id: &str,
+    scope: &str,
+    filter: Value,
+) -> Result<LocalDaemonResponse, crate::error::DaemonError> {
     let request = LocalDaemonRequest::CreateAppInboxRoute(CreateAppInboxRouteRequest {
         installation_id: "installed".into(),
         route_id: id.into(),
@@ -63,7 +72,7 @@ async fn route(
         connection: Some(AppInboxConnection {
             generator_id: GENERATOR.into(),
             connection_id: "fixture-connection".into(),
-            connection_scope: "default".into(),
+            connection_scope: scope.into(),
             filter,
         }),
     });
@@ -78,6 +87,52 @@ async fn route(
             request,
         )
         .await
+}
+fn test_config(root: &std::path::Path, services: &Services) -> crate::config::DaemonConfig {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    std::fs::create_dir(root.join("state")).unwrap();
+    std::fs::create_dir_all(root.join("workspace/first")).unwrap();
+    std::fs::create_dir_all(root.join("workspace/second")).unwrap();
+    config.user_config.state.path = Some(root.join("state/state.db").display().to_string());
+    config.user_config_path = root.join("state/config.toml");
+    config = config.with_session_history_root(root.join("session-history"));
+    config.user_config.history.operational.path =
+        Some(root.join("operational.db").display().to_string());
+    config.user_config.artifacts.operational.root =
+        Some(root.join("artifacts").display().to_string());
+    config.user_config.artifacts.operational.index_path =
+        Some(root.join("artifacts.db").display().to_string());
+    config.event_delivery_url = Some(services.aeds_url.clone());
+    config.event_delivery_environment_id = "evval-fixture".into();
+    config.event_generator_management_targets.insert(
+        GENERATOR.into(),
+        crate::config::EventGeneratorManagementTarget {
+            url: services.generator_url.clone(),
+            registry_discovered: false,
+        },
+    );
+    config
+}
+/// Installs the fixture inbox App for the local owner and stages its release.
+fn install_fixture_app(store: &crate::durable_state::DurableKernelStateStore) {
+    let (bytes, publisher) = fixture_inbox_installation(store, "local");
+    let package = verify(
+        &bytes,
+        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
+    )
+    .unwrap();
+    ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
 }
 struct WorkerCleanup(crate::runtime::app_lifecycle::AppLifecycleService);
 impl Drop for WorkerCleanup {
@@ -249,6 +304,22 @@ fn runs(state: &KernelRuntimeState, sessions: &[(String, String)]) -> Vec<String
         .collect()
 }
 fn envelope(binding: &str, suffix: &str, now: u64) -> EventDeliveryEnvelope {
+    envelope_to(
+        binding,
+        suffix,
+        now,
+        ["first", "second"],
+        json!({"kind":"wanted"}),
+    )
+}
+/// One delivery whose fixture App handler forwards to the two named automations.
+fn envelope_to(
+    binding: &str,
+    suffix: &str,
+    now: u64,
+    automations: [&str; 2],
+    event: Value,
+) -> EventDeliveryEnvelope {
     let emission = |automation: &str| {
         serde_json::to_value(Occurrence {
             automation_id: automation.into(),
@@ -275,7 +346,7 @@ fn envelope(binding: &str, suffix: &str, now: u64) -> EventDeliveryEnvelope {
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         prompt: "canonical fixture prompt".into(),
         artifacts: vec![],
-        metadata: json!({"event":{"kind":"wanted"},"emissionFirst":emission("first"),"emissionSecond":emission("second")}),
+        metadata: json!({"event":event,"emissionFirst":emission(automations[0]),"emissionSecond":emission(automations[1])}),
         reply_context: Some(json!({"thread":"safe-fixture"})),
         expires_at_ms: now + 60_000,
     }
@@ -302,15 +373,15 @@ async fn drain(state: &KernelRuntimeState, expected: u64, sessions: &[(String, S
 
 #[test]
 fn event_path_delivery_filter_restart_ack_loss_and_ttl() {
-    exercise_on_runtime(false);
+    on_runtime(|| exercise(false));
 }
 
 #[test]
 fn event_path_fanout_preserves_binding_and_automation_independence() {
-    exercise_on_runtime(true);
+    on_runtime(|| exercise(true));
 }
 
-fn exercise_on_runtime(fanout: bool) {
+fn on_runtime<F: std::future::Future<Output = ()>>(drill: impl FnOnce() -> F + Send + 'static) {
     // MP-10: whole-kernel drills use the production runtime's stack budget.
     let stack = crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
     std::thread::Builder::new()
@@ -322,7 +393,7 @@ fn exercise_on_runtime(fanout: bool) {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(Box::pin(exercise(fanout)));
+                .block_on(Box::pin(drill()));
         })
         .unwrap()
         .join()
@@ -334,51 +405,13 @@ async fn exercise(fanout: bool) {
     std::fs::create_dir(&root).unwrap();
     let scratch = Scratch(root.clone());
     let services = Services::new(&root).await;
-    let mut config = crate::config::DaemonConfig::for_tests();
-    std::fs::create_dir(root.join("state")).unwrap();
-    std::fs::create_dir_all(root.join("workspace/first")).unwrap();
-    std::fs::create_dir_all(root.join("workspace/second")).unwrap();
-    config.user_config.state.path = Some(root.join("state/state.db").display().to_string());
-    config.user_config_path = root.join("state/config.toml");
-    config = config.with_session_history_root(root.join("session-history"));
-    config.user_config.history.operational.path =
-        Some(root.join("operational.db").display().to_string());
-    config.user_config.artifacts.operational.root =
-        Some(root.join("artifacts").display().to_string());
-    config.user_config.artifacts.operational.index_path =
-        Some(root.join("artifacts.db").display().to_string());
-    config.event_delivery_url = Some(services.aeds_url.clone());
-    config.event_delivery_environment_id = "evval-fixture".into();
-    config.event_generator_management_targets.insert(
-        GENERATOR.into(),
-        crate::config::EventGeneratorManagementTarget {
-            url: services.generator_url.clone(),
-            registry_discovered: false,
-        },
-    );
+    let config = test_config(&root, &services);
     let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
     let control = app.app_control_service();
     let cleanup = WorkerCleanup(control.lifecycle().clone());
     let observations = control.lifecycle().fixture_inbox_automation_workers();
     let store = app.durable_state_store();
-    let (bytes, publisher) = fixture_inbox_installation(&store, "local");
-    let package = verify(
-        &bytes,
-        &VerificationPolicy::new(crate::local::LOCAL_DAEMON_PROTOCOL_VERSION, vec![publisher]),
-    )
-    .unwrap();
-    ReleaseStore::open_or_create(store.path())
-        .unwrap()
-        .stage(
-            &package,
-            &bytes,
-            StageBudget {
-                max_stage_bytes: 1024 * 1024,
-                reserved_bytes: 1024 * 1024,
-                host_reserve_bytes: 1024 * 1024,
-            },
-        )
-        .unwrap();
+    install_fixture_app(&store);
     let sessions = vec![
         workflow(&mut app, &root.join("workspace/first"), "first"),
         workflow(&mut app, &root.join("workspace/second"), "second"),
@@ -390,7 +423,7 @@ async fn exercise(fanout: bool) {
     state
         .event_connection_registry()
         .upsert(
-            "local",
+            &crate::event_connection::event_connection_user_id(&config, "local"),
             FIXTURE_EVENT_OWNER,
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: GENERATOR.into(),
