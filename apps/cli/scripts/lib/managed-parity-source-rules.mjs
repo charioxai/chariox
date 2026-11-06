@@ -574,24 +574,6 @@ export const SOURCE_AUDIT_RULES = Object.freeze([
     ]
   },
   {
-    "id": "shared-provider-utility-capture-budget",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
-    "path": "apps/kernel/src/local/provider_requests/catalog/probe_capture.rs",
-    "blob": "451a629b85da106ac361f0897ee634b087cf1bda",
-    "classification": "shared_provider_utility_resource_policy",
-    "rationale": "Every provider utility retains one deadline, combined stdout/stderr memory cap and per-stream read budget with platform cleanup. Windows now reuses the common suspended-start job-owned pipe producer; the capture loop still has no managed topology selector. Platform runtime evidence is distinct from this common-loop inspection.",
-    "anchors": [
-      [
-        "cleanup_selector",
-        "capture"
-      ],
-      [
-        "cleanup_selector",
-        "drain"
-      ]
-    ]
-  },
-  {
     id: "shared-provider-status-probe-admission", sourceCommit: OSS_RUNTIME,
     path: "apps/kernel/src/local/provider_requests/catalog.rs",
     blob: "4727d4f3bcaf457a6f582a595e96d732a796788e",

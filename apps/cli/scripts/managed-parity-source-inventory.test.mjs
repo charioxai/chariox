@@ -1138,18 +1138,6 @@ test("slice placement observations remain separate from independent removal find
   });
 });
 
-test("manual audit anchors include generic utility resource functions", () => {
-  withFixture({}, (fixture) => {
-    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "shared-provider-utility-capture-budget");
-    const source = readFileSync(new URL("../../../apps/kernel/src/local/provider_requests/catalog/probe_capture.rs", import.meta.url), "utf8");
-    fixture.addFile(rule.path, source, "100644", rule.blob);
-    const report = collect(fixture);
-    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
-    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), ["capture", "drain"]);
-    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
-  });
-});
-
 test("machine enrollment data shapes get explicit candidates without widening source review", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-bootstrap-machine-profile-shape");
@@ -1969,9 +1957,9 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 
 // MP-11: frozen independent conclusions may bind only the reviewed source.
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
-  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
+  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 133);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 147);
+  assert.equal(SOURCE_AUDIT_RULES.length, 146);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");

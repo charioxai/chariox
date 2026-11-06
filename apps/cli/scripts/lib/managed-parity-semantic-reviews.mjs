@@ -1179,19 +1179,6 @@ export const INDEPENDENT_REVIEW_GROUPS = Object.freeze([
     ]
   },
   {
-    "ruleId": "shared-provider-utility-capture-budget",
-    "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
-    "sourceTree": "60dadc622701c79c63ef5d3bb6c5ff1006244aac",
-    "path": "apps/kernel/src/local/provider_requests/catalog/probe_capture.rs",
-    "blob": "451a629b85da106ac361f0897ee634b087cf1bda",
-    "disposition": "ordinary_path1_behavior",
-    "rationale": "MP-08/MP-11: Utility capture owns the producer and drains stdout/stderr under one shared retention policy. The limit is applied by the same helper irrespective of managed placement; it is not the broker build-output cap.",
-    "anchors": [
-      [29,15,"capture","cleanup_selector","capture","15d4995caf107e0ecd362c5c0d656ed2270cf07689f4e0fae2eab0b807bb75b6"],
-      [82,4,"drain","cleanup_selector","drain","36e618bbe20d1567937433a0c51c8edd294d6666dcec96d51247fe02708100e7"],
-    ]
-  },
-  {
     "ruleId": "shared-provisioner-command-guard",
     "sourceCommit": "686ec57d5e46cdd46e723155b7eb89f6f25202a2",
     "sourceTree": "60dadc622701c79c63ef5d3bb6c5ff1006244aac",

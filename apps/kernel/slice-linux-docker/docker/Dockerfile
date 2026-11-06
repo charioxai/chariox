@@ -376,6 +376,8 @@ CMD ["sleep", "infinity"]
 
 # MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-background.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-codec.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-chrome-window.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-geometry.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
