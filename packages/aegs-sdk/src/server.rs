@@ -1988,6 +1988,22 @@ mod mp11_delivery_http_tests {
         fn event_subject(&self, _: &crate::NormalizedEvent) -> Option<String> {
             Some("#7".into())
         }
+        /// The one scope every fixture connection has.
+        fn query_resources(
+            &self,
+            _: &chariox_event_protocol::AegsProviderResourceQuery,
+        ) -> Result<chariox_event_protocol::AegsProviderResourcePage, String> {
+            Ok(chariox_event_protocol::AegsProviderResourcePage {
+                resources: vec![chariox_event_protocol::AegsProviderResource {
+                    id: "1".into(),
+                    name: "scope".into(),
+                    kind: "repository".into(),
+                    connection_scope: "scope".into(),
+                    filter: None,
+                }],
+                next_cursor: None,
+            })
+        }
     }
     fn event() -> crate::NormalizedEvent {
         crate::NormalizedEvent {
@@ -2007,6 +2023,8 @@ mod mp11_delivery_http_tests {
         accepted: Arc<AtomicUsize>,
         /// Interest keys of the accepted publications, in order.
         interests: Arc<std::sync::Mutex<Vec<String>>>,
+        /// The `audience` of each accepted publication, in order (`null` when it had none).
+        audiences: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         refusals: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
@@ -2027,6 +2045,8 @@ mod mp11_delivery_http_tests {
             let refusals = Arc::new(AtomicUsize::new(0));
             let interests = Arc::new(std::sync::Mutex::new(Vec::new()));
             let recorded = interests.clone();
+            let audiences = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded_audiences = audiences.clone();
             let (accepts, refuse) = (accepted.clone(), refusals.clone());
             let stop = Arc::new(AtomicBool::new(false));
             let count = calls.clone();
@@ -2087,6 +2107,10 @@ mod mp11_delivery_http_tests {
                                 .lock()
                                 .unwrap()
                                 .push(request["event_interest_key"].as_str().unwrap().into());
+                            recorded_audiences
+                                .lock()
+                                .unwrap()
+                                .push(request["audience"].clone());
                             let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                         }
@@ -2102,6 +2126,7 @@ mod mp11_delivery_http_tests {
                 calls,
                 accepted,
                 interests,
+                audiences,
                 refusals,
                 stop,
                 hold,
@@ -2229,6 +2254,106 @@ mod mp11_delivery_http_tests {
         });
         (server, store)
     }
+    fn claim_for(binding_id: &str, active: bool) -> crate::SubscriptionClaim {
+        crate::SubscriptionClaim {
+            binding_id: binding_id.into(),
+            active,
+            ..subscription_claim()
+        }
+    }
+
+    /// AEDS delivers only to the routes the producer names, because anyone can claim an
+    /// interest key. The audience is every kernel with an active subscription for the key.
+    #[tokio::test]
+    async fn publication_names_the_kernels_holding_a_subscription_for_the_interest() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server_reconciled_by(&publisher, "kernel-1");
+        for (kernel, binding, active) in [
+            ("kernel-2", "binding-2", true),
+            ("kernel-3", "binding-3", false),
+        ] {
+            store
+                .reconcile_scoped(
+                    kernel,
+                    Some(&["owner".to_string()]),
+                    "dev.chariox.github",
+                    &[claim_for(binding, active)],
+                )
+                .unwrap();
+        }
+        signed_webhook(server).await;
+        let audiences = publisher.audiences.lock().unwrap().clone();
+        assert_eq!(
+            audiences,
+            vec![serde_json::json!([
+                {"kernel_id": "kernel-1", "binding_id": "binding"},
+                {"kernel_id": "kernel-2", "binding_id": "binding-2"},
+            ])]
+        );
+    }
+
+    async fn reconcile_as(
+        server: &Arc<AegsServer>,
+        kernel: &'static str,
+        claims: &[crate::SubscriptionClaim],
+    ) -> (u16, serde_json::Value) {
+        let body = serde_json::json!({
+            "owner_id": kernel,
+            "generator_id": "dev.chariox.github",
+            "subscriptions": claims,
+        });
+        management_send("PUT", server, "/v1/subscriptions/reconcile", kernel, body).await
+    }
+
+    /// A connection can only watch scopes it has: the interest key of a stranger's repository is
+    /// derivable, so a subscription for it would be a way to read that repository's events.
+    #[tokio::test]
+    async fn reconcile_refuses_a_scope_the_connection_does_not_have() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_token: Some("management-token".into()),
+            ..(*server).clone()
+        });
+        let foreign = crate::SubscriptionClaim {
+            binding_id: "foreign".into(),
+            connection_scope: "stranger/private-repo".into(),
+            event_interest_key: "foreign-interest".into(),
+            ..subscription_claim()
+        };
+        let (status, body) =
+            reconcile_as(&server, "kernel-x", &[subscription_claim(), foreign]).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["accepted_binding_ids"], serde_json::json!(["binding"]));
+        assert_eq!(
+            body["refused"],
+            serde_json::json!([{"binding_id": "foreign", "reason": "scope_not_in_connection"}])
+        );
+        assert!(store
+            .matching("dev.chariox.github", "event", "stranger/private-repo")
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The claim of a connection the AEGS does not know is refused as well.
+    #[tokio::test]
+    async fn reconcile_refuses_a_connection_the_aegs_does_not_know() {
+        let publisher = PublisherFixture::new();
+        let (server, _) = two_owner_server(&publisher);
+        let unknown = crate::SubscriptionClaim {
+            binding_id: "unknown".into(),
+            connection_id: "no-such-connection".into(),
+            ..subscription_claim()
+        };
+        let (status, body) = reconcile_as(&server, "kernel-x", &[unknown]).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["accepted_binding_ids"], serde_json::json!([]));
+        assert_eq!(
+            body["refused"],
+            serde_json::json!([{"binding_id": "unknown", "reason": "connection_not_found"}])
+        );
+    }
+
     #[tokio::test]
     async fn signed_webhook_is_acknowledged_when_aeds_refuses_the_first_publication() {
         let publisher = PublisherFixture::new();
@@ -2418,6 +2543,15 @@ mod mp11_delivery_http_tests {
         owner: &'static str,
         body: serde_json::Value,
     ) -> (u16, serde_json::Value) {
+        management_send("POST", server, path, owner, body).await
+    }
+    async fn management_send(
+        method: &'static str,
+        server: &Arc<AegsServer>,
+        path: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let server = server.clone();
@@ -2436,7 +2570,7 @@ mod mp11_delivery_http_tests {
                 .unwrap();
         });
         let response = tokio::task::spawn_blocking(move || {
-            let request = ureq::post(&url)
+            let request = ureq::request(method, &url)
                 .set("authorization", "Bearer management-token")
                 .set("x-chariox-owner-id", owner)
                 .set("connection", "close");
