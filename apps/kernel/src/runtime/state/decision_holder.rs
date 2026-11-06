@@ -34,7 +34,7 @@ pub(crate) enum UserOnly {
     UserDomain,
     /// Anything the kernel marked critical.
     Critical,
-    /// Any other kernel operation: renting or starting a machine, installs, unclassified.
+    /// Any other kernel operation: acquiring or starting a machine, installs, unclassified.
     KernelOperation,
 }
 
