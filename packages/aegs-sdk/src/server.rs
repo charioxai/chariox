@@ -2071,6 +2071,8 @@ mod mp11_delivery_http_tests {
                                 break;
                             }
                             std::thread::sleep(Duration::from_millis(delay.load(Ordering::SeqCst)));
+                            // fetch_update: the measured kernel build pins Rust 1.88, where try_update is unstable.
+                            #[allow(deprecated)]
                             if refuse
                                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                                     left.checked_sub(1)
