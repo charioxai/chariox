@@ -465,10 +465,16 @@ async fn import_entry<S: EnvironmentSource>(
                 .await
                 .map_err(ImportFailure::from)?
                 .ok_or_else(missing_at_source)?;
-            target
+            // The check above ran before the pull; a registration saved meanwhile wins over the imported one.
+            let installed = target
                 .registrations
-                .install(registration)
-                .map_err(ImportFailure::Entry)
+                .install_if_absent(registration)
+                .map_err(ImportFailure::Entry)?;
+            if installed {
+                Ok(())
+            } else {
+                Err(ImportFailure::Entry("Already registered here".into()))
+            }
         }
         EnvironmentEntryKind::File => {
             if !snapshot.files.contains(&entry.name) {
@@ -608,6 +614,8 @@ mod tests {
     use super::super::operations::{Begun, EnvironmentOperations, OperationChanges};
     use super::*;
     use crate::local::{EnvironmentOperationKind, EnvironmentOperationView};
+    use crate::mcp::{CharioxMcpRegistry, CharioxMcpServerConfig};
+    use crate::skill::CharioxSkillRegistry;
     use std::collections::HashMap;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
@@ -650,6 +658,8 @@ mod tests {
         gate: Option<Arc<tokio::sync::Notify>>,
         /// A secret pull waits for this, so a test can act while the pull is pending.
         secret_gate: Option<Arc<tokio::sync::Notify>>,
+        /// The pull of this registration waits for the signal, so a test can act while it is pending.
+        registration_gate: Option<(String, Arc<tokio::sync::Notify>)>,
         slice_bytes: usize,
         /// A pull holds this long, so slices requested ahead overlap.
         pull_delay: Duration,
@@ -676,10 +686,96 @@ mod tests {
         fn read(&self, _: EnvironmentEntryKind, _: &str) -> Result<Option<Registration>, String> {
             Ok(None)
         }
-        fn install(&self, registration: Registration) -> Result<(), String> {
+        fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
             self.installed.lock().unwrap().push(registration);
-            Ok(())
+            Ok(true)
         }
+    }
+
+    /// The registrations of the kernel under test on disk, written the way the user's are.
+    struct DiskRegistrations {
+        mcps: CharioxMcpRegistry,
+        skills: CharioxSkillRegistry,
+    }
+
+    impl DiskRegistrations {
+        fn under(root: &Path) -> Self {
+            Self {
+                mcps: CharioxMcpRegistry::new(vec![root.join("mcps")]),
+                skills: CharioxSkillRegistry::new(vec![root.join("skills")]),
+            }
+        }
+    }
+
+    impl RegistrationHost for DiskRegistrations {
+        fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool {
+            match kind {
+                EnvironmentEntryKind::Mcp => self.mcps.get(name).unwrap().is_some(),
+                EnvironmentEntryKind::Skill => self.skills.get(name).unwrap().is_some(),
+                EnvironmentEntryKind::Secret | EnvironmentEntryKind::File => false,
+            }
+        }
+        fn read(&self, _: EnvironmentEntryKind, _: &str) -> Result<Option<Registration>, String> {
+            Ok(None)
+        }
+        fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
+            super::super::registrations::install_if_absent(&self.mcps, &self.skills, registration)
+        }
+    }
+
+    fn entries_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|read| {
+                read.flatten()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    /// Runs an Import of `names` (all registrations of `kind`) whose pull of `late` is held until `late` was saved
+    /// locally by `save`, as another writer on this kernel would.
+    async fn import_while_saving(
+        rig: &Rig,
+        host: &DiskRegistrations,
+        kind: EnvironmentEntryKind,
+        names: &[&str],
+        pulled: Vec<(EnvironmentEntryKind, String, Registration)>,
+        save: impl FnOnce(),
+    ) -> EnvironmentOperationView {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let mut saved = record(1, &[], &[]);
+        let entries = names
+            .iter()
+            .map(|name| ExtensionEntry::registration(*name))
+            .collect();
+        let held = names.iter().map(|name| name.to_string()).collect();
+        if kind == EnvironmentEntryKind::Mcp {
+            saved.mcps = entries;
+        } else {
+            saved.skills = entries;
+        }
+        let mut from = source(Some(saved), &[], &[]);
+        if let Ok(snapshot) = &mut from.snapshot {
+            if kind == EnvironmentEntryKind::Mcp {
+                snapshot.mcps = held;
+            } else {
+                snapshot.skills = held;
+            }
+        }
+        from.registrations = pulled;
+        from.registration_gate = Some(("late".into(), gate.clone()));
+        let running = rig.import_into("pending", &from, host, None);
+        let saver = async {
+            while from.pulls.lock().unwrap().is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            save();
+            gate.notify_one();
+        };
+        tokio::join!(running, saver).0
     }
 
     impl EnvironmentSource for FakeSource {
@@ -707,6 +803,11 @@ mod tests {
             name: &str,
         ) -> Result<Option<Registration>, SourceError> {
             self.pulls.lock().unwrap().push(format!("{kind:?}:{name}"));
+            if let Some((gated, gate)) = &self.registration_gate {
+                if gated == name {
+                    gate.notified().await;
+                }
+            }
             Ok(self
                 .registrations
                 .iter()
@@ -755,6 +856,7 @@ mod tests {
             offline_after_read: false,
             gate: None,
             secret_gate: None,
+            registration_gate: None,
             slice_bytes: usize::MAX / 2,
             pull_delay: Duration::ZERO,
             in_flight: Default::default(),
@@ -834,6 +936,17 @@ mod tests {
             source: &S,
             requested: Option<Vec<EnvironmentEntryRef>>,
         ) -> EnvironmentOperationView {
+            self.import_into(id, source, &self.registrations, requested)
+                .await
+        }
+
+        async fn import_into<S: EnvironmentSource>(
+            &self,
+            id: &str,
+            source: &S,
+            registrations: &dyn RegistrationHost,
+            requested: Option<Vec<EnvironmentEntryRef>>,
+        ) -> EnvironmentOperationView {
             let on_record = |record: &ProjectEnvironmentRecord| {
                 self.adopted.lock().unwrap().push(record.revision)
             };
@@ -845,7 +958,7 @@ mod tests {
                     checkout: &self.checkout,
                     store: &self.store,
                     vault: &self.vault,
-                    registrations: &self.registrations,
+                    registrations,
                     on_record: &on_record,
                 },
                 requested,
@@ -1330,6 +1443,137 @@ mod tests {
         assert_eq!(
             rig.vault.find_secret(&service, "LATE").unwrap().as_deref(),
             Some("typed-locally")
+        );
+    }
+
+    #[tokio::test]
+    async fn an_mcp_saved_while_its_import_is_pending_is_kept_byte_for_byte() {
+        let rig = Rig::new();
+        let host = DiskRegistrations::under(&rig.root);
+        let pulled = |name: &str| {
+            Registration::Mcp(CharioxMcpServerConfig::stdio(name, "from-source", vec![]))
+        };
+        let local = CharioxMcpServerConfig::stdio("late", "typed-locally", vec!["--keep".into()]);
+        let view = import_while_saving(
+            &rig,
+            &host,
+            EnvironmentEntryKind::Mcp,
+            &["late", "free", "broken"],
+            vec![
+                (EnvironmentEntryKind::Mcp, "late".into(), pulled("late")),
+                (EnvironmentEntryKind::Mcp, "free".into(), pulled("free")),
+                (
+                    EnvironmentEntryKind::Mcp,
+                    "broken".into(),
+                    Registration::Mcp(CharioxMcpServerConfig::stdio("broken", " ", vec![])),
+                ),
+            ],
+            || {
+                host.mcps.install(&local).unwrap();
+            },
+        )
+        .await;
+        assert_eq!(
+            view.entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.state))
+                .collect::<Vec<_>>(),
+            vec![
+                ("late", EnvironmentOperationEntryState::Failed),
+                ("free", EnvironmentOperationEntryState::Imported),
+                ("broken", EnvironmentOperationEntryState::Failed),
+            ]
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("Already registered here")
+        );
+        let root = rig.root.join("mcps");
+        assert_eq!(
+            std::fs::read_to_string(root.join("late.json")).unwrap(),
+            format!("{}\n", serde_json::to_string_pretty(&local).unwrap())
+        );
+        assert_eq!(
+            host.mcps.get("free").unwrap().unwrap().name,
+            "free",
+            "a name still absent is imported"
+        );
+        assert_eq!(
+            entries_in(&root),
+            vec!["free.json".to_string(), "late.json".into()],
+            "the refused and the failed entries leave no file behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_skill_saved_while_its_import_is_pending_is_kept_byte_for_byte() {
+        let rig = Rig::new();
+        let host = DiskRegistrations::under(&rig.root);
+        let origin = CharioxSkillRegistry::new(vec![rig.root.join("origin")]);
+        let write_skill = |dir: &Path, name: &str, body: &str| {
+            std::fs::create_dir_all(dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {body}\n---\n{body}\n"),
+            )
+            .unwrap();
+        };
+        let staging = rig.root.join("staging");
+        let mut pulled = Vec::new();
+        for name in ["late", "free", "broken"] {
+            write_skill(&staging.join(name), name, "from the source");
+            origin.upsert_from_path(&staging.join(name)).unwrap();
+            let mut package = origin.package(name).unwrap().unwrap();
+            if name == "broken" {
+                package.files[0].sha256 = "0".repeat(64);
+            }
+            pulled.push((
+                EnvironmentEntryKind::Skill,
+                name.to_string(),
+                Registration::Skill(package),
+            ));
+        }
+        let local_dir = rig.root.join("skills").join("late");
+        let view = import_while_saving(
+            &rig,
+            &host,
+            EnvironmentEntryKind::Skill,
+            &["late", "free", "broken"],
+            pulled,
+            || {
+                write_skill(&local_dir, "late", "typed locally");
+                std::fs::write(local_dir.join("notes.txt"), "mine").unwrap();
+            },
+        )
+        .await;
+        assert_eq!(
+            view.entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.state))
+                .collect::<Vec<_>>(),
+            vec![
+                ("late", EnvironmentOperationEntryState::Failed),
+                ("free", EnvironmentOperationEntryState::Imported),
+                ("broken", EnvironmentOperationEntryState::Failed),
+            ]
+        );
+        assert_eq!(
+            view.entries[0].reason.as_deref(),
+            Some("Already registered here")
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("SKILL.md")).unwrap(),
+            "---\nname: late\ndescription: typed locally\n---\ntyped locally\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(local_dir.join("notes.txt")).unwrap(),
+            "mine"
+        );
+        assert!(host.skills.get("free").unwrap().is_some());
+        assert_eq!(
+            entries_in(&rig.root.join("skills")),
+            vec!["free".to_string(), "late".into()],
+            "the refused and the failed entries leave no directory behind, not even a backup"
         );
     }
 }

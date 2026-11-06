@@ -32,7 +32,9 @@ pub(crate) trait RegistrationHost: Send + Sync {
     fn has(&self, kind: EnvironmentEntryKind, name: &str) -> bool;
     /// The registration as another kernel can write it, or `None` when this kernel holds none of that name.
     fn read(&self, kind: EnvironmentEntryKind, name: &str) -> Result<Option<Registration>, String>;
-    fn install(&self, registration: Registration) -> Result<(), String>;
+    /// Registers the entry unless its name is held by the time it is published; `false` means it was held and is
+    /// left exactly as it is.
+    fn install_if_absent(&self, registration: Registration) -> Result<bool, String>;
 }
 
 /// The registrations of the user: `~/.chariox/mcps` and `~/.chariox/skills`.
@@ -95,26 +97,42 @@ impl RegistrationHost for UserRegistrations {
         }
     }
 
-    fn install(&self, registration: Registration) -> Result<(), String> {
-        match registration {
-            Registration::Mcp(config) => mcp_registry()
-                .and_then(|registry| registry.install(&config))
-                .map(|_| ())
-                .map_err(|error| error.to_string()),
-            Registration::Skill(package) => {
-                let registry = skill_registry().map_err(|error| error.to_string())?;
-                let root = CharioxSkillRegistry::user_root().ok_or("HOME must be set")?;
-                let incoming = root.join(format!(
-                    ".incoming-{}-{}",
-                    std::process::id(),
-                    crate::session::unix_epoch_ms()
-                ));
-                std::fs::create_dir_all(&incoming).map_err(|error| error.to_string())?;
-                let installed = materialize_skill_package(&incoming, &package)
-                    .and_then(|dir| registry.upsert_from_path(&dir));
-                let _ = std::fs::remove_dir_all(&incoming);
-                installed.map(|_| ()).map_err(|error| error.to_string())
-            }
+    fn install_if_absent(&self, registration: Registration) -> Result<bool, String> {
+        let mcps = mcp_registry().map_err(|error| error.to_string())?;
+        let skills = skill_registry().map_err(|error| error.to_string())?;
+        install_if_absent(&mcps, &skills, registration)
+    }
+}
+
+/// The write behind `RegistrationHost::install_if_absent`, over the registries it lands in.
+pub(crate) fn install_if_absent(
+    mcps: &CharioxMcpRegistry,
+    skills: &CharioxSkillRegistry,
+    registration: Registration,
+) -> Result<bool, String> {
+    match registration {
+        Registration::Mcp(config) => mcps
+            .install_if_absent(&config)
+            .map(|installed| installed.is_some())
+            .map_err(|error| error.to_string()),
+        Registration::Skill(package) => {
+            let root = skills
+                .primary_root()
+                .map_err(|error| error.to_string())?
+                .clone();
+            std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+            let incoming = root.join(format!(
+                ".incoming-{}-{}",
+                std::process::id(),
+                crate::session::unix_epoch_ms()
+            ));
+            std::fs::create_dir_all(&incoming).map_err(|error| error.to_string())?;
+            let installed = materialize_skill_package(&incoming, &package)
+                .and_then(|dir| skills.install_if_absent_from_path(&dir));
+            let _ = std::fs::remove_dir_all(&incoming);
+            installed
+                .map(|installed| installed.is_some())
+                .map_err(|error| error.to_string())
         }
     }
 }
