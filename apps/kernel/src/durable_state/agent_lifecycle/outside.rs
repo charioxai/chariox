@@ -10,7 +10,8 @@ mod validation;
 pub(super) use retention::bound;
 pub(crate) use retention::expire_notifications;
 use retention::prune_ended;
-use validation::{limit as inbox_limit, now as outside_now_ms};
+use validation::limit as inbox_limit;
+pub(crate) use validation::now as outside_now_ms;
 
 pub(crate) const PENDING_LIMIT: usize = 100_000;
 

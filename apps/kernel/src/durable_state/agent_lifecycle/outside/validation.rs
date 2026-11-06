@@ -15,7 +15,7 @@ pub(super) fn limit() -> Result<usize, DaemonError> {
     }
     Ok(PENDING_LIMIT)
 }
-pub(super) fn now() -> Result<u64, DaemonError> {
+pub(crate) fn now() -> Result<u64, DaemonError> {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("CHARIOX_TEST_OUTSIDE_CLOCK_MS_FILE") {
         use std::io::Read;

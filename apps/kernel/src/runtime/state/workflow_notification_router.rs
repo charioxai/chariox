@@ -404,7 +404,10 @@ impl KernelRuntimeOwnedState {
     /// No network, App worker, AEDS or registry dependency is involved.
     pub(super) fn route_workflow_notifications(&self) -> (BTreeSet<String>, bool) {
         let mut queued_sessions = BTreeSet::new();
-        let now = crate::session::unix_epoch_ms();
+        // The sweep reads the outside event clock, which a debug build lets a drill move forward.
+        let Ok(now) = crate::durable_state::agent_lifecycle::outside::outside_now_ms() else {
+            return (queued_sessions, false);
+        };
         if self
             .durable_state_store
             .notify(NotificationOperation::Sweep { now })
@@ -554,10 +557,10 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+mod outside_agent_listing_tests;
+#[cfg(test)]
 mod outside_agent_tests;
 #[cfg(test)]
-#[cfg(test)]
-mod outside_agent_listing_tests;
 mod tests {
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
