@@ -304,10 +304,15 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
     Box::pin(runtime.deliver_agent_inbox(session.id(), agent.id()))
         .await
         .unwrap();
-    let event = store
+    let (notices, mut wakes): (Vec<_>, Vec<_>) = store
         .agent_inbox(session.id(), agent.id(), 0)
         .unwrap()
-        .remove(0);
+        .into_iter()
+        .partition(|event| event.kind == "task_cancelled");
+    // The owner's cancellation is context for the next turn, never a turn itself.
+    assert_eq!(notices.len(), 1);
+    assert_eq!(notices[0].state, "pending");
+    let event = wakes.remove(0);
     assert_eq!(
         event.state, "accepted",
         "MP-11: an independent waiting task must wake"
