@@ -171,9 +171,19 @@ impl KernelRuntimeState {
         }
         let sessions = self.owned.session_store.read();
         let mut sources = sources;
+        // A disabled source keeps its follow row, flagged unavailable, so the grant can still end it.
+        let usable: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                (
+                    source.source_id.clone(),
+                    source.enabled
+                        && super::workflow_notification_router::source_available(&sessions, source),
+                )
+            })
+            .collect();
         for source in &mut sources {
-            source.available =
-                super::workflow_notification_router::source_available(&sessions, source);
+            source.enabled = true;
         }
         let summaries = super::workflow_notification_router::summaries(&sessions, &sources);
         Ok(followed
@@ -188,7 +198,9 @@ impl KernelRuntimeState {
                     kind: summary.kind,
                     session_id: summary.session_id.clone(),
                     subscription_id: sub.subscription_id,
-                    available: summary.available,
+                    available: usable
+                        .iter()
+                        .any(|(id, usable)| *usable && *id == sub.source_id),
                 })
             })
             .collect())

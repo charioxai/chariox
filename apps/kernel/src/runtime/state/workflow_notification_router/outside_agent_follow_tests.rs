@@ -114,3 +114,52 @@ async fn a_follow_that_passes_a_source_fanout_limit_follows_none_of_its_sources(
     drop((router, kernel));
     cleanup(f);
 }
+
+#[tokio::test]
+async fn a_disabled_source_stays_followed_until_the_grant_unsubscribes_it() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let source = register(&kernel, &f, &a);
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":[source.source_id.clone()]}}),
+    )
+    .await
+    .unwrap();
+    // The owner disables the source; the grant's follow is still there and shows as unavailable.
+    kernel
+        .execute_workflow_notification_request(
+            LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                RegisterWorkflowNotificationSourceRequest {
+                    session_id: f.session.clone(),
+                    workflow_ref: a.clone(),
+                    enabled: false,
+                    exit_node_id: "exit-1".into(),
+                },
+            ),
+            "local",
+        )
+        .unwrap();
+    let follows = kernel.followed_notification_sources(&grant).unwrap();
+    assert_eq!(follows.len(), 1, "{follows:?}");
+    assert_eq!(follows[0].source_id, source.source_id);
+    assert!(!follows[0].available);
+    // `events unsubscribe --source all` names what the grant reports following.
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"UnsubscribeEvents":{"sources":[follows[0].source_id.clone()]}}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        followed(&kernel, &grant).is_empty(),
+        "re-enabling the source must not resume a detached follow"
+    );
+    drop((router, kernel));
+    cleanup(f);
+}
