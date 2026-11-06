@@ -47,17 +47,52 @@ impl KernelRuntimeState {
         if agent.remote_execution().is_some() {
             return Err(refusal("agent_deadline_requires_executor", "arm an agent deadline on its executing kernel; leased-agent deadlines require worker enforcement"));
         }
+        // A deadline is never later than an ancestor's: the parent's deadline ends its team.
+        let agents = self
+            .owned
+            .agent_store
+            .get_session_agents(&request.session_id);
+        for ancestor in crate::agent::authority_limit::ancestors(&agent, &agents) {
+            if self
+                .owned
+                .durable_state_store
+                .agent_deadline(&request.session_id, ancestor.id())?
+                .is_some_and(|parent| request.deadline_ms > parent.deadline_ms)
+            {
+                return Err(refusal(
+                    "agent_deadline_after_parent",
+                    "an agent deadline cannot be later than its parent's; use a shorter time",
+                ));
+            }
+        }
         let Outcome::Deadline(deadline) =
             self.owned
                 .durable_state_store
                 .agent_lifecycle(Operation::SetDeadline {
-                    room: request.session_id,
-                    agent: request.agent_id,
+                    room: request.session_id.clone(),
+                    agent: request.agent_id.clone(),
                     deadline: request.deadline_ms,
                 })?
         else {
             unreachable!()
         };
+        // Everything below follows a shortened deadline at once.
+        for descendant in crate::agent::authority_limit::descendants(&request.agent_id, &agents) {
+            let later = self
+                .owned
+                .durable_state_store
+                .agent_deadline(&request.session_id, descendant.id())?
+                .is_none_or(|own| own.deadline_ms > request.deadline_ms);
+            if later {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::SetDeadline {
+                        room: request.session_id.clone(),
+                        agent: descendant.id().to_string(),
+                        deadline: request.deadline_ms,
+                    })?;
+            }
+        }
         Ok(LocalDaemonResponse::AgentDeadline {
             deadline: Some(deadline),
         })

@@ -105,7 +105,8 @@ impl AgentService {
             });
         }
 
-        for request in &requests {
+        for (index, request) in requests.iter().enumerate() {
+            self.check_authority_limit(request, &requests[..index], &session)?;
             if request.role == crate::agent::AgentRole::Meta {
                 return Err(DaemonError::LocalTransport {
                     operation,
@@ -173,6 +174,24 @@ impl AgentService {
         Ok(created_agents)
     }
 
+    /// A child above its parent's current limit, or beyond the fan-out caps, is refused where
+    /// it is created, so nothing can change between the check and the effect.
+    fn check_authority_limit(
+        &self,
+        request: &CreateAgentRequest,
+        earlier_in_batch: &[CreateAgentRequest],
+        session: &RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let Some(parent) = request.parent_agent_id.as_ref() else {
+            return Ok(());
+        };
+        let agents = self.store.get_by_session(&request.session_id);
+        let Some(parent) = agents.iter().find(|agent| agent.id() == parent.agent_id()) else {
+            return Ok(());
+        };
+        super::authority_limit::check_spawn(request, parent, &agents, earlier_in_batch, session)
+    }
+
     pub(crate) fn create_agent_for_session(
         &mut self,
         request: CreateAgentRequest,
@@ -187,6 +206,8 @@ impl AgentService {
                 operation: "create agent",
             });
         }
+
+        self.check_authority_limit(&request, &[], session)?;
 
         // Check max agents limit
         let current_count = self

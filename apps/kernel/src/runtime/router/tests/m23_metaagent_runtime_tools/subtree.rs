@@ -3,17 +3,17 @@
 use super::*;
 use crate::transport::runtime_tools::RuntimeToolResult;
 
-struct World {
-    router: CommandRouter,
-    app: Arc<Mutex<DaemonApp>>,
-    room: String,
-    other_room: String,
-    tokens: std::collections::BTreeMap<&'static str, String>,
-    ids: std::collections::BTreeMap<&'static str, String>,
-    _env: TestMetaRuntimeEnv,
+pub(super) struct World {
+    pub(super) router: CommandRouter,
+    pub(super) app: Arc<Mutex<DaemonApp>>,
+    pub(super) room: String,
+    pub(super) other_room: String,
+    pub(super) tokens: std::collections::BTreeMap<&'static str, String>,
+    pub(super) ids: std::collections::BTreeMap<&'static str, String>,
+    pub(super) _env: TestMetaRuntimeEnv,
 }
 
-async fn room_command(world: &World, who: &str, command: &str) -> RuntimeToolResult {
+pub(super) async fn room_command(world: &World, who: &str, command: &str) -> RuntimeToolResult {
     world
         .router
         .dispatch_authenticated_runtime_tool_call(
@@ -25,7 +25,7 @@ async fn room_command(world: &World, who: &str, command: &str) -> RuntimeToolRes
         .unwrap()
 }
 
-fn error_text(result: &RuntimeToolResult) -> String {
+pub(super) fn error_text(result: &RuntimeToolResult) -> String {
     result.payload["error"]
         .as_str()
         .unwrap_or_default()
@@ -41,7 +41,7 @@ fn refused_by_policy(result: &RuntimeToolResult) -> bool {
             || error.contains("outside the caller room"))
 }
 
-async fn launch(app: &Arc<Mutex<DaemonApp>>, room: &str, agent: &str) -> String {
+pub(super) async fn launch(app: &Arc<Mutex<DaemonApp>>, room: &str, agent: &str) -> String {
     let mut app = app.lock().await;
     launch_test_provider(&mut app, room, agent, "dev-stub", "dev-stub", "room-model")
         .runtime_mcp_auth_token()
@@ -49,7 +49,7 @@ async fn launch(app: &Arc<Mutex<DaemonApp>>, room: &str, agent: &str) -> String 
         .to_owned()
 }
 
-async fn world(label: &str) -> World {
+pub(super) async fn world(label: &str) -> World {
     let env = TestMetaRuntimeEnv::new(label);
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();

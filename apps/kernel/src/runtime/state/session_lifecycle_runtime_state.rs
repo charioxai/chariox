@@ -599,7 +599,10 @@ impl KernelRuntimeState {
         self.authorize_current_external_command()?;
         self.normalize_local_kernel_ref(&mut request);
         if request.kernel_ref.is_none() {
+            self.keep_child_folder_inside_parent(&request)?;
             request = self.prepare_local_agent_worktree_placement(request)?;
+            #[cfg(test)]
+            crate::agent::authority_limit::run_hook_before_spawn_commit(&request.session_id);
             return self.owned.spawn_agent(request);
         }
         self.with_app_side_effect(|app| {
@@ -608,6 +611,24 @@ impl KernelRuntimeState {
                 .spawn_agent_authorized(request, &|| self.authorize_current_external_command())
         })
         .await
+    }
+
+    /// A sub-agent's explicit folder lies inside its parent's folders (A5).
+    fn keep_child_folder_inside_parent(
+        &self,
+        request: &crate::agent::CreateAgentRequest,
+    ) -> Result<(), DaemonError> {
+        let (Some(parent), Some(directory)) = (
+            request.parent_agent_id.as_ref(),
+            request.worktree_id.as_deref(),
+        ) else {
+            return Ok(());
+        };
+        let Ok(parent) = self.owned.agent_store.get_agent(parent.agent_id()) else {
+            return Ok(());
+        };
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        crate::agent::authority_limit::check_directory(&parent, &session, directory)
     }
 
     pub(super) fn normalize_local_kernel_ref(

@@ -614,6 +614,15 @@ impl AgentExecutionMode {
         self == Self::Build || child == Self::Plan
     }
 
+    /// The lower of two modes: what an agent may run in under both limits.
+    pub fn lower(self, other: Self) -> Self {
+        if self.permits(other) {
+            other
+        } else {
+            self
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "build" => Some(Self::Build),
@@ -652,6 +661,15 @@ impl AgentPermissionLevel {
     /// An agent that must ask cannot start a child that does not ask.
     pub fn permits(self, child: Self) -> bool {
         self == Self::Yolo || child == Self::Required
+    }
+
+    /// The lower of two levels: what an agent may do under both limits.
+    pub fn lower(self, other: Self) -> Self {
+        if self.permits(other) {
+            other
+        } else {
+            self
+        }
     }
 
     pub fn parse(value: &str) -> Option<Self> {

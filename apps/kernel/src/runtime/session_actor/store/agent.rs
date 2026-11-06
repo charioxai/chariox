@@ -15,26 +15,17 @@ use super::SessionRuntimeStore;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 
 /// A child never has more authority than its parent: its level and mode
-/// default to the parent's and cannot be raised above them. A spawn from a
+/// default to the parent's current limit and cannot be raised above it. A spawn from a
 /// person (no parent) keeps the requested values.
 fn child_authority(
-    parent: Option<&crate::agent::AgentInstance>,
+    parent: Option<crate::session::EffectiveAgentExecutionConfig>,
     mode: Option<AgentExecutionMode>,
     level: Option<AgentPermissionLevel>,
-    default_mode: Option<AgentExecutionMode>,
-    default_level: Option<AgentPermissionLevel>,
 ) -> Result<(Option<AgentExecutionMode>, Option<AgentPermissionLevel>), DaemonError> {
-    let Some(parent) = parent else {
+    let Some(limit) = parent else {
         return Ok((mode, level));
     };
-    let parent_mode = parent
-        .execution_mode_override()
-        .or(default_mode)
-        .unwrap_or_default();
-    let parent_level = parent
-        .permission_level_override()
-        .or(default_level)
-        .unwrap_or_default();
+    let (parent_mode, parent_level) = (limit.mode, limit.permission_level);
     let child_mode = mode.unwrap_or(parent_mode);
     let child_level = level.unwrap_or(parent_level);
     if !parent_mode.permits(child_mode) || !parent_level.permits(child_level) {
@@ -46,6 +37,16 @@ fn child_authority(
         });
     }
     Ok((Some(child_mode), Some(child_level)))
+}
+
+fn parent_limit(
+    session: &crate::session::RuntimeSession,
+    parent: Option<&crate::agent::AgentInstance>,
+    agents: &[crate::agent::AgentInstance],
+) -> Option<crate::session::EffectiveAgentExecutionConfig> {
+    parent.map(|parent| {
+        crate::session::effective_agent_execution_config_in_tree(session, parent, agents)
+    })
 }
 
 impl SessionRuntimeStore {
@@ -281,11 +282,13 @@ impl SessionRuntimeStore {
             }
         }
         let (execution_mode, permission_level) = match child_authority(
-            parent.as_ref(),
+            parent_limit(
+                &session,
+                parent.as_ref(),
+                &self.state.session_agents(&request.session_id),
+            ),
             request.execution_mode.or(defaults.execution_mode),
             request.permission_level.or(defaults.permission_level),
-            defaults.execution_mode,
-            defaults.permission_level,
         ) {
             Ok(authority) => authority,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
@@ -508,12 +511,10 @@ impl SessionRuntimeStore {
         let default_account_profile = defaults.account_profile.clone();
         let default_execution_mode = defaults.execution_mode;
         let default_permission_level = defaults.permission_level;
-        let parent = caller_metaagent_id.as_deref().and_then(|id| {
-            self.state
-                .session_agents(&request.session_id)
-                .into_iter()
-                .find(|agent| agent.id() == id)
-        });
+        let room_agents = self.state.session_agents(&request.session_id);
+        let parent = caller_metaagent_id
+            .as_deref()
+            .and_then(|id| room_agents.iter().find(|agent| agent.id() == id).cloned());
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
@@ -550,11 +551,9 @@ impl SessionRuntimeStore {
                 .effort
                 .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
             let (execution_mode, permission_level) = match child_authority(
-                parent.as_ref(),
+                parent_limit(&session, parent.as_ref(), &room_agents),
                 item.execution_mode.or(default_execution_mode),
                 item.permission_level.or(default_permission_level),
-                default_execution_mode,
-                default_permission_level,
             ) {
                 Ok(authority) => authority,
                 Err(error) => return self.with_session_projection_action_result(Err(error)).await,

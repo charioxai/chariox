@@ -1,3 +1,4 @@
+pub(crate) mod authority_limit;
 mod failed_requests;
 mod service;
 mod service_store;
