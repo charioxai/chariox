@@ -98,6 +98,7 @@ async fn exercise() {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
     let state = router.runtime_state();
     configure(&state, &sessions[0].0, &sessions[0].1, "first");
+    record_fixture_connection(&state, &config);
     let LocalDaemonResponse::AgentTriggerCreated { trigger, .. } = state
         .create_agent_trigger(
             CreateAgentTriggerRequest {
@@ -134,8 +135,11 @@ async fn exercise() {
             LocalDaemonResponse::AppInboxRoutes { .. }
         ));
     }
+    // Bindings are named after the kernel's identity key, which is what the connector signs with.
+    let kernel_id =
+        crate::transport::gateway_identity::GatewayIdentity::from_config(&config).kernel_id();
     let resumes = state
-        .event_delivery_resumes(&config.daemon_id, &config.event_delivery_environment_id)
+        .event_delivery_resumes(&kernel_id, &config.event_delivery_environment_id)
         .unwrap();
     let claims = &resumes[0].routes;
     assert_eq!(claims.len(), 2);
@@ -204,11 +208,13 @@ async fn exercise() {
     let connection = connector(&state, &config, &services).await;
     let original_runs = runs(&state, &sessions);
     assert_eq!(original_runs.len(), 1);
-    let watched = chariox_app_runtime::app_inbox::route_binding_id(
-        "local",
-        "installed",
-        "pull-request-updated",
-    );
+    // The route of the published repository is the one the generator knows.
+    let watched = services
+        .subscriptions
+        .matching(GENERATOR, "dummy.test", REPOSITORY)
+        .unwrap()[0]
+        .binding_id
+        .clone();
     let delivery = deliveries
         .iter()
         .find(|d| d.binding_id == watched)

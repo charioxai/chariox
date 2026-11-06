@@ -113,6 +113,24 @@ fn test_config(root: &std::path::Path, services: &Services) -> crate::config::Da
     );
     config
 }
+/// Records the fixture connection under the user the kernel resolves for `local`.
+fn record_fixture_connection(state: &KernelRuntimeState, config: &crate::config::DaemonConfig) {
+    state
+        .event_connection_registry()
+        .upsert(
+            &crate::event_connection::event_connection_user_id(config, "local"),
+            FIXTURE_EVENT_OWNER,
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: GENERATOR.into(),
+                connection_id: "fixture-connection".into(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: json!({}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+}
 /// Installs the fixture inbox App for the local owner and stages its release.
 fn install_fixture_app(store: &crate::durable_state::DurableKernelStateStore) {
     let (bytes, publisher) = fixture_inbox_installation(store, "local");
@@ -420,21 +438,7 @@ async fn exercise(fanout: bool) {
     let state = router.runtime_state();
     configure(&state, &sessions[0].0, &sessions[0].1, "first");
     configure(&state, &sessions[1].0, &sessions[1].1, "second");
-    state
-        .event_connection_registry()
-        .upsert(
-            &crate::event_connection::event_connection_user_id(&config, "local"),
-            FIXTURE_EVENT_OWNER,
-            chariox_event_protocol::AegsConnectionSummary {
-                generator_id: GENERATOR.into(),
-                connection_id: "fixture-connection".into(),
-                status: chariox_event_protocol::AegsConnectionStatus::Ready,
-                metadata: json!({}),
-                expires_at_ms: None,
-                updated_at_ms: 1,
-            },
-        )
-        .unwrap();
+    record_fixture_connection(&state, &config);
     assert!(matches!(
         route(&router, "first", json!({"event.kind":"wanted"}))
             .await
