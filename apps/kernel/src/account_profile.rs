@@ -670,6 +670,29 @@ pub struct ProviderAccountProfile {
     pub usage: ProviderAccountUsageSnapshot,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub materializations: Vec<ProviderAccountMaterializationStatus>,
+    /// Filled by the kernel when it answers a read; never stored.
+    #[serde(
+        default,
+        skip_serializing_if = "ProviderAccountContextTransfer::is_available"
+    )]
+    pub context_transfer: ProviderAccountContextTransfer,
+}
+
+/// Whether a managed machine's context transfer can carry this login. A login
+/// whose secret lives in the Vault has no provider-native file to materialise;
+/// it moves through the Vault (account copy or the machine's own setup-token).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountContextTransfer {
+    #[default]
+    Available,
+    VaultCredential,
+}
+
+impl ProviderAccountContextTransfer {
+    fn is_available(&self) -> bool {
+        *self == Self::Available
+    }
 }
 
 impl ProviderAccountProfile {
@@ -4004,6 +4027,7 @@ fn new_public_profile(
         services: Vec::new(),
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
         materializations: Vec::new(),
+        context_transfer: ProviderAccountContextTransfer::Available,
     }
 }
 

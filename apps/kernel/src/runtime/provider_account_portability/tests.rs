@@ -1,4 +1,5 @@
 use super::*;
+use crate::account_profile::ProviderAccountContextTransfer;
 use crate::config::PersistedCloudRelayProfile;
 use crate::local::{LocalDaemonRequest, ManagedEnvironmentProviderAccountSelection};
 use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
@@ -168,4 +169,66 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
         &fixture.request
     )
     .is_ok());
+}
+
+#[test]
+fn vault_backed_login_is_not_offered_to_context_transfer() {
+    crate::test_support::isolated_env_test!();
+    let _guard = crate::env_lock::lock();
+    let fixture = Fixture::new();
+    let vault = fixture.root.join("vault.enc");
+    let mut config = fixture.config.clone();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &vault,
+        "test-only-vault-passphrase",
+        crate::secret::VaultUnlockLease::Operation,
+    )
+    .unwrap();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let token_profile = fixture
+        .profiles
+        .create_managed(owner, "claude", "Vault token")
+        .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        owner,
+        "claude",
+        &token_profile.profile_id,
+        "sk-ant-oat01-TESTONLY-portability-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        false,
+    )
+    .unwrap();
+
+    let mut profiles = fixture.profiles.list(owner, None).unwrap();
+    mark_context_transfer(owner, &mut profiles).unwrap();
+
+    let state = |provider: &str| {
+        profiles
+            .iter()
+            .find(|profile| profile.provider == provider)
+            .unwrap()
+            .context_transfer
+    };
+    assert_eq!(
+        state("claude"),
+        ProviderAccountContextTransfer::VaultCredential
+    );
+    assert_eq!(state("codex"), ProviderAccountContextTransfer::Available);
+    // The state is the preflight's own verdict, not a second opinion.
+    assert!(preflight_selection(
+        &config,
+        &fixture.profiles,
+        owner,
+        &ManagedEnvironmentProviderAccounts::Selected {
+            accounts: vec![ManagedEnvironmentProviderAccountSelection {
+                provider: "claude".into(),
+                account_profile: token_profile.profile_id,
+            }],
+        },
+    )
+    .is_err());
+    crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
 }

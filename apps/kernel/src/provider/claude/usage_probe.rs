@@ -434,7 +434,10 @@ mod tests {
     use super::*;
 
     fn version_parts(version: &str) -> Vec<u64> {
-        version.split('.').map(|part| part.parse().unwrap()).collect()
+        version
+            .split('.')
+            .map(|part| part.parse().unwrap())
+            .collect()
     }
 
     #[test]

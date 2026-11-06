@@ -2,7 +2,8 @@
 //! human Cloud mutations. Preflight reads only existing provider-native exports
 //! and drops their bytes; callers receive an empty acknowledgement.
 use crate::account_profile::{
-    provider_account_authority_owner_user_id, ProviderAccountProfileRegistry,
+    provider_account_authority_owner_user_id, ProviderAccountContextTransfer,
+    ProviderAccountProfile, ProviderAccountProfileRegistry,
 };
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
@@ -55,6 +56,24 @@ pub(super) fn preflight_selection(
                     account.provider, account.account_profile
                 ))
             })?;
+    }
+    Ok(())
+}
+
+/// Tells readers which logins a managed machine's context transfer cannot
+/// carry, so a client never selects one by default.
+pub(crate) fn mark_context_transfer(
+    owner: &str,
+    profiles: &mut [ProviderAccountProfile],
+) -> Result<(), DaemonError> {
+    for profile in profiles {
+        if crate::provider::provider_account_credential_uses_vault(
+            owner,
+            &profile.provider,
+            &profile.profile_id,
+        )? {
+            profile.context_transfer = ProviderAccountContextTransfer::VaultCredential;
+        }
     }
     Ok(())
 }
