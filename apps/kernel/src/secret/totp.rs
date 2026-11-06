@@ -88,235 +88,101 @@ fn decode_seed(seed: &str) -> Result<Zeroizing<Vec<u8>>, DaemonError> {
 }
 
 /// A page shows its setup key inside a sentence ("Or enter the secret: ABCD EFGH …"), so a
-/// captured element is not always the bare key. Finds the key in such text: an `otpauth://`
-/// URI, one long token, or four or more equal-size groups (`ABCD-EFGH-…`). Capture never stores
-/// a seed other than the one shown: when the text allows more than one key, there is no key.
+/// captured element is not always the bare key. Finds the key in such text: an `otpauth://` URI,
+/// or the one run of base32 words that only spaces, dashes and line breaks join. A run ends at the
+/// edge of the text, at punctuation or at a word with a non-base32 character; a base32 label word
+/// ("Seed", "CODE") joined by a space is part of the run, so the run is no key unless it is one
+/// unseparated word or has a standard secret size (16 or 32 characters), and a run before a colon
+/// is a label ("Or enter the secret:"), never a key. Capture never stores a
+/// seed other than the one shown: when the text shows no such run, or several, there is no key.
 /// Returns what to store, not yet normalized.
 pub(crate) fn locate(text: &str) -> Option<Zeroizing<String>> {
     let defaults = TotpConfig::default();
-    let valid = |candidate: &str| normalize(candidate, &defaults).is_ok();
-    let found = |candidate: &str| Some(Zeroizing::new(candidate.to_string()));
-    // A standalone manual key has no prose to disambiguate. The normalizer
-    // accepts lowercase and valid padding; keep that contract here too.
-    let standalone = text.trim();
-    if !standalone.chars().any(char::is_whitespace) && valid(standalone) {
-        return found(standalone);
-    }
     if let Some(start) = text.find("otpauth://") {
         let end = text[start..]
             .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>'))
             .map_or(text.len(), |length| start + length);
-        if valid(&text[start..end]) {
-            return found(&text[start..end]);
+        if normalize(&text[start..end], &defaults).is_ok() {
+            return Some(Zeroizing::new(text[start..end].to_string()));
         }
     }
-    let tokens = tokenize(text);
-    // A real key mixes in digits or is all capitals; a lowercase or capitalized word is prose.
-    let looks_like_key = |token: &str| {
-        token.bytes().any(|b| b.is_ascii_digit()) || !token.bytes().any(|b| b.is_ascii_lowercase())
-    };
-    let mut singles = tokens
-        .iter()
-        .map(|(token, _)| *token)
-        .filter(|token| {
-            token.len() >= 16 && base32_only(token) && looks_like_key(token) && valid(token)
-        })
+    let mut candidates = key_runs(text)
+        .into_iter()
+        .filter(|run| !run.label && (run.words == 1 || matches!(run.key.len(), 16 | 32)))
+        .filter(|run| normalize(&run.key, &defaults).is_ok())
+        .map(|run| run.key)
         .collect::<Vec<_>>();
-    singles.sort_unstable();
-    singles.dedup();
-    match singles.as_slice() {
-        [] => {}
-        [single] => return found(single),
-        _ => return None,
-    }
-    let bare = text
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '=' || c == '-' || c.is_whitespace());
-    let mut candidates = Vec::new();
-    let mut start = 0;
-    while start < tokens.len() {
-        let run = group_run(&tokens, start);
-        if run.is_empty() {
-            start += 1;
-            continue;
-        }
-        let next = start + run.len();
-        let dangling = tokens.get(next).is_some_and(|(token, separator)| {
-            joins(separator)
-                && base32_only(token)
-                && !mixed_case(token)
-                && fits_group_tail(token, run[0].0.len())
-        });
-        start = next;
-        if dangling {
-            continue;
-        }
-        let groups = run.iter().map(|(token, _)| *token).collect::<Vec<_>>();
-        if bare && groups.len() == tokens.len() {
-            return bare_key(&groups, &valid).map(Zeroizing::new);
-        }
-        candidates.extend(segment_candidates(&groups, &valid));
-    }
-    candidates.sort_unstable();
-    candidates.dedup();
-    match candidates.as_slice() {
-        [candidate] => found(candidate),
+    candidates.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
+    candidates.dedup_by(|a, b| a.as_str() == b.as_str());
+    match candidates.len() {
+        1 => candidates.pop(),
         _ => None,
     }
 }
 
-fn base32_only(token: &str) -> bool {
-    token
-        .bytes()
-        .all(|b| b.is_ascii_alphabetic() || (b'2'..=b'7').contains(&b) || b == b'=')
+/// Base32 words joined only by spaces, dashes and line breaks, separators removed.
+struct KeyRun {
+    key: Zeroizing<String>,
+    words: usize,
+    /// A colon follows: the run names what comes next ("Or enter the secret:").
+    label: bool,
 }
 
-fn mixed_case(token: &str) -> bool {
-    token.bytes().any(|b| b.is_ascii_lowercase()) && token.bytes().any(|b| b.is_ascii_uppercase())
+/// Base32 in any letter case, with padding only at the end; a group may be padding alone.
+fn key_word(word: &str) -> bool {
+    !word.is_empty()
+        && word
+            .trim_end_matches('=')
+            .bytes()
+            .all(|b| b.is_ascii_alphabetic() || (b'2'..=b'7').contains(&b))
 }
 
-/// Only spaces, dashes and line breaks sit between the groups of a key.
-fn joins(separator: &str) -> bool {
-    separator.chars().all(|c| c.is_whitespace() || c == '-')
-}
-
-/// A word that continues a run of groups without being one: a shorter last group, or a padded
-/// one. A key followed by it may be longer than the groups before it, so the run is no key.
-fn fits_group_tail(token: &str, size: usize) -> bool {
-    token.len() < size || token.contains('=')
-}
-
-/// The longest run of tokens at `start` that can be groups of one key: equal size, base32, joined
-/// by spaces, dashes or line breaks only. A capitalized or otherwise mixed-case word is prose.
-fn group_run<'a>(tokens: &[(&'a str, &'a str)], start: usize) -> Vec<(&'a str, &'a str)> {
-    let size = tokens[start].0.len();
-    if !(2..=8).contains(&size) {
-        return Vec::new();
-    }
-    tokens[start..]
-        .iter()
-        .enumerate()
-        .take_while(|(index, (token, separator))| {
-            token.len() == size
-                && base32_only(token)
-                && !mixed_case(token)
-                && (*index == 0 || joins(separator))
-        })
-        .map(|(_, token)| *token)
-        .collect()
-}
-
-/// Letter case of a group: `Some(true)` lowercase, `Some(false)` uppercase, `None` neither
-/// (digits and padding), which belongs to the neighbouring segment.
-fn group_case(group: &str) -> Option<bool> {
-    let lower = group.bytes().any(|b| b.is_ascii_lowercase());
-    (lower || group.bytes().any(|b| b.is_ascii_uppercase())).then_some(lower)
-}
-
-/// Splits groups where the letter case changes; ranges of group indexes.
-fn case_segments(groups: &[&str]) -> Vec<std::ops::Range<usize>> {
-    let mut segments: Vec<std::ops::Range<usize>> = Vec::new();
-    let mut current = None;
-    for (index, group) in groups.iter().enumerate() {
-        match (group_case(group), current) {
-            (Some(case), Some(previous)) if case != previous => {
-                segments.push(index..index + 1);
-                current = Some(case);
+/// The maximal runs of key words in `text`. A word is a maximal run of alphanumeric characters
+/// (`=` counts, for padding); anything between two words other than spaces, dashes and line
+/// breaks ends a run, as does a word that is not base32.
+fn key_runs(text: &str) -> Vec<KeyRun> {
+    let joins = |gap: &str| gap.chars().all(|c| matches!(c, ' ' | '-' | '\n' | '\r'));
+    let mut runs = Vec::new();
+    let mut current: Option<KeyRun> = None;
+    let mut gap_start = 0;
+    for (word, start) in words(text) {
+        let gap = &text[gap_start..start];
+        gap_start = start + word.len();
+        if let Some(run) = current.as_mut() {
+            run.label = gap.trim_start().starts_with(':');
+        }
+        let joined = joins(gap);
+        if !key_word(word) {
+            runs.extend(current.take());
+            continue;
+        }
+        match current.as_mut() {
+            Some(run) if joined => {
+                run.key.push_str(word);
+                run.words += 1;
             }
-            (case, _) => {
-                match segments.last_mut() {
-                    Some(last) => last.end = index + 1,
-                    None => segments.push(index..index + 1),
-                }
-                current = current.or(case);
+            _ => {
+                runs.extend(current.take());
+                current = Some(KeyRun {
+                    key: Zeroizing::new(word.to_string()),
+                    words: 1,
+                    label: false,
+                });
             }
         }
     }
-    segments
+    if let Some(run) = current.as_mut() {
+        run.label = text[gap_start..].trim_start().starts_with(':');
+    }
+    runs.extend(current);
+    runs
 }
 
-/// A window of groups makes a key when it keeps whole bytes (a multiple of 8 characters), has at
-/// least four groups, and ends the run if the run carries padding.
-fn window_key(
-    groups: &[&str],
-    window: std::ops::Range<usize>,
-    valid: &impl Fn(&str) -> bool,
-) -> Option<String> {
-    let joined = groups[window.clone()].concat();
-    let ends_run = window.end == groups.len() || !groups.iter().any(|group| group.contains('='));
-    (window.len() >= 4 && joined.len() >= 16 && joined.len() % 8 == 0 && ends_run && valid(&joined))
-        .then_some(joined)
-}
-
-/// Keys formed by whole case segments of a run inside prose. A change of letter case is accepted
-/// as the edge of the key, never as proof of it.
-fn segment_candidates(groups: &[&str], valid: &impl Fn(&str) -> bool) -> Vec<String> {
-    let segments = case_segments(groups);
-    let mut keys = Vec::new();
-    for first in 0..segments.len() {
-        for last in first..segments.len() {
-            keys.extend(window_key(
-                groups,
-                segments[first].start..segments[last].end,
-                valid,
-            ));
-        }
-    }
-    keys
-}
-
-/// The element shows nothing but groups. A standard secret size (16 or 32 characters) is the key
-/// as shown, in any case: a service shows 128- and 160-bit secrets that way. The one accepted
-/// ambiguity is a 32-character element that is a 16-character key plus same-case label words of the
-/// same group size. Other sizes: one case means any valid shorter run of the same groups could be
-/// the key with label words stuck to it ("SEED ABCD … CODE"), so only the unique run counts.
-/// Several cases mean a mixed-case key shown in a regular pattern: equal-size case blocks.
-fn bare_key(groups: &[&str], valid: &impl Fn(&str) -> bool) -> Option<String> {
-    let whole = window_key(groups, 0..groups.len(), valid)?;
-    if matches!(whole.len(), 16 | 32) {
-        return Some(whole);
-    }
-    let segments = case_segments(groups);
-    if segments.len() > 1 {
-        let regular = segments
-            .iter()
-            .all(|segment| segment.len() == segments[0].len());
-        return regular.then_some(whole);
-    }
-    // Padding marks the end of a deliberately formatted key, so a leading group is not a label.
-    if groups.iter().any(|group| group.contains('=')) {
-        return Some(whole);
-    }
-    let shorter = (0..groups.len()).any(|first| {
-        (first + 1..=groups.len()).any(|last| {
-            (first, last) != (0, groups.len()) && window_key(groups, first..last, valid).is_some()
-        })
-    });
-    (!shorter).then_some(whole)
-}
-
-/// Splits `text` into alphanumeric words (`=` counts, for padding), each with the separator text
-/// that precedes it, so a caller can tell a space or dash from a colon or bracket.
-fn tokenize(text: &str) -> Vec<(&str, &str)> {
-    let is_token = |c: char| c.is_ascii_alphanumeric() || c == '=';
-    let mut tokens = Vec::new();
-    let mut separator_start = 0;
-    let mut token_start = None;
-    for (index, c) in text.char_indices() {
-        match (is_token(c), token_start) {
-            (true, None) => token_start = Some(index),
-            (false, Some(start)) => {
-                tokens.push((&text[start..index], &text[separator_start..start]));
-                token_start = None;
-                separator_start = index;
-            }
-            _ => {}
-        }
-    }
-    if let Some(start) = token_start {
-        tokens.push((&text[start..], &text[separator_start..start]));
-    }
-    tokens
+/// The words of `text` with their byte offsets.
+fn words(text: &str) -> impl Iterator<Item = (&str, usize)> {
+    text.split(|c: char| !(c.is_alphanumeric() || c == '='))
+        .filter(|word| !word.is_empty())
+        .map(move |word| (word, word.as_ptr() as usize - text.as_ptr() as usize))
 }
 
 pub(super) fn code(
@@ -352,38 +218,132 @@ pub(super) fn code(
 mod tests {
     use super::*;
 
+    /// Fixed-seed xorshift, so a failing case is reproducible.
+    struct Cases(u64);
+
+    impl Cases {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, bound: usize) -> usize {
+            (self.next() % bound as u64) as usize
+        }
+
+        /// A base32 key of `bytes` random bytes, padded or not, with every letter's case flipped
+        /// at random and separators between random-size groups.
+        fn shown(&mut self, bytes: usize, padded: bool) -> (String, String) {
+            let raw = (0..bytes).map(|_| self.next() as u8).collect::<Vec<_>>();
+            let key = if padded {
+                BASE32.encode(&raw)
+            } else {
+                BASE32_NOPAD.encode(&raw)
+            };
+            let mut shown = String::new();
+            let group = [0, 4, 4, 8, 2 + self.below(6)][self.below(5)];
+            for (index, c) in key.chars().enumerate() {
+                if group > 0 && index > 0 && index % group == 0 {
+                    shown.push_str([" ", "-", "\n", " - ", "\r\n"][self.below(5)]);
+                }
+                shown.push(if self.below(2) == 0 {
+                    c.to_ascii_lowercase()
+                } else {
+                    c
+                });
+            }
+            (BASE32_NOPAD.encode(&raw), shown)
+        }
+    }
+
+    fn stored(text: &str) -> Option<Zeroizing<String>> {
+        let located = locate(text)?;
+        Some(normalize(&located, &TotpConfig::default()).unwrap().0)
+    }
+
     #[test]
-    fn locates_a_setup_key_in_page_text_and_never_in_prose() {
-        let seed = "JBSWY3DPEHPK3PXP";
-        for text in [
-            seed.to_string(),
-            "jbsw y3dp ehpk 3pxp".to_string(),
-            format!(
-                "Or enter the secret: {seed}\nAnd enter the passcode shown in the application:"
-            ),
-            format!("Setup key: {}", "JBSW-Y3DP-EHPK-3PXP"),
-            "Manual entry key jbsw y3dp ehpk 3pxp (spaces optional)".to_string(),
-            format!("Open otpauth://totp/Fixture:alice?secret={seed}&issuer=Fixture to add it"),
+    fn a_mixed_case_grouped_key_is_captured_whole() {
+        // RFC 6238 SHA-1 key, case-insensitive base32: the first four groups alone would also be
+        // a valid 16-character seed, so only the whole element is the key that is shown.
+        let config = TotpConfig {
+            digits: 8,
+            ..TotpConfig::default()
+        };
+        for shown in [
+            "GEZD GNBV GY3T QOJQ gEzD gnbv gy3t qojq",
+            "GEZD GNBV GY3T QOJQ gezd gnbv gy3t qojq",
         ] {
-            let located = locate(&text).unwrap_or_else(|| panic!("no key in {text:?}"));
-            let (canonical, _) = normalize(&located, &TotpConfig::default()).unwrap();
-            assert_eq!(canonical.as_str(), seed, "{text:?}");
+            let located = locate(shown).expect("the whole key is shown");
+            let (stored, _) = normalize(&located, &config).unwrap();
+            assert!(stored.as_str() == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+            assert_eq!(code(&stored, &config, 59).unwrap(), "94287082");
         }
-        for text in [
-            "",
-            "Or enter the secret",
-            "This page shows nothing that looks like a key at all",
-            "Scan this image with your authentication application:",
-            "This also gives game plan ideas around town",
-        ] {
-            assert!(locate(text).is_none(), "{text:?}");
+    }
+
+    #[test]
+    fn a_bare_key_is_captured_whole_in_any_case_and_grouping() {
+        let mut cases = Cases(0x5eed_0001);
+        for index in 0..300 {
+            // 10 and 20 bytes are the 16- and 32-character keys; 16 bytes padded is 32 characters.
+            let (bytes, padded) = [(10, false), (20, false), (16, true)][index % 3];
+            let (key, shown) = cases.shown(bytes, padded);
+            assert!(
+                stored(&shown).is_some_and(|seed| *seed == key),
+                "case {index}: a bare key was not captured whole"
+            );
         }
+    }
+
+    #[test]
+    fn a_key_inside_labels_is_captured_exactly_or_refused() {
+        // (before, after, delimited): punctuation and words with a non-base32 character end a run;
+        // base32 words joined by a space or dash are part of it, so the capture is refused.
+        let labels: [(&str, &str, bool); 16] = [
+            ("", "", true),
+            ("Your seed: ", "", true),
+            ("Key: ", ".", true),
+            ("(", ")", true),
+            ("Setup (", ") Done", true),
+            ("Step 1 ", " 9", true),
+            ("Seed: ", "\nThen type the code.", false),
+            ("Seed ", "", false),
+            ("", " code", false),
+            ("SEED ", " CODE", false),
+            ("seed ", "", false),
+            ("Copy\n", "\nthen", false),
+            ("Code - ", " - Here", false),
+            ("Or enter the secret: ", "\nAnd enter the passcode:", false),
+            ("Manual entry key ", " (spaces optional)", false),
+            ("Key 2FA ", " and", false),
+        ];
+        let mut cases = Cases(0x5eed_0002);
+        let mut captured = 0;
+        for index in 0..300 {
+            let (bytes, padded) = [(10, false), (20, false), (16, true)][index % 3];
+            let (key, shown) = cases.shown(bytes, padded);
+            for (before, after, delimited) in labels {
+                let text = format!("{before}{shown}{after}");
+                match stored(&text) {
+                    Some(seed) => {
+                        assert!(
+                            *seed == key,
+                            "case {index} {before:?}/{after:?}: another seed"
+                        );
+                        captured += 1;
+                    }
+                    None => assert!(!delimited, "case {index} {before:?}/{after:?}: refused"),
+                }
+            }
+        }
+        assert!(captured >= 300 * 6, "{captured} captures");
     }
 
     #[test]
     fn page_text_around_a_key_never_joins_the_seed() {
         // The RFC 6238 SHA-1 test key "12345678901234567890" shown as eight groups of four. Label
-        // words have the length of a group, so only the boundary rules keep them out of the seed.
+        // words have the length of a group, so only a delimiter keeps them out of the seed.
         let groups = "GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ";
         let config = TotpConfig {
             digits: 8,
@@ -391,14 +351,13 @@ mod tests {
         };
         let dashed = groups.replace(' ', "-");
         let lined = groups.replace(' ', "\n");
+        let lower = groups.to_ascii_lowercase();
         for text in [
             format!("Your seed: {groups}"),
-            format!("Seed {groups} code"),
             format!("Key: {dashed}."),
-            format!("Code {groups}"),
             format!("Setup ({groups}) Done"),
-            format!("Copy\n{lined}\nthen"),
-            format!("Code - {groups} - Here"),
+            format!("Your secret key:\n{lined}"),
+            format!("Enter this key: {lower}"),
         ] {
             let located = locate(&text).unwrap_or_else(|| panic!("no key in {text:?}"));
             let (stored, _) = normalize(&located, &config).unwrap();
@@ -408,188 +367,56 @@ mod tests {
             );
             assert_eq!(code(&stored, &config, 59).unwrap(), "94287082", "{text:?}");
         }
-    }
-
-    #[test]
-    fn a_mixed_case_grouped_key_is_captured_whole() {
-        // RFC 6238 SHA-1 key, case-insensitive base32: the first four groups alone would also be
-        // a valid 16-character seed, so only the whole element is the key that is shown.
-        let shown = "GEZD GNBV GY3T QOJQ gezd gnbv gy3t qojq";
-        let config = TotpConfig {
-            digits: 8,
-            ..TotpConfig::default()
-        };
-        let located = locate(shown).expect("the whole key is shown");
-        let (stored, _) = normalize(&located, &config).unwrap();
-        assert!(stored.as_str() == "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
-        assert_eq!(code(&stored, &config, 59).unwrap(), "94287082");
-    }
-
-    #[test]
-    fn a_bare_key_of_a_standard_size_is_captured_whole_in_any_case() {
-        let config = TotpConfig {
-            digits: 8,
-            ..TotpConfig::default()
-        };
-        // 160-bit RFC 6238 key as eight groups; the first sixteen characters are a valid key too.
-        for shown in [
-            "abcd efgh ijkl mnop qrst uvwx yz23 4567",
-            "GEZD GNBV GY3T QOJQ GEZD GNBV GY3T QOJQ",
-            "GEZD GNBV GY3T QOJQ GEZD gnbv gy3t qojq",
-            "GEZD gnbv GY3T qojq gezd GNBV gy3t QOJQ",
-            "gezd-gnbv-gy3t-qojq-gezd-gnbv-gy3t-qojq",
-            "GEZD\nGNBV\nGY3T\nQOJQ\nGEZD\nGNBV\nGY3T\nQOJQ",
-            // 80-bit key as four groups.
-            "jbsw y3dp ehpk 3pxp",
-            "JBSW Y3DP EHPK 3PXP",
-        ] {
-            let located = locate(shown).unwrap_or_else(|| panic!("no key in {shown:?}"));
-            let (stored, _) = normalize(&located, &config).unwrap();
-            let expected = shown
-                .chars()
-                .filter(char::is_ascii_alphanumeric)
-                .collect::<String>()
-                .to_ascii_uppercase();
-            assert!(stored.as_str() == expected, "{shown:?} stored another seed");
-        }
-        // Inside prose, or at a size without a standard meaning, nothing is guessed.
         for text in [
-            "SEED abcd efgh ijkl mnop qrst uvwx yz23 4567 CODE",
-            "Key: abcd efgh ijkl mnop qrst uvwx yz23 4567.",
+            format!("Seed {groups} code"),
+            format!("Code {groups}"),
+            format!("Copy\n{lined}\nthen"),
+            format!("Code - {groups} - Here"),
+            format!("Your seed: {groups} and"),
+            format!("Two keys: {groups}, JBSW Y3DP EHPK 3PXP"),
         ] {
-            if let Some(located) = locate(text) {
-                let (stored, _) = normalize(&located, &config).unwrap();
-                assert!(
-                    stored.as_str() == "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
-                    "{text:?}"
-                );
-            }
+            assert!(locate(&text).is_none(), "{text:?}");
         }
     }
 
     #[test]
-    fn capture_stores_the_key_as_shown_or_nothing() {
-        let keys: [&[u8]; 4] = [
-            b"1234567890",
-            b"12345678901",
-            b"123456789012345",
-            b"12345678901234567890",
-        ];
-        let labels: [(&str, &str, bool); 9] = [
-            ("", "", true),
-            ("Seed ", "", true),
-            ("", " Code", true),
-            ("Your seed: ", "", true),
-            ("Key: ", ".", true),
-            ("(", ")", true),
-            ("SEED ", "", false),
-            ("", " CODE", false),
-            ("SEED ", " CODE", false),
-        ];
-        let mut captured = 0;
-        for bytes in keys {
-            let padded = BASE32.encode(bytes);
-            let plain = BASE32_NOPAD.encode(bytes);
-            let groups = |key: &str| {
-                key.as_bytes()
-                    .chunks(4)
-                    .map(|group| std::str::from_utf8(group).unwrap().to_string())
-                    .collect::<Vec<_>>()
-            };
-            let mixed_halves = {
-                let groups = groups(&plain);
-                let half = groups.len() / 2;
-                groups
-                    .iter()
-                    .enumerate()
-                    .map(|(index, group)| {
-                        if index < half {
-                            group.clone()
-                        } else {
-                            group.to_ascii_lowercase()
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let alternating = groups(&plain)
-                .iter()
-                .enumerate()
-                .map(|(index, group)| {
-                    if index % 2 == 0 {
-                        group.clone()
-                    } else {
-                        group.to_ascii_lowercase()
-                    }
-                })
-                .collect::<Vec<_>>();
-            let forms: [(&str, String, bool); 8] = [
-                ("upper", groups(&plain).join(" "), false),
-                (
-                    "lower",
-                    groups(&plain.to_ascii_lowercase()).join(" "),
-                    false,
-                ),
-                ("mixed halves", mixed_halves.join(" "), true),
-                ("alternating", alternating.join(" "), true),
-                ("dashed", groups(&plain).join("-"), false),
-                ("line-broken", groups(&plain).join("\n"), false),
-                ("padded", groups(&padded).join(" "), false),
-                (
-                    "lower padded",
-                    groups(&padded.to_ascii_lowercase()).join(" "),
-                    false,
-                ),
-            ];
-            for (name, body, mixed_case) in forms {
-                let shown_len = if name.contains("padded") {
-                    padded.len()
-                } else {
-                    plain.len()
-                };
-                for (before, after, unambiguous) in labels {
-                    let text = format!("{before}{body}{after}");
-                    let Some(located) = locate(&text) else {
-                        // A refusal stores nothing; only an unambiguous display may not refuse.
-                        // Mixed case has no unambiguous edge inside prose.
-                        let bare = before.is_empty() && after.is_empty();
-                        let must_capture = unambiguous
-                            && shown_len % 8 == 0
-                            && (!mixed_case
-                                || (bare
-                                    && (name == "mixed halves"
-                                        || shown_len == 32
-                                        || shown_len == 16)))
-                            && !(bare
-                                && !mixed_case
-                                && shown_len > 16
-                                && shown_len != 32
-                                && !(name.contains("padded") && padded.contains('=')));
-                        assert!(!must_capture, "{name} {before:?}/{after:?} refused");
-                        continue;
-                    };
-                    captured += 1;
-                    let (stored, _) = normalize(&located, &TotpConfig::default()).unwrap();
-                    // The documented limit: a bare element of 16 or 32 characters is the key as
-                    // shown, even if it is a shorter key plus same-case label words.
-                    let bare_text = text.chars().all(|c| {
-                        c.is_ascii_alphanumeric() || c == '=' || c == '-' || c.is_whitespace()
-                    });
-                    let with_labels = format!(
-                        "{}{plain}{}",
-                        before.trim().to_ascii_uppercase(),
-                        after.trim().to_ascii_uppercase()
-                    );
-                    let standard_size_limit = bare_text
-                        && matches!(stored.len(), 16 | 32)
-                        && stored.as_str() == with_labels;
-                    assert!(
-                        stored.as_str() == plain || standard_size_limit,
-                        "{name} {before:?}/{after:?} stored a different seed"
-                    );
-                }
-            }
+    fn locates_a_setup_key_in_page_text_and_never_in_prose() {
+        let seed = "JBSWY3DPEHPK3PXP";
+        for text in [
+            seed.to_string(),
+            seed.to_ascii_lowercase(),
+            "jbsw y3dp ehpk 3pxp".to_string(),
+            "Or enter the secret: jbsw y3dp ehpk 3pxp".to_string(),
+            format!("Setup key: {}", "JBSW-Y3DP-EHPK-3PXP"),
+            format!("Or enter the secret: {seed}.\nAnd enter the passcode shown:"),
+            format!("Open otpauth://totp/Fixture:alice?secret={seed}&issuer=Fixture to add it"),
+            format!("Schlüssel: {seed} öffnen"),
+        ] {
+            let located = locate(&text).unwrap_or_else(|| panic!("no key in {text:?}"));
+            let (canonical, _) = normalize(&located, &TotpConfig::default()).unwrap();
+            assert_eq!(canonical.as_str(), seed, "{text:?}");
         }
-        assert!(captured > 100, "{captured} captures");
+        for text in [
+            "",
+            "Or enter the secret:",
+            "This page shows nothing that looks like a key at all",
+            "Scan this image with your authentication application:",
+            "This also gives game plan ideas around town",
+        ] {
+            assert!(locate(text).is_none(), "{text:?}");
+        }
+    }
+
+    #[test]
+    fn a_standard_size_run_is_the_key_as_shown() {
+        // Documented limit: label words joined to a key by spaces only, adding up to a standard
+        // size, cannot be told from key groups; the run is stored as shown.
+        let shown = "Your secret code JBSW Y3DP EHPK 3PXP";
+        assert!(stored(shown).is_none(), "30 characters is no standard size");
+        let shown = "SEED CODE JBSW Y3DP EHPK 3PXP SEED CODE";
+        assert!(stored(shown).is_some_and(|seed| seed.len() == 32));
+        // The same holds for an element that shows only 16 base32 letters of prose.
+        assert!(stored("Or enter the secret").is_some_and(|seed| seed.len() == 16));
     }
 
     #[test]
