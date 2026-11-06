@@ -1,7 +1,7 @@
 // The replacement wait client against a stand-in for the CLI: the stdout contract, the fallback listing and the
 // unreachable kernel. The real kernel and CLI are exercised by scripts/drills/notif-external-agent.mjs --scenario workflow-runs.
 import assert from "node:assert/strict"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
@@ -10,7 +10,7 @@ import { formatLine, kernelUnreachable, main } from "./reviewer-wait-events.mjs"
 const SOURCE = { source_id: "run_finished_a", kind: "workflow_run", display_name: "reviewer run finished", name: "reviewer", workflow_id: "wf-1", session_id: "room-1" }
 const PROMPT = "Handle GitHub pull_request.synchronize for charioxai/chariox #1279 at head 0e8b5e6fd8c3a1b2."
 const at = Date.UTC(2026, 10, 6, 9, 17)
-const notification = (run_id, status, extra = {}) => ({ type: "notification", at_ms: at, value: { source_id: SOURCE.source_id, output: { message: JSON.stringify({ status, run_id, prompt: PROMPT, ...extra }) } } })
+const notification = (run_id, status, extra = {}, cursor = 1) => ({ type: "notification", cursor, at_ms: at, value: { source_id: SOURCE.source_id, output: { message: JSON.stringify({ status, run_id, prompt: PROMPT, ...extra }) } } })
 
 // A stand-in CLI: `script` is the body of a function (args, input) returning { code, stdout, stderr }.
 function cli(dir, body) {
@@ -44,13 +44,12 @@ test("only a connection problem is an unreachable kernel", () => {
 test("a notification ends the wait with one line per run, once, and is acknowledged", async () => {
   const dir = scratch()
   const binary = cli(dir, `${sources}
-if (args[1] === "wait") return { stdout: JSON.stringify({ events: [${JSON.stringify(notification("r1", "Completed"))}, ${JSON.stringify(notification("r2", "Failed", { failure: "boom" }))}], next_cursor: 7 }) }
+if (args[1] === "wait") return { stdout: JSON.stringify({ events: [${JSON.stringify(notification("r1", "Completed", {}, 6))}, ${JSON.stringify(notification("r2", "Failed", { failure: "boom" }, 7))}], next_cursor: 7 }) }
 return { stdout: "{}" }`)
   const first = await wait(dir, binary, "--window-minutes", "1")
   assert.equal(first.code, 0)
   assert.deepEqual(first.out, ["09:17Z review Completed charioxai/chariox #1279 @0e8b5e6fd8", "09:17Z review Failed charioxai/chariox #1279 @0e8b5e6fd8: boom"])
-  const calls = (await import("node:fs")).readFileSync(join(dir, "calls"), "utf8")
-  assert.match(calls, /events ack 7/)
+  assert.match(readFileSync(join(dir, "calls"), "utf8"), /events ack 7/)
   // The same notifications again (a lost acknowledgement) print nothing new; the window then closes.
   const second = await wait(dir, binary, "--window-minutes", "0.02")
   assert.deepEqual(second.out, ["no review finished in the window"])
@@ -90,5 +89,43 @@ return { stdout: "{}" }`)
   const result = await wait(dir, binary, "--window-minutes", "1")
   assert.equal(result.code, 0)
   assert.deepEqual(result.out, ['event follow ended: {"reason":"grant revoked"}'])
+  rmSync(dir, { recursive: true })
+})
+
+const foreign = cursor => ({ type: "notification", cursor, at_ms: at, value: { source_id: "someone_elses_source", output: { message: "{}" } } })
+const calls = dir => readFileSync(join(dir, "calls"), "utf8")
+
+test("records of other sources and targets are neither read as runs nor acknowledged", async () => {
+  const dir = scratch()
+  const ours = notification("r1", "Completed", {}, 4)
+  const interaction = { type: "interaction", cursor: 5, value: {} }
+  const binary = cli(dir, `${sources}
+if (args[1] === "wait") return { stdout: JSON.stringify({ events: [${JSON.stringify(foreign(3))}, ${JSON.stringify(ours)}, ${JSON.stringify(interaction)}], next_cursor: 5 }) }
+return { stdout: "{}" }`)
+  const result = await wait(dir, binary, "--window-minutes", "1")
+  assert.deepEqual(result.out, ["09:17Z review Completed charioxai/chariox #1279 @0e8b5e6fd8"])
+  assert.ok(!/events ack/.test(calls(dir)), `another source's record precedes the run: nothing may be acknowledged\n${calls(dir)}`)
+  rmSync(dir, { recursive: true })
+  const second = scratch()
+  const first = cli(second, `${sources}
+if (args[1] === "wait") return { stdout: JSON.stringify({ events: [${JSON.stringify(notification("r1", "Completed", {}, 3))}, ${JSON.stringify(foreign(4))}], next_cursor: 4 }) }
+return { stdout: "{}" }`)
+  await wait(second, first, "--window-minutes", "1")
+  assert.match(calls(second), /events ack 3\n/)
+  assert.ok(!/events ack 4/.test(calls(second)), "the record after the run belongs to someone else")
+  rmSync(second, { recursive: true })
+})
+
+test("a gap is reconciled by listing the runs even when the batch holds a finished run", async () => {
+  const dir = scratch()
+  const dropped = { id: "dropped", status: "Failed", completed_at_ms: Date.now() + 60_000, invocation_prompt: PROMPT, failure_events: [{ message: "lost" }] }
+  const binary = cli(dir, `${sources}
+if (args[1] === "wait") return { stdout: JSON.stringify({ events: [{ type: "gap", cursor: 2 }, ${JSON.stringify(notification("r1", "Completed", {}, 3))}], next_cursor: 3 }) }
+if (args[0] === "request") return { stdout: JSON.stringify({ WorkflowRunsListed: { workflow_runs: ${JSON.stringify([dropped])} } }) }
+return { stdout: "{}" }`)
+  const result = await wait(dir, binary, "--window-minutes", "1")
+  assert.equal(result.out.length, 2, result.out.join("\n"))
+  assert.equal(result.out[0], "09:17Z review Completed charioxai/chariox #1279 @0e8b5e6fd8")
+  assert.match(result.out[1], /^\d\d:\d\dZ review Failed charioxai\/chariox #1279 @0e8b5e6fd8: lost$/)
   rmSync(dir, { recursive: true })
 })

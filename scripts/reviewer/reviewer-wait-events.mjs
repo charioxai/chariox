@@ -133,18 +133,32 @@ export async function main(argv, out = console.log) {
     if (waited.code === 3) return followEnded(waited, out)
     if (waited.code === 0) {
       const batch = JSON.parse(waited.stdout)
+      // The grant's stream is shared with other sources and targets: only the unbroken run of records this script
+      // consumed from the front of the batch is acknowledged, so nobody else's record is dropped with them.
+      let acknowledgeThrough, foreignSeen = false
       for (const event of batch.events ?? []) {
-        if (event.type === "gap") gap = true
         if (event.type === "subscription_ended") return unreachable()
-        if (event.type !== "notification" || !sourceIds.has(event.value.source_id)) continue
-        const ended = JSON.parse(event.value.output.message)
-        take({ at: event.at_ms, status: ended.status, prompt: ended.prompt, runId: ended.run_id, failure: ended.failure })
+        const mine = event.type === "gap" || (event.type === "notification" && sourceIds.has(event.value.source_id))
+        if (!mine) { foreignSeen = true; continue }
+        if (event.type === "gap") gap = true
+        else {
+          const ended = JSON.parse(event.value.output.message)
+          take({ at: event.at_ms, status: ended.status, prompt: ended.prompt, runId: ended.run_id, failure: ended.failure })
+        }
+        if (!foreignSeen) acknowledgeThrough = event.cursor
       }
-      const acknowledged = await chariox("events", "ack", String(batch.next_cursor))
-      if (kernelUnreachable(acknowledged)) return unreachable()
+      // Runs the kernel dropped from the stream come back by listing, whether or not the batch also holds a run.
+      if (gap) {
+        fallbackAt = Date.now() + fallbackMs
+        if (!(await listRuns())) return unreachable()
+      }
+      if (acknowledgeThrough !== undefined) {
+        const acknowledged = await chariox("events", "ack", String(acknowledgeThrough))
+        if (kernelUnreachable(acknowledged)) return unreachable()
+      }
       cursor = batch.next_cursor
     } else if (waited.code !== 5) { out(`events wait failed: ${waited.stderr.trim().slice(0, 300)}`); return 1 }
-    if (lines.length === 0 && (gap || Date.now() >= fallbackAt)) {
+    if (lines.length === 0 && Date.now() >= fallbackAt) {
       fallbackAt = Date.now() + fallbackMs
       if (!(await listRuns())) return unreachable()
     }
