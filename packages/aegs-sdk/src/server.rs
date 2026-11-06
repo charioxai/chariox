@@ -2322,6 +2322,47 @@ mod mp11_delivery_http_tests {
         );
     }
 
+    /// Two users watching one scope share an interest key: each connection is published to on
+    /// its own, naming only its own kernels.
+    #[tokio::test]
+    async fn connections_sharing_an_interest_are_published_to_separately() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server_reconciled_by(&publisher, "kernel-1");
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        let claim_b = crate::SubscriptionClaim {
+            binding_id: "binding-b".into(),
+            connection_id: "connection-b".into(),
+            ..subscription_claim()
+        };
+        store
+            .reconcile_scoped(
+                "kernel-b",
+                Some(&["owner-b".to_string()]),
+                "dev.chariox.github",
+                &[claim_b],
+            )
+            .unwrap();
+        let (status, _) = post_signed_webhook_at(server, "/webhooks/github", None).await;
+        assert_eq!(status, 202);
+        let mut audiences = publisher.audiences.lock().unwrap().clone();
+        audiences.sort_by_key(|audience| audience.to_string());
+        assert_eq!(
+            audiences,
+            vec![
+                serde_json::json!([{"kernel_id": "kernel-1", "binding_id": "binding"}]),
+                serde_json::json!([{"kernel_id": "kernel-b", "binding_id": "binding-b"}]),
+            ]
+        );
+    }
+
     async fn reconcile_as(
         server: &Arc<AegsServer>,
         kernel: &'static str,

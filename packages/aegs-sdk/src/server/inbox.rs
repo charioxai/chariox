@@ -92,8 +92,8 @@ impl AegsServer {
         Ok(selected)
     }
 
-    /// Publishes `selected` once per interest key; an interest whose authorization changed since
-    /// it was selected is skipped.
+    /// Publishes `selected` once per connection and interest key; an interest whose
+    /// authorization changed since it was selected is skipped.
     async fn publish_selected(
         &self,
         normalized: &NormalizedEvent,
@@ -102,7 +102,10 @@ impl AegsServer {
         let mut interest_keys = HashSet::new();
         let mut responses = Vec::new();
         for interest in selected {
-            let key = interest.0.event_interest_key.clone();
+            let key = (
+                interest.0.connection_id.clone(),
+                interest.0.event_interest_key.clone(),
+            );
             if !interest_keys.insert(key.clone()) {
                 continue;
             }

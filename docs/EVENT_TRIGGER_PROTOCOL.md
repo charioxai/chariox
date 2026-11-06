@@ -249,6 +249,34 @@ source state to reconcile expiring or provider-managed webhook registrations aft
 restart. The version 1 request is specified by
 `docs/schemas/aegs-subscription-reconcile-v1.schema.json`.
 
+### Isolation between users
+
+An `event_interest_key` is derivable from public names (generator, event type,
+repository), and any kernel authenticated to AEDS can claim a route for it. A claim
+therefore never decides who receives an occurrence. The producer does:
+
+- `PublishEventRequest.audience` lists the routes (`kernel_id` + `binding_id`) an
+  occurrence may reach. The AEGS fills it from its live, authorized subscriptions
+  for the interest, through the connection that received the event. AEDS delivers
+  only to active routes whose kernel and binding both appear in it, and refuses a
+  publication without an `audience` array (`400 audience_required`). An empty
+  audience delivers to nobody. A repeated publication of one occurrence reaches
+  the routes it adds; each route is delivered to once.
+- A subscription is read at publication time, so revoking a connection or
+  withdrawing a subscription stops delivery at once, whatever the AEDS route
+  does. A kernel that claims a route without a subscription receives nothing.
+- A reconcile claim is taken only if the connection exists and is ready, and
+  its provider lists the claim's `connection_scope` among the connection's
+  resources. Other claims come back in `refused` with a typed `reason`
+  (`connection_not_found`, `connection_not_ready`, `scope_not_in_connection`);
+  the response never carries error text. The AEGS keeps the stored subscriptions
+  and answers `502 scope_check_unavailable` when the provider cannot list the
+  resources, so the kernel retries. A listing is cached for five minutes per
+  connection and authorization generation.
+
+One AEGS and one AEDS enforce this the same way for Cloud and self-hosted
+operators: no signature, ticket or Cloud account takes part.
+
 Provider credentials never transit the kernel. The kernel starts authorization with
 the AEGS management capability at `POST /v1/authorizations`; the response is either a
 ready opaque `connection_id` or a user-action URL/device code. It then pages
