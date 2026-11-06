@@ -51,8 +51,12 @@ const listsOf = (environment: ProjectEnvironmentView): EnvironmentLists => ({
   skills: environment.skills.map(({ name, source }) => ({ name, source })),
 })
 
+/** The connection to one kernel; a different object is a different connection. */
+export type KernelClient = { send: (request: unknown) => Promise<unknown> }
+
 export type ProjectEnvironmentControllerDeps = {
-  send: (request: unknown) => Promise<unknown>
+  /** The connection the terminal is using now; it changes when the user switches kernels. */
+  client: () => KernelClient
   /** The user's other connected kernels, from the same Cloud directory the web lists; none when it cannot be read. */
   otherKernels: () => Promise<readonly EnvironmentSourceKernel[]>
   render: () => void
@@ -71,10 +75,10 @@ function failureText(error: unknown): string {
 export function createProjectEnvironmentController(deps: ProjectEnvironmentControllerDeps) {
   let open = false
   let generation = 0
-  let projectId = ""
   let loading = false
-  // Edits, saves and operations belong to the Project, even while its dialog is closed.
+  // Edits, saves and operations belong to the Project on one kernel, even while its dialog is closed. Every request of an editor goes through its own client, so a kernel switch can neither show nor reach it; a closed connection takes its editors with it.
   type Editor = {
+    client: KernelClient
     projectId: string
     environment: ProjectEnvironmentView | null
     typed: { script?: string; variables?: string }
@@ -86,9 +90,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     // Completed list edits not yet acknowledged by the kernel. Every save carries all of them; a conflict or failure keeps them for the next explicit save.
     listDrafts: ListDraft[]
   }
-  const editors = new Map<string, Editor>()
-  const newEditor = (project: string): Editor => ({ projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [], transfer: null, draft: null })
-  let editor: Editor = newEditor("")
+  const editors = new WeakMap<KernelClient, Map<string, Editor>>()
+  const newEditor = (client: KernelClient, project: string): Editor => ({ client, projectId: project, environment: null, typed: {}, busy: false, saveRequested: false, listDrafts: [], transfer: null, draft: null })
+  let editor: Editor = newEditor({ send: async () => { throw new Error("No Environment open") } }, "")
   let focus: EnvironmentFocus = { kind: "run" }
   let input: Input | null = null
   let operation: EnvironmentOperationView | null = null
@@ -129,12 +133,12 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   /** Ordinary requests apply to the current dialog; operation replies also survive closing it. */
-  const guarded = async <T>(work: () => Promise<T>, apply: (result: T, target: Editor) => void, retainOperation = false): Promise<void> => {
+  const guarded = async <T>(work: (client: KernelClient) => Promise<T>, apply: (result: T, target: Editor) => void, retainOperation = false): Promise<void> => {
     const mine = generation
     const target = editor
     target.busy = true
     try {
-      const result = await work()
+      const result = await work(target.client)
       if (mine !== generation && !retainOperation) return
       if (mine === generation) message = null
       apply(result, target)
@@ -150,13 +154,14 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   const refresh = async () => {
     const mine = generation
+    const target = editor
     try {
-      const next = projectEnvironmentFromResponse(await deps.send(getProjectEnvironmentRequest(projectId)))
+      const next = projectEnvironmentFromResponse(await target.client.send(getProjectEnvironmentRequest(target.projectId)))
       if (mine !== generation) return
-      if (next.projectId !== projectId) throw new Error("Environment unavailable for this Project")
+      if (next.projectId !== target.projectId) throw new Error("Environment unavailable for this Project")
       setEnvironment(next)
-      if (next.setupState.state === "running") poll(next.setupState.operationId)
-      else await showLastRun(next.setupState, mine)
+      if (next.setupState.state === "running") poll(target, next.setupState.operationId)
+      else await showLastRun(target, next.setupState, mine)
     } catch (error) {
       if (mine !== generation) return
       message = failureText(error)
@@ -165,10 +170,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   // A reopened dialog shows the output of the last finished run; if it cannot be read the state row still tells the result.
-  const showLastRun = async (state: SetupState, mine: number) => {
+  const showLastRun = async (target: Editor, state: SetupState, mine: number) => {
     if (state.state === "notRun" || state.state === "running" || operation?.operationId === state.operationId) return
     try {
-      const last = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(state.operationId)))
+      const last = environmentOperationFromResponse(await target.client.send(getEnvironmentOperationRequest(state.operationId)))
       if (mine === generation) operation = last
     } catch {
       // The output is a courtesy.
@@ -176,7 +181,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   }
 
   // Follows the running operation: the kernel holds each read until the operation has changed, so output and the end show at once.
-  const poll = (operationId: string, known?: number) => {
+  const poll = (target: Editor, operationId: string, known?: number) => {
     if (pollingOperations.has(operationId)) return
     const token = {}
     pollingOperations.set(operationId, token)
@@ -185,9 +190,9 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const follow = async (seen: number | undefined) => {
       if (!current()) return
       try {
-        const next = environmentOperationFromResponse(await deps.send(getEnvironmentOperationRequest(operationId, seen)))
+        const next = environmentOperationFromResponse(await target.client.send(getEnvironmentOperationRequest(operationId, seen)))
         if (!current()) return
-        setOperation(next)
+        setOperation(next, target)
         message = null
         deps.render()
         if (next.state !== "running") {
@@ -229,7 +234,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     target.busy = true
     try {
       const lists = batch.reduce((latest, { edit }) => ({ ...latest, ...edit(latest) }), listsOf(current))
-      const outcome = projectEnvironmentSaveOutcomeFromResponse(await deps.send(saveProjectEnvironmentRequest({
+      const outcome = projectEnvironmentSaveOutcomeFromResponse(await target.client.send(saveProjectEnvironmentRequest({
         projectId: target.projectId,
         expectedRevision: current.revision,
         ...submitted,
@@ -270,7 +275,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
 
   const sendSecret = async (name: string, value: string) => {
     await guarded(
-      async () => projectEnvironmentSavedFromResponse(await deps.send(setProjectEnvironmentSecretRequest(projectId, name, value))),
+      async (client) => projectEnvironmentSavedFromResponse(await client.send(setProjectEnvironmentSecretRequest(editor.projectId, name, value))),
       (next) => setEnvironment(next),
     )
   }
@@ -283,7 +288,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (current.setupState.state === "running") {
       const operationId = current.setupState.operationId
       await guarded(
-        async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(operationId))),
+        async (client) => environmentOperationFromResponse(await client.send(cancelEnvironmentOperationRequest(operationId))),
         (next) => { operation = next; pollingOperations.delete(operationId); void refresh() },
       )
       return
@@ -295,8 +300,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       if (mine !== generation || hasUnsaved(target)) return
     }
     await guarded(
-      async () => environmentOperationFromResponse(await deps.send(runProjectEnvironmentSetupRequest(projectId, deps.newOperationId()))),
-      (next) => { operation = next; if (next.state === "running") poll(next.operationId, next.updates); void refresh() },
+      async (client) => environmentOperationFromResponse(await client.send(runProjectEnvironmentSetupRequest(target.projectId, deps.newOperationId()))),
+      (next) => { operation = next; if (next.state === "running") poll(target, next.operationId, next.updates); void refresh() },
     )
   }
 
@@ -307,8 +312,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const from = source()
     if (!from || editor.busy || editor.transfer?.state === "running") return
     await guarded(
-      async () => environmentOperationFromResponse(await deps.send(importProjectEnvironmentEntriesRequest({ projectId, operationId: deps.newOperationId(), sourceKernelId: from.id, ...(entries ? { entries } : {}) }))),
-      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(next.operationId, next.updates) }, true,
+      async (client) => environmentOperationFromResponse(await client.send(importProjectEnvironmentEntriesRequest({ projectId: editor.projectId, operationId: deps.newOperationId(), sourceKernelId: from.id, ...(entries ? { entries } : {}) }))),
+      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(target, next.operationId, next.updates) }, true,
     )
   }
 
@@ -316,7 +321,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
   const stopOperation = async (running: EnvironmentOperationView | null) => {
     if (!running || running.state !== "running" || editor.busy) return
     await guarded(
-      async () => environmentOperationFromResponse(await deps.send(cancelEnvironmentOperationRequest(running.operationId))),
+      async (client) => environmentOperationFromResponse(await client.send(cancelEnvironmentOperationRequest(running.operationId))),
       (next, target) => { setOperation(next, target); if (open && target === editor) { pollingOperations.delete(running.operationId); void refresh() } }, true,
     )
   }
@@ -328,8 +333,8 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (editor.busy) return
     if (editor.draft?.state === "running") { await stopOperation(editor.draft); return }
     await guarded(
-      async () => environmentOperationFromResponse(await deps.send(kind === "draft" ? draftProjectEnvironmentRequest(projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(projectId, deps.newOperationId(), withAgent))),
-      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(next.operationId, next.updates) }, true,
+      async (client) => environmentOperationFromResponse(await client.send(kind === "draft" ? draftProjectEnvironmentRequest(editor.projectId, deps.newOperationId()) : checkProjectEnvironmentRequest(editor.projectId, deps.newOperationId(), withAgent))),
+      (next, target) => { setOperation(next, target); if (open && target === editor && next.state === "running") poll(target, next.operationId, next.updates) }, true,
     )
   }
 
@@ -337,7 +342,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const proposal = editor.environment?.proposals[index]
     if (!proposal || editor.busy) return
     await guarded(
-      async () => projectEnvironmentSavedFromResponse(await deps.send(resolveEnvironmentProposalRequest(projectId, proposal.id, accept))),
+      async (client) => projectEnvironmentSavedFromResponse(await client.send(resolveEnvironmentProposalRequest(editor.projectId, proposal.id, accept))),
       (next) => setEnvironment(next),
     )
   }
@@ -458,10 +463,13 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     async open(project: string) {
       const mine = ++generation
       open = true
-      projectId = project
       loading = true
-      editor = editors.get(project) ?? newEditor(project)
-      editors.set(project, editor)
+      const client = deps.client()
+      const onKernel = editors.get(client) ?? new Map<string, Editor>()
+      editors.set(client, onKernel)
+      const target = onKernel.get(project) ?? newEditor(client, project)
+      onKernel.set(project, target)
+      editor = target
       focus = { kind: "run" }
       input = null
       operation = null
@@ -472,15 +480,15 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       deps.render()
       void deps.otherKernels().then((found) => { if (mine === generation) { sources = found; deps.render() } }, () => {})
       try {
-        const next = projectEnvironmentFromResponse(await deps.send(getProjectEnvironmentRequest(project)))
+        const next = projectEnvironmentFromResponse(await client.send(getProjectEnvironmentRequest(project)))
         if (mine !== generation) return
         if (next.projectId !== project) throw new Error("Environment unavailable for this Project")
-        if (!editor.environment || next.revision >= editor.environment.revision) setEnvironment(next)
-        for (const running of [editor.transfer, editor.draft]) {
-          if (running?.state === "running") poll(running.operationId)
+        if (!target.environment || next.revision >= target.environment.revision) setEnvironment(next)
+        for (const running of [target.transfer, target.draft]) {
+          if (running?.state === "running") poll(target, running.operationId)
         }
-        if (next.setupState.state === "running") poll(next.setupState.operationId)
-        else await showLastRun(next.setupState, mine)
+        if (next.setupState.state === "running") poll(target, next.setupState.operationId)
+        else await showLastRun(target, next.setupState, mine)
       } catch (error) {
         if (mine !== generation) return
         message = failureText(error)

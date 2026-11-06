@@ -37,24 +37,34 @@ function operation(patch: Partial<EnvironmentOperationView> = {}): EnvironmentOp
 type Reply = unknown | Error | (() => unknown)
 
 function harness(initial: ProjectEnvironmentView = environment(), kernels: readonly { id: string; label: string }[] | (() => Promise<readonly { id: string; label: string }[]>) = []) {
-  const requests: Record<string, any>[] = []
-  const replies: Reply[] = []
-  // Reads the kernel holds until the operation changes: they answer when the test calls `release`.
-  const held: Array<(value: unknown) => void> = []
+  // Each kernel is its own connection with its own queue of replies and held reads.
+  const kernel = () => {
+    const requests: Record<string, any>[] = []
+    const replies: Reply[] = []
+    // Reads the kernel holds until the operation changes: they answer when the test calls `release`.
+    const held: Array<(value: unknown) => void> = []
+    const client = {
+      send: async (request: unknown) => {
+        requests.push(request as Record<string, any>)
+        if ((request as any).GetEnvironmentOperation?.waitAfterUpdates !== undefined) return new Promise((resolve) => held.push(resolve))
+        const next = replies.shift()
+        if (next === undefined) throw new Error(`unexpected request ${Object.keys(request as object)[0]}`)
+        const value = typeof next === "function" ? (next as () => unknown)() : next
+        if (value instanceof Error) throw value
+        return value
+      },
+    }
+    return { client, requests, replies, held }
+  }
+  const first = kernel()
+  let connected = first
+  const { requests, replies, held } = first
   const scheduled: Array<{ callback: () => void; delayMs: number }> = []
   let renders = 0
   let operationIds = 0
   const controller = createProjectEnvironmentController({
     otherKernels: async () => typeof kernels === "function" ? kernels() : kernels,
-    send: async (request) => {
-      requests.push(request as Record<string, any>)
-      if ((request as any).GetEnvironmentOperation?.waitAfterUpdates !== undefined) return new Promise((resolve) => held.push(resolve))
-      const next = replies.shift()
-      if (next === undefined) throw new Error(`unexpected request ${Object.keys(request as object)[0]}`)
-      const value = typeof next === "function" ? (next as () => unknown)() : next
-      if (value instanceof Error) throw value
-      return value
-    },
+    client: () => connected.client,
     render: () => { renders++ },
     schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs }) },
     newOperationId: () => `op-${++operationIds}`,
@@ -78,7 +88,8 @@ function harness(initial: ProjectEnvironmentView = environment(), kernels: reado
     for (let i = 0; i < 20 && !controller.view().rows.some((row) => row.focused && row.text.includes(target)); i++) key("down")
   }
   const release = async (value: unknown) => { held.shift()!(value); await settle() }
-  return { controller, requests, replies, scheduled, key, type, text, open, settle, focusOn, release, held, renders: () => renders }
+  const connect = (next: ReturnType<typeof kernel>) => { connected = next }
+  return { controller, requests, replies, scheduled, kernel, connect, a: first, key, type, text, open, settle, focusOn, release, held, renders: () => renders }
 }
 
 test("the dialog shows one machine line and the four sections from the kernel", async () => {
@@ -1072,4 +1083,90 @@ for (const inventory of ["empty", "failed"] as const) test(`a retained Import ke
   h.key("return"); await h.settle()
   assert.deepEqual(h.requests.find(request => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
   assert.equal(h.requests.filter(request => request.ImportProjectEnvironmentEntries).length, 1)
+})
+
+// The same Project on two kernels: A holds revision 5 with a machine, a script and secrets; B has revision 1 and nothing set up.
+const onKernelA = (patch: Partial<ProjectEnvironmentView> = {}) => environment({ revision: 5, machineLabel: "Mac A", setup: { script: "make a-setup" }, variables: "A_ONLY=1", ...patch })
+const onKernelB = () => environment({ exists: false, revision: 1, machineLabel: "Mac B", setup: { script: "" }, variables: "", secrets: [], files: [] })
+
+test("switching kernels shows the other kernel's Environment and nothing of the first", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  assert.match(h.text(), /Mac A/)
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  const text = h.text()
+  assert.match(text, /Mac B/)
+  for (const leaked of ["Mac A", "make a-setup", "A_ONLY", "API_KEY", "In Vault"]) assert.ok(!text.includes(leaked), `kernel A's ${leaked} is shown on kernel B\n${text}`)
+  assert.deepEqual(b.requests, [{ GetProjectEnvironment: { projectId: "project-1" } }])
+})
+
+test("retained operations are followed only on the kernel that started them", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "check-a", kind: "check", outputTail: "" }) } })
+  h.key("c")
+  await h.settle()
+  h.key("escape")
+  const aRequests = h.requests.length
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  await h.settle()
+  assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation), "kernel B was asked for kernel A's operation")
+  assert.equal(h.requests.length, aRequests, "kernel A was read while the terminal is on kernel B")
+  h.key("escape")
+  // Back on A the Check is still its own and is followed again.
+  h.connect(h.a)
+  h.replies.push({ ProjectEnvironment: { environment: onKernelA() } })
+  await h.controller.open("project-1")
+  await h.settle()
+  assert.ok(h.requests.slice(aRequests).some((request) => request.GetEnvironmentOperation?.operationId === "check-a"))
+  assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation))
+})
+
+test("a save started on one kernel completes against that kernel after the switch", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  let finishSave: (value: unknown) => void = () => {}
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make a-setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.key("escape")
+  const aRequests = () => h.requests.filter((request) => request.SaveProjectEnvironment)
+  assert.equal(aRequests().length, 1)
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  finishSave({ ProjectEnvironmentSaved: { environment: onKernelA({ revision: 6, setup: { script: "make a-setup && make test" } }) } })
+  await h.settle()
+  assert.equal(aRequests().length, 1)
+  assert.ok(b.requests.every((request) => !request.SaveProjectEnvironment), "the save reached kernel B")
+  assert.match(h.text(), /Mac B/)
+  assert.ok(!h.text().includes("make a-setup"), h.text())
+})
+
+test("returning to a kernel shows its own Environment again", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  h.key("escape")
+  h.connect(h.a)
+  h.replies.push({ ProjectEnvironment: { environment: onKernelA() } })
+  await h.controller.open("project-1")
+  assert.match(h.text(), /Mac A/)
+  assert.match(h.text(), /make a-setup/)
+  assert.ok(!h.text().includes("Mac B"), h.text())
 })

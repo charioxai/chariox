@@ -108,7 +108,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     pageSize: () => dialogPageSize(deps.dimensions().height),
   })
   const environmentController = createProjectEnvironmentController({
-    send: request => deps.client.send(request),
+    client: () => deps.client.currentClient(),
     otherKernels: deps.environmentSourceKernels,
     pageSize: () => dialogPageSize(deps.dimensions().height),
     textWidth: () => dialogTextWidth(deps.dimensions().width),
@@ -117,6 +117,8 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     newOperationId: randomUUID,
     now: Date.now,
   })
+  // The dialog shows one kernel's Environment; switching kernels ends it.
+  onCleanup(deps.client.onClientChanged(() => { if (environmentController.isOpen()) environmentController.close() }))
   const handleEnvironmentPaste = (event: { text: string; preventDefault(): void }) => {
     if (environmentController.handlePaste(event.text)) event.preventDefault()
   }
