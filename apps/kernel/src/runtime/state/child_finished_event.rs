@@ -31,9 +31,11 @@ impl KernelRuntimeState {
         let outcome = if task.state == ExecutionState::Done {
             TurnOutcome::completed()
         } else {
+            // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
             failure
                 .cloned()
                 .or_else(|| self.owned.recorded_turn_outcome(task))
+                .filter(|outcome| outcome.kind != crate::provider::TurnOutcomeKind::Completed)
                 .unwrap_or_else(TurnOutcome::cancelled)
         };
         let mut event = ledger::occurrence(

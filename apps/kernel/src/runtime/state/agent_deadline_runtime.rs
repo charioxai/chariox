@@ -185,13 +185,22 @@ impl KernelRuntimeState {
                 crate::durable_state::agent_lifecycle::ExecutionState::Done
                     | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
             ) {
-                owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::CancelTask {
-                        task: task.task_id,
-                        owner: session.owner_user_id().into(),
-                        revision: task.revision,
-                    })?;
+                let Outcome::Task(cancelled) =
+                    owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::CancelTask {
+                            task: task.task_id,
+                            owner: session.owner_user_id().into(),
+                            revision: task.revision,
+                        })?
+                else {
+                    unreachable!("cancelling a task answers with the task")
+                };
+                // The deadline ended this task: its parent hears of it.
+                if let Err(error) = self.announce_child_finished(&cancelled, None, None).await {
+                    tracing::warn!(%error, agent_id=%agent,
+                        "child_finished retained for the inbox sweep");
+                }
             }
         }
         if let Some(run) = run

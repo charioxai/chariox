@@ -16,6 +16,11 @@ struct Team {
 
 /// A parent and its child in one room; the child has an active turn and a task, not yet settled.
 async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
+    team_with(label, Some(settle_cancelled), parent_running).await
+}
+
+/// `settle_cancelled: None` leaves the child working.
+async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -72,7 +77,7 @@ async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
-    store
+    let Outcome::Task(begun) = store
         .agent_lifecycle(Operation::Begin {
             owner: "local".into(),
             room: session.id().into(),
@@ -81,25 +86,38 @@ async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team
             run: Some(child_run.id().into()),
             now: 1,
         })
-        .unwrap();
-    let Outcome::Settled { task, correction } = store
-        .agent_lifecycle(Operation::Settle {
-            room: session.id().into(),
-            agent: child.id().into(),
-            prompt: prompt.id().into(),
-            run: child_run.id().into(),
-            has_answer: !settle_cancelled,
-            cancelled: settle_cancelled,
-            now: 2,
-        })
         .unwrap()
     else {
-        panic!("settled")
+        panic!("begun")
     };
-    runtime
-        .owned
-        .complete_local_prompt_without_advance(session.id(), child.id(), Some(child_run.id()))
-        .unwrap();
+    let (task, correction) = match settle_cancelled {
+        None => (begun, false),
+        Some(cancelled) => {
+            let Outcome::Settled { task, correction } = store
+                .agent_lifecycle(Operation::Settle {
+                    room: session.id().into(),
+                    agent: child.id().into(),
+                    prompt: prompt.id().into(),
+                    run: child_run.id().into(),
+                    has_answer: !cancelled,
+                    cancelled,
+                    now: 2,
+                })
+                .unwrap()
+            else {
+                panic!("settled")
+            };
+            runtime
+                .owned
+                .complete_local_prompt_without_advance(
+                    session.id(),
+                    child.id(),
+                    Some(child_run.id()),
+                )
+                .unwrap();
+            (task, correction)
+        }
+    };
     if !parent_running {
         // The parent ended its turn and parked on its children.
         runtime
@@ -221,4 +239,28 @@ async fn a_finish_steers_a_running_parent() {
         event.target_prompt_id.is_some() && event.attempted_at_ms.is_some(),
         "the running parent's turn is the steer target: {event:?}"
     );
+}
+
+#[tokio::test]
+async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
+    let team = team_with("child-finished-deadline-stop", None, false).await;
+    let deadline_ms = crate::session::unix_epoch_ms() + 1_000;
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            deadline: deadline_ms,
+        })
+        .unwrap();
+    team.runtime
+        .tick_agent_deadlines(deadline_ms + 1)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["deadline_reached"], true);
+    assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
+    assert!(events[0].urgent);
 }
