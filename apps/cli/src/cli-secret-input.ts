@@ -6,6 +6,7 @@ import { theme } from "./theme.js"
 export function createCliSecretInput(renderer: CliRenderer) {
   let pending: AbortController | null = null
   return {
+    isActive: () => pending !== null,
     cancel() { pending?.abort() },
     async readSecret(prompt: string): Promise<string> {
       if (pending) throw new Error("secret input is already open")

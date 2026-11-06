@@ -2,7 +2,7 @@ import { createSessionProcessController } from "./session-process-controller.js"
 import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
 import { createProjectEnvironmentController } from "./project-environment-controller.js"
 import { randomUUID } from "node:crypto"
-import { MouseButton } from "@opentui/core"
+import { MouseButton, type Selection } from "@opentui/core"
 import { createEffect, on, onCleanup } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
@@ -46,6 +46,7 @@ export type CliOverlayInteractionCompositionDeps = {
   promptInputRefController: {
     current: AnyFn
     currentOrNull: AnyFn
+    focus: () => void
   }
   describeRenderableDebug: AnyFn
   scheduleTimer: AnyFn
@@ -70,7 +71,6 @@ export type CliOverlayInteractionCompositionDeps = {
   flashFooter: AnyFn
   attachBinding: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
-  retainPromptFocus: AnyFn
 }
 
 export function createCliOverlayInteractionComposition(deps: CliOverlayInteractionCompositionDeps) {
@@ -242,15 +242,18 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     logWarning: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
   })
-  const copySelection = clipboardController.copySelection
 
   const promptSurfaceMouseController = createPromptSurfaceMouseController({
     delayMs: 0,
     scheduleTimer: deps.scheduleTimer,
-    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
-    copySelection,
-    retainPromptFocus: deps.retainPromptFocus,
+    isPrimaryButton: (event: { button: MouseButton; isDragging?: boolean }) => event.button === MouseButton.LEFT,
+    copyText: clipboardController.copyTextWithFeedback,
+    retainPromptFocus: () => deps.promptInputRefController.focus(),
   })
+
+  const onSelection = (selection: Selection) => promptSurfaceMouseController.handleSelection(selection.getSelectedText())
+  deps.renderer.on("selection", onSelection)
+  onCleanup(() => deps.renderer.off("selection", onSelection))
 
   return {
     assignDialogOverlayBox: dialogOverlayController.assignOverlayBox,
@@ -258,7 +261,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
+    captureCopyKey: clipboardController.captureCopyKey,
+    capturePaste: clipboardController.capturePaste,
+    replayCopyKey: clipboardController.replayCopyKey,
+    discardCopyInput: clipboardController.discardCopyInput,
+    copyPromptSelection: clipboardController.copyCapturedSelection,
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,
