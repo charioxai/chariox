@@ -20,9 +20,12 @@ mod login_recovery;
 mod operation;
 mod policy;
 mod process;
+#[cfg(test)]
+mod reach_tests;
 mod receipts;
 mod scope;
 mod window;
+pub(in crate::runtime::state) use policy::sudo_request_forbidden;
 pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]

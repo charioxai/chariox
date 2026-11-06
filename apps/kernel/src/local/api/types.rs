@@ -477,4 +477,6 @@ pub use workspace::*;
 /// `deleted_open_bytes` (deleted files it keeps open) and `outlived` (it kept running after the
 /// command that started it ended). The peer protocol is unchanged (424).
 /// Allocated 991 carries current disk occupancy in the existing process feed.
+/// MP-08/MP-09/MP-10/MP-11: 974 adds the agent reach identity and "ask before agents acquire machines"; 966 integrated WASM Apps (peer415).
+/// MP-08 / MP-09 / MP-10 / MP-11: 989 integrates working-agent activity with reach.
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 991;

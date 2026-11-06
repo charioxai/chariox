@@ -100,6 +100,7 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
@@ -500,7 +501,7 @@ mod local_prompt_dispatch_runtime;
 mod local_prompt_submission_owned_state;
 mod managed_activity_persistence;
 mod structured_prompt_dispatch;
-pub(crate) use managed_activity_persistence::ManagedActivityObservation;
+pub(crate) use managed_activity_persistence::{ManagedActivityCounts, ManagedActivityObservation};
 mod metaagent_event_owned_state;
 mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
@@ -1050,7 +1051,14 @@ impl KernelRuntimeState {
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
                 passkey_prompts: Arc::default(),
-                kernel_access: Default::default(),
+                kernel_access: Arc::new(std::sync::Mutex::new(
+                    crate::runtime::kernel_access::AccessState {
+                        // A handed-over run keeps its id: so does the owner's revoke of it.
+                        #[cfg(unix)]
+                        revoked_reach_runs: crate::hot_reload::take_revoked_reach_runs(),
+                        ..Default::default()
+                    },
+                )),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
                 vault_capture_claims: Default::default(),

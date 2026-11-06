@@ -83,6 +83,7 @@ where
 
 mod catalog_changes;
 mod permission_prompt;
+mod reach;
 mod slice_tools;
 
 #[tokio::test]

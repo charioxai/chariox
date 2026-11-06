@@ -229,9 +229,12 @@ impl CommandRouter {
             }
         }
         // MP-08 / MP-10 / MP-11 A04: approvals belong to the user, including
-        // when the requesting agent is elevated.
+        // when the requesting agent is elevated. The one exception is an agent driving
+        // another room through reach: like an external agent it answers a routine question.
         if command.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
-            && matches!(&request, LocalDaemonRequest::RespondToInteraction(_))
+            && matches!(&request, LocalDaemonRequest::RespondToInteraction(answer)
+                if command.reach_caller_id().is_none()
+                    || self.runtime_state.interaction_requires_terminal(answer))
         {
             return Err(crate::runtime::kernel_access::error(
                 "agents cannot answer approvals; the user answers in a Chariox terminal",

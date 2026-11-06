@@ -576,6 +576,37 @@ mod tests {
     use crate::runtime::router::CommandRouter;
     use crate::DaemonApp;
 
+    // MP-08 / MP-09 / MP-10 / MP-11: paired with Cloud's core-activity-contract drill.
+    #[tokio::test]
+    #[ignore = "run with Cloud's core-activity-contract.mjs receiver"]
+    async fn selected_cloud_receiver_accepts_the_real_activity_producer() {
+        let api_url = std::env::var("CHARIOX_ACTIVITY_CONTRACT_URL")
+            .expect("start Cloud's contract receiver first");
+        let reporter = ManagedKernelActivityReporter {
+            binding: ManagedKernelActivityBinding {
+                api_url,
+                account_id: "account-1".into(),
+                resource_id: "managed-env-1".into(),
+                worker: false,
+                machine_id: "managed-machine-1".into(),
+                kernel_id: "managed-kernel-1".into(),
+                machine_credential: format!("mcred_{}", "a".repeat(43)),
+            },
+            confirmation_wait_started: None,
+            persistence_retry_started: None,
+        };
+        let answer = reporter
+            .report(AcceptedActivity {
+                sequence: 7,
+                working_agent_count: 2,
+                activity_changed_at_ms: 1_793_620_800_000,
+            })
+            .await
+            .expect("the selected Cloud must accept the producer's signed report");
+        assert_eq!(answer.accepted_sequence, 7);
+        assert_eq!(answer.working_agent_count, 2);
+    }
+
     fn binding() -> ManagedKernelActivityBinding {
         ManagedKernelActivityBinding {
             api_url: "https://cloud.example.test".to_string(),

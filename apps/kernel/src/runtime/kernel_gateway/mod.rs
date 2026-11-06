@@ -8,6 +8,7 @@ mod directory;
 mod error;
 mod events;
 mod events_created;
+mod forward;
 mod hosted;
 mod identity;
 mod inventory;
@@ -38,6 +39,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
 pub(crate) use error::{is_public_code, GatewayError};
+pub(crate) use forward::forward_audited;
 use identity::GatewayIdentity;
 use inventory::RelayInventory;
 use link::{Link, LinkFailure, LinkParams};
@@ -236,6 +238,7 @@ impl KernelGateway {
             validate_machine_target(expected, &kernel)?;
         }
         if grant_live {
+            self.ensure_access_live(origin, target)?;
             self.register_for(&origin.grant_id, target).await?;
         }
         let gateway_ready = is_gateway_ready(&kernel);
@@ -501,7 +504,7 @@ impl KernelGateway {
     }
 
     /// The owner revoked this kernel's gateway in the Cloud clients list. That ends
-    /// every agent access grant; a new grant registers the gateway again.
+    /// every existing agent access identity; a new grant or run may register again.
     async fn gateway_revoked(&self) -> GatewayError {
         if self.hosted.revoked().await {
             let hosted = self.hosted.clone();
@@ -665,7 +668,8 @@ mod tests {
                 key,
                 Some(origins::Named {
                     kernel: "kernel-a",
-                    name: None
+                    name: None,
+                    harness: "claude",
                 })
             )
             .unwrap());

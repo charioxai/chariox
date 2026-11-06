@@ -20,7 +20,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 12;
+pub const HANDOVER_FORMAT: u32 = 13;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -39,6 +39,9 @@ struct Handover {
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
     user_domain: crate::runtime::user_domain_access::AccessHandover,
+    // Provider runs the owner cut off from the gateway: a handed-over run keeps its
+    // id and tool token, so the revocation has to survive the swap with it.
+    revoked_reach_runs: Vec<String>,
     // A pipe holding the providers' launch credentials: they stay in memory.
     credentials_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
@@ -129,6 +132,7 @@ static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new())
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
 static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
     Mutex::new(None);
+static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -216,6 +220,7 @@ pub fn receive() {
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
     *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
+    *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -239,6 +244,12 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
 
 pub(crate) fn take_user_domain() -> Option<crate::runtime::user_domain_access::AccessHandover> {
     lock(&RECEIVED_USER_DOMAIN).take()
+}
+
+pub(crate) fn take_revoked_reach_runs() -> std::collections::HashSet<String> {
+    std::mem::take(&mut *lock(&RECEIVED_REVOKED_REACH_RUNS))
+        .into_iter()
+        .collect()
 }
 
 // Listening sockets stay open across the swap: a connection that arrives
@@ -518,6 +529,15 @@ impl PreparedForTests {
         });
         Self
     }
+
+    /// What the next program receives of this swap, as it reads it from the handover file.
+    pub(crate) fn reload(&self) {
+        let prepared = lock(&PREPARED);
+        let body = serde_json::to_vec(&prepared.as_ref().expect("a prepared swap").handover)
+            .expect("the handover serializes");
+        let handover: Handover = serde_json::from_slice(&body).expect("the handover reads back");
+        *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
+    }
 }
 
 #[cfg(test)]
@@ -544,6 +564,13 @@ pub(crate) fn hand_over_claude(
 pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
         prepared.handover.user_domain = access;
+    }
+}
+
+/// Keeps the owner's gateway revocations of live provider runs for the next program.
+pub(crate) fn hand_over_revoked_reach_runs(runs: impl IntoIterator<Item = String>) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared.handover.revoked_reach_runs = runs.into_iter().collect();
     }
 }
 
@@ -670,6 +697,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             released_jobs: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
+            revoked_reach_runs: Vec::new(),
             credentials_fd: None,
             listeners: lock(&LISTENERS).clone(),
         }),

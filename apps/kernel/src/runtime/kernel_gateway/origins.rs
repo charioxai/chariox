@@ -31,6 +31,9 @@ pub(crate) struct GatewayOrigin {
     /// It does not survive a kernel restart, so this witness is memory-only.
     #[serde(skip)]
     pub(crate) generation: u64,
+    /// The origin's agents that acted through it, newest last, so the owner sees who.
+    #[serde(default)]
+    pub(crate) agents: Vec<String>,
 }
 
 impl GatewayOrigin {
@@ -42,6 +45,21 @@ impl GatewayOrigin {
     pub(crate) fn display_name(&self) -> &str {
         self.origin_name.as_deref().unwrap_or(&self.origin_kernel)
     }
+
+    /// The row's name with the agents that acted through it, newest first.
+    pub(crate) fn listed_name(&self) -> String {
+        if self.agents.is_empty() {
+            return self.display_name().to_owned();
+        }
+        let agents = self
+            .agents
+            .iter()
+            .rev()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>();
+        format!("{}: {}", self.display_name(), agents.join(", "))
+    }
 }
 
 /// The origin a gateway request names for itself.
@@ -49,7 +67,26 @@ impl GatewayOrigin {
 pub(crate) struct Named<'a> {
     pub(crate) kernel: &'a str,
     pub(crate) name: Option<&'a str>,
+    /// How the origin names the one acting, such as `room/agent (Chariox agent)`.
+    pub(crate) harness: &'a str,
 }
+
+/// The most agents a gateway row remembers.
+const AGENTS_KEPT: usize = 8;
+
+fn remember_agent(known: &mut GatewayOrigin, harness: &str) -> bool {
+    if !harness.ends_with(AGENT_SUFFIX) || known.agents.last().is_some_and(|last| last == harness) {
+        return false;
+    }
+    known.agents.retain(|agent| agent != harness);
+    known.agents.push(harness.to_owned());
+    let excess = known.agents.len().saturating_sub(AGENTS_KEPT);
+    known.agents.drain(..excess);
+    true
+}
+
+/// A Room agent's name ends with this; a grant holder's harness does not.
+pub(crate) const AGENT_SUFFIX: &str = " (Chariox agent)";
 
 /// What the cache holds per file, so a revoke is seen by the next request.
 static CACHE: LazyLock<Mutex<BTreeMap<PathBuf, Vec<GatewayOrigin>>>> =
@@ -116,17 +153,18 @@ pub(crate) fn admit(
                 // A renamed origin shows its new name at once; a busy one rewrites `last_seen_ms` rarely.
                 let renamed = known.origin_name.as_deref() != origin.name;
                 let stale = now_ms.saturating_sub(known.last_seen_ms) >= SEEN_REFRESH_MS;
+                let new_agent = remember_agent(known, origin.harness);
                 if renamed {
                     known.origin_name = origin.name.map(str::to_owned);
                 }
-                if renamed || stale {
+                if renamed || stale || new_agent {
                     known.last_seen_ms = now_ms;
                 }
-                (true, renamed || stale)
+                (true, renamed || stale || new_agent)
             }
             None => match origin {
                 Some(origin) => {
-                    origins.push(GatewayOrigin {
+                    let mut added = GatewayOrigin {
                         key_thumbprint: thumbprint,
                         origin_kernel: origin.kernel.to_string(),
                         origin_name: origin.name.map(str::to_owned),
@@ -134,7 +172,10 @@ pub(crate) fn admit(
                         last_seen_ms: now_ms,
                         revoked: false,
                         generation: 0,
-                    });
+                        agents: Vec::new(),
+                    };
+                    remember_agent(&mut added, origin.harness);
+                    origins.push(added);
                     (true, true)
                 }
                 None => (true, false),
@@ -205,6 +246,7 @@ mod tests {
         Some(Named {
             kernel: "mac-kernel",
             name,
+            harness: "claude",
         })
     }
 

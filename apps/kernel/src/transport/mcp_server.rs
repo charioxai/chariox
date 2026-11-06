@@ -26,6 +26,7 @@ mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
 mod tool_content;
+mod reach;
 
 pub(crate) fn catalog_changed() {
     catalog::changed();
@@ -160,6 +161,10 @@ async fn handle_http_request_inner(
 
     if let Some(name) = request.uri().path().strip_prefix("/mcp/proxy/") {
         return handle_proxy_json_rpc_request(router, name.to_string(), request).await;
+    }
+
+    if request.uri().path() == "/mcp/reach" {
+        return reach::handle(router, request).await;
     }
 
     if request.uri().path() != "/mcp" {

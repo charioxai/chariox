@@ -38,11 +38,10 @@ impl KernelGateway {
         }
         let owner = self
             .runtime_state
-            .access_grant_summary(&origin.grant_id)
+            .event_source_owner(&origin.grant_id)
             .ok_or_else(|| {
                 crate::durable_state::agent_lifecycle::outside::refused("grant revoked or expired")
-            })?
-            .owner_user_id;
+            })?;
         let mut normalized = Vec::new();
         for target in targets {
             let local = target.kernel == "local"
@@ -80,10 +79,7 @@ impl KernelGateway {
     ) -> Result<LocalDaemonResponse, crate::error::DaemonError> {
         let id = &origin.grant_id;
         let store = self.runtime_state.outside_store();
-        let owner = self
-            .runtime_state
-            .access_grant_summary(id)
-            .map(|grant| grant.owner_user_id);
+        let owner = self.runtime_state.event_source_owner(id);
         let response = match request {
             LocalDaemonRequest::SubscribeEvents(request) => {
                 let targets = self.event_targets(origin, &request.targets).await?;

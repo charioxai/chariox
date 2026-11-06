@@ -432,10 +432,11 @@ An external agent needs to know when something it started has moved: an agent fi
 
 ### 14.2 Session confinement (rule)
 
-- A session is the confinement boundary for the agents in it. A session agent sees and is woken by changes of its own session only. The `chariox.events.*` tools stay session-scoped and unchanged.
-- Observing several sessions belongs only to **outside principals**: an external agent through its grant (now) and the Chariox assistants (later, the in-product equivalent of an external agent, see the `chariox-assistants` area). Neither is a session member.
-- The event subscription requests of this section are **not exposed** to Chariox session agents at all: they are absent from kernel MCP tool discovery, from `chariox.events.*`, and from the `/sudo` request vocabulary. There is nothing for a session agent to call, so there is nothing to refuse. They exist only on the external access path (the grant holder's Unix socket and the gateway) and, later, for assistants inside the kernel.
-- Communication between session agents across sessions is a separate future mechanism. Nothing here provides it.
+- A session is the confinement boundary for the agents in it. The room tools of a session agent (`chariox.events.*`, `chariox.history.*`) see and wake it for changes of its own session only, and stay unchanged.
+- Observing several sessions belongs to **principals outside the session**, none of them a session member: an external agent through its grant, and the owner's Room agents through agent reach (the second runtime MCP entry `chariox-reach`, `docs/KERNEL_ACCESS.md`). The Chariox assistants (later, see the `chariox-assistants` area) will be the in-product equivalent.
+- A Room agent of the kernel owner follows other rooms and kernels with the reach tools `events_subscribe`, `events_wait` and `events_ack`: one inbox per live run on its own kernel (origin `reach:<run>`), parts installed on followed kernels through the gateway exactly as for an external holder, and it ends with the run. It may answer a routine decision of another room it follows (`RespondToInteraction`), never one of its own room, never a passkey or a decision that needs the person's terminal. A guest's agent in a shared room never reaches.
+- The event subscription requests are **not exposed** to the room `chariox` tools or the `/sudo` request vocabulary. A session agent has them only through `chariox-reach`, and an event request with a `kernel` argument is refused (`events_local_only`): the target goes in the `events_subscribe` call.
+- Communication between session agents across sessions is still the room message tools; reach adds reading another room's history and messaging its agents for the owner's agents, with the same authority rule as at home: what needs `/sudo` in the agent's own room needs it elsewhere.
 
 ### 14.3 Terms
 
