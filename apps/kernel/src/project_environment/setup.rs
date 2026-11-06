@@ -14,12 +14,14 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use zeroize::Zeroizing;
 
 const DIRECTORY: &str = "project-environment-setup";
-/// The output a run keeps; older lines are dropped first.
+/// The output a run keeps; the oldest text is dropped first.
 const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
+/// One read from the script's output: text is shown as it arrives, newline or not.
+const OUTPUT_READ_BYTES: usize = 8 * 1024;
 /// How long output may still arrive after the script exited.
 const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a run's progress may sit only in memory.
@@ -426,25 +428,31 @@ impl SetupRuns {
         let runs_root = self.root.clone();
         let changes = self.changes.clone();
         tokio::spawn(async move {
-            let mut lines = BufReader::new(pipe).lines();
+            let mut pipe = pipe;
+            let mut read = vec![0; OUTPUT_READ_BYTES];
+            let mut output = OutputText::new(secrets);
             let mut persisted = std::time::Instant::now();
             let mut announced = std::time::Instant::now();
             let announce_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            while let Ok(Some(line)) = lines.next_line().await {
-                let mut line = line;
-                for (name, value) in secrets.iter() {
-                    if !value.is_empty() {
-                        line = line.replace(value.as_str(), &format!("[{name}]"));
+            loop {
+                let (text, ended) = match pipe.read(&mut read).await {
+                    Ok(0) | Err(_) => (output.finish(), true),
+                    Ok(count) => (output.push(&read[..count]), false),
+                };
+                if text.is_empty() {
+                    if ended {
+                        break;
                     }
+                    continue;
                 }
                 let snapshot = {
                     let mut run = lock(&live.run);
-                    append_tail(&mut run.view.output_tail, &line);
+                    append_tail(&mut run.view.output_tail, &text);
                     run.view.updates += 1;
                     (persisted.elapsed() >= PERSIST_INTERVAL).then(|| run.clone())
                 };
-                // A burst of lines wakes readers at most every OUTPUT_ANNOUNCE_INTERVAL; a delayed wake
-                // announces the last line of a burst, so output never waits for the next line to show.
+                // A burst of output wakes readers at most every OUTPUT_ANNOUNCE_INTERVAL; a delayed wake
+                // announces the end of a burst, so output never waits for the next read to show.
                 if announced.elapsed() >= OUTPUT_ANNOUNCE_INTERVAL {
                     announced = std::time::Instant::now();
                     changes.notify();
@@ -460,6 +468,9 @@ impl SetupRuns {
                 if let Some(snapshot) = snapshot {
                     persisted = std::time::Instant::now();
                     let _ = write_run(&runs_root, &snapshot);
+                }
+                if ended {
+                    break;
                 }
             }
         })
@@ -527,9 +538,88 @@ fn write_run(root: &Path, run: &StoredRun) -> std::io::Result<()> {
     result
 }
 
-fn append_tail(tail: &mut String, line: &str) {
-    tail.push_str(line);
-    tail.push('\n');
+/// A script's output between reads: bytes that end inside a UTF-8 character, and text that ends
+/// with the start of a Secret value the next read may complete. Both are bounded, so a script
+/// without newlines cannot grow the kernel's memory.
+struct OutputText {
+    secrets: Arc<Vec<(String, Zeroizing<String>)>>,
+    bytes: Vec<u8>,
+    text: String,
+}
+
+impl OutputText {
+    fn new(secrets: Arc<Vec<(String, Zeroizing<String>)>>) -> Self {
+        Self {
+            secrets,
+            bytes: Vec::new(),
+            text: String::new(),
+        }
+    }
+
+    /// Takes one read and returns the redacted text that can be shown now.
+    fn push(&mut self, read: &[u8]) -> String {
+        self.bytes.extend_from_slice(read);
+        let mut start = 0;
+        loop {
+            match std::str::from_utf8(&self.bytes[start..]) {
+                Ok(text) => {
+                    self.text.push_str(text);
+                    start = self.bytes.len();
+                    break;
+                }
+                Err(error) => {
+                    let valid = start + error.valid_up_to();
+                    self.text.push_str(
+                        std::str::from_utf8(&self.bytes[start..valid]).unwrap_or_default(),
+                    );
+                    let Some(invalid) = error.error_len() else {
+                        start = valid;
+                        break;
+                    };
+                    self.text.push(char::REPLACEMENT_CHARACTER);
+                    start = valid + invalid;
+                }
+            }
+        }
+        self.bytes.drain(..start);
+        self.shown(false)
+    }
+
+    /// Returns everything still held once the output has ended.
+    fn finish(&mut self) -> String {
+        let bytes = std::mem::take(&mut self.bytes);
+        self.text.push_str(&String::from_utf8_lossy(&bytes));
+        self.shown(true)
+    }
+
+    fn shown(&mut self, all: bool) -> String {
+        for (name, value) in self.secrets.iter() {
+            if !value.is_empty() && self.text.contains(value.as_str()) {
+                self.text = self.text.replace(value.as_str(), &format!("[{name}]"));
+            }
+        }
+        let held = if all { 0 } else { self.secret_start() };
+        let rest = self.text.split_off(self.text.len() - held);
+        std::mem::replace(&mut self.text, rest)
+    }
+
+    /// The longest end of the text that begins a Secret value.
+    fn secret_start(&self) -> usize {
+        self.secrets
+            .iter()
+            .filter_map(|(_, value)| {
+                (1..value.len())
+                    .rev()
+                    .filter(|length| value.is_char_boundary(*length))
+                    .find(|length| self.text.ends_with(&value[..*length]))
+            })
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+fn append_tail(tail: &mut String, text: &str) {
+    tail.push_str(text);
     if tail.len() > OUTPUT_TAIL_BYTES {
         let mut cut = tail.len() - OUTPUT_TAIL_BYTES;
         while !tail.is_char_boundary(cut) {
@@ -667,6 +757,41 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the Setup process kept running after Stop");
+    }
+
+    /// Output without a newline is shown while the script still runs, the kept text stays
+    /// bounded, and a Secret value split across two reads is still hidden.
+    #[tokio::test]
+    async fn output_without_a_newline_is_bounded_shown_while_running_and_redacted_across_reads() {
+        let dir = scratch();
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        let script = "head -c 1048576 /dev/zero | tr '\\0' x; printf ' token=synthetic-tok'; \
+                      sleep 0.3; printf 'en-value\\rprogress 50%%'; sleep 60";
+        runs.start(spec(&dir, "op-unbroken", script)).unwrap();
+        let mut view = runs.get("op-unbroken").unwrap().unwrap();
+        for _ in 0..200 {
+            if view.output_tail.ends_with("progress 50%") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            view = runs.get("op-unbroken").unwrap().unwrap();
+        }
+        assert_eq!(view.state, EnvironmentOperationState::Running);
+        assert!(
+            view.output_tail
+                .ends_with(" token=[NOTION_TOKEN]\rprogress 50%"),
+            "{:?}",
+            &view.output_tail[view.output_tail.len().saturating_sub(80)..]
+        );
+        assert!(view.output_tail.len() <= OUTPUT_TAIL_BYTES);
+        runs.cancel("op-unbroken").unwrap();
+        let view = finished(&runs, "op-unbroken").await;
+        assert!(!view.output_tail.contains("synthetic-tok"));
+        let persisted = fs::read_dir(&dir.0)
+            .unwrap()
+            .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap_or_default())
+            .collect::<String>();
+        assert!(!persisted.contains("synthetic-tok"));
     }
 
     /// An ordinary kernel has no managed admission: a lost-reply retry with the same id and a
@@ -897,6 +1022,6 @@ mod tests {
             append_tail(&mut tail, "é");
         }
         assert!(tail.len() <= OUTPUT_TAIL_BYTES);
-        assert!(tail.ends_with("é\n"));
+        assert!(tail.ends_with('é'));
     }
 }
