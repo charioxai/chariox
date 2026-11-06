@@ -395,6 +395,82 @@ test("adding a secret saves the name, then sends the masked value to the Vault w
   assert(!JSON.stringify(h.controller.view()).includes("hunter2"))
 })
 
+/** Adds NEW_TOKEN in the open dialog and returns the reply of its pending Save. */
+async function addSecretNameWithPendingSave(h: ReturnType<typeof harness>) {
+  let finishSave: (value: unknown) => void = () => {}
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.key("return")
+  await h.settle()
+  return (revision: number) => finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] }) } })
+}
+
+test("a Secret name saved after its dialog closed does not open the value prompt in another Project", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", secrets: [{ name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-2")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), `the prompt follows the Project the name was typed in\n${h.text()}`)
+  assert.ok(h.requests.every((request) => !request.SetProjectEnvironmentSecret))
+  // The save itself finished against its own Project.
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ revision: 3, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-1")
+  assert.match(h.text(), /NEW_TOKEN/)
+  assert.ok(!/Value/.test(h.text()))
+})
+
+test("a Secret name saved after the dialog moved to another kernel does not open the value prompt there", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: environment({ secrets: [{ name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-1")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), `the prompt follows the kernel the name was typed on\n${h.text()}`)
+  assert.ok(b.requests.every((request) => !request.SetProjectEnvironmentSecret && !request.SaveProjectEnvironment))
+})
+
+test("a Secret name saved after the dialog was closed and reopened for the same Project does not open the value prompt", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.controller.open("project-1")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), h.text())
+})
+
+test("a failed Save does not put its reason into a dialog opened after it", async () => {
+  const h = harness()
+  await h.open()
+  let fail: (error: Error) => void = () => {}
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.replies.push(() => new Promise((_resolve, reject) => { fail = reject }))
+  h.controller.dismiss()
+  await h.settle()
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.controller.open("project-1")
+  fail(new Error("kernel request timed out"))
+  await h.settle()
+  assert.equal(h.controller.view().message ?? null, null)
+})
+
 test("a Vault failure shows in the dialog and drops the typed value", async () => {
   const h = harness()
   await h.open()

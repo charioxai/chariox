@@ -245,6 +245,7 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     const batch = target.listDrafts.slice()
     if (!current) { batch.forEach(({ settled }) => settled()); return }
     const submitted = { script: script(target), variables: variables(target) }
+    const mine = generation
     let acknowledged = false
     target.busy = true
     try {
@@ -265,10 +266,10 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
       }
       if (target === editor) {
         setEnvironment(outcome.environment)
-        message = outcome.kind === "saved" ? null : "Changed elsewhere"
+        if (mine === generation) message = outcome.kind === "saved" ? null : "Changed elsewhere"
       }
     } catch (error) {
-      if (target === editor) message = failureText(error)
+      if (target === editor && mine === generation) message = failureText(error)
     } finally {
       target.busy = false
       batch.forEach(({ settled }) => settled())
@@ -395,8 +396,11 @@ export function createProjectEnvironmentController(deps: ProjectEnvironmentContr
     if (target === "secretName") {
       const existing = editor.environment.secrets.find((secret) => secret.name === value)
       if (existing) { input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }; return }
-      void save(({ secretNames }) => ({ secretNames: secretNames.includes(value) ? secretNames : [...secretNames, value] })).then(() => {
-        if (open && editor.environment?.secrets.some((secret) => secret.name === value) && !input) {
+      const origin = editor
+      const mine = generation
+      void save(({ secretNames }) => ({ secretNames: secretNames.includes(value) ? secretNames : [...secretNames, value] }), origin).then(() => {
+        // The save finishes whatever happened to the dialog; its value prompt belongs only to the Project, kernel and dialog that asked for it.
+        if (mine === generation && origin === editor && origin.environment?.secrets.some((secret) => secret.name === value) && !input) {
           input = { kind: "secretValue", name: value, buffer: bufferAtEnd("") }
           deps.render()
         }
