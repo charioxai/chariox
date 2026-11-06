@@ -48,3 +48,13 @@ rebinding between a separate validation lookup and the actual connection.
 Static `CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON` or file targets are an explicit
 administrator action and retain HTTPS or loopback HTTP support for local and
 self-hosted deployments. Store metadata never enables that exception.
+
+## Connection owner
+
+A connection is created under the owner ID its kernel record keeps from then on
+(today the kernel and user hash used at creation). Later requests for that
+connection use the record's owner, not one recomputed from the kernel ID, so a
+kernel that holds a copy of the record addresses the same connection. A
+management capability must list that owner. Cloud-issued capabilities list the
+requesting kernel's own owners only, so a copy on another kernel needs a
+capability that names the record's owner; Cloud does not issue one yet.
