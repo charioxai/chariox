@@ -88,6 +88,7 @@ impl Part {
         EventSubscription {
             subscription_id: self.id.clone(),
             targets: self.targets.clone(),
+            sources: Vec::new(),
             kernels: Vec::new(),
             acknowledged_cursor: self.ack,
             ended: self.ended.clone(),

@@ -139,6 +139,51 @@ fn outside_event_requests_are_typed() {
     }
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 (ON-17, ON-18): a grant follows notification sources by id and
+// nothing else: no destination, filter, queue or retention field exists on the wire.
+#[test]
+fn outside_event_source_requests_name_source_ids_only() {
+    let request: super::super::super::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":["wf_source_a"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":["wf_source_a"]}})
+    );
+    let request: super::super::super::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"UnsubscribeEvents":{"sources":["wf_source_a"]}}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"UnsubscribeEvents":{"sources":["wf_source_a"]}})
+    );
+    for field in [
+        "url",
+        "webhook",
+        "destination",
+        "email",
+        "filter",
+        "events",
+        "queue",
+        "retention_ms",
+        "in_response_to",
+    ] {
+        for variant in ["SubscribeEvents", "UnsubscribeEvents"] {
+            let mut body = serde_json::json!({"sources":["wf_source_a"]});
+            body[field] = serde_json::json!("x");
+            assert!(
+                serde_json::from_value::<super::super::super::LocalDaemonRequest>(
+                    serde_json::json!({variant:body})
+                )
+                .is_err(),
+                "{variant} accepted {field}"
+            );
+        }
+    }
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: every outside event variant is a stable wire shape.
 #[test]
 fn outside_events_snapshot_and_hash() {
@@ -183,7 +228,7 @@ fn outside_events_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "998d78ee2eee5ef99b94d05b59d60aa4f7229a3eb4de8bc3166fbc60a8449d74"
+        "661e08f46947017aa520ad47c05d613cab39269f45130da9d58cf859748c627f"
     );
 }
 

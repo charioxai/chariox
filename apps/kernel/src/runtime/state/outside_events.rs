@@ -17,6 +17,10 @@ pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
     )
 }
+/// Notification sources reach a grant's own part only, through the gateway.
+pub(crate) fn source_not_available() -> DaemonError {
+    crate::durable_state::agent_lifecycle::outside::refused("source not available")
+}
 impl KernelRuntimeState {
     pub(crate) fn subscribe_outside_part(
         &self,
@@ -89,11 +93,17 @@ impl KernelRuntimeState {
         let store = self.outside_store();
         match request {
             LocalDaemonRequest::SubscribeEvents(request) => {
+                if !request.sources.is_empty() {
+                    return Err(source_not_available());
+                }
                 self.validate_event_targets(&request.targets, owner)?;
                 self.subscribe_outside_part(id, home, request.targets.clone())?;
                 self.outside_subscription_response(id)
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
+                if !request.sources.is_empty() {
+                    return Err(source_not_available());
+                }
                 if request.all != request.targets.is_empty() {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "unsubscribe needs targets or --all",

@@ -82,6 +82,9 @@ impl KernelGateway {
         let owner = self.runtime_state.event_source_owner(id);
         let response = match request {
             LocalDaemonRequest::SubscribeEvents(request) => {
+                if !request.sources.is_empty() {
+                    return Err(crate::runtime::state::source_not_available());
+                }
                 let targets = self.event_targets(origin, &request.targets).await?;
                 let previous = store
                     .outside_part(id)?
@@ -117,6 +120,7 @@ impl KernelGateway {
                                 &event_command_id(),
                                 &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
                                     targets,
+                                    sources: Vec::new(),
                                 }),
                                 REQUEST_DEADLINE,
                             )
@@ -153,6 +157,9 @@ impl KernelGateway {
                 self.runtime_state.outside_subscription_response(id)?
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
+                if !request.sources.is_empty() {
+                    return Err(crate::runtime::state::source_not_available());
+                }
                 if request.all != request.targets.is_empty() {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
                         "unsubscribe needs targets or --all",

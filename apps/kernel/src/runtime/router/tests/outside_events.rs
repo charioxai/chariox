@@ -3,7 +3,7 @@
 use super::*;
 use crate::local::*;
 
-fn command(grant: &str, request: &LocalDaemonRequest) -> KernelCommand {
+pub(super) fn command(grant: &str, request: &LocalDaemonRequest) -> KernelCommand {
     let mut command = KernelCommand::from_local_request(
         format!("outside-test-{:016x}", rand::random::<u64>()),
         None,
@@ -15,7 +15,7 @@ fn command(grant: &str, request: &LocalDaemonRequest) -> KernelCommand {
     command.caller.user_id = Some(DEFAULT_LOCAL_USER_ID.into());
     command
 }
-async fn dispatch(
+pub(super) async fn dispatch(
     router: &CommandRouter,
     grant: &str,
     request: LocalDaemonRequest,
@@ -25,10 +25,10 @@ async fn dispatch(
         .await
         .unwrap()
 }
-fn request(value: serde_json::Value) -> LocalDaemonRequest {
+pub(super) fn request(value: serde_json::Value) -> LocalDaemonRequest {
     serde_json::from_value(value).unwrap()
 }
-fn run(name: &str, test: impl std::future::Future<Output = ()> + Send + 'static) {
+pub(super) fn run(name: &str, test: impl std::future::Future<Output = ()> + Send + 'static) {
     std::thread::Builder::new()
         .name(name.into())
         .stack_size(64 * 1024 * 1024)

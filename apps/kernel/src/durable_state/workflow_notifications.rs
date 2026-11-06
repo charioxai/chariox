@@ -90,6 +90,9 @@ pub(crate) fn ancestry_identity(sub: &WorkflowNotificationSubscription) -> Strin
         crate::local::WorkflowNotificationTargetKind::Agent => {
             format!("agent:{}", sub.endpoint_id)
         }
+        crate::local::WorkflowNotificationTargetKind::OutsideAgent => {
+            format!("grant:{}", sub.endpoint_id)
+        }
     }
 }
 pub(crate) fn workflow_identity(kernel: &str, session: &str, workflow: &str) -> String {
@@ -621,12 +624,23 @@ fn require_source_workflow(
     Ok(())
 }
 fn validate_subscription(sub: &WorkflowNotificationSubscription) -> Result<(), DaemonError> {
-    use crate::local::WorkflowNotificationTargetKind::{Agent, WorkflowEndpoint};
+    use crate::local::WorkflowNotificationTargetKind::{Agent, OutsideAgent, WorkflowEndpoint};
     let target_ids = match sub.target_kind {
         WorkflowEndpoint => vec![&sub.workflow_id],
         Agent => {
             if sub.agent_id.as_deref() != Some(sub.endpoint_id.as_str())
                 || sub.trigger_id.as_deref() != Some(sub.publication_id.as_str())
+            {
+                return Err(error("notification identifier invalid"));
+            }
+            vec![&sub.endpoint_id]
+        }
+        // The grant's id is both the publication and the endpoint; it names no agent or trigger.
+        OutsideAgent => {
+            if sub.endpoint_id != sub.publication_id
+                || sub.agent_id.is_some()
+                || sub.trigger_id.is_some()
+                || !sub.workflow_id.is_empty()
             {
                 return Err(error("notification identifier invalid"));
             }

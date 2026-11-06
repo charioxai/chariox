@@ -21,7 +21,7 @@
       }
     }
   ],
-  "local_protocol": 999,
+  "local_protocol": 1000,
   "peer": [
     {
       "epoch": "epoch",
