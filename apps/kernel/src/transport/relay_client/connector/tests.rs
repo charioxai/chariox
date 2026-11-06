@@ -978,19 +978,18 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
     // This connector also awaits a router on an independent runtime. Use its
     // real socket and real deadline instead of advancing only one runtime's
     // clock; fixed yields never establish a cross-runtime timer barrier.
+    // Two read-idle deadlines watch this socket (the reader stall and the silent-relay
+    // frame deadline); the earlier one replaces it.
+    let deadline = RELAY_READ_IDLE_LIMIT.min(RELAY_READ_IDLE_TIMEOUT);
     let waiting_started = std::time::Instant::now();
-    let reconnected = timeout(
-        RELAY_READ_IDLE_LIMIT + Duration::from_secs(10),
-        connections.recv(),
-    )
-    .await;
+    let reconnected = timeout(deadline + Duration::from_secs(10), connections.recv()).await;
     let waited = waiting_started.elapsed();
     let _ = stop.send(true);
     connector.await.unwrap();
     let _ = server_stop.send(());
     server.await.unwrap();
     assert!(
-        waited >= RELAY_READ_IDLE_LIMIT - Duration::from_secs(5),
+        waited >= deadline - Duration::from_secs(5),
         "socket replacement happened before the idle deadline"
     );
     assert!(

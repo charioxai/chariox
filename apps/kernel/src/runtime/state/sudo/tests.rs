@@ -2273,15 +2273,10 @@ async fn reach_machine_acquisition_uses_the_live_sudo_window() {
         ),
     )
     .await
-    .expect("an existing sudo window must not wait on another acquisition card")
-    .unwrap();
-    assert!(!result.ok);
+    .expect("an existing sudo window must not wait on another acquisition card");
+    // The absent service's definitive code survives the sudo response boundary.
     assert!(
-        result
-            .payload
-            .to_string()
-            .contains("no connected machine service"),
-        "{}",
-        result.payload
+        matches!(&result, Err(DaemonError::ExternalRequestFailed { code, retryable: false }) if code == "control_plane_unavailable"),
+        "{result:?}"
     );
 }

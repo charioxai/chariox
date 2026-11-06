@@ -168,19 +168,20 @@ mod tests {
 
     #[test]
     fn provider_limits_read_as_usage_limit_reached() {
+        // Claude's usage limit keeps its bounded, redacted reset detail for people.
         assert_eq!(
             failed_request_reason(
                 "claude",
                 "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am"
             ),
-            "The provider's usage limit was reached"
+            "You've hit your session limit · resets 8:30am"
         );
         assert_eq!(
             failed_request_reason(
                 "claude",
                 "Claude StopFailure [rate_limit]: You've hit your session limit · resets 8:30am"
             ),
-            "The provider's usage limit was reached"
+            "You've hit your session limit · resets 8:30am"
         );
         assert_eq!(
             failed_request_reason(
