@@ -236,7 +236,7 @@ fn vault_key(entry: &UserCredentialConfig) -> Result<&str, DaemonError> {
 }
 
 /// Registry, encrypted value and Activity commit together or restore their previous state.
-fn commit_entry(
+pub(in crate::runtime::state) fn commit_entry(
     service: &crate::secret::RuntimeSecretService,
     registry: &crate::credential::CharioxCredentialRegistry,
     previous: Option<UserCredentialConfig>,

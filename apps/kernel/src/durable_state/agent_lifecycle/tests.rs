@@ -226,11 +226,13 @@ fn a02_deadline_occurrence_and_long_notice_coalesce() {
     assert_eq!(f.task().state, ExecutionState::Waiting);
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 2,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -352,6 +354,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         .is_err());
     f.apply(Operation::Sweep {
         now: DELIVERY_TIMEOUT_MS + 10,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -493,6 +496,7 @@ fn a02_corrupt_delivery_is_quarantined_without_replay() {
     .unwrap();
     f.apply(Operation::Sweep {
         now: 10,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -573,6 +577,7 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         });
@@ -645,6 +650,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         });
@@ -806,11 +812,13 @@ fn a02_clock_rollback_wakes_after_a_persisted_sweep() {
     f.settle("p", true);
     f.apply(Operation::Sweep {
         now: 20,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
     f.apply(Operation::Sweep {
         now: 10,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -1807,6 +1815,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
         assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
         let Outcome::Swept(changed) = f.apply(Operation::Sweep {
             now,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         }) else {
@@ -1816,6 +1825,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     }
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     }) else {
@@ -1838,6 +1848,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
     );
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS + SWEEP_MS,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     }) else {
@@ -1879,6 +1890,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -1958,6 +1970,7 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
     }
     f.apply(Operation::Sweep {
         now: 120_010,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -1973,12 +1986,14 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
     assert_eq!(event.attempted_at_ms, Some(90_010));
     f.apply(Operation::Sweep {
         now: 90_010 + DELIVERY_TIMEOUT_MS - 1,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
     assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
     f.apply(Operation::Sweep {
         now: 90_010 + DELIVERY_TIMEOUT_MS,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -2047,6 +2062,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
     if timed_out {
         f.apply(Operation::Sweep {
             now: attempted_at + DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         });
@@ -2089,6 +2105,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         .contains("retained for the next turn"));
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: idle_at,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     }) else {
@@ -2175,6 +2192,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
     );
     f.apply(Operation::Sweep {
         now: now + 30_000,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -2188,6 +2206,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
     );
     f.apply(Operation::Sweep {
         now: at as u64 + DELIVERY_TIMEOUT_MS,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -2257,6 +2276,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     ).unwrap();
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 120_010,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     }) else {
@@ -2303,6 +2323,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
     assert_eq!(remaining, 0);
     let Outcome::Swept(changed) = f.apply(Operation::Sweep {
         now: 150_010,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     }) else {
@@ -2353,6 +2374,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
             }
             f.apply(Operation::Sweep {
                 now,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: Vec::new(),
                 held_work: Vec::new(),
             });
@@ -2376,12 +2398,14 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
                 f.apply(Operation::Sweep {
                     now: at + DELIVERY_TIMEOUT_MS - 1,
+                    vault_wait_recipients: Vec::new(),
                     busy_recipients: Vec::new(),
                     held_work: Vec::new(),
                 });
                 assert!(f.store.agent_tasks(None, None).unwrap().is_empty());
                 f.apply(Operation::Sweep {
                     now: at + DELIVERY_TIMEOUT_MS,
+                    vault_wait_recipients: Vec::new(),
                     busy_recipients: Vec::new(),
                     held_work: Vec::new(),
                 });
@@ -2431,6 +2455,7 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
         });
         f.apply(Operation::Sweep {
             now: 10 + DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: Vec::new(),
             held_work: Vec::new(),
         });
@@ -2547,6 +2572,7 @@ fn a02_security_f1_full_recipient_cannot_abort_deadline_sweep() {
     security_fill_inbox(&f, "parent", "pending");
     f.apply(Operation::Sweep {
         now: LONG_WAIT_MS + 1,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: Vec::new(),
         held_work: Vec::new(),
     });
@@ -3258,6 +3284,7 @@ fn a02_late_native_settlement_delivers_the_original_deadline_once() {
     for now in [60_002, 60_003] {
         f.apply(Operation::Sweep {
             now,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: vec![],
             held_work: vec![],
         });

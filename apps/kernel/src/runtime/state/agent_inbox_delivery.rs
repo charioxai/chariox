@@ -2,6 +2,29 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation, Outcome};
 impl KernelRuntimeState {
+    pub(super) fn agent_inbox_waits_for_vault(&self, room: &str, agent: &str) -> bool {
+        if !self
+            .owned
+            .agent_store
+            .get_agent(agent)
+            .is_ok_and(|agent| agent.remote_execution().is_none())
+        {
+            return false;
+        }
+        self.owned
+            .session_store
+            .get_session(room)
+            .is_ok_and(|session| {
+                session.active_interactions().iter().any(|card| {
+                    card.agent_id() == Some(agent)
+                        && card
+                            .choices()
+                            .iter()
+                            .any(|choice| choice.vault_unlock().is_some())
+                })
+            })
+    }
+
     pub(super) async fn deliver_agent_inbox(
         &self,
         room: &str,
@@ -77,6 +100,17 @@ impl KernelRuntimeState {
                         .iter()
                         .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
                 }) {
+                    if event.attempted_at_ms.is_some()
+                        && event.submit_epoch.is_none()
+                        && tasks.iter().any(|task| {
+                            task.state == ExecutionState::Blocked
+                                && task.wait.is_some()
+                                && ids.contains(&task.task_id.as_str())
+                        })
+                    {
+                        // A proven startup refusal retains its answer for explicit Resume.
+                        return Ok(());
+                    }
                     // The source occurrence and blocked task retain their outcome.
                     // Retire only this automatic wake so unrelated later wakes run.
                     self.owned
@@ -273,10 +307,24 @@ impl KernelRuntimeState {
                     }
                 }
                 Err(e) => {
+                    if let DaemonError::VaultUnlock {
+                        code: "vault_unlock_declined" | "vault_unlock_timed_out",
+                        retryable: false,
+                        ..
+                    } = &e
+                    {
+                        self.owned.block_vault_refused_inbox_start(
+                            room,
+                            agent,
+                            event.sequence,
+                            &e,
+                        )?;
+                    }
                     let state = ledger::delivery_receipt_state(None, false);
                     self.record_agent_delivery_receipt(room, agent, event.sequence, state)?;
                     self.owned
                         .settle_failed_delegate_start(room, agent, &e.to_string())?;
+                    self.publish_task_change(room);
                     return Err(e);
                 }
             }

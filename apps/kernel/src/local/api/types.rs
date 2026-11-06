@@ -479,4 +479,8 @@ pub use workspace::*;
 /// Allocated 991 carries current disk occupancy in the existing process feed.
 /// MP-08/MP-09/MP-10/MP-11: 974 adds the agent reach identity and "ask before agents acquire machines"; 966 integrated WASM Apps (peer415).
 /// MP-08 / MP-09 / MP-10 / MP-11: 989 integrates working-agent activity with reach.
+/// Vault unlock 984 makes the owner pick a duration on every unlock (`UnlockCredentialVault.duration`,
+/// the unlock options in `CredentialVaultStatus`, a duration on Vault-unlock choices; peer425).
+/// MP-08/MP-09/MP-10/MP-11: 992 adds positive browser-card verification conditions and non-secret receipts (peer431).
+/// MP-08/MP-09/MP-10/MP-11: 993 keeps lifecycle capabilities discoverable without an acquisition offer (peer432).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 991;

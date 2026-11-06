@@ -215,7 +215,7 @@ impl KernelRuntimeState {
     }
 }
 
-pub(in crate::runtime::state) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
@@ -388,6 +388,8 @@ mod registry_tests {
             &LocalDaemonRequest::UnlockCredentialVault(
                 crate::local::UnlockCredentialVaultRequest {
                     passphrase: crate::local::VaultPassphrase::new("passphrase"),
+                    duration: crate::local::VaultUnlockDuration::Once,
+                    surface: crate::local::VaultUnlockSurface::VaultWindow,
                 }
             )
         ));

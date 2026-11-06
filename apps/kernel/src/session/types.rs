@@ -9,9 +9,12 @@ pub(crate) use super::prompt_queue::{DurablePromptDeliveryPhase, DurablePromptPr
 pub use super::queued_metaagent_task::QueuedMetaagentTask;
 pub use super::runtime_interactions::{
     HandoffChangeLine, HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, RuntimeHandoff,
-    RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
-    RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin,
+    RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
+    RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
+    RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
+    RuntimeInteractionView, RuntimeProviderLogin,
 };
 pub use super::runtime_session::{RuntimeSession, SessionCollaborationAgentCounts};
 pub use super::runtime_worktrees::{RuntimeWorktreeAssignment, WorktreeIsolationMode};

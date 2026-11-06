@@ -577,6 +577,7 @@ fn a12_overdue_restart_coalesces_and_blocked_source_events_never_resume() {
         reopened
             .agent_lifecycle(Operation::Sweep {
                 now,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: vec![],
             })
@@ -639,6 +640,7 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
         let sweep = |now| {
             f.apply(Operation::Sweep {
                 now,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: vec![],
             })
@@ -922,6 +924,7 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
     );
     f.apply(Operation::Sweep {
         now: 60005,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: vec![("room".into(), "parent".into())],
         held_work: vec![],
     });
@@ -995,6 +998,7 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
     );
     f.apply(Operation::Sweep {
         now: 60005,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: vec![],
         held_work: vec![],
     });

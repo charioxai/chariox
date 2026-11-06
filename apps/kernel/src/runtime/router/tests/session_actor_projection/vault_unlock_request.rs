@@ -2,7 +2,10 @@
 //! no session or agent, inside the budget every passphrase check shares.
 use super::*;
 use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
-use crate::local::{KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase};
+use crate::local::{
+    KernelConnectionClass, UnlockCredentialVaultRequest, VaultPassphrase, VaultUnlockDuration,
+    VaultUnlockSurface,
+};
 use crate::session::{RuntimeSession, DEFAULT_LOCAL_USER_ID};
 
 pub(super) const PASSPHRASE: &str = "correct horse battery";
@@ -110,16 +113,17 @@ impl Fixture {
         self.router.dispatch(command, request).await
     }
 
-    pub(super) async fn unlock(
+    pub(super) async fn unlock(&self, passphrase: &str) -> Result<LocalDaemonResponse, DaemonError> {
+        self.unlock_for(passphrase, VaultUnlockDuration::Minutes { minutes: 30 })
+            .await
+    }
+
+    async fn unlock_for(
         &self,
         passphrase: &str,
+        duration: VaultUnlockDuration,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.send(LocalDaemonRequest::UnlockCredentialVault(
-            UnlockCredentialVaultRequest {
-                passphrase: VaultPassphrase::new(passphrase),
-            },
-        ))
-        .await
+        self.send(unlock_request(passphrase, duration)).await
     }
 
     pub(super) async fn status(&self) -> crate::secret::CharioxVaultUnlockStatus {
@@ -130,28 +134,14 @@ impl Fixture {
             .await
             .unwrap()
         {
-            LocalDaemonResponse::CredentialVaultStatus { status } => status,
+            LocalDaemonResponse::CredentialVaultStatus { status, .. } => status,
             other => panic!("unexpected {other:?}"),
         }
     }
 
-    /// The interaction path: an agent's operation asks for the passphrase and
-    /// the person answers it, as a terminal does.
-    async fn unlock_through_the_agent_prompt(&self, passphrase: &str) -> Result<(), DaemonError> {
-        let runtime = self.router.runtime_state.clone();
-        let (session, agent) = (self.session.clone(), self.agent.clone());
-        let operation = tokio::spawn(async move {
-            runtime
-                .manage_credential_vault_unlock(&session, &agent)
-                .await
-        });
-        self.answer_the_unlock_prompt(passphrase).await;
-        operation.await.unwrap().map(|_| ())
-    }
-
-    /// The person answers the unlock prompt that appeared in the agent's terminal.
-    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
-        let prompt = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    /// The id of the unlock prompt that appears in the agent's terminal.
+    async fn the_open_unlock_prompt(&self) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let snapshot = self
                     .router
@@ -166,18 +156,132 @@ impl Fixture {
             }
         })
         .await
-        .expect("the unlock prompt should appear");
+        .expect("the unlock prompt should appear")
+    }
+
+    async fn no_prompt_is_open(&self) -> bool {
+        self.router
+            .runtime_state
+            .session_snapshot(&self.session)
+            .await
+            .unwrap()
+            .active_interaction_for_agent(&self.agent)
+            .is_none()
+    }
+
+    /// The unlock prompt that is open and is not `after`, with its message.
+    async fn next_prompt(&self, after: Option<&str>) -> (String, String) {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let snapshot = self
+                    .router
+                    .runtime_state
+                    .session_snapshot(&self.session)
+                    .await
+                    .unwrap();
+                if let Some(prompt) = snapshot
+                    .active_interaction_for_agent(&self.agent)
+                    .filter(|prompt| Some(prompt.id()) != after)
+                {
+                    break (prompt.id().to_owned(), prompt.message().to_owned());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("an unlock prompt should appear")
+    }
+
+    async fn answer_prompt(&self, prompt: &str, choice: &str, reply: Option<&str>) {
+        let answer =
+            LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
+                session_id: self.session.clone(),
+                interaction_id: prompt.to_owned(),
+                choice_id: choice.into(),
+                custom_reply: reply.map(str::to_owned),
+                passkey: None,
+                passkey_remember_minutes: None,
+            });
+        self.send(answer).await.unwrap();
+    }
+
+    fn the_agents_operation(
+        &self,
+    ) -> tokio::task::JoinHandle<
+        Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError>,
+    > {
+        let runtime = self.router.runtime_state.clone();
+        let (session, agent) = (self.session.clone(), self.agent.clone());
+        tokio::spawn(async move {
+            runtime
+                .manage_credential_vault_unlock(&session, &agent)
+                .await
+        })
+    }
+
+    /// The person answers the unlock prompt that appeared in the agent's terminal.
+    async fn answer_the_unlock_prompt(&self, passphrase: &str) {
+        let prompt = self.the_open_unlock_prompt().await;
         let answer =
             LocalDaemonRequest::RespondToInteraction(crate::local::RespondToInteractionRequest {
                 session_id: self.session.clone(),
                 interaction_id: prompt,
-                choice_id: "passphrase".into(),
+                choice_id: "unlock_kernel".into(),
                 custom_reply: Some(passphrase.to_owned()),
                 passkey: None,
                 passkey_remember_minutes: None,
             });
         self.send(answer).await.unwrap();
     }
+}
+
+// VUI-2: whatever window the owner unlocks from, the open unlock card closes and the agent's operation goes on.
+#[tokio::test]
+async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes_on() {
+    for duration in [
+        VaultUnlockDuration::Once,
+        VaultUnlockDuration::Minutes { minutes: 30 },
+        VaultUnlockDuration::UntilKernelStops,
+    ] {
+        let f = Fixture::locked();
+        let runtime = f.router.runtime_state.clone();
+        let (session, agent) = (f.session.clone(), f.agent.clone());
+        let operation = tokio::spawn(async move {
+            runtime
+                .manage_credential_vault_unlock(&session, &agent)
+                .await
+        });
+        f.the_open_unlock_prompt().await;
+        f.unlock_for(PASSPHRASE, duration).await.unwrap();
+        let (status, action) = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+            .await
+            .expect("the agent's operation is woken by the unlock")
+            .unwrap()
+            .expect("the operation succeeds");
+        assert_eq!(action, "unlocked", "{duration:?}");
+        assert!(status.unlocked);
+        assert!(
+            f.no_prompt_is_open().await,
+            "{duration:?}: the card closed by itself"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_unlock_request_cannot_claim_to_come_from_a_card() {
+    let f = Fixture::locked();
+    let (code, _) = code_of(
+        f.send(LocalDaemonRequest::UnlockCredentialVault(
+            UnlockCredentialVaultRequest {
+                passphrase: VaultPassphrase::new(PASSPHRASE),
+                duration: VaultUnlockDuration::Once,
+                surface: VaultUnlockSurface::Card,
+            },
+        ))
+        .await,
+    );
+    assert_eq!(code, "vault_unlock_card_surface");
+    assert!(!f.status().await.unlocked);
 }
 
 pub(super) fn code_of(result: Result<LocalDaemonResponse, DaemonError>) -> (String, String) {
@@ -271,22 +375,36 @@ async fn parallel_guesses_are_checked_one_at_a_time_inside_the_budget() {
     assert_eq!(count("vault_unlock_rate_limited"), 15);
 }
 
+// PCD-04: a wrong passphrase in the card asks again in a card that says so; the budget is still the owner's one.
 #[tokio::test]
 async fn the_budget_is_shared_with_the_interaction_unlock() {
     let f = Fixture::locked();
+    let operation = f.the_agents_operation();
+    let mut previous: Option<String> = None;
     for _ in 0..5 {
-        assert!(f.unlock_through_the_agent_prompt(WRONG).await.is_err());
+        let (id, _) = f.next_prompt(previous.as_deref()).await;
+        f.answer_prompt(&id, "unlock_kernel", Some(WRONG)).await;
+        previous = Some(id);
     }
+    let (id, message) = f.next_prompt(previous.as_deref()).await;
+    assert!(
+        message.starts_with("That is not the Vault passphrase"),
+        "{message}"
+    );
     let (code, _) = code_of(f.unlock(PASSPHRASE).await);
     assert_eq!(code, "vault_unlock_rate_limited");
-    let error = f
-        .unlock_through_the_agent_prompt(PASSPHRASE)
-        .await
-        .expect_err("a locked-out owner cannot unlock through the prompt either");
+    f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
+        .await;
+    let (id, message) = f.next_prompt(Some(&id)).await;
     assert!(
-        error.to_string().contains("Too many wrong passphrases"),
-        "{error}"
+        message.contains("Too many wrong passphrases"),
+        "a locked-out owner cannot unlock through the prompt either: {message}"
     );
+    f.answer_prompt(&id, "cancel", None).await;
+    operation
+        .await
+        .unwrap()
+        .expect_err("the cancelled card ends the operation");
     assert!(!f.status().await.unlocked);
 }
 
@@ -296,14 +414,20 @@ async fn wrong_unlocks_count_against_the_interaction_unlock() {
     for _ in 0..5 {
         assert_eq!(code_of(f.unlock(WRONG).await).0, "vault_passphrase_wrong");
     }
-    let error = f
-        .unlock_through_the_agent_prompt(PASSPHRASE)
-        .await
-        .expect_err("the budget is spent");
+    let operation = f.the_agents_operation();
+    let (id, _) = f.next_prompt(None).await;
+    f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
+        .await;
+    let (id, message) = f.next_prompt(Some(&id)).await;
     assert!(
-        error.to_string().contains("Too many wrong passphrases"),
-        "{error}"
+        message.contains("Too many wrong passphrases"),
+        "the budget is spent: {message}"
     );
+    f.answer_prompt(&id, "cancel", None).await;
+    operation
+        .await
+        .unwrap()
+        .expect_err("the cancelled card ends the operation");
 }
 
 #[tokio::test]
@@ -336,9 +460,7 @@ async fn a_plain_backend_needs_no_unlock() {
 #[tokio::test]
 async fn the_passphrase_is_in_no_record_debug_or_reply() {
     let f = Fixture::locked();
-    let request = LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
-        passphrase: VaultPassphrase::new(SENTINEL),
-    });
+    let request = unlock_request(SENTINEL, VaultUnlockDuration::Once);
     assert!(format!("{request:?}").contains("[REDACTED]"));
     assert!(!format!("{request:?}").contains(SENTINEL));
     let command = KernelCommand::from_local_request_with_caller(
@@ -373,40 +495,76 @@ async fn an_operation_without_a_session_asks_the_client_to_unlock_first() {
 }
 
 #[tokio::test]
-async fn the_lease_follows_the_unlock_policy() {
+async fn the_lease_follows_the_chosen_duration_and_the_policy_only_preselects() {
     let now_ms = crate::session::unix_epoch_ms();
-    let kernel_init = Fixture::new(CredentialVaultUnlockPolicy::KernelInit, true);
-    kernel_init.unlock(PASSPHRASE).await.unwrap();
-    assert_eq!(kernel_init.status().await.expires_at_ms, None);
+    for policy in [
+        CredentialVaultUnlockPolicy::KernelInit,
+        CredentialVaultUnlockPolicy::Ttl,
+        CredentialVaultUnlockPolicy::Always,
+    ] {
+        let kernel = Fixture::new(policy, true);
+        kernel
+            .unlock_for(PASSPHRASE, VaultUnlockDuration::UntilKernelStops)
+            .await
+            .unwrap();
+        assert_eq!(kernel.status().await.expires_at_ms, None, "{policy:?}");
+    }
 
-    let ttl = Fixture::new(CredentialVaultUnlockPolicy::Ttl, true);
-    ttl.unlock(PASSPHRASE).await.unwrap();
-    let config = ttl
-        .router
-        .runtime_state
-        .config_snapshot()
+    let timed = Fixture::new(CredentialVaultUnlockPolicy::KernelInit, true);
+    timed
+        .unlock_for(PASSPHRASE, VaultUnlockDuration::Minutes { minutes: 45 })
         .await
-        .user_config
-        .credential_vault;
-    let minutes = config
-        .default_ttl_minutes
-        .min(config.max_ttl_minutes)
-        .max(1);
-    let expires = ttl.status().await.expires_at_ms.unwrap();
-    assert!(expires.abs_diff(now_ms + minutes * 60_000) < 5_000);
+        .unwrap();
+    let expires = timed.status().await.expires_at_ms.unwrap();
+    assert!(expires.abs_diff(now_ms + 45 * 60_000) < 5_000);
 
-    let always = Fixture::new(CredentialVaultUnlockPolicy::Always, true);
-    always.unlock(PASSPHRASE).await.unwrap();
-    let expires = always.status().await.expires_at_ms.unwrap();
+    let once = Fixture::new(CredentialVaultUnlockPolicy::Ttl, true);
+    once.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
+    let expires = once.status().await.expires_at_ms.unwrap();
     assert!(
         expires.abs_diff(now_ms + 60_000) < 5_000,
         "single use lasts a minute"
     );
 }
 
-fn unlock_request(passphrase: &str) -> LocalDaemonRequest {
+#[tokio::test]
+async fn the_status_offers_the_durations_and_preselects_the_policys_own() {
+    for (policy, preselected) in [
+        (
+            CredentialVaultUnlockPolicy::KernelInit,
+            VaultUnlockDuration::UntilKernelStops,
+        ),
+        (
+            CredentialVaultUnlockPolicy::Always,
+            VaultUnlockDuration::Once,
+        ),
+    ] {
+        let f = Fixture::new(policy, true);
+        let LocalDaemonResponse::CredentialVaultStatus { unlock, .. } = f
+            .send(LocalDaemonRequest::GetCredentialVaultStatus(
+                crate::local::GetCredentialVaultStatusRequest,
+            ))
+            .await
+            .unwrap()
+        else {
+            panic!("expected CredentialVaultStatus");
+        };
+        assert_eq!(unlock.default, preselected, "{policy:?}");
+        assert_eq!(unlock.durations.first(), Some(&VaultUnlockDuration::Once));
+        assert_eq!(
+            unlock.durations.last(),
+            Some(&VaultUnlockDuration::UntilKernelStops)
+        );
+    }
+}
+
+fn unlock_request(passphrase: &str, duration: VaultUnlockDuration) -> LocalDaemonRequest {
     LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
         passphrase: VaultPassphrase::new(passphrase),
+        duration,
+        surface: VaultUnlockSurface::VaultWindow,
     })
 }
 
@@ -424,7 +582,13 @@ async fn only_the_owners_own_client_may_unlock() {
         .with_connection_class(KernelConnectionClass::Terminal);
     metaagent.metaagent_id = Some("metaagent".into());
     for caller in [member, agent, metaagent] {
-        let (code, message) = code_of(f.send_as(caller, unlock_request(PASSPHRASE)).await);
+        let (code, message) = code_of(
+            f.send_as(
+                caller,
+                unlock_request(PASSPHRASE, VaultUnlockDuration::Once),
+            )
+            .await,
+        );
         assert_eq!(code, "vault_unlock_owner_only");
         assert_eq!(
             message,
@@ -440,7 +604,9 @@ async fn only_the_owners_own_client_may_unlock() {
         let mut member = KernelCaller::for_source(&KernelCommandSource::RelayClient)
             .with_connection_class(KernelConnectionClass::Terminal);
         member.user_id = Some("session-member".into());
-        f.send_as(member, unlock_request(WRONG)).await.unwrap_err();
+        f.send_as(member, unlock_request(WRONG, VaultUnlockDuration::Once))
+            .await
+            .unwrap_err();
     }
     f.unlock(PASSPHRASE).await.unwrap();
     assert!(f.status().await.unlocked);
@@ -821,15 +987,19 @@ fn set_secret(value: &str) -> LocalDaemonRequest {
 }
 
 #[tokio::test]
-async fn under_ask_every_time_the_client_unlock_covers_the_next_write_only() {
-    let f = Fixture::new(CredentialVaultUnlockPolicy::Always, true);
-    f.unlock(PASSPHRASE).await.unwrap();
+async fn a_once_unlock_covers_the_next_write_only() {
+    let f = Fixture::locked();
+    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
     f.send(set_secret("first")).await.unwrap();
     assert!(!f.status().await.unlocked, "the write used the unlock up");
     let (code, _) = code_of(f.send(set_secret("second")).await);
     assert_eq!(code, "vault_locked");
 
-    f.unlock(PASSPHRASE).await.unwrap();
+    f.unlock_for(PASSPHRASE, VaultUnlockDuration::Once)
+        .await
+        .unwrap();
     f.send(LocalDaemonRequest::DeleteCredentialSecret(
         crate::local::DeleteCredentialSecretRequest {
             session_id: None,

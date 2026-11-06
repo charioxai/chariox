@@ -50,7 +50,7 @@ fn capture_totp_uri_stores_seed_and_provisioning_parameters_atomically() {
         .upsert_vault_backed_credential_with_secret(
             &registry,
             registered.clone(),
-            "PRIVATE-NOT-BASE32",
+            "PRIVATE-NOT-BASE-1",
             true
         )
         .is_err());

@@ -44,6 +44,9 @@ struct Handover {
     revoked_reach_runs: Vec<String>,
     // A pipe holding the providers' launch credentials: they stay in memory.
     credentials_fd: Option<i32>,
+    // A memory file holding the unlocked Vault keys, so a program update does
+    // not lock the Vault again. Keys never reach the handover file.
+    vault_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
 }
 
@@ -200,6 +203,9 @@ pub fn receive() {
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
     }
+    if let Some(fd) = handover.vault_fd {
+        receive_vault_unlocks(fd);
+    }
     for fd in handover.listeners.values() {
         set_close_on_exec(*fd, true);
     }
@@ -322,6 +328,39 @@ fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
     }
 }
 
+/// Reads the Vault unlocks the previous program left and closes the
+/// descriptor: it is read once. A Vault that cannot be restored stays locked.
+fn receive_vault_unlocks(fd: i32) {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    // SAFETY: the previous program named this file for this handover alone.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut body = zeroize::Zeroizing::new(Vec::new());
+    let restored = match file.read_to_end(&mut body) {
+        Ok(_) => crate::secret::adopt_vault_unlocks(&body)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = restored {
+        crate::logging::error_with_fields(
+            "hot_reload.receive",
+            "the Vault unlocks could not be restored; the Vault stays locked",
+            serde_json::json!({ "error": error }),
+        );
+    }
+}
+
+/// Hands the Vault's unlocked keys to the next program in a descriptor it
+/// inherits, or none when the Vault is locked.
+fn send_vault_unlocks() -> std::io::Result<Option<i32>> {
+    let body = crate::secret::hand_over_vault_unlocks().map_err(std::io::Error::other)?;
+    if body.is_empty() {
+        return Ok(None);
+    }
+    memory_file_for_next_program(c"chariox-handover-vault", &body).map(Some)
+}
+
 /// Hands the providers' credentials to the next program in a descriptor it
 /// inherits. Nothing reads it before `exec`, so writing must never wait for a
 /// reader.
@@ -339,16 +378,16 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
         })
         .collect();
     let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
-    credentials_for_next_program(&body).map(Some)
+    memory_file_for_next_program(c"chariox-handover-credentials", &body).map(Some)
 }
 
-/// A file only in memory, of any size, read from its start.
+/// A file only in memory, of any size, read from its start. It carries keys
+/// and credentials: it is never a path on disk.
 #[cfg(target_os = "linux")]
-fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+fn memory_file_for_next_program(name: &std::ffi::CStr, body: &[u8]) -> std::io::Result<i32> {
     use std::io::{Seek, Write};
     use std::os::fd::{FromRawFd, IntoRawFd};
-    let fd =
-        unsafe { libc::memfd_create(c"chariox-handover-credentials".as_ptr(), libc::MFD_CLOEXEC) };
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -363,13 +402,13 @@ fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
 /// nothing reads it before `exec`. A larger body fails the hot reload instead
 /// of waiting for ever.
 #[cfg(not(target_os = "linux"))]
-fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+fn memory_file_for_next_program(_name: &std::ffi::CStr, body: &[u8]) -> std::io::Result<i32> {
     use std::io::Write;
     use std::os::fd::{FromRawFd, IntoRawFd};
     const PIPE_CAPACITY: usize = 16 << 10;
     if body.len() > PIPE_CAPACITY {
         return Err(std::io::Error::other(format!(
-            "{} bytes of launch credentials do not fit a pipe",
+            "{} bytes for the next program do not fit a pipe",
             body.len()
         )));
     }
@@ -699,6 +738,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             user_domain: Default::default(),
             revoked_reach_runs: Vec::new(),
             credentials_fd: None,
+            vault_fd: None,
             listeners: lock(&LISTENERS).clone(),
         }),
         Ok(Err(error)) => {
@@ -731,6 +771,14 @@ fn replace_program() -> Option<String> {
     match send_credentials(&prepared.handover.providers) {
         Ok(fd) => prepared.handover.credentials_fd = fd,
         Err(error) => return Some(format!("the credentials could not be handed over: {error}")),
+    }
+    match send_vault_unlocks() {
+        Ok(fd) => prepared.handover.vault_fd = fd,
+        Err(error) => {
+            return Some(format!(
+                "the Vault unlocks could not be handed over: {error}"
+            ))
+        }
     }
     if let Err(error) = write_private(&prepared.path, &prepared.handover) {
         return Some(format!("the handover could not be written: {error}"));
@@ -765,6 +813,7 @@ fn replace_program() -> Option<String> {
                 .flat_map(ProviderHandover::fds),
         )
         .chain(prepared.handover.credentials_fd)
+        .chain(prepared.handover.vault_fd)
         .chain(prepared.handover.listeners.values().copied())
         .chain(crate::slice::hand_over_managed_docker_broker())
         .collect();
@@ -902,4 +951,79 @@ pub(crate) fn set_close_on_exec(fd: i32, close: bool) {
         flags & !libc::FD_CLOEXEC
     };
     unsafe { libc::fcntl(fd, libc::F_SETFD, flags) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::secret::{
+        chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
+        create_chariox_encrypted_vault_for_test, unlock_existing_chariox_encrypted_vault,
+        VaultUnlockLease,
+    };
+
+    fn unlocked_vault() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-hot-reload-vault-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
+        unlock_existing_chariox_encrypted_vault(
+            &path,
+            "correct horse battery",
+            VaultUnlockLease::TtlMinutes(30),
+        )
+        .unwrap()
+        .expect("the passphrase opens the test Vault");
+        path
+    }
+
+    fn is_open(fd: i32) -> bool {
+        unsafe { libc::fcntl(fd, libc::F_GETFD) >= 0 }
+    }
+
+    #[test]
+    fn unlocked_vault_survives_the_swap_and_its_descriptor_is_read_once() {
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        let path = unlocked_vault();
+        let before = chariox_encrypted_vault_status(&path).unwrap();
+        let fd = send_vault_unlocks()
+            .unwrap()
+            .expect("an unlocked Vault is handed over");
+        // The new program starts with nothing unlocked.
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+
+        receive_vault_unlocks(fd);
+        assert_eq!(chariox_encrypted_vault_status(&path).unwrap(), before);
+        assert!(!is_open(fd), "the descriptor is consumed and closed");
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+    }
+
+    #[test]
+    fn locked_vault_hands_nothing_over() {
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        assert!(send_vault_unlocks().unwrap().is_none());
+    }
+
+    #[test]
+    fn restart_without_a_handover_starts_locked() {
+        let path = unlocked_vault();
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        std::env::remove_var(HANDOVER_ENV);
+        receive();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+    }
+
+    #[test]
+    fn handover_file_names_the_descriptor_not_the_keys() {
+        let handover = Handover {
+            vault_fd: Some(9),
+            ..Handover::default()
+        };
+        let json = serde_json::to_string(&handover).unwrap();
+        assert!(json.contains("\"vault_fd\":9"));
+        assert!(!json.contains("key"));
+    }
 }

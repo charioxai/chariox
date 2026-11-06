@@ -203,7 +203,7 @@ impl KernelRuntimeState {
         else {
             unreachable!()
         };
-        self.retract_stale_task_owner_interactions(session.id(), std::slice::from_ref(&cancelled))
+        self.retract_stale_task_owner_interactions(session.id())
             .await;
         Box::pin(self.cancel_agent_task_resources(&cancelled)).await?;
         self.agent_cancellation_response(session.id(), &cancelled.task_id)

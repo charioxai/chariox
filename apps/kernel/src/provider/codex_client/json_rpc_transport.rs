@@ -386,8 +386,11 @@ mod tests {
         assert_eq!(codex_request_timeout("turn/start"), Duration::from_secs(30));
     }
 
+    /// `codex_honours_exclude_turns` models the real app-server, which leaves
+    /// the history out of the reply when the request carries `excludeTurns`.
     fn thread_resume_with_history(
         history_bytes: usize,
+        codex_honours_exclude_turns: bool,
     ) -> Result<CodexThreadStartResponse, crate::error::DaemonError> {
         const OBSERVED_HISTORY_BYTES: usize = 23_600_000;
         assert!(history_bytes <= CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1);
@@ -441,6 +444,20 @@ mod tests {
                 Some("thread/resume")
             );
 
+            let turns_excluded = resume
+                .pointer("/params/excludeTurns")
+                .and_then(Value::as_bool)
+                == Some(true);
+            if codex_honours_exclude_turns && turns_excluded {
+                let response = json!({
+                    "jsonrpc": "2.0",
+                    "id": resume.get("id").cloned().expect("resume id"),
+                    "result": {"thread": { "id": "thread-large-history" }, "model": "gpt-5.6"},
+                })
+                .to_string();
+                let _ = socket.send(Message::Text(response.into()));
+                return;
+            }
             // Keep this fixture bounded at the observed history size for the acceptance case,
             // and at one byte over the explicit transport policy for the rejection case.
             let history = "h".repeat(history_bytes);
@@ -504,7 +521,7 @@ mod tests {
 
     #[test]
     fn codex_thread_resume_accepts_large_history_frame_within_message_budget() {
-        let result = thread_resume_with_history(23_600_000);
+        let result = thread_resume_with_history(23_600_000, false);
 
         let resumed = result.expect("valid history below the aggregate limit should be admitted");
         assert_eq!(resumed.thread.id, "thread-large-history");
@@ -512,8 +529,16 @@ mod tests {
     }
 
     #[test]
+    fn codex_thread_resume_asks_codex_to_leave_out_a_history_above_the_message_budget() {
+        let result = thread_resume_with_history(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1, true);
+
+        let resumed = result.expect("resume must not pull the thread history into the reply");
+        assert_eq!(resumed.thread.id, "thread-large-history");
+    }
+
+    #[test]
     fn codex_thread_resume_rejects_history_above_bounded_message_budget() {
-        let result = thread_resume_with_history(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1);
+        let result = thread_resume_with_history(CODEX_WEBSOCKET_MAX_MESSAGE_SIZE + 1, false);
         let error = match result {
             Ok(_) => panic!("history above the transport policy must be rejected"),
             Err(error) => error,

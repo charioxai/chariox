@@ -2361,3 +2361,70 @@ These paths are common to ordinary and managed kernels. No placement branch,
 provider execution rule, relay admission, signing/trust or managed automatic
 shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
 drills cover this seam only; they do not close the entire MP-10 comparison matrix.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 person cards (2026-11-04)
+
+Local 988 / peer 427 adds a provider-neutral acquisition offer to the existing
+Cloud capability. Cloud resolves specifications and a currency/period price from
+its provider catalogue; the kernel writes the confirmation text and binds it to
+the capability revision. OSS contains no compute-provider catalogue or pricing
+logic. A missing approved signed placement blocks both live rental legs.
+
+The same interaction and browser-grant paths resolve `view.browser_region` on
+ordinary and managed kernels. The kernel follows browser-owned geometry, publishes
+only changed crops, and resolves a removed/replaced element with `condition_met`.
+Revocation or a failed observation source gives an explicit unavailable result.
+Clients project the existing folded question stripes, a half-height scrolling
+pile, and the shared protected browser display inside the existing popup.
+
+A Vault wait before provider I/O pauses the inbox receipt clock. Declining or
+expiring that unlock blocks the retained task with the actual Vault reason;
+explicit Resume retries the original answer once. This does not weaken receipts
+for attempts that reached the provider, change browser observation protection,
+or alter managed shutdown activity/policy (MP-09). Focused regressions and hosted
+provider drills cover these seams; they do not close the entire MP-10 matrix or
+replace MP-11 security-anchor review.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11: positive browser-card verification (992/431)
+
+A verification card binds one challenge to its asking task, card, agent observer,
+Tab, browser generation and document. Its optional generic `verification`
+condition names an exact same-origin POST URL and a JSON pointer whose value
+must be boolean true in a successful HTTP response. Only requests started while
+that card watches the same frame and document count. A controller-isolated
+listener acknowledges trusted input inside that region. The helper requires
+the bound field value in the request JSON, URL-encoded form or multipart text field and a user gesture; the value stays
+in private helper memory and is never included in a receipt. The challenge ID
+is the card operation nonce, not a fabricated server-issued challenge ID. Responses from a different
+endpoint, document or older overlapping attempt cannot complete the card.
+
+The kernel projects only request delivery, HTTP status and fixed result labels.
+No request body, response body, headers, code or token enters the receipt. The
+person sees and types in the existing live popup region; verification cards have
+only Cancel and use a durable nonblocking question. A rejection stays visible in
+the same card, including when a page framework replaces the crop anchor during an outstanding geometry poll. A
+missing element or navigation is never positive verification. Capture the new
+credential through Vault and prove its declared authenticated use separately.
+
+The no-email owned-service rehearsal lives in
+`scripts/e2e-stack/vault-autonomy/challenge-hosted-live.mjs`. It covers request
+ordering, rejection and acceptance, page rerender, Vault capture and an
+authenticated API call at desktop DPR1/DPR2. It is supplementary;
+it does not establish real Vercel acceptance or close the full MP matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11: lifecycle discovery without a purchase offer (993/432)
+
+An enrolled kernel keeps its machine capability revision and lifecycle actions
+when the connected service cannot quote a new machine or has no placements.
+The capability's `offer` is null in that case, and acquisition requires a fresh
+non-null offer plus its advertised action. Enrollment revocation and resource
+revision checks continue to fence Stop, Release and saved-state deletion.
+The service's purchase outage must not strand an existing paid resource.
+
+Focused coverage: Cloud's production control-plane route discovers capabilities
+for the first time during catalogue, quote and empty-placement failures, then
+stops and releases an existing allocation. The OSS protocol snapshot round-trips
+the lifecycle-only descriptor and pins its hash. These checks cover this seam;
+they do not close the MP-10 ordinary/managed matrix or the MP-11 anchor review.

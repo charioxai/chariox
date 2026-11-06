@@ -188,7 +188,13 @@ impl RuntimeSession {
         &mut self,
         tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
     ) {
-        self.agent_tasks = tasks;
+        self.agent_tasks = tasks
+            .into_iter()
+            .map(|mut task| {
+                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                task
+            })
+            .collect();
     }
     pub(crate) fn set_sudo_windows(&mut self, windows: Vec<crate::local::KernelSudoTurn>) {
         self.sudo_windows = windows;
@@ -1032,6 +1038,20 @@ impl RuntimeSession {
         self.active_interactions.push(interaction);
         self.active_interactions
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
+    }
+
+    pub(crate) fn update_active_interaction_view(
+        &mut self,
+        id: &str,
+        view: super::RuntimeInteractionView,
+    ) {
+        if let Some(interaction) = self
+            .active_interactions
+            .iter_mut()
+            .find(|interaction| interaction.id() == id)
+        {
+            *interaction = interaction.clone().with_view(view);
+        }
     }
 
     pub fn remove_active_interaction(

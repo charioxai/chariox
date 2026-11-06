@@ -155,6 +155,18 @@ impl CommandRouter {
                     }
                 }
             }
+            if crate::transport::runtime_tools::canonical_credential_tool_name(tool_name)
+                == Some(crate::transport::runtime_tools::REQUEST_POPUP_TOOL)
+                && arguments.get("action").is_some()
+            {
+                let run = self.runtime_mcp_catalog_run(auth_token).ok_or_else(|| {
+                    DaemonError::LocalTransport {
+                        operation: "runtime_tool_request_popup",
+                        message: "an action card needs the asking agent's own running turn".into(),
+                    }
+                })?;
+                return self.dispatch_action_card(run, arguments).await;
+            }
             if tool_name == "chariox_kernel_request" {
                 // A10: a leased run passes its worker fence, then the home rechecks.
                 if let Some(run) = self.runtime_mcp_catalog_run(auth_token) {

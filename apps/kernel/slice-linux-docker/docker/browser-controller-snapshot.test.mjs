@@ -121,3 +121,95 @@ test("MP-08/MP-10/MP-11 known-value scrubbing covers nested results, keys and si
   assert.deepEqual(result["[redacted]"], variants.map(() => "[redacted]"));
   assert.equal(result.nested.output, "[redacted]");
 });
+
+// A short password or a mistaken label stays masked in prose but never rewrites a URL, id or longer word.
+test("a value under 8 characters is redacted only as a whole word", () => {
+  const page = {
+    url: "https://dynv6.com/keys#key_token_1",
+    path: "https://en.wikipedia.org/wiki/Token?x=1",
+    id: "data-Token-field",
+    longer: "Tokens and tokenizer, hunter2",
+    prose: "Your Token is ready. The password hunter, then Token: ok",
+    exact: "hunter",
+    end: "type hunter.",
+    longInUrl: "https://x.test/a?k=vaudit-long-secret-value-12345",
+  };
+  const result = observations.redactObservation(page, ["Token", "hunter", "vaudit-long-secret-value-12345"]);
+  for (const key of ["url", "path", "id", "longer"]) assert.equal(result[key], page[key], `${key} must be left alone`);
+  assert.equal(result.prose, "Your [redacted] is ready. The password [redacted], then [redacted]: ok");
+  assert.equal(result.exact, "[redacted]");
+  assert.equal(result.end, "type [redacted].");
+  assert.equal(result.longInUrl, "https://x.test/a?k=[redacted]", "a long value keeps today's matching");
+});
+
+// MP-08 / MP-10 / MP-11: an accidental capture of a schema word must not break the next read.
+test("capturing a schema label preserves snapshot fields and CDP identities", async () => {
+  for (const secret of ["name", "value", "nodeId", "root", "page-1", "textbox"]) {
+    const base = fixture();
+    const connection = {async send(method, params) {
+      const reply = await base.send(method, params);
+      if (method === "Accessibility.getFullAXTree") {
+        reply.nodes[0].name.value = `Account ${secret}`;
+        reply.nodes[0].value = {value: secret};
+      }
+      return reply;
+    }};
+    const snapshot = await captureBrowserSnapshot({connection, sessionId: "page", targetId: "target",
+      documentId: "page-1", browserGeneration: 1, snapshotRevision: 1, protectedValues: [secret]});
+    assert.equal(snapshot.document_id, "page-1");
+    assert.equal(snapshot.accessibility_nodes[0].name, "Account [redacted]", secret);
+    assert.equal(snapshot.accessibility_nodes[0].value, "[redacted]", secret);
+    assert.equal(snapshot.accessibility_nodes[0].role, "textbox", secret);
+    assert.equal(snapshot.accessibility_nodes[0].node_ref, "backend:100", secret);
+  }
+});
+
+// Element names can be page-owned custom tags, unlike transport keys and AX enums.
+test("MP-08/MP-11 a captured value echoed in a custom tag remains protected", async () => {
+  const secret = "PRIVATE-SECRET-ELEMENT";
+  const connection = { async send(method) {
+    if (method === "Page.getFrameTree") return {frameTree:{frame:{id:"root",loaderId:"page-1"}}};
+    if (method === "Accessibility.getFullAXTree") return {nodes:[]};
+    return {strings:[secret],documents:[{nodes:{backendNodeId:[1],nodeType:[1],nodeName:[0],nodeValue:[-1],parentIndex:[-1],attributes:[[]]}}]};
+  }};
+  const snapshot = await captureBrowserSnapshot({connection,sessionId:"page",targetId:"target",documentId:"page-1",browserGeneration:1,snapshotRevision:1,protectedValues:[secret]});
+  assert.equal(snapshot.dom_nodes[0].node_name,"[redacted]");
+  assert.equal(observations.redactSnapshot({...snapshot,dom_nodes:[{...snapshot.dom_nodes[0],node_name:secret}]},[secret]).dom_nodes[0].node_name,"[redacted]");
+});
+
+test("MP-08/MP-11 observed controls after decorative nodes fit in the DOM budget", async () => {
+  const connection = {async send(method) {
+    if (method === "Page.getFrameTree") return {frameTree:{frame:{id:"root",loaderId:"page-1"}}};
+    if (method === "Accessibility.getFullAXTree") return {nodes:[{nodeId:"field",backendDOMNodeId:7,role:{value:"textbox"},name:{value:"Code"},properties:[{name:"focused",value:{value:true}}]}]};
+    return {strings:["DIV","INPUT","type","text"],documents:[{nodes:{backendNodeId:[1,2,3,4,5,6,7],nodeType:[1,1,1,1,1,1,1],nodeName:[0,0,0,0,0,0,1],nodeValue:[-1,-1,-1,-1,-1,-1,-1],parentIndex:[-1,0,1,2,3,4,5],attributes:[[],[],[],[],[],[],[2,3]]}}]};
+  }};
+  const snapshot=await capture(connection,{maxNodes:3});
+  assert.equal(snapshot.dom_nodes.length,3);
+  assert(snapshot.dom_nodes.some(n=>n.node_ref==="backend:7"&&n.node_name==="INPUT"));
+  assert.equal(snapshot.accessibility_nodes[0].focused,true);
+  const refs=new Set(snapshot.dom_nodes.map(n=>n.node_ref));
+  assert(snapshot.dom_nodes.every(n=>n.parent_ref===null||refs.has(n.parent_ref)));
+  assert.equal(snapshot.dom_nodes.at(-1).parent_ref,"backend:2");
+});
+
+// MP-08 / MP-09 / MP-10 / MP-11 review P2: fixed dialog/download metadata is not page text.
+test('MP-11 browser inventory scrubs page fields while preserving protocol metadata', () => {
+  const state = {
+    state: 'ready', generation: 7, active_tab_id: 'same-value',
+    tabs: [{tab_id:'same-value',document_id:'same-value',title:'same-value',url:'https://example.com/same-value'}],
+    dialogs: [{dialog_id:'same-value',document_id:'same-value',kind:'prompt',message:'same-value',default_prompt:'same-value',origin:'https://same-value.test'}, {dialog_id:'permission',kind:'permission',message:'geolocation',origin:'https://same-value.test'}],
+    downloads: [{download_id:'same-value',tab_id:'same-value',state:'done',name:'same-value',path:'/work/same-value'}],
+  };
+  const clean = observations.redactBrowserState(state, ['same-value', 'ready', 'prompt', 'done', 'generation', 'geolocation']);
+  assert.equal(clean.state, 'ready'); assert.equal(clean.generation, 7);
+  assert.equal(clean.active_tab_id, 'same-value');
+  assert.equal(clean.tabs[0].tab_id, 'same-value'); assert.equal(clean.tabs[0].document_id, 'same-value');
+  assert.equal(clean.tabs[0].title, '[redacted]'); assert.equal(clean.tabs[0].url, 'https://example.com/[redacted]');
+  assert.equal(clean.dialogs[0].dialog_id, 'same-value'); assert.equal(clean.dialogs[0].kind, 'prompt');
+  assert.equal(clean.dialogs[0].message, '[redacted]'); assert.equal(clean.dialogs[0].default_prompt, '[redacted]');
+  assert.equal(clean.dialogs[0].origin, 'https://[redacted].test');
+  assert.equal(clean.dialogs[1].message, 'geolocation');
+  assert.equal(clean.dialogs[1].origin, 'https://[redacted].test');
+  assert.equal(clean.downloads[0].download_id, 'same-value'); assert.equal(clean.downloads[0].state, 'done');
+  assert.equal(clean.downloads[0].name, '[redacted]'); assert.equal(clean.downloads[0].path, '/work/[redacted]');
+});

@@ -254,6 +254,7 @@ impl KernelRuntimeState {
     pub(crate) async fn confirm_machine_acquisition(
         &self,
         caller: &ReachCaller,
+        offer: Option<&crate::local::MachineAcquisitionOffer>,
     ) -> Result<bool, DaemonError> {
         if self.reach_sudo_turn(caller).is_some() {
             return Ok(true);
@@ -281,14 +282,25 @@ impl KernelRuntimeState {
                 &caller.agent_id,
                 Some(&run),
                 crate::transport::runtime_tools::RequestPopupArgs {
+                    view: None,
                     wait: None,
-                    message: format!("Let {} acquire a machine?", caller.harness),
-                    choices: vec![choice("accept", "Allow"), choice("decline", "Decline")],
+                    message: match offer {
+                        Some(offer) => format!(
+                            "Let {} acquire a machine?\n\n{} · {} vCPU · {} GB RAM · {} GB disk · {} · {} {}/{}",
+                            caller.harness, offer.machine_type, offer.vcpu, offer.ram_gb,
+                            offer.disk_gb, offer.location, offer.price.currency, offer.price.amount,
+                            match offer.price.period { crate::local::MachineAcquisitionPricePeriod::Hour => "hour", crate::local::MachineAcquisitionPricePeriod::Month => "month" },
+                        ),
+                        None => format!("Let {} acquire a machine?", caller.harness),
+                    },
+                    choices: vec![choice("accept", "Accept")],
                     custom_choice: None,
                     title: None,
                     level: None,
                     timeout_sec: Some(900),
                     default_on_timeout: None,
+                    until: None,
+                    action: None,
                 },
             )
             .await?;

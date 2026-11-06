@@ -9,6 +9,7 @@ import { browserControllerLaunchOptions } from "./browser-controller-test-launch
 import { observeBrowserResources } from "./browser-controller-resources.mjs";
 import { BrowserCdpClient } from "./browser-controller-cdp.mjs";
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
+import { measureBrowserProtection } from "./browser-protection-regions.mjs";
 
 const browserLaunchOptions = browserControllerLaunchOptions(process.env);
 assert.ok(process.env.PLAYWRIGHT_MODULE, "set PLAYWRIGHT_MODULE to the installed module; this test never downloads a browser");
@@ -582,6 +583,78 @@ test("password step form controls cannot shadow native submit methods", async ()
     });
     assert.equal(result.ok, true, JSON.stringify(result.error));
     assert.equal(await page.getByRole('status').innerText(), 'accepted');
+    assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
+  });
+});
+
+// MP-08/MP-11 vpaste: a submit that leaves the filled document is a success the agent can continue from.
+async function withLoginSite(run, { delayMs = 0 } = {}) {
+  const server = createServer((request, response) => {
+    if (request.method === "POST") {
+      request.resume();
+      return setTimeout(() => { response.writeHead(303, { location: "/welcome" }); response.end(); }, delayMs);
+    }
+    response.writeHead(200, { "content-type": "text/html" });
+    response.end(request.url === "/welcome" ? "<title>Welcome home</title><h1>Signed in</h1>"
+      : '<title>Sign in</title><form method="post" action="/session"><label>Sample<input type="password" name="p"></label><button>Go</button></form>');
+  });
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await run(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
+
+for (const delayMs of [0, 400]) {
+  test(`password step submit that navigates (server ${delayMs} ms) reports the resulting page and leaves no pending fill`, async () => {
+    await withLoginSite(async (origin) => {
+      await withController(async ({ page, request, browser }) => {
+        await page.goto(`${origin}/login`);
+        const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+        const result = await request("browser.action", {
+          ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+          action: { kind: "fill", text: "local-password-canary", expected_document_url: `${origin}/login`, submit: true },
+        });
+        assert.equal(result.ok, true, JSON.stringify(result.error));
+        assert.deepEqual(result.result.submitted, { navigated: true, url: `${origin}/welcome`, title: "Welcome home" });
+        assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
+        await measureBrowserProtection(browser, { targets: [] });
+        assert.ok([...browser.fillTargets.values()].every((fill) => !fill.pending), "no fill stays pending");
+        await measureBrowserProtection(browser, { targets: [] });
+        assert.equal(browser.fillTargets.size, 0, "the replaced document's fill target is retired");
+      });
+    }, { delayMs });
+  });
+}
+
+test("password step submit handled by the page without navigating reports the page as submitted", async () => {
+  await withController(async ({ page, request }) => {
+    await page.setContent('<title>Single page</title><form><label>Sample<input type="password"></label></form>');
+    await page.locator("form").evaluate((form) => form.addEventListener("submit", (event) => { event.preventDefault(); document.title = "Done"; }));
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const result = await request("browser.action", {
+      ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+      action: { kind: "fill", text: "local-password-canary", expected_document_url: page.url(), submit: true },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.error));
+    assert.equal(result.result.submitted.navigated, false);
+    assert.equal(result.result.submitted.title, "Done");
+  });
+});
+
+test("password step submit blocked by form validation is a typed error", async () => {
+  await withController(async ({ page, request }) => {
+    await page.setContent('<form><label>Sample<input type="password"></label><input name="code" required></form>');
+    const target = (await request("browser.reconcile", { viewport })).result.tabs[0];
+    const result = await request("browser.action", {
+      ...target, node_ref: fieldReference(await request("browser.snapshot", target)),
+      action: { kind: "fill", text: "local-password-canary", expected_document_url: page.url(), submit: true },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "browser_submit_failed");
+    assert.match(result.error.message, /form validation/);
     assert.equal(JSON.stringify(result).includes("local-password-canary"), false);
   });
 });

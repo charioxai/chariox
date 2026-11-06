@@ -25,8 +25,11 @@ pub(crate) use http_boundary::HttpSecretBoundary;
 use http_boundary::{decode_http_response, http_error};
 mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
+pub(crate) use vault::take_chariox_vault_single_use_unlock;
 use vault::vault_store_for_config;
 pub(crate) use vault::vault_store_for_config as web_bot_auth_vault_store;
+#[cfg(unix)]
+pub(crate) use vault::{adopt_vault_unlocks, hand_over_vault_unlocks};
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
     chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,
@@ -1258,6 +1261,11 @@ fn hex_bytes(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// See `totp::locate`: the setup key inside the text a page element shows.
+pub(crate) fn locate_totp_key(text: &str) -> Option<Zeroizing<String>> {
+    totp::locate(text)
 }
 
 pub(crate) fn normalize_vault_credential_input(

@@ -645,6 +645,7 @@ impl KernelBrowserHost {
                     Some(
                         "state"
                             | "snapshot"
+                            | "popup_region"
                             | "screenshot"
                             | "unsubscribe"
                             | "display_subscribe"
@@ -870,7 +871,7 @@ impl KernelBrowserHost {
         let note = method == "host.browser"
             && matches!(
                 params["op"].as_str(),
-                Some("note_selection" | "pointer_cursor")
+                Some("note_selection" | "pointer_cursor" | "popup_region")
             );
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.
@@ -1019,7 +1020,13 @@ impl KernelBrowserHost {
                         state.access.opened_tab(user, agent, id)?;
                     }
                 }
-                if state.access.focused(user) != Some(agent) {
+                // Owner approval covers browser tabs the task may discover and
+                // claim, including after revocation removed its old leases.
+                let browser_tabs_approved = matches!(
+                    state.access.grant(user, agent)?.cause,
+                    super::user_domain_access::GrantCause::OwnerDecision { .. }
+                );
+                if state.access.focused(user) != Some(agent) && !browser_tabs_approved {
                     let grant = state.access.grant(user, agent)?;
                     for field in ["tabs", "dialogs", "downloads"] {
                         if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
@@ -1035,6 +1042,7 @@ impl KernelBrowserHost {
                 }
                 if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
                     if state.access.focused(user) != Some(agent)
+                        && !browser_tabs_approved
                         && !state
                             .access
                             .grant(user, agent)?

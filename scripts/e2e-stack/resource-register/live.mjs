@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { Fixture, until } from '../room-exec/fixture.mjs'
 import { startKeyService } from './service.mjs'
+import { signInValidation } from '/w/valenv/scripts/sign-in.mjs'
 import * as req from '../../../packages/kernel-client/dist/ipc-requests.js'
 
 const options = new Map()
@@ -126,24 +127,12 @@ try {
   const stackRoot = path.join('/w/valenv/prs', stack)
   const metadata = JSON.parse(await readFile(path.join(stackRoot, 'metadata.json'), 'utf8'))
   const origin = `https://${metadata.hostname}`
-  const envText = await readFile(path.join(stackRoot, 'config/cloud.env'), 'utf8')
-  const devSecret = envText.split('\n').find(line => line.startsWith('CHARIOX_CLOUD_DEV_AUTH_SECRET='))?.split('=').slice(1).join('=').trim()
-  if (!devSecret) throw new Error('owned stack has no dev-auth input')
-  privateValues.push(devSecret)
   report.stack = stack; report.origin = origin; report.cloud_revision = metadata.cloud_revision ?? metadata.commit
   browser = await chromium.launch({ executablePath: '/opt/google/chrome/chrome', headless: true, args: ['--no-sandbox','--disable-dev-shm-usage'] })
+  // The stack signs in through the generated access key; the validation helper fills it privately.
   async function login(ctx) {
-    const csrf = await (await ctx.request.get(origin + '/auth/csrf')).json()
-    const browserLogin = await ctx.request.post(origin + '/auth/dev/browser-login', {
-      headers: { 'x-chariox-dev-auth-secret': devSecret }, data: { email: metadata.fixture_email,
-        displayName: 'AU-11 Private Validation', providerSubject: 'dev|' + metadata.fixture_email } })
-    if (!browserLogin.ok()) throw new Error('fixture browser login failed: HTTP ' + browserLogin.status())
-    const auth = await ctx.request.post(origin + '/auth/cloud-session', {
-      headers: { 'csrf-token': csrf.csrfToken }, data: { accountSlug: stack, accountName: stack } })
-    if (!auth.ok()) throw new Error('fixture Cloud session failed: HTTP ' + auth.status())
-    const token = (await auth.json()).cloudSessionToken
-    privateValues.push(token)
-    await ctx.addInitScript(value => sessionStorage.setItem('chariox-browser-cloud-session', value), token)
+    const signIn = await ctx.newPage()
+    try { await signInValidation(signIn, origin, '/terminal?ui=os') } finally { await signIn.close() }
   }
   const enrollment = await browser.newContext()
   try {
@@ -152,11 +141,11 @@ try {
     const started = (await fixture.A.send({ StartCloudRelayLogin: { api_url: origin,
       client_id: `vreg-${Date.now()}`, client_alias: 'AU-11 development', machine_id: status.machine_id,
       machine_alias: `vreg-au11-${Date.now()}` } })).CloudRelayLoginStarted.login
-    const approved = await enrollment.request.post(origin + '/auth/dev/device/approve', {
-      headers: { 'x-chariox-dev-auth-secret': devSecret }, data: { userCode: started.user_code,
-        email: metadata.fixture_email, accountSlug: stack, accountName: stack,
-        displayName: 'AU-11 Private Validation', providerSubject: 'dev|' + metadata.fixture_email } })
-    if (!approved.ok()) throw new Error('fixture device enrollment failed: HTTP ' + approved.status())
+    const approval = await enrollment.newPage()
+    try {
+      await approval.goto(started.verification_url)
+      await approval.getByRole('button', { name: /approve|allow|connect/i }).click()
+    } finally { await approval.close() }
     await until(async () => {
       const result = (await fixture.A.send({ PollCloudRelayLogin: { api_url: origin, device_code: started.device_code } })).CloudRelayLoginPolled.result
       if (result.status === 'denied') throw new Error('owned kernel enrollment denied')

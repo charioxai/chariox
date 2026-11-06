@@ -2368,7 +2368,7 @@ pub(in crate::runtime::state) mod tests {
             .resolve_terminal_runtime_interaction(
                 session.id(),
                 passphrase_interaction.id(),
-                "passphrase",
+                "unlock_kernel",
                 Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )
@@ -2556,7 +2556,7 @@ pub(in crate::runtime::state) mod tests {
             .resolve_terminal_runtime_interaction(
                 session.id(),
                 &passphrase,
-                "passphrase",
+                "unlock_kernel",
                 Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )

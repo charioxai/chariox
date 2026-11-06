@@ -618,7 +618,7 @@ impl KernelRuntimeState {
             unreachable!()
         };
         let committed = std::time::Instant::now();
-        self.retract_stale_task_owner_interactions(&next.room_id, std::slice::from_ref(&next))
+        self.retract_stale_task_owner_interactions(&next.room_id)
             .await;
         if action == "resume" {
             let resumed = async {

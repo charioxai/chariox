@@ -265,6 +265,8 @@ impl KernelRuntimeState {
             .await?;
         self.claude_session_grants
             .forget(&leased_agent.backing_agent_id);
+        self.terminal_input_grants
+            .forget(&leased_agent.backing_agent_id);
         Ok(leased_agent)
     }
 

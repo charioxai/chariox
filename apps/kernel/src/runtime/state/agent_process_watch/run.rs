@@ -26,8 +26,6 @@ pub(in crate::runtime::state) enum KernelCommandExit {
     Exited(i32),
     /// The command outlived its timeout and was stopped.
     TimedOut,
-    /// The submitting prompt ended and its owned command was stopped.
-    Cancelled,
     /// Physical settlement could not be confirmed.
     Lost,
 }
@@ -71,11 +69,11 @@ impl KernelRuntimeState {
     /// the run and its authority; this owns launch, timeout and settlement.
     pub(in crate::runtime::state) fn run_kernel_command(
         &self,
-        run: &crate::provider::RuntimeProviderRun,
+        context: &super::super::vault_use::VaultAgentContext,
         request: KernelCommand,
-        still_authorized: impl Fn() -> Result<(), DaemonError>,
     ) -> Result<KernelCommandOutput, DaemonError> {
-        still_authorized()?;
+        let run = &context.run;
+        self.recheck_vault_command_context(context)?;
         let failed = |e: &dyn std::fmt::Display| {
             crate::runtime::kernel_access::error(format!("command launch failed: {e}"))
         };
@@ -131,11 +129,19 @@ impl KernelRuntimeState {
             live.insert(id.clone(), owned.clone());
         }
         let deadline = Instant::now() + request.timeout;
-        let mut stopped: Option<(Instant, KernelCommandExit)> = None;
+        let mut stopped_at = None;
+        let mut cancelled = None;
         let exit = loop {
-            let polled = owned.lock().map(|mut c| c.poll());
-            match polled {
-                Ok(Ok(Some(status))) if stopped.is_none() => {
+            let now = Instant::now();
+            if stopped_at.is_none() {
+                cancelled = self.recheck_vault_command_context(context).err();
+                if cancelled.is_some() || now >= deadline || processes.stopping() {
+                    stopped_at = Some(now);
+                    processes.terminate(&id);
+                }
+            }
+            match owned.lock().map(|mut c| c.poll()) {
+                Ok(Ok(Some(status))) if stopped_at.is_none() => {
                     break KernelCommandExit::Exited(
                         status
                             .code()
@@ -143,31 +149,12 @@ impl KernelRuntimeState {
                             .unwrap_or(-1),
                     )
                 }
-                Ok(Ok(Some(_))) => {
-                    break stopped.take().expect("a stopped command has an outcome").1
-                }
+                Ok(Ok(Some(_))) => break KernelCommandExit::TimedOut,
                 Ok(Ok(None)) => {}
                 _ if owned.lock().map_or(true, |c| c.lost) => break KernelCommandExit::Lost,
                 _ => {}
             }
-            let now = Instant::now();
-            if stopped.is_none() {
-                let reason = if still_authorized().is_err() {
-                    Some(KernelCommandExit::Cancelled)
-                } else if now >= deadline {
-                    Some(KernelCommandExit::TimedOut)
-                } else {
-                    None
-                };
-                if let Some(reason) = reason {
-                    stopped = Some((now, reason));
-                    processes.terminate(&id);
-                }
-            }
-            if stopped
-                .as_ref()
-                .is_some_and(|(at, _)| now >= *at + SETTLE_LIMIT)
-            {
+            if stopped_at.is_some_and(|stopped| Instant::now() >= stopped + SETTLE_LIMIT) {
                 break KernelCommandExit::Lost;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -187,6 +174,9 @@ impl KernelRuntimeState {
         let [stdout, stderr] = streams.map(|stream| {
             stream.map_or_else(|| (Zeroizing::new(Vec::new()), false), |(c, _)| taken(&c))
         });
+        if let Some(error) = cancelled {
+            return Err(error);
+        }
         Ok(KernelCommandOutput {
             exit,
             truncated: stdout.1 || stderr.1,

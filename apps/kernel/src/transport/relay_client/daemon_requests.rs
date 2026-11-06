@@ -871,8 +871,11 @@ async fn dispatch_on_behalf_of(
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
-    // The paired gateway carries an external agent's request; it is not a person's terminal.
-    caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    // A decision answered through the paired gateway is the external agent's, not a person's.
+    // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
+    if matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+        caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    }
     if let Err(error) = router
         .runtime_state()
         .authorize_on_behalf_of_request(on_behalf_of, &request)

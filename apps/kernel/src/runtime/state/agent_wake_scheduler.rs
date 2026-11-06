@@ -172,6 +172,7 @@ impl KernelRuntimeState {
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
         self.tick_interaction_wakes(now)?;
+        self.resume_browser_region_cards();
         let store = &self.owned.durable_state_store;
         for wake in store.agent_wakes(None, None)? {
             if matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
@@ -215,6 +216,7 @@ impl KernelRuntimeState {
                 format!("Wake '{}' fired (due {})", wake.label, iso(due))
             };
             self.wake_notice(&wake, text);
+            self.close_cards_following(&wake);
             recipients.insert((wake.room_id, wake.agent_id));
         }
         for (room, agent) in recipients {
@@ -437,7 +439,9 @@ impl KernelRuntimeState {
     pub(super) fn schedule_wake_delivery(&self, wake: &AgentWake) {
         let state = self.clone();
         let (room, agent) = (wake.room_id.clone(), wake.agent_id.clone());
+        let wake = wake.clone();
         tokio::spawn(async move {
+            state.close_cards_following(&wake);
             let _ = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
             state.refresh_wake_projection(&room);
         });

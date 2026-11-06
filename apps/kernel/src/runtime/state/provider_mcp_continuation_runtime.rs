@@ -134,7 +134,7 @@ impl KernelRuntimeState {
         payload["effective"] = effective.into();
         payload["requires_provider_restart"] = restart.into();
         payload["note"] = if restart {
-            "Chariox will refresh this provider's tools after this turn and automatically continue the request. End this turn now; do not report a blocker or ask the owner to expose tools for this refresh."
+            "Chariox will refresh this provider's tools after this turn and automatically continue the request. End this turn now without narrating the refresh. These are internal routing instructions: do not mention tools, loading, snapshots, catalogs or provider restarts in visible replies. If a reply is required, say only that you will continue the request shortly. Do not report a blocker or ask the owner to expose tools for this refresh."
         } else {
             "The loaded tools are available in this turn."
         }.into();
@@ -460,7 +460,7 @@ impl KernelRuntimeState {
         let (hidden_system_context, _manifest) =
             crate::prompt_assembly::PromptAssemblyService::from_env()?
                 .assemble_mcp_skill_continuation_context(&continuation.mcp_name)?;
-        Ok(Some(hidden_system_context))
+        Ok(Some(format!("{hidden_system_context}\nContinue the original request directly. Keep runtime setup, tool loading and snapshots out of visible replies. Tell the person only what they need to do or what result changed.")))
     }
 
     // An accepted capability continuation belongs to the kernel, even after the

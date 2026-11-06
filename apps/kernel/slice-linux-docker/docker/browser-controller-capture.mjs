@@ -3,8 +3,14 @@
 // The value goes back to the kernel only; it never appears in an error.
 import { randomUUID } from "node:crypto";
 import { assertCurrentDocument, assertNotCancelled, BrowserActionError, resolveBackendNode } from "./browser-controller-actions.mjs";
+import { redactObservation } from "./browser-controller-snapshot.mjs";
 
 const VALUE_LIMIT = 16 * 1024;
+// A QR code is read from a picture of its element: the kernel decodes it and
+// the picture of a page element is not a secret.
+const QR_IMAGE_LIMIT = 4 * 1024 * 1024;
+const QR_MIN_SIDE_PX = 400;
+const QR_MAX_SCALE = 4;
 const POLL_INTERVAL_MS = 100;
 
 export async function captureBrowserValue({
@@ -24,12 +30,14 @@ export async function captureBrowserValue({
 }) {
   const backendNodeId = backendNode(nodeRef);
   if (revealNodeRef !== null) backendNode(revealNodeRef);
-  if (read !== "node" && read !== "clipboard") throw invalid("capture read must be node or clipboard");
+  if (read !== "node" && read !== "clipboard" && read !== "qr") throw invalid("capture read must be node, clipboard or qr");
+  if (read === "qr" && revealNodeRef !== null) throw invalid("qr capture reads node_ref (the QR image) as shown; omit reveal_node_ref");
   if (read === "clipboard" && revealNodeRef !== null) {
     throw invalid("clipboard capture clicks node_ref (the copy button) itself; omit reveal_node_ref");
   }
   if (typeof expectedDocumentUrl !== "string" || !expectedDocumentUrl) throw invalid("capture requires the observed document URL");
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
+  if (read === "qr") return captureQrImage(connection, sessionId, backendNodeId);
   const poll = async (sample) => {
     const startedAt = now();
     while (true) {
@@ -67,6 +75,27 @@ export async function captureBrowserValue({
     const value = await shown();
     return value && value !== before ? value : null;
   });
+}
+
+/** Returns the element as a base64 PNG, scaled up so a small code keeps its modules legible. */
+async function captureQrImage(connection, sessionId, backendNodeId) {
+  await connection.send("DOM.scrollIntoViewIfNeeded", { backendNodeId }, sessionId).catch(() => {});
+  const box = await connection.send("DOM.getBoxModel", { backendNodeId }, sessionId).catch(() => null);
+  const quad = box?.model?.border;
+  if (!Array.isArray(quad) || quad.length !== 8) throw invalid("the element has no visible box; point node_ref at the QR image");
+  const xs = [0, 2, 4, 6].map((i) => quad[i]), ys = [1, 3, 5, 7].map((i) => quad[i]);
+  const width = Math.max(...xs) - Math.min(...xs), height = Math.max(...ys) - Math.min(...ys);
+  if (!(width >= 1 && height >= 1)) throw invalid("the element has no visible box; point node_ref at the QR image");
+  const { cssVisualViewport } = await connection.send("Page.getLayoutMetrics", {}, sessionId);
+  const scale = Math.min(QR_MAX_SCALE, Math.max(1, Math.ceil(QR_MIN_SIDE_PX / Math.min(width, height))));
+  const shot = await connection.send("Page.captureScreenshot", {
+    format: "png", fromSurface: true, captureBeyondViewport: false,
+    clip: { x: Math.min(...xs) + cssVisualViewport.pageX, y: Math.min(...ys) + cssVisualViewport.pageY, width, height, scale },
+  }, sessionId);
+  if (typeof shot?.data !== "string" || shot.data.length > QR_IMAGE_LIMIT * 1.4) {
+    throw new BrowserActionError("browser_capture_failed", "the QR image could not be captured");
+  }
+  return shot.data;
 }
 
 // Isolated world: page script cannot observe or change what the kernel reads.
@@ -107,6 +136,31 @@ const INSTALL_CLIPBOARD_RECORDER = `function(slot, expectedDocumentUrl) {
   } });
   return { value: true };
 }`;
+
+// The kernel binds a capture or fill to the document URL it observed, and that observation has
+// protected text redacted. The page compares its real URL, so a protected word inside the URL
+// (a generic label, or a key in a query) would make every bind fail.
+/** Returns the node's real document URL when it is the one the kernel observed, else `observed` unchanged. */
+export async function realUrlOfObserved(connection, sessionId, nodeRef, observed, protectedValues) {
+  const match = /^backend:([1-9][0-9]*)$/.exec(String(nodeRef));
+  if (!match || typeof observed !== "string" || !protectedValues.size) return observed;
+  let objectId;
+  try {
+    objectId = await resolveBackendNode(connection, sessionId, Number(match[1]), true);
+    const response = await connection.send("Runtime.callFunctionOn", {
+      objectId,
+      functionDeclaration: "function() { return this.ownerDocument?.defaultView?.location.href ?? null; }",
+      returnByValue: true,
+    }, sessionId);
+    const href = response?.result?.value;
+    return typeof href === "string" && redactObservation(href, protectedValues) === observed ? href : observed;
+  } catch {
+    // An unreachable node fails the action's own check with the usual stale-element error.
+    return observed;
+  } finally {
+    if (objectId) await connection.send("Runtime.releaseObject", { objectId }, sessionId).catch(() => {});
+  }
+}
 
 async function callOnNode(connection, sessionId, backendNodeId, isolated, functionDeclaration, args) {
   const objectId = await resolveBackendNode(connection, sessionId, backendNodeId, isolated);

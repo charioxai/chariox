@@ -1029,9 +1029,9 @@ impl KernelRuntimeState {
         let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
         let already_loaded = host.is_loaded(&user, agent.id());
         if !host.is_focused(&user, agent.id()) && !already_loaded {
-            let prompt = self.owner_requested_prompt(&agent).ok_or_else(|| {
-                host_error(crate::runtime::user_domain_access::NOT_REQUESTED_LOAD.into())
-            })?;
+            let Some(prompt) = self.owner_requested_prompt(&agent) else {
+                return self.block_for_browser_access(run, &agent).await;
+            };
             let lifetime = crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
                 arguments.lifetime_hours,
             )

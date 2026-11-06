@@ -161,6 +161,13 @@ impl CommandRouter {
         // may do in its own room; the window adds what /sudo adds at home.
         let sudo =
             match reach_need(&request) {
+                ReachNeed::Room if acquires_machine(&request) => {
+                    state.reach_sudo_turn(caller).filter(|turn| {
+                        state
+                            .authorize_sudo_request(&turn.entry_id, &request)
+                            .is_ok()
+                    })
+                }
                 ReachNeed::Room => None,
                 ReachNeed::HumanOnly => {
                     return Ok(refused(
@@ -198,11 +205,65 @@ impl CommandRouter {
                 "an agent does not answer the decisions of its own room; answer the room you drive",
             ));
         }
-        if acquires_machine(&request) && !state.confirm_machine_acquisition(caller).await? {
-            return Ok(refused(
-                "acquisition_declined",
-                "the owner did not accept acquiring a machine",
-            ));
+        if acquires_machine(&request) && sudo.is_none() {
+            let offer = if let LocalDaemonRequest::ControlPlane(
+                crate::local::ControlPlaneRequest::Acquire {
+                    capability_revision,
+                    ..
+                },
+            ) = &request
+            {
+                // Resolve through the same target and owner authority as the acquisition.
+                // Cloud binds this descriptor to the revision it validates again on Accept.
+                let capabilities = Box::pin(self.reach_request(
+                    caller,
+                    kernel.clone(),
+                    LocalDaemonRequest::ControlPlane(
+                        crate::local::ControlPlaneRequest::Capabilities {},
+                    ),
+                ))
+                .await?;
+                if !capabilities.ok {
+                    return Ok(capabilities);
+                }
+                let Some(capability) = serde_json::from_value::<crate::local::LocalDaemonResponse>(
+                    capabilities.payload,
+                )
+                .ok()
+                .and_then(|response| match response {
+                    crate::local::LocalDaemonResponse::ControlPlane {
+                        result:
+                            crate::local::ControlPlaneResponse::Capabilities { machine_allocation },
+                    } => machine_allocation,
+                    _ => None,
+                }) else {
+                    return Ok(refused(
+                        "acquisition_unavailable",
+                        "the connected service has no machine offer",
+                    ));
+                };
+                if capability.revision != *capability_revision
+                    || !capability.actions.iter().any(|action| action == "acquire")
+                    || capability.offer.is_none()
+                {
+                    return Ok(refused(
+                        "acquisition_offer_changed",
+                        "refresh machine capabilities before acquiring a machine",
+                    ));
+                }
+                capability.offer
+            } else {
+                None
+            };
+            if !state
+                .confirm_machine_acquisition(caller, offer.as_ref())
+                .await?
+            {
+                return Ok(refused(
+                    "acquisition_declined",
+                    "the owner did not accept acquiring a machine",
+                ));
+            }
         }
         let command_id = format!("{}:{}", caller.id, rand::random::<u64>());
         let Some(kernel) = kernel else {

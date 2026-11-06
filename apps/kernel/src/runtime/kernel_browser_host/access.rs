@@ -109,6 +109,45 @@ impl KernelBrowserHost {
         expected_fence: Option<u64>,
         session: &str,
     ) -> Result<bool, String> {
+        self.grant_from_cause(
+            user,
+            agent,
+            crate::runtime::user_domain_access::GrantCause::Prompt(prompt_id.into()),
+            lifetime,
+            expected_fence,
+            session,
+        )
+    }
+    pub(crate) fn request_task_grant(
+        &self,
+        user: &str,
+        agent: &str,
+        task_id: &str,
+        revision: u64,
+        expected_fence: u64,
+        session: &str,
+    ) -> Result<bool, String> {
+        self.grant_from_cause(
+            user,
+            agent,
+            crate::runtime::user_domain_access::GrantCause::OwnerDecision {
+                task_id: task_id.into(),
+                revision,
+            },
+            Self::grant_lifetime(None)?,
+            Some(expected_fence),
+            session,
+        )
+    }
+    fn grant_from_cause(
+        &self,
+        user: &str,
+        agent: &str,
+        cause: crate::runtime::user_domain_access::GrantCause,
+        lifetime: Duration,
+        expected_fence: Option<u64>,
+        session: &str,
+    ) -> Result<bool, String> {
         tokio::runtime::Handle::try_current()
             .map_err(|_| "MP-11: a live runtime is required for grant expiry")?;
         let created = self.update_grant(user, Some(agent), |state| {
@@ -120,7 +159,9 @@ impl KernelBrowserHost {
                     "MP-11: not_granted: grant state changed while acquisition was pending".into(),
                 );
             }
-            let created = state.access.request(user, agent, prompt_id, lifetime);
+            let created = state
+                .access
+                .request_with_cause(user, agent, cause, lifetime);
             state.access.bind(
                 user,
                 agent,
@@ -137,6 +178,28 @@ impl KernelBrowserHost {
         self.arm_expiry();
         crate::transport::mcp_server::catalog_changed();
         Ok(created)
+    }
+    pub(crate) fn revoke_task_grant(
+        &self,
+        user: &str,
+        agent: &str,
+        task_id: &str,
+        revision: u64,
+    ) -> Result<(), String> {
+        let cause = crate::runtime::user_domain_access::GrantCause::OwnerDecision {
+            task_id: task_id.into(),
+            revision,
+        };
+        self.update_grant(user, Some(agent), |state| {
+            if state
+                .access
+                .grant(user, agent)
+                .is_ok_and(|grant| grant.cause == cause)
+            {
+                state.access.revoke(user, Some(agent));
+            }
+            Ok(())
+        })
     }
     /// MP-08/MP-11: explicit subset transfer to a direct child (checked by the caller).
     pub(crate) fn transfer_grant(

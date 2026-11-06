@@ -1014,6 +1014,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
         } else if state == "blocked" {
             f.apply(Operation::Sweep {
                 now: 1_001 + DELIVERY_TIMEOUT_MS,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: Vec::new(),
             });
@@ -1039,6 +1040,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
         }
         f.apply(Operation::Sweep {
             now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: vec![],
             held_work: Vec::new(),
         });
@@ -2600,6 +2602,7 @@ mod driver_sources {
             } else if state == "blocked" {
                 f.apply(Operation::Sweep {
                     now: 1_001 + DELIVERY_TIMEOUT_MS,
+                    vault_wait_recipients: Vec::new(),
                     busy_recipients: vec![],
                     held_work: Vec::new(),
                 });
@@ -2625,6 +2628,7 @@ mod driver_sources {
             }
             f.apply(Operation::Sweep {
                 now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: Vec::new(),
             });
@@ -3013,6 +3017,7 @@ mod driver_sources {
             f.apply(Operation::FireWakes { now });
             f.apply(Operation::Sweep {
                 now,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: Vec::new(),
                 held_work: Vec::new(),
             });

@@ -3,7 +3,7 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::vault_unlock_requests::notify_vault_unlocked;
 use super::*;
-use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
+use crate::config::CredentialVaultBackend;
 
 // Everything the owner reads about an unlock that did not happen lives here.
 pub(crate) mod wording {
@@ -16,6 +16,8 @@ pub(crate) mod wording {
         "This kernel already has a Vault. Unlock it with its own passphrase.";
     pub(crate) const NOT_CHARIOX_ENCRYPTED: &str =
         "This kernel keeps its secrets outside a Chariox Vault.";
+    pub(super) const CARD_SURFACE: &str =
+        "An unlock card is answered in the card; this request names the window it came from.";
 
     pub(super) fn rate_limited(seconds: u64) -> String {
         format!("Too many wrong passphrases. Try again in {seconds} seconds.")
@@ -29,6 +31,7 @@ const LOCKED: &str = "vault_locked";
 const OWNER_ONLY: &str = "vault_unlock_owner_only";
 pub(crate) const EXISTS: &str = "vault_exists";
 pub(crate) const NOT_CHARIOX_ENCRYPTED: &str = "vault_not_chariox_encrypted";
+const CARD_SURFACE: &str = "vault_unlock_card_surface";
 
 pub(super) fn refusal(
     code: &'static str,
@@ -120,12 +123,15 @@ impl KernelRuntimeState {
                 "not_required",
             ));
         }
+        if request.surface == crate::local::VaultUnlockSurface::Card {
+            return Err(refusal(CARD_SURFACE, wording::CARD_SURFACE, false));
+        }
         let _mutation = vault_unlock_request_lock(&path).lock_owned().await;
         let status = crate::secret::chariox_encrypted_vault_status(&path)?;
         if status.unlocked {
             return Ok((status, "already_unlocked"));
         }
-        let lease = owner_client_lease(&config);
+        let lease = request.duration.lease(&config, false);
         let status = self
             .unlock_vault_counted(
                 owner,
@@ -135,9 +141,8 @@ impl KernelRuntimeState {
                 false,
             )
             .await?;
-        if lease != crate::secret::VaultUnlockLease::SingleUse {
-            notify_vault_unlocked(&path);
-        }
+        // Every open unlock card closes, whatever lease the owner chose.
+        notify_vault_unlocked(&path, request.surface);
         Ok((status, "unlocked"))
     }
 

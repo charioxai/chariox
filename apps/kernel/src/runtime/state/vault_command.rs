@@ -6,32 +6,17 @@ use super::*;
 use crate::runtime::kernel_access::error;
 
 mod capture;
-
-#[derive(Default)]
-pub(super) struct CaptureClaims {
-    handles: std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
-}
-
-impl CaptureClaims {
-    fn lock(&self, handle: &str) -> Result<Arc<tokio::sync::Mutex<()>>, DaemonError> {
-        let mut handles = self
-            .handles
-            .lock()
-            .map_err(|_| error("Vault capture claims are unavailable"))?;
-        handles.retain(|_, lock| lock.strong_count() > 0);
-        if let Some(lock) = handles.get(handle).and_then(std::sync::Weak::upgrade) {
-            return Ok(lock);
-        }
-        let lock = Arc::new(tokio::sync::Mutex::new(()));
-        handles.insert(handle.into(), Arc::downgrade(&lock));
-        Ok(lock)
-    }
-}
 mod files;
+mod remove;
 mod use_env;
 
+pub(in crate::runtime::state) use capture::CaptureClaims;
+pub(in crate::runtime::state) use capture::{
+    capture_binding_schema, committed as committed_capture, service_host, Captured,
+};
 pub(crate) use capture::{capture_command_spec, VAULT_CAPTURE_COMMAND};
 pub(crate) use files::{capture_file_spec, write_file_spec, VAULT_CAPTURE_FILE, VAULT_WRITE_FILE};
+pub(crate) use remove::{remove_capture_spec, VAULT_REMOVE_CAPTURE};
 pub(crate) use use_env::{use_env_spec, VAULT_USE_ENV};
 
 /// Codex gives a chariox tool call 300 s; a command stops well before that.
@@ -47,7 +32,7 @@ fn command_timeout(seconds: Option<u64>) -> Result<Duration, DaemonError> {
     }
 }
 
-fn validate_capture_binding(
+pub(in crate::runtime::state) fn validate_capture_binding(
     run: &crate::provider::RuntimeProviderRun,
     binding: &crate::config::VaultUseBinding,
 ) -> Result<(), DaemonError> {
@@ -61,7 +46,7 @@ fn validate_capture_binding(
 }
 
 impl KernelRuntimeState {
-    fn recheck_vault_command_context(
+    pub(in crate::runtime::state) fn recheck_vault_command_context(
         &self,
         context: &VaultAgentContext,
     ) -> Result<(), DaemonError> {
@@ -80,10 +65,7 @@ async fn run_command(
     let state = state.clone();
     tokio::task::spawn_blocking(move || {
         state.recheck_vault_command_context(&context)?;
-        let run = state.watched_process_run(context.run.id())?;
-        state.run_kernel_command(&run, command, || {
-            state.recheck_vault_command_context(&context)
-        })
+        state.run_kernel_command(&context, command)
     })
     .await
     .map_err(|_| error("the command runner stopped unexpectedly"))?

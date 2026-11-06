@@ -1216,7 +1216,7 @@ mod tests {
             .resolve_runtime_interaction(
                 &session,
                 &card,
-                "passphrase",
+                "unlock_kernel",
                 Some("synthetic MP11 passphrase"),
                 Some(&owner),
                 true,
@@ -1314,7 +1314,7 @@ mod tests {
             .resolve_runtime_interaction(
                 &session,
                 &card,
-                "passphrase",
+                "unlock_kernel",
                 Some("synthetic queued passphrase"),
                 Some(&owner),
                 true,
@@ -1462,7 +1462,7 @@ mod tests {
             .resolve_runtime_interaction(
                 &session,
                 &card,
-                "passphrase",
+                "unlock_kernel",
                 Some("synthetic wait passphrase"),
                 Some(&owner),
                 true,

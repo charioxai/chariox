@@ -3,6 +3,16 @@ use super::*;
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 use chariox_relay::protocol::ClientTarget;
 
+/// The provider cuts a blocking tool call at 300 s and tells neither the kernel nor the card, so a blocking
+/// card ends itself just before that instead of staying open for a call that is gone.
+const BLOCKING_POPUP_MAX_SECONDS: u64 = 280;
+
+pub(in crate::runtime::state) fn blocking_popup_timeout_seconds(requested: Option<u64>) -> u64 {
+    requested
+        .unwrap_or(BLOCKING_POPUP_MAX_SECONDS)
+        .min(BLOCKING_POPUP_MAX_SECONDS)
+}
+
 fn popup_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "runtime_tool_request_popup",
@@ -10,7 +20,53 @@ fn popup_error(message: &str) -> DaemonError {
     }
 }
 
+/// The choice every agent question carries so the person can always decline.
+pub(in crate::runtime::state) const CANCEL_CHOICE_ID: &str = "cancel";
+
+/// What the agent reads as the outcome: declining is a definitive result of its
+/// own, never a timeout or a missing answer.
+pub(in crate::runtime::state) fn popup_status<'a>(
+    status: &'a str,
+    choice_id: Option<&str>,
+) -> &'a str {
+    if status == "answered" && choice_id == Some(CANCEL_CHOICE_ID) {
+        "cancelled"
+    } else {
+        status
+    }
+}
+
 impl KernelRuntimeState {
+    /// The wake a card follows must be this agent's own live source, so the card
+    /// can never be closed by someone else's event or wait for one that is over.
+    fn card_condition_wake(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        wake_id: &str,
+    ) -> Result<String, DaemonError> {
+        let wake = self
+            .owned
+            .durable_state_store
+            .agent_wake(wake_id)?
+            .filter(|wake| wake.room_id == session_id && wake.agent_id == agent_id)
+            .ok_or_else(|| {
+                popup_error(&format!(
+                    "until `{wake_id}` is not a wake source you armed in this room"
+                ))
+            })?;
+        if wake.kind == super::super::interaction_wake::KIND {
+            return Err(popup_error("a card cannot follow another card"));
+        }
+        if !matches!(wake.state.as_str(), "scheduled" | "starting" | "running") {
+            return Err(popup_error(&format!(
+                "until `{wake_id}` already ended ({}); check it with events.wakes instead of asking",
+                wake.state
+            )));
+        }
+        Ok(wake.id)
+    }
+
     pub(super) async fn dispatch_popup_tool(
         &self,
         provider_run: &crate::provider::RuntimeProviderRun,
@@ -69,13 +125,33 @@ impl KernelRuntimeState {
         if args.timeout_sec == Some(0) {
             return Err(popup_error("timeout_sec must be at least 1"));
         }
+        if args.action.is_some() {
+            return Err(popup_error(
+                "an action card must be raised by a local agent's own provider run",
+            ));
+        }
         if args.choices.is_empty() {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_request_popup",
                 message: "popup interactions require at least one choice".to_string(),
             });
         }
-        let choices = args
+        if args
+            .view
+            .as_ref()
+            .is_some_and(|view| view.browser_region.verification.is_some())
+            && (args.wait != Some(false)
+                || args.until.is_some()
+                || args.custom_choice.is_some()
+                || args.default_on_timeout.is_some()
+                || args
+                    .choices
+                    .iter()
+                    .any(|choice| choice.id != CANCEL_CHOICE_ID))
+        {
+            return Err(popup_error("verification cards require wait:false and only Cancel; no until, custom reply or default"));
+        }
+        let mut choices = args
             .choices
             .into_iter()
             .map(|choice| {
@@ -87,6 +163,14 @@ impl KernelRuntimeState {
                 )
             })
             .collect::<Vec<_>>();
+        if choices.iter().all(|choice| choice.id() != CANCEL_CHOICE_ID) {
+            choices.push(crate::session::RuntimeInteractionChoice::new(
+                CANCEL_CHOICE_ID,
+                "Cancel",
+                CANCEL_CHOICE_ID,
+                Some(crate::session::RuntimeInteractionChoiceStyle::Secondary),
+            ));
+        }
         let custom_choice = args.custom_choice.map(|choice| {
             crate::session::RuntimeInteractionCustomChoice::new(
                 choice.id,
@@ -134,8 +218,35 @@ impl KernelRuntimeState {
                 });
             }
         }
-        let interaction = crate::session::RuntimeInteraction::new(
-            format!("interaction-{:032x}", rand::random::<u128>()),
+        let closing_wake = match args.until {
+            Some(until) if args.wait != Some(false) => {
+                return Err(popup_error(&format!(
+                    "until `{}` needs wait:false: a blocking card cannot also follow a wake source",
+                    until.wake_id
+                )));
+            }
+            Some(until) => Some(self.card_condition_wake(session_id, agent_id, &until.wake_id)?),
+            None => None,
+        };
+        let interaction_id = format!("interaction-{:032x}", rand::random::<u128>());
+        let view = if let Some(view) = args.view.as_ref() {
+            if let Some(run) = provider_run {
+                self.user_domain_agent_authority(run)?;
+            }
+            Some(
+                self.resolve_popup_view(
+                    session_id,
+                    agent_id,
+                    &interaction_id,
+                    &view.browser_region,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let mut interaction = crate::session::RuntimeInteraction::new(
+            interaction_id,
             agent_id,
             crate::session::RuntimeInteractionKind::Choice,
             args.level
@@ -144,11 +255,23 @@ impl KernelRuntimeState {
             args.message,
             choices,
             custom_choice,
-            args.timeout_sec,
+            if args.wait == Some(false) {
+                args.timeout_sec
+            } else {
+                Some(blocking_popup_timeout_seconds(args.timeout_sec))
+            },
             default_choice_id.clone(),
         );
+        if let Some(wake_id) = closing_wake {
+            interaction = interaction.closing_with_wake(wake_id);
+        }
+        if let Some(view) = view {
+            interaction = interaction.with_view(view);
+        }
         if args.wait == Some(false) {
-            return self.arm_interaction_wake(session_id, agent_id, interaction);
+            let result = self.arm_interaction_wake(session_id, agent_id, interaction)?;
+            self.resume_browser_region_cards();
+            return Ok(result);
         }
         let provider_run =
             provider_run.ok_or_else(|| popup_error("forwarded popup must use wait:false"))?;
@@ -197,7 +320,7 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "interaction_id": interaction_id,
-                    "status": resolution.status,
+                    "status": popup_status(&resolution.status, resolution.choice_id.as_deref()),
                     "choice_id": resolution.choice_id,
                     "reply": resolution.reply,
                 }),
@@ -206,6 +329,14 @@ impl KernelRuntimeState {
         let resolution_rx = self
             .create_runtime_interaction(&session_id, interaction)
             .await?;
+        // The card is only answerable while this tool call waits: when the
+        // provider gives up on the call, withdraw it instead of leaving a dead card.
+        let _close = super::super::runtime_vault_unlock_state::CloseInteractionOnDrop {
+            state: self.clone(),
+            session_id: session_id.clone(),
+            interaction_id: interaction_id.clone(),
+        };
+        self.resume_browser_region_cards();
         if let Some(timeout_sec) = timeout_sec {
             let state = self.clone();
             let timeout_session_id = session_id.clone();
@@ -227,7 +358,7 @@ impl KernelRuntimeState {
             ok: true,
             payload: serde_json::json!({
                 "interaction_id": interaction_id,
-                "status": resolution.status,
+                "status": popup_status(resolution.status, resolution.choice_id.as_deref()),
                 "choice_id": resolution.choice_id,
                 "reply": resolution.reply,
             }),

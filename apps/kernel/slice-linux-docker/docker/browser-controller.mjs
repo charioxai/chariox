@@ -17,7 +17,7 @@ import {
 } from "./browser-controller-resources.mjs";
 
 import { managedCanonicalDisplay } from "./browser-controller-display.mjs";
-import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { redactObservation, redactSnapshot } from "./browser-controller-snapshot.mjs";
 
 import {hostErrorLabel} from './kernel-browser-error-label.mjs';
 import {RoomSharedDisplay} from './room-shared-display.mjs';
@@ -36,6 +36,7 @@ export async function handleBrowserControllerRequest(request, options = {}) {
   // MP-08/MP-11: this adapter returns only shared protected frame packets and
   // opaque identities. Treating compressed bytes as text corrupts their codec.
   if(request.method==='room.display'&&result.ok)return result;
+  if (request.method === 'browser.snapshot' && result.ok) return { ...result, result: redactSnapshot(result.result, browser.protectedValues ?? []) };
   return redactObservation(result, browser.protectedValues ?? []);
 }
 

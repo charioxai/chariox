@@ -217,7 +217,8 @@ pub use api::{
     UpdateWorkflowPromptQueueRequest, UpsertConnectorRequest, UpsertCredentialRequest,
     UpsertSkillRequest, UserConfigMutationEffect, UserConfigProviderReloadSummary,
     ValidateScriptRequest, ValidateWorkflowCodeRequest, ValidateWorkflowHandoffRequest,
-    VaultPassphrase, WaitingRoomAgentRuntimePlacement, WaitingRoomGitCredentialSummary,
+    VaultPassphrase, VaultUnlockDuration, VaultUnlockOptions, VaultUnlockSurface,
+    WaitingRoomAgentRuntimePlacement, WaitingRoomGitCredentialSummary,
     WaitingRoomInventorySnapshot, WaitingRoomLaunchTarget, WaitingRoomPublicAgentSummary,
     WaitingRoomPublicItemActivitySummary, WaitingRoomPublicProjectSummary,
     WaitingRoomPublicSessionSummary, WaitingRoomPublicSnapshot,
@@ -327,8 +328,8 @@ pub use api::{
 };
 
 pub use api::{
-    ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse,
-    MachineAllocationCapability,
+    ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionOffer,
+    MachineAcquisitionPrice, MachineAcquisitionPricePeriod, MachineAllocationCapability,
 };
 
 pub use api::{ControlPlaneMachineRow, ControlPlaneSavedStateRow};

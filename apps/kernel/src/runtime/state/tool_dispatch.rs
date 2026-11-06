@@ -21,6 +21,9 @@ mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
 mod popup;
+pub(in crate::runtime::state) use popup::{
+    blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,
+};
 pub(super) fn authorize_remote_home_context_for_peer(
     state: &KernelRuntimeState,
     context: &crate::transport::relay_peer::RemoteExtensionInvocationContext,
@@ -203,6 +206,7 @@ impl KernelRuntimeState {
             specs.push(super::vault_command::use_env_spec());
             specs.push(super::vault_command::capture_file_spec());
             specs.push(super::vault_command::write_file_spec());
+            specs.push(super::vault_command::remove_capture_spec());
             specs.extend(super::resource_register::specs());
             specs.push(super::agent_auth::spec());
         }
@@ -294,6 +298,25 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let kernel_browser = tool_name == "chariox.kernel_browser";
+        let kernel_snapshot = kernel_browser && arguments["command"]["op"] == "snapshot";
+        let browser_state = kernel_browser
+            && matches!(
+                arguments["command"]["op"].as_str(),
+                Some(
+                    "start"
+                        | "state"
+                        | "open"
+                        | "close"
+                        | "navigate"
+                        | "resize"
+                        | "pointer_cursor"
+                        | "input"
+                        | "dialog"
+                        | "cancel_download"
+                        | "stop"
+                )
+            );
         let rooms = self
             .owned
             .provider_store
@@ -319,10 +342,14 @@ impl KernelRuntimeState {
             }
         };
         for room in rooms {
-            result = self
-                .owned
-                .room_secret_observations
-                .scrub_runtime_result(&room, result)?;
+            let protection = &self.owned.room_secret_observations;
+            if kernel_snapshot {
+                result.payload = protection.scrub_kernel_snapshot_result(&room, result.payload)?;
+            } else if browser_state {
+                result.payload = protection.scrub_kernel_browser_state(&room, result.payload)?;
+            } else {
+                result = protection.scrub_runtime_result(&room, result)?;
+            }
         }
         Ok(result)
     }
@@ -406,6 +433,9 @@ impl KernelRuntimeState {
         }
         if tool_name == super::vault_command::VAULT_WRITE_FILE {
             return Box::pin(self.vault_write_file(auth_token, arguments)).await;
+        }
+        if tool_name == super::vault_command::VAULT_REMOVE_CAPTURE {
+            return Box::pin(self.vault_remove_capture(auth_token, arguments)).await;
         }
         {
             let owned = &self.owned;
@@ -790,12 +820,11 @@ impl KernelRuntimeState {
                 ))
                 .await;
             }
-            Box::pin(self.dispatch_authenticated_workflow_runtime_tool_call(
-                &provider_runs,
-                canonical_tool_name,
-                arguments,
-            ))
-            .await
+            // Workflow tools returned above; anything left is not a runtime tool.
+            Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_runtime_tool_call",
+                message: format!("unknown runtime tool `{tool_name}`"),
+            })
         }
     }
 
@@ -863,6 +892,7 @@ fn is_home_credential_runtime_tool(tool_name: &str) -> bool {
             | crate::transport::runtime_tools::SEND_SECRET_TO_TERMINAL_TOOL
             | crate::transport::runtime_tools::PASTE_SECRET_TO_COMPUTER_TOOL
             | crate::transport::runtime_tools::REQUEST_POPUP_TOOL
+            | crate::transport::runtime_tools::MANAGE_CREDENTIAL_VAULT_TOOL
     )
 }
 

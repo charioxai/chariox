@@ -77,7 +77,7 @@ function fixture(root, { realCdp = false, personIdleMs } = {}) {
     reconcile: async viewport => { connection.density=viewport.device_scale_factor; return { tabs: [...pages].map(([target_id, tab]) => ({ target_id, document_id: `doc-${target_id}`, title: "fixture", ...tab })) }; },
     manageTab: async ({ target_id }) => pages.delete(target_id),
     navigate: async ({ target_id, url }) => { pages.set(target_id, { url }); },
-    snapshot: async () => ({ text: "fixture" }),
+    snapshot: async () => ({ text: "fixture", accessibility_nodes: [], dom_nodes: [] }),
     resolvePageTarget: async target => ({ connection, sessionId: `session-${target}` }),
     clearViewport: async target => connection.send('Emulation.clearDeviceMetricsOverride', {}, `session-${target}`),
     inputCapture: { hold: async()=>async()=>{}, run: async (_connection, _session, operation) => operation() },
@@ -3321,3 +3321,77 @@ test('an agent opening a background Tab starts its renderer before any later age
   assert.ok(host.backgroundHolds.has(target), 'open itself holds the background renderer');
   assert.ok(sent.some(call => call.method === 'Page.startScreencast'), 'the new renderer is already scheduling frames');
 }));
+
+test("MP-08/MP-10/MP-11 the host snapshot boundary preserves schema words and identifiers", () => using(async ({host}) => {
+  const tab = await host.request({op: "open", url: "https://example.com"});
+  await host.protect({unknown: false, values: ["name", "backend:7", "textbox"], targets: []});
+  host.browser.snapshot = async () => ({browser_generation: 1, target_id: "name", document_id: "backend:7", snapshot_revision: 1,
+    accessibility_nodes: [{node_ref: "backend:7", role: "textbox", name: "Account name", description: "name", value: "name"}],
+    dom_nodes: [{node_ref: "backend:7", node_name: "INPUT", text: "name", attributes: {"aria-label": "name"}}]});
+  const reply = await host.handle({id: 1, method: "host.browser", params: {op: "snapshot", tab_id: tab.tab_id, generation: host.generation}});
+  assert.equal(reply.ok, true);
+  const snapshot = reply.result.snapshot;
+  assert.equal(snapshot.target_id, "name");
+  assert.equal(snapshot.document_id, "backend:7");
+  assert.equal(snapshot.accessibility_nodes[0].node_ref, "backend:7");
+  assert.equal(snapshot.accessibility_nodes[0].role, "textbox");
+  assert.equal(snapshot.accessibility_nodes[0].name, "Account [redacted]");
+  assert.equal(snapshot.dom_nodes[0].attributes["aria-label"], "[redacted]");
+}));
+
+// MP-08 / MP-09 / MP-10 / MP-11: capture-label collisions must not rewrite browser protocol.
+for (const word of ['Tabs', 'generation', 'ready', 'host-tab-protocol']) {
+  test(`MP-11 review: captured ${word} preserves state/open/navigate/input schema`, () => using(async ({ host, pages }) => {
+    const opened = await host.request({ op: 'open', tab_id: 'host-tab-protocol', url: 'https://example.com/' });
+    await host.protect({ unknown: false, values: [word], targets: [] });
+    for (const command of [
+      { op: 'state' },
+      { op: 'open', url: 'https://example.com/?label=' + word },
+      { op: 'navigate', tab_id: opened.tab_id, generation: opened.generation, url: 'https://example.com/?label=' + word },
+      { op: 'input', tab_id: opened.tab_id, generation: opened.generation, document_id: 'doc-target-1', input: { kind: 'key', key: 'ArrowDown' } },
+    ]) {
+      for (const page of pages.values()) page.title = 'Page ' + word;
+      if (command.op === 'input') command.document_id = host.tabs.get(opened.tab_id).document_id;
+      const reply = await host.handle({ id: 888, method: 'host.browser', params: command });
+      assert.equal(reply.ok, true, command.op + ': ' + JSON.stringify(reply.error));
+      assert.equal(reply.result.state, 'ready', command.op + ' keeps state enum');
+      assert.equal(reply.result.generation, opened.generation, command.op + ' keeps generation');
+      assert(Array.isArray(reply.result.tabs), command.op + ' keeps tabs');
+      assert(reply.result.tabs.some(tab => tab.tab_id === opened.tab_id), command.op + ' keeps opaque tab identities');
+      assert(reply.result.tabs.every(tab => !tab.title.includes(word)), command.op + ' scrubs page titles');
+    }
+  }));
+}
+
+for (const word of ['state', 'present', 'region', 'accepted', 'rejected', 'challenge_id', 'backend:42']) {
+  test(`MP-11 r10 popup_region keeps fixed schema when Vault contains ${word}`, () => using(async ({host}) => {
+    const region = {state:'present',region:{tab_id:'host-tab-1',ref:'backend:42',generation:1,document_id:'doc',origin:'https://example.com',rect:{x:1,y:2,width:30,height:40},viewport_width:800,viewport_height:600,verification:{challenge_id:'challenge_id',url:'https://example.com/verify',accepted_json_pointer:'/accepted'},verification_result:{challenge_id:'challenge_id',request_id:'r1',input_delivered:true,http_status:422,result:'rejected'}}};
+    await host.protect({unknown:false,values:[word],targets:[]});
+    host.request = async () => region;
+    const reply = await host.handle({id:1,method:'host.browser',params:{op:'popup_region'}});
+    assert.equal(reply.ok,true);
+    assert.deepEqual(reply.result,region);
+  }));
+}
+
+
+// MP-08 / MP-09 / MP-10 / MP-11: cursor keywords and viewport sizes are fixed protocol.
+for (const word of ['generation', 'cursor', 'pointer', 'width', 'height']) {
+  test(`MP-11 captured ${word} preserves pointer_cursor and resize schema`, () => using(async ({ host, connection }) => {
+    const opened = await host.request({ op: 'open', url: 'https://example.com/' });
+    host.browser.pointerCursor = async () => 'pointer';
+    const send = connection.send;
+    connection.send = async (method, params, session) => method === 'Browser.getWindowForTarget'
+      ? {windowId: 1, bounds: {windowState: 'normal', width: 1280, height: 800}}
+      : send(method, params, session);
+    await host.protect({ unknown: false, values: [word], targets: [] });
+    for (const [command, expected] of [
+      [{op:'pointer_cursor',tab_id:opened.tab_id,generation:opened.generation,x:10,y:10}, {generation:opened.generation,cursor:'pointer'}],
+      [{op:'resize',tab_id:opened.tab_id,generation:opened.generation,width:1280,height:800}, {width:1280,height:800}],
+    ]) {
+      const reply = await host.handle({ id: 889, method: 'host.browser', params: command });
+      assert.equal(reply.ok, true, command.op + ': ' + JSON.stringify(reply.error));
+      assert.deepEqual(reply.result, expected, command.op + ' keeps fixed metadata');
+    }
+  }));
+}

@@ -24,6 +24,9 @@ struct Registration {
     credential: Option<Secret>,
     api_key: Option<Secret>,
     credential_type: Option<String>,
+    /// Every other reply field; only fields the agent names in `return_fields` ever leave.
+    #[serde(flatten)]
+    rest: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(serde::Deserialize)]
@@ -38,6 +41,14 @@ pub(super) struct IssuedCredential {
     pub value: Secret,
     pub registration_id: String,
     pub resource: String,
+    pub fields: ReturnedFields,
+}
+
+/// Non-secret registration fields the agent asked for, keyed by their JSON pointer.
+#[derive(Default)]
+pub(super) struct ReturnedFields {
+    pub values: std::collections::BTreeMap<String, serde_json::Value>,
+    pub unavailable: Vec<String>,
 }
 
 fn issued(
@@ -57,7 +68,61 @@ fn issued(
         value,
         registration_id,
         resource: resource.into(),
+        fields: Default::default(),
     })
+}
+
+/// Words that make a pointer segment a secret. The agent picks the fields, but a service must not be able to
+/// hand the model a credential through this tool.
+const SECRET_SEGMENTS: [&str; 7] = [
+    "token",
+    "secret",
+    "assertion",
+    "credential",
+    "password",
+    "key",
+    "jwt",
+];
+
+/// Checked before any network call, so a refused request never leaves an account behind.
+pub(super) fn refuse_secret_fields(pointers: &[String]) -> Result<(), DaemonError> {
+    let named_secret = pointers.iter().any(|pointer| {
+        pointer.split('/').any(|segment| {
+            let segment = segment.to_ascii_lowercase();
+            SECRET_SEGMENTS.iter().any(|word| segment.contains(word))
+        })
+    });
+    if named_secret {
+        return Err(error(
+            "return_fields cannot name a token, key, secret or credential field",
+        ));
+    }
+    Ok(())
+}
+
+/// Short scalar fields of the registration reply named by JSON pointer. Services need some of them to use
+/// the account, for example the id of the project the registration created. A field that is absent or not
+/// a short scalar is reported, not fatal: the account already exists and its credential must still be stored.
+fn requested_fields(
+    reply: &serde_json::Map<String, serde_json::Value>,
+    pointers: &[String],
+) -> ReturnedFields {
+    let reply = serde_json::Value::Object(reply.clone());
+    let mut returned = ReturnedFields::default();
+    for pointer in pointers {
+        match reply.pointer(pointer) {
+            Some(found @ (serde_json::Value::Number(_) | serde_json::Value::Bool(_))) => {
+                returned.values.insert(pointer.clone(), found.clone());
+            }
+            Some(found @ serde_json::Value::String(text))
+                if text.len() <= 256 && !text.chars().any(char::is_control) =>
+            {
+                returned.values.insert(pointer.clone(), found.clone());
+            }
+            _ => returned.unavailable.push(pointer.clone()),
+        }
+    }
+    returned
 }
 
 pub(super) fn token_credential(
@@ -111,6 +176,7 @@ pub(super) async fn register(
     let reply = http.post_json(&discovery.identity_endpoint, &body).await?;
     reply.success()?;
     let registration: Registration = reply.json()?;
+    let fields = requested_fields(&registration.rest, &args.return_fields);
     if registration.registration_id.is_empty() || registration.registration_id.len() > 256 {
         return Err(error(
             "auth.md registration response has no valid registration_id",
@@ -160,7 +226,8 @@ pub(super) async fn register(
             claim_token,
             ceremony,
         )
-        .await;
+        .await
+        .map(|issued| IssuedCredential { fields, ..issued });
     }
     // Some auth.md services issue an API key directly, without an OAuth exchange.
     if registration.credential_type.as_deref() == Some("api_key") {
@@ -176,7 +243,8 @@ pub(super) async fn register(
                 .ok_or_else(|| error("auth.md registration has no API key"))?,
             registration.registration_id,
             &discovery.resource,
-        );
+        )
+        .map(|issued| IssuedCredential { fields, ..issued });
     }
     let assertion = registration
         .identity_assertion
@@ -202,4 +270,5 @@ pub(super) async fn register(
         &discovery.resource,
         &args.scopes,
     )
+    .map(|issued| IssuedCredential { fields, ..issued })
 }

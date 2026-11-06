@@ -310,6 +310,7 @@ impl KernelRuntimeState {
         {
             store.agent_lifecycle(cancel(false))?;
         }
+        self.close_cards_following(wake);
         Ok(())
     }
 }

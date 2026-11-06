@@ -192,6 +192,7 @@ fn failed_reply_start_retires_rejected_and_waiting_requests_across_restart() {
     f.store = DurableKernelStateStore::open_owned(f.root.join("state.sqlite")).unwrap();
     f.apply(Operation::Sweep {
         now: 10,
+        vault_wait_recipients: Vec::new(),
         busy_recipients: vec![],
         held_work: vec![],
     });

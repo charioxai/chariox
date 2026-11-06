@@ -1087,6 +1087,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-focus-world.mjs",
         "browser-controller-cursor.mjs",
         "browser-controller-cdp.mjs",
+        "browser-submit-outcome.mjs",
         "browser-controller-dialogs.mjs",
         "browser-controller-events.mjs",
         "browser-controller-files.mjs",

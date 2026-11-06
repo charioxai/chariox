@@ -321,7 +321,7 @@ async function main() {
       "Then reply with the words REACH and DONE joined by an underscore, nothing else.",
     ].join("\n"), "REACH_DONE")
     const text = claudeTranscript(a.dir + "/chariox", startedAt)
-    
+
     const listed = text.includes("target-room") && text.includes(roomB.session.id)
     check("the agent lists B's sessions without /sudo", listed)
     const rows = audit()
@@ -920,9 +920,9 @@ async function main() {
     const acquire = call(null, { ControlPlane: { action: "acquire", capability_revision: "r1", request_id: "reach-drill" } })
     const acquirePrompt = tag => ["This is a drill. Use only the chariox-reach `request` tool; no shell, no files. Do not retry.", `Call \`request\` once with exactly: ${acquire}`, `Then reply with the words ${tag} and DONE joined by an underscore, followed by the \`code\` field of the answer if there is one.`].join("\n")
     const askedBefore = async () => (await state(a, roomA.session.id)).active_interactions?.filter(x => String(x.message ?? "").includes("acquire a machine")) ?? []
-    for (const choice of ["decline", "accept"]) {
-      const tag = choice === "decline" ? "ACQUIRENO" : "ACQUIREYES", since = Date.now() - 1000
-      const needle = choice === "decline" ? "acquisition_declined" : "no connected machine service"
+    for (const choice of ["cancel", "accept"]) {
+      const tag = choice === "cancel" ? "ACQUIRENO" : "ACQUIREYES", since = Date.now() - 1000
+      const needle = choice === "cancel" ? "acquisition_declined" : "no connected machine service"
       const seenBefore = claudeTranscript(a.dir + "/chariox", 0).split(needle).length
       await a.rpc(submitPromptRequest(roomA.session.id, attached, agentA, acquirePrompt(tag), []))
       let asked

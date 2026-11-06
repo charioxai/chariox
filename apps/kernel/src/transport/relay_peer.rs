@@ -190,6 +190,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// MP-08 / MP-09 / MP-10 / MP-11: 435 carries bounded lossless Browser snapshots.
 /// OSS boundary: 416 pairs the embedded local union with local 967 (retired Cloud controls removed).
 /// Allocated 424 carries local983 (the waiting-command row and the outside `process` event).
+/// Peer425 carries local984 Vault unlock durations.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 430;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

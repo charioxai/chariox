@@ -25,13 +25,16 @@ mod reach_tests;
 mod receipts;
 mod scope;
 mod window;
-pub(in crate::runtime::state) use policy::sudo_request_forbidden;
-pub(crate) use policy::{is_sudo_control, is_sudo_prompt};
+pub(crate) use policy::{is_sudo_control, is_sudo_prompt, sudo_request_forbidden};
 pub(crate) use window::sudo_window_minutes;
 #[cfg(test)]
 pub(crate) use window::SUDO_WINDOW_LENGTH_FOR_TEST;
 #[cfg(test)]
+mod acquisition_tests;
+#[cfg(test)]
 mod agent_auth_tests;
+#[cfg(test)]
+mod card_action_tests;
 #[cfg(test)]
 mod catalog_tests;
 #[cfg(test)]

@@ -143,10 +143,14 @@ impl KernelRuntimeState {
         )
         .await?;
         record_registration(self, &credential, &issued.registration_id)?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: json!({"credential_id": handle, "label": label}),
-        })
+        let mut payload = json!({"credential_id": handle, "label": label});
+        if !issued.fields.values.is_empty() {
+            payload["fields"] = json!(issued.fields.values);
+        }
+        if !issued.fields.unavailable.is_empty() {
+            payload["unavailable_fields"] = json!(issued.fields.unavailable);
+        }
+        Ok(RuntimeToolResult { ok: true, payload })
     }
 }
 

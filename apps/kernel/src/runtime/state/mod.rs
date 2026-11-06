@@ -115,6 +115,7 @@ mod user_app_view_runtime;
 mod vault_command;
 mod vault_generate;
 mod vault_use;
+pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -122,7 +123,9 @@ pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
-pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
+pub(crate) use sudo::{
+    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, sudo_window_minutes,
+};
 mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
@@ -188,6 +191,7 @@ mod room_secret_observation;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
+mod terminal_input_grants;
 mod usage_snapshot;
 mod visible_region_capture;
 mod web_bot_auth_runtime;
@@ -223,6 +227,8 @@ pub(crate) struct KernelRuntimeState {
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
+    /// The agents whose terminal input a person allowed for the session.
+    terminal_input_grants: terminal_input_grants::TerminalInputGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
@@ -248,7 +254,6 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     agent_auth_registrations: agent_auth::RegistrationClaims,
-    vault_capture_claims: Arc<vault_command::CaptureClaims>,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -370,6 +375,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
@@ -387,6 +393,7 @@ struct KernelRuntimeOwnedState {
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
     task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
+    vault_capture_claims: vault_command::CaptureClaims,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
@@ -586,6 +593,7 @@ mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
 mod disk_pressure;
 mod disk_usage;
+mod browser_region_card;
 mod owner_vault;
 mod process_waits;
 mod runtime_interaction_state;
@@ -610,6 +618,7 @@ pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
+mod kernel_browser_qr;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
@@ -1041,6 +1050,7 @@ impl KernelRuntimeState {
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             lifecycle_sweeps: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
+            terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
             managed_work_activity: None,
@@ -1067,7 +1077,6 @@ impl KernelRuntimeState {
                 )),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
-                vault_capture_claims: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
@@ -1179,6 +1188,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
@@ -1198,6 +1208,7 @@ impl KernelRuntimeState {
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
                 task_settlement_revisions: Arc::default(),
                 agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
+                vault_capture_claims: Default::default(),
                 relay_state,
                 notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -1556,6 +1567,7 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod card_action_state;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;

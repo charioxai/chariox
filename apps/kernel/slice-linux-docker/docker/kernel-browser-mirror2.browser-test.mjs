@@ -21,7 +21,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
-async function mirrored(html, run, routes = {}) {
+async function mirrored(html, run, routes = {}, initialOptions = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
@@ -55,10 +55,11 @@ async function mirrored(html, run, routes = {}) {
       const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
       return { next, input, subscription_id, generation: opened.generation };
     };
-    const { next, input, subscription_id, generation } = await subscribe();
+    const { next, input, subscription_id, generation } = await subscribe(initialOptions);
     await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
   } finally {
     await host.stop();
+    if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
     await rm(apps, { recursive: true, force: true });
@@ -2567,3 +2568,34 @@ test("MP-08/MP-10: frame navigation retires the old owner before forwarding chil
       assert(echoed, `${mode}: the counter mutation uses the live owner's IDs`);
     }
   }, Object.fromEntries(['quirks', 'standards'].map(mode => ['/' + mode, { type: 'text/html', body: (mode === 'standards' ? '<!doctype html>' : '') + '<body style="margin:0;font:16px sans-serif"><h3>' + mode + '</h3><button id="counter" onclick="count.textContent=Number(count.textContent)+1">Count click</button><span id="count">0</span></body>' }]))));
+
+// MP-08 / MP-09 / MP-10 / MP-11: a verification rejection can replace the
+// ancestor while keeping the actual field/form alive. Their mirror IDs stay live.
+for (const viewportFirst of [false, true]) test(`MP-08/MP-10 verification ancestor replacement keeps live form records, viewportFirst=${viewportFirst}`, () => mirrored(
+  '<svg style="display:none">' + '<path d="M0 0"/>'.repeat(6000) + '</svg><main id="challenge"><h1>Verify account</h1><form id="verify"><label for="code">Code</label><input id="code"><button>Verify</button><p role="alert"></p></form></main>', async ({ next, evaluate }) => {
+    const first = await next(), seen = new Set();
+    const introduce = rows => {
+      let id = 0;
+      for (const row of rows) {
+        id += row[0];
+        assert(!seen.has(id), 'an existing live form descendant must not be serialized under its own ID again');
+        seen.add(id);
+      }
+    };
+    introduce(first.nodes);
+    assert(elements(first).some(([, tag, attrs]) => tag === 'input' && attrs.id === 'code'), 'visible code field is in the initial viewport');
+    await evaluate(`const old=document.querySelector('#challenge'),replacement=document.createElement('main');replacement.id=old.id;old.before(replacement);while(old.firstChild)replacement.append(old.firstChild);old.remove();document.querySelector('[role=alert]').textContent='That code was not accepted';true`);
+    let rejection = false;
+    for (let i = 0; i < 30; i++) {
+      const packet = await next(100);
+      assert(!packet.reset, 'a live ancestor replacement is incremental');
+      for (const op of packet.ops) {
+        if (op.op === 'children') {
+          introduce(op.nodes);
+          rejection ||= op.nodes.some(row => row[2] === 0 && row[3] === 'That code was not accepted');
+        } else if (op.op === 'text') rejection ||= op.text === 'That code was not accepted';
+      }
+      if (rejection && packet.snapshot_complete !== false) break;
+    }
+    assert(rejection, 'the visible site rejection travels without losing the live form');
+  }, {}, viewportFirst ? { viewport_first: true } : {}));

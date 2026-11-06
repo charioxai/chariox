@@ -483,6 +483,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-cdp.mjs"),
     ),
     (
+        "browser-submit-outcome.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-submit-outcome.mjs"),
+    ),
+    (
         "browser-controller-compatibility.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-compatibility.mjs"),
     ),
@@ -589,6 +593,14 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-background.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-background.mjs"),
+    ),
+    (
+        "kernel-browser-card-verification.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-card-verification.mjs"),
+    ),
+    (
+        "kernel-browser-card-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-card-region.mjs"),
     ),
     (
         "kernel-browser-host.mjs",

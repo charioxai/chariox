@@ -732,7 +732,7 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+        self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
         if changed {
@@ -1271,6 +1271,7 @@ impl KernelRuntimeState {
         // Include taskless recipients: their active user/provider turn must
         // not consume the idle-refusal budget or suppress later urgent steering.
         let mut busy_recipients = Vec::new();
+        let mut vault_wait_recipients = Vec::new();
         let mut held_work = Vec::new();
         for (room, agent) in self
             .owned
@@ -1287,7 +1288,10 @@ impl KernelRuntimeState {
                     .active_prompt_for_agent(&session, &agent)
                     .is_some()
                 {
-                    busy_recipients.push((room, agent));
+                    busy_recipients.push((room.clone(), agent.clone()));
+                }
+                if self.agent_inbox_waits_for_vault(&room, &agent) {
+                    vault_wait_recipients.push((room, agent));
                 }
             }
         }
@@ -1302,6 +1306,7 @@ impl KernelRuntimeState {
                 .agent_lifecycle(Operation::Sweep {
                     now: crate::session::unix_epoch_ms(),
                     busy_recipients,
+                    vault_wait_recipients,
                     held_work,
                 })?
         };
