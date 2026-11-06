@@ -427,8 +427,11 @@ async fn exercise(fanout: bool) {
             LocalDaemonResponse::AppInboxRoutes { .. }
         ));
     }
+    // Bindings are named after the kernel's identity key, which is what the connector signs with.
+    let kernel_id = crate::transport::gateway_identity::GatewayIdentity::from_config(&config)
+        .kernel_id();
     let resumes = state
-        .event_delivery_resumes(&config.daemon_id, &config.event_delivery_environment_id)
+        .event_delivery_resumes(&kernel_id, &config.event_delivery_environment_id)
         .unwrap();
     let claims = &resumes[0].routes;
     assert_eq!(claims.len(), if fanout { 2 } else { 1 });

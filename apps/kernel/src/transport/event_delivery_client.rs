@@ -1111,6 +1111,245 @@ mod tests {
         assert!(received[0].contains("dev.chariox.up") && received[0].contains("thing.happened"));
     }
 
+    /// What a stand-in AEGS saw of one reconciliation: the owner it was named
+    /// for and whether the kernel's key signature verified over that owner.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct SeenReconcile {
+        owner_id: String,
+        signature_bound_to_owner: bool,
+        kernel_id: String,
+        binding_count: usize,
+    }
+
+    /// An AEGS stand-in that verifies each signed reconcile and refuses the
+    /// owners in `refused_owners` with a typed code.
+    fn aegs_for_owners(
+        refused_owners: Vec<String>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<SeenReconcile>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_seen = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(8) {
+                let mut stream = stream.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 8192];
+                let (head, body) = loop {
+                    let count = stream.read(&mut buffer).unwrap_or(0);
+                    request.extend_from_slice(&buffer[..count]);
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                        let length = head
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if body.len() >= length || count == 0 {
+                            break (head.to_string(), body.to_string());
+                        }
+                    }
+                    if count == 0 {
+                        panic!("incomplete request");
+                    }
+                };
+                use chariox_event_protocol::kernel_identity as identity;
+                let header = |name: &str| {
+                    head.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                    })
+                };
+                let parsed: chariox_event_protocol::AegsSubscriptionReconcileRequest =
+                    serde_json::from_str(&body).unwrap();
+                let kernel_key = header(identity::KERNEL_KEY_HEADER).unwrap();
+                let signed_owner = header(identity::OWNER_ID_HEADER).unwrap();
+                let bound = identity::verify(
+                    &kernel_key,
+                    &identity::ManagementRequest {
+                        method: "PUT",
+                        path: "/v1/subscriptions/reconcile",
+                        generator_id: &parsed.generator_id,
+                        owner_id: &signed_owner,
+                        timestamp_ms: header(identity::KERNEL_TIMESTAMP_HEADER)
+                            .unwrap()
+                            .parse()
+                            .unwrap(),
+                        nonce: &header(identity::KERNEL_NONCE_HEADER).unwrap(),
+                        body: body.as_bytes(),
+                    }
+                    .message(),
+                    &header(identity::KERNEL_SIGNATURE_HEADER).unwrap(),
+                )
+                .is_ok()
+                    && signed_owner == parsed.owner_id;
+                server_seen.lock().unwrap().push(SeenReconcile {
+                    owner_id: parsed.owner_id.clone(),
+                    signature_bound_to_owner: bound,
+                    kernel_id: identity::kernel_id_for_public_key(&kernel_key),
+                    binding_count: parsed.subscriptions.len(),
+                });
+                let (status, body) = if refused_owners.contains(&parsed.owner_id) {
+                    (
+                        "403 Forbidden",
+                        r#"{"error":{"code":"management_owner_mismatch","message":"x"}}"#
+                            .to_string(),
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        r#"{"accepted_binding_ids":[],"authoritative":true}"#.to_string(),
+                    )
+                };
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    const OWNER_A: &str = "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a";
+    const OWNER_B: &str = "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b";
+
+    /// A kernel holding two connection records of two owners (its own and a
+    /// copy from another kernel of the same user), each with one route.
+    fn kernel_with_two_owners(
+        generator_url: String,
+        second_status: chariox_event_protocol::AegsConnectionStatus,
+    ) -> (KernelRuntimeState, EventDeliveryClientConfig) {
+        let target = crate::config::EventGeneratorManagementTarget {
+            url: generator_url,
+            registry_discovered: false,
+        };
+        let targets = BTreeMap::from([("dev.chariox.up".to_string(), target)]);
+        let mut daemon_config = crate::config::DaemonConfig::for_tests();
+        daemon_config.event_generator_management_targets = targets.clone();
+        let app = crate::app::DaemonApp::bootstrap(daemon_config.clone())
+            .expect("test daemon should bootstrap");
+        let store = app.durable_state_store();
+        let runtime_state = runtime_state_from_app(app);
+        rusqlite::Connection::open(store.path())
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                 VALUES('app','dev.chariox.app','local',1,1,'{}')",
+            )
+            .unwrap();
+        for (connection_id, owner, status) in [
+            ("connection-a", OWNER_A, chariox_event_protocol::AegsConnectionStatus::Ready),
+            ("connection-b", OWNER_B, second_status),
+        ] {
+            runtime_state
+                .event_connection_registry()
+                .upsert(
+                    "local",
+                    owner,
+                    chariox_event_protocol::AegsConnectionSummary {
+                        generator_id: "dev.chariox.up".into(),
+                        connection_id: connection_id.into(),
+                        status,
+                        metadata: serde_json::json!({}),
+                        expires_at_ms: None,
+                        updated_at_ms: 1,
+                    },
+                )
+                .unwrap();
+            store
+                .app_inbox(
+                    crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
+                        route: chariox_app_runtime::app_inbox::InboxRoute {
+                            route_id: format!("route-{connection_id}"),
+                            owner_id: "local".into(),
+                            installation_id: "app".into(),
+                            event_name: "received".into(),
+                            source_event_type: "thing.happened".into(),
+                            source_event_version: 1,
+                            active: true,
+                            source: Some(chariox_app_runtime::app_inbox::InboxSource {
+                                generator_id: "dev.chariox.up".into(),
+                                connection_id: connection_id.into(),
+                                connection_scope: "scope".into(),
+                                filter_json: "null".into(),
+                            }),
+                        },
+                        now_ms: 1,
+                    },
+                )
+                .unwrap();
+        }
+        let config = EventDeliveryClientConfig {
+            url: None,
+            identity: GatewayIdentity::from_config(&daemon_config),
+            environment_id: "environment-test".to_string(),
+            generator_management_targets: targets,
+            config_projection: DaemonConfigProjectionStore::new(daemon_config),
+        };
+        (runtime_state, config)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconciles_one_signed_claim_per_record_owner() {
+        let (url, seen) = aegs_for_owners(Vec::new());
+        let (runtime_state, config) =
+            kernel_with_two_owners(url, chariox_event_protocol::AegsConnectionStatus::Ready);
+        reconcile_aegs_subscriptions(&runtime_state, &config)
+            .await
+            .expect("both owners reconcile");
+        let mut seen = seen.lock().unwrap().clone();
+        seen.sort_by(|left, right| left.owner_id.cmp(&right.owner_id));
+        let kernel_id = config.kernel_id();
+        assert_eq!(
+            seen,
+            vec![
+                SeenReconcile {
+                    owner_id: OWNER_A.into(),
+                    signature_bound_to_owner: true,
+                    kernel_id: kernel_id.clone(),
+                    binding_count: 1,
+                },
+                SeenReconcile {
+                    owner_id: OWNER_B.into(),
+                    signature_bound_to_owner: true,
+                    kernel_id,
+                    binding_count: 1,
+                },
+            ],
+            "one claim per record owner; an owner without a record is never named"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_owner_does_not_stop_the_other_and_a_revoked_record_is_not_claimed() {
+        // Owner B refuses: owner A is still reconciled, the failure is typed in the log
+        // and returned for the caller to log, never shown.
+        let (url, seen) = aegs_for_owners(vec![OWNER_B.into()]);
+        let (runtime_state, config) =
+            kernel_with_two_owners(url, chariox_event_protocol::AegsConnectionStatus::Ready);
+        let error = reconcile_aegs_subscriptions(&runtime_state, &config)
+            .await
+            .expect_err("the refused owner is reported");
+        assert!(!error.contains(OWNER_B), "the owner id is a secret: {error}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // A revoked record stops being claimed.
+        let (url, seen) = aegs_for_owners(Vec::new());
+        let (runtime_state, config) =
+            kernel_with_two_owners(url, chariox_event_protocol::AegsConnectionStatus::Revoked);
+        reconcile_aegs_subscriptions(&runtime_state, &config)
+            .await
+            .expect("the live owner reconciles");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].owner_id, OWNER_A);
+    }
+
     fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
         let config_projection = app.config_projection_store();
         let session_store = app.session_state_store();
