@@ -177,6 +177,7 @@ mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_exit_diagnostic;
 mod structured_output;
+mod subtree_cascade;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

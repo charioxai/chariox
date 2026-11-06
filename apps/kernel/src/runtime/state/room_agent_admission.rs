@@ -197,15 +197,8 @@ impl KernelRuntimeState {
             .agent_store
             .get_session_agents(actor.session_id());
         in_subtree(&actor, &target, &agents)?;
-        // Deletion never silently cancels or destroys the target's descendants/work.
-        // Keep them visible for the owner and require explicit settlement by the child.
+        // Deleting an agent ends its sub-agents with it (A4); only its own unsettled runs refuse.
         if deleting {
-            if agents
-                .iter()
-                .any(|agent| agent.parent_agent_id() == Some(target.id()))
-            {
-                return Err(denied("agent still has sub-agents; delete them first"));
-            }
             let session = self.owned.session_store.get_session(room)?;
             if session.workflow_runs().iter().any(|run| {
                 !run.status().is_terminal() && run.created_by_agent_id() == Some(target.id())
