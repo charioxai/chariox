@@ -211,6 +211,8 @@ async function main() {
   await a.client.subscribeToKernelEvents(R, attached)
   await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
   note("room-ready", { room: R, orchestrator: orch })
+  // A person's own second agent: not in the orchestrator's tree, the peer of the tree drill.
+  if (flags.get("--scenario") === "authority") await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
@@ -310,7 +312,18 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
 2. Yield on its registration (events_yield with the registration id, a deadline 15 minutes ahead, this turn's metadata) and END YOUR TURN with the text ASKARMED. Do not poll.
 3. When the kernel wakes you, call chariox events_inbox ONCE, read the answer, call chariox events_ack with handled true, and write ${join(work, "orchestrator-report.json")} with: what woke you, the exact answer text, the ack answer. Then reply ASKDONE.
 `
-  const brief = scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  const authorityBrief = `# Orchestrator brief (drill, authority scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}); your agent id is ${orch}. A person's other agent called "peer" is in the room but is not yours. Use only your room commands (chariox room run_command) and chariox events tools. No /sudo. Do not ask the owner anything. Never retry a refused call more than once: record the exact answer. Never use shell sleeps or poll.
+Keep ${join(work, "orchestrator-state.json")} updated after every step.
+1. Spawn c1, c2 and m with \`agent spawn <name> --provider claude --model ${model} --effort low --permission yolo\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission required\` (you run freely, so a child that must ask is allowed). Record each answer.
+2. Prompt c1 with the room command \`prompt c1 "<text>"\`: "Run these room commands with the chariox room run_command tool, one by one, and report the exact answer of each as OK or REFUSED followed by the text: (1) agent spawn g1 --provider claude --model ${model} --effort low --permission yolo (2) prompt g1 'Reply with GCHILD' (3) agent cancel c2 (4) agent cancel peer (5) agent cancel ${orch} (6) agent deadline set c2 10m. Do not retry a refused command. End your reply with C1DONE."
+3. Prompt p: "Run these room commands and report each exact answer as OK or REFUSED followed by the text: (1) agent spawn p1 --provider claude --model ${model} --effort low --permission yolo (2) agent spawn p2 --provider claude --model ${model} --effort low --permission required. Do not retry a refused command. End with PDONE."
+4. Prompt m: "Run these room commands and report each exact answer as OK or REFUSED followed by the text: (1) agent spawn y1 --provider claude --model ${model} --effort low --permission yolo. Then call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 600, title 'lower me', message 'Ready?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns run: (2) agent spawn y2 --provider claude --model ${model} --effort low --permission yolo (3) agent spawn y3 --provider claude --model ${model} --effort low --permission required. Report each answer. End with MDONE."
+5. Subscribe to c1, p and m (chariox events_subscribe with the agent id), yield on ALL registrations with a deadline 15 minutes ahead and END YOUR TURN. Each child's finish arrives as a child_finished event with the child's reply in public_answer; for each one record the commands it ran and the answers in the state file; ack; yield again until c1, p and m have finished.
+6. When c1 has finished, YOU control its sub-agent g1 (your grandchild): run \`agent children\`, \`agent deadline get g1\`, \`agent cancel g1\` and record the answers (they are allowed).
+7. Write ${join(work, "orchestrator-report.json")}: per step the command, the exact answer, and per child the OK/REFUSED lines it reported. Then delete c1, c2, p, m with \`agent delete <name>\` (delete the sub-agents of a child first if a delete is refused) and reply ORCHDONE.
+`
+  const brief = scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
 the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
@@ -398,6 +411,12 @@ Steps:
     }
     if ((scenario === "restart" || scenario === "ask") && restarted && s) for (const it of s.active_interactions ?? []) {
       if (holdTitle.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: scenario === "ask" ? "go" : "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
+    }
+    // The person lowers the sub-agent that waits on the popup, then lets it go on.
+    if (scenario === "authority" && s) for (const it of s.active_interactions ?? []) {
+      if (!/lower me/.test(it.title ?? "") || !seen.interactions.get(it.id)) continue
+      await a.rpc({ UpdateAgentConfig: { session_id: R, agent_id: it.agent_id, permission_level: "required" } }).then(() => note("owner-lowered-m", { agent: it.agent_id }), e => note("owner-lower-error", { message: e.message.slice(0, 300) }))
+      await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: "ok" } }).then(() => { seen.interactions.set(it.id, 0); note("owner-answer", { which: "lower me" }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
     if (scenario === "sudo" && s) for (const it of s.active_interactions ?? []) {
       const open = seen.interactions.get(it.id)
