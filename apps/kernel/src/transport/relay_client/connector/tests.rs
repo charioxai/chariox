@@ -997,3 +997,23 @@ async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
         "a writable but silent relay socket was never replaced"
     );
 }
+
+// Cloud refused the token refresh with "retry in 20 seconds": the refresh holds its slot
+// until then, so the next tick does not spend another call inside that window.
+#[tokio::test(start_paused = true)]
+async fn a_rate_limited_token_refresh_waits_out_the_cloud_retry_hint() {
+    let task = tokio::spawn(run_cloud_token_refresh(
+        async {
+            Err::<(), _>("cloud relay request failed with 429: cloud_api_code=rate_limited: Rate limit exceeded, retry in 20 seconds")
+        },
+        "wss://relay.example".to_string(),
+    ));
+    tokio::time::sleep(Duration::from_secs(19)).await;
+    assert!(
+        !should_start_cloud_token_refresh(Some(&task)),
+        "the next tick asked Cloud again inside its retry window"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::task::yield_now().await;
+    assert!(should_start_cloud_token_refresh(Some(&task)));
+}
