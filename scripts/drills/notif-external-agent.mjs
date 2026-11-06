@@ -17,6 +17,10 @@
 //              the holder's next grant follows nothing;
 //   refused    a source of ANOTHER kernel and an unknown id are refused by the kernel with the same sentence.
 // Red on a base kernel without the arm (protocol 999 / S1 head): `events sources` is refused as an unknown request.
+// `--scenario owner-action --provider claude --login-file F | --provider codex --codex-scope DIR` (AT-40, one real
+// turn: Claude Haiku on the drill kernel's own Vault, or Codex gpt-6-luna low on a linked profile): a driven agent
+// reports through its `chariox.events.blocked` tool that its task needs the owner; the holder, following "Agent needs
+// your action" and not polling, is woken by one notification that names the task and the decision, and answers it.
 // Usage: node notif-external-agent.mjs --kernel-binary K --state-root DIR --evidence-dir DIR [--cli apps/cli/dist/index.js]
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
@@ -223,8 +227,67 @@ sleep 600
 const notifications = h => h.records().filter(e => e.type === "notification")
 
 const results = {}
+const scenario = flags.get("--scenario") ?? "main"
+assert(["main", "owner-action"].includes(scenario), "unknown scenario")
 const home = await kernelHome("home"), other = await kernelHome("other")
-try {
+
+// AT-40: a real driven agent blocks its task; the holder is woken by the owner-action source and answers the decision.
+async function ownerAction() {
+  // Claude Haiku on a login stored in this kernel's Vault, or Codex gpt-6-luna (low) on a linked product profile.
+  const provider = flags.get("--provider") ?? "claude"
+  assert(["claude", "codex"].includes(provider), "--provider is claude or codex")
+  await start(home)
+  let agentDefaults
+  if (provider === "claude") {
+    const token = readFileSync(resolve(need("--login-file")), "utf8").trim()
+    await home.rpc({ SetProviderAccountCredential: { provider: "claude", account_profile: "default", value: token, overwrite: true } })
+    agentDefaults = { provider: "claude", model: "claude-haiku-5-5", permission_level: "yolo" }
+  } else {
+    const profile = (await home.rpc({ LinkProviderAccountProfile: { provider: "codex", label: "notif drill", path: resolve(need("--codex-scope")) } })).ProviderAccountProfile.profile.profile_id
+    await home.rpc({ GetProviderAuthStatus: { provider: "codex", account_profile: profile } })
+    agentDefaults = { provider: "codex", account_profile: profile, model: "gpt-6-luna", effort: "low", permission_level: "yolo" }
+  }
+  const driven = (await home.rpc({ SpawnAgent: { ...agentDefaults, session_id: home.sessionId, alias: "driven" } })).AgentSpawned.agent
+  note("driven-agent", { provider, model: agentDefaults.model })
+  const dir2 = join(dir, "holder-owner-action"); mkdirSync(dir2)
+  const script = join(dir2, "holder.sh")
+  writeFileSync(script, `#!/bin/bash
+cd "$(dirname "$0")"
+log() { echo "$(date +%s%3N) $*" >> calls.log; }
+run() { local name=$1; shift; log "start $name"; "$@" > "$name.out" 2> "$name.err"; local rc=$?; echo $rc > "$name.rc"; log "end $name rc=$rc"; return $rc; }
+run grant chariox access request --until-exit || exit 2
+run sources chariox events sources || exit 3
+run follow chariox events subscribe --source "Agent needs your action" || exit 4
+touch ready
+run wait-1 chariox events wait --timeout 280 || exit 5
+node -e 'const e=JSON.parse(require("fs").readFileSync("wait-1.out","utf8")).events.find(x=>x.type==="notification");require("fs").writeFileSync("answer.json",JSON.stringify({RespondToInteraction:{session_id:e.session_id,interaction_id:e.refs.interaction_id,choice_id:"cancel"}}))'
+run answer bash -c 'chariox request < answer.json'
+touch done
+sleep 600
+`, { mode: 0o755 })
+  const child = spawn("bash", ["-c", `bash ${script}; true`], { env: home.env, stdio: "ignore" })
+  own(child)
+  const file = f => (existsSync(join(dir2, f)) ? readFileSync(join(dir2, f), "utf8") : null)
+  await until(() => file("ready") !== null, "holder follows the owner-action source", 120000)
+  const sent = ms()
+  await home.rpc({ SubmitPrompt: { session_id: home.sessionId, attachment_id: home.attachment.id, target_agent_id: driven.id, prompt: "Your task cannot continue without the owner's decision. Call your chariox events blocked tool exactly once, with the reason \"drill: the owner must decide\", then end your turn.", attachments: [] } })
+  await until(() => file("done") !== null, "the holder was woken and answered", 280000)
+  const woke = Number((file("calls.log").match(/^(\d+) end wait-1/m) ?? [])[1])
+  const event = JSON.parse(file("wait-1.out")).events.find(e => e.type === "notification")
+  assert.equal(event.value.source_kind, "owner_action")
+  assert.equal(event.value.display_name, "Agent needs your action")
+  assert(/^task-blocked-/.test(event.refs.interaction_id), "the decision of a blocked task")
+  assert(event.refs.task_id, "the task")
+  assert.equal(JSON.parse(file("wait-1.out")).events.filter(e => e.type === "notification").length, 1, "exactly one notification")
+  assert.equal(file("answer.rc").trim(), "0", `the holder answered the decision: ${file("answer.err")}`)
+  assert.equal(file("calls.log").split("\n").filter(l => / start wait-/.test(l)).length, 1, "one wait, no polling")
+  await until(async () => !((await home.rpc({ GetSessionState: { session_id: home.sessionId } })).SessionState.session.active_interactions ?? []).some(x => x.id === event.refs.interaction_id), "the decision is closed", 30000)
+  results.ownerAction = { provider, model: agentDefaults.model, wake_after_prompt_ms: woke - sent, interaction_id: event.refs.interaction_id, task_id: event.refs.task_id, summary: event.summary, answer: "cancel", answered_rc: 0 }
+  for (const f of ["calls.log", "wait-1.out", "answer.rc", "answer.err", "follow.out"]) if (file(f) !== null) writeFileSync(join(evidence, `holder-owner-action-${f}`), file(f))
+  note("owner-action", results.ownerAction)
+}
+// The lifecycle proofs: follow, twice, restart, expire, revoke and refused.
+async function lifecycle() {
   // ---- follow -------------------------------------------------------------------------------------------------
   await start(home)
   const reviewer = await reviewerWorkflow(home, "reviewer-gate")
@@ -352,6 +415,10 @@ try {
   note("refused", results.refused)
   results.sources_after_revoke = (h.json("sources2.out")?.sources ?? []).map(s => s.display_name)
   note("result", results)
+}
+try {
+  await (scenario === "owner-action" ? ownerAction() : lifecycle())
+  if (scenario === "owner-action") note("result", results)
 } catch (error) {
   results.failure = String(error.message ?? error).slice(0, 400)
   note("failure", { failure: results.failure })
