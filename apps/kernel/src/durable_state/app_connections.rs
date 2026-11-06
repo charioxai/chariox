@@ -13,6 +13,9 @@ const MAX_GRANTS: i64 = 16;
 pub(crate) struct ConnectionGrant {
     pub(crate) generator_id: String,
     pub(crate) connection_id: String,
+    /// The owner the event services know the connection under, taken from the
+    /// connection's record when granted.
+    pub(crate) event_owner_id: String,
     pub(crate) granted_at_ms: u64,
 }
 
@@ -22,6 +25,7 @@ pub(crate) enum ConnectionGrantCommand {
         installation: String,
         generator_id: String,
         connection_id: String,
+        event_owner_id: String,
         now_ms: u64,
     },
     Revoke {
@@ -45,9 +49,22 @@ pub(super) fn initialize(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS app_connection_grants (
             owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, connection_id TEXT NOT NULL,
-            generator_id TEXT NOT NULL, granted_at_ms INTEGER NOT NULL,
+            generator_id TEXT NOT NULL, event_owner_id TEXT NOT NULL,
+            granted_at_ms INTEGER NOT NULL,
             PRIMARY KEY(owner_id, installation_id, connection_id));",
-    )
+    )?;
+    // Grants made before connections carried their owner cannot reach their
+    // connection; the owner grants again.
+    let has_owner = connection
+        .prepare(
+            "SELECT 1 FROM pragma_table_info('app_connection_grants') WHERE name='event_owner_id'",
+        )?
+        .exists([])?;
+    if !has_owner {
+        connection.execute_batch("DROP TABLE app_connection_grants;")?;
+        return initialize(connection);
+    }
+    Ok(())
 }
 
 impl DurableKernelStateStore {
@@ -74,7 +91,7 @@ impl DurableKernelStateStore {
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let mut statement = connection
             .prepare(
-                "SELECT generator_id, connection_id, granted_at_ms FROM app_connection_grants
+                "SELECT generator_id, connection_id, event_owner_id, granted_at_ms FROM app_connection_grants
                  WHERE owner_id=?1 AND installation_id=?2 ORDER BY generator_id, connection_id",
             )
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
@@ -83,7 +100,8 @@ impl DurableKernelStateStore {
                 Ok(ConnectionGrant {
                     generator_id: row.get(0)?,
                     connection_id: row.get(1)?,
-                    granted_at_ms: row.get::<_, i64>(2)? as u64,
+                    event_owner_id: row.get(2)?,
+                    granted_at_ms: row.get::<_, i64>(3)? as u64,
                 })
             })
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
@@ -147,6 +165,7 @@ fn apply(connection: &mut Connection, command: ConnectionGrantCommand) -> Result
             installation,
             generator_id,
             connection_id,
+            event_owner_id,
             now_ms,
         } => {
             let count: i64 = transaction
@@ -163,13 +182,15 @@ fn apply(connection: &mut Connection, command: ConnectionGrantCommand) -> Result
             transaction
                 .execute(
                     "INSERT OR IGNORE INTO app_connection_grants
-                       (owner_id, installation_id, connection_id, generator_id, granted_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                       (owner_id, installation_id, connection_id, generator_id,
+                        event_owner_id, granted_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                     params![
                         owner,
                         installation,
                         connection_id,
                         generator_id,
+                        event_owner_id,
                         now_ms as i64
                     ],
                 )
@@ -213,6 +234,7 @@ mod tests {
                 installation: installation.into(),
                 generator_id: "dev.chariox.slack".into(),
                 connection_id: connection.into(),
+                event_owner_id: "event-owner-1".into(),
                 now_ms: 5,
             })
         };
@@ -223,6 +245,7 @@ mod tests {
             vec![ConnectionGrant {
                 generator_id: "dev.chariox.slack".into(),
                 connection_id: "connection-1".into(),
+                event_owner_id: "event-owner-1".into(),
                 granted_at_ms: 5,
             }]
         );

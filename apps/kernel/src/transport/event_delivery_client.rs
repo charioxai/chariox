@@ -448,6 +448,11 @@ async fn reconcile_aegs_subscriptions(
     let mut failures = Vec::new();
     for generator_id in claims.keys() {
         let current_config = config.config_projection.snapshot();
+        let caller_user_id = current_config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.as_str())
+            .unwrap_or("kernel");
         let request = crate::local::LocalDaemonRequest::ListEventConnections(
             crate::local::ListEventConnectionsRequest {
                 generator_id: Some(generator_id.clone()),
@@ -459,11 +464,11 @@ async fn reconcile_aegs_subscriptions(
             runtime_state,
             &config.config_projection,
             &current_config,
-            current_config
-                .cloud_relay
-                .as_ref()
-                .map(|profile| profile.user_id.as_str())
-                .unwrap_or("kernel"),
+            caller_user_id,
+            &crate::runtime::event_catalog_control::new_event_connection_owner_id(
+                &current_config,
+                caller_user_id,
+            ),
             &request,
         )
         .await

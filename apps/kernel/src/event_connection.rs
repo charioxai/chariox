@@ -46,12 +46,19 @@ struct RegistryState {
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredConnection {
     owner_user_id: String,
+    /// The owner the event services know this connection under. It is chosen
+    /// when the connection is created and travels with the record, so a
+    /// kernel holding a copy reaches the same connection whatever its own id.
+    #[serde(default)]
+    event_owner_id: String,
     connection: EventConnection,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredAuthorization {
     owner_user_id: String,
+    #[serde(default)]
+    event_owner_id: String,
     authorization: EventConnectionAuthorization,
 }
 
@@ -124,9 +131,37 @@ impl EventConnectionRegistry {
             .map(|record| record.connection.clone()))
     }
 
+    /// The owner the event services know a connection under; `None` when this
+    /// kernel holds no record of it.
+    pub(crate) fn connection_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .connections
+            .get(&(owner_user_id.to_string(), connection_id.to_string()))
+            .map(|record| record.event_owner_id.clone()))
+    }
+
+    /// The owner an authorization was started under.
+    pub(crate) fn authorization_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        authorization_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .authorizations
+            .get(&(owner_user_id.to_string(), authorization_id.to_string()))
+            .map(|record| record.event_owner_id.clone()))
+    }
+
     pub(crate) fn upsert(
         &self,
         owner_user_id: &str,
+        event_owner_id: &str,
         summary: chariox_event_protocol::AegsConnectionSummary,
     ) -> Result<EventConnection, DaemonError> {
         let now_ms = unix_epoch_ms();
@@ -150,6 +185,7 @@ impl EventConnectionRegistry {
             );
         let record = StoredConnection {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: event_owner_id.to_string(),
             connection: EventConnection {
                 generator_id: summary.generator_id,
                 connection_id: summary.connection_id,
@@ -291,8 +327,12 @@ impl EventConnectionRegistry {
         let current = self
             .get(owner_user_id, connection_id)?
             .ok_or_else(|| registry_error("connection was not found".to_string()))?;
+        let event_owner_id = self
+            .connection_event_owner_id(owner_user_id, connection_id)?
+            .ok_or_else(|| registry_error("connection was not found".to_string()))?;
         self.upsert(
             owner_user_id,
+            &event_owner_id,
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: current.generator_id,
                 connection_id: current.connection_id,
@@ -361,6 +401,7 @@ impl EventConnectionRegistry {
     pub(crate) fn start_authorization(
         &self,
         owner_user_id: &str,
+        event_owner_id: &str,
         flow: chariox_event_protocol::AegsAuthorizationFlow,
     ) -> Result<EventConnectionAuthorization, DaemonError> {
         if flow
@@ -384,6 +425,7 @@ impl EventConnectionRegistry {
         };
         let record = StoredAuthorization {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: event_owner_id.to_string(),
             authorization,
         };
         self.append(
@@ -566,6 +608,7 @@ impl EventConnectionRegistry {
         }
         let record = StoredAuthorization {
             owner_user_id: owner_user_id.to_string(),
+            event_owner_id: current.event_owner_id.clone(),
             authorization,
         };
         self.append(
@@ -610,6 +653,11 @@ impl EventConnectionRegistry {
             match event.kind.as_str() {
                 CONNECTION_UPSERTED => {
                     let mut record: StoredConnection = decode(event.payload)?;
+                    // A record from before connections carried their owner cannot
+                    // reach its connection; the user connects again.
+                    if record.event_owner_id.is_empty() {
+                        continue;
+                    }
                     if record.connection.lifecycle_state
                         == crate::local::EventConnectionLifecycleState::NotInstalled
                     {
@@ -633,6 +681,9 @@ impl EventConnectionRegistry {
                 }
                 AUTHORIZATION_UPSERTED => {
                     let record: StoredAuthorization = decode(event.payload)?;
+                    if record.event_owner_id.is_empty() {
+                        continue;
+                    }
                     state.authorizations.insert(
                         (
                             record.owner_user_id.clone(),
@@ -826,6 +877,7 @@ mod tests {
         let missing_connection_id = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -842,6 +894,7 @@ mod tests {
         let expired = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -860,6 +913,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "github-connection-1".to_string(),
@@ -884,6 +938,7 @@ mod tests {
         let authorization = restored
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "pending".to_string(),
@@ -925,6 +980,7 @@ mod tests {
         let authorization = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "connected".to_string(),
@@ -943,7 +999,9 @@ mod tests {
             expires_at_ms: None,
             updated_at_ms: 42,
         };
-        registry.upsert("user-a", summary.clone()).unwrap();
+        registry
+            .upsert("user-a", "event-owner-a", summary.clone())
+            .unwrap();
         let inspection = chariox_event_protocol::AegsConnectionInspection {
             generator_id: "dev.chariox.github".to_string(),
             connection_id: "github-connection-1".to_string(),
@@ -971,7 +1029,9 @@ mod tests {
             registry
                 .update_authorization("user-a", authorization.clone())
                 .unwrap();
-            registry.upsert("user-a", summary.clone()).unwrap();
+            registry
+                .upsert("user-a", "event-owner-a", summary.clone())
+                .unwrap();
             registry
                 .apply_inspection(
                     "user-a",
@@ -1010,6 +1070,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "expired-connection".to_string(),
@@ -1023,6 +1084,7 @@ mod tests {
         let authorization = registry
             .start_authorization(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsAuthorizationFlow {
                     generator_id: "dev.chariox.github".to_string(),
                     status: "user_action_required".to_string(),
@@ -1054,6 +1116,7 @@ mod tests {
         registry
             .upsert(
                 "user-a",
+                "event-owner-a",
                 chariox_event_protocol::AegsConnectionSummary {
                     generator_id: "dev.chariox.github".to_string(),
                     connection_id: "orphaned-connection".to_string(),

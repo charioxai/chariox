@@ -145,10 +145,7 @@ impl AppConnectionBroker {
         );
         let request = chariox_event_protocol::AegsProviderActionRequest {
             generator_id: grant.generator_id,
-            owner_id: crate::runtime::event_catalog_control::event_connection_owner_id(
-                &config.daemon_id,
-                &self.owner,
-            ),
+            owner_id: grant.event_owner_id,
             connection_id: grant.connection_id,
             action_id: action.action,
             input: action.input,

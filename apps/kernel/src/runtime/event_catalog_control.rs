@@ -98,7 +98,7 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             runtime_state,
             &BTreeMap::new(),
             management_client,
-            &config.daemon_id,
+            &config,
             caller_user_id,
             request,
         )
@@ -116,11 +116,18 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
     ) {
+        let event_owner_id = event_owner_for_request(
+            runtime_state.event_connection_registry(),
+            &config,
+            caller_user_id,
+            &request,
+        )?;
         let management_targets = resolve_event_generator_management_targets(
             runtime_state,
             config_projection,
             &config,
             caller_user_id,
+            &event_owner_id,
             &request,
         )
         .await?;
@@ -128,7 +135,7 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             runtime_state,
             &management_targets,
             management_client,
-            &config.daemon_id,
+            &config,
             caller_user_id,
             request,
         )
@@ -139,15 +146,21 @@ pub(crate) async fn execute_event_catalog_request_with_client(
         LocalDaemonRequest::StartEventGeneratorAuthorization(_)
             | LocalDaemonRequest::ListEventGeneratorResources(_)
     ) {
+        let owner_id = event_owner_for_request(
+            runtime_state.event_connection_registry(),
+            &config,
+            caller_user_id,
+            &request,
+        )?;
         let targets = resolve_event_generator_management_targets(
             runtime_state,
             config_projection,
             &config,
             caller_user_id,
+            &owner_id,
             &request,
         )
         .await?;
-        let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
         let management_client = management_client.clone();
         return tokio::task::spawn_blocking(move || {
             aegs_management_request(&management_client, &targets, &owner_id, &request)
@@ -178,6 +191,7 @@ pub(crate) async fn resolve_event_generator_management_targets(
     config_projection: &DaemonConfigProjectionStore,
     config: &crate::config::DaemonConfig,
     caller_user_id: &str,
+    event_owner_id: &str,
     request: &LocalDaemonRequest,
 ) -> Result<BTreeMap<String, crate::config::EventGeneratorManagementTarget>, DaemonError> {
     let generator_ids =
@@ -195,10 +209,7 @@ pub(crate) async fn resolve_event_generator_management_targets(
     let registry_url = config.event_registry_url.clone().ok_or_else(|| {
         catalog_error("event generator management bootstrap requires a registry URL".to_string())
     })?;
-    let requested_owner_ids = [
-        config.daemon_id.clone(),
-        event_connection_owner_id(&config.daemon_id, caller_user_id),
-    ];
+    let requested_owner_ids = [config.daemon_id.clone(), event_owner_id.to_string()];
     for generator_id in generator_ids {
         let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
         if targets.get(&generator_id).is_some_and(|target| {
@@ -387,7 +398,10 @@ pub(crate) async fn validate_event_connection(
     connection_id: &str,
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
-    let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
+    let owner_id = runtime_state
+        .event_connection_registry()
+        .connection_event_owner_id(caller_user_id, connection_id)?
+        .unwrap_or_else(|| new_event_connection_owner_id(&config, caller_user_id));
     let target_request =
         LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
             generator_id: Some(generator_id.to_string()),
@@ -399,6 +413,7 @@ pub(crate) async fn validate_event_connection(
         config_projection,
         &config,
         caller_user_id,
+        &owner_id,
         &target_request,
     )
     .await?;
@@ -407,11 +422,12 @@ pub(crate) async fn validate_event_connection(
     let expected_generator_id = generator_id.clone();
     let expected_connection_id = connection_id.clone();
     let management_client = management_client.clone();
+    let query_owner_id = owner_id.clone();
     let page = match blocking_aegs(move || {
         query_aegs_connections(
             &management_client,
             &targets,
-            &owner_id,
+            &query_owner_id,
             &generator_id,
             Some(&connection_id),
         )
@@ -448,9 +464,11 @@ pub(crate) async fn validate_event_connection(
             .get(caller_user_id, &expected_connection_id)?
             .is_some()
         {
-            runtime_state
-                .event_connection_registry()
-                .upsert(caller_user_id, summary.clone())?;
+            runtime_state.event_connection_registry().upsert(
+                caller_user_id,
+                &owner_id,
+                summary.clone(),
+            )?;
         }
         return Err(connection_error(format!(
             "event connection `{}` is {:?}; reconnect it before attaching",
@@ -459,7 +477,7 @@ pub(crate) async fn validate_event_connection(
     }
     runtime_state
         .event_connection_registry()
-        .upsert(caller_user_id, summary)?;
+        .upsert(caller_user_id, &owner_id, summary)?;
     Ok(())
 }
 
@@ -565,12 +583,12 @@ async fn execute_event_connection_request(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     management_client: &AegsManagementHttpClient,
-    daemon_id: &str,
+    config: &crate::config::DaemonConfig,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.event_connection_registry();
-    let owner_id = event_connection_owner_id(daemon_id, caller_user_id);
+    let owner_id = event_owner_for_request(registry, config, caller_user_id, &request)?;
     match request {
         LocalDaemonRequest::ListEventConnections(request) => {
             let connections = registry
@@ -614,6 +632,7 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::InstallEventConnection(request) => {
             let targets = targets.clone();
             let management_client = management_client.clone();
+            let recorded_owner_id = owner_id.clone();
             let owner_id = owner_id.clone();
             let flow = blocking_aegs(move || {
                 start_aegs_authorization(
@@ -625,7 +644,8 @@ async fn execute_event_connection_request(
                 )
             })
             .await?;
-            let authorization = registry.start_authorization(caller_user_id, flow)?;
+            let authorization =
+                registry.start_authorization(caller_user_id, &recorded_owner_id, flow)?;
             Ok(LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization })
         }
         LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => {
@@ -746,6 +766,7 @@ async fn execute_event_connection_request(
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
             let management_client = management_client.clone();
+            let recorded_owner_id = owner_id.clone();
             let owner_id = owner_id.clone();
             let reconnect = chariox_event_protocol::AegsConnectionReconnectRequest {
                 generator_id: connection.generator_id.clone(),
@@ -775,7 +796,8 @@ async fn execute_event_connection_request(
                     return Err(error);
                 }
             };
-            let authorization = registry.start_authorization(caller_user_id, flow)?;
+            let authorization =
+                registry.start_authorization(caller_user_id, &recorded_owner_id, flow)?;
             Ok(LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization })
         }
         LocalDaemonRequest::ListEventConnectionResources(request) => {
@@ -938,7 +960,7 @@ async fn observe_event_connection_authorization(
         }
         let generator_id = summary.generator_id.clone();
         let connection_id = summary.connection_id.clone();
-        let mut connection = registry.upsert(caller_user_id, summary)?;
+        let mut connection = registry.upsert(caller_user_id, &inspection_owner_id, summary)?;
         let targets = inspection_targets.clone();
         let management_client = inspection_client.clone();
         let owner_id = inspection_owner_id.clone();
@@ -1402,11 +1424,61 @@ fn unsent(message: String) -> AegsActionFailure {
     }
 }
 
-pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
+/// The owner a new event connection is created under at the event services.
+/// The connection record keeps it from then on (see [`event_owner_for_request`]),
+/// so it does not follow this kernel's id when the record is copied elsewhere.
+pub(crate) fn new_event_connection_owner_id(
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+) -> String {
     use sha2::{Digest, Sha256};
 
+    let daemon_id = &config.daemon_id;
     let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());
     format!("kernel-user-{digest:x}")
+}
+
+/// The owner the event services know the request's connection or authorization
+/// under: the one its record carries. A request that starts a new connection,
+/// or names a record this kernel does not hold (which then fails as not found),
+/// gets this kernel's default.
+pub(crate) fn event_owner_for_request(
+    registry: &crate::event_connection::EventConnectionRegistry,
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+    request: &LocalDaemonRequest,
+) -> Result<String, DaemonError> {
+    let recorded = match request {
+        LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => {
+            registry.authorization_event_owner_id(caller_user_id, &request.authorization_id)?
+        }
+        LocalDaemonRequest::RefreshEventConnection(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::TestEventConnection(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::ListEventConnectionEvents(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::ReplayEventConnectionEvent(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::ReconnectEventConnection(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::ListEventConnectionResources(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::RemoveEventConnection(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        LocalDaemonRequest::ListEventGeneratorResources(request) => {
+            registry.connection_event_owner_id(caller_user_id, &request.connection_id)?
+        }
+        _ => None,
+    };
+    Ok(recorded.unwrap_or_else(|| new_event_connection_owner_id(config, caller_user_id)))
 }
 
 /// Registry-issued management targets must resolve only to public addresses.
@@ -1903,6 +1975,135 @@ fn catalog_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config_of(daemon: &str) -> crate::config::DaemonConfig {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.daemon_id = daemon.into();
+        config
+    }
+
+    fn registry_in(root: &std::path::Path) -> crate::event_connection::EventConnectionRegistry {
+        crate::event_connection::EventConnectionRegistry::new(
+            crate::durable_state::DurableKernelStateStore::open(root.join("state.sqlite3"))
+                .unwrap(),
+        )
+    }
+
+    fn summary(connection_id: &str) -> chariox_event_protocol::AegsConnectionSummary {
+        chariox_event_protocol::AegsConnectionSummary {
+            generator_id: "dev.chariox.dummy".into(),
+            connection_id: connection_id.into(),
+            status: chariox_event_protocol::AegsConnectionStatus::Ready,
+            metadata: serde_json::json!({}),
+            expires_at_ms: None,
+            updated_at_ms: 1,
+        }
+    }
+
+    fn refresh(connection_id: &str) -> LocalDaemonRequest {
+        LocalDaemonRequest::RefreshEventConnection(crate::local::RefreshEventConnectionRequest {
+            connection_id: connection_id.into(),
+        })
+    }
+
+    #[test]
+    fn a_new_connection_is_created_under_this_kernels_owner() {
+        assert_ne!(
+            new_event_connection_owner_id(&config_of("kernel-a"), "user"),
+            new_event_connection_owner_id(&config_of("kernel-b"), "user"),
+        );
+        assert_ne!(
+            new_event_connection_owner_id(&config_of("kernel-a"), "user"),
+            new_event_connection_owner_id(&config_of("kernel-a"), "visitor"),
+        );
+    }
+
+    #[test]
+    fn a_connection_keeps_its_owner_whatever_the_kernel_id() {
+        let root = std::env::temp_dir().join(format!("ghowner-owner-{}", std::process::id()));
+        let registry = registry_in(&root);
+        let kernel_a = config_of("kernel-a");
+        let owner = new_event_connection_owner_id(&kernel_a, "user");
+        registry
+            .upsert("user", &owner, summary("connection-1"))
+            .unwrap();
+        // The kernel is re-provisioned under another id: the record still names
+        // the owner the event services know the connection under.
+        let kernel_a_again = config_of("kernel-a-renamed");
+        assert_eq!(
+            event_owner_for_request(&registry, &kernel_a_again, "user", &refresh("connection-1"))
+                .unwrap(),
+            owner
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_copy_of_the_record_on_another_kernel_resolves_the_same_owner_and_credential() {
+        let root = std::env::temp_dir().join(format!("ghowner-copy-{}", std::process::id()));
+        let kernel_a = config_of("kernel-a");
+        let owner = new_event_connection_owner_id(&kernel_a, "user");
+        // Kernel B holds an independent copy of kernel A's record.
+        let registry_b = registry_in(&root);
+        registry_b
+            .upsert("user", &owner, summary("connection-1"))
+            .unwrap();
+        let kernel_b = config_of("kernel-b");
+        let resolved =
+            event_owner_for_request(&registry_b, &kernel_b, "user", &refresh("connection-1"))
+                .unwrap();
+        assert_eq!(resolved, owner);
+        assert_ne!(resolved, new_event_connection_owner_id(&kernel_b, "user"));
+        // The management credential the operator or Cloud issued for that owner
+        // serves the copy.
+        let target = crate::config::EventGeneratorManagementTarget {
+            url: "https://aegs.example.test".into(),
+            token: "fixture-capability".into(),
+            expires_at_ms: None,
+            owner_ids: Some(vec![owner.clone()]),
+            owner_scoped: None,
+        };
+        let targets = BTreeMap::from([("dev.chariox.dummy".to_string(), target)]);
+        assert!(
+            select_event_generator_management_target(&targets, "dev.chariox.dummy", &resolved)
+                .is_ok()
+        );
+        let own = new_event_connection_owner_id(&kernel_b, "user");
+        assert!(
+            select_event_generator_management_target(&targets, "dev.chariox.dummy", &own).is_err()
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_authorization_names_the_owner_the_connection_will_have() {
+        let root = std::env::temp_dir().join(format!("ghowner-auth-{}", std::process::id()));
+        let registry = registry_in(&root);
+        let authorization = registry
+            .start_authorization(
+                "user",
+                "event-owner-1",
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.dummy".into(),
+                    status: "user_action_required".into(),
+                    connection_id: Some("connection-1".into()),
+                    authorization_url: None,
+                    user_code: None,
+                    expires_at_ms: None,
+                },
+            )
+            .unwrap();
+        let observe = LocalDaemonRequest::ObserveEventConnectionAuthorization(
+            crate::local::ObserveEventConnectionAuthorizationRequest {
+                authorization_id: authorization.authorization_id,
+            },
+        );
+        assert_eq!(
+            event_owner_for_request(&registry, &config_of("kernel-b"), "user", &observe).unwrap(),
+            "event-owner-1"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn builtin_dummy_catalog_matches_publisher_manifest_fixture() {

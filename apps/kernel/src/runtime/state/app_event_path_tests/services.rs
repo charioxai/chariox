@@ -69,7 +69,7 @@ impl Services {
                             serde_json::to_value(AegsSubscriptionReconcileResponse { accepted_binding_ids, authoritative: true }).unwrap()
                         }
                         "/v1/connections/query" => {
-                            assert_eq!(body["owner_id"], crate::runtime::event_catalog_control::event_connection_owner_id("daemon-test", "local"));
+                            assert_eq!(body["owner_id"], crate::runtime::event_catalog_control::new_event_connection_owner_id(&crate::config::DaemonConfig::for_tests(), "local"));
                             json!({"connections":[{"generator_id":GENERATOR,"connection_id":"fixture-connection","status":"ready","metadata":{},"updated_at_ms":1}],"next_cursor":null})
                         }
                         _ => panic!("unexpected fixture management operation"),

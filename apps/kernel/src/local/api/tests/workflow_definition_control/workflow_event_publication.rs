@@ -444,8 +444,8 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         client,
     );
     let caller_user_id = "external-user";
-    let expected_owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
-        "daemon-test",
+    let expected_owner_id = crate::runtime::event_catalog_control::new_event_connection_owner_id(
+        &crate::config::DaemonConfig::for_tests(),
         caller_user_id,
     );
 
@@ -514,6 +514,7 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
         .event_connection_registry()
         .start_authorization(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsAuthorizationFlow {
                 generator_id: "dev.chariox.dummy".to_string(),
                 status: "user_action_required".to_string(),
@@ -580,6 +581,7 @@ fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
         .event_connection_registry()
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: "dev.chariox.dummy".to_string(),
                 connection_id: "connection-local".to_string(),
@@ -646,8 +648,8 @@ fn event_connection_removal_waits_for_the_apps_that_use_it() {
     let database = rusqlite::Connection::open(store.path()).unwrap();
     database
         .execute_batch(
-            "INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,granted_at_ms)
-             VALUES('local','app_route_first','connection-local','dev.chariox.dummy',1)",
+            "INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,event_owner_id,granted_at_ms)
+             VALUES('local','app_route_first','connection-local','dev.chariox.dummy','event-owner-test',1)",
         )
         .unwrap();
     let connection_id = "connection-local".to_string();
@@ -768,6 +770,7 @@ fn register_ready_connection(harness: &LocalRouterTestHarness) {
     registry
         .upsert(
             crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
             chariox_event_protocol::AegsConnectionSummary {
                 generator_id: "dev.chariox.dummy".to_string(),
                 connection_id: "connection-local".to_string(),
