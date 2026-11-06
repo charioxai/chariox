@@ -8,6 +8,7 @@ use crate::managed_context::cloud_completion::{
     context_manifest_digest, validate_disposable_worker_completion_binding,
     validate_managed_context_completion_binding,
 };
+use crate::managed_context::event_connections::ManagedContextEventConnectionImportTarget;
 use crate::managed_context::package::{
     apply_managed_context_package, rollback_managed_context_package_application,
     rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
@@ -397,6 +398,10 @@ impl CommandRouter {
                 &caller.owner_user_id,
             ),
         };
+        let event_connection_target = ManagedContextEventConnectionImportTarget {
+            registry: self.runtime_state.event_connection_registry().clone(),
+            owner_user_id: caller.owner_user_id.clone(),
+        };
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -525,6 +530,7 @@ impl CommandRouter {
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
         let import_git_credential_target = git_credential_target.clone();
+        let import_event_connection_target = event_connection_target.clone();
         let environment_target = Some(completion_config.clone());
         let imported = self
             .import_io(move || {
@@ -545,6 +551,7 @@ impl CommandRouter {
                     context_import_target: environment_target,
                     provider_account_target: Some(import_provider_account_target),
                     git_credential_target: import_git_credential_target,
+                    event_connection_target: Some(import_event_connection_target),
                 })
             })
             .await;
@@ -605,6 +612,7 @@ impl CommandRouter {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
+                let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
                         rollback_managed_context_package_application(
@@ -612,6 +620,7 @@ impl CommandRouter {
                             &rollback_private_key,
                             Some(&rollback_provider_account_target),
                             rollback_git_credential_target.as_ref(),
+                            Some(&rollback_event_connection_target),
                         )
                     })
                     .await
@@ -664,6 +673,7 @@ impl CommandRouter {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
                 let rollback_git_credential_target = git_credential_target.clone();
+                let rollback_event_connection_target = event_connection_target.clone();
                 if let Err(rollback_error) = self
                     .import_io(move || {
                         rollback_managed_context_package_application(
@@ -671,6 +681,7 @@ impl CommandRouter {
                             &rollback_private_key,
                             Some(&rollback_provider_account_target),
                             rollback_git_credential_target.as_ref(),
+                            Some(&rollback_event_connection_target),
                         )
                     })
                     .await

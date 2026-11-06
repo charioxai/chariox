@@ -131,6 +131,7 @@ fn legacy_plan_binding() -> crate::managed_context::package::ManagedContextPlanB
         development: ManagedContextDevelopmentSelection::Empty,
         provider_accounts: ManagedContextProviderAccountSelection::None,
         git_credentials: ManagedContextGitCredentialSelection::None,
+        event_connections: Default::default(),
     }
 }
 

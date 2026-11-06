@@ -6,7 +6,8 @@ use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::managed_context::outbound_service::{
-    start_managed_context_outbound_operation, ManagedContextOutboundOperationStore,
+    start_managed_context_outbound_operation, ManagedContextOutboundCaller,
+    ManagedContextOutboundOperationStore,
 };
 use crate::transport::relay_client::RelayClientState;
 
@@ -29,6 +30,13 @@ pub(crate) fn execute_managed_context_outbound_request(
                     ticket
                 }
                 (None, Some(selection)) if request.interactive => {
+                    // Refuse an event connection that cannot be copied before the
+                    // transfer asks Cloud for authority.
+                    crate::managed_context::event_connections::export_selected(
+                        &selection.context_selection.event_connections,
+                        runtime.event_connection_registry(),
+                        caller_user_id,
+                    )?;
                     let relay = relay_state.try_read().map_err(|_| {
                         crate::managed_context::owner_managed::admission_error(
                             "source kernel relay is temporarily unavailable",
@@ -54,7 +62,10 @@ pub(crate) fn execute_managed_context_outbound_request(
                 store,
                 provider_account_profiles,
                 ticket,
-                Some(runtime),
+                Some(ManagedContextOutboundCaller {
+                    runtime,
+                    user_id: caller_user_id.to_string(),
+                }),
                 request.interactive,
             )?;
             Ok(LocalDaemonResponse::ManagedContextTransferStarted { status })
@@ -125,5 +136,113 @@ mod tests {
             .expect("local kernel owner");
         authorize_source_user(&config, "cloud-user-1").expect("Cloud owner");
         assert!(authorize_source_user(&config, "cloud-user-2").is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn owner_copy_refuses_an_unusable_event_connection_before_any_operation_starts() {
+        use crate::managed_context::outbound_service::{
+            ManagedContextOutboundOperationStore, ManagedContextTransferTarget,
+        };
+        use crate::managed_context::owner_managed::{
+            OwnerManagedContextSelection, OwnerManagedDevelopmentSelection,
+            OwnerManagedKernelSelection, OwnerManagedTransfer,
+        };
+        use crate::managed_context::package::ManagedContextEventConnectionSelection;
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owner-event-preflight-{:032x}",
+            rand::random::<u128>()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.user_config_path = root.join("config.toml");
+        config.user_config.history.operational.path =
+            Some(root.join("history.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config = config.with_session_history_root(root.join("sessions"));
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            account_id: "account".into(),
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_id: Some(config.daemon_id.clone()),
+            kernel_credential: Some("synthetic-test-enrollment".into()),
+            kernel_public_key_thumbprint: Some(
+                crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key),
+            ),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            1,
+        );
+        let runtime = router.runtime_state();
+        let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        let start = |connection_id: &str| {
+            let selection = OwnerManagedTransfer {
+                target: ManagedContextTransferTarget {
+                    relay_realm_id: "realm".into(),
+                    machine_id: "target-machine".into(),
+                    kernel_id: "target-kernel".into(),
+                    relay_public_key: config.relay_public_key.clone(),
+                    key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                        &config.relay_public_key,
+                    ),
+                },
+                context_selection: OwnerManagedContextSelection {
+                    event_connections: ManagedContextEventConnectionSelection::Selected {
+                        connection_ids: vec![connection_id.to_string()],
+                    },
+                    kernel_context: OwnerManagedKernelSelection::Empty,
+                    development_setup: OwnerManagedDevelopmentSelection::Empty,
+                },
+            };
+            execute_managed_context_outbound_request(
+                config.clone(),
+                Arc::new(RwLock::new(
+                    crate::transport::relay_client::RelayClientState::default(),
+                )),
+                store.clone(),
+                runtime.provider_account_profile_registry().clone(),
+                runtime.clone(),
+                "owner",
+                LocalDaemonRequest::StartManagedContextTransfer(
+                    crate::local::StartManagedContextTransferRequest {
+                        ticket: None,
+                        owner_managed: Some(selection),
+                        interactive: true,
+                    },
+                ),
+            )
+            .unwrap_err()
+        };
+        let code = |error: DaemonError| match error {
+            DaemonError::ManagedContext { code, .. } => code,
+            other => panic!("expected a managed-context refusal, got {other:?}"),
+        };
+        assert_eq!(code(start("connection-a")), "event_connection_not_found");
+        runtime
+            .event_connection_registry()
+            .upsert(
+                "owner",
+                "event-owner-secret-a",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.github".to_string(),
+                    connection_id: "connection-a".to_string(),
+                    status: crate::local::EventConnectionStatus::Pending,
+                    metadata: serde_json::json!({}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
+        assert_eq!(code(start("connection-a")), "event_connection_not_ready");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -10,6 +10,10 @@ use super::development::{
     DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
     DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
 };
+use super::event_connections::{
+    self, EventConnectionRecord, ManagedContextEventConnectionImportTarget,
+    ManagedContextEventConnectionReceipt, MAX_EVENT_CONNECTION_COMPONENT_BYTES,
+};
 use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
@@ -70,6 +74,15 @@ pub enum ManagedContextPackageGitCredentials {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ManagedContextPackageEventConnections {
+    #[default]
+    None,
+    Selected {
+        records: Vec<EventConnectionRecord>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextPlanBinding {
@@ -83,6 +96,11 @@ pub struct ManagedContextPlanBinding {
     pub provider_accounts: ManagedContextProviderAccountSelection,
     #[serde(default)]
     pub git_credentials: ManagedContextGitCredentialSelection,
+    #[serde(
+        default,
+        skip_serializing_if = "ManagedContextEventConnectionSelection::is_none"
+    )]
+    pub event_connections: ManagedContextEventConnectionSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +148,29 @@ pub enum ManagedContextGitCredentialSelection {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ManagedContextEventConnectionSelection {
+    #[default]
+    None,
+    Selected {
+        connection_ids: Vec<String>,
+    },
+}
+
+impl ManagedContextEventConnectionSelection {
+    /// A selection that names nothing is left out of every serialized plan, so
+    /// requests and plans that do not use the item keep their earlier shape.
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
 impl std::fmt::Debug for ManagedContextPackageKernel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -153,6 +194,7 @@ pub struct ManagedContextPackageExportRequest {
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub git_credentials: ManagedContextPackageGitCredentials,
+    pub event_connections: ManagedContextPackageEventConnections,
     pub package_path: PathBuf,
 }
 
@@ -196,6 +238,7 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub context_import_target: Option<crate::config::DaemonConfig>,
     pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
     pub git_credential_target: Option<ManagedContextGitCredentialImportTarget>,
+    pub event_connection_target: Option<ManagedContextEventConnectionImportTarget>,
 }
 
 #[derive(Clone)]
@@ -233,6 +276,7 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
             .field("target_private_key", &"[REDACTED]")
             .field("provider_account_target", &self.provider_account_target)
             .field("git_credential_target", &self.git_credential_target)
+            .field("event_connection_target", &self.event_connection_target)
             .finish()
     }
 }
@@ -252,6 +296,8 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub provider_accounts: ManagedContextImportedProviderAccounts,
     #[serde(default)]
     pub git_credentials: ManagedContextImportedGitCredentials,
+    #[serde(default)]
+    pub event_connections: ManagedContextImportedEventConnections,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +317,16 @@ pub(crate) enum ManagedContextImportedGitCredentials {
     None,
     Selected {
         credentials: Vec<ManagedContextGitCredentialReceipt>,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManagedContextImportedEventConnections {
+    #[default]
+    None,
+    Selected {
+        connections: Vec<ManagedContextEventConnectionReceipt>,
     },
 }
 
@@ -298,6 +354,7 @@ pub(crate) struct ExtractedManagedContextPackage {
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub git_credentials: ManagedContextPackageGitCredentials,
+    pub event_connections: ManagedContextPackageEventConnections,
     _cleanup: PackageExtractionCleanup,
 }
 
@@ -333,6 +390,8 @@ struct ManagedContextPackageManifest {
     provider_accounts: ProviderAccountComponentManifest,
     #[serde(default)]
     git_credentials: GitCredentialComponentManifest,
+    #[serde(default)]
+    event_connections: EventConnectionComponentManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +433,18 @@ enum GitCredentialComponentManifest {
         size_bytes: u64,
         sha256: String,
         credential_count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum EventConnectionComponentManifest {
+    #[default]
+    None,
+    Selected {
+        size_bytes: u64,
+        sha256: String,
+        connection_count: usize,
     },
 }
 
@@ -548,6 +619,30 @@ pub fn export_managed_context_package(
                 )
             }
         };
+    let (event_connection_bytes, event_connection_manifest) = match request.event_connections {
+        ManagedContextPackageEventConnections::None => {
+            if !matches!(
+                binding.plan.event_connections,
+                ManagedContextEventConnectionSelection::None
+            ) {
+                return Err(package_error(
+                    "managed context package omits the selected event connections",
+                ));
+            }
+            (None, EventConnectionComponentManifest::None)
+        }
+        ManagedContextPackageEventConnections::Selected { records } => {
+            event_connections::validate_records(&binding.plan.event_connections, &records)?;
+            let bytes =
+                serialize_bounded_json(&records, MAX_EVENT_CONNECTION_COMPONENT_BYTES as usize)?;
+            let manifest = EventConnectionComponentManifest::Selected {
+                size_bytes: bytes.len() as u64,
+                sha256: sha256_bytes(&bytes),
+                connection_count: records.len(),
+            };
+            (Some(bytes), manifest)
+        }
+    };
     let manifest = ManagedContextPackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,
         plan: binding.plan,
@@ -560,6 +655,7 @@ pub fn export_managed_context_package(
         kernel_context: kernel_manifest,
         provider_accounts: provider_account_manifest,
         git_credentials: git_credential_manifest,
+        event_connections: event_connection_manifest,
     };
     let manifest_bytes = serialize_bounded_json(&manifest, MAX_MANIFEST_BYTES)?;
 
@@ -612,6 +708,9 @@ pub fn export_managed_context_package(
         writer.write_all(bytes).map_err(package_write_error)?;
     }
     if let Some(bytes) = git_credential_bytes.as_deref() {
+        writer.write_all(bytes).map_err(package_write_error)?;
+    }
+    if let Some(bytes) = event_connection_bytes.as_deref() {
         writer.write_all(bytes).map_err(package_write_error)?;
     }
     writer
@@ -708,6 +807,31 @@ pub(crate) fn apply_managed_context_package(
                 return Err(package_unavailable(format!(
                     "{error}; roll back provider accounts: {rollback_error}"
                 )));
+            }
+            return Err(error);
+        }
+    };
+    let event_connections = match import_event_connections(&request, &extracted.event_connections) {
+        Ok(connections) => connections,
+        Err(error) => {
+            let rollback = run_import_rollbacks(
+                || Ok(()),
+                || {
+                    rollback_imported_git_credentials(
+                        request.git_credential_target.as_ref(),
+                        &git_credentials,
+                    )
+                },
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
+                || Ok(()),
+            );
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
             }
             return Err(error);
         }
@@ -850,6 +974,12 @@ pub(crate) fn apply_managed_context_package(
                         &provider_accounts,
                     )
                 },
+                || {
+                    rollback_imported_event_connections(
+                        request.event_connection_target.as_ref(),
+                        &event_connections,
+                    )
+                },
             );
             if let Err(rollback_error) = rollback {
                 return Err(package_unavailable(format!("{error}; {rollback_error}")));
@@ -867,6 +997,7 @@ pub(crate) fn apply_managed_context_package(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
     })
 }
 
@@ -1011,13 +1142,60 @@ fn rollback_imported_git_credentials(
     rollback_git_credentials(&target.command_context, credentials)
 }
 
+fn import_event_connections(
+    request: &ManagedContextPackageApplicationRequest,
+    event_connections: &ManagedContextPackageEventConnections,
+) -> Result<ManagedContextImportedEventConnections, DaemonError> {
+    match (
+        event_connections,
+        &request.expected_binding.plan.event_connections,
+    ) {
+        (
+            ManagedContextPackageEventConnections::None,
+            ManagedContextEventConnectionSelection::None,
+        ) => Ok(ManagedContextImportedEventConnections::None),
+        (
+            ManagedContextPackageEventConnections::Selected { records },
+            ManagedContextEventConnectionSelection::Selected { .. },
+        ) => {
+            let target = request.event_connection_target.as_ref().ok_or_else(|| {
+                package_error("managed context event connection target is unavailable")
+            })?;
+            let connections = event_connections::import(target, records)?;
+            Ok(ManagedContextImportedEventConnections::Selected { connections })
+        }
+        _ => Err(package_error(
+            "managed context event connection component does not match the launch plan",
+        )),
+    }
+}
+
+fn rollback_imported_event_connections(
+    target: Option<&ManagedContextEventConnectionImportTarget>,
+    event_connections: &ManagedContextImportedEventConnections,
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedEventConnections::Selected { connections } = event_connections else {
+        return Ok(());
+    };
+    let target = target.ok_or_else(|| {
+        package_error("managed context event connection rollback target is unavailable")
+    })?;
+    event_connections::rollback(target, connections)
+}
+
 pub(crate) fn rollback_managed_context_package_application(
     receipt: &ManagedContextPackageImportReceipt,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
     git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
+    event_connection_target: Option<&ManagedContextEventConnectionImportTarget>,
 ) -> Result<(), DaemonError> {
     let mut failures = Vec::new();
+    if let Err(error) =
+        rollback_imported_event_connections(event_connection_target, &receipt.event_connections)
+    {
+        failures.push(error);
+    }
     if let Err(error) =
         rollback_imported_git_credentials(git_credential_target, &receipt.git_credentials)
     {
@@ -1114,6 +1292,9 @@ pub(crate) fn rollback_persisted_managed_context_publication(
             ManagedContextImportedGitCredentials::Selected { credentials }
         }
     };
+    // A recovered publication cannot tell which event connection records the
+    // interrupted import created, so it leaves them: they are the owner's own
+    // connections and the event services validate them at first use.
     let mut failures = Vec::new();
     if let Err(error) = rollback_imported_git_credentials(git_credential_target, &git_credentials) {
         failures.push(error);
@@ -1264,6 +1445,14 @@ fn preflight_import_receipt_capacity(
             }
         }
     };
+    let event_connections = match &extracted.event_connections {
+        ManagedContextPackageEventConnections::None => ManagedContextImportedEventConnections::None,
+        ManagedContextPackageEventConnections::Selected { records } => {
+            ManagedContextImportedEventConnections::Selected {
+                connections: event_connections::receipts_for(records),
+            }
+        }
+    };
     let receipt = ManagedContextPackageImportReceipt {
         destination: request.expected_binding.plan.destination.clone(),
         schema_version: PACKAGE_SCHEMA_VERSION,
@@ -1274,6 +1463,7 @@ fn preflight_import_receipt_capacity(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
     };
     let placeholder_outer_bytes = serde_json::to_vec(&receipt)
         .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
@@ -1481,6 +1671,43 @@ pub(crate) fn extract_managed_context_package(
             ManagedContextPackageGitCredentials::Selected { materializations }
         }
     };
+    let event_connections = match &manifest.event_connections {
+        EventConnectionComponentManifest::None => ManagedContextPackageEventConnections::None,
+        EventConnectionComponentManifest::Selected {
+            size_bytes,
+            sha256,
+            connection_count,
+        } => {
+            let path = component_root.join("event-connections.json");
+            let file = create_private_file(&path)?;
+            let actual_sha256 = copy_component_to_file(
+                &mut reader,
+                file,
+                *size_bytes,
+                MAX_EVENT_CONNECTION_COMPONENT_BYTES,
+            )?;
+            if &actual_sha256 != sha256 {
+                return Err(package_error(
+                    "managed context event connection component digest does not match",
+                ));
+            }
+            let file = open_regular_file_no_follow(&path)?;
+            let records =
+                serde_json::from_reader::<_, Vec<EventConnectionRecord>>(file).map_err(|_| {
+                    package_error("managed context event connection component is invalid")
+                })?;
+            if records.len() != *connection_count {
+                return Err(package_error(
+                    "managed context event connection count does not match its manifest",
+                ));
+            }
+            event_connections::validate_records(
+                &request.expected_binding.plan.event_connections,
+                &records,
+            )?;
+            ManagedContextPackageEventConnections::Selected { records }
+        }
+    };
     let mut trailer = [0_u8; 16];
     reader
         .read_exact(&mut trailer)
@@ -1506,6 +1733,7 @@ pub(crate) fn extract_managed_context_package(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
         _cleanup: cleanup,
     })
 }
@@ -1661,6 +1889,35 @@ fn validate_manifest(
         _ => Err(package_error(
             "managed context Git credential component does not match the launch plan",
         )),
+    }?;
+    match (
+        &manifest.event_connections,
+        &manifest.plan.event_connections,
+    ) {
+        (EventConnectionComponentManifest::None, ManagedContextEventConnectionSelection::None) => {
+            Ok(())
+        }
+        (
+            EventConnectionComponentManifest::Selected {
+                size_bytes,
+                sha256,
+                connection_count,
+            },
+            ManagedContextEventConnectionSelection::Selected { connection_ids },
+        ) => {
+            if *size_bytes == 0
+                || *size_bytes > MAX_EVENT_CONNECTION_COMPONENT_BYTES
+                || *connection_count != connection_ids.len()
+            {
+                return Err(package_error(
+                    "managed context event connection component size or count is invalid",
+                ));
+            }
+            validate_sha256(sha256, "event connection component digest")
+        }
+        _ => Err(package_error(
+            "managed context event connection component does not match the launch plan",
+        )),
     }
 }
 
@@ -1763,7 +2020,20 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
             }
         }
     }
-    Ok(())
+    validate_plan_event_connections(plan.destination.is_some(), &plan.event_connections)
+}
+
+/// Event connections move only between kernels of one owner.
+pub(crate) fn validate_plan_event_connections(
+    owner_managed: bool,
+    selection: &ManagedContextEventConnectionSelection,
+) -> Result<(), DaemonError> {
+    if !owner_managed && *selection != ManagedContextEventConnectionSelection::None {
+        return Err(package_error(
+            "managed context event connections require an owner-managed destination",
+        ));
+    }
+    event_connections::validate_selection(selection)
 }
 
 pub(crate) fn validate_development_selection(
@@ -2290,8 +2560,9 @@ fn run_import_rollbacks(
     kernel: impl FnOnce() -> Result<(), DaemonError>,
     git: impl FnOnce() -> Result<(), DaemonError>,
     provider: impl FnOnce() -> Result<(), DaemonError>,
+    event_connections: impl FnOnce() -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
-    let failures = [kernel(), git(), provider()]
+    let failures = [kernel(), git(), provider(), event_connections()]
         .into_iter()
         .filter_map(Result::err)
         .map(|error| error.to_string())
@@ -2323,10 +2594,14 @@ fn mp11_import_rollback_attempts_every_credential_family_after_kernel_failure() 
             seen.set(seen.get() | 4);
             Ok(())
         },
+        || {
+            seen.set(seen.get() | 8);
+            Ok(())
+        },
     );
     assert_eq!(
         seen.get(),
-        7,
+        15,
         "a failed cleanup suppressed later credential cleanup"
     );
     let error = result.unwrap_err().to_string();

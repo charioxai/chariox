@@ -10,9 +10,9 @@ use crate::managed_context::development::{
     DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding,
 };
 use crate::managed_context::package::{
-    ManagedContextDevelopmentSelection, ManagedContextGitCredentialSelection,
-    ManagedContextKernelSelection, ManagedContextPlanBinding, ManagedContextProviderAccount,
-    ManagedContextProviderAccountSelection,
+    ManagedContextDevelopmentSelection, ManagedContextEventConnectionSelection,
+    ManagedContextGitCredentialSelection, ManagedContextKernelSelection, ManagedContextPlanBinding,
+    ManagedContextProviderAccount, ManagedContextProviderAccountSelection,
 };
 
 const MAX_CONTEXT_PLAN_BYTES: usize = 72 * 1024;
@@ -33,6 +33,14 @@ pub struct ManagedKernelContextPlan {
     development_setup: ManagedKernelDevelopmentSetup,
     provider_accounts: ManagedKernelProviderAccounts,
     git_credentials: ManagedKernelGitCredentials,
+    /// Only owner-managed copies select event connections. The field is left out
+    /// of the plan and its digest while none are selected, so a plan Cloud
+    /// issues keeps the digest it was issued with.
+    #[serde(
+        default,
+        skip_serializing_if = "ManagedContextEventConnectionSelection::is_none"
+    )]
+    event_connections: ManagedContextEventConnectionSelection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +148,7 @@ impl ManagedKernelContextPlan {
             "developmentSetup": selection.context_selection.development_setup,
             "providerAccounts": {"kind":"none"},
             "gitCredentials": {"kind":"none"},
+            "eventConnections": selection.context_selection.event_connections,
             "destination": {"kind":"owner_managed_machine", "machineId": selection.target.machine_id, "kernelId": selection.target.kernel_id}
         });
         let mut plan: Self =
@@ -188,6 +197,7 @@ impl ManagedKernelContextPlan {
         self.validate_development()?;
         self.validate_provider_accounts()?;
         self.validate_git_credentials()?;
+        self.validate_event_connections()?;
         let source_required = self.kernel_context != ManagedKernelContextSelection::Empty
             || matches!(
                 self.development_setup,
@@ -200,7 +210,8 @@ impl ManagedKernelContextPlan {
             || matches!(
                 self.git_credentials,
                 ManagedKernelGitCredentials::Selected { .. }
-            );
+            )
+            || !self.event_connections.is_none();
         if (source_required || self.destination.is_some()) != self.source.is_some() {
             return Err("managed context plan source selection is inconsistent");
         }
@@ -288,6 +299,7 @@ impl ManagedKernelContextPlan {
                     }
                 }
             },
+            event_connections: self.event_connections.clone(),
         }
     }
 
@@ -297,6 +309,7 @@ impl ManagedKernelContextPlan {
             && matches!(self.development_setup, ManagedKernelDevelopmentSetup::Empty)
             && matches!(self.provider_accounts, ManagedKernelProviderAccounts::None)
             && matches!(self.git_credentials, ManagedKernelGitCredentials::None)
+            && self.event_connections.is_none()
     }
 
     fn validate_development(&self) -> Result<(), &'static str> {
@@ -375,6 +388,14 @@ impl ManagedKernelContextPlan {
         Ok(())
     }
 
+    fn validate_event_connections(&self) -> Result<(), &'static str> {
+        crate::managed_context::package::validate_plan_event_connections(
+            self.destination.is_some(),
+            &self.event_connections,
+        )
+        .map_err(|_| "managed context event connection selection is invalid")
+    }
+
     fn compute_digest(&self) -> Result<String, &'static str> {
         let mut value = serde_json::json!({
             "schemaVersion": self.schema_version,
@@ -384,6 +405,10 @@ impl ManagedKernelContextPlan {
             "providerAccounts": self.provider_accounts,
             "gitCredentials": self.git_credentials,
         });
+        if !self.event_connections.is_none() {
+            value["eventConnections"] = serde_json::to_value(&self.event_connections)
+                .map_err(|_| "invalid event connections")?;
+        }
         if let Some(destination) = &self.destination {
             value["destination"] =
                 serde_json::to_value(destination).map_err(|_| "invalid destination")?;
@@ -424,6 +449,7 @@ impl ManagedKernelContextPlan {
             },
             provider_accounts: ManagedKernelProviderAccounts::None,
             git_credentials: ManagedKernelGitCredentials::None,
+            event_connections: ManagedContextEventConnectionSelection::None,
         };
         plan.plan_digest = plan.compute_digest().expect("test plan digest");
         plan
@@ -474,6 +500,7 @@ impl ManagedKernelContextPlan {
             },
             provider_accounts: ManagedKernelProviderAccounts::None,
             git_credentials: ManagedKernelGitCredentials::None,
+            event_connections: ManagedContextEventConnectionSelection::None,
         };
         plan.plan_digest = plan.compute_digest().expect("test plan digest");
         plan
@@ -491,6 +518,7 @@ impl ManagedKernelContextPlan {
             development_setup: ManagedKernelDevelopmentSetup::Empty,
             provider_accounts: ManagedKernelProviderAccounts::None,
             git_credentials: ManagedKernelGitCredentials::None,
+            event_connections: ManagedContextEventConnectionSelection::None,
         };
         plan.plan_digest = plan.compute_digest().expect("test plan digest");
         plan

@@ -495,6 +495,7 @@ impl InlineShellFixture {
                 },
                 provider_accounts: ManagedContextProviderAccountSelection::None,
                 git_credentials: ManagedContextGitCredentialSelection::None,
+                event_connections: Default::default(),
             },
             target_environment_id: String::new(),
             source_kernel_id: "source-kernel".into(),
@@ -517,6 +518,7 @@ impl InlineShellFixture {
             kernel_context: ManagedContextPackageKernel::Empty,
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials: ManagedContextPackageGitCredentials::None,
+            event_connections: Default::default(),
             package_path: self.root.join("context.pkg"),
         })
         .unwrap();
@@ -531,6 +533,7 @@ impl InlineShellFixture {
             context_import_target: None,
             provider_account_target: None,
             git_credential_target: None,
+            event_connection_target: None,
         })
     }
 }

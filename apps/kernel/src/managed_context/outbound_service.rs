@@ -32,8 +32,9 @@ use crate::managed_context::outbound::{
 };
 use crate::managed_context::package::{
     export_managed_context_package, ManagedContextDevelopmentSelection,
-    ManagedContextGitCredentialSelection, ManagedContextKernelSelection,
-    ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
+    ManagedContextEventConnectionSelection, ManagedContextGitCredentialSelection,
+    ManagedContextKernelSelection, ManagedContextPackageDevelopment,
+    ManagedContextPackageEventConnections, ManagedContextPackageExportRequest,
     ManagedContextPackageGitCredentials, ManagedContextPackageKernel,
     ManagedContextPackageProviderAccounts, ManagedContextProviderAccountSelection,
     MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
@@ -445,13 +446,19 @@ impl ManagedContextOutboundOperationStore {
     }
 }
 
+/// The kernel runtime and the user a transfer was started for.
+pub(crate) struct ManagedContextOutboundCaller {
+    pub runtime: crate::runtime::state::KernelRuntimeState,
+    pub user_id: String,
+}
+
 pub(crate) fn start_managed_context_outbound_operation(
     config: DaemonConfig,
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     ticket: ManagedContextTransferTicket,
-    runtime: Option<crate::runtime::state::KernelRuntimeState>,
+    caller: Option<ManagedContextOutboundCaller>,
     interactive: bool,
 ) -> Result<ManagedContextOutboundOperationStatus, DaemonError> {
     validate_ticket(&config, &ticket)?;
@@ -502,9 +509,10 @@ pub(crate) fn start_managed_context_outbound_operation(
             .destination
             .is_some();
         if owner_copy {
-            let review = match (runtime.as_ref(), interactive) {
-                (Some(runtime), true) => {
-                    runtime
+            let review = match (caller.as_ref(), interactive) {
+                (Some(caller), true) => {
+                    caller
+                        .runtime
                         .review_credential_free_owner_context(
                             &authoritative_ticket
                                 .context_plan
@@ -537,12 +545,17 @@ pub(crate) fn start_managed_context_outbound_operation(
         let task_config = config.clone();
         let task_ticket = authoritative_ticket.clone();
         let task_provider_account_profiles = provider_account_profiles.clone();
+        let task_event_connections = caller.map(|caller| EventConnectionSource {
+            registry: caller.runtime.event_connection_registry().clone(),
+            owner_user_id: caller.user_id,
+        });
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
             prepare_managed_context_package_for_ticket(
                 &task_config,
                 &package_store,
                 &task_provider_account_profiles,
+                task_event_connections.as_ref(),
                 &task_ticket,
             )
         })
@@ -734,13 +747,27 @@ fn prepare_managed_context_package(
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
-    prepare_managed_context_package_for_ticket(config, store, provider_account_profiles, ticket)
+    prepare_managed_context_package_for_ticket(
+        config,
+        store,
+        provider_account_profiles,
+        None,
+        ticket,
+    )
+}
+
+/// The registry that holds the event connections a transfer may copy, and the
+/// user they belong to.
+pub(crate) struct EventConnectionSource {
+    pub registry: crate::event_connection::EventConnectionRegistry,
+    pub owner_user_id: String,
 }
 
 fn prepare_managed_context_package_for_ticket(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
     provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    event_connections: Option<&EventConnectionSource>,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
@@ -880,6 +907,24 @@ fn prepare_managed_context_package_for_ticket(
             ManagedContextPackageGitCredentials::Selected { materializations }
         }
     };
+    let event_connections = match (&plan.event_connections, event_connections) {
+        (ManagedContextEventConnectionSelection::None, _) => {
+            ManagedContextPackageEventConnections::None
+        }
+        (selection, Some(source)) => ManagedContextPackageEventConnections::Selected {
+            records: crate::managed_context::event_connections::export_selected(
+                selection,
+                &source.registry,
+                &source.owner_user_id,
+            )?,
+        },
+        (_, None) => {
+            return Err(outbound_service_error(
+                "source kernel has no event connections to transfer",
+                false,
+            ))
+        }
+    };
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     let kernel_context = match plan.kernel_context {
         ManagedContextKernelSelection::Empty => ManagedContextPackageKernel::Empty,
@@ -951,6 +996,7 @@ fn prepare_managed_context_package_for_ticket(
         kernel_context,
         provider_accounts,
         git_credentials,
+        event_connections,
         package_path: artifact_root.join("managed-context.pkg"),
     })?;
     if let Some(path) = development_archive_path {
@@ -1845,6 +1891,7 @@ mod tests {
                 key_thumbprint: public_key_thumbprint(&config.relay_public_key),
             },
             context_selection: OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: OwnerManagedKernelSelection::Empty,
                 development_setup: OwnerManagedDevelopmentSelection::SourceProject {
                     project_id: "project".into(),
@@ -2059,6 +2106,7 @@ mod tests {
             let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
                 target: ticket.target.clone(),
                 context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                    event_connections: Default::default(),
                     kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
                     development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
                 },
@@ -2759,6 +2807,7 @@ mod tests {
         let selection = crate::managed_context::owner_managed::OwnerManagedTransfer {
             target: ticket.target.clone(),
             context_selection: crate::managed_context::owner_managed::OwnerManagedContextSelection {
+                event_connections: Default::default(),
                 kernel_context: crate::managed_context::owner_managed::OwnerManagedKernelSelection::Empty,
                 development_setup: crate::managed_context::owner_managed::OwnerManagedDevelopmentSelection::Empty,
             },

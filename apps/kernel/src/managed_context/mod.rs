@@ -2,6 +2,7 @@ pub(crate) mod cloud_completion;
 pub(crate) mod credential_free;
 pub mod development;
 pub(crate) mod empty;
+pub(crate) mod event_connections;
 pub mod kernel;
 pub(crate) mod limits;
 pub(crate) mod outbound;
