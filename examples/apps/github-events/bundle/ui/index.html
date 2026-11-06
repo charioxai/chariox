@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GitHub events</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <h1>GitHub events</h1>
+    <form id="automations" aria-label="Automations">
+      <label>
+        <span>Pull request opened</span>
+        <input name="pull_request_opened_notification" maxlength="2000" autocomplete="off" placeholder="Automation names, separated by commas">
+      </label>
+      <label>
+        <span>Pull request updated</span>
+        <input name="pull_request_updated_notification" maxlength="2000" autocomplete="off" placeholder="Automation names, separated by commas">
+      </label>
+      <label>
+        <span>Review requested</span>
+        <input name="review_requested_notification" maxlength="2000" autocomplete="off" placeholder="Automation names, separated by commas">
+      </label>
+      <label>
+        <span>Issue opened</span>
+        <input name="issue_opened_notification" maxlength="2000" autocomplete="off" placeholder="Automation names, separated by commas">
+      </label>
+      <label>
+        <span>Workflow run completed</span>
+        <input name="workflow_run_completed_notification" maxlength="2000" autocomplete="off" placeholder="Automation names, separated by commas">
+      </label>
+      <button type="submit">Save</button>
+    </form>
+  </main>
+</body>
+</html>
