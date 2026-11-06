@@ -42,6 +42,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     assert!(!request_is_cacheable(&uninstall));
     for request in [
         serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
+        serde_json::json!({"ClientAppView":{"Open":{"installation_id":"installed"}}}),
         serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
         // The result carries a relay token; a replay creates another link.
         serde_json::json!({"CreateTerminalPairingLink":{}}),
@@ -70,6 +71,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             "ControlAppWorker",
             "UninstallApp",
             "OpenUserAppView",
+            "ClientAppView",
             "CallUserAppView",
             "RespondToHandoff",
             "CreateTerminalPairingLink",
