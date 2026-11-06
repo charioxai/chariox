@@ -16,7 +16,9 @@ const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
 const need = key => { const v = flags.get(key); if (typeof v !== "string") throw new Error(`${key} is required`); return resolve(v) }
 const binary = need("--kernel-binary"), relayBinary = need("--relay-binary"), stateRoot = need("--state-root"), evidence = need("--evidence-dir")
-const model = flags.get("--model") ?? "claude-haiku-5-5"
+const provider = flags.get("--provider") ?? "claude"
+const codexProfilePath = provider === "codex" ? need("--codex-profile-path") : null
+const model = flags.get("--model") ?? (provider === "codex" ? "gpt-6-luna" : "claude-haiku-5-5")
 const budgetMs = Number(flags.get("--budget-seconds") ?? 1800) * 1000
 const tokenFile = "/root/.claude-lanes/oauth-token"
 if (!stateRoot.startsWith("/root/.chariox/dev/")) throw new Error("state must be lane-owned")
@@ -140,6 +142,28 @@ function turnStats(lines) {
   }
   return turns
 }
+// Codex rollouts written under the linked profile during this run: one entry per user turn (prompt start, tool calls, tokens).
+function codexTurns(profileDir, sinceMs) {
+  const files = []
+  const walk = dir => { for (const e of readdirSync(dir, { withFileTypes: true })) { const f = join(dir, e.name); if (e.isDirectory()) walk(f); else if (e.name.startsWith("rollout-") && e.name.endsWith(".jsonl") && statSync(f).mtimeMs >= sinceMs) files.push(f) } }
+  try { walk(join(profileDir, "sessions")) } catch {}
+  return files.map(file => {
+    const turns = []
+    let cur = null, model = null
+    for (const l of readFileSync(file, "utf8").split("\n")) {
+      let e; try { e = JSON.parse(l) } catch { continue }
+      const p = e.payload ?? {}
+      if (p.model) model = p.model
+      if (e.type === "response_item" && p.type === "message" && p.role === "user") {
+        const text = redact((p.content ?? []).map(c => c.text ?? "").join(" "))
+        if (/^<(environment_context|user_instructions|permissions)/.test(text.trim())) continue
+        cur = { at: e.timestamp, prompt: text.slice(0, 160), tool_calls: [], output_tokens: 0, total_tokens: 0 }; turns.push(cur)
+      } else if (cur && e.type === "response_item" && (p.type === "function_call" || p.type === "custom_tool_call")) cur.tool_calls.push({ name: p.name, input: redact(String(p.arguments ?? p.input ?? "")).slice(0, 260) })
+      else if (cur && e.type === "event_msg" && p.type === "token_count" && p.info?.total_token_usage) { cur.output_tokens = p.info.total_token_usage.output_tokens ?? 0; cur.total_tokens = p.info.total_token_usage.total_tokens ?? 0 }
+    }
+    return { file: file.split("/").pop(), model, turns }
+  })
+}
 function toolLog(lines) {
   const rows = []
   for (const e of lines) for (const p of Array.isArray(e.message?.content) ? e.message.content : []) {
@@ -163,20 +187,29 @@ async function main() {
   const pairing = (await b.rpc({ CreateTerminalPairingLink: { terminal_type: "cli", expires_in_ms: 300000 } })).TerminalPairingLinkCreated.pairing
   await a.rpc({ JoinKernelLink: { link: pairing.pairing_link, relay_token: token("orch-operator", "client", ["client.connect", "client.metadata.read", "packet.route"]) } })
   note("paired", { from: "a", to: "b", b: b.status.daemon_id })
-  const oauth = readFileSync(tokenFile, "utf8").trim()
-  await provision(a, oauth)
-  await provision(b, oauth)
+  let profile = "default"
+  if (provider === "codex") {
+    // The profile directory already holds a product login; the kernel links it and never reads the credential.
+    const linked = (await a.rpc({ LinkProviderAccountProfile: { provider: "codex", label: "orch-codex", path: codexProfilePath } })).ProviderAccountProfile.profile
+    profile = linked.profile_id
+    await a.rpc({ RefreshProviderAccountProfile: { provider: "codex", account_profile: profile } })
+    note("codex-profile-linked", { profile })
+  } else {
+    const oauth = readFileSync(tokenFile, "utf8").trim()
+    await provision(a, oauth)
+    await provision(b, oauth)
+  }
   // The project: a git repository the workers branch their own worktrees from.
   const work = join(a.dir, "work")
   const git = (...args) => execFileSync("git", ["-C", work, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "drill", GIT_AUTHOR_EMAIL: "drill@example.invalid", GIT_COMMITTER_NAME: "drill", GIT_COMMITTER_EMAIL: "drill@example.invalid" } }).toString()
   git("init", "-q", "-b", "main"); writeFileSync(join(work, "README.md"), "orchestrate-one-room drill project\n"); git("add", "README.md"); git("commit", "-q", "-m", "start")
   mkdirSync(join(b.dir, "work/w2"), { recursive: true })
-  const defaults = { provider: "claude", account_profile: "default", model, effort: "low", permission_level: "yolo" }
+  const defaults = { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" }
   const room = (await a.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "team-room", agent_defaults: defaults } })).SessionCreated
   const R = room.session.id, orch = room.agent.id
   const attached = (await a.rpc({ AttachToSession: { session_id: R, client_id: "orch-owner", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
   await a.client.subscribeToKernelEvents(R, attached)
-  await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: "claude", provider: "claude", account_profile: "default", model, variant: "low", native_tui: false } })
+  await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
   note("room-ready", { room: R, orchestrator: orch })
 
   const deadline = Date.now() + 25 * 60 * 1000
@@ -186,7 +219,7 @@ async function main() {
   const restartBrief = `# Orchestrator brief (drill, restart scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a team inside THIS Room using only your own Chariox tools. Do not ask the owner anything.
 Never retry a refused call more than once; record the exact refusal instead. Never use shell sleeps or poll in a loop.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt them (room \`prompt\` command):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
    w2: "Write the single word BETA into result.txt in your current working directory. End your reply with W2DONE."
@@ -205,7 +238,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step (what is 
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). The owner granted /sudo for this task: use the chariox kernel_request tool
 (chariox_kernel_request) for kernel requests. Do not ask the owner anything except in step 8. Never retry a refused call more than once; record
 the exact answer. Never use shell sleeps or poll in a loop.
-1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\`.
+1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\`.
 2. Prompt them (room \`prompt\`):
    w1: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w1 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. Then write ALPHA into result.txt in your working directory. End with W1DONE."
    w2: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w2 decide', message 'Write BETA?', choices [{id:'yes',label:'Yes',reply:'yes'},{id:'no',label:'No',reply:'no'}]. If the reply is yes write BETA into result.txt in your working directory. End with W2DONE."
@@ -226,7 +259,7 @@ the exact answer. Never use shell sleeps or poll in a loop.
   const heartbeatBrief = `# Orchestrator brief (drill, heartbeat scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never use shell sleeps or poll in a loop.
 Keep ${join(work, "orchestrator-state.json")} updated after every step and every wake.
-1. Spawn w1 with room command \`agent spawn w1 --provider claude --model claude-no-such-model-1 --effort low --worktree ${join(root, "wt/w1")} --branch w1\` and w2 with \`agent spawn w2 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w2")} --branch w2\`. Record the answers.
+1. Spawn w1 with room command \`agent spawn w1 --provider claude --model claude-no-such-model-1 --effort low --worktree ${join(root, "wt/w1")} --branch w1\` and w2 with \`agent spawn w2 --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt/w2")} --branch w2\`. Record the answers.
 2. Prompt both (room \`prompt\`): "Write the single word DONE into result.txt in your current working directory."
 3. Subscribe to both workers (chariox events_subscribe with the agent id) and arm a heartbeat: chariox events_timer with label 'heartbeat', delay_ms 1800000 and interval_ms 1800000.
 4. Yield on ALL your registrations (events_subscriptions lists them) with a deadline 45 minutes ahead and END YOUR TURN.
@@ -237,7 +270,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step and every
   // The wake that follows must be ONE turn that reads the three events from the inbox and acknowledges them.
   const batchBrief = `# Orchestrator brief (drill, inbox-batch scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt each (room \`prompt\` command): "Write the single word ALPHA (w1) / BETA (w2) / GAMMA (w3) into result.txt in your current working directory. End your reply with W1DONE / W2DONE / W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id).
 4. Hold this turn with ONE shell command: \`sleep 150\`. The three workers finish while it runs.
@@ -250,13 +283,36 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
   const goPath = join(root, "go")
   const batchYieldBrief = `# Orchestrator brief (drill, inbox-batch-yield scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once.
-1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
 2. Prompt each (room \`prompt\` command): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA (w1) / BETA (w2) / GAMMA (w3) into result.txt in your current working directory. End your reply with W1DONE / W2DONE / W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 20 minutes ahead and END YOUR TURN. Do not poll and do not read the inbox before you are woken.
 4. When the kernel wakes you, its prompt only names counts and kinds. Call chariox events_inbox ONCE, read every event, then ${flags.get("--ack-mode") === "single" ? "call chariox events_ack once for each event with handled true" : "call chariox events_ack ONCE with through = the last sequence you read and handled true"}. If your inbox read shows fewer than three worker completions, yield again on your remaining registrations and repeat this step on the next wake.
 5. When all three completions are acknowledged write ${join(work, "orchestrator-report.json")} with: each wake (what woke you, how many events your inbox read returned) and the ack answers. Delete the workers (\`agent delete wN\`) and reply ORCHDONE.
 `
-  const brief = scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  // A02-S02 / A02-S03: a default message to a busy, an idle and a yielded receiver, one reply-requested message, one urgent steer.
+  const messagesBrief = `# Orchestrator brief (drill, messages scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once; record the exact answer.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3. Do not prompt w2.
+2. Prompt w1 (room \`prompt\`): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA into result.txt in your working directory. End your reply with W1DONE." (w1 stays BUSY.)
+   Prompt w3: "Arm a timer with the chariox events_timer tool (delay_ms 600000, label w3-wait), then yield on it with chariox events_yield (deadline 15 minutes ahead) and end your turn. When you are woken, handle what the inbox shows, write it into result.txt, and end with W3DONE." (w3 is YIELDED once it has parked; wait until room \`agent list\` shows w3 is no longer processing before you send to it.)
+3. Send, with chariox send_agent_message (default, not urgent, no reply wanted):
+   to w1 (busy): "Also write the word BUSYMSG into msg.txt in your working directory after result.txt."
+   to w2 (idle): "Write the word IDLEMSG into msg.txt in your working directory."
+   to w3 (yielded): "Also write the word YIELDEDMSG into msg.txt in your working directory."
+   Then send to w2 ONE message with reply_requested true: "What is 2 plus 3? Answer with the number as your final answer." Your wake carries its single answer.
+   Then send to w1 (still busy) ONE urgent message (urgent true): "Also write the word STEERED into steer.txt in your working directory."
+4. Subscribe to w1, w2 and w3 (chariox events_subscribe) and yield on ALL your registrations (events_subscriptions) with a deadline 20 minutes ahead; END YOUR TURN. Do not poll.
+5. On each wake: chariox events_inbox once, read the events, events_ack them (handled true), and yield again until w1, w2 and w3 reported. Expect: no courtesy replies for the default messages, one reply for the reply_requested message.
+6. Write ${join(work, "orchestrator-report.json")} with each wake (what woke you, events read, acks). Delete the workers (\`agent delete wN\`) and reply ORCHDONE.
+`
+  // AM-ASK-03: a non-blocking owner question stays pending across a kernel restart and the answer wakes the agent once.
+  const askBrief = `# Orchestrator brief (drill, ask scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything in plain text. Never retry a refused call more than once.
+1. Call chariox request_popup with wait false, title 'ask-restart', message 'Go on?', choices [{id:'go',label:'Go',reply:'go ahead'}], timeout_sec 900.
+2. Yield on its registration (events_yield with the registration id, a deadline 15 minutes ahead, this turn's metadata) and END YOUR TURN with the text ASKARMED. Do not poll.
+3. When the kernel wakes you, call chariox events_inbox ONCE, read the answer, call chariox events_ack with handled true, and write ${join(work, "orchestrator-report.json")} with: what woke you, the exact answer text, the ack answer. Then reply ASKDONE.
+`
+  const brief = scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only your own Chariox tools:
 the room tools (chariox room run_command / commands docs / list_session_agents / send_agent_message / history), the chariox events tools
 (subscribe, timer, yield, inbox, ack) and the chariox-reach tools (kernels, sessions, request, events_subscribe, events_wait, events_ack, guide).
@@ -264,8 +320,8 @@ Do not ask the owner anything. Never retry a refused call more than once; record
 Kernel B id: ${b.status.daemon_id}. Deadline for both workers: unix ms ${deadline}.
 
 Steps:
-1. Spawn worker w1 in this Room with its OWN git worktree: room command \`agent spawn w1 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1\`.
-2. Spawn worker w2 in this Room but running on kernel B: room command \`agent spawn w2 --provider claude --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w2")}\`.
+1. Spawn worker w1 in this Room with its OWN git worktree: room command \`agent spawn w1 --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1\`.
+2. Spawn worker w2 in this Room but running on kernel B: room command \`agent spawn w2 --provider ${provider} --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w2")}\`.
    If that is refused, record the answer and spawn w2 locally with \`--worktree ${join(root, "wt/w2")} --branch w2\`.
 3. Give each worker the deadline: reach \`request\` with {"request":{"SetAgentDeadline":{"session_id":"${R}","agent_id":"<worker id>","deadline_ms":${deadline}}}}. Record the answer.
    Also call reach \`request\` once each with {"request":{"ListProviderAccountProfiles":null}} and {"request":{"GetProviderUsageSnapshot":{}}} and record the answers (usage pacing).
@@ -293,7 +349,7 @@ Steps:
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
   const seen = { agents: new Map(), interactions: new Map(), prompts: new Map() }
   const orchTurns = []
-  let reportAt = null, fallbackAnswers = 0, goAt = null
+  let reportAt = null, fallbackAnswers = 0, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
   while (Date.now() - since < budgetMs) {
@@ -319,12 +375,26 @@ Steps:
       }
       for (const [id, at] of seen.interactions) if (at && !(s.active_interactions ?? []).some(x => x.id === id)) { seen.interactions.set(id, 0); note("interaction-closed", { id }) }
     }
-    const hold = [...seen.interactions.entries()].find(([id, at]) => at && s?.active_interactions?.find(x => x.id === id && /w3 hold/.test(x.title ?? "")))
+    const holdTitle = scenario === "ask" ? /ask-restart/ : /w3 hold/
+    const hold = [...seen.interactions.entries()].find(([id, at]) => at && s?.active_interactions?.find(x => x.id === id && holdTitle.test(x.title ?? "")))
     const orchIdle = s && !s.prompt_states?.[orch]?.active_prompt
     if (scenario === "batchyield" && !goAt && orchIdle && (s.agents ?? []).filter(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt).length >= 3) {
       writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
     }
-    if (scenario === "restart" && !restarted && hold && orchIdle && Date.now() - hold[1] > 45000) {
+    idleSince = orchIdle ? idleSince ?? Date.now() : null
+    // A04-S06: an unrelated owner prompt while the sudo-bound orchestrator is parked inside the open window must wait, not start.
+    if (scenario === "sudo" && !fenceProbeAt && orchIdle && orchTurns.length >= 4) {
+      fenceProbeAt = Date.now()
+      a.client.send(submitPromptRequest(R, attachedNow, orch, "UNRELATED owner request: reply with the single word FENCEPROBE and nothing else.", [])).then(() => note("fence-probe-accepted"), e => note("fence-probe-refused", { message: String(e.message).slice(0, 200) }))
+    }
+    if (fenceProbeAt && !fenceProbeDone && Date.now() - fenceProbeAt > 40000) {
+      fenceProbeDone = true
+      note("fence-probe-view", { orch_prompt_state: JSON.stringify(s?.prompt_states?.[orch] ?? null).slice(0, 700), prompts_since_probe: orchTurns.filter(t => t.started_s * 1000 + since > fenceProbeAt).map(t => t.prompt) })
+    }
+    if (scenario === "messages" && !goAt && orchTurns.length && idleSince && Date.now() - idleSince > 20000) {
+      writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
+    }
+    if ((scenario === "restart" || scenario === "ask") && !restarted && hold && orchIdle && Date.now() - hold[1] > 45000) {
       restarted = true
       note("restart-begin", { orchestrator_idle: true, open_hold: hold[0] })
       await restart(a)
@@ -332,8 +402,8 @@ Steps:
       await a.client.subscribeToKernelEvents(R, again)
       attachedNow = again
     }
-    if (scenario === "restart" && restarted && s) for (const it of s.active_interactions ?? []) {
-      if (/w3 hold/.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
+    if ((scenario === "restart" || scenario === "ask") && restarted && s) for (const it of s.active_interactions ?? []) {
+      if (holdTitle.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: scenario === "ask" ? "go" : "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
     if (scenario === "sudo" && s) for (const it of s.active_interactions ?? []) {
       const open = seen.interactions.get(it.id)
@@ -359,7 +429,12 @@ Steps:
   const stats = orchFile ? turnStats(orchFile.lines) : []
   writeFileSync(join(evidence, "orchestrator-turns.json"), JSON.stringify(stats, null, 1), { mode: 0o600 })
   writeFileSync(join(evidence, "orchestrator-tool-log.json"), JSON.stringify(orchFile ? toolLog(orchFile.lines) : [], null, 1), { mode: 0o600 })
-  for (const t of all.filter(t => t !== orchFile)) writeFileSync(join(evidence, `worker-tool-log-${t.file.split("/").pop()}.json`), JSON.stringify(toolLog(t.lines), null, 1), { mode: 0o600 })
+  for (const t of all.filter(t => t !== orchFile)) {
+    writeFileSync(join(evidence, `worker-tool-log-${t.file.split("/").pop()}.json`), JSON.stringify(toolLog(t.lines), null, 1), { mode: 0o600 })
+    writeFileSync(join(evidence, `worker-turns-${t.file.split("/").pop()}.json`), JSON.stringify(turnStats(t.lines), null, 1), { mode: 0o600 })
+  }
+  note("resolved-models", { models: [...new Set(all.flatMap(t => t.lines.flatMap(e => e.type === "assistant" && e.message?.model ? [e.message.model] : [])))] })
+  if (provider === "codex") writeFileSync(join(evidence, "codex-turns.json"), JSON.stringify(codexTurns(codexProfilePath, since), null, 1), { mode: 0o600 })
   const bTranscripts = transcripts(join(b.dir, "home"))
   for (const t of bTranscripts) writeFileSync(join(evidence, `b-tool-log-${t.file.split("/").pop()}.json`), JSON.stringify(toolLog(t.lines), null, 1), { mode: 0o600 })
   const read = p => { try { return readFileSync(p, "utf8").slice(0, 2000) } catch { return null } }
@@ -375,7 +450,7 @@ Steps:
   let w1log = null
   try { w1log = git("log", "--oneline", "w1") } catch (e) { w1log = `no w1 branch: ${String(e.message).slice(0, 120)}` }
   note("results", {
-    report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
+    report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(root, "wt", w, "msg.txt")), read(join(root, "wt", w, "steer.txt"))]), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
     agents: (final?.agents ?? []).map(x => ({ id: x.id, alias: x.alias, state: x.state })), b_transcripts: bTranscripts.length,
     orchestrator_turns: stats.length, orchestrator_turns_seen_by_driver: orchTurns.length,
     tokens: stats.reduce((acc, t) => ({ input: acc.input + t.input, cache_read: acc.cache_read + t.cache_read, cache_write: acc.cache_write + t.cache_write, output: acc.output + t.output }), { input: 0, cache_read: 0, cache_write: 0, output: 0 }),
