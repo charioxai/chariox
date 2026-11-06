@@ -182,6 +182,9 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
         RelayPeerRequest::ReadProjectEnvironment { .. } => "read_project_environment",
         RelayPeerRequest::PullProjectEnvironmentSecret { .. } => "pull_project_environment_secret",
         RelayPeerRequest::PullProjectEnvironmentFile { .. } => "pull_project_environment_file",
+        RelayPeerRequest::PullProjectEnvironmentRegistration { .. } => {
+            "pull_project_environment_registration"
+        }
         RelayPeerRequest::EnsureRemoteSkillPackages { .. } => "ensure_remote_skill_packages",
         RelayPeerRequest::RequestProviderAccountCopy { .. } => "request_provider_account_copy",
         RelayPeerRequest::InstallProviderAccountCopy { .. } => "install_provider_account_copy",

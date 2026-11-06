@@ -431,7 +431,7 @@ mod tests {
     fn concurrent_requests_with_one_id_start_one_task_that_stop_still_reaches() {
         for round in 0..40 {
             let root = scratch();
-            let operations = EnvironmentOperations::new(&root);
+            let operations = EnvironmentOperations::new(&root, OperationChanges::new());
             let gate = Arc::new(std::sync::Barrier::new(8));
             let id = format!("same-{round}");
             let outcomes: Vec<_> = (0..8)
@@ -465,7 +465,7 @@ mod tests {
     fn polling_while_an_operation_is_published_never_settles_it_as_restarted() {
         for round in 0..40 {
             let root = scratch();
-            let operations = EnvironmentOperations::new(&root);
+            let operations = EnvironmentOperations::new(&root, OperationChanges::new());
             let id = format!("poll-{round}");
             let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let poller = {

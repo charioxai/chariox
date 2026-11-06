@@ -1,8 +1,9 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: Setup and Import share managed work and stop admission.
 use crate::error::DaemonError;
 use crate::local::{
-    EnvironmentOperationRequest, ImportProjectEnvironmentEntriesRequest, LocalDaemonResponse,
-    ProjectEnvironmentSetupField, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
+    EnvironmentOperationRequest, GetEnvironmentOperationRequest,
+    ImportProjectEnvironmentEntriesRequest, LocalDaemonResponse, ProjectEnvironmentSetupField,
+    RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
 };
 use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
 use crate::runtime::router::CommandRouter;
@@ -78,6 +79,8 @@ fn fixture(label: &str) -> Fixture {
                 variables: String::new(),
                 secrets: Vec::new(),
                 files: Vec::new(),
+                mcps: Vec::new(),
+                skills: Vec::new(),
             },
             &owner,
         )
@@ -137,11 +140,13 @@ impl Fixture {
                 let LocalDaemonResponse::EnvironmentOperation { operation } = self
                     .runtime
                     .get_environment_operation(
-                        EnvironmentOperationRequest {
+                        GetEnvironmentOperationRequest {
                             operation_id: id.into(),
+                            wait_after_updates: None,
                         },
                         &self.owner,
                     )
+                    .await
                     .unwrap()
                 else {
                     panic!("Setup operation expected")
@@ -226,11 +231,13 @@ async fn reserved_stop_refuses_setup_from_local_and_peer_entry_points() {
             fixture
                 .runtime
                 .get_environment_operation(
-                    EnvironmentOperationRequest {
-                        operation_id: id.into()
+                    GetEnvironmentOperationRequest {
+                        operation_id: id.into(),
+                        wait_after_updates: None,
                     },
                     &fixture.owner
                 )
+                .await
                 .is_err(),
             "refused Setup must not publish an operation"
         );
@@ -318,11 +325,13 @@ async fn reserved_stop_refuses_import_without_publishing_an_operation() {
         fixture
             .runtime
             .get_environment_operation(
-                EnvironmentOperationRequest {
-                    operation_id: "import-fenced".into()
+                GetEnvironmentOperationRequest {
+                    operation_id: "import-fenced".into(),
+                    wait_after_updates: None,
                 },
                 &fixture.owner,
             )
+            .await
             .is_err(),
         "a refused Import must not publish an operation"
     );

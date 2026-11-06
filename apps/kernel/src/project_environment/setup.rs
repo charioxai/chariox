@@ -66,6 +66,7 @@ pub(crate) struct SetupRuns {
     root: PathBuf,
     changes: super::OperationChanges,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
+    managed: crate::room_terminal::managed_work::ManagedWork,
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -84,6 +85,7 @@ impl SetupRuns {
             root: private_state_root.join(DIRECTORY),
             changes,
             live: Mutex::new(HashMap::new()),
+            managed: Default::default(),
         });
         for entry in fs::read_dir(&runs.root).into_iter().flatten().flatten() {
             let Ok(bytes) = fs::read(entry.path()) else {
@@ -226,10 +228,28 @@ impl SetupRuns {
     }
 
     /// Starts the script, or answers the run that already carries this operation id.
+    pub(crate) fn link_managed_kernel(
+        &self,
+        gate: Arc<crate::runtime::state::ManagedKernelQuiescenceGate>,
+        callback: std::sync::Weak<dyn Fn() + Send + Sync>,
+    ) {
+        self.managed.link(gate, callback);
+    }
+
+    pub(crate) fn has_running_work(&self) -> bool {
+        // Keep cancelled runs counted until the child is reaped and its output has drained.
+        !lock(&self.live).is_empty()
+    }
+
+    fn report_work(&self) {
+        self.managed.report(|| self.has_running_work());
+    }
+
     pub(crate) fn start(
         self: &Arc<Self>,
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
+        let _admission = self.managed.admission()?;
         if let Some(existing) = self.get(&spec.operation_id)? {
             if existing.project_id != spec.project_id {
                 return Err(environment_error(
@@ -276,6 +296,7 @@ impl SetupRuns {
             cancelled: std::sync::atomic::AtomicBool::new(false),
         });
         lock(&self.live).insert(spec.operation_id.clone(), Arc::clone(&live));
+        self.report_work();
         let runs = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runs.execute(&live, &spec).await;
@@ -446,6 +467,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
+        self.report_work();
         self.changes.notify();
     }
 
