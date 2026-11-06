@@ -800,6 +800,30 @@ mod tests {
             )
             .is_err());
     }
+    // The run source kind travels in this response: a peer that does not know it must be refused at the
+    // protocol number, not answered with a variant it cannot read.
+    #[test]
+    fn a_peer_on_the_protocol_before_the_run_source_kind_is_refused() {
+        let mut f = Fixture::for_kernel("run-source-peer");
+        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let ask = |protocol_version| {
+            runtime.receive_workflow_notification_peer(
+                "home-peer",
+                "local",
+                RelayPeerRequest::ListWorkflowNotificationSources { protocol_version },
+            )
+        };
+        assert!(
+            ask(438).is_err(),
+            "peer protocol 438 cannot read workflow_run"
+        );
+        assert!(matches!(
+            ask(VERSION),
+            Ok(RelayPeerResponse::WorkflowNotificationSources { protocol_version, .. })
+                if protocol_version == VERSION && protocol_version >= 439
+        ));
+    }
+
     fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
         chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "wfnotify-fixture".into(),

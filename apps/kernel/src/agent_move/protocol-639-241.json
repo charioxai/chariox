@@ -1,6 +1,6 @@
 {
   "local_protocol": 1000,
-  "peer_protocol": 438,
+  "peer_protocol": 439,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
