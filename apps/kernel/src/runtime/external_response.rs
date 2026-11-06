@@ -184,6 +184,7 @@ response_policies! {
     Public => [
         ControlPlane,
         EventSubscription,
+        NotificationSources,
         EventsListed,
         EventsAcknowledged,
         EventsCursorExpired,

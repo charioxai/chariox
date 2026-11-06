@@ -231,6 +231,7 @@ pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::SubscribeEvents(_)
             | LocalDaemonRequest::UnsubscribeEvents(_)
             | LocalDaemonRequest::GetEventSubscription(_)
+            | LocalDaemonRequest::ListNotificationSources(_)
             | LocalDaemonRequest::ListEvents(_)
             | LocalDaemonRequest::WaitEvents(_)
             | LocalDaemonRequest::AckEvents(_)

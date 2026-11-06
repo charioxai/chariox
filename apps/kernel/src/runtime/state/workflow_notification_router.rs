@@ -556,6 +556,8 @@ impl KernelRuntimeOwnedState {
 #[cfg(test)]
 mod outside_agent_tests;
 #[cfg(test)]
+#[cfg(test)]
+mod outside_agent_listing_tests;
 mod tests {
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};

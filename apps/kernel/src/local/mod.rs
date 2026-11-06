@@ -326,8 +326,8 @@ pub use api::{
     EventKernelIssue, EventQuestion, EventQuestionChoice, EventQuestionTextReply, EventRefs,
     EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSourceFollow,
     EventSubscription, EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest,
-    OutsideEvent, OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest,
-    WaitEventsRequest,
+    ListNotificationSourcesRequest, OutsideEvent, OutsideEventValue, SubscribeEventsRequest,
+    UnsubscribeEventsRequest, WaitEventsRequest,
 };
 
 pub use api::{

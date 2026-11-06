@@ -7,7 +7,7 @@ use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
 use crate::runtime::command::KernelCommand;
 use crate::runtime::router::CommandRouter;
 
-async fn dispatch(
+pub(super) async fn dispatch(
     router: &CommandRouter,
     grant: &str,
     request: serde_json::Value,
@@ -24,7 +24,7 @@ async fn dispatch(
     command.caller.user_id = Some(crate::session::DEFAULT_LOCAL_USER_ID.into());
     router.dispatch(command, request).await
 }
-fn register(
+pub(super) fn register(
     kernel: &KernelRuntimeState,
     f: &Fixture,
     workflow: &str,
@@ -47,7 +47,7 @@ fn register(
     };
     source
 }
-fn restore(kernel: &KernelRuntimeState, f: &Fixture) {
+pub(super) fn restore(kernel: &KernelRuntimeState, f: &Fixture) {
     kernel
         .owned
         .session_store
@@ -67,7 +67,7 @@ async fn wait(router: &CommandRouter, grant: &str, since: u64) -> Vec<OutsideEve
         other => panic!("expected events, got {other:?}"),
     }
 }
-fn refusal(result: Result<LocalDaemonResponse, DaemonError>) -> String {
+pub(super) fn refusal(result: Result<LocalDaemonResponse, DaemonError>) -> String {
     match result {
         Err(DaemonError::MachineRequest { code, message }) => {
             assert_eq!(code, "events_refused");

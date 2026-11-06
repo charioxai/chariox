@@ -38,6 +38,9 @@
       "GetEventSubscription": {}
     },
     {
+      "ListNotificationSources": {}
+    },
+    {
       "ListEvents": {
         "since": 1,
         "limit": 100
@@ -77,6 +80,36 @@
           "acknowledged_cursor": 0,
           "ended": null
         }
+      }
+    },
+    {
+      "NotificationSources": {
+        "sources": [
+          {
+            "kind": "workflow_exit",
+            "source_id": "wf_source_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "workflow-a",
+            "exit_node_id": "exit-a",
+            "exit_ordinal": 0,
+            "name": "Review",
+            "display_name": "Review",
+            "available": true
+          },
+          {
+            "kind": "owner_action",
+            "source_id": "owner_action_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "owner_action",
+            "exit_node_id": "blocked",
+            "exit_ordinal": 0,
+            "name": "Agent needs your action",
+            "display_name": "Agent needs your action",
+            "available": true
+          }
+        ]
       }
     },
     {

@@ -12,6 +12,7 @@ pub(crate) fn is_outside_event_request(request: &LocalDaemonRequest) -> bool {
         LocalDaemonRequest::SubscribeEvents(_)
             | LocalDaemonRequest::UnsubscribeEvents(_)
             | LocalDaemonRequest::GetEventSubscription(_)
+            | LocalDaemonRequest::ListNotificationSources(_)
             | LocalDaemonRequest::ListEvents(_)
             | LocalDaemonRequest::WaitEvents(_)
             | LocalDaemonRequest::AckEvents(_)
@@ -118,6 +119,16 @@ impl KernelRuntimeState {
                 self.outside_subscription_response(id)
             }
             LocalDaemonRequest::GetEventSubscription(_) => self.outside_subscription_response(id),
+            LocalDaemonRequest::ListNotificationSources(_) => {
+                let owner = owner.ok_or_else(|| {
+                    crate::durable_state::agent_lifecycle::outside::refused(
+                        "grant revoked or expired",
+                    )
+                })?;
+                Ok(LocalDaemonResponse::NotificationSources {
+                    sources: self.followable_notification_sources(owner)?,
+                })
+            }
             LocalDaemonRequest::ListEvents(request) => {
                 self.outside_list_response(id, request.since, request.limit)
             }

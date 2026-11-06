@@ -35,6 +35,11 @@ pub struct UnsubscribeEventsRequest {
 #[serde(deny_unknown_fields)]
 pub struct GetEventSubscriptionRequest {}
 
+/// The notification sources a grant may follow with `SubscribeEvents{sources}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListNotificationSourcesRequest {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ListEventsRequest {

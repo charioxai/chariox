@@ -112,6 +112,40 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The sources a grant of `owner` can follow on this kernel: exactly those
+    /// `follow_notification_sources` accepts. "Agent needs your action" is created with its Room's
+    /// first listing, so it is ensured here and can be followed before any task has blocked.
+    pub(crate) fn followable_notification_sources(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<WorkflowNotificationSourceSummary>, DaemonError> {
+        for session in self.owned.session_store.list_sessions() {
+            if session.owner_user_id() == owner
+                && session.status() != crate::session::SessionStatus::Ended
+            {
+                self.owned
+                    .ensure_owner_action_notification_source(&session)?;
+            }
+        }
+        let home = self.owned.config_projection.snapshot().daemon_id;
+        let (mut sources, _, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
+        let sessions = self.owned.session_store.read();
+        sources.retain(|source| {
+            source.kernel_id == home
+                && source.enabled
+                && super::workflow_notification_router::source_available(&sessions, source)
+        });
+        for source in &mut sources {
+            source.available = true;
+        }
+        Ok(super::workflow_notification_router::summaries(
+            &sessions, &sources,
+        ))
+    }
+
     /// What the grant follows, as `GetEventSubscription` shows it.
     pub(crate) fn followed_notification_sources(
         &self,
