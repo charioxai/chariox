@@ -130,7 +130,7 @@ pub(crate) async fn run_event_delivery_connector(
 ) {
     let delivery_queue = DeliveryAcceptanceQueue::new(
         runtime_state.clone(),
-        config.kernel_id.clone(),
+        config.kernel_id(),
         config.environment_id.clone(),
     );
     run_event_delivery_connector_with_queue(runtime_state, config, shutdown, delivery_queue).await;
@@ -438,17 +438,25 @@ async fn connect_once(
     }
 }
 
+/// One reconciliation per generator and record owner: the kernel signs each
+/// with its own key and names the owner the connection record carries, so a
+/// kernel holding copies of several owners' connections claims each under its
+/// own owner and an owner without a record is never named.
 async fn reconcile_aegs_subscriptions(
     runtime_state: &KernelRuntimeState,
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
     let mut generator_management_targets = config.generator_management_targets.clone();
-    let mut claims = runtime_state
-        .event_generator_subscription_claims(&config.kernel_id, &config.environment_id)?;
+    let claim_sets = runtime_state
+        .event_generator_subscription_claims(&config.kernel_id(), &config.environment_id)?;
     // Each generator reconciles on its own: one that is down, unresolvable, or
     // refuses must not keep the others from receiving their subscriptions.
     let mut failures = Vec::new();
-    for generator_id in claims.keys() {
+    let generator_ids = claim_sets
+        .keys()
+        .map(|set| set.generator_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    for generator_id in &generator_ids {
         let current_config = config.config_projection.snapshot();
         let caller_user_id = current_config
             .cloud_relay
@@ -475,31 +483,16 @@ async fn reconcile_aegs_subscriptions(
             Err(error) => failures.push(format!("{generator_id}: {error}")),
         }
     }
-    if generator_management_targets.is_empty() {
-        return if failures.is_empty() {
-            Ok(())
-        } else {
-            Err(failures.join("; "))
-        };
-    }
-    let current_config = config.config_projection.snapshot();
-    let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
-        &current_config.daemon_id,
-        current_config
-            .cloud_relay
-            .as_ref()
-            .map(|profile| profile.user_id.as_str())
-            .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
-    );
-    for generator_id in generator_management_targets.keys() {
+    for (set, claims) in claim_sets {
+        let generator_id = set.generator_id;
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
-            owner_id: owner_id.clone(),
+            owner_id: set.owner_id,
             generator_id: generator_id.clone(),
-            subscriptions: claims.remove(generator_id).unwrap_or_default(),
+            subscriptions: claims,
         };
         let target = match crate::runtime::event_catalog_control::event_generator_management_target(
             &generator_management_targets,
-            generator_id,
+            &generator_id,
         ) {
             Ok(target) => target.clone(),
             Err(error) => {
@@ -508,58 +501,11 @@ async fn reconcile_aegs_subscriptions(
             }
         };
         let identity = config.identity.clone();
-        let generator_id = generator_id.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let path = "/v1/subscriptions/reconcile";
-            let encoded = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-            let headers = identity.management_headers(
-                "PUT",
-                path,
-                &generator_id,
-                &request.owner_id,
-                encoded.as_bytes(),
-            )?;
-            let mut http_request =
-                crate::runtime::event_catalog_control::aegs_management_agent_builder(&target)
-                    .timeout_connect(Duration::from_secs(3))
-                    .timeout_read(Duration::from_secs(10))
-                    .timeout_write(Duration::from_secs(10))
-                    .build()
-                    .put(&format!("{}{path}", target.url));
-            for (name, value) in &headers {
-                http_request = http_request.set(name, value);
-            }
-            let response = http_request
-                .set("content-type", "application/json")
-                .send_string(&encoded)
-                .map_err(|error| {
-                    format!("AEGS {generator_id} reconciliation request failed: {error}")
-                })?;
-            let response_body = response.into_string().map_err(|error| error.to_string())?;
-            let response: chariox_event_protocol::AegsSubscriptionReconcileResponse =
-                serde_json::from_str(&response_body)
-                    .map_err(|error| format!("AEGS {generator_id} response is invalid: {error}"))?;
-            if !response.authoritative {
-                return Err(format!(
-                    "AEGS {generator_id} did not accept authoritative reconciliation"
-                ));
-            }
-            for refused in &response.refused {
-                crate::logging::warn_with_fields(
-                    "daemon.event_delivery",
-                    "AEGS refused a subscription",
-                    serde_json::json!({
-                        "generator_id": generator_id,
-                        "binding_id": refused.binding_id,
-                        "reason": refused.reason,
-                    }),
-                );
-            }
-            Ok::<(), String>(())
-        })
-        .await
-        .map_err(|error| error.to_string())
-        .and_then(|result| result);
+        let result =
+            tokio::task::spawn_blocking(move || reconcile_one_owner(&identity, &target, &request))
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result);
         if let Err(error) = result {
             failures.push(error);
         }
@@ -569,6 +515,86 @@ async fn reconcile_aegs_subscriptions(
     } else {
         Err(failures.join("; "))
     }
+}
+
+/// The code of an AEGS error response, which is all a log needs of a refusal.
+fn aegs_error_code(response: ureq::Response) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_str(&response.into_string().ok()?).ok()?;
+    body["error"]["code"].as_str().map(str::to_string)
+}
+
+fn reconcile_one_owner(
+    identity: &GatewayIdentity,
+    target: &crate::config::EventGeneratorManagementTarget,
+    request: &chariox_event_protocol::AegsSubscriptionReconcileRequest,
+) -> Result<(), String> {
+    let generator_id = &request.generator_id;
+    let path = "/v1/subscriptions/reconcile";
+    let encoded = serde_json::to_string(request).map_err(|error| error.to_string())?;
+    let headers = identity.management_headers(
+        "PUT",
+        path,
+        generator_id,
+        &request.owner_id,
+        encoded.as_bytes(),
+    )?;
+    let mut http_request =
+        crate::runtime::event_catalog_control::aegs_management_agent_builder(target)
+            .timeout_connect(Duration::from_secs(3))
+            .timeout_read(Duration::from_secs(10))
+            .timeout_write(Duration::from_secs(10))
+            .build()
+            .put(&format!("{}{path}", target.url));
+    for (name, value) in &headers {
+        http_request = http_request.set(name, value);
+    }
+    let response = match http_request
+        .set("content-type", "application/json")
+        .send_string(&encoded)
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            // The owner id is a secret: the log names the generator, the HTTP
+            // status and the typed code, never the owner.
+            let code = aegs_error_code(response);
+            crate::logging::warn_with_fields(
+                "daemon.event_delivery",
+                "AEGS refused a reconciliation",
+                serde_json::json!({
+                    "generator_id": generator_id,
+                    "status": status,
+                    "code": code,
+                }),
+            );
+            return Err(format!("AEGS {generator_id} refused the reconciliation"));
+        }
+        Err(error) => {
+            return Err(format!(
+                "AEGS {generator_id} reconciliation request failed: {error}"
+            ));
+        }
+    };
+    let response_body = response.into_string().map_err(|error| error.to_string())?;
+    let response: chariox_event_protocol::AegsSubscriptionReconcileResponse =
+        serde_json::from_str(&response_body)
+            .map_err(|error| format!("AEGS {generator_id} response is invalid: {error}"))?;
+    if !response.authoritative {
+        return Err(format!(
+            "AEGS {generator_id} did not accept authoritative reconciliation"
+        ));
+    }
+    for refused in &response.refused {
+        crate::logging::warn_with_fields(
+            "daemon.event_delivery",
+            "AEGS refused a subscription",
+            serde_json::json!({
+                "generator_id": generator_id,
+                "binding_id": refused.binding_id,
+                "reason": refused.reason,
+            }),
+        );
+    }
+    Ok(())
 }
 
 fn record_connected() {

@@ -1556,7 +1556,6 @@ fn two_kernel_proof_driver() {
     use std::os::unix::fs::OpenOptionsExt;
 
     let aegs_url = std::env::var("GHOWNER_PROOF_AEGS_URL").expect("event service url");
-    let token = std::env::var("GHOWNER_PROOF_MANAGEMENT_TOKEN").expect("management token");
     let owners_file = std::env::var("GHOWNER_PROOF_OWNERS_FILE").expect("owners file");
     let kernel_config = |cloud_user_id: &str| {
         let mut config = config_of_cloud_user(cloud_user_id);
@@ -1565,10 +1564,7 @@ fn two_kernel_proof_driver() {
             "dev.chariox.dummy".to_string(),
             crate::config::EventGeneratorManagementTarget {
                 url: aegs_url.clone(),
-                token: token.clone(),
-                expires_at_ms: None,
-                owner_ids: None,
-                owner_scoped: None,
+                registry_discovered: false,
             },
         );
         config

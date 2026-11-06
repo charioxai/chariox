@@ -87,7 +87,7 @@ impl Services {
                     let response = match path {
                         "/v1/subscriptions/reconcile" => {
                             let request: AegsSubscriptionReconcileRequest = serde_json::from_value(body).unwrap();
-                            assert_eq!(request.owner_id, crate::runtime::event_catalog_control::event_connection_owner_id("daemon-test", "local"));
+                            assert_eq!(request.owner_id, super::FIXTURE_EVENT_OWNER);
                             let accepted_binding_ids = store.reconcile_for_owner(&identity::kernel_id_for_public_key(&kernel_key), &request.owner_id, &request.generator_id, &request.subscriptions).unwrap();
                             serde_json::to_value(AegsSubscriptionReconcileResponse { accepted_binding_ids, authoritative: true, refused: Vec::new() }).unwrap()
                         }

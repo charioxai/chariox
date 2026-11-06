@@ -172,6 +172,37 @@ impl EventConnectionRegistry {
             .map(|record| record.event_owner_id.clone()))
     }
 
+    /// The owner a connection's claims go out under; `None` when this kernel
+    /// holds no record of it or the record is revoked, so a revoked
+    /// connection stops being claimed.
+    pub(crate) fn claimable_event_owner_id(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        Ok(self
+            .lock_state()?
+            .connections
+            .get(&(owner_user_id.to_string(), connection_id.to_string()))
+            .filter(|record| record.connection.status != crate::local::EventConnectionStatus::Revoked)
+            .map(|record| record.event_owner_id.clone()))
+    }
+
+    /// The generator and event owner of every record that is not revoked:
+    /// one claim set per pair, empty when no route uses the connection.
+    pub(crate) fn claimable_generator_owners(&self) -> Result<Vec<(String, String)>, DaemonError> {
+        let mut pairs = self
+            .lock_state()?
+            .connections
+            .values()
+            .filter(|record| record.connection.status != crate::local::EventConnectionStatus::Revoked)
+            .map(|record| (record.connection.generator_id.clone(), record.event_owner_id.clone()))
+            .collect::<Vec<_>>();
+        pairs.sort();
+        pairs.dedup();
+        Ok(pairs)
+    }
+
     /// The owner an authorization was started under.
     pub(crate) fn authorization_event_owner_id(
         &self,

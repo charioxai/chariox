@@ -504,7 +504,6 @@ pub(crate) async fn load_imported_event_connection(
         config_projection,
         &config_projection.snapshot(),
         caller_user_id,
-        std::slice::from_ref(&owner_id),
         &LocalDaemonRequest::GetEventConnection(crate::local::GetEventConnectionRequest {
             connection_id: connection.connection_id.clone(),
         }),
@@ -2116,7 +2115,7 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_of_the_record_on_another_kernel_resolves_the_same_owner_and_credential() {
+    fn a_copy_of_the_record_on_another_kernel_resolves_the_same_owner() {
         let root = std::env::temp_dir().join(format!("ghowner-copy-{}", std::process::id()));
         let owner = new_event_connection_owner_id();
         // Kernel B holds an independent copy of kernel A's record.
@@ -2127,24 +2126,6 @@ mod tests {
         let resolved =
             event_owner_for_request(&registry_b, "user", &refresh("connection-1")).unwrap();
         assert_eq!(resolved, owner);
-        // The management credential the operator or Cloud issued for that owner
-        // serves the copy.
-        let target = crate::config::EventGeneratorManagementTarget {
-            url: "https://aegs.example.test".into(),
-            token: "fixture-capability".into(),
-            expires_at_ms: None,
-            owner_ids: Some(vec![owner.clone()]),
-            owner_scoped: None,
-        };
-        let targets = BTreeMap::from([("dev.chariox.dummy".to_string(), target)]);
-        assert!(
-            select_event_generator_management_target(&targets, "dev.chariox.dummy", &resolved)
-                .is_ok()
-        );
-        let own = new_event_connection_owner_id();
-        assert!(
-            select_event_generator_management_target(&targets, "dev.chariox.dummy", &own).is_err()
-        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

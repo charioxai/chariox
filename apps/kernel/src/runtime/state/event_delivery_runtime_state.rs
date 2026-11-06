@@ -1,5 +1,13 @@
 use super::*;
 
+/// What one AEGS reconciliation claims: a generator's subscriptions under one
+/// event owner, named by the connection records that carry that owner.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EventClaimSet {
+    pub(crate) generator_id: String,
+    pub(crate) owner_id: String,
+}
+
 impl KernelRuntimeState {
     /// Err when the App routes could not be read: the caller skips this round
     /// rather than publish an authoritative set without them.
@@ -7,24 +15,38 @@ impl KernelRuntimeState {
         &self,
         kernel_id: &str,
         environment_id: &str,
-    ) -> Result<BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>, String> {
-        let mut generators =
-            BTreeMap::<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
+    ) -> Result<
+        BTreeMap<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>,
+        String,
+    > {
+        // One claim set per generator and record owner, each reconciled under
+        // that owner; a record no route uses still gets its (empty) set so a
+        // removed route stops being delivered.
+        let mut sets = BTreeMap::<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
+        for (generator_id, owner_id) in self
+            .event_connection_registry()
+            .claimable_generator_owners()
+            .map_err(|error| format!("event connection owners could not be read: {error}"))?
+        {
+            sets.entry(EventClaimSet { generator_id, owner_id }).or_default();
+        }
         for (route, event_owner_id) in self.bound_app_event_routes()? {
             let binding_id =
                 delivery_binding_id(&route, &event_owner_id, kernel_id, environment_id);
             let Some(claim) = app_route_subscription(&route, binding_id) else {
                 continue;
             };
-            generators
-                .entry(claim.generator_id.clone())
-                .or_default()
-                .push(claim);
+            sets.entry(EventClaimSet {
+                generator_id: claim.generator_id.clone(),
+                owner_id: event_owner_id,
+            })
+            .or_default()
+            .push(claim);
         }
-        for claims in generators.values_mut() {
+        for claims in sets.values_mut() {
             claims.sort_by(|left, right| left.binding_id.cmp(&right.binding_id));
         }
-        Ok(generators)
+        Ok(sets)
     }
 
     /// App inbox routes fed by generator connections (protocol 358), of
@@ -51,7 +73,7 @@ impl KernelRuntimeState {
                 continue;
             };
             let owner = registry
-                .connection_event_owner_id(
+                .claimable_event_owner_id(
                     &crate::event_connection::event_connection_user_id(&config, &route.owner_id),
                     &source.connection_id,
                 )
@@ -448,12 +470,24 @@ mod tests {
         runtime
     }
 
+    /// The claims of one generator across the owners that carry them.
+    fn claims_of<'a>(
+        sets: &'a BTreeMap<EventClaimSet, Vec<chariox_event_protocol::AegsSubscriptionClaim>>,
+        generator_id: &str,
+    ) -> Vec<&'a chariox_event_protocol::AegsSubscriptionClaim> {
+        sets.iter()
+            .filter(|(set, _)| set.generator_id == generator_id)
+            .flat_map(|(_, claims)| claims)
+            .collect()
+    }
+
     fn only_binding_id(runtime: &KernelRuntimeState, kernel_id: &str) -> String {
         let claims = runtime
             .event_generator_subscription_claims(kernel_id, "default")
             .unwrap();
-        assert_eq!(claims["dev.chariox.slack"].len(), 1);
-        claims["dev.chariox.slack"][0].binding_id.clone()
+        let claims = claims_of(&claims, "dev.chariox.slack");
+        assert_eq!(claims.len(), 1);
+        claims[0].binding_id.clone()
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -496,15 +530,15 @@ mod tests {
         let route = mention_route();
         let binding_id = delivery_binding_id(&route, OWNER, "kernel-1", "default");
         // Only an active installation's routes are claimed.
-        assert!(runtime
+        let before = runtime
             .event_generator_subscription_claims("kernel-1", "default")
-            .unwrap()
-            .is_empty());
+            .unwrap();
+        assert!(claims_of(&before, "dev.chariox.slack").is_empty());
         activate_mention_installation(&runtime);
         let claims = runtime
             .event_generator_subscription_claims("kernel-1", "default")
             .unwrap();
-        let claim = &claims["dev.chariox.slack"][0];
+        let claim = claims_of(&claims, "dev.chariox.slack")[0];
         assert_eq!(
             (
                 claim.binding_id.as_str(),
