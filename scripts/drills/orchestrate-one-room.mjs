@@ -228,32 +228,30 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step (what is 
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id) and yield on ALL your registrations (chariox events_subscriptions lists them; a yield must cover every open obligation) with a deadline 20 minutes ahead, then END YOUR TURN. The kernel wakes you with a new turn per event.
 4. On the FIRST wake, steer w3 while it is still busy: chariox send_agent_message to w3 with urgent true: "When you continue, also write the word DELTA into steer.txt in your working directory." Then ack the event and yield again on all registrations.
 5. On each later wake: ack, check which workers are done (room \`agent list\` or list_session_agents) and yield again until all three are done.
-6. Collect the results through the kernel, not your shell: chariox-reach \`request\` {"request":{"AttachToSession":{"session_id":"${R}","client_id":"orchestrator","capability_level":"FullTerminal"}}}, then for each worker {"request":{"ReadFile":{"session_id":"${R}","attachment_id":"<id>","path":"${join(root, "wt")}/wN/result.txt"}}}, then write all three words into ${join(work, "collected.txt")} with {"request":{"EditFile":{"session_id":"${R}","attachment_id":"<id>","path":"${join(work, "collected.txt")}","contents":"<the three words>"}}}. Record every answer.
+6. Collect the results with your own shell: read result.txt (and steer.txt) from each worker worktree under ${join(root, "wt")}.
 7. Then write ${join(work, "orchestrator-report.json")} with one entry per wake (what woke you, what you did), the step 6 answers, and each worker's result.txt content. Then delete the three workers with \`agent delete wN\` and reply ORCHDONE.
 `
   const workerDeadline = Date.now() + 240000
-  // What the room tools lack, under a /sudo window the owner approves once: a peer's deadline, stopping a peer, answering
-  // a peer's decision, usage and account profiles, kernel file transfer; plus a heartbeat timer and a non-blocking owner question.
-  const sudoBrief = `# Orchestrator brief (drill, sudo scenario)
-You are the ORCHESTRATOR of this Chariox Room (session ${R}). The owner granted /sudo for this task: use the chariox kernel_request tool
-(chariox_kernel_request) for kernel requests. Do not ask the owner anything except in step 8. Never retry a refused call more than once; record
-the exact answer. Never use shell sleeps or poll in a loop.
-1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\`.
+  // Orchestration WITHOUT /sudo: every control below is a room command or an events tool of an ordinary room agent.
+  const sudoBrief = `# Orchestrator brief (drill, no-sudo scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). There is NO /sudo and no kernel_request: use only your room commands and the chariox events tools.
+Do not ask the owner anything except in step 8. Never retry a refused call more than once; record the exact answer. Never use shell sleeps or poll in a loop.
+1. Spawn w1, w2, w3 with room commands \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN --permission yolo --command-id spawn-wN\`. Spawn w1 a SECOND time with the identical command and record whether you got the same agent id.
 2. Prompt them (room \`prompt\`):
-   w1: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w1 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. Then write ALPHA into result.txt in your working directory. End with W1DONE."
-   w2: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w2 decide', message 'Write BETA?', choices [{id:'yes',label:'Yes',reply:'yes'},{id:'no',label:'No',reply:'no'}]. If the reply is yes write BETA into result.txt in your working directory. End with W2DONE."
-   w3: "Call the chariox request_popup tool (wait true, timeout_sec 900) with title 'w3 hold', message 'Hold?', choices [{id:'ok',label:'OK',reply:'ok'}]. Then write GAMMA into result.txt. End with W3DONE."
+   w1: "Run the shell command sleep 240. Then write ALPHA into result.txt in your working directory. End with W1DONE."
+   w2: "Write BETA into result.txt in your working directory. End with W2DONE."
+   w3: "Run the shell command sleep 240. Then write GAMMA into result.txt. End with W3DONE."
 3. Subscribe to each worker (chariox events_subscribe with the worker agent id).
-4. kernel_request {"SetAgentDeadline":{"session_id":"${R}","agent_id":"<w1 id>","deadline_ms":${workerDeadline}}} and then {"GetAgentDeadline":{"session_id":"${R}","agent_id":"<w1 id>"}}.
-5. kernel_request {"ListProviderAccountProfiles":{"provider":"claude"}} and {"GetProviderUsageSnapshot":{}}.
-6. Wait until the 'w2 decide' decision is open (kernel_request {"GetSessionState":{"session_id":"${R}"}}, field active_interactions), then answer it: kernel_request {"RespondToInteraction":{"session_id":"${R}","interaction_id":"<id>","choice_id":"yes"}}.
-7. Stop w3: kernel_request {"AttachToSession":{"session_id":"${R}","client_id":"orchestrator","capability_level":"FullTerminal"}}, then {"CancelActivePrompt":{"session_id":"${R}","attachment_id":"<attachment id>","target_agent_id":"<w3 id>","expected_prompt_id":null}}.
+4. Run \`agent deadline set w1 3m\` and then \`agent deadline get w1\`. Run \`agent children\`.
+5. Run \`agent profiles\` and \`agent usage\`.
+6. Stop w3's turn without deleting it: \`agent cancel w3\`.
+7. Steer w1 while it is still running: chariox send_agent_message to w1 with urgent true: "Also write the word DELTA into steer.txt in your working directory."
 8. Ask the owner a question WITHOUT blocking: chariox request_popup with wait false, title 'owner question', message 'May I merge w2?', choices [{id:'merge',label:'Merge',reply:'merge'},{id:'hold',label:'Hold',reply:'hold'}].
 9. Start a heartbeat: chariox events_timer with interval_ms 60000 and label 'heartbeat'.
-10. Yield on ALL your registrations (chariox events_subscriptions lists them; include the heartbeat timer and the owner question registration) with a deadline 15 minutes ahead and END YOUR TURN. The kernel wakes you with one turn per event.
-11. On each wake: note in ${join(work, "orchestrator-state.json")} (append) the time, what woke you and what you did; ack; when the heartbeat has woken you at least twice, cancel it (chariox events_cancel_wake). Expect: w1's deadline (${workerDeadline}) ending w1, w2 finishing, the owner's answer.
-12. When w1 and w2 are done (or ended) and the owner answered: copy w2's result.txt through the kernel file requests: kernel_request {"ReadKernelFile":{"path":"${join(root, "wt/w2/result.txt")}","offset":0,"length":4096}}, then {"WriteKernelFile":{"path":"${join(work, "collected-w2.txt")}","offset":0,"data_base64":"<the base64 you read>","total_size":<size>,"sha256":null}}.
-13. Write ${join(work, "orchestrator-report.json")}: one entry per step with ok, tool and exact answer, and per wake what woke you. Delete the workers with \`agent delete wN\`. Reply ORCHDONE.
+10. Yield on ALL your registrations (chariox events_subscriptions lists them; include the heartbeat timer and the owner question registration) with a deadline 15 minutes ahead and END YOUR TURN. A child's finish arrives as a child_finished event: it wakes you, so do not poll.
+11. On each wake: append to ${join(work, "orchestrator-state.json")} the time, what woke you (for child_finished: the outcome kind and deadline_reached) and what you did; ack; when the heartbeat has woken you at least twice, cancel it (chariox events_cancel_wake). Expect: w1's deadline ending w1 (deadline_reached true), w2 finishing, w3's cancel, the owner's answer.
+12. When w1, w2 and w3 have each finished: read w2's result.txt with your own shell from ${join(root, "wt/w2")} (it is on your kernel).
+13. Write ${join(work, "orchestrator-report.json")}: one entry per step with ok, the command you used and the exact answer, and per wake what woke you. Delete the workers with \`agent delete wN\`. Reply ORCHDONE.
 `
   // A 30-minute heartbeat and a worker turn that really fails: what wakes a parked orchestrator, and what it can read about the failure.
   const heartbeatBrief = `# Orchestrator brief (drill, heartbeat scenario)
@@ -313,37 +311,33 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
 3. When the kernel wakes you, call chariox events_inbox ONCE, read the answer, call chariox events_ack with handled true, and write ${join(work, "orchestrator-report.json")} with: what woke you, the exact answer text, the ack answer. Then reply ASKDONE.
 `
   const brief = scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
-You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only your own Chariox tools:
-the room tools (chariox room run_command / commands docs / list_session_agents / send_agent_message / history), the chariox events tools
-(subscribe, timer, yield, inbox, ack) and the chariox-reach tools (kernels, sessions, request, events_subscribe, events_wait, events_ack, guide).
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
+the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
-Kernel B id: ${b.status.daemon_id}. Deadline for both workers: unix ms ${deadline}.
+Kernel B id: ${b.status.daemon_id}. Never use shell sleeps and never poll: a child's finish arrives as a child_finished event that wakes you.
 
 Steps:
-1. Spawn worker w1 in this Room with its OWN git worktree: room command \`agent spawn w1 --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1\`.
-2. Spawn worker w2 in this Room but running on kernel B: room command \`agent spawn w2 --provider ${provider} --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w2")}\`.
-   If that is refused, record the answer and spawn w2 locally with \`--worktree ${join(root, "wt/w2")} --branch w2\`.
-3. Give each worker the deadline: reach \`request\` with {"request":{"SetAgentDeadline":{"session_id":"${R}","agent_id":"<worker id>","deadline_ms":${deadline}}}}. Record the answer.
-   Also call reach \`request\` once each with {"request":{"ListProviderAccountProfiles":null}} and {"request":{"GetProviderUsageSnapshot":{}}} and record the answers (usage pacing).
-4. Give each worker its task with the room \`prompt\` command:
-   w1: "Write the single word ALPHA into result.txt in your current working directory. Then call the chariox request_popup tool (wait true, timeout_sec 600) with title 'w1 commit', message 'Commit result.txt?', choices [{id:'yes',label:'Yes',reply:'yes'},{id:'no',label:'No',reply:'no'}]. If the reply is yes, run git add result.txt and git commit -m w1-result. End your reply with W1DONE."
-   w2: "Run the shell command sleep 60. Then write the single word BETA into result.txt in your current working directory. End your reply with W2DONE."
-5. Follow both workers and wait for them WITHOUT polling and without shell sleeps: first reach \`events_subscribe\` {"session_id":"${R}"} (no kernel argument: this Room is on your own kernel), then chariox events_subscribe with each worker's agent id, then chariox events_yield on those registrations with a deadline 15 minutes ahead and END YOUR TURN; the kernel wakes you with a new turn per event. In each wake, read reach \`events_wait\` {"timeout_seconds":1} to see what happened in the Room, act, ack, and yield again until both workers are done.
-6. When w1's decision 'w1 commit' is open, answer it with choice yes: reach \`request\` {"request":{"RespondToInteraction":{"session_id":"${R}","interaction_id":"<id>","choice_id":"yes"}}}. Find the id from your events or reach \`request\` GetSessionState (active_interactions). If refused, try once through any other tool you have, then record what happened.
-7. While w2 is still running, steer it: chariox send_agent_message to w2 with urgent true: "Also write the word GAMMA as a second line of result.txt." (or reach SteerActivePrompt).
-8. When both are done, read each worker's result.txt (your shell for local paths, reach request ReadFile/RunShellCommand for kernel B) and write ${join(work, "orchestrator-report.json")}: one entry per step 1-8 with ok true/false, the tool you used and the exact answer when something was refused. Then delete both workers with the room command \`agent delete <alias>\`, record the answers in the report too, and reply ORCHDONE.
+1. Run the room commands \`agent profiles\` and \`agent usage\` and record the answers.
+2. Spawn worker w1 with its OWN git worktree: \`agent spawn w1 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1 --permission yolo --account-profile default --deadline 20m --command-id spawn-w1\`. Run the identical command a second time and record whether the same agent id came back.
+3. Spawn worker w2 (same flags, worktree ${join(root, "wt/w2")}, branch w2) and worker w4 (worktree ${join(root, "wt/w4")}, branch w4). Spawn worker w3 with the model claude-no-such-model-1 (worktree ${join(root, "wt/w3")}, branch w3).
+4. Spawn w5 on kernel B: \`agent spawn w5 --provider claude --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w5")}\`. Record the exact answer, even a refusal. Then go on: a refused spawn must not stop you from yielding in step 7.
+5. Give tasks with the room \`prompt\` command:
+   w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
+   w2: "Run the shell command sleep 300. Then write BETA into result.txt in your current working directory. End your reply with W2DONE."
+   w3: "Reply with the word hello."
+   w4: "Run the shell command sleep 300. Then write DELTA into result.txt. End your reply with W4DONE."
+6. Run \`agent deadline set w2 90s\` and \`agent deadline get w2\`, then \`agent children\`. Record the answers.
+7. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 15 minutes ahead and END YOUR TURN. The kernel wakes you with a new turn per event.
+8. In each wake read the event (chariox events_inbox): for a child_finished event note the child, outcome.kind, success and deadline_reached. When w4 is still running after the first wake, steer it (send_agent_message to w4, urgent true: "Also write the word GAMMA into steer.txt") and then stop its turn with \`agent cancel w4\`. Ack and yield again on all registrations until w1, w2, w3 and w4 have each finished.
+9. Read w1's result.txt with your own shell from ${join(root, "wt/w1")} (the worker is on your kernel).
+10. Write ${join(work, "orchestrator-report.json")}: one entry per step 1-9 with ok true/false, the command you used and the exact answer, and one entry per child_finished event (child, outcome kind, deadline_reached). Then delete the workers with \`agent delete wN\`, record those answers too, and reply ORCHDONE.
 `
   writeFileSync(join(work, "BRIEF.md"), brief)
   let restarted = false
   const since = Date.now()
-  if (scenario === "sudo") {
-    const submitted = a.client.send(submitPromptRequest(R, attached, orch, `/sudo Read ${join(work, "BRIEF.md")} and carry it out now.`, []))
-    submitted.catch(e => note("sudo-submit-error", { message: String(e.message).slice(0, 200) }))
-    let popup
-    await until(async () => (popup = (await state(a, R)).active_interactions?.find(x => String(x.id).startsWith("sudo:"))), "sudo popup", 60000)
-    await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: popup.id, choice_id: popup.choices.find(c => c.id === "approve").id, custom_reply: "60", passkey: a.passkey } })
-    note("sudo-approved", { title: popup.title })
-  } else await a.rpc(submitPromptRequest(R, attached, orch, `Read ${join(work, "BRIEF.md")} and carry it out now.`, []))
+  {
+    await a.rpc(submitPromptRequest(R, attached, orch, `Read ${join(work, "BRIEF.md")} and carry it out now.`, []))
+  }
   note("brief-submitted", { deadline })
 
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
