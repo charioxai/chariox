@@ -378,12 +378,12 @@ Steps:
     const holdTitle = scenario === "ask" ? /ask-restart/ : /w3 hold/
     const hold = [...seen.interactions.entries()].find(([id, at]) => at && s?.active_interactions?.find(x => x.id === id && holdTitle.test(x.title ?? "")))
     const orchIdle = s && !s.prompt_states?.[orch]?.active_prompt
-    if (scenario === "batchyield" && !goAt && orchIdle && (s.agents ?? []).filter(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt).length >= 3) {
+    idleSince = orchIdle ? idleSince ?? Date.now() : null
+    if (scenario === "batchyield" && !goAt && orchIdle && ((s.agents ?? []).filter(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt).length >= 3 || (idleSince && Date.now() - idleSince > 45000))) {
       writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
     }
-    idleSince = orchIdle ? idleSince ?? Date.now() : null
     // A04-S06: an unrelated owner prompt while the sudo-bound orchestrator is parked inside the open window must wait, not start.
-    if (scenario === "sudo" && !fenceProbeAt && orchIdle && orchTurns.length >= 4) {
+    if (scenario === "sudo" && !fenceProbeAt && orchIdle && orchTurns.length >= 2) {
       fenceProbeAt = Date.now()
       a.client.send(submitPromptRequest(R, attachedNow, orch, "UNRELATED owner request: reply with the single word FENCEPROBE and nothing else.", [])).then(() => note("fence-probe-accepted"), e => note("fence-probe-refused", { message: String(e.message).slice(0, 200) }))
     }
