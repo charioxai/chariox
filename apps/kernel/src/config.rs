@@ -811,10 +811,26 @@ fn persist_user_config(path: &PathBuf, config: &CharioxUserConfig) -> Result<(),
             message: error.to_string(),
         })?;
     }
-    let payload = toml::to_string_pretty(config).map_err(|error| DaemonError::LocalTransport {
-        operation: "persist user config",
-        message: error.to_string(),
-    })?;
+    let mut document =
+        toml::Table::try_from(config).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist user config",
+            message: error.to_string(),
+        })?;
+    // The owner edits this list by hand while the kernel runs; keep the file's current one.
+    let standing_holders = kernel_access::standing_holder_entries(path);
+    if !standing_holders.is_empty() {
+        if let Some(toml::Value::Table(section)) = document.get_mut("kernel_access") {
+            section.insert(
+                "standing_holders".into(),
+                toml::Value::Array(standing_holders),
+            );
+        }
+    }
+    let payload =
+        toml::to_string_pretty(&document).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist user config",
+            message: error.to_string(),
+        })?;
     write_private_file(path, payload.as_bytes()).map_err(|error| DaemonError::LocalTransport {
         operation: "persist user config",
         message: error.to_string(),
