@@ -9,9 +9,12 @@ use crate::local::{
 };
 use crate::session::WorkflowRunStatus;
 
-const GRANT: &str = "grant-a";
+pub(super) const GRANT: &str = "grant-a";
 
-fn follow(f: &Fixture, source: &WorkflowNotificationSource) -> WorkflowNotificationSubscription {
+pub(super) fn follow(
+    f: &Fixture,
+    source: &WorkflowNotificationSource,
+) -> WorkflowNotificationSubscription {
     f.store
         .outside_mutate(Mutation::Identity {
             kernel: "daemon-test".into(),
@@ -56,14 +59,14 @@ fn follow(f: &Fixture, source: &WorkflowNotificationSource) -> WorkflowNotificat
         other => panic!("{other:?}"),
     }
 }
-fn events(f: &Fixture) -> Vec<OutsideEvent> {
+pub(super) fn events(f: &Fixture) -> Vec<OutsideEvent> {
     f.store
         .outside_list(GRANT, Some(0), 100)
         .unwrap()
         .unwrap()
         .events
 }
-fn accept(
+pub(super) fn accept(
     f: &Fixture,
     sub: &WorkflowNotificationSubscription,
     env: &WorkflowNotificationEnvelope,
@@ -73,7 +76,11 @@ fn accept(
         envelope: env.clone(),
     })
 }
-fn append(f: &Fixture, sub: &WorkflowNotificationSubscription, env: &WorkflowNotificationEnvelope) {
+pub(super) fn append(
+    f: &Fixture,
+    sub: &WorkflowNotificationSubscription,
+    env: &WorkflowNotificationEnvelope,
+) {
     f.store
         .notify(NotificationOperation::AppendToGrantInbox {
             subscription: sub.clone(),

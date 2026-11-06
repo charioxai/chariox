@@ -30,14 +30,19 @@ pub(super) fn source_available(
         s.owner_user_id() == source.owner_user_id
             && s.host_daemon_id() == source.kernel_id
             && s.status() != crate::session::SessionStatus::Ended
-    }) && (source.kind == crate::local::NotificationSourceKind::OwnerAction
-        || sessions
+    }) && match source.kind {
+        crate::local::NotificationSourceKind::OwnerAction => true,
+        crate::local::NotificationSourceKind::WorkflowRun => sessions
+            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+            .is_ok(),
+        crate::local::NotificationSourceKind::WorkflowExit => sessions
             .resolve_workflow_ref(&source.session_id, &source.workflow_id)
             .is_ok_and(|workflow| {
                 workflow
                     .node(&source.exit_node_id)
                     .is_some_and(|node| node.can_complete_workflow_run())
-            }))
+            }),
+    }
 }
 /// Summaries name each source from its workflow's current definition: the
 /// alias, followed by the exit's ordinal when more than one exit of the
@@ -54,6 +59,7 @@ pub(super) fn summaries(
                 .iter()
                 .filter(|other| {
                     other.enabled
+                        && other.kind != NotificationSourceKind::WorkflowRun
                         && other.kernel_id == source.kernel_id
                         && other.session_id == source.session_id
                         && other.workflow_id == source.workflow_id
@@ -77,7 +83,11 @@ pub(super) fn summaries(
                 workflow_id: source.workflow_id.clone(),
                 exit_node_id: source.exit_node_id.clone(),
                 exit_ordinal: ordinal,
-                display_name: naming::display_name(&name, ordinal, notifying),
+                display_name: if source.kind == NotificationSourceKind::WorkflowRun {
+                    naming::run_display_name(&name)
+                } else {
+                    naming::display_name(&name, ordinal, notifying)
+                },
                 name,
                 available: source.available,
             }

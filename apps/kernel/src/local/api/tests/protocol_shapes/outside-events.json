@@ -108,6 +108,18 @@
             "name": "Agent needs your action",
             "display_name": "Agent needs your action",
             "available": true
+          },
+          {
+            "kind": "workflow_run",
+            "source_id": "run_finished_a",
+            "kernel_id": "kernel-a",
+            "session_id": "room-a",
+            "workflow_id": "workflow-a",
+            "exit_node_id": "run_finished",
+            "exit_ordinal": 0,
+            "name": "Review",
+            "display_name": "Review run finished",
+            "available": true
           }
         ]
       }

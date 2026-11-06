@@ -140,4 +140,6 @@ pub enum WorkflowNotificationTargetKind {
 pub enum NotificationSourceKind {
     WorkflowExit,
     OwnerAction,
+    /// Any run of a workflow that ended, completed or failed.
+    WorkflowRun,
 }

@@ -31,7 +31,7 @@ async fn a_grant_lists_the_sources_it_can_follow_and_follows_every_one_listed() 
     let router = router(&mut f);
     let kernel = router.runtime_state();
     let grant = kernel.insert_access_grant_for_test(&f.session);
-    // The owner-action source does not exist yet: nothing has blocked and no Room listed.
+    // No source exists yet: nothing has blocked and no Room was listed.
     assert!(kernel
         .owned
         .durable_state_store
@@ -83,13 +83,16 @@ async fn a_grant_lists_the_sources_it_can_follow_and_follows_every_one_listed() 
                 NotificationSourceKind::OwnerAction,
                 "Agent needs your action"
             ),
+            (NotificationSourceKind::WorkflowRun, "disabled run finished"),
+            // The run source does not count as a second notifying exit: the exit keeps its name.
             (NotificationSourceKind::WorkflowExit, "reviewer"),
+            (NotificationSourceKind::WorkflowRun, "reviewer run finished"),
         ],
         "{sources:?}"
     );
     assert!(sources.iter().all(|s| s.available));
     assert!(sources.iter().any(|s| s.source_id == own.source_id));
-    // Listing created the owner-action source, so it can be followed before any block.
+    // Listing created the owner-action and run sources, so they can be followed before any block.
     let ids: Vec<_> = sources.iter().map(|s| s.source_id.clone()).collect();
     let LocalDaemonResponse::EventSubscription { subscription } = dispatch(
         &router,
@@ -100,9 +103,9 @@ async fn a_grant_lists_the_sources_it_can_follow_and_follows_every_one_listed() 
     .unwrap() else {
         panic!("expected a subscription")
     };
-    assert_eq!(subscription.sources.len(), 2);
+    assert_eq!(subscription.sources.len(), 4);
     // A second listing changes nothing.
-    assert_eq!(listed(&router, &grant).await.len(), 2);
+    assert_eq!(listed(&router, &grant).await.len(), 4);
     drop((router, kernel));
     cleanup(f);
 }

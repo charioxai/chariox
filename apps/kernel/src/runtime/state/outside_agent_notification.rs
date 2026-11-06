@@ -125,6 +125,10 @@ impl KernelRuntimeState {
             {
                 self.owned
                     .ensure_owner_action_notification_source(&session)?;
+                for workflow in session.workflows() {
+                    self.owned
+                        .ensure_run_finished_notification_source(&session, workflow)?;
+                }
             }
         }
         let home = self.owned.config_projection.snapshot().daemon_id;

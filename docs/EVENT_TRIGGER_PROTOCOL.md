@@ -187,7 +187,13 @@ sources per grant. Paired kernels do not inherit grants: a source of another ker
 outputs): the enabled, available sources of this kernel that the grant's owner may follow, and
 every one of them is accepted by `SubscribeEvents`. Listing creates the owner-action source
 ("Agent needs your action") of each of the owner's Rooms, so it can be followed before any task has
-blocked. Only a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
+blocked, and the "run finished" source of each of their workflows (kind `workflow_run`, named
+`<workflow> run finished`). A "run finished" source emits one occurrence for every run of its
+workflow that completed or failed, whether or not it reached an exit, with the run id as the
+occurrence id. Its output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`,
+`prompt` (the run's invocation prompt, at most 2,000 characters) and, for a failed run,
+`failure` (the first failure message, at most 2,000 characters). A stopped run emits nothing. Only
+a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
 refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
 --source ID|NAME` follows, `chariox events unsubscribe --source ID|all` unfollows, and `chariox
 events mcp` offers the same as tools next to `chariox_next_notification`, which returns each

@@ -7,6 +7,9 @@ pub(crate) mod naming;
 pub(crate) mod outside_agent;
 #[cfg(test)]
 mod outside_agent_tests;
+pub(crate) mod run_finished;
+#[cfg(test)]
+mod run_finished_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -647,6 +650,9 @@ fn require_source_workflow(
     if source.kind == crate::local::NotificationSourceKind::OwnerAction {
         return Ok(());
     }
+    // A run source follows the workflow's runs, whatever its definition is now.
+    let expected =
+        expected.filter(|_| source.kind != crate::local::NotificationSourceKind::WorkflowRun);
     let current: Option<String> = tx.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE owner_id=?1 AND session_id=?2 AND entity_kind='workflow' AND entity_id=?3",params![source.kernel_id,source.session_id,source.workflow_id],|r|r.get(0)).optional().map_err(sql)?;
     if current.is_none() || expected.is_some_and(|expected| current.as_deref() != Some(expected)) {
         return Err(error("source not available"));
