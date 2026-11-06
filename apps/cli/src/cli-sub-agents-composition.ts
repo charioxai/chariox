@@ -70,11 +70,11 @@ export function createCliSubAgentsComposition(deps: {
     },
     cardRows: () => subAgentsCardRows(controller.lines(), controller.selectedIndex, new Set(controller.lines().filter(row => controller.isCollapsed(row.id)).map(row => row.id)), dialogTextWidth(deps.width())),
     closeCard: () => controller.closeCard(),
-    /** Ctrl+G opens the card from anywhere; with the card open the list is modal; Ctrl+Up/Down move the focus of an open view. */
+    /** F7 opens the card from anywhere; with the card open the list is modal; Ctrl+Up/Down move the focus of an open view. */
     handleKey(event: Key): boolean {
       if (event.eventType === "release" || !deps.attached()) return false
       if (controller.cardOpen) {
-        if (event.ctrl && event.name === "g") { controller.closeCard(); return consume(event) }
+        if (event.name === "f7" && !event.ctrl) { controller.closeCard(); return consume(event) }
         if (event.ctrl || event.meta) return false
         switch (event.name) {
           case "up": controller.moveCard(-1); break
@@ -86,7 +86,7 @@ export function createCliSubAgentsComposition(deps: {
         }
         return consume(event)
       }
-      if (event.ctrl && event.name === "g" && controller.available) { controller.openCard(); return consume(event) }
+      if (event.name === "f7" && !event.ctrl && controller.available) { controller.openCard(); return consume(event) }
       if (controller.viewOpen && (event.ctrl || event.meta) && (event.name === "up" || event.name === "down")) {
         controller.moveFocus(event.name === "up" ? -1 : 1)
         return consume(event)
