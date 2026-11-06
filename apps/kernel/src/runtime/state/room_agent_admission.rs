@@ -110,6 +110,8 @@ impl KernelRuntimeState {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::CancelActivePrompt(r) => match r.target_agent_id.as_ref() {
+                // An agent may always stop its own turn.
+                Some(target) if target == actor.id() => return Ok(()),
                 Some(target) => (&r.session_id, target, false),
                 None => return Err(denied("cancel names the agent whose turn it stops")),
             },

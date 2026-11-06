@@ -466,6 +466,17 @@ impl KernelRuntimeState {
                         occurrence: format!("task-terminal-{}", task.task_id),
                         success: false,
                     })?;
+                // A task cancelled from outside (a deadline, the owner, an archive) ends like any other:
+                // the parent hears of it.
+                if task.task_id == root.task_id {
+                    if let Err(error) = self
+                        .announce_child_finished(&task, None, root_answer.as_ref())
+                        .await
+                    {
+                        tracing::warn!(%error, agent_id=%task.agent_id,
+                            "child_finished retained for the inbox sweep");
+                    }
+                }
             }
         }
         first_error.map_or(Ok(()), Err)
