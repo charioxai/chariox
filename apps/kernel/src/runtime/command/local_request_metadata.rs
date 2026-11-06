@@ -679,6 +679,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
         LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",
         LocalDaemonRequest::CloseUserAppView(_) => "app.user_view.close",
+        LocalDaemonRequest::ClientAppView(_) => "app.client_view",
         LocalDaemonRequest::GetUserAppViewFrontend(_) => "app.user_view.frontend",
         LocalDaemonRequest::CallUserAppView(_) => "app.user_view.call",
         LocalDaemonRequest::SubscribeUserAppViews(_) => "app.user_view.subscribe",

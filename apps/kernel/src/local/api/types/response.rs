@@ -69,6 +69,7 @@ pub enum LocalDaemonResponse {
     AppWorker { worker: AppWorkerSummary, },
     AppAutomations { installation_id: String, automations: Vec<AppAutomationSummary>, },
     AppAutomation { installation_id: String, automation: AppAutomationSummary, },
+    ClientAppView(ClientAppViewResponse),
     UserAppViewOpened { view: UserAppView, frontend: AppFrontendBundle },
     UserAppViewsListed { views: Vec<UserAppView> },
     UserAppViewClosed { view_id: String },

@@ -31,6 +31,7 @@ impl CommandRouter {
                     | LocalDaemonRequest::Notes(_)
                     | LocalDaemonRequest::Dictation(_)
                     | LocalDaemonRequest::CaptureVisibleRegion(_)
+                    | LocalDaemonRequest::ClientAppView(_)
                     | LocalDaemonRequest::OpenUserAppView(_)
                     | LocalDaemonRequest::ListUserAppViews(_)
                     | LocalDaemonRequest::CloseUserAppView(_)

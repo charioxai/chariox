@@ -5,6 +5,7 @@ import { root, checkLicenses, notices } from './licenses.mjs';
 
 await checkLicenses();
 const output = path.resolve(process.argv[2] ?? path.join(root, 'bundle'));
+const clientView = process.argv.includes('--client-view');
 await mkdir(path.join(output, 'ui'), { recursive: true });
 const built = await build({
   absWorkingDir: root,
@@ -24,7 +25,7 @@ const built = await build({
       return { contents: text.replace(loaders[0], `const PATTERN_LOADERS = {\n${english[0]}\n};`), loader: 'js' };
     });
   } }],
-  loader: { '.woff': 'file', '.woff2': 'file', '.ttf': 'file', '.svg': 'file', '.png': 'file' },
+  loader: Object.fromEntries(['.woff', '.woff2', '.ttf', '.svg', '.png'].map(extension => [extension, clientView ? 'dataurl' : 'file'])),
 });
 for (const name of Object.keys(built.metafile.inputs)) {
   if (/@univerjs-pro[+/]|univer-pro/i.test(name)) throw new Error(`Pro code forbidden in bundle: ${name}`);

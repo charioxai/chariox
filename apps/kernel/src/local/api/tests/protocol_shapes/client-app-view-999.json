@@ -1,0 +1,89 @@
+{
+  "local": 999,
+  "relayPeer": 438,
+  "requests": [
+    {
+      "ClientAppView": {
+        "Open": {
+          "installation_id": "installed"
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Read": {
+          "view_id": "v",
+          "offset": 0,
+          "max_bytes": 65536
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Check": {
+          "view_id": "v"
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Close": {
+          "view_id": "v"
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "ClientAppView": {
+        "Opened": {
+          "view_id": "client-app-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "installation_id": "installed",
+          "generation": "7",
+          "package_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "bundle": {
+            "manifest": "{}",
+            "inventory": "{}",
+            "signature": {
+              "algorithm": "ed25519",
+              "key_id": "test",
+              "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "value": "signature"
+            }
+          },
+          "trust": {
+            "publisherId": "com.example",
+            "keyId": "test",
+            "contentDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            "publicKey": "key"
+          }
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Chunk": {
+          "view_id": "v",
+          "offset": 0,
+          "body_base64": "YQ==",
+          "eof": true
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Valid": {
+          "view_id": "v",
+          "generation": "7"
+        }
+      }
+    },
+    {
+      "ClientAppView": {
+        "Closed": {
+          "view_id": "v"
+        }
+      }
+    }
+  ]
+}

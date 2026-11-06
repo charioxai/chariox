@@ -167,6 +167,59 @@ on an isolated filesystem while its writer remains alive. Focused regressions
 also cover ordinary/binary disk predictions in both admission directions.
 Its `--liveness` memory case requires two heavy growing descendants to finish
 under a near-capacity parent prediction without waiting for that parent to exit.
+## MP-08 / MP-09 / MP-10 / MP-11 client App view feasibility (AV1)
+
+The shared renderer candidate in `packages/app-view-host` is pinned into Cloud's
+built web assets. AV1's 2026-11-05 acceptance contract explicitly includes the
+owner-authorized `chromium-network-service-ipv6-route-probe` exemption: only
+Network Service `connect()` on an attributed `AF_INET6 SOCK_DGRAM` socket to
+`[2001:4860:4860::8888]:443`, no sends/writes on that socket, complete trace and
+zero strict receiver/probe wire packets. Every other operation retains the
+strict gate, including DNS, TCP, other destinations and other processes.
+
+The shared final assessment used by the real built-Cloud browser drill records
+each exempted PID/TID, destination, result and source trace. Raw non-loopback
+findings remain visible. Both pinned Chrome155 engines passed the complete
+DPR1/2 matrix: each has 72/72 frame/policy checks, 72/72 controls, 4/4 references
+and 81/81 strict captures. AV1 is accepted WITH this named exemption. The .39
+and .79 runs audit 129 and 123 exempt connects respectively, with zero strict
+receiver/probe wire packets or capture drops. Tested OSS 8b93dfb54b and Cloud
+e52b13392a; exact source/artifact/capture identity is in the r6 evidence linked
+from the AV1 document. This is not a zero-sockets claim. Round 4's rejected
+namespace/feature attempts and original gate results remain historical evidence.
+See [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md) for the exact five conditions,
+source research, fail-first regressions and browser evidence.
+
+Round7 closes the filtered-matrix acceptance finding: the shared assessment
+requires the complete case/DPR set, rejecting subsets, empty filters and duplicate
+rows. Both complete Chrome155.39/.79 reruns pass; actual fetch-only and unmatched
+runs exit1 with `complete-attack-matrix`. The30 named route-probe tests remain.
+Evidence is pinned in `appview/r7/AV1_IDENTITY.json` under the same evidence root.
+
+The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
+pre-script bootstrap, inherited policy, dedicated restricted browser/profile
+and Cloud static response remain the security anchors. Ordinary Web tabs cannot
+apply the required launch settings. There is no App-open cutover, new protocol,
+managed activity lease or shutdown-policy change. Real ordinary/managed
+Room/backend/provider/Web/TUI/relay opens require AV2–AV5 and remain deferred;
+AV1 does not close the wider MP parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11 signed App asset transport (AV2 first slice)
+
+Local999 / peer438 adds owner-scoped descriptor, bounded entry chunks and a
+60second immutable-release delivery lease. The production Web adapter verifies
+signed controls and file hashes and uses a scoped256MiB memory cache; every cache
+hit still needs a fresh authorized descriptor. Ordinary and managed placements
+share this service; idle delivery registrations hold no managed activity fence.
+
+The first real hosted WSS exit passes signed Excalidraw asset delivery at DPR1/2:
+7,788,348 bytes in119 chunks per cold read,64KiB maximum, fresh cache admission
+and rejected reads after Close. The base rejects the request at both DPRs and
+fails the normal workflow at feature admission. This is a transport slice only:
+reference execution, normal App-open/Room UI, live-page revocation/update staging,
+TUI, managed parity, performance and soaks remain unproven. The test page's normal
+waiting-room shell remains Connecting. See `APP_VIEW_DELIVERY_AV2.md` and the r7
+identity/cleanup receipts. No broader MP item or full AV2 acceptance is closed.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

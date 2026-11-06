@@ -183,6 +183,7 @@ pub(crate) mod self_host_terminal_grants;
 
 pub(crate) mod room_tool_admission;
 
+mod client_app_views;
 pub(crate) mod room_dispatch_registration;
 mod user_app_views;
 
