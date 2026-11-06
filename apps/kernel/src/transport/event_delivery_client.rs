@@ -967,6 +967,22 @@ mod tests {
                  VALUES('app','dev.chariox.app','local',1,1,'{}')",
             )
             .unwrap();
+        // A route is claimed under the owner its connection record carries.
+        runtime_state
+            .event_connection_registry()
+            .upsert(
+                "local",
+                "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.up".into(),
+                    connection_id: "connection-1".into(),
+                    status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                    metadata: serde_json::json!({}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
         for generator_id in ["dev.chariox.down", "dev.chariox.up"] {
             store
                 .app_inbox(
