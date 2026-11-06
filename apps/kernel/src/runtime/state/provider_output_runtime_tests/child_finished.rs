@@ -36,7 +36,11 @@ pub(super) async fn team(label: &str, settle_cancelled: bool, parent_running: bo
 }
 
 /// `settle_cancelled: None` leaves the child working.
-pub(super) async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
+pub(super) async fn team_with(
+    label: &str,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+) -> Team {
     let Family {
         runtime,
         room,
