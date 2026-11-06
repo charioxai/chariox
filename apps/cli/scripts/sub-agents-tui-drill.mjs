@@ -50,6 +50,17 @@ async function run(cols, port) {
   }
   // The agents' side of the screen on one line: at narrow widths the stripe copy wraps, and the view sits on the right.
   const area = text => text.split("\n").map(line => line.slice(0, cols - (cols >= 110 ? 36 : 32))).join(" ").replace(/\s+/g, " ")
+  // The focused panel is the one drawn with the active border colour (the theme's primary), read from the ANSI frame.
+  const focusedPanel = () => {
+    const rows = tmux("capture-pane", "-p", "-e", "-t", session).split("\n")
+    for (const row of rows) {
+      const plain = row.replace(/\x1b\[[0-9;]*m/g, "")
+      const name = plain.match(/││\s*(\w+)\s+(?:running|waiting|done)\s*││/)?.[1]
+      if (name && /\x1b\[38;2;250;178;131m[│┌└]/.test(row)) return name
+    }
+    return null
+  }
+  const waitFocus = async (name) => { for (let attempt = 0; attempt < 40; attempt += 1) { if (focusedPanel() === name) return true; await sleep(250) } return false }
   let step = 0
   const shot = async (name, test) => {
     const text = await waitFor(test, name)
@@ -96,13 +107,16 @@ async function run(cols, port) {
     check("a row opens the closed view", /Sub-agents 6/.test(view) && !/\bparser\s+running\s*\n.*\n.*Esc/.test(view))
     check("the prompt stays on the room agent", /Write your next prompt here/.test(view))
 
+    check("the row's panel is focused", await waitFocus("reader"), `focus ${focusedPanel()}`)
     keys("C-Down")
-    const moved = await shot("view-focus-moved", () => true)
-    await sleep(300)
+    check("Ctrl+Down moves the focus to the next panel", await waitFocus("parser"), `focus ${focusedPanel()}`)
+    await shot("view-focus-moved-parser", () => true)
     keys("hello")
     const typed = await shot("prompt-still-types", text => /hello/.test(text))
     check("typing still reaches the room agent's prompt", /hello/.test(typed))
     keys("C-u")
+    keys("C-Up")
+    check("Ctrl+Up moves it back to reader", await waitFocus("reader"), `focus ${focusedPanel()}`)
 
     setTree("mixed")
     const mixed = await shot("mixed-needs-you-waiting-done", (text, flat) => /1 agent needs you · 2 running · 1 waiting · 2 done/.test(flat))
@@ -118,7 +132,7 @@ async function run(cols, port) {
 
     setTree("readerDone")
     const done = await shot("node-finished-while-focused", text => /reader\s+done/.test(text))
-    check("a finished node keeps its panel and the view stays", /Sub-agents 6/.test(done) && /reader\s+done/.test(done))
+    check("a finished node keeps its panel, the view and the focus on it", /Sub-agents 6/.test(done) && /reader\s+done/.test(done) && focusedPanel() === "reader", `focus ${focusedPanel()}`)
 
     setTree("lastLive")
     await shot("last-live-writer", (text, flat) => /1 agent running · 5 done/.test(flat))
