@@ -5645,8 +5645,10 @@ merged peer contracts. The event requests are available to external Unix
 access grants and their kernel gateway only. They are absent from session-agent
 tools and sudo's allowed request vocabulary.
 
-`SubscribeEvents { targets }` follows `{ kernel, session_id, agent_id? }` targets;
-omitting the agent follows every agent in the session, including later additions.
+`SubscribeEvents { targets, sources? }` follows `{ kernel, session_id, agent_id? }` targets;
+omitting the agent follows every agent in the session, including later additions. `sources`
+names notification source ids of this kernel (see `EVENT_TRIGGER_PROTOCOL.md`, "Outside agent
+grants"); their occurrences arrive as `notification` events.
 `UnsubscribeEvents { targets | all }`, `GetEventSubscription`, `ListEvents
 { since?, limit }`, `WaitEvents { since?, timeout_ms, limit }` and `AckEvents
 { cursor }` share one grant-owned inbox. A wait returns pending records immediately
