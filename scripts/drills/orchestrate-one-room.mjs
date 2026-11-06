@@ -418,6 +418,14 @@ Steps:
       await a.rpc({ UpdateAgentConfig: { session_id: R, agent_id: it.agent_id, permission_level: "required" } }).then(() => note("owner-lowered-m", { agent: it.agent_id }), e => note("owner-lower-error", { message: e.message.slice(0, 300) }))
       await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: "ok" } }).then(() => { seen.interactions.set(it.id, 0); note("owner-answer", { which: "lower me" }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
+    // A sub-agent at the Required level asks before it acts: the person approves, as at the keyboard.
+    if (scenario === "authority" && s) for (const it of s.active_interactions ?? []) {
+      const open = seen.interactions.get(it.id)
+      if (!open || /lower me/.test(it.title ?? "") || Date.now() - open < 40000) continue
+      const choice = (it.choices ?? []).find(c => /allow|approve|yes|^ok$/i.test(c.id)) ?? it.choices?.[0]
+      if (!choice) continue
+      await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: choice.id } }).then(() => { seen.interactions.set(it.id, 0); note("owner-approved", { title: it.title, agent: it.agent_id, choice: choice.id }) }, e => note("owner-approve-error", { message: e.message.slice(0, 200) }))
+    }
     if (scenario === "sudo" && s) for (const it of s.active_interactions ?? []) {
       const open = seen.interactions.get(it.id)
       if (!open) continue
