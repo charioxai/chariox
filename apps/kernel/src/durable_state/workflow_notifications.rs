@@ -130,7 +130,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS workflow_notification_remote_installs (
       owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, source_kernel_id TEXT NOT NULL,
       state TEXT NOT NULL, prior_status TEXT, prior_json TEXT, prior_grant TEXT,
-      desired_json TEXT, next_attempt_at_ms INTEGER NOT NULL,
+      desired_json TEXT, next_attempt_at_ms INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
@@ -223,9 +223,18 @@ pub(crate) enum NotificationOperation {
         now: u64,
         limit: usize,
     },
+    /// Installs left unsettled by a stopped kernel become unconfirmed.
+    SettleInterruptedRemoteInstalls {
+        now: u64,
+    },
     RemoteReconciled {
         owner: String,
         subscription_id: String,
+    },
+    /// A `RemoteAttach` this kernel is about to install on the source kernel: the subscription it
+    /// replaces is kept until the source answers.
+    AttachToRemoteSource {
+        subscription: WorkflowNotificationSubscription,
     },
     /// The accepted occurrence becomes one event in the subscribed grant's own stream, and
     /// its receipt is settled, in one commit.
@@ -511,11 +520,12 @@ fn apply(
             if cycle {
                 return Err(error("workflow notification cycle"));
             }
-            if subscription.source_kernel_id != subscription.target_kernel_id {
-                remote_install::begin_in(tx, &subscription)?;
-            }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::AttachToRemoteSource { subscription } => {
+            remote_install::begin_in(tx, &subscription)?;
+            apply(tx, NotificationOperation::RemoteAttach { subscription })
         }
         NotificationOperation::RemoteInstallConfirmed {
             owner,
@@ -542,6 +552,10 @@ fn apply(
         NotificationOperation::ClaimRemoteReconciles { now, limit } => Ok(
             NotificationOutcome::Reconciles(remote_install::claim_in(tx, now, limit)?),
         ),
+        NotificationOperation::SettleInterruptedRemoteInstalls { now } => {
+            remote_install::settle_interrupted_in(tx, now)?;
+            Ok(NotificationOutcome::Swept)
+        }
         NotificationOperation::RemoteReconciled {
             owner,
             subscription_id,

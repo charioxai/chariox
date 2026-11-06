@@ -234,7 +234,7 @@ impl KernelRuntimeState {
                                 target,
                             }
                         } else {
-                            NotificationOperation::RemoteAttach { subscription }
+                            NotificationOperation::AttachToRemoteSource { subscription }
                         };
                         if let Some(grant) = self.notification_grant() {
                             operation = NotificationOperation::Granted {

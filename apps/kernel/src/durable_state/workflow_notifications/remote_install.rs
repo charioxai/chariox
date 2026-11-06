@@ -5,6 +5,17 @@ use super::*;
 
 /// The source kernel is asked again this long after an unconfirmed install or detach.
 const RECONCILE_RETRY_MS: i64 = 30_000;
+/// A reconciliation the source never matched is dropped after this many asks (about ten minutes).
+const RECONCILE_MAX_ATTEMPTS: i64 = 20;
+/// An install still unsettled this long after it began lost its task (a crash): it is settled
+/// as unconfirmed. Far above the peer request timeout.
+const INSTALL_SETTLE_AFTER_MS: i64 = 60_000;
+
+/// Why a reconciliation entry was dropped without the source matching it.
+#[derive(Debug)]
+enum ReconcileDropped {
+    AttemptsExhausted,
+}
 
 /// One unconfirmed remote install or detach the source kernel must be brought in line with.
 #[derive(Debug)]
@@ -31,7 +42,7 @@ pub(super) fn begin_in(
     };
     // The row is keyed by the id the save will settle on: the reused one, or the new one.
     let id = id.unwrap_or_else(|| sub.subscription_id.clone());
-    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs VALUES (?1,?2,?3,'installing',?4,?5,?6,NULL,0)",params![sub.owner_user_id,id,sub.source_kernel_id,status,json,grant]).map_err(sql)?;
+    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs VALUES (?1,?2,?3,'installing',?4,?5,?6,NULL,CAST(strftime('%s','now') AS INTEGER)*1000,0)",params![sub.owner_user_id,id,sub.source_kernel_id,status,json,grant]).map_err(sql)?;
     Ok(())
 }
 
@@ -85,7 +96,7 @@ pub(super) fn undo_in(
         // The source holds the same subscription whether or not it installed the repeat.
         return confirm_in(tx, owner, subscription_id);
     }
-    tx.execute("UPDATE workflow_notification_remote_installs SET state='reconcile',desired_json=?3,next_attempt_at_ms=0 WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id,desired]).map_err(sql)?;
+    tx.execute("UPDATE workflow_notification_remote_installs SET state='reconcile',desired_json=?3,next_attempt_at_ms=0,attempts=0 WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id,desired]).map_err(sql)?;
     Ok(())
 }
 
@@ -96,7 +107,7 @@ pub(super) fn mark_detach_in(
     subscription_id: &str,
     source_kernel: &str,
 ) -> Result<(), DaemonError> {
-    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs VALUES (?1,?2,?3,'reconcile',NULL,NULL,NULL,NULL,0)",params![owner,subscription_id,source_kernel]).map_err(sql)?;
+    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs VALUES (?1,?2,?3,'reconcile',NULL,NULL,NULL,NULL,0,0)",params![owner,subscription_id,source_kernel]).map_err(sql)?;
     Ok(())
 }
 
@@ -108,18 +119,31 @@ pub(super) fn claim_in(
     limit: usize,
 ) -> Result<Vec<RemoteReconcile>, DaemonError> {
     let rows = {
-        let mut q = tx.prepare("SELECT owner_id,subscription_id,source_kernel_id,desired_json FROM workflow_notification_remote_installs WHERE state='reconcile' AND next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms,subscription_id LIMIT ?2").map_err(sql)?;
+        let mut q = tx.prepare("SELECT owner_id,subscription_id,source_kernel_id,desired_json,attempts FROM workflow_notification_remote_installs WHERE state='reconcile' AND next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms,subscription_id LIMIT ?2").map_err(sql)?;
         let rows = q
             .query_map(params![now as i64, limit as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
             })
             .map_err(sql)?;
-        rows.collect::<Result<Vec<(String, String, String, Option<String>)>, _>>()
+        rows.collect::<Result<Vec<(String, String, String, Option<String>, i64)>, _>>()
             .map_err(sql)?
     };
     let mut due = Vec::new();
-    for (owner, subscription_id, source_kernel_id, desired) in rows {
-        tx.execute("UPDATE workflow_notification_remote_installs SET next_attempt_at_ms=?3 WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id,now as i64+RECONCILE_RETRY_MS]).map_err(sql)?;
+    for (owner, subscription_id, source_kernel_id, desired, attempts) in rows {
+        if attempts >= RECONCILE_MAX_ATTEMPTS {
+            tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile'",params![owner,subscription_id]).map_err(sql)?;
+            crate::logging::warn_with_fields(
+                "workflow.notifications",
+                "remote notification reconciliation dropped",
+                serde_json::json!({
+                    "reason": format!("{:?}", ReconcileDropped::AttemptsExhausted),
+                    "subscription_id": subscription_id,
+                    "source_kernel_id": source_kernel_id,
+                }),
+            );
+            continue;
+        }
+        tx.execute("UPDATE workflow_notification_remote_installs SET next_attempt_at_ms=?3,attempts=attempts+1 WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id,(now as i64).saturating_add(RECONCILE_RETRY_MS)]).map_err(sql)?;
         due.push(RemoteReconcile {
             desired: desired.as_deref().map(decode).transpose()?,
             owner,
@@ -138,5 +162,24 @@ pub(super) fn reconciled_in(
     subscription_id: &str,
 ) -> Result<(), DaemonError> {
     tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile'",params![owner,subscription_id]).map_err(sql)?;
+    Ok(())
+}
+
+/// Installs that began long ago and were never settled (the kernel stopped between the local
+/// commit and the source's answer) are settled as unconfirmed: the prior row comes back and the
+/// source is reconciled.
+pub(super) fn settle_interrupted_in(tx: &Transaction<'_>, now: u64) -> Result<(), DaemonError> {
+    let stale = {
+        let mut q = tx.prepare("SELECT owner_id,subscription_id FROM workflow_notification_remote_installs WHERE state='installing' AND next_attempt_at_ms<=?1").map_err(sql)?;
+        let rows = q
+            .query_map(params![(now as i64).saturating_sub(INSTALL_SETTLE_AFTER_MS)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(sql)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
+    };
+    for (owner, subscription_id) in stale {
+        undo_in(tx, &owner, &subscription_id)?;
+    }
     Ok(())
 }

@@ -537,6 +537,10 @@ impl KernelRuntimeState {
     /// here: it re-installs the subscription this kernel kept, or drops the one it should not
     /// hold. Each source is asked once per retry window, with the request timeout.
     async fn reconcile_remote_notification_installs(&self, now: u64) {
+        let _ = self
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now });
         let Ok(NotificationOutcome::Reconciles(due)) = self
             .owned
             .durable_state_store

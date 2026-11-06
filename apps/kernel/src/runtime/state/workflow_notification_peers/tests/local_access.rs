@@ -301,7 +301,7 @@ async fn a_refused_repeat_attach_restores_the_prior_follow_and_asks_the_source_t
         vec![&working],
         "the refused repeat must leave the prior fields, not the attempted ones"
     );
-    let due = due_reconciles(&f, u64::MAX / 2);
+    let due = due_reconciles(&f, 1_000);
     assert_eq!(due.len(), 1);
     assert_eq!(due[0].subscription_id, working.subscription_id);
     assert_eq!(due[0].source_kernel_id, "other-home");
@@ -310,7 +310,7 @@ async fn a_refused_repeat_attach_restores_the_prior_follow_and_asks_the_source_t
         "the source may have installed the attempt: it is asked to hold the prior one"
     );
     assert!(
-        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        due_reconciles(&f, 2_000).is_empty(),
         "a claimed reconciliation waits for its retry window"
     );
     drop(runtime);
@@ -343,6 +343,58 @@ async fn a_first_remote_attach_the_peer_does_not_answer_is_reconciled_as_absent(
         })
         .unwrap();
     assert!(due_reconciles(&f, u64::MAX).is_empty());
+    drop(runtime);
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn a_reconciliation_the_source_never_matches_is_dropped_after_its_attempts() {
+    let (f, runtime, _source, publication) = setup();
+    assert!(runtime
+        .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
+        .await
+        .is_err());
+    let mut asked = 0;
+    for round in 1..=40u64 {
+        asked += due_reconciles(&f, round * 3_600_000).len();
+    }
+    assert_eq!(asked, 20, "an unmatched reconciliation is asked a bounded number of times");
+    assert!(due_reconciles(&f, u64::MAX / 2).is_empty());
+    drop(runtime);
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn an_install_left_unsettled_by_a_stopped_kernel_restores_the_prior_follow() {
+    let (f, runtime, source, publication) = setup();
+    let working = working_remote_follow(&f, &runtime, &source, &publication, |s| {
+        s.workflow_id = "workflow-the-first-attach-named".into();
+    })
+    .await;
+    // The kernel stopped after the attach committed and before the source answered.
+    let mut attempt = working.clone();
+    attempt.workflow_id = publication.clone();
+    f.store
+        .notify(NotificationOperation::AttachToRemoteSource {
+            subscription: attempt.clone(),
+        })
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now: 0 })
+        .unwrap();
+    assert!(
+        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        "an install that has just begun is still in flight"
+    );
+    f.store
+        .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now: u64::MAX / 2 })
+        .unwrap();
+    let (_, active, _) = f.store.notification_inventory("local").unwrap();
+    assert!(active.contains(&working), "the prior follow is back");
+    assert!(!active.contains(&attempt));
+    let due = due_reconciles(&f, u64::MAX / 2);
+    assert_eq!(due.len(), 1);
+    assert!(due[0].desired.as_ref() == Some(&working));
     drop(runtime);
     cleanup(f);
 }
