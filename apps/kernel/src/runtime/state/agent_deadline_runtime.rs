@@ -175,6 +175,20 @@ impl KernelRuntimeState {
                 Some(active.id()),
             );
         }
+        // The wakes' retirement can end these tasks before the loop below sees them.
+        let unfinished_tasks = owned
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+            .into_iter()
+            .filter(|task| {
+                !matches!(
+                    task.state,
+                    crate::durable_state::agent_lifecycle::ExecutionState::Done
+                        | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
+                )
+            })
+            .map(|task| task.task_id)
+            .collect::<Vec<_>>();
         owned.cancel_owned_agent_wakes(room, Some(agent));
         for task in owned
             .durable_state_store
@@ -185,22 +199,23 @@ impl KernelRuntimeState {
                 crate::durable_state::agent_lifecycle::ExecutionState::Done
                     | crate::durable_state::agent_lifecycle::ExecutionState::Cancelled
             ) {
-                let Outcome::Task(cancelled) =
-                    owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::CancelTask {
-                            task: task.task_id,
-                            owner: session.owner_user_id().into(),
-                            revision: task.revision,
-                        })?
-                else {
-                    unreachable!("cancelling a task answers with the task")
-                };
-                // The deadline ended this task: its parent hears of it.
-                if let Err(error) = self.announce_child_finished(&cancelled, None, None).await {
-                    tracing::warn!(%error, agent_id=%agent,
-                        "child_finished retained for the inbox sweep");
-                }
+                owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::CancelTask {
+                        task: task.task_id,
+                        owner: session.owner_user_id().into(),
+                        revision: task.revision,
+                    })?;
+            }
+        }
+        // The deadline ended these tasks: their parent hears of it.
+        for task_id in unfinished_tasks {
+            let Some(ended) = owned.durable_state_store.agent_task(&task_id)? else {
+                continue;
+            };
+            if let Err(error) = self.announce_child_finished(&ended, None, None).await {
+                tracing::warn!(%error, agent_id=%agent,
+                    "child_finished retained for the inbox sweep");
             }
         }
         if let Some(run) = run
