@@ -298,9 +298,13 @@ mod tests {
         let address = listener.local_addr().expect("Cloud fixture address");
         let provisioned = Arc::new(AtomicBool::new(false));
         let fixture_provisioned = Arc::clone(&provisioned);
+        let mut expired = crate::config::DaemonConfig::for_tests();
+        // The kernel reads the refreshed owner token's expiry, so it must carry one.
+        let refreshed_owner_token = fresh_owner_token(&expired);
+        let expected_owner_token = refreshed_owner_token.clone();
         let fixture = std::thread::spawn(move || {
             for (expected, token) in [
-                (None, "refreshed-owner-token"),
+                (None, refreshed_owner_token.as_str()),
                 (
                     Some(r#""allowedActions":["client.metadata.read"]"#),
                     "dedicated-metadata-token",
@@ -329,7 +333,6 @@ mod tests {
                 .expect("write Cloud token response");
             }
         });
-        let mut expired = crate::config::DaemonConfig::for_tests();
         expired.relay_url = Some("wss://relay.example.test".to_string());
         expired.relay_token = Some("expired-owner-token".to_string());
         expired.cloud_relay = Some(expired_cloud_profile(format!("http://{address}"), &expired));
@@ -381,7 +384,7 @@ mod tests {
         );
         assert_eq!(
             projection.snapshot().relay_token.as_deref(),
-            Some("refreshed-owner-token"),
+            Some(expected_owner_token.as_str()),
             "dedicated discovery credentials must not replace the owner's daemon token"
         );
     }
