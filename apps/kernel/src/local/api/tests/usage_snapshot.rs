@@ -201,6 +201,87 @@ fn usage_snapshot_uses_agent_projection_and_never_serializes_remote_credentials(
 }
 
 #[test]
+fn account_usage_requests_stay_bounded_during_a_tick_with_a_busy_provider_service() {
+    crate::test_support::isolated_env_test!();
+    let harness = LocalRouterTestHarness::new();
+    let profile = harness.with_app_mut(|app| {
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Busy service",
+            )
+            .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        registry
+            .update_usage(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+                serde_json::from_value(serde_json::json!({
+                    "profile_id": profile.profile_id, "provider": "codex",
+                    "availability": "available", "source": "provider", "observed_at_ms": now,
+                    "meters": [{"meter_id": "primary", "label": "5-hour",
+                        "kind": "rolling_limit", "scope": "account", "used_percent": 42.0,
+                        "state": "healthy", "source": "provider", "observed_at_ms": now}]
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+    });
+    for request in [
+        LocalDaemonRequest::GetProviderUsageSnapshot(
+            crate::local::GetProviderUsageSnapshotRequest {},
+        ),
+        LocalDaemonRequest::ListProviderAccountProfiles(
+            crate::local::api::ListProviderAccountProfilesRequest {
+                provider: Some("codex".into()),
+            },
+        ),
+    ] {
+        let providers = harness.with_app(|app| app.providers().clone());
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _unrelated_provider_operation = providers.write();
+            locked_tx.send(()).unwrap();
+            // Release even on the broken path so the test fails without hanging.
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(8));
+        });
+        locked_rx.recv().unwrap();
+        let refresher = harness.runtime_state().provider_usage_refresher().clone();
+        let (ticked_tx, ticked_rx) = std::sync::mpsc::channel();
+        let tick = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(refresher.refresh_due());
+            ticked_tx.send(()).unwrap();
+        });
+        let tick_finished = ticked_rx.recv_timeout(std::time::Duration::from_secs(1));
+        let started = std::time::Instant::now();
+        let response = harness.dispatch(request);
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        holder.join().unwrap();
+        tick.join().unwrap();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "account usage request waited {elapsed:?} behind the provider service"
+        );
+        assert!(
+            tick_finished.is_ok(),
+            "scheduler tick waited for the provider service"
+        );
+        let value = serde_json::to_value(response.unwrap()).unwrap();
+        assert!(value.to_string().contains(&profile.profile_id));
+        assert!(value.to_string().contains("42.0"));
+    }
+}
+
+#[test]
 fn usage_snapshot_answers_from_the_projection_while_the_provider_service_is_busy() {
     crate::test_support::isolated_env_test!();
     let worktree = crate::test_support::TestWorktree::new("usage-snapshot-busy-provider");

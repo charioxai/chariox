@@ -38,9 +38,7 @@ pub(crate) use native_tui::{
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
-pub(crate) use usage_probe::{
-    probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
-};
+pub(crate) use usage_probe::{verify_claude_account_credential, ClaudeCredentialCheckError};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 

@@ -7,58 +7,12 @@ use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
-use crate::account_profile::ProviderAccountUsageSnapshot;
 use crate::error::DaemonError;
 
 use super::mcp_config::create_claude_runtime_files_root;
 
-const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const CLAUDE_USAGE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
+const CLAUDE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 const CLAUDE_CREDENTIAL_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
-
-pub(crate) fn probe_claude_account_usage(
-    executable: &Path,
-    account_profile: &str,
-    environment: &BTreeMap<String, String>,
-) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    probe_claude_account_usage_with_timeout(
-        executable,
-        account_profile,
-        environment,
-        CLAUDE_USAGE_PROBE_TIMEOUT,
-    )
-}
-
-fn probe_claude_account_usage_with_timeout(
-    executable: &Path,
-    account_profile: &str,
-    environment: &BTreeMap<String, String>,
-    timeout: Duration,
-) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    let (status, result) = run_claude_print(
-        executable,
-        environment,
-        &["/usage"],
-        timeout,
-        "Claude usage probe",
-    )?;
-    if !status.success() {
-        return Err(probe_error(format!(
-            "Claude exited before reporting usage ({status})"
-        )));
-    }
-    let result = result.ok_or_else(|| probe_error("Claude returned invalid usage JSON".into()))?;
-    let text = validated_claude_usage_result(&result)?;
-    let mut usage = claude_usage_snapshot_from_text(text).ok_or_else(|| {
-        probe_error("Claude did not return subscription usage windows".to_string())
-    })?;
-    usage.profile_id = account_profile.to_string();
-    usage.source = "claude.native_usage".to_string();
-    for meter in &mut usage.meters {
-        meter.source = "claude.native_usage".to_string();
-    }
-    Ok(usage)
-}
 
 /// Why Claude did not accept an account credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,8 +293,8 @@ fn run_claude_capture(
         unsafe {
             command.pre_exec(|| {
                 let limit = libc::rlimit {
-                    rlim_cur: CLAUDE_USAGE_PROBE_OUTPUT_BYTES as libc::rlim_t,
-                    rlim_max: CLAUDE_USAGE_PROBE_OUTPUT_BYTES as libc::rlim_t,
+                    rlim_cur: CLAUDE_PROBE_OUTPUT_BYTES as libc::rlim_t,
+                    rlim_max: CLAUDE_PROBE_OUTPUT_BYTES as libc::rlim_t,
                 };
                 if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
                     return Err(std::io::Error::last_os_error());
@@ -369,9 +323,8 @@ fn run_claude_capture(
         let overflow = [&stdout_metadata, &stderr_metadata]
             .into_iter()
             .any(|file| {
-                file.metadata().map_or(true, |metadata| {
-                    metadata.len() >= CLAUDE_USAGE_PROBE_OUTPUT_BYTES
-                })
+                file.metadata()
+                    .map_or(true, |metadata| metadata.len() >= CLAUDE_PROBE_OUTPUT_BYTES)
             });
         if overflow {
             stop_claude_probe(&mut child);
@@ -394,9 +347,8 @@ fn run_claude_capture(
     if [&stdout_metadata, &stderr_metadata]
         .into_iter()
         .any(|file| {
-            file.metadata().map_or(true, |metadata| {
-                metadata.len() >= CLAUDE_USAGE_PROBE_OUTPUT_BYTES
-            })
+            file.metadata()
+                .map_or(true, |metadata| metadata.len() >= CLAUDE_PROBE_OUTPUT_BYTES)
         })
     {
         return Err(print_error(format!("{label} output limit exceeded")));
@@ -406,10 +358,10 @@ fn run_claude_capture(
         .rewind()
         .map_err(|_| print_error(format!("failed to rewind {label} output")))?;
     stdout_metadata
-        .take(CLAUDE_USAGE_PROBE_OUTPUT_BYTES + 1)
+        .take(CLAUDE_PROBE_OUTPUT_BYTES + 1)
         .read_to_end(&mut output)
         .map_err(|_| print_error(format!("failed to read {label} output")))?;
-    if output.len() as u64 > CLAUDE_USAGE_PROBE_OUTPUT_BYTES {
+    if output.len() as u64 > CLAUDE_PROBE_OUTPUT_BYTES {
         return Err(print_error(format!("{label} output limit exceeded")));
     }
     Ok((status, output))
@@ -421,83 +373,6 @@ fn stop_claude_probe(child: &mut std::process::Child) {
         let _ = child.kill();
     }
     let _ = child.wait();
-}
-
-fn validated_claude_usage_result(value: &serde_json::Value) -> Result<&str, DaemonError> {
-    let success = value.get("type").and_then(serde_json::Value::as_str) == Some("result")
-        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("success")
-        && value.get("is_error").and_then(serde_json::Value::as_bool) == Some(false);
-    if !success {
-        return Err(probe_error(
-            "Claude returned an unsuccessful usage result".to_string(),
-        ));
-    }
-    let no_model_activity = value
-        .get("duration_api_ms")
-        .and_then(serde_json::Value::as_u64)
-        == Some(0)
-        && value.get("num_turns").and_then(serde_json::Value::as_u64) == Some(0)
-        && value
-            .get("total_cost_usd")
-            .and_then(serde_json::Value::as_f64)
-            == Some(0.0)
-        && [
-            "input_tokens",
-            "cache_creation_input_tokens",
-            "cache_read_input_tokens",
-            "output_tokens",
-        ]
-        .into_iter()
-        .all(|field| {
-            value
-                .get("usage")
-                .and_then(|usage| usage.get(field))
-                .and_then(serde_json::Value::as_u64)
-                == Some(0)
-        });
-    if !no_model_activity {
-        return Err(probe_error(
-            "Claude /usage unexpectedly performed model activity".to_string(),
-        ));
-    }
-    value
-        .get("result")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| probe_error("Claude usage result text is unavailable".to_string()))
-}
-
-fn claude_usage_snapshot_from_text(text: &str) -> Option<ProviderAccountUsageSnapshot> {
-    let mut rate_limits = serde_json::Map::new();
-    for line in text.lines().map(str::trim) {
-        if let Some(percent) = usage_percent(line, "Current session:") {
-            rate_limits.insert(
-                "five_hour".to_string(),
-                serde_json::json!({ "used_percentage": percent }),
-            );
-        } else if let Some(percent) = usage_percent(line, "Current week (all models):")
-            .or_else(|| usage_percent(line, "Current week:"))
-        {
-            rate_limits.insert(
-                "seven_day".to_string(),
-                serde_json::json!({ "used_percentage": percent }),
-            );
-        }
-    }
-    crate::provider::claude_status_line_usage_snapshot(&serde_json::json!({
-        "rate_limits": rate_limits,
-    }))
-}
-
-fn usage_percent(line: &str, prefix: &str) -> Option<f64> {
-    let percent = line
-        .strip_prefix(prefix)?
-        .trim_start()
-        .split_once('%')?
-        .0
-        .trim()
-        .parse::<f64>()
-        .ok()?;
-    (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent)
 }
 
 fn validate_claude_probe_environment(
@@ -542,7 +417,7 @@ fn terminal_diagnostic(output: &[u8]) -> String {
 
 fn probe_error(message: String) -> DaemonError {
     DaemonError::LocalTransport {
-        operation: "refresh Claude usage",
+        operation: "probe Claude",
         message,
     }
 }
@@ -659,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn probes_both_usage_windows_without_replacing_home() {
+    fn model_probe_preserves_profile_scope_and_scrubs_ambient_credentials() {
         if crate::process_spawn::command("node")
             .arg("--version")
             .output()
@@ -680,8 +555,8 @@ mod tests {
         fs::write(
             &source,
             br#"#!/usr/bin/env node
-import { writeFileSync } from "node:fs"
-const expected = ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""]
+import { readFileSync, writeFileSync } from "node:fs"
+const expected = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--no-chrome", "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}"]
 if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) {
   throw new Error(`unexpected Claude usage arguments: ${JSON.stringify(process.argv.slice(2))}`)
 }
@@ -697,16 +572,18 @@ writeFileSync(process.env.CHARIOX_PROBE_TEST_ENV_FILE, JSON.stringify({
   foundry: process.env.CLAUDE_CODE_USE_FOUNDRY,
   oauthPresent: process.env.CLAUDE_CODE_OAUTH_TOKEN === "fixture-oauth"
 }))
+const request = JSON.parse(readFileSync(0, "utf8").trim())
+if (request.request.subtype !== "initialize") throw new Error("expected initialize")
 process.stdout.write(JSON.stringify({
-  type: "result",
-  subtype: "success",
-  is_error: false,
-  duration_api_ms: 0,
-  num_turns: 0,
-  total_cost_usd: 0,
-  result: "Current session: 17% used\nCurrent week (all models): 41% used \\u00b7 resets Sep 2 at 11:59pm (Europe/Helsinki)",
-  usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }
-}))
+  type: "control_response",
+  response: {
+    subtype: "success",
+    request_id: request.request_id,
+    response: {
+      models: [{value: "haiku", resolvedModel: "claude-haiku-5-5", displayName: "Haiku"}]
+    }
+  }
+}) + "\n")
 "#,
         )
         .expect("fake Claude source");
@@ -749,19 +626,8 @@ process.stdout.write(JSON.stringify({
             ),
         ]);
 
-        let usage = probe_claude_account_usage_with_timeout(
-            &executable,
-            "claude-2",
-            &environment,
-            Duration::from_secs(5),
-        )
-        .expect("usage probe");
-
-        assert_eq!(usage.profile_id, "claude-2");
-        assert_eq!(usage.meters.len(), 2);
-        assert_eq!(usage.meters[0].used_percent, Some(17.0));
-        assert_eq!(usage.meters[1].used_percent, Some(41.0));
-        assert_eq!(usage.source, "claude.native_usage");
+        let models = probe_claude_models(&executable, &environment).expect("model probe");
+        assert_eq!(models[0]["value"], "haiku");
         let observed: serde_json::Value =
             serde_json::from_slice(&fs::read(&observed_environment).expect("observed environment"))
                 .expect("environment JSON");
@@ -963,50 +829,6 @@ process.stdout.write(JSON.stringify({
     }
 
     #[test]
-    fn rejects_model_activity_in_usage_result() {
-        let value = serde_json::json!({
-            "type": "result",
-            "subtype": "success",
-            "is_error": false,
-            "duration_api_ms": 1,
-            "num_turns": 1,
-            "total_cost_usd": 0.01,
-            "result": "Current session: 17% used",
-            "usage": {
-                "input_tokens": 1,
-                "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0,
-                "output_tokens": 1
-            }
-        });
-
-        let error = validated_claude_usage_result(&value)
-            .expect_err("model activity must fail the usage probe");
-
-        assert!(error.to_string().contains("performed model activity"));
-    }
-
-    #[test]
-    fn parses_official_claude_usage_text() {
-        let usage = claude_usage_snapshot_from_text(
-            "You are currently using your subscription\n\nCurrent session: 12.5% used\nCurrent week (all models): 84% used · resets Sep 2 at 11:59pm (Europe/Helsinki)",
-        )
-        .expect("usage snapshot");
-
-        assert_eq!(usage.meters.len(), 2);
-        assert_eq!(usage.meters[0].used_percent, Some(12.5));
-        assert_eq!(usage.meters[1].used_percent, Some(84.0));
-    }
-
-    #[test]
-    fn rejects_legacy_command_summary_without_subscription_windows() {
-        assert!(claude_usage_snapshot_from_text(
-            "Total cost: $0.0000\nTotal duration (API): 0s\nUsage: 0 input, 0 output, 0 cache read, 0 cache write",
-        )
-        .is_none());
-    }
-
-    #[test]
     fn rejects_account_home_override_when_profile_home_is_unsupported() {
         let environment = BTreeMap::from([("HOME".to_string(), "/tmp/account".to_string())]);
 
@@ -1027,7 +849,7 @@ process.stdout.write(JSON.stringify({
 
 #[cfg(all(test, unix))]
 #[test]
-fn mp11_usage_probe_rejects_stdout_and_stderr_bursts_before_allocating_them() {
+fn mp11_claude_probe_rejects_stdout_and_stderr_bursts_before_allocating_them() {
     use std::os::unix::fs::PermissionsExt;
     let root = std::env::temp_dir().join(format!("mp11-usage-{:016x}", rand::random::<u64>()));
     fs::create_dir(&root).unwrap();
@@ -1044,13 +866,7 @@ fn mp11_usage_probe_rejects_stdout_and_stderr_bursts_before_allocating_them() {
             root.join("profile").display().to_string(),
         )]);
         let start = std::time::Instant::now();
-        let error = probe_claude_account_usage_with_timeout(
-            &executable,
-            "synthetic",
-            &environment,
-            Duration::from_secs(2),
-        )
-        .unwrap_err();
+        let error = probe_claude_models(&executable, &environment).unwrap_err();
         assert!(
             error.to_string().contains("output limit"),
             "burst was not rejected at the output boundary"

@@ -55,6 +55,7 @@ mod service;
 pub(crate) mod startup_diagnostic;
 mod termination;
 mod types;
+mod usage_read_error;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
@@ -78,8 +79,7 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    verify_claude_account_credential, verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -194,6 +194,7 @@ pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
     ProviderClientInterface, ProviderRunState,
 };
+pub(crate) use usage_read_error::ProviderUsageReadError;
 pub(crate) use workspace_live_sync_policy::{
     native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
     NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,

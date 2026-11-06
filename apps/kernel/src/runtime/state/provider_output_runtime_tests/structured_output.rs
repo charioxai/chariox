@@ -1041,7 +1041,7 @@ async fn structured_output_usage_resolves_the_cloud_owners_local_account_authori
         .provider_account_profiles
         .get(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "default")
         .expect("the local account authority profile should remain resolvable");
-    assert_eq!(profile.usage.source, "cloud-owner-usage-test");
+    assert_eq!(profile.usage.source, "event");
     assert_eq!(
         runtime
             .owned

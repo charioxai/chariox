@@ -347,7 +347,36 @@ pub struct ProviderAccountUsageSnapshot {
 pub const PROVIDER_USAGE_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
 
+impl ProviderAccountUsageMeter {
+    /// A window whose reset time has passed no longer describes the account:
+    /// the percent it carried belongs to the previous window. The meter stays
+    /// listed, with its observation time, as "not measured yet" until a new
+    /// reading replaces it. A stale percent is never shown and zero is never assumed.
+    pub(crate) fn expire_measurement(&mut self, now_ms: u64) {
+        if self
+            .resets_at_ms
+            .is_some_and(|resets_at_ms| resets_at_ms <= now_ms)
+            && self.state != ProviderAccountUsageMeterState::Unknown
+        {
+            self.used_percent = None;
+            self.used = None;
+            self.remaining = None;
+            self.state = ProviderAccountUsageMeterState::Unknown;
+        }
+    }
+}
+
 impl ProviderAccountUsageSnapshot {
+    /// Marks how the readings arrived: `event` for provider output during a
+    /// turn, `refresh` for the kernel's own periodic or on-demand read.
+    pub(crate) fn with_reading_source(mut self, source: &str) -> Self {
+        self.source = source.to_string();
+        for meter in &mut self.meters {
+            meter.source = source.to_string();
+        }
+        self
+    }
+
     pub fn unavailable(profile_id: impl Into<String>, provider: impl Into<String>) -> Self {
         let provider = provider.into();
         Self {
@@ -372,6 +401,9 @@ impl ProviderAccountUsageSnapshot {
     /// Snapshots without meters (including `provider_not_observed`) are honest
     /// missing data and stay untouched; error states are never masked.
     pub fn reconciled_freshness(mut self, now_ms: u64) -> Self {
+        for meter in &mut self.meters {
+            meter.expire_measurement(now_ms);
+        }
         if self.meters.is_empty() {
             return self;
         }
@@ -1463,7 +1495,12 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
         usage: ProviderAccountUsageSnapshot,
     ) {
-        if let Err(error) = self.update_usage(owner_user_id, provider, profile_id, usage) {
+        if let Err(error) = self.update_usage(
+            owner_user_id,
+            provider,
+            profile_id,
+            usage.with_reading_source("event"),
+        ) {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "observed provider usage not recorded",
@@ -6568,6 +6605,65 @@ mod tests {
             .expect("both exhausted capacity sources must block");
             assert!(blocked.requires_exhausted_credits);
         }
+    }
+
+    #[test]
+    fn a_window_past_its_reset_is_not_measured_yet_and_a_live_window_keeps_its_percent() {
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut ended = usage_meter(now_ms - 6 * 60 * 60 * 1000);
+        ended.resets_at_ms = Some(now_ms - 60 * 60 * 1000);
+        ended.used_percent = Some(99.0);
+        ended.state = ProviderAccountUsageMeterState::Warning;
+        let mut live = usage_meter(now_ms - 60_000);
+        live.meter_id = "rate_limit/seven_day".to_string();
+        live.resets_at_ms = Some(now_ms + 60 * 60 * 1000);
+        live.used_percent = Some(5.0);
+        let usage = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![ended, live],
+            now_ms - 60_000,
+        )
+        .reconciled_freshness(now_ms);
+
+        assert_eq!(usage.meters[0].used_percent, None);
+        assert_eq!(
+            usage.meters[0].state,
+            ProviderAccountUsageMeterState::Unknown
+        );
+        assert_eq!(usage.meters[0].observed_at_ms, now_ms - 6 * 60 * 60 * 1000);
+        assert_eq!(usage.meters[1].used_percent, Some(5.0));
+        assert_eq!(
+            usage.meters[1].state,
+            ProviderAccountUsageMeterState::Healthy
+        );
+    }
+
+    #[test]
+    fn readings_from_provider_output_are_stamped_as_events() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "claude", "Work")
+            .unwrap();
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut reading = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![usage_meter(now_ms)],
+            now_ms,
+        );
+        reading.source = "claude.status_line".to_string();
+
+        registry.record_observed_usage("owner-a", "claude", &profile.profile_id, reading);
+
+        let usage = registry
+            .get("owner-a", "claude", &profile.profile_id)
+            .unwrap()
+            .usage;
+        assert_eq!(usage.source, "event");
+        assert_eq!(usage.meters[0].source, "event");
+        assert_eq!(usage.meters[0].observed_at_ms, now_ms);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

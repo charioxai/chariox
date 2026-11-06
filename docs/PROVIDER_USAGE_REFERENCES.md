@@ -33,6 +33,33 @@ input are not the main conversation context. OpenCode's official CLI stats provi
 usage surface can report rolling limits. Local costs are not a subscription
 balance. Missing windows or credits remain missing.
 
+## Keeping meters current
+
+The kernel reads signed-in Codex accounts through the official app-server
+without running a turn:
+
+- every 15 minutes, and every 5 minutes while an agent runs on the account;
+- when `ListProviderAccountProfiles` or `GetProviderUsageSnapshot` finds a reading
+  older than 5 minutes, the kernel renews it first and waits a few seconds for the
+  answer (a slower read finishes in the background);
+- one read per account at a time, spread by a per-account jitter, with a doubling
+  wait after a failure (capped at an hour unless the provider asks for longer).
+  The wait starts when the read finishes; a queued worker rechecks it before
+  claiming the next read.
+
+Codex's `account/rateLimits/read` and `account/usage/read` are read-only app-server
+requests. A failed read keeps the last reading with its observed time. Claude
+windows come from official running-turn `rate_limit_event` and native status-line
+observations. The documented status-line windows appear after an API response;
+no supported idle usage read is established for enrolled setup tokens. The kernel
+does not poll Claude's HTTP API or spend a turn to refresh
+usage. Missing windows stay unavailable.
+
+A window whose reset time has passed is reported with state `unknown`
+and no percent ("not measured yet") until a new reading arrives; a stale percent is
+never shown and zero is never assumed. Every meter carries `observed_at_ms` and a
+`source` of `event` (provider output during a turn) or `refresh` (this read).
+
 ## Acceptance scenarios
 
 These are required scenarios, not claims of acceptance. MP-10 real-path evidence

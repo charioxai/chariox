@@ -160,6 +160,46 @@ test("provider account list renders every subscription window meter with labels"
   assert.match(rendered, /5-hour 84% used · nearing limit · resets in 2h \| Weekly 31% used · resets in 5d/)
 })
 
+test("provider account list says a window past its reset is not measured yet", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude",
+    flashFooter: () => {},
+    appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a",
+      provider: "claude",
+      profile_id: "opaque-claude-id",
+      label: "Pro",
+      origin: "chariox_created",
+      is_default: true,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-claude-id",
+        provider: "claude",
+        availability: "available",
+        meters: [{
+          meter_id: "rate_limit/five_hour",
+          label: "5-hour",
+          kind: "rolling_limit",
+          scope: "account",
+          resets_at_ms: Date.now() - 60_000,
+          state: "unknown",
+          source: "refresh",
+          observed_at_ms: Date.now() - 6 * 3_600_000,
+        }],
+        source: "refresh",
+      },
+      materializations: [],
+    }],
+  }
+
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts list", value: "accounts list" })
+
+  assert.match(notices.join("\n"), /authenticated · not measured yet/)
+  assert.doesNotMatch(notices.join("\n"), /no reported value/)
+})
+
 test("provider account list preserves the source reason when meters have no values", async () => {
   const notices: string[] = []
   const deps: ProviderCommandHandlerDeps = {

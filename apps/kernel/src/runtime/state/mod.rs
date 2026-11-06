@@ -336,6 +336,7 @@ struct KernelRuntimeOwnedState {
     managed_activity_record_calls: Arc<std::sync::atomic::AtomicU64>,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    provider_usage_refresher: Arc<crate::runtime::provider_usage_refresh::ProviderUsageRefresher>,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
     claude_token_checks: Arc<claude_token_checks::ClaudeTokenChecks>,
@@ -1044,6 +1045,11 @@ impl KernelRuntimeState {
             interaction_wake_driver: None,
             managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
+                provider_usage_refresher:
+                    crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
+                        provider_account_profiles.clone(),
+                        provider_run_projection.clone(),
+                    ),
                 app_control,
                 dev_app_bindings: Default::default(),
                 critical_approval_passkeys:
@@ -1284,6 +1290,12 @@ impl KernelRuntimeState {
         })?;
         self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
         result
+    }
+
+    pub(crate) fn provider_usage_refresher(
+        &self,
+    ) -> &Arc<crate::runtime::provider_usage_refresh::ProviderUsageRefresher> {
+        &self.owned.provider_usage_refresher
     }
 
     pub(crate) fn provider_account_profile_registry(
