@@ -19,6 +19,34 @@ fn capture_error(error: capture::CaptureError) -> io::Error {
 }
 
 const COMMAND_LIMIT: Duration = Duration::from_secs(60);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_COMMAND_LIMIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+fn command_limit() -> Duration {
+    #[cfg(test)]
+    if let Some(limit) = TEST_COMMAND_LIMIT.with(std::cell::Cell::get) {
+        return limit;
+    }
+    COMMAND_LIMIT
+}
+
+/// Shortens the generic command cap on this thread so tests can show that
+/// progress-based work does not inherit it.
+#[cfg(test)]
+pub(crate) fn with_test_command_limit<T>(limit: Duration, run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_COMMAND_LIMIT.with(|cell| cell.set(None));
+        }
+    }
+    TEST_COMMAND_LIMIT.with(|cell| cell.set(Some(limit)));
+    let _reset = Reset;
+    run()
+}
 const REAP_LIMIT: Duration = Duration::from_secs(1);
 
 pub(crate) trait BoundedCommandExt {
@@ -27,6 +55,15 @@ pub(crate) trait BoundedCommandExt {
     fn bounded_status(&mut self) -> io::Result<ExitStatus>;
     #[track_caller]
     fn output_with_deadline(&mut self, timeout: Duration) -> io::Result<Output>;
+    /// Bulk work whose lifetime is its progress: the child lives while
+    /// `position` keeps changing and is stopped, with its pipe owners, once it
+    /// stays unchanged for `stall` or `position` fails.
+    #[track_caller]
+    fn output_with_progress(
+        &mut self,
+        stall: Duration,
+        position: &mut dyn FnMut() -> io::Result<u64>,
+    ) -> io::Result<Output>;
 }
 
 impl BoundedCommandExt for Command {
@@ -52,21 +89,21 @@ impl BoundedCommandExt for Command {
 
     #[track_caller]
     fn bounded_output(&mut self) -> io::Result<Output> {
-        self.output_with_deadline(COMMAND_LIMIT)
+        self.output_with_deadline(command_limit())
+    }
+    #[track_caller]
+    fn output_with_progress(
+        &mut self,
+        stall: Duration,
+        position: &mut dyn FnMut() -> io::Result<u64>,
+    ) -> io::Result<Output> {
+        let _watch = super::stall_watchdog::progress_watch("subprocess", "output", stall);
+        capture::capture_command_with_progress(self, stall, position).map_err(capture_error)
     }
     #[track_caller]
     fn output_with_deadline(&mut self, timeout: Duration) -> io::Result<Output> {
         let _watch = super::stall_watchdog::watch("subprocess", "output");
-        capture::capture_command(self, timeout).map_err(|error| match error {
-            capture::CaptureError::Io(error) => error,
-            capture::CaptureError::TimedOut => io::Error::new(
-                io::ErrorKind::TimedOut,
-                "subprocess output deadline exceeded; child shutdown requested",
-            ),
-            capture::CaptureError::OutputLimit => {
-                io::Error::other("subprocess output exceeded the capture budget")
-            }
-        })
+        capture::capture_command(self, timeout).map_err(capture_error)
     }
 }
 
@@ -267,5 +304,31 @@ async fn read_async_pipe<R: tokio::io::AsyncRead + Unpin>(
             ));
         }
         bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn failed_progress_sample_stops_the_child_promptly() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo $$ >&2; exec sleep 60"]);
+        let started = Instant::now();
+        let mut calls = 0;
+        let mut position = || {
+            calls += 1;
+            if calls > 3 {
+                Err(io::Error::other("cancelled"))
+            } else {
+                Ok(0)
+            }
+        };
+        let error = command
+            .output_with_progress(Duration::from_secs(30), &mut position)
+            .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

@@ -1,13 +1,34 @@
 use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::fs::OpenOptions;
+use std::io::Seek as _;
 use std::path::Path;
 use std::process::Stdio;
 
 use crate::error::DaemonError;
 
 // MP-08/MP-10/MP-11: pin the archive, then hash in the same cancellable,
-// bounded-memory process supervisor used by broker preverification.
+// bounded-memory process supervisor used by broker preverification. Hashing a
+// large archive is bulk work: it lives while the worker keeps reading the
+// pinned file and ends once the read offset stalls for the archive progress
+// timeout, the same policy the guard applies per block.
 pub(super) fn digest(path: &Path, operation: &'static str) -> Result<(u64, String), DaemonError> {
+    let guard = super::linux_docker_slice_script()?.with_file_name("slice-command-guard.py");
+    let mut command = crate::process_spawn::command("python3");
+    command.arg(guard).arg("digest-stdin");
+    digest_with(
+        command,
+        path,
+        operation,
+        super::home_archive_capture::progress_timeout(),
+    )
+}
+
+fn digest_with(
+    mut command: std::process::Command,
+    path: &Path,
+    operation: &'static str,
+    progress_timeout: std::time::Duration,
+) -> Result<(u64, String), DaemonError> {
     let error = |message: String| DaemonError::LocalTransport { operation, message };
     let mut options = OpenOptions::new();
     options.read(true);
@@ -27,14 +48,19 @@ pub(super) fn digest(path: &Path, operation: &'static str) -> Result<(u64, Strin
             "slice archive is not a nonempty regular file of supported size".into(),
         ));
     }
-    let guard = super::linux_docker_slice_script()?.with_file_name("slice-command-guard.py");
-    let output = crate::process_spawn::command("python3")
-        .arg(guard)
-        .arg("digest-stdin")
+    // The worker shares this open file description, so its reads move this
+    // offset: the only progress signal that needs no cooperation from the guard.
+    let mut offset = {
+        let pin = file
+            .try_clone()
+            .map_err(|e| error(format!("failed to retain slice archive pin: {e}")))?;
+        move || (&pin).stream_position()
+    };
+    let output = command
         .stdin(Stdio::from(file.try_clone().map_err(|e| {
             error(format!("failed to retain slice archive pin: {e}"))
         })?))
-        .bounded_output()
+        .output_with_progress(progress_timeout, &mut offset)
         .map_err(|e| {
             error(format!(
                 "failed to supervise slice archive verification: {e}"
@@ -97,6 +123,97 @@ mod tests {
         symlink(&path, root.join("link")).unwrap();
         assert!(digest(&root.join("link"), "test.archive.verify").is_err());
         assert!(digest(&root, "test.archive.verify").is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    // Stand-in for the guard's digest worker: reads stdin one byte per step.
+    fn stand_in(
+        steps: u32,
+        pause: &str,
+        then_stall: bool,
+        pid_file: &Path,
+    ) -> std::process::Command {
+        let script = format!(
+            "import hashlib,os,sys,time\n\
+             open({pid:?},'w').write(str(os.getpid()))\n\
+             h=hashlib.sha256()\n\
+             for _ in range({steps}):\n\
+             \td=os.read(0,1)\n\
+             \th.update(d)\n\
+             \ttime.sleep({pause})\n\
+             if {then_stall}:\n\
+             \ttime.sleep(60)\n\
+             print(h.hexdigest())\n",
+            pid = pid_file.to_str().unwrap(),
+            then_stall = if then_stall { "True" } else { "False" },
+        );
+        let mut command = std::process::Command::new("python3");
+        command.args(["-c", &script]);
+        command
+    }
+
+    fn archive_in(root: &Path, len: usize) -> std::path::PathBuf {
+        std::fs::create_dir_all(root).unwrap();
+        let path = root.join("archive");
+        std::fs::write(&path, vec![b'a'; len]).unwrap();
+        path
+    }
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "chariox-archive-progress-{name}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ))
+    }
+
+    fn alive(pid: i32) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn mp08_mp11_archive_verification_outlives_generic_command_cap_while_progressing() {
+        let _lock = crate::env_lock::lock();
+        let root = scratch("slow");
+        let path = archive_in(&root, 15);
+        let started = std::time::Instant::now();
+        // 15 steps of 200 ms is 3 s of steady progress against a 1 s generic cap.
+        let result = crate::runtime::bounded_process::with_test_command_limit(
+            std::time::Duration::from_secs(1),
+            || {
+                digest_with(
+                    stand_in(15, "0.2", false, &root.join("pid")),
+                    &path,
+                    "test.archive.verify",
+                    std::time::Duration::from_secs(1),
+                )
+            },
+        );
+        assert!(started.elapsed() > std::time::Duration::from_secs(2));
+        let (len, digest) = result.unwrap();
+        assert_eq!(len, 15);
+        assert!(super::super::state::valid_sha256_digest(&digest));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn mp08_mp11_archive_verification_that_stops_progressing_ends_at_the_progress_deadline() {
+        let _lock = crate::env_lock::lock();
+        let root = scratch("stalled");
+        let path = archive_in(&root, 15);
+        let pid_file = root.join("pid");
+        let started = std::time::Instant::now();
+        let result = digest_with(
+            stand_in(3, "0.1", true, &pid_file),
+            &path,
+            "test.archive.verify",
+            std::time::Duration::from_secs(1),
+        );
+        let elapsed = started.elapsed();
+        assert!(result.is_err());
+        assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+        let pid: i32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        assert!(!alive(pid), "stalled verifier must be reaped");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

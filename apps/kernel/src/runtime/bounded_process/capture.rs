@@ -38,6 +38,59 @@ pub(super) fn capture_command(
     capture_command_with_limit(command, timeout, 64 * 1024 * 1024)
 }
 
+/// How long a captured process may live: a fixed wall-clock budget, or for
+/// bulk work that reports progress, a stall budget that restarts whenever the
+/// sampled position advances.
+pub(super) enum Lifetime<'a> {
+    Wall(Instant),
+    Progress {
+        stall: Duration,
+        last_progress: Instant,
+        seen: Option<u64>,
+        position: &'a mut dyn FnMut() -> io::Result<u64>,
+    },
+}
+
+impl Lifetime<'_> {
+    fn expired(&mut self) -> Result<bool, CaptureError> {
+        match self {
+            Self::Wall(deadline) => Ok(Instant::now() >= *deadline),
+            Self::Progress {
+                stall,
+                last_progress,
+                seen,
+                position,
+            } => {
+                let now = position()?;
+                if *seen != Some(now) {
+                    *seen = Some(now);
+                    *last_progress = Instant::now();
+                }
+                Ok(last_progress.elapsed() >= *stall)
+            }
+        }
+    }
+}
+
+pub(super) fn capture_command_with_progress(
+    command: &mut Command,
+    stall: Duration,
+    position: &mut dyn FnMut() -> io::Result<u64>,
+) -> Result<Output, CaptureError> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let process = platform::Process::spawn(command)?;
+    capture_process(
+        process,
+        Lifetime::Progress {
+            stall,
+            last_progress: Instant::now(),
+            seen: None,
+            position,
+        },
+        64 * 1024 * 1024,
+    )
+}
+
 pub(crate) fn capture_command_with_limit(
     command: &mut Command,
     timeout: Duration,
@@ -48,7 +101,7 @@ pub(crate) fn capture_command_with_limit(
     // null stdin explicitly in capture(), rather than replacing caller input.
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let process = platform::Process::spawn(command)?;
-    capture_process(process, deadline, output_limit)
+    capture_process(process, Lifetime::Wall(deadline), output_limit)
 }
 
 pub(super) fn capture_child(mut child: Child, timeout: Duration) -> Result<Output, CaptureError> {
@@ -62,14 +115,14 @@ pub(super) fn capture_child(mut child: Child, timeout: Duration) -> Result<Outpu
     let deadline = Instant::now() + timeout;
     capture_process(
         platform::Process::from_child(child)?,
-        deadline,
+        Lifetime::Wall(deadline),
         64 * 1024 * 1024,
     )
 }
 
 fn capture_process(
     mut process: platform::Process,
-    deadline: Instant,
+    mut lifetime: Lifetime<'_>,
     output_limit: usize,
 ) -> Result<Output, CaptureError> {
     let mut stdout = Vec::new();
@@ -133,14 +186,10 @@ fn capture_process(
                 stderr,
             });
         }
-        if Instant::now() >= deadline {
+        if lifetime.expired()? {
             return Err(CaptureError::TimedOut);
         }
-        std::thread::sleep(
-            deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(5)),
-        );
+        std::thread::sleep(Duration::from_millis(5));
     }
 }
 

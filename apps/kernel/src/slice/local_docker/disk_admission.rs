@@ -11,6 +11,8 @@ use crate::slice::SliceRecord;
 
 use super::{broker::docker_command, local_docker_container_name, LocalDockerSliceOptions};
 
+// Same active-work budget as bulk capture in capture_depth.rs.
+const TREE_WALK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
 const ARCHIVE_OVERHEAD_BYTES: u64 = 16 * 1024 * 1024;
 const ARCHIVE_OVERHEAD_PERCENT: u64 = 5;
 const ARCHIVE_ENTRY_OVERHEAD_BYTES: u64 = 8 * 1024;
@@ -247,11 +249,11 @@ fn measure_slice_storage_with_helper(
         super::snapshot_pause::create_helper(record, options, &helper)?;
         created = true;
         docker_success(&["start", &helper], "start slice disk measurement helper")?;
-        let home_bytes = docker_numeric_field(
+        let home_bytes = docker_tree_walk_field(
             &["exec", "-u", "root", &helper, "du", "-sb", "/home-src"],
             "measure slice home storage",
         )?;
-        let entry_count = docker_numeric_field(
+        let entry_count = docker_tree_walk_field(
             &[
                 "exec",
                 "-u",
@@ -467,7 +469,20 @@ fn docker_numeric_output(args: &[&str], operation: &'static str) -> Result<u64, 
 }
 
 fn docker_numeric_field(args: &[&str], operation: &'static str) -> Result<u64, DaemonError> {
-    let output = docker_output(args, operation)?;
+    numeric_field(docker_output(args, operation)?, operation)
+}
+
+// `du` and `find` walk the whole home tree, which takes minutes on a large home
+// or a slow disk. This is active work with no progress channel, not a probe.
+fn docker_tree_walk_field(args: &[&str], operation: &'static str) -> Result<u64, DaemonError> {
+    let output = docker_command()
+        .args(args)
+        .output_with_deadline(TREE_WALK_DEADLINE)
+        .map_err(|error| disk_measurement_error(&format!("failed to {operation}: {error}")))?;
+    numeric_field(checked_stdout(output, operation)?, operation)
+}
+
+fn numeric_field(output: String, operation: &'static str) -> Result<u64, DaemonError> {
     output
         .split_whitespace()
         .find_map(|value| value.parse::<u64>().ok())
@@ -479,6 +494,13 @@ fn docker_output(args: &[&str], operation: &'static str) -> Result<String, Daemo
         .args(args)
         .bounded_output()
         .map_err(|error| disk_measurement_error(&format!("failed to {operation}: {error}")))?;
+    checked_stdout(output, operation)
+}
+
+fn checked_stdout(
+    output: std::process::Output,
+    operation: &'static str,
+) -> Result<String, DaemonError> {
     if !output.status.success() {
         return Err(disk_measurement_error(&format!(
             "failed to {operation}: {}",

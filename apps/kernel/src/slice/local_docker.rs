@@ -134,6 +134,7 @@ pub struct LocalDockerProviderAccount {
     pub environment: std::collections::BTreeMap<String, String>,
 }
 
+const COLIMA_START_DEADLINE: Duration = Duration::from_secs(300);
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
@@ -1752,11 +1753,10 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
     let mut start_attempts = Vec::new();
     if command_exists("colima") {
         start_attempts.push("colima start");
+        // Booting the VM is active work that takes longer than a utility call.
         let _ = crate::process_spawn::command("colima")
             .arg("start")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .bounded_status();
+            .output_with_deadline(COLIMA_START_DEADLINE);
         if wait_for_docker_ready() {
             return Ok(());
         }

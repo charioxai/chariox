@@ -37,7 +37,7 @@ pub(super) fn minimum_free_bytes() -> u64 {
     policy().minimum_free_bytes
 }
 
-fn progress_timeout() -> Duration {
+pub(super) fn progress_timeout() -> Duration {
     #[cfg(test)]
     if let Some(timeout) = TEST_PROGRESS_TIMEOUT.with(std::cell::Cell::get) {
         return timeout;
