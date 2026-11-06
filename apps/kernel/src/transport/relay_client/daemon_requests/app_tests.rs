@@ -299,7 +299,11 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
     use chariox_app_package::{verify, VerificationPolicy};
     use chariox_app_runtime::release_store::{ReleaseStore, StageBudget};
     let root = TestRoot::new();
-    let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let workspace = crate::test_support::TestWorktree::new("app-automation-session");
+    let mut app = crate::DaemonApp::bootstrap(root.config()).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request().with_owner_user_id("bob"))
+        .unwrap();
     let store = app.durable_state_store();
     // An active, trusted, never-started installation with its stored release.
     crate::durable_state::app_state::fixture_event_catalog(&store);
@@ -390,18 +394,42 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
         dispatch(&router, &cache, Some("alice"), disable(0), "disable-0").await,
         failed(AppRequestErrorCode::InvalidRequest)
     );
-    let configure = LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
-        installation_id: "installed".into(),
-        automation_id: "reminders".into(),
-        expected_revision: 0,
-        event_name: "missing_event".into(),
-        session_id: "missing-session".into(),
-        publication_ref: "missing".into(),
-        queue_ref: None,
-        scheduled: true,
-    });
+    let configure = |session_id: &str| {
+        LocalDaemonRequest::ConfigureAppAutomation(ConfigureAppAutomationRequest {
+            installation_id: "installed".into(),
+            automation_id: "reminders".into(),
+            expected_revision: 0,
+            event_name: "missing_event".into(),
+            session_id: session_id.into(),
+            publication_ref: "missing".into(),
+            queue_ref: None,
+            scheduled: true,
+        })
+    };
+    // The Room-membership gate runs first: an unknown session is a relay error.
+    let RelayDispatchOutcome::RelayError(unknown) = dispatch_relay_client_request(
+        &router,
+        &AtomicU64::new(1),
+        KernelCaller::for_relay_request(Some(caller("alice"))),
+        configure("missing-session"),
+        Some("configure-missing-session".into()),
+        &cache,
+    )
+    .await
+    else {
+        panic!("an unknown session is refused before the App request runs")
+    };
+    assert_eq!(unknown.code, "session_not_found");
+    // Bob is a member of the session but does not own the installation.
     assert_eq!(
-        dispatch(&router, &cache, Some("alice"), configure, "configure").await,
+        dispatch(
+            &router,
+            &cache,
+            Some("bob"),
+            configure(session.id()),
+            "configure"
+        )
+        .await,
         failed(AppRequestErrorCode::NotFound)
     );
 }
