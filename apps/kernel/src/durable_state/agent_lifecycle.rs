@@ -468,6 +468,22 @@ impl DurableKernelStateStore {
         }
         Ok(batch)
     }
+    /// Where an agent starts reading for a wake led by `lead`: before the
+    /// oldest row still pending for it, so a message held for its running turn
+    /// is read with the urgent one that skips it (an ack through the urgent
+    /// row would settle the unread one).
+    pub(crate) fn agent_read_cursor(
+        &self,
+        lead: &InboxEvent,
+        work: Option<&str>,
+    ) -> Result<u64, DaemonError> {
+        let oldest = self
+            .agent_work_inbox(&lead.room_id, &lead.agent_id, 0, work)?
+            .into_iter()
+            .find(|event| event.state == "pending" && event.sequence < lead.sequence)
+            .map_or(lead.sequence, |event| event.sequence);
+        Ok(oldest.saturating_sub(1))
+    }
     #[cfg(test)]
     pub(crate) fn agent_inbox(
         &self,

@@ -9,8 +9,8 @@ const LABEL_LIMIT: usize = 24;
 #[cfg(test)]
 pub(super) const WAKE_TEXT_LIMIT: usize = 240;
 
-pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent]) -> String {
-    let after = lead.sequence.saturating_sub(1);
+/// `after` is the sequence the agent's inbox read starts behind.
+pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> String {
     if lead.reply_requested {
         return format!("Inbox: 1 message with a reply requested (sequence {}). Read it with chariox.events.inbox after {after}. Your final answer of this turn goes back to the sender; do not send a separate message.", lead.sequence);
     }
@@ -98,7 +98,11 @@ mod tests {
         let batch: Vec<_> = (0..63)
             .map(|i| event(u64::MAX - 70 + i, kinds[i as usize % kinds.len()], false))
             .collect();
-        let text = wake_text(&event(u64::MAX - 71, "message", false), &batch);
+        let text = wake_text(
+            &event(u64::MAX - 71, "message", false),
+            &batch,
+            u64::MAX - 72,
+        );
         assert!(
             text.chars().count() <= WAKE_TEXT_LIMIT,
             "{} chars: {text}",
@@ -110,7 +114,7 @@ mod tests {
 
     #[test]
     fn a_reply_request_names_the_reply_rule() {
-        let text = wake_text(&event(41, "message", true), &[]);
+        let text = wake_text(&event(41, "message", true), &[], 40);
         assert!(text.chars().count() <= WAKE_TEXT_LIMIT, "{text}");
         assert!(
             text.contains("after 40") && text.contains("final answer"),

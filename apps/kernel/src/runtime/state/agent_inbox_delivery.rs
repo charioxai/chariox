@@ -162,7 +162,11 @@ impl KernelRuntimeState {
             Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
             None => format!("agent-event-{}-{}", agent, event.sequence),
         };
-        let text = super::agent_inbox_wake_text::wake_text(&event, &batch);
+        let after = self
+            .owned
+            .durable_state_store
+            .agent_read_cursor(&event, work.as_deref())?;
+        let text = super::agent_inbox_wake_text::wake_text(&event, &batch, after);
         let attachments = std::iter::once(&event)
             .chain(&batch)
             .map(|row| {
