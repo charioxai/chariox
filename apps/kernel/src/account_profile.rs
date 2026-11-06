@@ -3,6 +3,8 @@
 //! Provider CLIs continue to own credential formats. This registry stores only
 //! stable Chariox selection metadata and host-local provider root locators.
 
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 #[path = "account_profile_copy.rs"]
 mod account_copy;
 #[path = "account_profile_usage.rs"]
@@ -4734,7 +4736,7 @@ fn collect_claude_keychain_credentials(
 ) -> Result<(), DaemonError> {
     let output = crate::process_spawn::command("security")
         .args(["find-generic-password", "-s", service, "-w"])
-        .output()
+        .bounded_output()
         .map_err(registry_io("export Claude Keychain credentials"))?;
     if !output.status.success() || output.stdout.is_empty() {
         return Ok(());

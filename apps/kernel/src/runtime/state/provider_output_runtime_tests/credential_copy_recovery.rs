@@ -1,5 +1,6 @@
 //! MP-08/MP-10/MP-11: fake OAuth drill; no real accounts or endpoints.
 use super::*;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mp08_mp10_mp11_fake_oauth_copy_notice_login_and_resume_stay_on_worker() {
@@ -97,7 +98,9 @@ async fn isolated_case(recovery: RecoveryCase) {
                 ),
             )
             .env("RUST_MIN_STACK", "16777216")
-            .output()
+            // Login, the 60s relaunch deadline, queued readiness and the late
+            // spawn check have separate budgets inside the isolated fixture.
+            .output_with_deadline(Duration::from_secs(180))
             .unwrap();
         std::fs::remove_dir_all(root).unwrap();
         output
@@ -119,6 +122,7 @@ async fn run_case(recovery: RecoveryCase) {
     let relaunch_stall = matches!(recovery, RecoveryCase::RelaunchStall);
     use std::os::unix::fs::PermissionsExt;
     let workspace = crate::test_support::TestWorktree::new("credential-copy-recovery");
+    #[cfg(test)]
     let _env = crate::env_lock::lock();
     let mut config = crate::config::DaemonConfig::for_tests();
     if relaunch_stall {
@@ -645,6 +649,7 @@ async fn run_case(recovery: RecoveryCase) {
         .iter()
         .any(|entry| entry.text.contains("SYNTHETIC") || entry.text.contains("/device")));
     app.lock().await.shutdown_cleanup().unwrap();
+    #[cfg(test)]
     let _env = crate::env_lock::lock();
     match old_bin {
         Some(value) => std::env::set_var("CHARIOX_CODEX_BIN", value),

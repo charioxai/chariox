@@ -36,6 +36,7 @@ mod sampling;
 mod session_sweep;
 mod submissions;
 mod waits;
+mod terminal_groups;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
 pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};
@@ -298,7 +299,24 @@ impl PreparedDomain {
         #[cfg(not(target_os = "linux"))]
         let cgroup = None;
         let handed_over = listing.is_some();
+        // Preserve the inherited listing before admitting the first client;
+        // the asynchronous worker may not have reached its first tick yet.
+        let samples = if handed_over {
+            tree.sample().unwrap_or_else(|error| {
+                crate::logging::warn_with_fields(
+                    "process_resources.handover",
+                    "inherited process observation unavailable; retaining ownership until sampling recovers",
+                    serde_json::json!({"pid": root, "error": error.to_string()}),
+                );
+                Vec::new()
+            })
+        } else {
+            Vec::new()
+        };
+        let owned = handed_over.then(|| tree.owned());
         let state = Arc::new(Mutex::new(Observation {
+            samples,
+            owned,
             unit: self.unit.clone(),
             cap: self.cap,
             in_cgroup,
@@ -971,4 +989,9 @@ pub(crate) fn has_key(key: &str) -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .get(key)
         .is_some_and(|state| state.strong_count() > 0)
+}
+
+#[cfg(test)]
+pub(crate) fn snapshot_row_count_for_test() -> usize {
+    sampling::process_rows().map(|rows| rows.len()).unwrap_or(0)
 }

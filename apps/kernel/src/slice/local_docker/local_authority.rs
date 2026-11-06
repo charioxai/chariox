@@ -1,5 +1,6 @@
 //! Optional root-installed Linux local DEV broker. Absence preserves legacy
 //! local Docker behavior; present but invalid enrollment fails closed.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[cfg(target_os = "linux")]
 use std::{
     fs,
@@ -105,7 +106,13 @@ fn launch(launcher: &Path, uid: u32) -> std::io::Result<PathBuf> {
                 && !path.contains('\0') =>
         {
             std::thread::spawn(move || {
-                let _ = child.wait();
+                if let Err(error) = crate::runtime::bounded_process::supervise(&mut child) {
+                    crate::logging::error_with_fields(
+                        "local_docker_broker",
+                        "broker launcher supervision failed",
+                        serde_json::json!({"error": error.to_string()}),
+                    );
+                }
             });
             Ok(PathBuf::from(path))
         }
@@ -121,7 +128,7 @@ fn launch(launcher: &Path, uid: u32) -> std::io::Result<PathBuf> {
                 .is_none()
             {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
             }
             let refusal = refusal_receive
                 .recv_timeout(Duration::from_secs(1))
@@ -210,6 +217,31 @@ mod tests {
         assert_eq!(
             path,
             PathBuf::from("/tmp/chariox-local-broker-4242-abc/control.sock")
+        );
+    }
+
+    #[test]
+    fn published_broker_launcher_survives_the_short_reap_deadline() {
+        let root = crate::test_support::TestWorktree::new("broker-lifetime");
+        let completed = root.path().join("completed");
+        let launcher = root.path().join("launcher");
+        fs::write(
+            &launcher,
+            format!(
+                "#!/usr/bin/python3\nimport time,pathlib\nprint('/tmp/chariox-local-broker-4242-lifetime/control.sock',flush=True)\ntime.sleep(1.6)\npathlib.Path({:?}).write_text('finished')\n",
+                completed.to_string_lossy()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        launch(&launcher, 4242).expect("published broker should start");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !completed.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            completed.exists(),
+            "healthy broker was killed by the reap deadline"
         );
     }
 }

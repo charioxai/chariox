@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[cfg(unix)]
 use std::io::{self, BufReader, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -196,7 +197,7 @@ pub(super) fn run_kernel_once(
         child = spawn_kernel(config, release, topology)?;
     }
     KERNEL_PID.store(child.id() as i32, Ordering::SeqCst);
-    let status = child.wait();
+    let status = crate::runtime::bounded_process::supervise(&mut child);
     KERNEL_PID.store(0, Ordering::SeqCst);
     let status =
         status.map_err(|error| supervisor_error(&format!("wait for managed kernel: {error}")))?;
@@ -1899,7 +1900,7 @@ fn terminate_child(child: &mut Child) -> Result<(), DaemonError> {
         )));
     }
     child
-        .wait()
+        .bounded_wait()
         .map_err(|error| supervisor_error(&format!("reap stopped managed kernel: {error}")))?;
     Ok(())
 }

@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
@@ -193,7 +194,7 @@ impl StdioMcpProcess {
             if child.id() > 1 {
                 let _ = child.kill();
             }
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(DaemonError::LocalTransport {
                 operation: "mcp.proxy.stdio.spawn",
                 message: format!(
@@ -297,7 +298,7 @@ impl StdioMcpProcess {
             if self.child.id() > 1 {
                 let _ = self.child.kill();
             }
-            let _ = self.child.wait();
+            let _ = self.child.bounded_wait();
         }
         response
     }
@@ -371,7 +372,7 @@ impl StdioMcpProcess {
         if self.child.id() > 1 {
             let _ = self.child.kill();
         }
-        let _ = self.child.wait();
+        let _ = self.child.bounded_wait();
         Err(DaemonError::LocalTransport {
             operation: "mcp.proxy.stdio.timeout",
             message: format!(
@@ -403,7 +404,7 @@ impl Drop for StdioMcpProcess {
         if self.child.id() > 1 {
             let _ = self.child.kill();
         }
-        let _ = self.child.wait();
+        let _ = self.child.bounded_wait();
     }
 }
 

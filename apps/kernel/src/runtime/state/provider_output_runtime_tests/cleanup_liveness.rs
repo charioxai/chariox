@@ -1279,6 +1279,38 @@ async fn mixed_client_state(
     response
 }
 
+/// The authoritative part of a `SessionState` read. Live process samples are
+/// telemetry that depends on how many sampler ticks have run, so they are not
+/// part of what a reload has to preserve.
+#[derive(Clone, Debug, PartialEq)]
+struct MixedAuthoritativeState {
+    room_workflows: crate::runtime::projection::RoomWorkflowInventory,
+    session: crate::session::RuntimeSession,
+    agent_activity:
+        std::collections::BTreeMap<String, crate::runtime::projection::AgentRuntimeActivity>,
+    agent_activity_revision: u64,
+}
+
+fn mixed_authoritative_state(
+    response: crate::local::LocalDaemonResponse,
+) -> MixedAuthoritativeState {
+    match response {
+        crate::local::LocalDaemonResponse::SessionState {
+            room_workflows,
+            session,
+            agent_activity,
+            agent_activity_revision,
+            processes: _,
+        } => MixedAuthoritativeState {
+            room_workflows,
+            session,
+            agent_activity,
+            agent_activity_revision,
+        },
+        other => panic!("expected a session state response, got {other:?}"),
+    }
+}
+
 fn mixed_queue_prompt_ids(session: &crate::session::RuntimeSession, agent_id: &str) -> Vec<String> {
     session
         .queued_prompts_for_agent(agent_id)
@@ -1834,7 +1866,9 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
     // Client reads publish the composed session view. Warm that publication before
     // taking the revision baseline for duplicate callbacks.
     mixed_client_state(&router, &session_id, "mixed-publish").await;
-    let first_client_state = mixed_client_state(&router, &session_id, "mixed-before-stale").await;
+    let first_client_state = mixed_authoritative_state(
+        mixed_client_state(&router, &session_id, "mixed-before-stale").await,
+    );
     let first_reconciled_revision = runtime.session_projection_session_change_sequence(&session_id);
 
     // The pre-reconciliation revision is stale relative to the authoritative projection.
@@ -1926,34 +1960,31 @@ async fn kernel_mixed_01_reconciles_two_stale_providers_without_touching_healthy
     // A client reload reconnects to the same authoritative kernel; it does not
     // construct another scheduler with empty in-memory output deadlines.
     let reloaded = router.clone().runtime_state();
-    let reconnected_client_state =
-        mixed_client_state(&router, &session_id, "mixed-reconnect").await;
-    match (first_client_state, reconnected_client_state) {
-        (
-            crate::local::LocalDaemonResponse::SessionState {
-                session: before_session,
-                agent_activity: before_activity,
-                agent_activity_revision: before_revision,
-                room_workflows: before_workflows,
-                ..
-            },
-            crate::local::LocalDaemonResponse::SessionState {
-                session,
-                agent_activity,
-                agent_activity_revision,
-                room_workflows,
-                ..
-            },
-        ) => {
-            // Process samples and disk usage can change between reads, even
-            // while the authoritative Room state remains unchanged.
-            assert_eq!(session, before_session);
-            assert_eq!(agent_activity, before_activity);
-            assert_eq!(agent_activity_revision, before_revision);
-            assert_eq!(room_workflows, before_workflows);
-        }
-        _ => unreachable!("mixed_client_state checks the response variant"),
-    }
+    assert_eq!(
+        mixed_authoritative_state(
+            mixed_client_state(&router.clone(), &session_id, "mixed-reconnect").await
+        ),
+        first_client_state,
+        "client reload must preserve the authoritative session, activity, and revision"
+    );
+    let mut drifted_revision = first_client_state.clone();
+    drifted_revision.agent_activity_revision += 1;
+    assert_ne!(
+        drifted_revision, first_client_state,
+        "the comparison must notice a changed activity revision"
+    );
+    let mut drifted_activity = first_client_state.clone();
+    assert!(
+        drifted_activity
+            .agent_activity
+            .remove(&healthy_agent_id)
+            .is_some(),
+        "the healthy agent must be part of the authoritative activity"
+    );
+    assert_ne!(
+        drifted_activity, first_client_state,
+        "the comparison must notice a changed agent activity"
+    );
     let reloaded_revision = reloaded.session_projection_session_change_sequence(&session_id);
     assert_eq!(reloaded_revision, first_reconciled_revision);
     let reloaded_projection = reloaded

@@ -1,3 +1,5 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -132,6 +134,7 @@ pub struct LocalDockerProviderAccount {
     pub environment: std::collections::BTreeMap<String, String>,
 }
 
+const COLIMA_START_DEADLINE: Duration = Duration::from_secs(300);
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 const MANAGED_SLICE_DOCKER_PROVISIONER: &str =
@@ -427,10 +430,24 @@ pub fn run_local_docker_slice_action(
                 })?;
             output.status
         } else {
+            // The provisioner owns action deadlines and cancellation, including
+            // unbounded image builds. Only shutdown uses the short reap limit.
             command
                 .stdout(Stdio::from(log_file))
                 .stderr(Stdio::from(stderr_log))
-                .status()
+                .spawn()
+                .and_then(|mut child| {
+                    match crate::runtime::bounded_process::supervise(&mut child) {
+                        Ok(status) => Ok(status),
+                        Err(error) => {
+                            crate::runtime::child_shutdown::stop(
+                                &mut child,
+                                "direct_slice_provisioner",
+                            )?;
+                            Err(error)
+                        }
+                    }
+                })
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "slice.local_docker",
                     message: format!(
@@ -540,7 +557,7 @@ fn bounded_github_token(
         None => {
             let _ = crate::runtime::process_health::terminate_process_tree(child.id());
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             let _ = reader.join();
             return None;
         }
@@ -698,7 +715,7 @@ pub fn start_local_docker_slice_provider_login(
     configure_local_docker_slice_command(&mut command, record, None, options, false)?;
     let output = broker::run_provisioner(&command, "start-provider-login", &[])
         .map(|response| response.map(|response| response.output))
-        .unwrap_or_else(|| command.output())
+        .unwrap_or_else(|| command.bounded_output())
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.auth.login",
             message: format!(
@@ -812,7 +829,7 @@ pub fn inspect_local_docker_slice_provider_auth(
     for (summary_provider, path) in checks {
         let status = docker_command()
             .args(["exec", "-u", "slice", &container, "test", "-s", path])
-            .status()
+            .bounded_status()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.auth.inspect",
                 message: format!(
@@ -936,7 +953,7 @@ pub fn inspect_local_docker_slice_host_runtime(
             "{{.State.Running}} {{.State.Status}}",
             &container,
         ])
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return super::SliceHostRuntimeState::Unknown;
     };
@@ -974,7 +991,7 @@ pub fn inspect_local_docker_slice_relay_endpoint(
             ".relay_url",
             "/home/slice/.chariox/daemon/config.json",
         ])
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;
@@ -1521,7 +1538,7 @@ pub(super) fn ensure_local_docker_slice_ports_available(
 pub(super) fn local_docker_container_is_running(record: &SliceRecord) -> bool {
     let output = docker_command()
         .args(["ps", "--format", "{{.Names}}"])
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return false;
     };
@@ -1578,7 +1595,7 @@ pub(super) fn run_local_docker_slice_screen(
             "/opt/chariox-slice/slice-screen.sh",
             action,
         ])
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!(
@@ -1710,7 +1727,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
             .arg("info")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
+            .bounded_status()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.local_docker.broker",
                 message: format!("managed slice Docker broker is unavailable: {error}"),
@@ -1736,11 +1753,10 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
     let mut start_attempts = Vec::new();
     if command_exists("colima") {
         start_attempts.push("colima start");
+        // Booting the VM is active work that takes longer than a utility call.
         let _ = crate::process_spawn::command("colima")
             .arg("start")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+            .output_with_deadline(COLIMA_START_DEADLINE);
         if wait_for_docker_ready() {
             return Ok(());
         }
@@ -1754,7 +1770,7 @@ pub(super) fn ensure_host_docker_ready() -> Result<(), DaemonError> {
                 .args(["-ga", "Docker"])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .bounded_status();
             if wait_for_docker_ready() {
                 return Ok(());
             }
@@ -1787,7 +1803,7 @@ fn docker_is_ready() -> bool {
         .arg("info")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_status()
         .is_ok_and(|status| status.success())
 }
 
@@ -1796,7 +1812,7 @@ fn command_exists(command: &str) -> bool {
         .args(["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", command])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_status()
         .is_ok_and(|status| status.success())
 }
 

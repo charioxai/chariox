@@ -8,6 +8,12 @@ use super::{
     RuntimeProviderRun,
 };
 
+#[cfg(test)]
+type LaunchHook = Box<dyn FnOnce() + Send>;
+#[cfg(test)]
+pub(super) static LAUNCH_TEST_HOOK: std::sync::Mutex<Option<LaunchHook>> =
+    std::sync::Mutex::new(None);
+
 impl ProviderProcessService {
     pub(crate) fn enroll_local_run_owner(
         &mut self,
@@ -26,8 +32,9 @@ impl ProviderProcessService {
         Ok(updated)
     }
 
-    pub(crate) fn start_run_provider_only(
-        &mut self,
+    pub(crate) fn prepare_run_provider_only(
+        registry: super::ProviderRegistry,
+        reserved_run_id: String,
         mut request: LaunchProviderRequest,
     ) -> Result<ProviderRunStartedOutcome, DaemonError> {
         if let Some(checkpoint) = request.native_checkpoint.as_ref() {
@@ -46,7 +53,7 @@ impl ProviderProcessService {
                 .validate_request(&request)
                 .map_err(crate::provider::NativeCheckpointFailure::into_daemon_error)?;
         }
-        let adapter = self.registry.resolve(&request.adapter_key).ok_or_else(|| {
+        let adapter = registry.resolve(&request.adapter_key).ok_or_else(|| {
             DaemonError::ProviderAdapterNotFound {
                 adapter_key: request.adapter_key.clone(),
             }
@@ -62,26 +69,15 @@ impl ProviderProcessService {
             });
         }
 
-        // After a hot reload the agent's running turn continues in the same run.
-        #[cfg(unix)]
-        let handed_over = crate::hot_reload::claim_provider_run(
-            &request.session_id,
-            request.agent_id.as_deref(),
-            &request.adapter_key,
-        );
-        #[cfg(not(unix))]
-        let handed_over: Option<(String, Option<String>)> = None;
-        let run_id = match &handed_over {
-            Some((run_id, _)) => run_id.clone(),
-            None => self.next_run_id(),
-        };
-        #[allow(unused_mut)]
-        let mut launch_result = adapter.connect(&request)?;
-        // The handed-over app-server keeps listening where it did.
-        #[cfg(unix)]
-        if let Some(endpoint) = crate::hot_reload::adopting_codex_endpoint(&run_id) {
-            launch_result.structured_endpoint = Some(endpoint);
+        let run_id = reserved_run_id;
+        #[cfg(test)]
+        {
+            let hook = LAUNCH_TEST_HOOK.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook();
+            }
         }
+        let mut launch_result = adapter.connect(&request)?;
         // Everything the kernel starts for the agent writes its scratch in the agent's own folder.
         if let Some(agent_id) = request.agent_id.as_deref() {
             for (name, value) in crate::agent_temp::environment(&request.session_id, agent_id) {
@@ -118,18 +114,61 @@ impl ProviderProcessService {
             }),
         );
         let mut run = RuntimeProviderRun::new(run_id.clone(), &request, launch_result);
-        if let Some((_, Some(token))) = handed_over {
-            if run.runtime_mcp_auth_token().is_some() {
-                run.set_runtime_mcp_auth_token(Some(token));
-            }
-        }
         if let Some((home, path)) = request.preparation_environment.clone() {
             run.set_preparation_environment(home, path)?;
         }
 
-        self.runs.insert(run_id, run.clone());
-
         Ok(ProviderRunStartedOutcome { run })
+    }
+
+    pub(super) fn commit_prepared_run(
+        &mut self,
+        mut outcome: ProviderRunStartedOutcome,
+    ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        if self.runs.contains_key(outcome.run().id()) {
+            return Err(DaemonError::LocalTransport {
+                operation: "commit_provider_launch",
+                message: "reserved provider run identity is already in use; retry".into(),
+            });
+        }
+        #[cfg(unix)]
+        {
+            let run = outcome.run();
+            if let Some(id) = crate::hot_reload::handed_over_run_id(
+                run.session_id(),
+                run.agent_instance_id(),
+                run.adapter_key(),
+            ) {
+                if self.runs.contains_key(&id) {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "commit_provider_launch",
+                        message: "handed-over provider run identity is already in use; retry"
+                            .into(),
+                    });
+                }
+            }
+            if let Some((id, token)) = crate::hot_reload::claim_provider_run(
+                run.session_id(),
+                run.agent_instance_id(),
+                run.adapter_key(),
+            ) {
+                let endpoint = crate::hot_reload::adopting_codex_endpoint(&id);
+                outcome.run.adopt_handed_over_identity(id, token, endpoint);
+            }
+        }
+        self.runs
+            .insert(outcome.run().id().to_string(), outcome.run().clone());
+        Ok(outcome)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_run_provider_only(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<ProviderRunStartedOutcome, DaemonError> {
+        let id = self.next_run_id();
+        let outcome = Self::prepare_run_provider_only(self.registry, id, request)?;
+        self.commit_prepared_run(outcome)
     }
 
     #[cfg(test)]
@@ -445,6 +484,10 @@ impl ProviderProcessService {
         &mut self,
         session_id: &str,
     ) -> Result<ProviderSessionRunsTerminatedOutcome, DaemonError> {
+        *self
+            .session_retirement_epochs
+            .entry(session_id.to_string())
+            .or_default() += 1;
         let run_ids: Vec<String> = self
             .runs
             .values()
@@ -576,7 +619,7 @@ impl ProviderProcessService {
             })
     }
 
-    fn next_run_id(&mut self) -> String {
+    pub(super) fn next_run_id(&mut self) -> String {
         loop {
             self.next_run_number += 1;
             let run_id = format!("provider-run-{}", self.next_run_number);

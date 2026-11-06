@@ -21,14 +21,24 @@ pub(super) fn available(_pipe: &impl Pipe) -> io::Result<usize> {
 pub(super) struct Process {
     pub(super) child: Child,
     stopped: bool,
+    marker: Option<Vec<u8>>,
 }
 
 impl Process {
     pub(super) fn spawn(command: &mut Command) -> io::Result<Self> {
         command.process_group(0);
+        let marker = format!("{:032x}", rand::random::<u128>());
+        command.env("CHARIOX_CAPTURE_OWNER", &marker);
+        let mut process = Self::from_child(command.spawn()?)?;
+        process.marker = Some(format!("CHARIOX_CAPTURE_OWNER={marker}").into_bytes());
+        Ok(process)
+    }
+
+    pub(super) fn from_child(child: Child) -> io::Result<Self> {
         let process = Self {
-            child: command.spawn()?,
+            child,
             stopped: false,
+            marker: None,
         };
         for fd in process.pipe_fds() {
             let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -55,6 +65,11 @@ impl Process {
         ]
     }
 
+    pub(super) fn finish_closed_output(&mut self) -> io::Result<()> {
+        self.stopped = true;
+        Ok(())
+    }
+
     pub(super) fn stop(&mut self) -> io::Result<()> {
         if self.stopped {
             return Ok(());
@@ -62,7 +77,7 @@ impl Process {
         // Exact pipe ownership still identifies escaped writers after setsid
         // or reparenting. Names and parent PIDs alone cannot establish ownership.
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let cleanup = pipe_owners::terminate(&self.pipe_fds());
+        let cleanup = pipe_owners::terminate(&self.pipe_fds(), self.marker.as_deref());
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let cleanup = Ok(());
         // Pipe ownership pins escaped writers. Do not signal a numeric process
@@ -71,7 +86,7 @@ impl Process {
             return Err(io::Error::other("refusing to signal a protected process"));
         }
         let _ = self.child.kill();
-        let reaped = self.child.wait().map(|_| ());
+        let reaped = crate::runtime::child_shutdown::stop(&mut self.child, "capture_cleanup");
         self.stopped = true;
         cleanup.and(reaped)
     }
@@ -79,6 +94,12 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        let _ = self.stop();
+        if let Err(error) = self.stop() {
+            crate::logging::error_with_fields(
+                "subprocess",
+                "capture cleanup failed",
+                serde_json::json!({"operation": "capture_cleanup", "pid": self.child.id(), "error": error.to_string()}),
+            );
+        }
     }
 }

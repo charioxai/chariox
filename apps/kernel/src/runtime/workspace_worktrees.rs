@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ pub(crate) fn list_workspace_worktrees(
     let output = crate::process_spawn::command("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&workspace_path)
-        .output();
+        .bounded_output();
     let Ok(output) = output else {
         return Ok(vec![fallback_worktree_record(workspace_id, None)]);
     };
@@ -211,7 +212,7 @@ fn resolve_deletable_git_worktree(
     let output = crate::process_spawn::command("git")
         .args(["worktree", "list", "--porcelain"])
         .current_dir(&repo_root)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "workspace worktree delete",
             message: error.to_string(),

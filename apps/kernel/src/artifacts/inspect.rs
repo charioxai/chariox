@@ -1,4 +1,5 @@
 //! MP-08/MP-10/MP-11: bounded PDF extraction from an admitted operational blob.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::time::Duration;
@@ -47,7 +48,7 @@ pub(crate) fn pdf_text(input: &[u8]) -> Result<String, String> {
     let status = child.wait_timeout(Duration::from_secs(3));
     if !matches!(status, Ok(Some(_))) {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.bounded_wait();
     }
     let _ = writer.join();
     let bytes = reader

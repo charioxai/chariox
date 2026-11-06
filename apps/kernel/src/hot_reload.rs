@@ -7,6 +7,7 @@
 //! (clients, the relay, idle provider processes) comes back as after any
 //! restart.
 
+use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -130,6 +131,10 @@ struct Start {
 }
 
 static START: OnceLock<Start> = OnceLock::new();
+static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldCommand>> =
+    Mutex::new(Vec::new());
+static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
+    Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
@@ -210,9 +215,10 @@ pub fn receive() {
         set_close_on_exec(*fd, true);
     }
     *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
-    // Before any process is watched again, so its first sample finds them.
-    crate::runtime::process_resources::adopt_admission(std::mem::take(&mut handover.admission));
-    crate::runtime::process_resources::adopt_released(std::mem::take(&mut handover.released_jobs));
+    // Reading bootstrap environment must not start sampler/watchdog workers.
+    // Activate these only after startup finishes consuming the environment.
+    *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
+    *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -227,6 +233,15 @@ pub fn receive() {
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
     *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
     *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
+}
+
+/// Start inherited watches after environment bootstrap, inside the runtime.
+pub fn adopt_received_processes() {
+    let held = std::mem::take(&mut *lock(&RECEIVED_ADMISSION));
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_JOBS));
+    // Admission must precede the first watch sample.
+    crate::runtime::process_resources::adopt_admission(held);
+    crate::runtime::process_resources::adopt_released(jobs);
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -453,6 +468,21 @@ pub(crate) fn provider_handed_over(session_id: &str, agent_id: &str) -> bool {
     lock(&RECEIVED_PROVIDERS)
         .iter()
         .any(|p| p.session_id == session_id && p.agent_id.as_deref() == Some(agent_id))
+}
+
+pub(crate) fn handed_over_run_id(
+    session_id: &str,
+    agent_id: Option<&str>,
+    adapter_key: &str,
+) -> Option<String> {
+    lock(&RECEIVED_PROVIDERS)
+        .iter()
+        .find(|p| {
+            p.session_id == session_id
+                && p.agent_id.as_deref() == agent_id
+                && p.process.adapter_key() == adapter_key
+        })
+        .map(|p| p.run_id.clone())
 }
 
 /// A new run of the agent takes the handed-over run's id and tool token, and
@@ -911,7 +941,7 @@ async fn verify(start: &Start) -> Result<(), String> {
             .arg("--handover-format")
             .env_clear()
             .kill_on_drop(true)
-            .output(),
+            .bounded_output(),
     )
     .await
     .map_err(|_| "the new kernel program did not answer in time".to_string())?

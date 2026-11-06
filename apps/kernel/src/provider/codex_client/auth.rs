@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -497,7 +498,7 @@ pub(crate) fn codex_version() -> Result<String, DaemonError> {
         None,
         "codex:version",
     )?
-    .output()
+    .bounded_output()
     .map_err(|error| DaemonError::LocalTransport {
         operation: "codex_version",
         message: error.to_string(),

@@ -5,6 +5,8 @@
 //! the same pass: a heavy command waits for room, and a growing one is paused
 //! before anything is stopped.
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::sync::Weak;
 use std::time::Instant;
@@ -564,7 +566,7 @@ fn machine_memory() -> Option<u64> {
 fn machine_memory() -> Option<u64> {
     let output = crate::process_spawn::command("sysctl")
         .args(["-n", "hw.memsize"])
-        .output()
+        .bounded_output()
         .ok()?;
     String::from_utf8(output.stdout).ok()?.trim().parse().ok()
 }

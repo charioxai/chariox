@@ -1,7 +1,5 @@
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 
 use crate::error::DaemonError;
 use crate::managed_context::development::{
@@ -425,77 +423,51 @@ fn run_managed_publication_access_helper(
     storage_root: &Path,
     publication: &crate::slice::SliceDevelopmentPublication,
 ) -> Result<(), DaemonError> {
-    let mut child = crate::process_spawn::command(helper)
+    let mut command = crate::process_spawn::command(helper);
+    command
         .arg(action)
         .arg(storage_root)
         .arg(&publication.destination_root)
-        .args(&publication.repository_paths)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            slice_development_error(format!("run managed publication access helper: {error}"))
-        })?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| slice_development_error("managed publication helper stdout is missing"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| slice_development_error("managed publication helper stderr is missing"))?;
-    let stdout_reader = std::thread::spawn(move || read_bounded_helper_output(stdout));
-    let stderr_reader = std::thread::spawn(move || read_bounded_helper_output(stderr));
-    let status = child.wait().map_err(|error| {
+        .args(&publication.repository_paths);
+    // Recursive ACL work has its own deadline; the short reap limit only
+    // applies after capture requests shutdown. Capture also owns pipe writers.
+    let output = crate::runtime::bounded_process::capture::capture_command_with_limit(
+        &mut command,
+        std::time::Duration::from_secs(300),
+        MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES * 2,
+    )
+    .map_err(|error| {
+        use crate::runtime::bounded_process::capture::CaptureError;
+        let detail = match error {
+            CaptureError::OutputLimit => "OUTPUT_LIMIT".to_string(),
+            CaptureError::TimedOut => {
+                "operation exceeded its five-minute deadline; retry publication".to_string()
+            }
+            CaptureError::Io(error) => error.to_string(),
+        };
         slice_development_error(format!(
-            "wait for managed publication access helper: {error}"
+            "managed publication access helper failed: {detail}"
         ))
     })?;
-    let (_, stdout_truncated) = join_helper_output_reader(stdout_reader, "stdout")?;
-    let (stderr, stderr_truncated) = join_helper_output_reader(stderr_reader, "stderr")?;
-    if stdout_truncated || stderr_truncated {
+    if output.stdout.len() > MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES
+        || output.stderr.len() > MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES
+    {
         return Err(slice_development_error(format!(
-            "managed publication access helper failed with {status}: OUTPUT_LIMIT"
+            "managed publication access helper failed with {}: OUTPUT_LIMIT",
+            output.status
         )));
     }
-    if status.success() {
+    if output.status.success() {
         Ok(())
     } else {
-        let detail = managed_publication_helper_error_code(&stderr)
+        let detail = managed_publication_helper_error_code(&output.stderr)
             .map(|code| format!(": {code}"))
             .unwrap_or_default();
         Err(slice_development_error(format!(
-            "managed publication access helper failed with {status}{detail}"
+            "managed publication access helper failed with {}{detail}",
+            output.status
         )))
     }
-}
-
-fn read_bounded_helper_output(mut reader: impl Read) -> (Vec<u8>, bool) {
-    let mut retained = Vec::new();
-    let mut buffer = [0_u8; 4096];
-    let mut truncated = false;
-    loop {
-        let Ok(read) = reader.read(&mut buffer) else {
-            truncated = true;
-            break;
-        };
-        if read == 0 {
-            break;
-        }
-        let remaining = MAX_MANAGED_PUBLICATION_HELPER_OUTPUT_BYTES.saturating_sub(retained.len());
-        retained.extend_from_slice(&buffer[..read.min(remaining)]);
-        truncated |= read > remaining;
-    }
-    (retained, truncated)
-}
-
-fn join_helper_output_reader(
-    reader: std::thread::JoinHandle<(Vec<u8>, bool)>,
-    stream: &str,
-) -> Result<(Vec<u8>, bool), DaemonError> {
-    reader.join().map_err(|_| {
-        slice_development_error(format!("managed publication helper {stream} reader failed"))
-    })
 }
 
 fn managed_publication_helper_error_code(stderr: &[u8]) -> Option<&'static str> {
@@ -867,6 +839,33 @@ mod tests {
             slice_development_storage_root(&slice).expect("resolve durable root"),
             PathBuf::from("/old-config-root/development/slice-1")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publication_access_active_work_survives_the_reap_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_support::TestWorktree::new("publication-helper-lifetime");
+        let helper = root.path().join("helper.sh");
+        fs::write(&helper, "#!/bin/sh\n/bin/sleep 1.2\nexit 0\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: "development".into(),
+            destination_root: "/unused/development".into(),
+            primary_repository_path: "/unused/development/repository".into(),
+            repository_paths: vec!["/unused/development/repository".into()],
+        };
+        for action in ["grant", "verify", "revoke"] {
+            let started = Instant::now();
+            run_managed_publication_access_helper(
+                &helper,
+                action,
+                Path::new("/unused"),
+                &publication,
+            )
+            .expect("active publication access work must survive the reap deadline");
+            assert!(started.elapsed() >= Duration::from_millis(1200));
+        }
     }
 
     #[cfg(unix)]

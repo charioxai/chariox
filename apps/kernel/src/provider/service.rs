@@ -22,6 +22,8 @@ pub struct ProviderProcessService {
     run_actor_mailbox: ProviderRunActorMailbox,
     runs: BTreeMap<String, RuntimeProviderRun>,
     next_run_number: u64,
+    launching: std::collections::BTreeSet<(String, String)>,
+    session_retirement_epochs: BTreeMap<String, u64>,
 }
 
 impl ProviderProcessService {
@@ -31,6 +33,8 @@ impl ProviderProcessService {
             run_actor_mailbox: ProviderRunActorMailbox::default(),
             runs: BTreeMap::new(),
             next_run_number: 0,
+            launching: Default::default(),
+            session_retirement_epochs: Default::default(),
         }
     }
 

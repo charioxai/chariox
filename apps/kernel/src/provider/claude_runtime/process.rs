@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::fd::OwnedFd;
@@ -111,7 +112,7 @@ pub(super) fn spawn_claude_child(
         Ok(resources) => resources,
         Err(error) => {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(DaemonError::LocalTransport {
                 operation,
                 message: error.to_string(),
@@ -186,7 +187,7 @@ impl ClaudeChild {
         match self {
             Self::Started(child) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
             }
             Self::Adopted { pid, status } => {
                 unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };

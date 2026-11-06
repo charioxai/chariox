@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -6,7 +7,7 @@ pub(crate) fn git_command_output(path: &str, args: &[&str]) -> Option<String> {
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(path)
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;
@@ -23,7 +24,8 @@ pub(crate) fn run_workspace_git_command(
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(worktree_path)
-        .output()
+        // add, commit and push run repository hooks and talk to the network.
+        .output_for(Work::Mutation)
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: error.to_string(),
@@ -51,7 +53,8 @@ pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(repo_root)
-        .output()
+        // worktree add and remove check out a tree and run post-checkout hooks.
+        .output_for(Work::Mutation)
         .map_err(|error| DaemonError::LocalTransport {
             operation: "run git command",
             message: error.to_string(),
@@ -88,7 +91,7 @@ pub(crate) fn find_repo_root(workspace_path: &str) -> Result<Option<PathBuf>, Da
         .env("LC_ALL", "C")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(workspace_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "resolve repo root",
             message: format!("cannot inspect workspace {workspace_path}: {error}"),
@@ -115,7 +118,7 @@ pub(crate) fn git_ref_exists(repo_root: &Path, reference: &str) -> Result<bool, 
     let output = crate::process_spawn::command("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .current_dir(repo_root)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "check git ref",
             message: error.to_string(),
@@ -127,7 +130,7 @@ pub(crate) fn git_reference_resolves(repo_root: &str, reference: &str) -> bool {
     crate::process_spawn::command("git")
         .args(["rev-parse", "--verify", "--quiet", reference])
         .current_dir(repo_root)
-        .status()
+        .bounded_status()
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -226,7 +229,7 @@ pub(crate) fn detect_git_branch(path: &str) -> Result<String, DaemonError> {
     let output = crate::process_spawn::command("git")
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "detect git branch",
             message: error.to_string(),

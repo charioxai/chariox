@@ -138,6 +138,7 @@ use crate::io::windows_pipe_process as platform;
 
 #[cfg(unix)]
 mod platform {
+    use crate::runtime::bounded_process::BoundedChildExt as _;
     use std::io;
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
@@ -175,7 +176,7 @@ mod platform {
                 Ok(owned) => owned,
                 Err(error) => {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = child.bounded_wait();
                     return Err(error);
                 }
             };
@@ -220,7 +221,7 @@ mod platform {
         /// Ends everything the command started, then reaps its leader.
         pub(super) fn finish(&mut self) -> io::Result<std::process::ExitStatus> {
             self.end_session();
-            let status = self.child.wait();
+            let status = self.child.bounded_wait();
             self.reaped = true;
             status
         }
@@ -242,7 +243,7 @@ mod platform {
             if !self.reaped {
                 self.end_session();
                 let _ = self.child.kill();
-                let _ = self.child.wait();
+                let _ = self.child.bounded_wait();
             }
         }
     }
@@ -431,8 +432,10 @@ mod tests {
             fn drop(&mut self) {
                 if let Ok(pid) = fs::read_to_string(self.0.join("producer.pid")) {
                     if let Ok(pid) = pid.trim().parse::<i32>() {
-                        unsafe {
-                            libc::kill(pid, libc::SIGKILL);
+                        if pid > 1 {
+                            unsafe {
+                                libc::kill(pid, libc::SIGKILL);
+                            }
                         }
                     }
                 }
@@ -440,6 +443,18 @@ mod tests {
             }
         }
         let fixture = Fixture(root.clone());
+        // Initialize the shared supervision threads before measuring the
+        // resources that must settle after each individual command.
+        ShellCommandService::new()
+            .run(RunShellCommandRequest::new(
+                "warmup",
+                "attachment",
+                "/bin/sh",
+                vec!["-c".into(), "true".into()],
+                root.clone(),
+                None,
+            ))
+            .expect("shell supervision should initialize");
         let count = |path| fs::read_dir(path).unwrap().count();
         let threads = count("/proc/self/task");
         let descriptors = count("/proc/self/fd");

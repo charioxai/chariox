@@ -8,6 +8,7 @@
 //! target release. An interrupted activation remains pending until recovery
 //! commits or finishes rollback, even if its transient unit has already stopped.
 
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -272,7 +273,7 @@ impl ManagedReleaseUpdateClient {
                 Path::new(STAGING_ROOT),
                 update,
             ))
-            .status()
+            .bounded_status()
             .map_err(|error| update_error(format!("start release update unit: {error}")))?;
         if !status.success() {
             // The CLI reply can be ambiguous. The next poll checks the unit
@@ -359,7 +360,7 @@ fn cleanup_attempt_storage(update_id: &str) -> Result<(), DaemonError> {
         .args(["-n", "python3"])
         .arg(tooling)
         .args(["cleanup", STAGING_ROOT, update_id])
-        .status()
+        .bounded_status()
         .map_err(|error| update_error(format!("clean settled release update: {error}")))?;
     if !status.success() {
         return Err(update_error(
@@ -441,7 +442,7 @@ fn update_unit_settled() -> Result<bool, DaemonError> {
             "--property=ActiveState",
             UPDATE_UNIT,
         ])
-        .output()
+        .bounded_output()
         .map_err(|error| update_error(format!("inspect release update unit: {error}")))?;
     let state = std::str::from_utf8(&output.stdout)
         .map_err(|_| update_error("release update unit state is not UTF-8"))?;

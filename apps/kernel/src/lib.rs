@@ -17,6 +17,7 @@ pub(crate) mod disk_scan;
 pub(crate) mod durable_prompt_state;
 pub(crate) mod durable_snapshot;
 pub mod durable_state;
+#[cfg(test)]
 pub(crate) mod env_lock;
 pub mod error;
 pub(crate) mod event_connection;

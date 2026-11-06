@@ -815,7 +815,9 @@ impl DaemonApp {
         &self.providers
     }
 
-    pub fn providers_mut(&self) -> std::sync::MutexGuard<'_, ProviderProcessService> {
+    pub fn providers_mut(
+        &self,
+    ) -> crate::runtime::checked_lock::CheckedMutexGuard<'_, ProviderProcessService> {
         self.providers.write()
     }
 

@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -81,7 +82,7 @@ fn run_git(
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(working_directory)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::GitCapabilityFailed {
             session_id: session_id.to_string(),
             working_directory: working_directory.display().to_string(),

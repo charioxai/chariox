@@ -1,5 +1,7 @@
 //! MP-08/MP-10/MP-11: bind a server behind a spawn launcher before any turn.
 //! An endpoint holder must be unique and belong to the recorded launch tree.
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use crate::runtime::kernel_access::process::{ancestry, inspect, ProcessIdentity};
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -127,7 +129,7 @@ fn macos_listener_pids(address: SocketAddr) -> Option<Vec<u32>> {
             "-sTCP:LISTEN",
             "-Fp",
         ])
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;

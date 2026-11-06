@@ -1,5 +1,6 @@
 //! Bounded serialized compiler I/O and supervision, shared by isolation backends.
 use super::*;
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::io::Read;
 #[cfg(target_os = "macos")]
 use std::process::Child;
@@ -110,7 +111,7 @@ pub(super) fn run(
         })();
         if result.is_err() && child.id() > 1 {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         }
         let written = input_writer
             .join()

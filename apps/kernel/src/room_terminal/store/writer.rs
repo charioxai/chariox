@@ -9,7 +9,7 @@ use std::time::Instant;
 const QUEUE_LIMIT: usize = 64;
 const BATCH_LIMIT: usize = 32;
 
-type Reply = Result<(), String>;
+type Reply = Result<(), Arc<std::io::Error>>;
 
 pub(super) enum Operation {
     #[cfg(test)]
@@ -36,11 +36,11 @@ impl PendingWrite {
     pub(crate) fn wait(self) -> Result<(), DaemonError> {
         crate::durable_state::await_writer_response(self.0)
             .map_err(|_| failed("terminal writer stopped before settlement"))?
-            .map_err(failed)
+            .map_err(write_failed)
     }
     pub(crate) fn try_result(&self) -> Option<Result<(), DaemonError>> {
         match self.0.try_recv() {
-            Ok(result) => Some(result.map_err(failed)),
+            Ok(result) => Some(result.map_err(write_failed)),
             Err(mpsc::TryRecvError::Empty) => None,
             Err(mpsc::TryRecvError::Disconnected) => {
                 Some(Err(failed("terminal writer stopped before settlement")))
@@ -60,7 +60,7 @@ impl Writer {
             .name("chariox-terminal-writer".into())
             .stack_size(256 * 1024)
             .spawn(move || run(root, receiver))
-            .map_err(|error| failed(error.to_string()))?;
+            .map_err(|error| write_failed(Arc::new(error)))?;
         Ok(Arc::new(Self {
             sender: Mutex::new(Some(sender)),
             worker: Mutex::new(Some(worker)),
@@ -128,6 +128,14 @@ impl Drop for Writer {
     }
 }
 
+fn write_failed(error: Arc<std::io::Error>) -> DaemonError {
+    #[cfg(unix)]
+    if matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE)) {
+        return DaemonError::TooManyOpenFiles;
+    }
+    failed(error.to_string())
+}
+
 fn failed(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "room terminal persistence",
@@ -161,7 +169,7 @@ fn run(root: PathBuf, receiver: mpsc::Receiver<Job>) {
                 crate::logging::error_with_fields(
                     "room_terminal.persist",
                     "terminal persistence failed after its observer closed",
-                    serde_json::json!({"error": message}),
+                    serde_json::json!({"error": message.to_string()}),
                 );
             }
         }
@@ -169,40 +177,42 @@ fn run(root: PathBuf, receiver: mpsc::Receiver<Job>) {
 }
 
 fn apply(root: &std::path::Path, operation: &Operation, sync_us: &mut u64) -> Reply {
-    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root).map_err(Arc::new)?;
     match operation {
         #[cfg(test)]
         Operation::Pause { entered, release } => {
             let _ = entered.send(());
-            release.recv().map_err(|error| error.to_string())
+            release
+                .recv()
+                .map_err(|error| Arc::new(std::io::Error::other(error)))
         }
         Operation::Save { id, body } => {
             let path = root.join(format!("{id}.json"));
             let temporary = path.with_extension("json.tmp");
-            let mut file = super::open_private(&temporary).map_err(|error| error.to_string())?;
+            let mut file = super::open_private(&temporary).map_err(Arc::new)?;
             use std::io::Write;
-            file.write_all(body).map_err(|error| error.to_string())?;
+            file.write_all(body).map_err(Arc::new)?;
             let started = Instant::now();
-            let result = file.sync_all().map_err(|error| error.to_string());
+            let result = file.sync_all().map_err(Arc::new);
             *sync_us += started.elapsed().as_micros().min(u64::MAX as u128) as u64;
             result?;
-            fs::rename(temporary, path).map_err(|error| error.to_string())
+            fs::rename(temporary, path).map_err(Arc::new)
         }
         Operation::Remove { id } => match fs::remove_file(root.join(format!("{id}.json"))) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(Arc::new(error)),
         },
     }
 }
 
 fn sync_directory(root: &std::path::Path, sync_us: &mut u64) -> Reply {
-    fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root).map_err(Arc::new)?;
     #[cfg(unix)]
     {
-        let directory = File::open(root).map_err(|error| error.to_string())?;
+        let directory = File::open(root).map_err(Arc::new)?;
         let started = Instant::now();
-        let result = directory.sync_all().map_err(|error| error.to_string());
+        let result = directory.sync_all().map_err(Arc::new);
         *sync_us += started.elapsed().as_micros().min(u64::MAX as u128) as u64;
         result
     }

@@ -4,6 +4,7 @@ use std::time::Duration;
 mod utility_admission;
 pub(crate) use utility_admission::ProviderUtilityAdmission;
 mod account_credential;
+mod account_endpoints;
 mod claude;
 mod claude_runtime;
 pub(crate) use claude_runtime::usage::{
@@ -176,6 +177,7 @@ pub(crate) use run_actor::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
     ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
+    ProviderRunOperationPermit,
 };
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,

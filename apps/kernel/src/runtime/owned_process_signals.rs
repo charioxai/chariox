@@ -1,4 +1,6 @@
 //! Signals require a retained PID/start witness, including every group member.
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::{collections::BTreeMap, io, process::Child};
 
 #[derive(Clone, Debug)]
@@ -8,6 +10,8 @@ struct ProcessIdentity {
     group: u32,
     session: u32,
     start: String,
+    #[cfg(target_os = "linux")]
+    exited: bool,
 }
 
 pub(crate) struct OwnedProcessSignals {
@@ -139,6 +143,11 @@ impl OwnedProcessSignals {
         self.kill_owned_with(snapshot, send_signal)
     }
 
+    #[cfg(unix)]
+    pub(crate) fn signal_owned_processes(&mut self, signal: i32) -> io::Result<()> {
+        self.kill_owned_with(snapshot, |pid| send_signal_with(pid, signal))
+    }
+
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
@@ -151,6 +160,66 @@ impl OwnedProcessSignals {
             let rows = inspect()?;
             if rows.iter().any(|row| row.pid == pid && self.matches(row)) {
                 send(pid as i32)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn all_exited(&self) -> io::Result<bool> {
+        for (pid, start) in &self.owned {
+            let row = witnessed_row(*pid)?;
+            if !witnessed_exit(start, row)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn pin_owned_processes_into(
+        &mut self,
+        handles: &mut OwnedProcessHandles,
+    ) -> io::Result<()> {
+        let rows = snapshot()?;
+        self.refresh_from(&rows);
+        for row in &rows {
+            if row.start.is_empty()
+                && self.owned.contains_key(&row.pid)
+                && !handles.0.contains_key(&row.pid)
+            {
+                return Err(io::Error::other(
+                    "owned process identity is unreadable before pinning",
+                ));
+            }
+            if !self.matches(row) || handles.0.contains_key(&row.pid) {
+                continue;
+            }
+            if row.pid <= 1 || row.pid > i32::MAX as u32 {
+                return Err(io::Error::other("invalid child PID"));
+            }
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
+            if fd < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    continue;
+                }
+                return Err(error);
+            }
+            use std::os::fd::FromRawFd;
+            let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+            if snapshot()?
+                .iter()
+                .any(|current| current.pid == row.pid && self.matches(current))
+            {
+                // Publish each verified handle immediately. A subsequent pin
+                // failure must retain both old and newly acquired ownership.
+                handles.0.insert(row.pid, handle);
+            }
+        }
+        for (pid, start) in &self.owned {
+            if !handles.0.contains_key(pid) && !witnessed_exit(start, witnessed_row(*pid)?)? {
+                return Err(io::Error::other("live owned process could not be pinned"));
             }
         }
         Ok(())
@@ -169,8 +238,57 @@ impl OwnedProcessSignals {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct OwnedProcessHandles(BTreeMap<u32, std::os::fd::OwnedFd>);
+
+#[cfg(target_os = "linux")]
+impl OwnedProcessHandles {
+    pub(crate) fn signal(&self, signal: i32) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        for (pid, handle) in &self.0 {
+            if *pid <= 1 {
+                return Err(io::Error::other("reserved child signal target"));
+            }
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    handle.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn all_exited(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        self.0.values().all(|handle| {
+            let mut fd = libc::pollfd {
+                fd: handle.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            unsafe { libc::poll(&mut fd, 1, 0) == 1 }
+        })
+    }
+}
+
 #[cfg(unix)]
 fn send_signal(pid: i32) -> io::Result<()> {
+    send_signal_with(pid, libc::SIGKILL)
+}
+
+#[cfg(unix)]
+fn send_signal_with(pid: i32, signal: i32) -> io::Result<()> {
     // MP-11: reject system-wide targets even if a future caller loses its witness.
     if pid == i32::MIN || (-1..=1).contains(&pid) {
         return Err(io::Error::other("invalid process signal target"));
@@ -179,7 +297,7 @@ fn send_signal(pid: i32) -> io::Result<()> {
     if matches!(pid, -1..=1) {
         return Err(io::Error::other("reserved signal target"));
     }
-    if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+    if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
@@ -246,7 +364,28 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
         group,
         session,
         start: fields[19].into(),
+        exited: matches!(fields[0], "Z" | "X"),
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
+    match std::fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => linux_row(pid, Ok(bytes)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_exit(start: &str, row: Option<ProcessIdentity>) -> io::Result<bool> {
+    match row {
+        None => Ok(true),
+        Some(row) if row.start.is_empty() => {
+            Err(io::Error::other("owned process identity is unreadable"))
+        }
+        Some(row) => Ok(row.start != start || row.exited),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -259,6 +398,7 @@ fn unreadable_row(pid: u32) -> Option<ProcessIdentity> {
         group: group as u32,
         session: session as u32,
         start: String::new(),
+        exited: false,
     })
 }
 #[cfg(target_os = "macos")]
@@ -266,7 +406,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
     let result = crate::process_spawn::command("/bin/ps")
         .args(["-axo", "pid=,ppid=,pgid="])
         .env("LC_ALL", "C")
-        .output()?;
+        .bounded_output()?;
     if !result.status.success() {
         return Err(io::Error::other("process metadata unavailable"));
     }
@@ -374,8 +514,50 @@ mod tests {
             group,
             session: 0,
             start: start.into(),
+            #[cfg(target_os = "linux")]
+            exited: false,
         }
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn witnessed_exit_distinguishes_zombies_reuse_and_unknown_identity() {
+        assert!(!witnessed_exit("birth", Some(row(42, 1, 42, "birth"))).unwrap());
+        let mut zombie = row(42, 1, 42, "birth");
+        zombie.exited = true;
+        assert!(witnessed_exit("birth", Some(zombie)).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, "new-birth"))).unwrap());
+        assert!(witnessed_exit("birth", None).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, ""))).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn repeated_pins_retain_the_same_process_handles() {
+        use std::os::fd::AsRawFd;
+        let mut child = crate::process_spawn::command("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut owner = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut handles = OwnedProcessHandles::default();
+        owner.pin_owned_processes_into(&mut handles).unwrap();
+        let before: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        let repinned = owner.pin_owned_processes_into(&mut handles);
+        let after: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        crate::runtime::child_shutdown::stop(&mut child, "repin_fixture").unwrap();
+        assert!(repinned.is_ok());
+        assert!(!before.is_empty());
+        assert_eq!(before, after);
+    }
+
     /// A process can only rename itself, so a shell does it and then waits.
     #[cfg(target_os = "linux")]
     fn spawn_shell_named_invalidly() -> std::process::Child {

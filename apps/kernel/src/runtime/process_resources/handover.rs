@@ -73,6 +73,16 @@ pub(crate) fn hand_over_released() -> Vec<ReleasedJobs> {
 /// Watches the handed-over jobs again. One that cannot be watched is stopped
 /// with its owner's next stop or a restart, like any job the kernel lost track of.
 pub(crate) fn adopt_released(handed_over: Vec<ReleasedJobs>) {
+    if !handed_over.is_empty() {
+        if let Err(error) = sampling::warm_up() {
+            // A failed sampler cannot revoke ownership; the watches retry it.
+            crate::logging::warn_with_fields(
+                "process_resources.handover",
+                "initial process snapshot unavailable; retaining inherited watches",
+                serde_json::json!({"error": error.to_string()}),
+            );
+        }
+    }
     for mut jobs in handed_over {
         // Whatever ended or was forked during the swap, the domain knows.
         jobs.tree.including(jobs.domain_members());

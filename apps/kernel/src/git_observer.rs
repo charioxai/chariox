@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -1077,7 +1078,7 @@ pub(crate) fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
         .arg("-C")
         .arg(worktree)
         .args(args)
-        .output()
+        .bounded_output()
         .ok()?;
     output
         .status

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::bounded_process::AsyncChildOwner as _;
 
 impl ConnectorAdapterProcessPool {
     pub async fn execute(
@@ -175,7 +176,8 @@ impl WarmConnectorAdapterProcess {
             let _ = self.stdin.write_all(b"\n").await;
             let _ = self.stdin.flush().await;
         }
-        let _ = tokio::time::timeout(Duration::from_millis(1000), self.child.wait()).await;
+        let _ =
+            tokio::time::timeout(Duration::from_millis(1000), self.child.supervised_wait()).await;
         if self.child.id().is_some() {
             let _ = self.child.kill().await;
         }

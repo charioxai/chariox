@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::bounded_process::BoundedChildExt as _;
 
 pub(super) fn ensure_worktree_root(worktree: &Path) -> Result<(), DaemonError> {
     let metadata = fs::symlink_metadata(worktree)
@@ -365,7 +366,7 @@ fn create_git_bundle_to_writer(
                 if child.id() > 1 {
                     let _ = child.kill();
                 }
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read Git bundle", error));
             }
@@ -378,7 +379,7 @@ fn create_git_bundle_to_writer(
             if child.id() > 1 {
                 let _ = child.kill();
             }
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
                 "repository Git bundle exceeds {maximum_bytes} bytes"
@@ -388,13 +389,13 @@ fn create_git_bundle_to_writer(
             if child.id() > 1 {
                 let _ = child.kill();
             }
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             let _ = stderr_reader.join();
             return Err(context_io_error("write Git bundle", error));
         }
     }
     let status = child
-        .wait()
+        .bounded_wait()
         .map_err(|error| context_io_error("wait for Git bundle", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
     require_git_not_interrupted(status, "create Git bundle")?;
@@ -669,7 +670,7 @@ fn run_git_output_bounded(
                 if child.id() > 1 {
                     let _ = child.kill();
                 }
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 let _ = stderr_reader.join();
                 return Err(context_io_error("read bounded Git output", error));
             }
@@ -681,7 +682,7 @@ fn run_git_output_bounded(
             if child.id() > 1 {
                 let _ = child.kill();
             }
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             let _ = stderr_reader.join();
             return Err(context_error(format!(
                 "Git command output exceeds {maximum_stdout_bytes} bytes"
@@ -690,7 +691,7 @@ fn run_git_output_bounded(
         stdout_bytes.extend_from_slice(&buffer[..read]);
     }
     let status = child
-        .wait()
+        .bounded_wait()
         .map_err(|error| context_io_error("wait for bounded Git command", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
     Ok(Output {
@@ -838,7 +839,7 @@ where
         let _ = child.kill();
     }
     let status = child
-        .wait()
+        .bounded_wait()
         .map_err(|error| context_io_error("wait for streaming Git command", error))?;
     let stderr = stderr_reader.join().unwrap_or_default();
     // A parser/policy refusal kills its own child with SIGKILL. Preserve that

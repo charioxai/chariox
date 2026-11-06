@@ -1,4 +1,5 @@
 //! MP-08 / MP-11: detect Vault-routed content; reject plaintext secrets before target mutation.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[path = "credential_free/config.rs"]
 mod config;
 mod history;
@@ -223,7 +224,7 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
     // MP-11: signal only this scan's child; distinguish our policy kill
     // from a target shutdown interrupting an otherwise retryable import.
     let killed_for_refusal = refused_output && child.id() > 1 && child.kill().is_ok();
-    let status = child.wait().map_err(|_| scan_unavailable())?;
+    let status = child.bounded_wait().map_err(|_| scan_unavailable())?;
     drop(stdout);
     scan_git_status(status, killed_for_refusal)?;
     if refused_output {

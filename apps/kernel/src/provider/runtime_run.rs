@@ -723,6 +723,24 @@ impl RuntimeProviderRun {
         self.terminal_diagnostic = None;
     }
 
+    #[cfg(unix)]
+    pub(crate) fn adopt_handed_over_identity(
+        &mut self,
+        id: String,
+        token: Option<String>,
+        endpoint: Option<String>,
+    ) {
+        self.id = id;
+        if self.runtime_mcp_auth_token.is_some() {
+            if let Some(token) = token {
+                self.runtime_mcp_auth_token = Some(token);
+            }
+        }
+        if endpoint.is_some() {
+            self.structured_endpoint = endpoint;
+        }
+    }
+
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {
         self.runtime_mcp_auth_token = auth_token;
     }

@@ -49,6 +49,7 @@ const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     resolve_claude_executable_unlocked()
 }
@@ -74,6 +75,7 @@ fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
 pub fn plan_claude_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     plan_claude_launch_unlocked(request)
 }

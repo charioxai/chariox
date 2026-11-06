@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -1437,7 +1438,7 @@ fn kill_owned_child(child: &mut Child, group: &mut owned_process_group::OwnedPro
     // MD-4: preserve start identities recorded before the controller exited.
     group.signal();
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.bounded_wait();
 }
 
 /// `browser.reconcile` parameters for both the barrier and observation paths.

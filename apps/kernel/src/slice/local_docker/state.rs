@@ -734,7 +734,7 @@ pub fn remove_local_docker_saved_state(state: &SliceSavedStateRecord) -> Result<
         .args(["image", "rm", "-f", &state.image_ref])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .bounded_status();
     let manifest_path = PathBuf::from(&state.manifest_path);
     if let Some(dir) = manifest_path.parent() {
         if dir.exists() {
@@ -886,7 +886,7 @@ fn container_exists_by_name(container_name: &str) -> bool {
         .args(["container", "inspect", container_name])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_status()
         .is_ok_and(|status| status.success())
 }
 
@@ -898,7 +898,7 @@ fn stop_local_docker_container_if_running(record: &SliceRecord) -> Result<(), Da
     run_local_docker_slice_screen(record, "stop", "slice.state.stop_desktop")?;
     let status = docker_command()
         .args(["stop", &container])
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "slice.state.stop",
             message: format!("failed to stop slice container `{container}`: {error}"),
@@ -962,7 +962,7 @@ fn stop_local_docker_slice_desktop_for_snapshot(
         let container = local_docker_container_name(record);
         let status = docker_command()
             .args(["pause", &container])
-            .status()
+            .bounded_status()
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "slice.state.pause_for_snapshot",
                 message: format!("failed to pause slice container `{container}`: {error}"),
@@ -1023,7 +1023,7 @@ fn archive_local_docker_home_volume(
         .args(["rm", "-f", &helper])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .bounded_status();
     let (archive_path, size, sha256) = result?;
     if size > 0 {
         Ok((archive_path, size, sha256))
@@ -1048,7 +1048,7 @@ fn archive_local_docker_home_volume_with_helper(
 ) -> Result<(PathBuf, u64, String), DaemonError> {
     let status = docker_command()
         .args(["start", helper])
-        .status()
+        .bounded_status()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!("failed to start home archive helper `{helper}`: {error}"),
@@ -1096,7 +1096,7 @@ fn valid_docker_image_id(value: &str) -> bool {
 fn docker_image_id(image_ref: &str, operation: &'static str) -> Result<String, DaemonError> {
     let output = docker_command()
         .args(["image", "inspect", "--format", "{{.Id}}", image_ref])
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!("failed to inspect slice image `{image_ref}`: {error}"),
@@ -1324,7 +1324,7 @@ fn remove_docker_image_best_effort(image_ref: &str) {
         .args(["image", "rm", "-f", image_ref])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status();
+        .bounded_status();
 }
 
 pub(super) fn read_state_manifest<T: serde::de::DeserializeOwned>(

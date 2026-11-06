@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -855,7 +856,7 @@ impl PtyManager {
             Ok(resources) => resources,
             Err(error) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 return Err(spawn_failed(&request.provider_run_id.clone(), &error));
             }
         };
@@ -892,7 +893,7 @@ impl PtyManager {
                 Ok(endpoints) => endpoints,
                 Err(error) => {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = child.bounded_wait();
                     return Err(error);
                 }
             };
@@ -919,7 +920,7 @@ impl PtyManager {
             Ok(thread) => thread,
             Err(error) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 return Err(spawn_failed(&provider_run_id, &error));
             }
         };
@@ -974,7 +975,7 @@ impl PtyManager {
             });
         if let Err(error) = reader_thread {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             drop(input_writer);
             let _ = writer_thread.join();
             self.output_signal.unregister_process(&process_key);
@@ -1621,7 +1622,7 @@ impl PtyManager {
                 })?;
             process
                 .child
-                .wait()
+                .bounded_wait()
                 .map_err(|error| DaemonError::PtyCleanup {
                     provider_run_id: provider_run_id.unwrap_or(process_key).to_string(),
                     message: error.to_string(),

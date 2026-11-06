@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::fs::File;
 use std::process::Command;
 
@@ -213,7 +214,7 @@ mod linux {
             .write_all(&payload);
         if let Err(error) = written {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(failure(format!(
                 "failed to submit extension build request: {error}"
             )));
@@ -221,11 +222,11 @@ mod linux {
         // Ordinary extension builds have no global deadline. The helper binds
         // its namespace to this caller and the sudo monitor, bounds retained
         // output, and settles all descendants on cancellation/caller death.
-        match child.wait() {
+        match crate::runtime::bounded_process::supervise(&mut child) {
             Ok(status) => Ok(status),
             Err(error) => {
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 Err(failure(format!(
                     "failed to wait for extension build helper: {error}"
                 )))
@@ -325,6 +326,38 @@ mod linux {
             fn drop(&mut self) {
                 let _ = std::fs::remove_dir_all(&self.0);
             }
+        }
+
+        #[test]
+        fn active_extension_build_survives_the_short_reap_deadline() {
+            let scratch = Scratch::new();
+            let helper = scratch.0.join("build.py");
+            std::fs::write(
+                &helper,
+                "import json,sys,time\nr=json.load(sys.stdin)\nassert r['phase']=='build'\ntime.sleep(1.6)\nprint('build completed',flush=True)\n",
+            )
+            .unwrap();
+            let stdout = File::create(scratch.0.join("stdout")).unwrap();
+            let stderr = File::create(scratch.0.join("stderr")).unwrap();
+            let request = Request {
+                phase: "build",
+                caller_pid: std::process::id(),
+                image: "extension-lifetime-fixture".into(),
+                policy: "auto",
+                environment: BTreeMap::new(),
+                context: None,
+                dockerfile: None,
+                basename: None,
+            };
+            assert!(run_helper(&helper, &request, &stdout, &stderr)
+                .expect("active build must remain supervised")
+                .success());
+            assert_eq!(
+                std::fs::read_to_string(scratch.0.join("stdout"))
+                    .unwrap()
+                    .trim(),
+                "build completed"
+            );
         }
 
         #[test]

@@ -33,7 +33,7 @@ pub(crate) use native_interaction::{
     ProviderNativeInteractionBridge, ProviderNativeInteractionBridgeStore,
     ProviderNativeInteractionResolution,
 };
-pub(crate) use operation_lanes::ProviderRunOperationLanes;
+pub(crate) use operation_lanes::{ProviderRunOperationLanes, ProviderRunOperationPermit};
 use runtime_slots::ProviderRunRuntimeRegistry;
 use worker::{ProviderRunActorCommand, ProviderRunWorkerDeps};
 
