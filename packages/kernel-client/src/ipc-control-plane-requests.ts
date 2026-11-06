@@ -27,5 +27,5 @@ export type ControlPlaneSavedStateRow = {
 
 /** Display facts supplied by the connected service for this capability revision. */
 export type MachineAcquisitionOffer = {
-  machine_type: string; vcpu: number; ram_gb: number; disk_gb: number; location: string; price: { amount: string; currency: string; period: "hour" | "month" }
+  machine_type: string; vcpu: number; ram_gb: number; disk_gb: number; location: string; terms: { amount: string; currency: string; period: "hour" | "month" }
 }

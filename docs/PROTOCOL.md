@@ -6753,7 +6753,7 @@ checks: `cargo test -p chariox-kernel --lib managed_working_agents` and
 
 MP-08 / MP-09 / MP-10 / MP-11: `ControlPlane` capabilities include the current
 `machine_allocation.offer`: `machine_type`, `vcpu`, `ram_gb`, `disk_gb`, `location`,
-and `price: { amount, currency, period }` (`hour` or `month`). Cloud supplies these
+and `terms: { amount, currency, period }` (`hour` or `month`). Cloud supplies these
 provider-neutral values from its placement provider's catalogue at offer time.
 The capability revision covers the descriptor. Before asking an agent to confirm
 Acquire, the kernel verifies that revision and writes every offer fact in the

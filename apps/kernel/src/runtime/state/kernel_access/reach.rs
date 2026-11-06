@@ -288,8 +288,8 @@ impl KernelRuntimeState {
                         Some(offer) => format!(
                             "Let {} acquire a machine?\n\n{} · {} vCPU · {} GB RAM · {} GB disk · {} · {} {}/{}",
                             caller.harness, offer.machine_type, offer.vcpu, offer.ram_gb,
-                            offer.disk_gb, offer.location, offer.price.currency, offer.price.amount,
-                            match offer.price.period { crate::local::MachineAcquisitionPricePeriod::Hour => "hour", crate::local::MachineAcquisitionPricePeriod::Month => "month" },
+                            offer.disk_gb, offer.location, offer.terms.currency, offer.terms.amount,
+                            match offer.terms.period { crate::local::MachineAcquisitionPeriod::Hour => "hour", crate::local::MachineAcquisitionPeriod::Month => "month" },
                         ),
                         None => format!("Let {} acquire a machine?", caller.harness),
                     },

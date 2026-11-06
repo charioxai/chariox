@@ -126,7 +126,7 @@ fn fixture_with_config(owner_running: bool, config: DaemonConfig) -> Reach {
     }
 }
 
-/// A connected service fixture: only Cloud supplies the offered machine and price.
+/// A connected service fixture: only Cloud supplies the offered machine and its terms.
 async fn offered_reach() -> (
     Reach,
     tokio::task::JoinHandle<()>,
@@ -161,7 +161,7 @@ async fn offered_reach() -> (
                         "capabilities" => serde_json::json!({"kind": "capabilities", "machine_allocation": {
                             "revision": "r1", "actions": ["acquire"], "offer": {
                                 "machine_type": "Standard", "vcpu": 2, "ram_gb": 4, "disk_gb": 40,
-                                "location": "Europe", "price": {"amount": "0.01", "currency": "EUR", "period": "hour"}
+                                "location": "Europe", "terms": {"amount": "0.01", "currency": "EUR", "period": "hour"}
                             }}}),
                         "acquire" => {
                             count.fetch_add(1, Ordering::SeqCst);
@@ -682,7 +682,7 @@ async fn mp08_mp11_stale_acquisition_offer_is_refused_before_asking_or_spending(
         &reach.owner_token,
         None,
         serde_json::json!({"ControlPlane": {
-        "action": "acquire", "capability_revision": "old-price", "request_id": "stale"}}),
+        "action": "acquire", "capability_revision": "old-terms", "request_id": "stale"}}),
     )
     .await;
     assert!(!ok);

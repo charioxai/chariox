@@ -85,21 +85,22 @@ pub struct MachineAcquisitionOffer {
     pub ram_gb: f64,
     pub disk_gb: u32,
     pub location: String,
-    /// Includes currency and billing interval; the kernel never calculates prices.
-    pub price: MachineAcquisitionPrice,
+    /// Amount, currency and period exactly as the connected service offers them; the kernel
+    /// never computes amounts.
+    pub terms: MachineAcquisitionTerms,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MachineAcquisitionPrice {
+pub struct MachineAcquisitionTerms {
     pub amount: String,
     pub currency: String,
-    pub period: MachineAcquisitionPricePeriod,
+    pub period: MachineAcquisitionPeriod,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MachineAcquisitionPricePeriod {
+pub enum MachineAcquisitionPeriod {
     Hour,
     Month,
 }

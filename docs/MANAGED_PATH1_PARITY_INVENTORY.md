@@ -2366,7 +2366,7 @@ drills cover this seam only; they do not close the entire MP-10 comparison matri
 ## MP-08 / MP-09 / MP-10 / MP-11 person cards (2026-11-04)
 
 Local 988 / peer 427 adds a provider-neutral acquisition offer to the existing
-Cloud capability. Cloud resolves specifications and a currency/period price from
+Cloud capability. Cloud resolves specifications and currency/period terms from
 its provider catalogue; the kernel writes the confirmation text and binds it to
 the capability revision. OSS contains no compute-provider catalogue or pricing
 logic. A missing approved signed placement blocks both live rental legs.

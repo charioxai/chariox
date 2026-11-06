@@ -329,7 +329,7 @@ pub use api::{
 
 pub use api::{
     ControlPlaneMachineTarget, ControlPlaneRequest, ControlPlaneResponse, MachineAcquisitionOffer,
-    MachineAcquisitionPrice, MachineAcquisitionPricePeriod, MachineAllocationCapability,
+    MachineAcquisitionPeriod, MachineAcquisitionTerms, MachineAllocationCapability,
 };
 
 pub use api::{ControlPlaneMachineRow, ControlPlaneSavedStateRow};

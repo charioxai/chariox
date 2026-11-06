@@ -6,7 +6,7 @@ fn mp08_mp11_control_plane_959_shapes_and_hash() {
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    let snapshot = serde_json::json!({"requests":[{"ControlPlane":{"action":"capabilities"}},{"ControlPlane":{"action":"acquire","capability_revision":"revision","request_id":"one"}},{"ControlPlane":{"action":"list"}},{"ControlPlane":{"action":"get","allocation_ref":"resource"}},{"ControlPlane":{"action":"release","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"start","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"stop","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"start_saved_state","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1,"saved_state_ref":"saved-record"}},{"ControlPlane":{"action":"delete_saved_state","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1,"saved_state_ref":"saved-record"}}],"responses":[{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":null}}},{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":{"revision":"revision","actions":["acquire","list"],"offer":{"machine_type":"Standard","vcpu":2,"ram_gb":4.0,"disk_gb":40,"location":"Europe","price":{"amount":"0.01","currency":"EUR","period":"hour"}}}}}},{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":{"revision":"revision","actions":["list","get","stop","release","delete_saved_state"],"offer":null}}}},{"ControlPlane":{"result":{"kind":"machines","machines":[{"allocation_ref":"resource","name":"Computer","state":"ready","revision":1,"since":"2026-11-02T00:00:00Z","kernel_id":"kernel","machine_id":"machine","available_actions":["stop","release"]}],"saved_states":[]}}},{"ControlPlane":{"result":{"kind":"machine","allocation_ref":"resource","revision":1,"available_actions":["stop","release"],"state":"ready","access_state":"available","access_reason":null,"kernel_target":{"kernel_id":"kernel","machine_id":"machine","relay_realm_id":"realm","key_thumbprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}]});
+    let snapshot = serde_json::json!({"requests":[{"ControlPlane":{"action":"capabilities"}},{"ControlPlane":{"action":"acquire","capability_revision":"revision","request_id":"one"}},{"ControlPlane":{"action":"list"}},{"ControlPlane":{"action":"get","allocation_ref":"resource"}},{"ControlPlane":{"action":"release","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"start","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"stop","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1}},{"ControlPlane":{"action":"start_saved_state","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1,"saved_state_ref":"saved-record"}},{"ControlPlane":{"action":"delete_saved_state","allocation_ref":"resource","capability_revision":"revision","request_id":"two","expected_revision":1,"saved_state_ref":"saved-record"}}],"responses":[{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":null}}},{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":{"revision":"revision","actions":["acquire","list"],"offer":{"machine_type":"Standard","vcpu":2,"ram_gb":4.0,"disk_gb":40,"location":"Europe","terms":{"amount":"0.01","currency":"EUR","period":"hour"}}}}}},{"ControlPlane":{"result":{"kind":"capabilities","machine_allocation":{"revision":"revision","actions":["list","get","stop","release","delete_saved_state"],"offer":null}}}},{"ControlPlane":{"result":{"kind":"machines","machines":[{"allocation_ref":"resource","name":"Computer","state":"ready","revision":1,"since":"2026-11-02T00:00:00Z","kernel_id":"kernel","machine_id":"machine","available_actions":["stop","release"]}],"saved_states":[]}}},{"ControlPlane":{"result":{"kind":"machine","allocation_ref":"resource","revision":1,"available_actions":["stop","release"],"state":"ready","access_state":"available","access_reason":null,"kernel_target":{"kernel_id":"kernel","machine_id":"machine","relay_realm_id":"realm","key_thumbprint":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}}]});
     for shape in snapshot["requests"].as_array().unwrap() {
         let request: LocalDaemonRequest = serde_json::from_value(shape.clone()).unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), *shape);
@@ -20,10 +20,22 @@ fn mp08_mp11_control_plane_959_shapes_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "ec1c81678967cc266e3996e5f723b0162fd96f7d1b1b065a21fc70a424d37558"
+        "288c4898698e5e564789f904ec6922c71ebffdb24a3468d61d1d4a03a579dfd4"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(
         serde_json::json!({"ControlPlane":{"action":"capabilities","token":"must-not-travel"}})
     )
     .is_err());
+}
+
+/// The connected service builds this offer; its contract test reads the same fixture.
+#[test]
+fn machine_acquisition_offer_fixture_is_the_service_contract() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../../../fixtures/machine-acquisition-offer.json"
+    ))
+    .unwrap();
+    let offer: crate::local::MachineAcquisitionOffer =
+        serde_json::from_value(fixture.clone()).unwrap();
+    assert_eq!(serde_json::to_value(offer).unwrap(), fixture);
 }
