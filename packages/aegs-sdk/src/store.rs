@@ -2260,3 +2260,78 @@ mod mp11_delivery_gate_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod shared_connection_tests {
+    use super::*;
+
+    fn claim(binding: &str, scope: &str) -> SubscriptionClaim {
+        SubscriptionClaim {
+            binding_id: binding.into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: scope.into(),
+            event_interest_key: format!("interest-{scope}"),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        }
+    }
+
+    fn connected() -> AegsStore {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn one_kernel_dropping_its_subscription_keeps_the_other_kernels() {
+        let store = connected();
+        // Two kernels share one connection; each reconciles under its own kernel id
+        // with a binding id of its own.
+        store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[claim("binding-a", "chariox/repo")],
+            )
+            .unwrap();
+        store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-b", "chariox/repo")],
+            )
+            .unwrap();
+        let bindings = |store: &AegsStore| {
+            store
+                .matching("dev.chariox.github", "event", "chariox/repo")
+                .unwrap()
+                .into_iter()
+                .map(|claim| claim.binding_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bindings(&store), ["binding-a", "binding-b"]);
+        // Kernel A removes its route: its reconcile no longer lists the binding.
+        store
+            .reconcile("kernel-a", "dev.chariox.github", &[])
+            .unwrap();
+        assert_eq!(bindings(&store), ["binding-b"]);
+        // Reconciling the same claim again is idempotent.
+        store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-b", "chariox/repo")],
+            )
+            .unwrap();
+        assert_eq!(bindings(&store), ["binding-b"]);
+        // Revoking the connection stops every kernel's subscription at the source.
+        store.revoke_connection("connection", "owner", 5).unwrap();
+        assert!(bindings(&store).is_empty());
+    }
+}
