@@ -5291,6 +5291,7 @@ pub(in crate::runtime::state) mod tests {
         adapter: &str,
         provider: &str,
         message: &str,
+        reason: &str,
     ) {
         let worktree =
             crate::test_support::TestWorktree::new(&format!("failed-request-{provider}"));
@@ -5350,20 +5351,23 @@ pub(in crate::runtime::state) mod tests {
         let failed = failed_requests(&runtime, agent.id());
         assert_eq!(failed.len(), 1, "{provider}");
         assert_eq!(failed[0].excerpt, "record r372-mcp-1, then r372-mcp-2");
-        assert_eq!(
-            failed[0].reason, "The provider's usage limit was reached",
-            "{provider}"
-        );
+        assert_eq!(failed[0].reason, reason, "{provider}");
         assert_eq!(
             not_carried_out_entries(&runtime, session.id(), observer.id()),
-            vec!["Request not carried out: The provider's usage limit was reached. It was dropped; send it again to retry."],
+            vec![format!(
+                // The notice drops the middle dot of Claude's "limit · resets" line.
+                "Request not carried out: {}. It was dropped; send it again to retry.",
+                reason.replace(" · ", " ")
+            )],
             "{provider}"
         );
         assert!(runtime
             .owned
             .agent_store
             .hidden_context_with_failed_requests(agent.id(), "")
-            .starts_with("Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed (The provider's usage limit was reached)"));
+            .starts_with(&format!(
+                "Your previous request (\"record r372-mcp-1, then r372-mcp-2\") failed ({reason})"
+            )));
     }
 
     #[tokio::test]
@@ -5372,18 +5376,22 @@ pub(in crate::runtime::state) mod tests {
             "claude",
             "claude-headless",
             "Provider prompt dispatch failed: You've hit your session limit · resets 8:30am",
+            // Claude's reset time is kept for people; other providers get the generic reason.
+            "You've hit your session limit · resets 8:30am",
         )
         .await;
         assert_provider_limit_records_failed_request(
             "codex",
             "codex",
             "Provider prompt dispatch failed: You exceeded your current quota, please check your plan and billing details.",
+            "The provider's usage limit was reached",
         )
         .await;
         assert_provider_limit_records_failed_request(
             "opencode",
             "opencode",
             "Provider prompt dispatch failed: insufficient_quota",
+            "The provider's usage limit was reached",
         )
         .await;
     }
