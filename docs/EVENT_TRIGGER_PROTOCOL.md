@@ -287,7 +287,7 @@ canonical `connection_scope` used in an event interest. Both operations are boun
 shared kernel requests used unchanged by web and TUI clients. An AEGS must not return
 provider access tokens, refresh tokens, webhook secrets, or raw credential material.
 
-Management protocol version 4 adds the reusable-connection lifecycle contract:
+Management protocol version 4 added the reusable-connection lifecycle contract (still part of version 5, which authenticates every request by the kernel identity key):
 
 - `POST /v1/connections/inspect` returns explicit lifecycle state, granted/required
   scopes, connected resources, health/event timestamps, recovery guidance, and test
