@@ -119,6 +119,21 @@ impl EventConnectionRegistry {
         Ok(connections)
     }
 
+    /// Every user's connections currently `Ready`, in a stable order.
+    pub(crate) fn ready_connections(&self) -> Result<Vec<(String, EventConnection)>, DaemonError> {
+        let state = self.lock_state()?;
+        let mut ready = state
+            .connections
+            .values()
+            .filter(|record| record.connection.status == crate::local::EventConnectionStatus::Ready)
+            .map(|record| (record.owner_user_id.clone(), record.connection.clone()))
+            .collect::<Vec<_>>();
+        ready.sort_by(|left, right| {
+            (&left.0, &left.1.connection_id).cmp(&(&right.0, &right.1.connection_id))
+        });
+        Ok(ready)
+    }
+
     pub(crate) fn get(
         &self,
         owner_user_id: &str,

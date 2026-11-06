@@ -404,71 +404,45 @@ pub(crate) async fn validate_event_connection(
     generator_id: &str,
     connection_id: &str,
 ) -> Result<(), DaemonError> {
-    let config = config_projection.snapshot();
     let owner_id = runtime_state
         .event_connection_registry()
         .connection_event_owner_id(caller_user_id, connection_id)?
         .ok_or_else(|| connection_error("event connection was not found".to_string()))?;
-    let target_request =
-        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
-            generator_id: Some(generator_id.to_string()),
-            cursor: None,
-            limit: 1,
-        });
-    let targets = resolve_event_generator_management_targets(
+    let summary = match query_connection_summary(
         runtime_state,
         config_projection,
-        &config,
+        management_client,
         caller_user_id,
-        std::slice::from_ref(&owner_id),
-        &target_request,
+        &owner_id,
+        generator_id,
+        connection_id,
     )
-    .await?;
-    let generator_id = generator_id.to_string();
-    let connection_id = connection_id.to_string();
-    let expected_generator_id = generator_id.clone();
-    let expected_connection_id = connection_id.clone();
-    let management_client = management_client.clone();
-    let query_owner_id = owner_id.clone();
-    let page = match blocking_aegs(move || {
-        query_aegs_connections(
-            &management_client,
-            &targets,
-            &query_owner_id,
-            &generator_id,
-            Some(&connection_id),
-        )
-    })
     .await
     {
-        Ok(page) => page,
+        Ok(Some(summary)) => summary,
+        Ok(None) => {
+            mark_connection_unavailable_if_registered(
+                runtime_state,
+                caller_user_id,
+                connection_id,
+            )?;
+            return Err(connection_error(
+                "the selected event connection is not installed for this kernel user".to_string(),
+            ));
+        }
         Err(error) => {
             mark_connection_unavailable_if_registered(
                 runtime_state,
                 caller_user_id,
-                &expected_connection_id,
+                connection_id,
             )?;
             return Err(error);
         }
     };
-    let summary = page.connections.into_iter().find(|connection| {
-        connection.connection_id == expected_connection_id
-            && connection.generator_id == expected_generator_id
-    });
-    let Some(summary) = summary else {
-        mark_connection_unavailable_if_registered(
-            runtime_state,
-            caller_user_id,
-            &expected_connection_id,
-        )?;
-        return Err(connection_error(
-            "the selected event connection is not installed for this kernel user".to_string(),
-        ));
-    };
     if summary.status != crate::local::EventConnectionStatus::Ready {
         if runtime_state
             .event_connection_registry()
-            .get(caller_user_id, &expected_connection_id)?
+            .get(caller_user_id, connection_id)?
             .is_some()
         {
             runtime_state.event_connection_registry().upsert(
@@ -486,6 +460,91 @@ pub(crate) async fn validate_event_connection(
         .event_connection_registry()
         .upsert(caller_user_id, &owner_id, summary)?;
     Ok(())
+}
+
+/// Asks the event service whether a connection this kernel holds as ready
+/// still is, for the background refresh: a copy learns of a revocation or
+/// expiry done elsewhere without being queried. Returns whether the status
+/// left `Ready`. An unreachable service is an error and changes nothing: an
+/// outage is not a revocation.
+pub(crate) async fn refresh_ready_event_connection(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
+    caller_user_id: &str,
+    connection: &crate::local::EventConnection,
+) -> Result<bool, DaemonError> {
+    let registry = runtime_state.event_connection_registry();
+    let owner_id = registry
+        .connection_event_owner_id(caller_user_id, &connection.connection_id)?
+        .ok_or_else(|| connection_error("event connection was not found".to_string()))?;
+    let summary = query_connection_summary(
+        runtime_state,
+        config_projection,
+        management_client,
+        caller_user_id,
+        &owner_id,
+        &connection.generator_id,
+        &connection.connection_id,
+    )
+    .await?;
+    let Some(summary) = summary else {
+        registry.mark_status(
+            caller_user_id,
+            &connection.connection_id,
+            crate::local::EventConnectionStatus::Unavailable,
+        )?;
+        return Ok(true);
+    };
+    let left_ready = summary.status != crate::local::EventConnectionStatus::Ready;
+    registry.upsert(caller_user_id, &owner_id, summary)?;
+    Ok(left_ready)
+}
+
+/// What the event service knows of one connection under its owner; `None`
+/// when it does not list it.
+async fn query_connection_summary(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
+    caller_user_id: &str,
+    owner_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+) -> Result<Option<chariox_event_protocol::AegsConnectionSummary>, DaemonError> {
+    let config = config_projection.snapshot();
+    let target_request =
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some(generator_id.to_string()),
+            cursor: None,
+            limit: 1,
+        });
+    let targets = resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config,
+        caller_user_id,
+        std::slice::from_ref(&owner_id.to_string()),
+        &target_request,
+    )
+    .await?;
+    let expected_generator_id = generator_id.to_string();
+    let expected_connection_id = connection_id.to_string();
+    let query_owner_id = owner_id.to_string();
+    let management_client = management_client.clone();
+    let page = blocking_aegs(move || {
+        query_aegs_connections(
+            &management_client,
+            &targets,
+            &query_owner_id,
+            &expected_generator_id,
+            Some(&expected_connection_id),
+        )
+    })
+    .await?;
+    Ok(page.connections.into_iter().find(|connection| {
+        connection.connection_id == connection_id && connection.generator_id == generator_id
+    }))
 }
 
 /// Protocol 358: the generator's current catalog declares an App inbox route's

@@ -51,10 +51,16 @@ self-hosted deployments. Store metadata never enables that exception.
 
 ## Connection owner
 
-A connection is created under the owner ID its kernel record keeps from then on
-(today the kernel and user hash used at creation). Later requests for that
-connection use the record's owner, not one recomputed from the kernel ID, so a
-kernel that holds a copy of the record addresses the same connection. A
-management capability must list that owner. Cloud-issued capabilities list the
-requesting kernel's own owners only, so a copy on another kernel needs a
-capability that names the record's owner; Cloud does not issue one yet.
+A connection is created under a random 128-bit owner ID that its kernel record
+keeps from then on. The ID is unrelated to any kernel or user ID and works as a
+bearer secret: it is never logged or shown, and only a kernel holding the record
+(the one that created the connection, or a copy moved to another kernel of the
+same user) can name the connection. Later requests for that connection use the
+record's owner, so a copy addresses the same connection, and the route binding
+ids that AEDS and the AEGS key subscriptions by include it.
+
+A management capability must list the owner it is used for. Cloud-issued
+capabilities list the requesting kernel's own ID and a derived owner that no new
+connection uses, so a hosted kernel cannot yet manage a connection created under
+a random owner; the design that replaces the Cloud-signed capability is in
+`GHOWNER.md` section 6. A static operator token (self-hosted) is not owner-scoped.

@@ -188,6 +188,14 @@ impl LocalRouterTestHarness {
             .expect("event connection reconciliation should succeed")
     }
 
+    pub(crate) fn refresh_ready_event_connections(
+        &self,
+    ) -> crate::runtime::router::event_connection_lifecycle::EventConnectionReconciliationSummary
+    {
+        self.runtime
+            .block_on(self.router.refresh_ready_event_connections())
+    }
+
     pub(crate) fn transport_runtime_pump_interval_ms(
         &self,
         active_interval_ms: u64,

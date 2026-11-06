@@ -573,6 +573,82 @@ fn kernel_reconciles_completed_event_authorization_without_a_client_observer() {
     );
 }
 
+fn harness_with_ready_connection(
+    server: &ReadyConnectionServer,
+) -> crate::local::test_support::LocalRouterTestHarness {
+    let mut config = crate::DaemonConfig::for_tests();
+    config
+        .event_generator_management_targets
+        .insert("dev.chariox.dummy".to_string(), server.target());
+    let harness = LocalRouterTestHarness::with_config(config);
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .upsert(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "event-owner-test",
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: "dev.chariox.dummy".to_string(),
+                connection_id: "connection-local".to_string(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: serde_json::json!({"account": "local"}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
+    harness
+}
+
+fn connection_status(
+    harness: &crate::local::test_support::LocalRouterTestHarness,
+) -> crate::local::EventConnectionStatus {
+    harness
+        .runtime_state()
+        .event_connection_registry()
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "connection-local")
+        .unwrap()
+        .expect("the connection record stays")
+        .status
+}
+
+#[test]
+fn a_copy_notices_a_revoked_connection_without_being_queried() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    // Nothing changed at the event service: the copy stays ready.
+    let quiet = harness.refresh_ready_event_connections();
+    assert_eq!((quiet.attempted, quiet.failed), (1, 0));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Ready
+    );
+    // Another kernel (or the user) revokes the connection.
+    server.revoked.store(true, Ordering::Relaxed);
+    let summary = harness.refresh_ready_event_connections();
+    assert_eq!((summary.attempted, summary.completed), (1, 1));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Revoked
+    );
+    // A revoked connection is not asked about again.
+    assert_eq!(harness.refresh_ready_event_connections().attempted, 0);
+}
+
+#[test]
+fn an_unreachable_event_service_leaves_a_ready_connection_ready() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    server.unavailable.store(true, Ordering::Relaxed);
+    let summary = harness.refresh_ready_event_connections();
+    assert_eq!((summary.attempted, summary.failed), (1, 1));
+    assert_eq!(
+        connection_status(&harness),
+        crate::local::EventConnectionStatus::Ready,
+        "an outage is not a revocation: keep the last known state"
+    );
+}
+
 #[test]
 fn failed_event_connection_validation_is_durable_and_recovers_in_place() {
     let server = ReadyConnectionServer::start();

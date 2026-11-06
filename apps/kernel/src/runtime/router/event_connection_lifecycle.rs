@@ -7,13 +7,19 @@ use tokio::time::{Duration, MissedTickBehavior};
 
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
-use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
+use crate::runtime::event_catalog_control::{
+    execute_event_catalog_request_with_client, refresh_ready_event_connection,
+};
 
 use super::CommandRouter;
 
 const AUTHORIZATION_RECONCILIATION_INTERVAL: Duration = Duration::from_secs(2);
 const AUTHORIZATION_RECONCILIATION_BATCH_SIZE: usize = 64;
 const AUTHORIZATION_RECONCILIATION_CONCURRENCY: usize = 8;
+/// A ready connection is asked about rarely: this only lets a copy notice a
+/// revocation or expiry that happened elsewhere.
+const READY_REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const READY_REFRESH_BATCH_SIZE: usize = 64;
 
 type ConnectionLaneKey = (String, String);
 type ConnectionLane = Weak<Mutex<()>>;
@@ -93,6 +99,110 @@ impl CommandRouter {
             summary.failed += usize::from(outcome.failed);
         }
         Ok(summary)
+    }
+
+    /// Asks the event service about every connection this kernel holds as
+    /// ready, so a copy learns that another kernel or the user revoked it
+    /// without being queried. A failed question keeps the last known state.
+    pub(crate) async fn refresh_ready_event_connections(
+        &self,
+    ) -> EventConnectionReconciliationSummary {
+        let ready = match self
+            .runtime_state
+            .event_connection_registry()
+            .ready_connections()
+        {
+            Ok(ready) => ready,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.event_connection_reconciliation",
+                    "ready event connections could not be listed for refresh",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                return EventConnectionReconciliationSummary::default();
+            }
+        };
+        let ready = ready
+            .into_iter()
+            .take(READY_REFRESH_BATCH_SIZE)
+            .collect::<Vec<_>>();
+        let mut summary = EventConnectionReconciliationSummary {
+            attempted: ready.len(),
+            ..Default::default()
+        };
+        let outcomes = stream::iter(ready.into_iter().map(
+            |(caller_user_id, connection)| async move {
+                let _connection_guard = self
+                    .event_connection_lanes
+                    .lock(&caller_user_id, &connection.connection_id)
+                    .await;
+                let result = refresh_ready_event_connection(
+                    &self.runtime_state,
+                    &self.config_projection,
+                    &self.aegs_management_http_client,
+                    &caller_user_id,
+                    &connection,
+                )
+                .await;
+                if let Err(error) = &result {
+                    crate::logging::warn_with_fields(
+                        "daemon.event_connection_reconciliation",
+                        "ready event connection refresh failed",
+                        serde_json::json!({
+                            "generator_id": connection.generator_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                result
+            },
+        ))
+        .buffer_unordered(AUTHORIZATION_RECONCILIATION_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+        for outcome in outcomes {
+            match outcome {
+                Ok(left_ready) => {
+                    summary.observed += 1;
+                    summary.completed += usize::from(left_ready);
+                }
+                Err(_) => summary.failed += 1,
+            }
+        }
+        summary
+    }
+
+    pub(crate) async fn run_ready_event_connection_refresher(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) {
+        let mut refresh = tokio::time::interval_at(
+            tokio::time::Instant::now() + READY_REFRESH_INTERVAL,
+            READY_REFRESH_INTERVAL,
+        );
+        refresh.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            if *shutdown.borrow() {
+                return;
+            }
+            tokio::select! {
+                _ = refresh.tick() => {
+                    tokio::select! {
+                        _ = self.refresh_ready_event_connections() => {}
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     async fn reconcile_event_connection_authorization(
