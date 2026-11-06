@@ -159,6 +159,8 @@ impl OwnedProcessSignals {
 
     /// Freezes the whole tree before ending any member: a waiting parent whose child is killed
     /// first would otherwise resume and run its next command before its own signal arrives.
+    /// Frozen parents cannot resume, so descendants end first and the root, whose exit a caller
+    /// waits for, ends last.
     fn kill_owned_with(
         &mut self,
         mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
@@ -183,7 +185,7 @@ impl OwnedProcessSignals {
             }
         }
         let rows = inspect()?;
-        for pid in self.parents_first(&rows) {
+        for pid in self.parents_first(&rows).into_iter().rev() {
             self.signal_current(pid, Signal::Kill, &mut inspect, &mut send)?;
         }
         Ok(())
@@ -953,7 +955,7 @@ mod tests {
             )
             .unwrap();
         use Signal::{Kill, Stop};
-        assert_eq!(signalled, [(41, Stop), (43, Stop), (41, Kill), (43, Kill)]);
+        assert_eq!(signalled, [(41, Stop), (43, Stop), (43, Kill), (41, Kill)]);
     }
 
     #[test]
@@ -985,7 +987,7 @@ mod tests {
         .unwrap();
         use Signal::{Kill, Stop};
         assert!(!ended);
-        assert_eq!(sent, [(41, Stop), (42, Stop), (41, Kill), (42, Kill)]);
+        assert_eq!(sent, [(41, Stop), (42, Stop), (42, Kill), (41, Kill)]);
         // Nothing carries the claim and the saved leader birth names another process.
         assert!(OwnedProcessSignals::end_claimed_tree_with(
             "abc",
@@ -1150,7 +1152,7 @@ mod tests {
         use Signal::{Kill, Stop};
         assert_eq!(
             sent,
-            [(-41, Kill), (41, Stop), (45, Stop), (41, Kill), (45, Kill)]
+            [(-41, Kill), (41, Stop), (45, Stop), (45, Kill), (41, Kill)]
         );
     }
 
