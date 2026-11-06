@@ -1261,7 +1261,7 @@ impl KernelRuntimeState {
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
-        runtime.retire_notification_grants(None);
+        runtime.retire_notification_grants_at_start();
         runtime.recover_app_grant_expiries();
         runtime
     }

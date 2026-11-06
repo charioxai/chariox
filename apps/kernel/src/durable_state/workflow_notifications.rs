@@ -194,9 +194,11 @@ pub(crate) enum NotificationOperation {
         subscription: WorkflowNotificationSubscription,
         envelope: WorkflowNotificationEnvelope,
     },
-    /// Disable subscriptions bound to this grant, or to any grant on restart.
+    /// Disable subscriptions bound to this grant, or to any grant on restart, except the
+    /// outside agent subscriptions of the grants named in `keep_outside_agent_of`.
     RetireGrants {
         grant: Option<String>,
+        keep_outside_agent_of: Vec<String>,
     },
     Detach {
         subscription_id: String,
@@ -536,17 +538,21 @@ fn apply(
             }
             Ok(outcome)
         }
-        NotificationOperation::RetireGrants { grant } => {
+        NotificationOperation::RetireGrants {
+            grant,
+            keep_outside_agent_of,
+        } => {
+            let keep = encode(&keep_outside_agent_of)?;
             let retired = {
-                let mut q = tx.prepare("SELECT a.notification_json FROM app_automations a JOIN workflow_notification_grants g ON g.owner_id=a.owner_id AND g.subscription_id=a.automation_id WHERE a.source_kind='workflow_completion' AND a.status='active' AND (?1 IS NULL OR g.grant_id=?1)").map_err(sql)?;
+                let mut q = tx.prepare("SELECT a.notification_json FROM app_automations a JOIN workflow_notification_grants g ON g.owner_id=a.owner_id AND g.subscription_id=a.automation_id WHERE a.source_kind='workflow_completion' AND a.status='active' AND (?1 IS NULL OR g.grant_id=?1) AND NOT (json_extract(a.notification_json,'$.target_kind')='outside_agent' AND g.grant_id IN (SELECT value FROM json_each(?2)))").map_err(sql)?;
                 let rows = q
-                    .query_map([&grant], |r| r.get::<_, String>(0))
+                    .query_map(params![grant, keep], |r| r.get::<_, String>(0))
                     .map_err(sql)?;
                 rows.map(|r| decode(&r.map_err(sql)?))
                     .collect::<Result<Vec<_>, _>>()?
             };
             // The binding stays: a stale candidate of a retired grant never reads as owner-attached.
-            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND (?1 IS NULL OR g.grant_id=?1))",[&grant]).map_err(sql)?;
+            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND (?1 IS NULL OR g.grant_id=?1)) AND NOT (json_extract(app_automations.notification_json,'$.target_kind')='outside_agent' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND g.grant_id IN (SELECT value FROM json_each(?2))))",params![grant, keep]).map_err(sql)?;
             Ok(NotificationOutcome::Retired(retired))
         }
         NotificationOperation::Detach {
@@ -599,6 +605,16 @@ fn apply(
         }
         NotificationOperation::Sweep { now } => {
             prune_occurrences(tx).map_err(sql)?;
+            // Routing goes on if expiry fails; the unread rows are retried by the next sweep.
+            if let Err(error) =
+                crate::durable_state::agent_lifecycle::outside::expire_notifications(tx, now)
+            {
+                crate::logging::warn_with_fields(
+                    "workflow.notifications",
+                    "unread notification expiry failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
             tx.execute("UPDATE app_outbox SET state=CASE WHEN state IN ('accepted','retryable') THEN 'expired' ELSE state END,payload_json=NULL WHERE source_kind='workflow_completion' AND expires_at_ms<=?1",[now as i64]).map_err(sql)?;
             tx.execute("DELETE FROM app_outbox WHERE sequence IN (SELECT sequence FROM app_outbox WHERE source_kind='workflow_completion' AND expires_at_ms<=?1 AND state NOT IN ('accepted','retryable') AND NOT EXISTS(SELECT 1 FROM durable_workflow_runs r WHERE r.status NOT IN ('Completed','Failed','Stopped') AND json_extract(r.payload_json,'$.queue_item_id')=app_outbox.queued_prompt_id) ORDER BY sequence LIMIT 256)",[now.saturating_sub(30*86_400_000) as i64]).map_err(sql)?;
             Ok(NotificationOutcome::Swept)

@@ -82,6 +82,36 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Ends the grant's follow of the named sources, or of all of them. Occurrences already in
+    /// the grant's stream stay readable until acknowledged. Naming a source it does not follow
+    /// changes nothing.
+    pub(crate) fn unfollow_notification_sources(
+        &self,
+        grant: &str,
+        owner: &str,
+        sources: Option<&[String]>,
+    ) -> Result<(), DaemonError> {
+        let home = self.owned.config_projection.snapshot().daemon_id;
+        let (_, subscriptions, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
+        for sub in subscriptions.into_iter().filter(|sub| {
+            sub.target_kind == WorkflowNotificationTargetKind::OutsideAgent
+                && sub.endpoint_id == grant
+                && sources.is_none_or(|named| named.contains(&sub.source_id))
+        }) {
+            self.owned
+                .durable_state_store
+                .notify(NotificationOperation::Detach {
+                    subscription_id: sub.subscription_id,
+                    owner: owner.into(),
+                    kernel: home.clone(),
+                })?;
+        }
+        Ok(())
+    }
+
     /// What the grant follows, as `GetEventSubscription` shows it.
     pub(crate) fn followed_notification_sources(
         &self,

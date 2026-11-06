@@ -314,3 +314,168 @@ async fn a_grant_follows_only_the_owners_sources_of_this_kernel() {
     drop((router, kernel));
     cleanup(f);
 }
+
+fn notifications(kernel: &KernelRuntimeState, grant: &str) -> Vec<String> {
+    kernel
+        .owned
+        .durable_state_store
+        .outside_list(grant, Some(0), 100)
+        .unwrap()
+        .unwrap()
+        .events
+        .into_iter()
+        .filter_map(|event| match event.value {
+            OutsideEventValue::Notification { occurrence_id, .. } => Some(occurrence_id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_revoked_grant_receives_nothing_more_even_for_an_accepted_occurrence() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let source = register(&kernel, &f, &a);
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":[source.source_id]}}),
+    )
+    .await
+    .unwrap();
+    f.complete(
+        &a,
+        "before",
+        None,
+        crate::session::WorkflowRunStatus::Completed,
+        "before",
+    );
+    restore(&kernel, &f);
+    kernel.owned.route_workflow_notifications();
+    assert_eq!(notifications(&kernel, &grant), ["before"]);
+    // This one is accepted by the router but not yet appended when the grant ends.
+    f.complete(
+        &a,
+        "accepted",
+        None,
+        crate::session::WorkflowRunStatus::Completed,
+        "accepted",
+    );
+    restore(&kernel, &f);
+    let (sub, env) = kernel
+        .owned
+        .durable_state_store
+        .notification_candidates(false, crate::session::unix_epoch_ms(), 8)
+        .unwrap()
+        .remove(0);
+    kernel
+        .owned
+        .durable_state_store
+        .notify(NotificationOperation::Accept {
+            subscription: sub,
+            envelope: env,
+        })
+        .unwrap();
+    f.complete(
+        &a,
+        "after",
+        None,
+        crate::session::WorkflowRunStatus::Completed,
+        "after",
+    );
+    restore(&kernel, &f);
+    kernel
+        .revoke_kernel_access(Some("local"), Some(&grant), "owner")
+        .unwrap();
+    kernel.owned.route_workflow_notifications();
+    kernel.owned.route_workflow_notifications();
+    assert_eq!(notifications(&kernel, &grant), ["before"]);
+    let part = kernel
+        .owned
+        .durable_state_store
+        .outside_part(&grant)
+        .unwrap()
+        .unwrap();
+    assert!(part.ended.is_some(), "the grant's stream ended with it");
+    let (_, subscriptions, _) = kernel
+        .owned
+        .durable_state_store
+        .notification_inventory("local")
+        .unwrap();
+    assert!(subscriptions.is_empty(), "its follows ended with it");
+    drop((router, kernel));
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn unsubscribing_a_source_stops_its_delivery_and_following_again_resumes_it() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let source = register(&kernel, &f, &a);
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    let follow = serde_json::json!({"SubscribeEvents":{"targets":[],"sources":[source.source_id]}});
+    dispatch(&router, &grant, follow.clone()).await.unwrap();
+    let complete = |f: &mut Fixture, run: &str| {
+        f.complete(
+            &a,
+            run,
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            run,
+        );
+        restore(&kernel, f);
+        kernel.owned.route_workflow_notifications();
+    };
+    complete(&mut f, "one");
+    let LocalDaemonResponse::EventSubscription { subscription } = dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"UnsubscribeEvents":{"sources":[source.source_id]}}),
+    )
+    .await
+    .unwrap() else {
+        panic!("expected a subscription")
+    };
+    assert!(subscription.sources.is_empty());
+    complete(&mut f, "two");
+    // What arrived stays readable; what came after the unsubscribe does not arrive.
+    assert_eq!(notifications(&kernel, &grant), ["one"]);
+    // Naming a source that is not followed changes nothing; asking for nothing is refused.
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"UnsubscribeEvents":{"sources":["wf_source_unknown"]}}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        dispatch(&router, &grant, serde_json::json!({"UnsubscribeEvents":{}}))
+            .await
+            .is_err()
+    );
+    let LocalDaemonResponse::EventSubscription { subscription } =
+        dispatch(&router, &grant, follow).await.unwrap()
+    else {
+        panic!("expected a subscription")
+    };
+    assert_eq!(subscription.sources.len(), 1);
+    complete(&mut f, "three");
+    assert_eq!(notifications(&kernel, &grant), ["one", "three"]);
+    // Ending the whole subscription ends every follow with it.
+    dispatch(
+        &router,
+        &grant,
+        serde_json::json!({"UnsubscribeEvents":{"all":true}}),
+    )
+    .await
+    .unwrap();
+    complete(&mut f, "four");
+    assert_eq!(notifications(&kernel, &grant), ["one", "three"]);
+    drop((router, kernel));
+    cleanup(f);
+}

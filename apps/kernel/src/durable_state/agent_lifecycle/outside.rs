@@ -8,6 +8,7 @@ mod health;
 mod retention;
 mod validation;
 pub(super) use retention::bound;
+pub(crate) use retention::expire_notifications;
 use retention::prune_ended;
 use validation::{limit as inbox_limit, now as outside_now_ms};
 
@@ -35,7 +36,7 @@ pub(super) use producers::{publish_deadline, publish_task};
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     inbox_limit()?;
     outside_now_ms()?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_outside_subscriptions(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS agent_outside_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),kernel TEXT NOT NULL,machine TEXT NOT NULL);").map_err(sql)
+    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_outside_subscriptions(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS agent_outside_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),kernel TEXT NOT NULL,machine TEXT NOT NULL); CREATE INDEX IF NOT EXISTS agent_inbox_notification_deadline ON agent_inbox(json_extract(payload,'$.value.deadline_ms')) WHERE room_id='' AND json_extract(payload,'$.type')='notification';").map_err(sql)
 }
 pub(super) fn read(db: &Connection, id: &str) -> Result<Option<Part>, DaemonError> {
     db.query_row(

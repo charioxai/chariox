@@ -170,3 +170,114 @@ fn an_occurrence_whose_ancestry_holds_the_grant_is_loop_dropped() {
     assert!(events(&f).is_empty());
     cleanup(f);
 }
+
+#[test]
+fn unread_notifications_expire_after_seven_days_with_one_gap() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let source = f.source(&a);
+    let sub = follow(&f, &source);
+    f.complete(&a, "run-1", None, WorkflowRunStatus::Completed, "first");
+    let (_, first) = f.candidates(false).remove(0);
+    accept(&f, &sub, &first).unwrap();
+    append(&f, &sub, &first);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    f.complete(&a, "run-2", None, WorkflowRunStatus::Completed, "second");
+    let (_, second) = f.candidates(false).remove(0);
+    accept(&f, &sub, &second).unwrap();
+    append(&f, &sub, &second);
+    assert_eq!(events(&f).len(), 2);
+    // The deadline of the first has passed; the second still has time.
+    f.store
+        .notify(NotificationOperation::Sweep {
+            now: first.deadline_ms,
+        })
+        .unwrap();
+    let left = events(&f);
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(matches!(
+        &left[0].value,
+        OutsideEventValue::Notification { occurrence_id, .. } if occurrence_id == "run-2"
+    ));
+    assert!(matches!(
+        &left[1].value,
+        OutsideEventValue::Gap { dropped: 1, .. }
+    ));
+    // The gap is told once, and the second expires in its turn.
+    f.store
+        .notify(NotificationOperation::Sweep {
+            now: first.deadline_ms,
+        })
+        .unwrap();
+    assert_eq!(events(&f).len(), 2);
+    f.store
+        .notify(NotificationOperation::Sweep {
+            now: second.deadline_ms,
+        })
+        .unwrap();
+    let left = events(&f);
+    assert_eq!(left.len(), 2, "{left:?}");
+    assert!(left
+        .iter()
+        .all(|event| matches!(event.value, OutsideEventValue::Gap { dropped: 1, .. })));
+    // The sweep finds them by deadline without reading the inbox.
+    let plan: String = f
+        .store
+        .lock_connection("plan")
+        .unwrap()
+        .prepare("EXPLAIN QUERY PLAN SELECT agent_id,sequence FROM agent_inbox INDEXED BY agent_inbox_notification_deadline WHERE room_id='' AND json_extract(payload,'$.type')='notification' AND json_extract(payload,'$.value.deadline_ms')<=1 ORDER BY agent_id,sequence")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+        .join(";");
+    assert!(plan.contains("agent_inbox_notification_deadline"), "{plan}");
+    cleanup(f);
+}
+
+#[test]
+fn a_restart_retires_every_follow_but_those_of_a_surviving_grant() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let source = f.source(&a);
+    let kept = follow(&f, &source);
+    let mut other = kept.clone();
+    other.subscription_id = "sub-grant-b".into();
+    other.publication_id = "grant-b".into();
+    other.endpoint_id = "grant-b".into();
+    f.store
+        .notify(NotificationOperation::Granted {
+            grant: "grant-b".into(),
+            attach: Box::new(NotificationOperation::RemoteAttach {
+                subscription: other,
+            }),
+        })
+        .unwrap();
+    let NotificationOutcome::Retired(retired) = f
+        .store
+        .notify(NotificationOperation::RetireGrants {
+            grant: None,
+            keep_outside_agent_of: vec![GRANT.into()],
+        })
+        .unwrap()
+    else {
+        panic!("expected retired subscriptions")
+    };
+    assert_eq!(
+        retired
+            .iter()
+            .map(|s| s.endpoint_id.as_str())
+            .collect::<Vec<_>>(),
+        ["grant-b"]
+    );
+    let (_, active, _) = f.store.notification_inventory("local").unwrap();
+    assert_eq!(
+        active
+            .iter()
+            .map(|s| s.subscription_id.as_str())
+            .collect::<Vec<_>>(),
+        [kept.subscription_id.as_str()]
+    );
+    cleanup(f);
+}

@@ -164,13 +164,21 @@ impl KernelGateway {
                 self.runtime_state.outside_subscription_response(id)?
             }
             LocalDaemonRequest::UnsubscribeEvents(request) => {
-                if !request.sources.is_empty() {
-                    return Err(crate::runtime::state::source_not_available());
-                }
-                if request.all != request.targets.is_empty() {
+                let named = !request.targets.is_empty() || !request.sources.is_empty();
+                if request.all == named {
                     return Err(crate::durable_state::agent_lifecycle::outside::refused(
-                        "unsubscribe needs targets or --all",
+                        "unsubscribe needs targets, sources or --all",
                     ));
+                }
+                // A holder whose grant is gone follows nothing: its sources retired with it.
+                if let Some(owner) = owner.as_deref() {
+                    if request.all || !request.sources.is_empty() {
+                        self.runtime_state.unfollow_notification_sources(
+                            id,
+                            owner,
+                            (!request.all).then_some(request.sources.as_slice()),
+                        )?;
+                    }
                 }
                 // Removing an ended target must not require that target to remain live.
                 let targets = if request.all {
