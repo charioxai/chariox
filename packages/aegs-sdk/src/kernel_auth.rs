@@ -16,11 +16,13 @@ use chariox_event_protocol::kernel_identity::{
 use hyper::header::HeaderMap;
 use hyper::StatusCode;
 
-/// How far a request's timestamp may be from the AEGS clock. The nonce makes a request
-/// single-use inside this window; outside it the request is stale.
-const SIGNATURE_WINDOW_MS: u64 = 60_000;
+/// How far a request's timestamp may be from the AEGS clock (five minutes: a user's machine may
+/// be a little off). The nonce makes a request single-use inside this window; outside it the
+/// request is stale.
+const SIGNATURE_WINDOW_MS: u64 = 300_000;
 const MAX_REMEMBERED_NONCES: usize = 100_000;
 const MAX_NONCE_BYTES: usize = 128;
+const MAX_OWNER_ID_BYTES: usize = 256;
 const MAX_ALLOWLIST_BYTES: u64 = 1024 * 1024;
 const DEFAULT_OPEN_MAX_OWNERS_PER_KERNEL: usize = 8;
 const DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE: u32 = 600;
@@ -40,6 +42,7 @@ pub(crate) enum Refusal {
     SignatureReplayed,
     NonceMemoryFull,
     OwnerRequired,
+    OwnerInvalid,
     NotAdmitted,
     RateLimited,
 }
@@ -53,6 +56,7 @@ impl Refusal {
             Self::SignatureReplayed => (StatusCode::UNAUTHORIZED, "kernel_signature_replayed"),
             Self::NonceMemoryFull => (StatusCode::SERVICE_UNAVAILABLE, "nonce_memory_full"),
             Self::OwnerRequired => (StatusCode::FORBIDDEN, "owner_required"),
+            Self::OwnerInvalid => (StatusCode::FORBIDDEN, "owner_invalid"),
             Self::NotAdmitted => (StatusCode::FORBIDDEN, "kernel_not_admitted"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         }
@@ -70,6 +74,7 @@ impl Refusal {
             Self::SignatureReplayed => "the request nonce was already used",
             Self::NonceMemoryFull => "too many recent requests; retry shortly",
             Self::OwnerRequired => "the request must name the owner id it acts for",
+            Self::OwnerInvalid => "the owner id is longer than 256 bytes or not printable ASCII",
             Self::NotAdmitted => "the operator's admission policy does not list this kernel",
             Self::RateLimited => "the kernel exceeded its request budget",
         }
@@ -247,6 +252,11 @@ impl ManagementAuth {
         self.remember_nonce(&kernel_id, nonce, timestamp_ms, now_ms)?;
         if owner_id.is_empty() {
             return Err(Refusal::OwnerRequired);
+        }
+        if owner_id.len() > MAX_OWNER_ID_BYTES
+            || !owner_id.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(Refusal::OwnerInvalid);
         }
         if !self.admission.admits(&kernel_id).await {
             return Err(Refusal::NotAdmitted);

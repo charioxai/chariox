@@ -336,6 +336,24 @@ fn a_body_owner_that_differs_from_the_signed_owner_is_refused() {
 }
 
 #[test]
+fn an_owner_id_that_is_too_long_is_refused() {
+    let aegs = Aegs::start();
+    let kernel = Kernel::new();
+    let long = "o".repeat(300);
+    let (status, body) = kernel.post(
+        &aegs,
+        "/v1/authorizations",
+        &long,
+        json!({"generator_id": GENERATOR, "owner_id": long}),
+    );
+    assert_eq!(
+        (status, error_code(&body)),
+        (403, "owner_invalid"),
+        "{body}"
+    );
+}
+
+#[test]
 fn a_replayed_request_is_refused() {
     let aegs = Aegs::start();
     let kernel = Kernel::new();

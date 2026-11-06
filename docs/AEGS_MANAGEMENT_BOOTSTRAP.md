@@ -26,7 +26,7 @@ x-chariox-owner-id:          the secret owner id the request acts for
 
 The signed message is `chariox-aegs-request-v5`, method, path, generator id, owner id,
 timestamp, nonce and the SHA-256 of the body, joined by NUL bytes. The AEGS accepts a request
-only within 60 seconds of its clock, remembers each nonce for that window (a replay is refused),
+only within five minutes of its clock, remembers each nonce for that window (a replay is refused),
 and requires the body's `owner_id` to equal the signed header.
 
 ## The owner id

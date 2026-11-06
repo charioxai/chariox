@@ -348,11 +348,11 @@ impl AegsStore {
             let mut statement = transaction
                 .prepare(
                     "SELECT binding_id FROM subscriptions
-                     WHERE generator_id = ?1 AND kernel_id = ?2",
+                     WHERE generator_id = ?1 AND kernel_id = ?2 AND owner_id = ?3",
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map(params![generator_id, kernel_id], |row| {
+                .query_map(params![generator_id, kernel_id, owner_id], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|error| error.to_string())?
@@ -1774,6 +1774,32 @@ mod tests {
                     && subscription.revision == 2
                     && subscription.active
             }));
+    }
+
+    /// One kernel may act for several owners; reconciling the empty set of one owner must not
+    /// switch off the bindings it holds for another.
+    #[test]
+    fn reconciling_one_owner_keeps_the_kernels_bindings_for_another_owner() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let (first, second) = (claim("binding-1", 1, true), claim("binding-2", 1, true));
+        store
+            .reconcile_for_owner("kernel", "owner-1", "dev.chariox.github", &[first])
+            .unwrap();
+        store
+            .reconcile_for_owner("kernel", "owner-2", "dev.chariox.github", &[second])
+            .unwrap();
+        store
+            .reconcile_for_owner("kernel", "owner-2", "dev.chariox.github", &[])
+            .unwrap();
+        let active = |owner: &str| {
+            store
+                .all_for_owner("dev.chariox.github", owner)
+                .unwrap()
+                .iter()
+                .filter(|claim| claim.active)
+                .count()
+        };
+        assert_eq!((active("owner-1"), active("owner-2")), (1, 0));
     }
 
     #[test]
