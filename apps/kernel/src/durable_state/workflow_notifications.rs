@@ -7,6 +7,7 @@ pub(crate) mod naming;
 pub(crate) mod outside_agent;
 #[cfg(test)]
 mod outside_agent_tests;
+pub(crate) mod remote_install;
 pub(crate) mod run_finished;
 #[cfg(test)]
 mod run_finished_tests;
@@ -125,6 +126,11 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       PRIMARY KEY(owner_id,kernel_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_grants (
       owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, grant_id TEXT NOT NULL,
+      PRIMARY KEY(owner_id,subscription_id));
+    CREATE TABLE IF NOT EXISTS workflow_notification_remote_installs (
+      owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, source_kernel_id TEXT NOT NULL,
+      state TEXT NOT NULL, prior_status TEXT, prior_json TEXT, prior_grant TEXT,
+      desired_json TEXT, next_attempt_at_ms INTEGER NOT NULL,
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
@@ -196,6 +202,31 @@ pub(crate) enum NotificationOperation {
         grant: String,
         subscriptions: Vec<WorkflowNotificationSubscription>,
     },
+    /// The source kernel answered an attach with the exact subscription.
+    RemoteInstallConfirmed {
+        owner: String,
+        subscription_id: String,
+    },
+    /// The source kernel refused an attach or did not answer it: the subscription it replaced
+    /// comes back and the source is reconciled.
+    RemoteInstallFailed {
+        owner: String,
+        subscription_id: String,
+    },
+    /// A detach the source kernel did not confirm.
+    RemoteDetachUnconfirmed {
+        owner: String,
+        subscription_id: String,
+        source_kernel: String,
+    },
+    ClaimRemoteReconciles {
+        now: u64,
+        limit: usize,
+    },
+    RemoteReconciled {
+        owner: String,
+        subscription_id: String,
+    },
     /// The accepted occurrence becomes one event in the subscribed grant's own stream, and
     /// its receipt is settled, in one commit.
     AppendToGrantInbox {
@@ -243,6 +274,7 @@ pub(crate) enum NotificationOutcome {
     SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
     Retired(Vec<WorkflowNotificationSubscription>),
+    Reconciles(Vec<remote_install::RemoteReconcile>),
     Swept,
 }
 pub(super) struct NotificationRequest {
@@ -479,8 +511,43 @@ fn apply(
             if cycle {
                 return Err(error("workflow notification cycle"));
             }
+            if subscription.source_kernel_id != subscription.target_kernel_id {
+                remote_install::begin_in(tx, &subscription)?;
+            }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::RemoteInstallConfirmed {
+            owner,
+            subscription_id,
+        } => {
+            remote_install::confirm_in(tx, &owner, &subscription_id)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::RemoteInstallFailed {
+            owner,
+            subscription_id,
+        } => {
+            remote_install::undo_in(tx, &owner, &subscription_id)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::RemoteDetachUnconfirmed {
+            owner,
+            subscription_id,
+            source_kernel,
+        } => {
+            remote_install::mark_detach_in(tx, &owner, &subscription_id, &source_kernel)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::ClaimRemoteReconciles { now, limit } => Ok(
+            NotificationOutcome::Reconciles(remote_install::claim_in(tx, now, limit)?),
+        ),
+        NotificationOperation::RemoteReconciled {
+            owner,
+            subscription_id,
+        } => {
+            remote_install::reconciled_in(tx, &owner, &subscription_id)?;
+            Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Accept {
             subscription,

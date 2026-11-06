@@ -217,3 +217,132 @@ async fn a_remote_attach_the_source_kernel_does_not_answer_leaves_no_subscriptio
     drop(runtime);
     cleanup(f);
 }
+
+/// The subscription an attach to the remote source builds, installed as already working.
+async fn working_remote_follow(
+    f: &Fixture,
+    runtime: &KernelRuntimeState,
+    source: &WorkflowNotificationSource,
+    publication: &str,
+    change: impl FnOnce(&mut WorkflowNotificationSubscription),
+) -> WorkflowNotificationSubscription {
+    let local = attach(f, &source.source_id, publication);
+    let LocalDaemonResponse::WorkflowNotificationAttached { mut subscription } = runtime
+        .execute_workflow_notification_command(local, "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    subscription.subscription_id = "working-remote-follow".into();
+    subscription.source_id = "remote-source".into();
+    subscription.source_kernel_id = "other-home".into();
+    change(&mut subscription);
+    f.store
+        .notify(NotificationOperation::RemoteAttach {
+            subscription: subscription.clone(),
+        })
+        .unwrap();
+    subscription
+}
+
+fn due_reconciles(
+    f: &Fixture,
+    now: u64,
+) -> Vec<crate::durable_state::workflow_notifications::remote_install::RemoteReconcile> {
+    match f
+        .store
+        .notify(NotificationOperation::ClaimRemoteReconciles { now, limit: 8 })
+        .unwrap()
+    {
+        NotificationOutcome::Reconciles(due) => due,
+        _ => panic!("a claim answers with the due reconciliations"),
+    }
+}
+
+#[tokio::test]
+async fn a_repeated_remote_attach_the_peer_does_not_answer_keeps_the_working_follow() {
+    let (f, runtime, source, publication) = setup();
+    let working = working_remote_follow(&f, &runtime, &source, &publication, |_| {}).await;
+    assert!(runtime
+        .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
+        .await
+        .is_err());
+    let (_, active, _) = f.store.notification_inventory("local").unwrap();
+    assert!(
+        active.contains(&working),
+        "the unanswered repeat disabled the follow that was already working"
+    );
+    assert!(
+        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        "the source holds the same subscription either way: nothing to reconcile"
+    );
+    drop(runtime);
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn a_refused_repeat_attach_restores_the_prior_follow_and_asks_the_source_to_match_it() {
+    let (f, runtime, source, publication) = setup();
+    let working = working_remote_follow(&f, &runtime, &source, &publication, |s| {
+        s.workflow_id = "workflow-the-first-attach-named".into();
+    })
+    .await;
+    assert!(runtime
+        .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
+        .await
+        .is_err());
+    let (_, active, _) = f.store.notification_inventory("local").unwrap();
+    assert_eq!(
+        active
+            .iter()
+            .filter(|s| s.subscription_id == working.subscription_id)
+            .collect::<Vec<_>>(),
+        vec![&working],
+        "the refused repeat must leave the prior fields, not the attempted ones"
+    );
+    let due = due_reconciles(&f, u64::MAX / 2);
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].subscription_id, working.subscription_id);
+    assert_eq!(due[0].source_kernel_id, "other-home");
+    assert!(
+        due[0].desired.as_ref() == Some(&working),
+        "the source may have installed the attempt: it is asked to hold the prior one"
+    );
+    assert!(
+        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        "a claimed reconciliation waits for its retry window"
+    );
+    drop(runtime);
+    cleanup(f);
+}
+
+#[tokio::test]
+async fn a_first_remote_attach_the_peer_does_not_answer_is_reconciled_as_absent() {
+    let (f, runtime, _source, publication) = setup();
+    assert!(runtime
+        .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
+        .await
+        .is_err());
+    assert!(f.store.notification_inventory("local").unwrap().1.is_empty());
+    let due = due_reconciles(&f, u64::MAX / 2);
+    assert_eq!(due.len(), 1, "the source may hold a row nothing here knows of");
+    assert!(due[0].desired.is_none());
+    assert_eq!(due[0].source_kernel_id, "other-home");
+    // A later attach that the source confirms owns the state: nothing is left to reconcile.
+    f.store
+        .notify(NotificationOperation::RemoteInstallConfirmed {
+            owner: "local".into(),
+            subscription_id: due[0].subscription_id.clone(),
+        })
+        .unwrap();
+    f.store
+        .notify(NotificationOperation::RemoteReconciled {
+            owner: "local".into(),
+            subscription_id: due[0].subscription_id.clone(),
+        })
+        .unwrap();
+    assert!(due_reconciles(&f, u64::MAX).is_empty());
+    drop(runtime);
+    cleanup(f);
+}
