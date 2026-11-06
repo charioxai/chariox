@@ -31,11 +31,6 @@ impl KernelGateway {
         targets: &[EventTarget],
     ) -> Result<Vec<EventTarget>, crate::error::DaemonError> {
         let config = self.config.snapshot();
-        if targets.is_empty() || targets.len() > 1024 {
-            return Err(crate::durable_state::agent_lifecycle::outside::refused(
-                "follow 1–1024 event targets",
-            ));
-        }
         let owner = self
             .runtime_state
             .event_source_owner(&origin.grant_id)
@@ -82,10 +77,22 @@ impl KernelGateway {
         let owner = self.runtime_state.event_source_owner(id);
         let response = match request {
             LocalDaemonRequest::SubscribeEvents(request) => {
-                if !request.sources.is_empty() {
-                    return Err(crate::runtime::state::source_not_available());
+                let follows = request.targets.len() + request.sources.len();
+                if follows == 0 || follows > 1024 {
+                    return Err(crate::durable_state::agent_lifecycle::outside::refused(
+                        "follow 1–1024 event targets and sources",
+                    ));
                 }
                 let targets = self.event_targets(origin, &request.targets).await?;
+                if !request.sources.is_empty() {
+                    let owner = owner.as_deref().ok_or_else(|| {
+                        crate::durable_state::agent_lifecycle::outside::refused(
+                            "grant revoked or expired",
+                        )
+                    })?;
+                    self.runtime_state
+                        .follow_notification_sources(id, owner, &request.sources)?;
+                }
                 let previous = store
                     .outside_part(id)?
                     .map_or_else(Vec::new, |part| part.targets);

@@ -3,7 +3,7 @@
 use super::*;
 use crate::local::*;
 
-pub(super) fn command(grant: &str, request: &LocalDaemonRequest) -> KernelCommand {
+fn command(grant: &str, request: &LocalDaemonRequest) -> KernelCommand {
     let mut command = KernelCommand::from_local_request(
         format!("outside-test-{:016x}", rand::random::<u64>()),
         None,
@@ -15,7 +15,7 @@ pub(super) fn command(grant: &str, request: &LocalDaemonRequest) -> KernelComman
     command.caller.user_id = Some(DEFAULT_LOCAL_USER_ID.into());
     command
 }
-pub(super) async fn dispatch(
+async fn dispatch(
     router: &CommandRouter,
     grant: &str,
     request: LocalDaemonRequest,
@@ -25,10 +25,10 @@ pub(super) async fn dispatch(
         .await
         .unwrap()
 }
-pub(super) fn request(value: serde_json::Value) -> LocalDaemonRequest {
+fn request(value: serde_json::Value) -> LocalDaemonRequest {
     serde_json::from_value(value).unwrap()
 }
-pub(super) fn run(name: &str, test: impl std::future::Future<Output = ()> + Send + 'static) {
+fn run(name: &str, test: impl std::future::Future<Output = ()> + Send + 'static) {
     std::thread::Builder::new()
         .name(name.into())
         .stack_size(64 * 1024 * 1024)
@@ -120,6 +120,7 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
 fn outside_event_requests() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"any"}]}}),
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":["wf_source_any"]}}),
         serde_json::json!({"WaitEvents":{"timeout_ms":1}}),
         serde_json::json!({"AckEvents":{"cursor":0}}),
         serde_json::json!({"ListEvents":{}}),

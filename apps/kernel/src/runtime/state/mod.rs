@@ -680,6 +680,7 @@ mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
+mod outside_agent_notification;
 mod room_workflow_control_runtime_state;
 mod workflow_notification_grants;
 mod workflow_notification_peers;

@@ -323,7 +323,7 @@ impl KernelRuntimeState {
     }
 
     /// An enabled source of this kernel, or an available one of another kernel's cached picker.
-    fn attachable_source(
+    pub(super) fn attachable_source(
         &self,
         sessions: &SessionService,
         owner: &str,
@@ -467,6 +467,10 @@ impl KernelRuntimeOwnedState {
                     self.accept_local_agent_notification(&sub, &env);
                     continue;
                 }
+                if sub.target_kind == WorkflowNotificationTargetKind::OutsideAgent {
+                    self.deliver_outside_agent_notification(&sub, &env, accepted);
+                    continue;
+                }
                 let operation = self
                     .durable_state_store
                     .with_workflow_runtime_transition_lock(|| {
@@ -550,13 +554,15 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+mod outside_agent_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
     use crate::{app::DaemonApp, config::DaemonConfig, runtime::router::CommandRouter};
     use std::sync::Arc;
     use tokio::sync::Mutex;
-    fn runtime(f: &mut Fixture) -> KernelRuntimeState {
+    pub(super) fn router(f: &mut Fixture) -> CommandRouter {
         // Bootstrap only local kernel services with every mutable root owned by this fixture.
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(f.root.join("runtime/state.db").display().to_string());
@@ -569,8 +575,8 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(f.root.join("artifacts/index.db").display().to_string());
         let app = DaemonApp::bootstrap(config).unwrap();
-        let runtime =
-            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let runtime = router.runtime_state();
         f.store = runtime.owned.durable_state_store.clone();
         for session in f.sessions.list_sessions() {
             for agent in session.agents() {
@@ -585,7 +591,10 @@ mod tests {
                 .persist_workflow_runtime_transition(&session, "notification router fixture")
                 .unwrap();
         }
-        runtime
+        router
+    }
+    fn runtime(f: &mut Fixture) -> KernelRuntimeState {
+        router(f).runtime_state()
     }
     #[test]
     fn r6_source_listeners_include_a_consumer_in_another_room() {

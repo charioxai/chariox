@@ -4,6 +4,9 @@ pub(crate) mod agent_lineage;
 pub(super) mod agent_steer;
 mod completion;
 pub(crate) mod naming;
+pub(crate) mod outside_agent;
+#[cfg(test)]
+mod outside_agent_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -184,6 +187,12 @@ pub(crate) enum NotificationOperation {
     Granted {
         grant: String,
         attach: Box<NotificationOperation>,
+    },
+    /// The accepted occurrence becomes one event in the subscribed grant's own stream, and
+    /// its receipt is settled, in one commit.
+    AppendToGrantInbox {
+        subscription: WorkflowNotificationSubscription,
+        envelope: WorkflowNotificationEnvelope,
     },
     /// Disable subscriptions bound to this grant, or to any grant on restart.
     RetireGrants {
@@ -511,9 +520,14 @@ fn apply(
                 .map_err(sql)?;
             Ok(NotificationOutcome::SteerBound)
         }
+        NotificationOperation::AppendToGrantInbox {
+            subscription,
+            envelope,
+        } => outside_agent::append_in(tx, &subscription, &envelope),
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;
             if let NotificationOutcome::Subscription(sub) = &outcome {
+                outside_agent::require_follow_room(tx, &grant, sub)?;
                 tx.execute(
                     "INSERT INTO workflow_notification_grants VALUES (?1,?2,?3)",
                     params![sub.owner_user_id, sub.subscription_id, grant],

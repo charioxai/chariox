@@ -324,9 +324,10 @@ pub use api::{EnvironmentOperationRequest, GetEnvironmentOperationRequest};
 pub use api::{
     AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,
     EventKernelIssue, EventQuestion, EventQuestionChoice, EventQuestionTextReply, EventRefs,
-    EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSubscription,
-    EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest, OutsideEvent,
-    OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest, WaitEventsRequest,
+    EventResolution, EventResolutionVia, EventRunState, EventSessionState, EventSourceFollow,
+    EventSubscription, EventTarget, EventsBatch, GetEventSubscriptionRequest, ListEventsRequest,
+    OutsideEvent, OutsideEventValue, SubscribeEventsRequest, UnsubscribeEventsRequest,
+    WaitEventsRequest,
 };
 
 pub use api::{

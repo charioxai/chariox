@@ -147,9 +147,9 @@ impl KernelRuntimeState {
                 "no event subscription; run chariox events subscribe first",
             )
         })?;
-        Ok(LocalDaemonResponse::EventSubscription {
-            subscription: part.subscription(),
-        })
+        let mut subscription = part.subscription();
+        subscription.sources = self.followed_notification_sources(id)?;
+        Ok(LocalDaemonResponse::EventSubscription { subscription })
     }
     fn outside_list_response(
         &self,

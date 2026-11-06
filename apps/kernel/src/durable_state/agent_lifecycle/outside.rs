@@ -546,6 +546,29 @@ fn project(event: OutsideEvent) -> Result<OutsideEvent, DaemonError> {
     crate::secret_redaction::redact_json_secrets(&mut projected);
     serde_json::from_value(projected).map_err(|_| error("outside event projection failed"))
 }
+/// Appends one event to the part of a grant that follows a notification source, in the
+/// caller's transaction. `occurrence` makes a repeated append a no-op. The part must live:
+/// an ended one has told its holder it is over.
+pub(crate) fn append_notification(
+    tx: &Transaction<'_>,
+    grant: &str,
+    occurrence: &str,
+    mut event: OutsideEvent,
+) -> Result<u64, DaemonError> {
+    let (kernel, machine) =
+        identity(tx)?.ok_or_else(|| error("outside source identity is missing"))?;
+    event.kernel = kernel;
+    event.machine = machine;
+    let mut part = require(tx, grant)?;
+    if part.ended.is_some() {
+        return Err(refused("subscription ended; request a new access grant"));
+    }
+    let event = project(event)?;
+    append(tx, &mut part, occurrence, &event)?;
+    bound(tx, &mut part, inbox_limit()?)?;
+    put(tx, &part)?;
+    Ok(part.latest)
+}
 pub(super) fn publish(
     tx: &Transaction<'_>,
     occurrence: &str,
