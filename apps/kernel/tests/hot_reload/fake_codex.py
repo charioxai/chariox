@@ -121,6 +121,7 @@ def run_turn():
 def answer(conn, request):
     global subscriber
     method, params = request.get("method"), request.get("params") or {}
+    note("calls", f"{os.getpid()} {method}")
     result = {}
     if method == "initialize":
         result = {"userAgent": "fake-codex/0.159.3"}
