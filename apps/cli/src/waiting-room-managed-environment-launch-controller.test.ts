@@ -1,4 +1,4 @@
-import type { ManagedEnvironmentCreateInput } from "./managed-environment-shutdown-policy.js"
+import type { ManagedEnvironmentCreateInput } from "./managed-environment-api.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 

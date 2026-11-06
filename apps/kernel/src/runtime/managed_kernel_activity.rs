@@ -357,7 +357,6 @@ impl ManagedKernelActivityReporter {
             "managed activity persistence unavailable; reporter will retry",
             serde_json::json!({
                 "resource_id": self.binding.resource_id,
-                "disposable_worker": self.binding.worker,
                 "machine_id": self.binding.machine_id,
                 "kernel_id": self.binding.kernel_id,
                 "retry_delay_ms": (*retry_delay).as_millis(),

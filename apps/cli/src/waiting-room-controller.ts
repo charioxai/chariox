@@ -1,4 +1,4 @@
-import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-shutdown-policy.js"
+import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-api.js"
 import {
   catalogModelOptions,
   selectConfiguredVariant,

@@ -2,6 +2,7 @@
 //! the agent turns that into the Environment fields, and the kernel checks the answer like any Save.
 //! The agent gets text and names only: never the contents of an ignored file, never a Secret value.
 use super::ProjectEnvironmentRecord;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::path::Path;
 
 /// Files whose content tells how a Project is set up; the first of each kind is sent, shortened.
@@ -69,7 +70,7 @@ fn ignored_files(checkout: &Path) -> Vec<String> {
                 .iter()
                 .map(|folder| format!(":(exclude,glob)**/{folder}/**")),
         )
-        .output()
+        .output_for(crate::runtime::bounded_process::Work::Query)
     else {
         return Vec::new();
     };

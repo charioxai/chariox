@@ -7,6 +7,7 @@ use crate::local::{
     EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
     ProjectEnvironmentSetupState,
 };
+use crate::runtime::bounded_process::AsyncChildOwner as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -354,7 +355,7 @@ impl SetupRuns {
             if let Some(pid) = child.id() {
                 crate::runtime::process_health::terminate_process_tree(pid);
             }
-            let _ = child.wait().await;
+            let _ = child.supervised_wait().await;
             return Err("Setup could not save its process".to_string());
         }
         // A Stop that arrived before the process existed found no PID to end.
@@ -375,7 +376,7 @@ impl SetupRuns {
                 .map(|pipe| self.pump(live, pipe, &secrets)),
         ];
         let status = child
-            .wait()
+            .supervised_wait()
             .await
             .map_err(|_| "Setup could not be awaited".to_string());
         // A script that leaves a background process holding the pipes must not keep the run open.

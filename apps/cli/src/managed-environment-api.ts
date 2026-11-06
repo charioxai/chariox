@@ -1,14 +1,23 @@
-import type { ManagedEnvironmentCreateInput } from "./managed-environment-shutdown-policy.js"
 import type { ManagedContextLaunchTarget, ManagedContextTransferStatus } from "@chariox/kernel-client/ipc-managed-context-requests"
 import type { ManagedContextTransferTicket, ManagedEnvironmentCatalog, ManagedEnvironmentContextPlanInput, ManagedEnvironmentReimagePreflight, ManagedEnvironmentReimageResult, ManagedEnvironmentResult, ManagedEnvironmentSummary, ManagedEnvironmentPreReimageObservationAcknowledgement } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { CloudControlProfile } from "./cloud-control-auth.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { RequestManagedEnvironmentLifecycleInput, RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { CreateManagedEnvironmentInput, RequestManagedEnvironmentLifecycleInput, RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion, startManagedContextTransferRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { managedEnvironmentJson } from "./managed-environment-cloud-http.js"
 import { prepareManagedEnvironmentReimageStop } from "./managed-environment-reimage-stop.js"
+
+export type ManagedEnvironmentShutdownPolicy =
+  | { readonly kind: "time_limit"; readonly durationSeconds: number }
+  | { readonly kind: "last_work_finished"; readonly warningSeconds: number }
+  | { readonly kind: "manual" }
+
+/** A create request whose shutdown is a policy the person chose rather than a fixed delay. */
+export type ManagedEnvironmentCreateInput = Omit<CreateManagedEnvironmentInput, "autoStopPolicy"> & {
+  readonly shutdownPolicy: ManagedEnvironmentShutdownPolicy
+}
 
 // MP-08 / MP-11: human control plane uses terminal authority; context export,
 // import, local launch and old-generation observation stay kernel-owned.
