@@ -113,7 +113,10 @@ impl Fixture {
         self.router.dispatch(command, request).await
     }
 
-    pub(super) async fn unlock(&self, passphrase: &str) -> Result<LocalDaemonResponse, DaemonError> {
+    pub(super) async fn unlock(
+        &self,
+        passphrase: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
         self.unlock_for(passphrase, VaultUnlockDuration::Minutes { minutes: 30 })
             .await
     }

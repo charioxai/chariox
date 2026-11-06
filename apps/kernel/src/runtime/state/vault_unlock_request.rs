@@ -3,7 +3,7 @@
 use super::runtime_vault_unlock_state::{expand_vault_path, vault_unlock_request_lock};
 use super::vault_unlock_requests::notify_vault_unlocked;
 use super::*;
-use crate::config::CredentialVaultBackend;
+use crate::config::{CredentialVaultBackend, CredentialVaultUnlockPolicy};
 
 // Everything the owner reads about an unlock that did not happen lives here.
 pub(crate) mod wording {
