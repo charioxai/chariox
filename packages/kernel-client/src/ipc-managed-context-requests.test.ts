@@ -8,6 +8,8 @@ import {
   startOwnerManagedContextTransferRequest,
   OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION,
   OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION,
+  OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION,
+  OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION,
 } from "./ipc-managed-context-requests.js"
 import type { ManagedContextTransferTicket } from "./ipc-managed-environment-requests.js"
 
@@ -67,6 +69,8 @@ test("MP-08 MP-11 owner-managed admission is interactive and carries inventory s
 })
 
 test("owner-managed admission carries an event connection selection by connection id only", () => {
+  assert.equal(OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION, 1000)
+  assert.equal(OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION, 439)
   const ownerManaged = {
     target: { relayRealmId: "realm", machineId: "machine", kernelId: "kernel", relayPublicKey: "public", keyThumbprint: "pin" },
     contextSelection: {

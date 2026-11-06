@@ -47,6 +47,9 @@ export type ManagedContextLaunchTarget = {
 export const OWNER_MANAGED_CONTEXT_CAPABILITY = "owner_managed_context_transfer_v1"
 export const OWNER_MANAGED_CONTEXT_MINIMUM_PROTOCOL_VERSION = 520
 export const OWNER_MANAGED_CONTEXT_MINIMUM_RELAY_PROTOCOL_VERSION = 128
+// A kernel older than this rejects `eventConnections` as an unknown field.
+export const OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_PROTOCOL_VERSION = 1000
+export const OWNER_MANAGED_EVENT_CONNECTIONS_MINIMUM_RELAY_PROTOCOL_VERSION = 439
 
 export type OwnerManagedDestination = {
   readonly kind: "owner_managed_machine"

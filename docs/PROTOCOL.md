@@ -6819,3 +6819,23 @@ Room agents use `chariox.notification_sources {}` to discover this Room's source
 trigger. No target agent or busy policy is accepted. App automation summaries
 carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
 current catalog, signer, automation revision and agent target before queueing.
+
+### Event connection records in an owner-managed copy — local 1000 / relay peer 439
+
+`StartManagedContextTransfer.ownerManaged.contextSelection` takes an optional
+`eventConnections`: `{kind:"none"}` (the default, and left out of the serialized shape) or
+`{kind:"selected", connectionIds:[…]}` naming 1 to 16 connections of the starting user, sorted and
+without duplicates. The managed-context plan binding in `arm_managed_context_import` carries the same
+field under the same rule, so the plan digest covers it; the Cloud ticket still binds only
+`kernelContext` and `developmentSetup`. A record is `{generatorId, connectionId, eventOwnerId,
+status}`: it holds no provider credential, so unlike provider accounts and Git credentials it is
+allowed in an owner-managed copy. The event owner id is a bearer capability for the connection and
+travels only inside the encrypted package; receipts list connection ids and whether the import created
+each record, never the owner id. Before the transfer asks Cloud for authority the source refuses a
+selection that names a connection it does not hold (`event_connection_not_found`) or that is not
+`ready` (`event_connection_not_ready`). The target keeps a record it already holds when it is the same
+connection and refuses a different one under the same connection id (`event_connection_conflict`),
+changing nothing; a later import failure removes only the records this import created. The event
+services validate the connection the first time the target refreshes or attaches it. Clients check
+local >= 1000 and relay peer >= 439 before sending `eventConnections`.
+
