@@ -193,7 +193,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer425 carries local984 Vault unlock durations.
 /// Peer 433 carries local994 per-exit sources, App agent targets and blocked-task notifications.
 /// Peer 437 carries the local998 notification listener contract.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 430;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 438;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
