@@ -9,7 +9,8 @@ use crate::local::{
 /// Sources one grant may follow; a coordinator follows a handful.
 pub(crate) const MAX_FOLLOWED_SOURCES: i64 = 64;
 
-/// A follow that would pass the grant's limit fails, and the attach rolls back with it.
+/// A follow that would pass the grant's limit, or follow into an ended inbox, fails, and the
+/// attach rolls back with it.
 pub(super) fn require_follow_room(
     tx: &Transaction<'_>,
     grant: &str,
@@ -18,6 +19,7 @@ pub(super) fn require_follow_room(
     if sub.target_kind != OutsideAgent {
         return Ok(());
     }
+    crate::durable_state::agent_lifecycle::outside::require_open_inbox(tx, grant)?;
     let followed: i64 = tx.query_row("SELECT count(*) FROM app_automations WHERE source_kind='workflow_completion' AND status='active' AND publication_id=?1 AND json_extract(notification_json,'$.target_kind')='outside_agent'",[grant],|r|r.get(0)).map_err(sql)?;
     if followed > MAX_FOLLOWED_SOURCES {
         return Err(error("event source limit"));

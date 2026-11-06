@@ -548,6 +548,14 @@ fn project(event: OutsideEvent) -> Result<OutsideEvent, DaemonError> {
     crate::secret_redaction::redact_json_secrets(&mut projected);
     serde_json::from_value(projected).map_err(|_| error("outside event projection failed"))
 }
+/// A grant follows into a live inbox only. Checked in the follow's own commit, so a follow
+/// cannot land after the inbox ended: it could never deliver and would hold the grant's limits.
+pub(crate) fn require_open_inbox(tx: &Transaction<'_>, grant: &str) -> Result<(), DaemonError> {
+    if read(tx, grant)?.is_some_and(|part| part.ended.is_some()) {
+        return Err(refused("subscription ended; request a new access grant"));
+    }
+    Ok(())
+}
 /// Appends one event to the part of a grant that follows a notification source, in the
 /// caller's transaction. `occurrence` makes a repeated append a no-op. The part must live:
 /// an ended one has told its holder it is over.
