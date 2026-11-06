@@ -237,14 +237,24 @@ impl OwnedProcessSignals {
         }
         let marker = format!("{CLAIM_VARIABLE}={claim}").into_bytes();
         let rows = inspect()?;
+        // The saved leader is a witness of its own: the same PID with the same birth is the
+        // script's session leader, so its tree is known without reading any environment.
+        let live_leader = leader
+            .filter(|(pid, birth)| *pid > 1 && !birth.is_empty())
+            .and_then(|(pid, birth)| rows.iter().find(|row| row.pid == pid && row.start == birth));
         let mut owned = BTreeMap::new();
         for row in rows.iter().filter(|row| row.pid > 1) {
+            if live_leader.is_some_and(|leader| leader.pid == row.pid) {
+                owned.insert(row.pid, row.start.clone());
+                continue;
+            }
             let named_by_launch = leader.is_some_and(|(pid, birth)| {
                 (row.pid == pid && row.start == birth) || (row.session == pid && pid > 1)
             });
             let marked = match environment(row.pid)? {
                 Some(bytes) => bytes.split(|byte| *byte == 0).any(|entry| entry == marker),
-                None if named_by_launch => {
+                // The leader's session is ended through the leader below.
+                None if named_by_launch && live_leader.is_none() => {
                     return Err(io::Error::other("an earlier Setup process is unreadable"))
                 }
                 None => false,
@@ -257,12 +267,17 @@ impl OwnedProcessSignals {
             }
             owned.insert(row.pid, row.start.clone());
         }
-        let Some(root) = owned.keys().next().copied() else {
+        let Some(root) = live_leader
+            .map(|leader| leader.pid)
+            .or_else(|| owned.keys().next().copied())
+        else {
             return Ok(true);
         };
         let mut guard = Self {
             root,
-            exclusive_session: None,
+            exclusive_session: live_leader
+                .filter(|leader| leader.session == leader.pid)
+                .map(|leader| leader.pid),
             owned,
         };
         guard.kill_owned_with(inspect, send)?;
@@ -297,10 +312,83 @@ fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
         Err(error) => Err(error),
     }
 }
+/// The environment comes from the process arguments the kernel keeps; another user's process
+/// and a process that is gone read as unreadable and as empty, like the Linux file.
+#[cfg(target_os = "macos")]
+fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let mut buffer = Vec::new();
+    // The first call reports the size, the second fills the buffer.
+    for fill in [false, true] {
+        let target = if fill {
+            buffer.resize(size, 0u8);
+            buffer.as_mut_ptr().cast()
+        } else {
+            std::ptr::null_mut()
+        };
+        let result = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                target,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ESRCH) => Ok(Some(Vec::new())),
+                Some(libc::EPERM | libc::EACCES | libc::EINVAL) => Ok(None),
+                _ => Err(error),
+            };
+        }
+    }
+    buffer.truncate(size);
+    procargs2_environment(&buffer).map(Some)
+}
 /// No environment is readable here: only the launch witnesses can show the tree is gone.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn read_environment(_: u32) -> io::Result<Option<Vec<u8>>> {
     Ok(None)
+}
+
+/// The environment of a `KERN_PROCARGS2` buffer, as NUL-ended entries like `/proc/<pid>/environ`.
+/// The buffer is the argument count (a native `i32`), the executable path, NUL padding, that
+/// many arguments, then the environment strings. A last entry cut short by the kernel's size
+/// limit is dropped; a buffer that ends before the environment starts is an error.
+#[cfg(any(target_os = "macos", test))]
+fn procargs2_environment(buffer: &[u8]) -> io::Result<Vec<u8>> {
+    let malformed = || io::Error::other("the process arguments are not readable");
+    let (count, rest) = buffer.split_first_chunk::<4>().ok_or_else(malformed)?;
+    let count = usize::try_from(i32::from_ne_bytes(*count)).map_err(|_| malformed())?;
+    // The executable path, then the padding that follows it.
+    let path_end = rest
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(malformed)?;
+    let mut rest = &rest[path_end..];
+    while let [0, tail @ ..] = rest {
+        rest = tail;
+    }
+    for _ in 0..count {
+        let end = rest
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(malformed)?;
+        rest = &rest[end + 1..];
+    }
+    let mut environment = Vec::new();
+    for entry in rest.split_inclusive(|byte| *byte == 0) {
+        match entry {
+            [0] => break,
+            [.., 0] => environment.extend_from_slice(entry),
+            _ => break,
+        }
+    }
+    Ok(environment)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,15 +803,113 @@ mod tests {
             |_, _| panic!("a reused PID was signalled"),
         )
         .unwrap());
-        // A member of the launched session that cannot be read may still be the script.
+        // With the leader gone, a member of its session that cannot be read may still be the script.
         assert!(OwnedProcessSignals::end_claimed_tree_with(
             "abc",
             Some((41, "leader")),
-            || Ok(rows.clone()),
+            || Ok(vec![rows[1].clone(), rows[2].clone()]),
             |pid| Ok((pid != 42).then(Vec::new)),
             |_, _| panic!("an unproven tree was signalled"),
         )
         .is_err());
+    }
+
+    /// The platform shows no environment (an unreadable process), so only the saved leader
+    /// names the tree; the orphan stays alive until the signals reach it.
+    #[test]
+    fn a_leader_with_its_saved_birth_ends_its_session_without_any_environment() {
+        use std::{cell::RefCell, collections::BTreeSet};
+        let mut leader = row(41, 1, 41, "leader");
+        leader.session = 41;
+        let mut child = row(42, 41, 41, "child");
+        child.session = 41;
+        // Detached from the leader's parent chain, still in its session.
+        let mut stray = row(44, 1, 44, "stray");
+        stray.session = 41;
+        let mut other = row(45, 1, 45, "other");
+        other.session = 45;
+        let alive = RefCell::new(vec![leader, child, stray, other]);
+        let sent = RefCell::new(Vec::new());
+        let unreadable = |_: u32| Ok(None);
+        let end = |leader_birth: &str| {
+            OwnedProcessSignals::end_claimed_tree_with(
+                "abc",
+                Some((41, leader_birth)),
+                || Ok(alive.borrow().clone()),
+                unreadable,
+                |pid, signal| {
+                    sent.borrow_mut().push((pid, signal));
+                    if signal == Signal::Kill {
+                        alive.borrow_mut().retain(|row| row.pid as i32 != pid);
+                    }
+                    Ok(())
+                },
+            )
+        };
+        // A reused PID: another birth is never signalled.
+        assert!(end("earlier")
+            .unwrap_err()
+            .to_string()
+            .contains("unreadable"));
+        assert!(sent.borrow().is_empty());
+        assert_eq!(alive.borrow().len(), 4);
+        // The saved birth: the whole session is frozen, then ended, parents first.
+        assert!(!end("leader").unwrap());
+        use Signal::{Kill, Stop};
+        let sent = sent.borrow().clone();
+        assert_eq!(sent.iter().filter(|(_, signal)| *signal == Stop).count(), 3);
+        assert_eq!(
+            sent.iter()
+                .filter(|(_, signal)| *signal == Kill)
+                .map(|(pid, _)| *pid)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([41, 42, 44])
+        );
+        assert!(sent[..3].iter().all(|(_, signal)| *signal == Stop));
+        assert!(sent.iter().all(|(pid, _)| *pid != 45));
+        // Asked again, nothing of it is left.
+        assert!(end("leader").unwrap());
+    }
+
+    #[test]
+    fn procargs2_environment_reads_the_entries_after_the_arguments() {
+        let buffer = |count: i32, body: &[u8]| {
+            let mut bytes = count.to_ne_bytes().to_vec();
+            bytes.extend_from_slice(body);
+            bytes
+        };
+        let body = b"/bin/sh\0\0\0\0sh\0-c\0A=1\0CHARIOX_SETUP_CLAIM=abc\0\0\0";
+        assert_eq!(
+            procargs2_environment(&buffer(2, body)).unwrap(),
+            b"A=1\0CHARIOX_SETUP_CLAIM=abc\0"
+        );
+        // No environment at all.
+        assert!(procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0"))
+            .unwrap()
+            .is_empty());
+        // The kernel's size limit cut the last entry: it is dropped, never half-read.
+        assert_eq!(
+            procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0A=1\0CHARIOX_SETUP_CL")).unwrap(),
+            b"A=1\0"
+        );
+        // Bytes that are not UTF-8 stay as they are.
+        assert_eq!(
+            procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0K=\xff\xfe\0")).unwrap(),
+            b"K=\xff\xfe\0"
+        );
+        // More arguments announced than present, a buffer cut inside the path or the count, a negative count.
+        assert!(procargs2_environment(&buffer(5, b"/bin/sh\0\0sh\0A=1\0")).is_err());
+        assert!(procargs2_environment(&buffer(1, b"/bin/sh")).is_err());
+        assert!(procargs2_environment(&[1, 0]).is_err());
+        assert!(procargs2_environment(&buffer(-1, b"/bin/sh\0\0sh\0")).is_err());
+        assert!(procargs2_environment(&buffer(i32::MAX, b"/bin/sh\0\0sh\0")).is_err());
+        // A very large environment is read whole.
+        let mut large = b"/bin/sh\0\0sh\0".to_vec();
+        for index in 0..20_000 {
+            large.extend_from_slice(format!("V{index}=x\0").as_bytes());
+        }
+        let read = procargs2_environment(&buffer(1, &large)).unwrap();
+        assert_eq!(read.iter().filter(|byte| **byte == 0).count(), 20_000);
     }
 
     #[test]
