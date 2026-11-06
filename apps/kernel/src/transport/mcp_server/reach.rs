@@ -76,7 +76,8 @@ pub(super) async fn handle(
                 .await
             {
                 Ok(result) => {
-                    let (content, structured_content) = runtime_tool_content(result.payload);
+                    let (content, structured_content) =
+                        super::tool_content::runtime_tool_content(result.payload);
                     serde_json::json!({
                         "content": content,
                         "structuredContent": structured_content,

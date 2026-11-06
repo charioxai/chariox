@@ -25,8 +25,8 @@ mod catalog;
 mod catalog_stream;
 #[cfg(test)]
 mod catalog_stream_tests;
-mod tool_content;
 mod reach;
+mod tool_content;
 
 pub(crate) fn catalog_changed() {
     catalog::changed();

@@ -119,7 +119,7 @@ test("managed environment details preserve observed activity and operation histo
     contextManifestDigest: null,
     autoStopPolicy: { minimumRuntimeSeconds: 10_800, idleDelaySeconds: 900 },
     runtimeStartedAt: "2026-09-26T00:00:00.000Z",
-    workingAgentCount: 0,
+    workingAgentCount: 3,
     lastActivityReportedAt: "2026-09-26T05:00:02.000Z",
     lastActivityChangedAt: "2026-09-26T04:59:00.000Z",
     autoStopWarningAt: null,

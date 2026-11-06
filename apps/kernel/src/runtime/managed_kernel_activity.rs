@@ -587,7 +587,6 @@ mod tests {
                 api_url,
                 account_id: "account-1".into(),
                 resource_id: "managed-env-1".into(),
-                worker: false,
                 machine_id: "managed-machine-1".into(),
                 kernel_id: "managed-kernel-1".into(),
                 machine_credential: format!("mcred_{}", "a".repeat(43)),

@@ -2,7 +2,7 @@
 // smallest managed machine through its `chariox-reach` `request` tool, the owner accepts the question the default
 // setting raises, the machine enrolls and shows up in `kernels`, the agent runs one command on it (the step that creates a
 // Room there is room-level, no /sudo), then stops and releases it. `--provider claude|codex|opencode` picks the agent. The hosted stack is a disposable validation stack
-// whose Cloud manager rents the real machine; this script never sees a provider key. Credentials are read inside the
+// whose Cloud manager acquires the real machine; this script never sees a provider key. Credentials are read inside the
 // script and never printed. After each phase it can run a photo command (the hosted web's Machines view).
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
