@@ -49,8 +49,7 @@ async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegatio
         .map(|event| event["kind"].as_str().unwrap())
         .collect();
     assert_eq!(
-        kinds,
-        ["child_finished"; 3],
+        kinds, ["child_finished"; 3],
         "one item per child, no separate receipt: {read}"
     );
 
@@ -70,7 +69,10 @@ async fn each_finished_child_is_one_inbox_item_and_its_ack_settles_the_delegatio
         .iter()
         .filter(|obligation| obligation.status != "satisfied")
         .collect();
-    assert!(open.is_empty(), "the acks settle every delegation: {open:?}");
+    assert!(
+        open.is_empty(),
+        "the acks settle every delegation: {open:?}"
+    );
     assert!(
         parent_task.owner_action.is_none()
             && parent_task.state != crate::durable_state::agent_lifecycle::ExecutionState::Blocked,

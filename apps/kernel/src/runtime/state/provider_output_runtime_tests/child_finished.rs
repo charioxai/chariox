@@ -166,11 +166,7 @@ pub(super) async fn family(
                 };
                 runtime
                     .owned
-                    .complete_local_prompt_without_advance(
-                        session.id(),
-                        &child,
-                        Some(&child_run),
-                    )
+                    .complete_local_prompt_without_advance(session.id(), &child, Some(&child_run))
                     .unwrap();
                 (task, correction)
             }

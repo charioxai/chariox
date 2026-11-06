@@ -153,6 +153,7 @@ mod approval_lifetime;
 mod browser_import_execution_gate;
 mod child_finished;
 mod child_receipts;
+mod inbox_sender;
 mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;

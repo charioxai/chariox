@@ -1567,6 +1567,7 @@ mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_inbox_leased_steer;
+mod agent_inbox_sender;
 mod agent_inbox_wake_text;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
