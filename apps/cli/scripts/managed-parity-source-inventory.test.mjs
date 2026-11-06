@@ -2397,8 +2397,11 @@ test("MP-11 new native/config formats retain selectors after literal/hash bounda
 test("MP-11 current bounded reviews do not repin the historical review module", () => {
   const root = new URL("../../..", import.meta.url).pathname;
   const path = "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs";
-  const original = execFileSync("git", ["show", "9334141d420f8a32393f206102c5b8b4a1b0b609:" + path], { cwd: root });
-  assert.deepEqual(readFileSync(join(root, path)), original);
+  const frozen = execFileSync("git", ["show", "9334141d420f8a32393f206102c5b8b4a1b0b609:" + path], { cwd: root, encoding: "utf8" });
+  // The only change since the freeze: the group of the probe capture audit rule, removed together with that rule.
+  const original = frozen.replace(/  \{\n    "ruleId": "shared-provider-utility-capture-budget",[\s\S]*?\n  \},\n/, "");
+  assert.ok(original.length < frozen.length, "the removed rule's group is in the frozen module");
+  assert.ok(readFileSync(join(root, path), "utf8") === original, "the current reviews differ from the frozen module beyond the removed rule's group");
   for (const review of CURRENT_SEMANTIC_REVIEWS) {
     assert.ok(review.independentReview.rationale.startsWith("MP-"));
     assert.ok(review.independentReview.reviewer.includes("scanner implementer"));
