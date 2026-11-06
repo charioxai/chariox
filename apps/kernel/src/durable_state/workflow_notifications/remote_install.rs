@@ -122,7 +122,13 @@ pub(super) fn claim_in(
         let mut q = tx.prepare("SELECT owner_id,subscription_id,source_kernel_id,desired_json,attempts FROM workflow_notification_remote_installs WHERE state='reconcile' AND next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms,subscription_id LIMIT ?2").map_err(sql)?;
         let rows = q
             .query_map(params![now as i64, limit as i64], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, i64>(4)?))
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, i64>(4)?,
+                ))
             })
             .map_err(sql)?;
         rows.collect::<Result<Vec<(String, String, String, Option<String>, i64)>, _>>()
@@ -172,9 +178,10 @@ pub(super) fn settle_interrupted_in(tx: &Transaction<'_>, now: u64) -> Result<()
     let stale = {
         let mut q = tx.prepare("SELECT owner_id,subscription_id FROM workflow_notification_remote_installs WHERE state='installing' AND next_attempt_at_ms<=?1").map_err(sql)?;
         let rows = q
-            .query_map(params![(now as i64).saturating_sub(INSTALL_SETTLE_AFTER_MS)], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
+            .query_map(
+                params![(now as i64).saturating_sub(INSTALL_SETTLE_AFTER_MS)],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
             .map_err(sql)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(sql)?
     };

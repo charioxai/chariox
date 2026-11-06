@@ -324,9 +324,18 @@ async fn a_first_remote_attach_the_peer_does_not_answer_is_reconciled_as_absent(
         .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
         .await
         .is_err());
-    assert!(f.store.notification_inventory("local").unwrap().1.is_empty());
+    assert!(f
+        .store
+        .notification_inventory("local")
+        .unwrap()
+        .1
+        .is_empty());
     let due = due_reconciles(&f, u64::MAX / 2);
-    assert_eq!(due.len(), 1, "the source may hold a row nothing here knows of");
+    assert_eq!(
+        due.len(),
+        1,
+        "the source may hold a row nothing here knows of"
+    );
     assert!(due[0].desired.is_none());
     assert_eq!(due[0].source_kernel_id, "other-home");
     // A later attach that the source confirms owns the state: nothing is left to reconcile.
@@ -358,7 +367,10 @@ async fn a_reconciliation_the_source_never_matches_is_dropped_after_its_attempts
     for round in 1..=40u64 {
         asked += due_reconciles(&f, round * 3_600_000).len();
     }
-    assert_eq!(asked, 20, "an unmatched reconciliation is asked a bounded number of times");
+    assert_eq!(
+        asked, 20,
+        "an unmatched reconciliation is asked a bounded number of times"
+    );
     assert!(due_reconciles(&f, u64::MAX / 2).is_empty());
     drop(runtime);
     cleanup(f);

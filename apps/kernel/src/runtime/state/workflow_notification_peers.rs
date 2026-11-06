@@ -344,21 +344,21 @@ impl KernelRuntimeState {
                     .await;
                 if matches!(&response,Ok(RelayPeerResponse::WorkflowNotificationSubscribed {subscription:s}) if *s==subscription)
                 {
-                    self.owned
-                        .durable_state_store
-                        .notify(NotificationOperation::RemoteInstallConfirmed {
+                    self.owned.durable_state_store.notify(
+                        NotificationOperation::RemoteInstallConfirmed {
                             owner: owner.into(),
                             subscription_id: subscription.subscription_id.clone(),
-                        })?;
+                        },
+                    )?;
                 } else {
                     // Put back the subscription this attach replaced; the source may or may
                     // not have installed it, so it is reconciled, never assumed absent.
-                    self.owned
-                        .durable_state_store
-                        .notify(NotificationOperation::RemoteInstallFailed {
+                    self.owned.durable_state_store.notify(
+                        NotificationOperation::RemoteInstallFailed {
                             owner: owner.into(),
                             subscription_id: subscription.subscription_id.clone(),
-                        })?;
+                        },
+                    )?;
                     let mut sources = self
                         .owned
                         .durable_state_store
