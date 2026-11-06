@@ -5,11 +5,14 @@ impl KernelRuntimeState {
     /// rather than publish an authoritative set without them.
     pub(crate) fn event_generator_subscription_claims(
         &self,
+        kernel_id: &str,
+        environment_id: &str,
     ) -> Result<BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>, String> {
         let mut generators =
             BTreeMap::<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
         for route in self.app_event_routes()? {
-            let Some(claim) = app_route_subscription(&route) else {
+            let binding_id = delivery_binding_id(&route, kernel_id, environment_id);
+            let Some(claim) = app_route_subscription(&route, binding_id) else {
                 continue;
             };
             generators
@@ -45,7 +48,7 @@ impl KernelRuntimeState {
                 Vec::new()
             })
             .iter()
-            .filter_map(app_route_subscription)
+            .filter_map(|route| app_route_subscription(route, route.binding_id()))
             .filter(|claim| claim.active)
             .count()
     }
@@ -128,9 +131,11 @@ impl KernelRuntimeState {
     pub(crate) fn accept_event_delivery(
         &self,
         delivery: chariox_event_protocol::EventDeliveryEnvelope,
+        kernel_id: &str,
+        environment_id: &str,
     ) -> Result<(), String> {
         if delivery.binding_id.starts_with("app-route-") {
-            return self.accept_app_event_delivery(delivery);
+            return self.accept_app_event_delivery(delivery, kernel_id, environment_id);
         }
         refused(&delivery, "direct workflow event bindings are retired")
     }
@@ -143,14 +148,13 @@ impl KernelRuntimeState {
     pub(crate) fn accept_app_event_delivery(
         &self,
         delivery: chariox_event_protocol::EventDeliveryEnvelope,
+        kernel_id: &str,
+        environment_id: &str,
     ) -> Result<(), String> {
         delivery.validate(crate::session::unix_epoch_ms())?;
-        let Some(route) = self
-            .owned
-            .durable_state_store
-            .app_route_by_binding(&delivery.binding_id)
-            .map_err(|error| error.to_string())?
-        else {
+        let Some(route) = self.app_event_routes()?.into_iter().find(|route| {
+            delivery_binding_id(route, kernel_id, environment_id) == delivery.binding_id
+        }) else {
             return refused(&delivery, "the App inbox route no longer exists");
         };
         let Some(source) = route.source.as_ref() else {
@@ -205,11 +209,12 @@ impl KernelRuntimeState {
 
 fn app_route_subscription(
     route: &chariox_app_runtime::app_inbox::InboxRoute,
+    binding_id: String,
 ) -> Option<chariox_event_protocol::AegsSubscriptionClaim> {
     let source = route.source.as_ref()?;
     let filter: serde_json::Value = serde_json::from_str(&source.filter_json).ok()?;
     Some(chariox_event_protocol::AegsSubscriptionClaim {
-        binding_id: route.binding_id(),
+        binding_id,
         generator_id: source.generator_id.clone(),
         connection_id: source.connection_id.clone(),
         connection_scope: source.connection_scope.clone(),
@@ -229,6 +234,23 @@ fn app_route_subscription(
     })
 }
 
+/// The binding id AEGS subscriptions and AEDS routes name this kernel's copy of
+/// an App route by. AEDS keys routes by binding id alone and refuses a second
+/// kernel's claim of the same one, so the id includes the kernel and
+/// environment: kernels that hold copies of one route, with the same owner,
+/// installation and route ids, each get their own delivery of an occurrence.
+fn delivery_binding_id(
+    route: &chariox_app_runtime::app_inbox::InboxRoute,
+    kernel_id: &str,
+    environment_id: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let digest =
+        Sha256::digest(format!("{}\0{kernel_id}\0{environment_id}", route.binding_id()).as_bytes());
+    format!("app-route-{}", &format!("{digest:x}")[..40])
+}
+
 /// AEDS routes by binding: the App route's installation and route stand in
 /// for a workflow's publication and endpoint.
 fn app_route_claim(
@@ -236,13 +258,14 @@ fn app_route_claim(
     kernel_id: &str,
     environment_id: &str,
 ) -> Option<chariox_event_protocol::EnvironmentRouteClaim> {
-    let subscription = app_route_subscription(route)?;
+    let binding_id = delivery_binding_id(route, kernel_id, environment_id);
+    let subscription = app_route_subscription(route, binding_id.clone())?;
     Some(chariox_event_protocol::EnvironmentRouteClaim {
         environment_id: environment_id.to_owned(),
         event_interest_key: subscription.event_interest_key,
         kernel_id: kernel_id.to_owned(),
         publication_id: format!("app-installation-{}", route.installation_id),
-        binding_id: subscription.binding_id,
+        binding_id,
         endpoint_id: route.route_id.clone(),
         queue_ref: None,
         binding_revision: 1,
@@ -275,6 +298,45 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
+    #[test]
+    fn account_event_routes_have_distinct_bindings_per_environment_and_kernel() {
+        let route = chariox_app_runtime::app_inbox::InboxRoute {
+            route_id: "same-route".into(),
+            owner_id: "same-user".into(),
+            installation_id: "same-installation".into(),
+            event_name: "received".into(),
+            source_event_type: "dummy.test".into(),
+            source_event_version: 1,
+            active: true,
+            source: Some(chariox_app_runtime::app_inbox::InboxSource {
+                generator_id: "dev.chariox.dummy".into(),
+                connection_id: "shared-connection".into(),
+                connection_scope: "default".into(),
+                filter_json: "null".into(),
+            }),
+        };
+        let first = app_route_claim(&route, "kernel-a", "env-a").unwrap();
+        let second = app_route_claim(&route, "kernel-b", "env-b").unwrap();
+        assert_eq!(
+            first.binding_id,
+            "app-route-1a414d5a2d5d7c1994290f33bba7f881a219c3c9"
+        );
+        assert_eq!(first.event_interest_key, second.event_interest_key);
+        assert_ne!(first.binding_id, second.binding_id);
+        assert_ne!(
+            first.binding_id,
+            app_route_claim(&route, "kernel-a", "env-b")
+                .unwrap()
+                .binding_id
+        );
+        assert_ne!(
+            first.binding_id,
+            app_route_claim(&route, "kernel-b", "env-a")
+                .unwrap()
+                .binding_id
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn app_routes_from_generators_are_claimed_and_unroutable_deliveries_are_acknowledged() {
         let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
@@ -305,10 +367,10 @@ mod tests {
                 },
             )
             .unwrap();
-        let binding_id = route.binding_id();
+        let binding_id = delivery_binding_id(&route, "kernel-1", "default");
         // Only an active installation's routes are claimed.
         assert!(runtime
-            .event_generator_subscription_claims()
+            .event_generator_subscription_claims("kernel-1", "default")
             .unwrap()
             .is_empty());
         rusqlite::Connection::open(runtime.owned.durable_state_store.path())
@@ -318,7 +380,9 @@ mod tests {
                  VALUES('app_slack','dev.chariox.slack-app','local',1,1,'{}')",
             )
             .unwrap();
-        let claims = runtime.event_generator_subscription_claims().unwrap();
+        let claims = runtime
+            .event_generator_subscription_claims("kernel-1", "default")
+            .unwrap();
         let claim = &claims["dev.chariox.slack"][0];
         assert_eq!(
             (
@@ -343,8 +407,12 @@ mod tests {
                 routes[0].binding_id.as_str(),
                 routes[0].endpoint_id.as_str()
             ),
-            (binding_id.as_str(), "mentions")
+            (
+                delivery_binding_id(&route, "kernel-1", "default").as_str(),
+                "mentions"
+            )
         );
+        let claim_binding_id = routes[0].binding_id.clone();
         assert_eq!(routes[0].event_interest_key, claim.event_interest_key);
         assert_eq!(runtime.active_app_route_count(), 1);
         // A delivery that can never land (unknown route, wrong event type, a
@@ -368,10 +436,21 @@ mod tests {
             let runtime = runtime.clone();
             move || {
                 (
-                    runtime
-                        .accept_app_event_delivery(delivery("app-route-missing", "app.mentioned")),
-                    runtime.accept_app_event_delivery(delivery(&binding_id, "reaction.added")),
-                    runtime.accept_event_delivery(delivery("binding-retired", "app.mentioned")),
+                    runtime.accept_app_event_delivery(
+                        delivery("app-route-missing", "app.mentioned"),
+                        "kernel-1",
+                        "default",
+                    ),
+                    runtime.accept_app_event_delivery(
+                        delivery(&claim_binding_id, "reaction.added"),
+                        "kernel-1",
+                        "default",
+                    ),
+                    runtime.accept_event_delivery(
+                        delivery("binding-retired", "app.mentioned"),
+                        "kernel-1",
+                        "default",
+                    ),
                 )
             }
         })

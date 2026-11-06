@@ -57,9 +57,9 @@ struct DeliveryAcceptanceQueue {
 }
 
 impl DeliveryAcceptanceQueue {
-    fn new(runtime_state: KernelRuntimeState) -> Self {
+    fn new(runtime_state: KernelRuntimeState, kernel_id: String, environment_id: String) -> Self {
         Self::with_acceptor(Arc::new(move |delivery| {
-            runtime_state.accept_event_delivery(delivery)
+            runtime_state.accept_event_delivery(delivery, &kernel_id, &environment_id)
         }))
     }
 
@@ -123,7 +123,11 @@ pub(crate) async fn run_event_delivery_connector(
     config: EventDeliveryClientConfig,
     shutdown: watch::Receiver<bool>,
 ) {
-    let delivery_queue = DeliveryAcceptanceQueue::new(runtime_state.clone());
+    let delivery_queue = DeliveryAcceptanceQueue::new(
+        runtime_state.clone(),
+        config.kernel_id.clone(),
+        config.environment_id.clone(),
+    );
     run_event_delivery_connector_with_queue(runtime_state, config, shutdown, delivery_queue).await;
 }
 
@@ -437,7 +441,8 @@ async fn reconcile_aegs_subscriptions(
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
     let mut generator_management_targets = config.generator_management_targets.clone();
-    let mut claims = runtime_state.event_generator_subscription_claims()?;
+    let mut claims = runtime_state
+        .event_generator_subscription_claims(&config.kernel_id, &config.environment_id)?;
     // Each generator reconciles on its own: one that is down, unresolvable, or
     // refuses must not keep the others from receiving their subscriptions.
     let mut failures = Vec::new();

@@ -416,14 +416,6 @@ fn generator_routes_carry_their_connection_and_an_opaque_binding_id() {
     let binding = fed.binding_id();
     assert!(binding.starts_with("app-route-") && !binding.contains("owner"));
     assert_ne!(binding, route("manual").binding_id());
-    assert_eq!(
-        app_inbox::route_by_binding(&db, &binding).unwrap(),
-        Some(fed)
-    );
-    assert_eq!(
-        app_inbox::route_by_binding(&db, "app-route-missing").unwrap(),
-        None
-    );
 }
 
 #[test]
