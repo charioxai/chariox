@@ -2121,22 +2121,53 @@ impl Rig {
         match outcome {
             "queued" => {}
             "completed" => {
-                self.start_the_queued_notification();
+                // The provider turn-end settlement: the running turn ends and the
+                // notification starts, then the notification's own turn ends.
                 let room = self
                     .runtime
                     .owned
-                    .session_store
-                    .get_session(&self.session_id)
+                    .session_snapshot(&self.session_id)
                     .unwrap();
-                self.runtime
+                let (active, queued) = self
+                    .runtime
                     .owned
                     .prompt_state_owner
-                    .complete_active_prompt_only(&room, &self.agent_id)
-                    .unwrap();
+                    .state_parts(&room, &self.agent_id);
+                let running = active.unwrap().id().to_owned();
+                let next = queued
+                    .iter()
+                    .find(|item| item.id() == prompt)
+                    .unwrap()
+                    .clone();
+                let started = self
+                    .runtime
+                    .complete_local_prompt_with_queued_advance_if_matches(
+                        &self.session_id,
+                        &self.agent_id,
+                        None,
+                        &next,
+                        Some(&running),
+                    )
+                    .await
+                    .unwrap()
+                    .expect("the running turn completes");
+                assert_eq!(
+                    started
+                        .completion
+                        .started_next
+                        .map(|item| item.id().to_owned()),
+                    Some(prompt.to_owned())
+                );
                 self.runtime
                     .owned
-                    .persist_prompt_session_state(&room, &self.agent_id)
-                    .unwrap();
+                    .complete_local_prompt_without_advance_if_matches(
+                        &self.session_id,
+                        &self.agent_id,
+                        None,
+                        Some(prompt),
+                    )
+                    .unwrap()
+                    .expect("the notification turn completes");
             }
             "steered" => {
                 self.runtime
@@ -2312,7 +2343,7 @@ async fn a_restart_between_admission_and_settlement_keeps_the_notification_linea
 // MP-08 / MP-09 / MP-10 / MP-11: a receipt that names its admitted prompt is settled from it, never fired again.
 #[tokio::test]
 async fn an_admitted_receipt_is_settled_from_its_prompt_after_a_restart() {
-    for outcome in ["queued", "steered", "cancelled"] {
+    for outcome in ["queued", "completed", "steered", "cancelled"] {
         let config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
             "n1-admission-fence",
         );
