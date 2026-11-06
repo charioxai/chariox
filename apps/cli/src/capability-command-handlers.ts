@@ -11,7 +11,9 @@ import type {
   SkillImportOutcome,
   ExtensionKind,
 } from "./cli-types.js"
+import { projectEnvironmentActions } from "./project-environment-command.js"
 import { formatAgentLabel } from "./agent-label.js"
+import { parseVaultUnlockDurationArgument, vaultUnlockDurationUsage, type VaultUnlockDuration } from "@chariox/kernel-client/ipc-requests"
 import type { ParsedSlashCommand } from "./commands.js"
 import type { ResolvedAgentReference } from "@chariox/kernel-client/session-agent-resolver"
 import {
@@ -46,6 +48,7 @@ export type CapabilityCommandHandlerDeps = {
   getSkill?: (name: string) => Promise<CharioxSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
+  projectEnvironmentCommand?: (args: readonly string[]) => Promise<string>
   listEnvironments?: () => Promise<CharioxEnvironmentConfig[]>
   getEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
   registerEnvironment?: (config: CharioxEnvironmentConfig) => Promise<CharioxEnvironmentConfig>
@@ -62,7 +65,7 @@ export type CapabilityCommandHandlerDeps = {
   setCredentialSecret?: (key: string, value: string) => Promise<string>
   getCredentialVaultStatus?: () => Promise<Record<string, unknown>>
   lockCredentialVault?: () => Promise<Record<string, unknown>>
-  unlockCredentialVault?: (passphrase: string) => Promise<{ action: string; status: Record<string, unknown> }>
+  unlockCredentialVault?: (passphrase: string, duration?: VaultUnlockDuration) => Promise<{ action: string; status: Record<string, unknown> }>
   manageCredentialVault?: () => Promise<{ action: string; status: Record<string, unknown> }>
   readSecret?: (prompt: string) => Promise<string>
   registerCredential?: (sourcePath: string) => Promise<CharioxCredentialConfig>
@@ -364,6 +367,14 @@ export async function handleEnvironmentSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "env" }>,
 ): Promise<void> {
   const [action] = command.args
+  if (command.raw.startsWith("/environment") && deps.projectEnvironmentCommand) {
+    // `/environment` is the Project's Environment; `/env` keeps the Script runtimes.
+    if (projectEnvironmentActions.some((known) => known === action)) {
+      deps.appendNotice(await deps.projectEnvironmentCommand(command.args))
+      return
+    }
+    return deps.flashFooter(`usage: /environment ${projectEnvironmentActions.join(" | ")}`, "error")
+  }
   if (!action || action === "list" || action === "ls") {
     if (!deps.listEnvironments) return deps.flashFooter("Script runtime registry is not available in this daemon", "error")
     const environments = await deps.listEnvironments()
@@ -514,11 +525,13 @@ export async function handleCredentialSlashCommand(
     if (vaultAction === "unlock") {
       if (!deps.unlockCredentialVault) return deps.flashFooter("credential vault unlock is not available in this daemon", "error")
       if (!deps.readSecret) return deps.flashFooter("credential vault unlock requires hidden input support", "error")
+      const chosen = command.args[2] === undefined ? undefined : parseVaultUnlockDurationArgument(command.args[2])
+      if (chosen === null) return deps.flashFooter(`unknown unlock length "${command.args[2]}". ${vaultUnlockDurationUsage}`, "error")
       const passphrase = await deps.readSecret("Vault passphrase: ")
       if (!passphrase) return deps.flashFooter("the Vault passphrase must not be empty", "error")
       let result: Awaited<ReturnType<typeof deps.unlockCredentialVault>>
       try {
-        result = await deps.unlockCredentialVault(passphrase)
+        result = await deps.unlockCredentialVault(passphrase, chosen)
       } catch (error) {
         if (isVaultPassphraseRejection(error)) deps.appendNotice(VAULT_FOLDED_PASSPHRASE_HINT)
         throw error
@@ -539,7 +552,7 @@ export async function handleCredentialSlashCommand(
       deps.flashFooter(result.action === "passphrase_changed" ? "vault passphrase changed" : `vault ${result.action}`, "info")
       return
     }
-    deps.flashFooter("usage: /credential vault status|lock|unlock|manage", "error")
+    deps.flashFooter("usage: /credential vault status|lock|unlock [once|30m|2h|kernel]|manage", "error")
     return
   }
   if (action === "remove" || action === "unregister") {
@@ -549,7 +562,7 @@ export async function handleCredentialSlashCommand(
     deps.flashFooter(`removed credential ${credential.id}`, "info")
     return
   }
-  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|unlock|manage", "error")
+  deps.flashFooter("usage: /credential list | /credential show <id> | /credential set <vault-key> | /credential register <file.yaml> | /credential remove <id> | /credential vault status|lock|unlock [once|30m|2h|kernel]|manage", "error")
 }
 
 /** Shown once when the kernel rejects a vault passphrase. Before the

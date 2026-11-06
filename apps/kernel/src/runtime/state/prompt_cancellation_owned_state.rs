@@ -558,18 +558,6 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             });
         }
-        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
-            let session = self.session_snapshot(session_id)?;
-            return Ok(Some(crate::app::KernelPromptCancellation {
-                cancellation: crate::session::PromptCancellation {
-                    prompt: active_prompt,
-                    started_next: None,
-                },
-                session,
-                dispatch: None,
-            }));
-        }
-
         let provider_run = self
             .provider_run_projection
             .get_for_agent(session_id, target_agent_id)
@@ -581,6 +569,18 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
             })?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run.id())?;
+
+        if active_prompt.status() == crate::session::PromptStatus::Cancelling {
+            let session = self.session_snapshot(session_id)?;
+            return Ok(Some(crate::app::KernelPromptCancellation {
+                cancellation: crate::session::PromptCancellation {
+                    prompt: active_prompt,
+                    started_next: None,
+                },
+                session,
+                dispatch: None,
+            }));
+        }
 
         let pty_input = if active_prompt.delivery_pending() {
             crate::app::claude_native_pending_prompt_cancel_input(&provider_run, active_prompt.id())
@@ -632,5 +632,76 @@ impl KernelRuntimeOwnedState {
                 pty_input,
             }),
         }))
+    }
+}
+
+impl KernelRuntimeState {
+    pub(super) async fn cancel_local_prompt_without_provider(
+        &self,
+        session_id: &str,
+        target_agent_id: &str,
+        prompt_id: &str,
+    ) -> Result<crate::app::KernelPromptCancellation, DaemonError> {
+        let owned = &self.owned;
+        // A pending launch or an ended run has no provider to abort.
+        // Fence the exact turn before settling it; an old dispatch
+        // must not write it or a delayed Stop reach its successor.
+        let session = owned.session_store.get_session(session_id)?;
+        let prompt = owned
+            .prompt_state_owner
+            .begin_cancelling_prompt_if_matches(&session, target_agent_id, Some(prompt_id))
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.into(),
+            })?;
+        use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+        let mut provider_run_id = prompt
+            .durable_delivery_provider_run_id()
+            .map(str::to_string);
+        let settlement = if let Some(task) =
+            owned
+                .durable_state_store
+                .agent_turn_task(session_id, target_agent_id, prompt_id)?
+        {
+            if provider_run_id.is_none() {
+                provider_run_id = task.provider_run_id.clone();
+            }
+            if let Some(run) = provider_run_id.as_deref() {
+                owned
+                    .private_work_results
+                    .discard(session_id, target_agent_id, prompt_id, run);
+            }
+            let Outcome::Task(task) =
+                owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::CancelTask {
+                        task: task.task_id,
+                        owner: session.owner_user_id().into(),
+                        revision: task.revision,
+                    })?
+            else {
+                unreachable!()
+            };
+            Some((task, false))
+        } else {
+            None
+        };
+        let _ = owned.workflow_cancel_prompt(session_id, &prompt);
+        let cancellation = owned.finalize_local_prompt_cancellation_deferring_queue_head(
+            session_id,
+            target_agent_id,
+            prompt_id,
+            provider_run_id.as_deref(),
+        )?;
+        let response = cancellation.cancellation.clone();
+        if let Some(settlement) = settlement {
+            self.finish_stopped_agent_task(settlement, &prompt).await;
+        }
+        self.start_queue_head_after_cancellation(session_id, target_agent_id, cancellation)
+            .await;
+        Ok(crate::app::KernelPromptCancellation {
+            cancellation: response,
+            session: owned.session_snapshot(session_id)?,
+            dispatch: None,
+        })
     }
 }

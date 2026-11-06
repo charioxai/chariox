@@ -11,6 +11,34 @@ pub(crate) const VAULT_CAPTURE_COMMAND: &str = "chariox.vault.capture_command";
 pub(super) const CAPTURED_KIND: &str = "vault_capture";
 const VALUE_LIMIT: usize = 16 * 1024;
 
+#[derive(Clone, Default)]
+pub(in crate::runtime::state) struct CaptureClaims(
+    Arc<std::sync::Mutex<BTreeMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
+);
+
+impl CaptureClaims {
+    pub(super) async fn claim(
+        &self,
+        handle: &str,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, DaemonError> {
+        let claim = {
+            let mut claims = self
+                .0
+                .lock()
+                .map_err(|_| error("Vault capture claims unavailable"))?;
+            claims.retain(|_, claim| claim.strong_count() > 0);
+            if let Some(claim) = claims.get(handle).and_then(std::sync::Weak::upgrade) {
+                claim
+            } else {
+                let claim = Arc::new(tokio::sync::Mutex::new(()));
+                claims.insert(handle.to_owned(), Arc::downgrade(&claim));
+                claim
+            }
+        };
+        Ok(claim.lock_owned().await)
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureArgs {
@@ -70,7 +98,7 @@ pub(crate) fn capture_command_spec() -> RuntimeToolSpec {
     }
 }
 
-pub(super) fn capture_binding_schema() -> serde_json::Value {
+pub(in crate::runtime::state) fn capture_binding_schema() -> serde_json::Value {
     serde_json::json!({"type":"object","required":["target"],"additionalProperties":false,"properties":{
         "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
         "target":{"oneOf":[
@@ -100,6 +128,18 @@ impl KernelRuntimeState {
         if args.label.as_ref().is_some_and(|label| label.len() > 200) {
             return Err(error("label must be at most 200 characters"));
         }
+        // The kernel owns settlement and commit even if the MCP waiter goes away.
+        let state = self.clone();
+        tokio::spawn(async move { state.capture_command_once(context, args).await })
+            .await
+            .map_err(|_| error("the capture runner stopped unexpectedly"))?
+    }
+
+    async fn capture_command_once(
+        &self,
+        context: VaultAgentContext,
+        args: CaptureArgs,
+    ) -> Result<RuntimeToolResult, DaemonError> {
         args.use_binding.target.validate()?;
         let host = service_host(&args.host)?;
         let argv = super::super::agent_process_watch::command_argv(&args.argv)?;
@@ -107,7 +147,8 @@ impl KernelRuntimeState {
         let timeout = command_timeout(args.timeout_seconds)?;
         let turn = &context;
         let handle = captured_handle(turn, &args.request_id);
-        let claim = self.owned.vault_capture_claims.claim(&handle)?;
+        let _claim = self.owned.vault_capture_claims.claim(&handle).await?;
+        self.recheck_vault_command_context(&context)?;
         let registry = crate::credential::CharioxCredentialRegistry::user()?;
         if let Some(existing) = registry.get(&handle)? {
             return committed(&existing, turn, &host, &args.use_binding);
@@ -130,7 +171,6 @@ impl KernelRuntimeState {
                 stdin: None,
                 timeout,
             },
-            claim.clone(),
         )
         .await?;
         use super::super::agent_process_watch::KernelCommandExit;
@@ -175,7 +215,7 @@ impl KernelRuntimeState {
     }
 
     /// Stores a captured value for kernel-local use (command env/stdin and files).
-    pub(super) async fn store_captured(
+    pub(in crate::runtime::state) async fn store_captured(
         &self,
         context: &VaultAgentContext,
         registry: &crate::credential::CharioxCredentialRegistry,
@@ -234,11 +274,11 @@ impl KernelRuntimeState {
     }
 }
 
-pub(super) struct Captured {
-    pub(super) handle: String,
-    pub(super) host: String,
-    pub(super) label: Option<String>,
-    pub(super) use_binding: crate::config::VaultUseBinding,
+pub(in crate::runtime::state) struct Captured {
+    pub(in crate::runtime::state) handle: String,
+    pub(in crate::runtime::state) host: String,
+    pub(in crate::runtime::state) label: Option<String>,
+    pub(in crate::runtime::state) use_binding: crate::config::VaultUseBinding,
 }
 
 pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, DaemonError> {
@@ -256,7 +296,7 @@ pub(super) fn extract_pattern(how: &Extract) -> Result<Option<regex::Regex>, Dae
 }
 
 /// A retry returns the committed handle only to the same agent, session and host.
-pub(super) fn committed(
+pub(in crate::runtime::state) fn committed(
     existing: &UserCredentialConfig,
     turn: &VaultAgentContext,
     host: &str,
@@ -296,7 +336,7 @@ pub(super) fn captured_handle(turn: &VaultAgentContext, request_id: &str) -> Str
 }
 
 /// A bare host name (with an optional port), as credential hosts are matched.
-pub(super) fn service_host(raw: &str) -> Result<String, DaemonError> {
+pub(in crate::runtime::state) fn service_host(raw: &str) -> Result<String, DaemonError> {
     let raw = raw.trim();
     let url = url::Url::parse(&format!("https://{raw}"))
         .ok()

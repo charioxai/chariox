@@ -865,8 +865,18 @@ fn room_controller_protocol_shapes_are_versioned() {
                     "desktop_pixel_width":1280,"desktop_pixel_height":800}}
         }}),
     ] {
-        let wire = serde_json::json!({"kind":"room_browser_controller", "session_id":"room-1",
-            "slice_id":"slice-1","result":result});
+        let snapshot = result["kind"] == "snapshot";
+        let result = serde_json::from_value(result).unwrap();
+        let wire = serde_json::to_value(RelayPeerResponse::RoomBrowserController {
+            session_id: "room-1".into(),
+            slice_id: "slice-1".into(),
+            result,
+        })
+        .unwrap();
+        if snapshot {
+            assert!(wire["result"]["snapshot"]["zlib_base64"].is_string());
+            assert!(wire["result"]["snapshot"]["decoded_bytes"].is_number());
+        }
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert!(
             !format!("{response:?}").contains("sensitive-event-fixture"),

@@ -531,3 +531,33 @@ pub(crate) fn fixture_event_catalog_from_package(
 ) -> Arc<EventCatalog> {
     tests::catalog_for_owner(store, "alice", package)
 }
+
+#[cfg(test)]
+pub(crate) fn fixture_room_event_catalog(
+    store: &DurableKernelStateStore,
+    owner: &str,
+) -> Arc<EventCatalog> {
+    let (bytes, publisher) = tests::package();
+    let catalog = tests::catalog_for_owner(store, owner, (bytes.clone(), publisher.clone()));
+    let package = chariox_app_package::verify(
+        &bytes,
+        &chariox_app_package::VerificationPolicy::new(
+            crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            vec![publisher],
+        ),
+    )
+    .unwrap();
+    chariox_app_runtime::release_store::ReleaseStore::open_or_create(store.path())
+        .unwrap()
+        .stage(
+            &package,
+            &bytes,
+            chariox_app_runtime::release_store::StageBudget {
+                max_stage_bytes: 1024 * 1024,
+                reserved_bytes: 1024 * 1024,
+                host_reserve_bytes: 1024 * 1024,
+            },
+        )
+        .unwrap();
+    catalog
+}

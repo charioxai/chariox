@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -614,6 +615,17 @@ pub(crate) struct GitCommitSummary {
 }
 
 pub(crate) fn capture_turn_snapshot(context: GitTurnContext) -> Option<GitTurnSnapshot> {
+    // Git can wait on a filesystem monitor or a slow worktree. Keep the
+    // pre-turn capture synchronous without occupying a transport worker.
+    if tokio::runtime::Handle::try_current()
+        .is_ok_and(|handle| handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+    {
+        return tokio::task::block_in_place(|| capture_turn_snapshot_blocking(context));
+    }
+    capture_turn_snapshot_blocking(context)
+}
+
+fn capture_turn_snapshot_blocking(context: GitTurnContext) -> Option<GitTurnSnapshot> {
     let repo_root = git_output(&context.worktree_path, &["rev-parse", "--show-toplevel"])?;
     let repo_root = normalize_path(repo_root.trim());
     let status_output =
@@ -1066,7 +1078,7 @@ pub(crate) fn git_output(worktree: &Path, args: &[&str]) -> Option<String> {
         .arg("-C")
         .arg(worktree)
         .args(args)
-        .output()
+        .bounded_output()
         .ok()?;
     output
         .status

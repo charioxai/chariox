@@ -75,18 +75,18 @@ impl CommandRouter {
         {
             return Ok(Some(response));
         }
-        if let Some(response) = self
-            .runtime_state
-            .app_control()
-            .execute(command, request)
-            .await
-        {
-            return Ok(Some(response));
-        }
         #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
         if let Some(response) = self
             .runtime_state
             .execute_app_control_request(command, request)
+            .await
+        {
+            return Ok(Some(response));
+        }
+        if let Some(response) = self
+            .runtime_state
+            .app_control()
+            .execute(command, request)
             .await
         {
             return Ok(Some(response));

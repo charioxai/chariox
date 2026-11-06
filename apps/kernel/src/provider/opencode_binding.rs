@@ -92,6 +92,12 @@ pub(crate) fn initialize_opencode_runtime(
                 );
                 (previous_session_id, snapshot.messages)
             }
+            Err(
+                error @ DaemonError::ProviderProtocol {
+                    operation: "http_response_limit",
+                    ..
+                },
+            ) => return Err(error),
             Err(_) => {
                 crate::logging::warn_with_fields(
                     "daemon.provider.opencode",
@@ -377,7 +383,7 @@ pub(super) fn sync_opencode_run_selection_for_session(
 ) -> Result<OpenCodeRunSelection, DaemonError> {
     let client = OpenCodeClient::new(provider_run_id, base_url)?;
     let defaults = client.configured_defaults()?;
-    let messages = client.messages(session_id)?;
+    let messages = client.recent_messages(session_id)?;
 
     Ok(resolve_sync_selection(
         &messages,
@@ -515,7 +521,7 @@ fn submit_opencode_prompt_with_policy(
             client
         }
     };
-    if let Ok(messages) = client.messages(state.session_id()) {
+    if let Ok(messages) = client.recent_messages(state.session_id()) {
         state.baseline_existing_messages(&messages);
     }
     let message_id = next_opencode_message_id();
@@ -542,6 +548,7 @@ pub(crate) fn run_opencode_utility_prompt(
     hidden_system_context: &str,
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
+    stop: Option<&crate::provider::UtilityStop>,
 ) -> Result<String, DaemonError> {
     let base_url = run
         .structured_endpoint()
@@ -591,6 +598,9 @@ pub(crate) fn run_opencode_utility_prompt(
     let mut output = String::new();
     let mut completed = false;
     while Instant::now() < deadline {
+        if stop.is_some_and(|stop| stop.is_stopped()) {
+            break;
+        }
         let drain = match drain_opencode_events(run, &mut state, None) {
             Ok(drain) => drain,
             Err(error) => {
@@ -618,9 +628,17 @@ pub(crate) fn run_opencode_utility_prompt(
         std::thread::sleep(OPENCODE_UTILITY_POLL_INTERVAL);
     }
     if !completed {
+        // The utility's own session is aborted; the agent's sessions are untouched.
         let _ = OpenCodeClient::new(run.id(), state.base_url())
             .and_then(|client| client.abort_session(state.session_id()));
         state.stop();
+        if stop.is_some_and(|stop| stop.is_stopped()) {
+            return Err(DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "opencode_utility_stopped",
+                message: "the utility was stopped before it answered".to_string(),
+            });
+        }
         return Err(DaemonError::ProviderProtocol {
             provider_run_id: run.id().to_string(),
             operation: "opencode_utility_timeout",
@@ -1203,7 +1221,7 @@ mod tests {
                     "{}"
                 } else if path.contains("/abort ") {
                     "true"
-                } else if path.contains("/message ") {
+                } else if path.contains("/message?limit=100 ") {
                     "[]"
                 } else {
                     "{}"

@@ -54,7 +54,6 @@ current_link=$chariox_root/current
 slice_build_context_link=$chariox_root/slice-build-context
 signed_slice_build_context_target=current/usr/lib/chariox/slice-build-context
 default_managed_receipt=$install_root/var/lib/chariox/managed/bootstrap-receipt.json
-default_worker_receipt=$install_root/var/lib/chariox/disposable-worker/bootstrap-receipt.json
 receipt_path=${CHARIOX_MANAGED_UPGRADE_RECEIPT:-$default_managed_receipt}
 receipt_path_explicit=0
 if [ -n "${CHARIOX_MANAGED_UPGRADE_RECEIPT:-}" ]; then
@@ -99,19 +98,14 @@ select_receipt_path() {
     selected_receipt=
     for candidate in \
       "$default_managed_receipt" \
-      "$default_worker_receipt" \
       "$legacy_home/managed/bootstrap-receipt.json" \
-      "$legacy_home/disposable-worker/bootstrap-receipt.json" \
       "$legacy_home/.chariox/managed/bootstrap-receipt.json" \
-      "$legacy_home/.chariox/disposable-worker/bootstrap-receipt.json" \
       "$managed_home/managed/bootstrap-receipt.json" \
-      "$managed_home/disposable-worker/bootstrap-receipt.json" \
-      "$managed_home/.chariox/managed/bootstrap-receipt.json" \
-      "$managed_home/.chariox/disposable-worker/bootstrap-receipt.json"
+      "$managed_home/.chariox/managed/bootstrap-receipt.json"
     do
       if path_exists "$candidate"; then
         if [ -n "$selected_receipt" ]; then
-          echo "both managed and allocation worker receipts exist; select the receipt explicitly" >&2
+          echo "more than one managed bootstrap receipt exists; select the receipt explicitly" >&2
           exit 1
         fi
         selected_receipt=$candidate
@@ -119,64 +113,44 @@ select_receipt_path() {
     done
     receipt_path=${selected_receipt:-$default_managed_receipt}
   fi
-  release_override_path=${CHARIOX_MANAGED_UPGRADE_RELEASE_OVERRIDE:-${receipt_path%/*}/release-override.json}
   grant_binding_path=${receipt_path%/*}/bootstrap-grant-binding.json
 }
 
-select_supervisor_service() {
-  service_name=$(node "$script_root/managed-kernel-upgrade-state.mjs" \
-    supervisor-service "$receipt_path" "$release_override_path") || return 1
-  if [ "$managed_provider_topology" = path1 ] \
-    && [ "$service_name" = chariox-managed-bootstrap.service ]; then
-    service_name=chariox-path1-managed-bootstrap.service
-  fi
-}
-
-assert_path1_units_have_no_dropins() {
+assert_path1_unit_has_no_dropins() {
   [ "$managed_provider_topology" = path1 ] || return 0
-  path1_preflight_failure=0
+  unit=chariox-path1-managed-bootstrap.service
+  # Any failed check below blocks activation; cleared once every check passes.
+  path1_drop_in_failure=1
+  need_daemon_reload=$(systemctl show --property=NeedDaemonReload --value "$unit") || {
+    echo "could not inspect systemd reload state for Path-1 service $unit" >&2
+    return 1
+  }
+  case "$need_daemon_reload" in
+    no) ;;
+    yes)
+      echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
+      return 1
+      ;;
+    *)
+      echo "could not verify systemd reload state for Path-1 service $unit" >&2
+      return 1
+      ;;
+  esac
+  drop_in_paths=$(systemctl show --property=DropInPaths --value "$unit") || {
+    echo "could not inspect effective systemd drop-ins for $unit" >&2
+    return 1
+  }
+  if [ -n "$drop_in_paths" ]; then
+    echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
+    return 1
+  fi
   path1_drop_in_failure=0
-  for unit in chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service; do
-    need_daemon_reload=$(systemctl show --property=NeedDaemonReload --value "$unit") || {
-      echo "could not inspect systemd reload state for Path-1 service $unit" >&2
-      path1_preflight_failure=1
-      path1_drop_in_failure=1
-      continue
-    }
-    case "$need_daemon_reload" in
-      no) ;;
-      yes)
-        echo "Path-1 service $unit needs systemd daemon-reload; refusing upgrade before service mutation" >&2
-        path1_preflight_failure=1
-        path1_drop_in_failure=1
-        ;;
-      *)
-        echo "could not verify systemd reload state for Path-1 service $unit" >&2
-        path1_preflight_failure=1
-        path1_drop_in_failure=1
-        ;;
-    esac
-    drop_in_paths=$(systemctl show --property=DropInPaths --value "$unit") || {
-      echo "could not inspect effective systemd drop-ins for $unit" >&2
-      path1_preflight_failure=1
-      path1_drop_in_failure=1
-      continue
-    }
-    if [ -n "$drop_in_paths" ]; then
-      path1_drop_in_failure=1
-      path1_preflight_failure=1
-      echo "Path-1 service $unit has systemd drop-ins: $drop_in_paths" >&2
-    fi
-  done
-  [ "$path1_preflight_failure" -eq 0 ]
 }
 
 verify_selected_release() {
   selected_builder_public_key=${4:-${trusted_builder_public_key:-}}
   if [ "$managed_provider_topology" = path1 ]; then
     node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" path1 "$selected_builder_public_key" || return 1
-  elif [ "$service_name" = chariox-disposable-worker-bootstrap.service ]; then
-    node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" || return 1
   else
     node "$script_root/verify-image-release.mjs" "$1" "$2" "$3" "$managed_provider_topology" || return 1
   fi
@@ -430,15 +404,6 @@ atomic_receipt() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-file "$1" "$receipt_path"
 }
 
-atomic_release_override() {
-  node "$script_root/managed-kernel-upgrade-state.mjs" atomic-sidecar \
-    "$1" "$release_override_path" "$receipt_path"
-}
-
-remove_release_override() {
-  node "$script_root/managed-kernel-upgrade-state.mjs" remove-state-file "$release_override_path"
-}
-
 write_phase() {
   node "$script_root/managed-kernel-upgrade-state.mjs" atomic-text "$1" "$transaction_root/phase"
 }
@@ -478,15 +443,9 @@ resume_home_migration() {
     "$transaction_root/home-migration.json" \
     "$state_root" "$legacy_home" "$managed_home" "$managed_state" \
     "$chariox_uid" "$chariox_gid" || return 1
-  previous_service_name=$service_name
   select_receipt_path
   require_private_regular_file "$receipt_path" "managed bootstrap receipt"
   require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-  select_supervisor_service || return 1
-  if [ "$service_name" != "$previous_service_name" ]; then
-    echo "managed kernel service identity changed during home migration" >&2
-    return 1
-  fi
 }
 
 verify_slice_build_context_facade() {
@@ -582,7 +541,7 @@ check_health() {
   systemctl is-active --quiet "$service_name" || return 1
   node "$script_root/check-managed-kernel-health.mjs" \
     "$health_host" "$health_port" "$health_timeout_ms" \
-    "$receipt_path" "$release_override_path" "$presence_root" \
+    "$receipt_path" "$presence_root" \
     "$expected_protocol" "$expected_digest" "$not_before_ms"
 }
 
@@ -632,8 +591,7 @@ rollback_transaction() {
     done
   fi
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
-    "$transaction_root/previous-receipt.json" "$previous_digest" \
-    "$transaction_root/previous-release-override.json" || return 1
+    "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
   target_digest=$(read_single_line "$transaction_root/target-digest") || return 1
   target_protocol=$(read_single_line "$transaction_root/target-protocol") || return 1
   previous_protocol=$(read_single_line "$transaction_root/previous-protocol") || return 1
@@ -653,12 +611,6 @@ rollback_transaction() {
     node "$script_root/managed-kernel-upgrade-state.mjs" atomic-sidecar \
       "$transaction_root/previous-grant-binding.json" "$grant_binding_path" "$receipt_path" || return 1
   fi
-  previous_override_present=$(read_single_line "$transaction_root/previous-release-override-present") || return 1
-  case "$previous_override_present" in
-    yes) atomic_release_override "$transaction_root/previous-release-override.json" || return 1 ;;
-    no) remove_release_override || return 1 ;;
-    *) echo "managed kernel upgrade transaction has an invalid release override marker" >&2; return 1 ;;
-  esac
   atomic_symlink "$previous_target" "$current_link" || return 1
   sync_path1_data_volume_unit_links || return 1
   sync_managed_app_binaries || return 1
@@ -666,7 +618,7 @@ rollback_transaction() {
   verify_slice_build_context_facade "$previous_slice_build_context" || return 1
   validate_active_builder_pin "$transaction_root" previous "$previous_target" || return 1
   systemctl daemon-reload || return 1
-  assert_path1_units_have_no_dropins || return 1
+  assert_path1_unit_has_no_dropins || return 1
   start_path1_runtime_services || return 1
   health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') || return 1
   systemctl start "$service_name" || return 1
@@ -674,8 +626,7 @@ rollback_transaction() {
   [ "$active_previous_protocol" = "$previous_protocol" ] || return 1
   check_health "$active_previous_protocol" "$previous_digest" "$health_not_before_ms" || return 1
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-    "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
-    "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
+    "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
   write_phase rolled_back || return 1
   publish_update_result "$transaction_root" || return 1
   tombstone_transaction || return 1
@@ -698,14 +649,12 @@ recover_terminal_transaction() {
       terminal_current=$(read_single_line "$terminal_transaction/target-current") || return 1
       terminal_slice_build_context=$(read_single_line "$terminal_transaction/target-slice-build-context") || return 1
       terminal_receipt=$terminal_transaction/target-receipt.json
-      terminal_override=$terminal_transaction/target-release-override.json
       ;;
     rolled_back)
       terminal_digest=$(read_single_line "$terminal_transaction/previous-digest") || return 1
       terminal_current=$(read_single_line "$terminal_transaction/previous-current") || return 1
       terminal_slice_build_context=$(read_single_line "$terminal_transaction/previous-slice-build-context") || return 1
       terminal_receipt=$terminal_transaction/previous-receipt.json
-      terminal_override=$terminal_transaction/previous-release-override.json
       ;;
     *)
       echo "managed kernel upgrade terminal transaction phase is invalid" >&2
@@ -728,8 +677,7 @@ recover_terminal_transaction() {
       ;;
   esac
   node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-    "$receipt_path" "$terminal_receipt" "$terminal_digest" \
-    "$release_override_path" "$terminal_override" || return 1
+    "$receipt_path" "$terminal_receipt" "$terminal_digest" || return 1
   publish_update_result "$terminal_transaction" || return 1
   discard_terminal_transaction
 }
@@ -756,8 +704,7 @@ recover_transaction() {
     verify_recovery_release "$transaction_root" target || return 1
     validate_active_builder_pin "$transaction_root" target "$target_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-      "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" \
-      "$release_override_path" "$transaction_root/target-release-override.json" || return 1
+      "$receipt_path" "$transaction_root/target-receipt.json" "$target_digest" || return 1
     publish_update_result "$transaction_root" || return 1
     tombstone_transaction || return 1
     return 0
@@ -773,8 +720,7 @@ recover_transaction() {
     verify_recovery_release "$transaction_root" previous || return 1
     validate_active_builder_pin "$transaction_root" previous "$previous_current" || return 1
     node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
-      "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" \
-      "$release_override_path" "$transaction_root/previous-release-override.json" || return 1
+      "$receipt_path" "$transaction_root/previous-receipt.json" "$previous_digest" || return 1
     publish_update_result "$transaction_root" || return 1
     tombstone_transaction || return 1
     return 0
@@ -875,8 +821,7 @@ if path_exists "$update_result_path"; then
 fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-select_supervisor_service
-assert_path1_units_have_no_dropins
+assert_path1_unit_has_no_dropins
 if [ "$recover_only" -eq 1 ]; then
   for recovery_journal in "$transaction_root" "$terminal_transaction"; do
     if path_exists "$recovery_journal"; then
@@ -893,7 +838,6 @@ if [ "$recover_only" -eq 1 ]; then exit 0; fi
 select_receipt_path
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 require_safe_ancestor_chain "$receipt_path" "managed bootstrap receipt"
-select_supervisor_service
 
 if [ ! -L "$current_link" ]; then
   echo "registered managed kernel current release link is missing" >&2
@@ -913,7 +857,7 @@ if [ "$current_target" != "$expected_current_target" ]; then
 fi
 require_private_regular_file "$receipt_path" "managed bootstrap receipt"
 node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt \
-  "$receipt_path" "$expected_current_digest" "$release_override_path"
+  "$receipt_path" "$expected_current_digest"
 require_root_owned_directory "$releases_root/${expected_current_digest#sha256:}"
 verify_selected_release \
   "$releases_root/${expected_current_digest#sha256:}" "$expected_current_digest" "$trusted_public_key"
@@ -965,14 +909,11 @@ else
   install -d -o root -g root -m 0755 \
     "$pending_release/usr/local/bin" \
     "$pending_release/usr/lib/chariox" \
-    "$pending_release/etc/systemd/system" \
-    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
-    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
+    "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   # The verified image carries the whole App set or, if built before Apps, none of it.
   if path_exists "$image_root/usr/local/bin/chariox-app-package"; then
-    install -d -o root -g root -m 0755 "$pending_release/usr/libexec"
     install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
     install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-wasm-worker" "$pending_release/usr/local/bin/chariox-app-wasm-worker"
   fi
@@ -983,6 +924,9 @@ else
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$unit" "$pending_release/etc/systemd/system/$unit"
   done
   if [ "$managed_provider_topology" = path1 ]; then
+    install -d -o root -g root -m 0755 \
+      "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+      "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
@@ -991,11 +935,10 @@ else
   if [ -f "$image_root/etc/systemd/system/$path1_unit" ]; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/$path1_unit" "$pending_release/etc/systemd/system/$path1_unit"
   fi
-  worker_unit=chariox-disposable-worker-bootstrap.service
-  if [ -f "$image_root/etc/systemd/system/$worker_unit" ]; then
-    install -o root -g root -m 0644 "$image_root/etc/systemd/system/$worker_unit" "$pending_release/etc/systemd/system/$worker_unit"
-  fi
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
+  if path_exists "$image_root/usr/lib/chariox/slice-image"; then
+    (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-image" "$pending_release/usr/lib/chariox/slice-image")
+  fi
   verify_selected_release "$pending_release" "$expected_new_digest" "$next_trusted_public_key" "${next_trusted_builder_public_key:-}"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
@@ -1022,22 +965,13 @@ install -d -o root -g root -m 0700 "$pending_transaction"
 journal_builder_pins "$pending_transaction"
 cp -P "$receipt_path" "$pending_transaction/previous-receipt.json"
 chmod 0600 "$pending_transaction/previous-receipt.json"
-if [ -e "$release_override_path" ] || [ -L "$release_override_path" ]; then
-  require_private_regular_file "$release_override_path" "managed release override"
-  require_safe_ancestor_chain "$release_override_path" "managed release override"
-  cp -P "$release_override_path" "$pending_transaction/previous-release-override.json"
-  printf '%s\n' yes > "$pending_transaction/previous-release-override-present"
-else
-  printf '%s\n' no > "$pending_transaction/previous-release-override-present"
-fi
 if [ -e "$grant_binding_path" ] || [ -L "$grant_binding_path" ]; then
   require_private_regular_file "$grant_binding_path" "managed bootstrap grant binding"
   cp -P "$grant_binding_path" "$pending_transaction/previous-grant-binding.json"
 fi
 node "$script_root/managed-kernel-upgrade-state.mjs" prepare-receipt \
   "$receipt_path" "$expected_current_digest" "$expected_new_digest" \
-  "$pending_transaction/target-receipt.json" "$release_override_path" \
-  "$pending_transaction/target-release-override.json"
+  "$pending_transaction/target-receipt.json"
 printf '%s\n' "$current_target" > "$pending_transaction/previous-current"
 printf '%s\n' "$expected_current_digest" > "$pending_transaction/previous-digest"
 printf '%s\n' "$current_protocol" > "$pending_transaction/previous-protocol"
@@ -1101,10 +1035,6 @@ if ! resume_home_migration; then
 fi
 if ! atomic_receipt "$transaction_root/target-receipt.json"; then
   activation_failed=1
-elif [ -f "$transaction_root/target-release-override.json" ]; then
-  atomic_release_override "$transaction_root/target-release-override.json" || activation_failed=1
-else
-  remove_release_override || activation_failed=1
 fi
 if [ "${activation_failed:-0}" -eq 0 ]; then
   if [ "${activation_failed:-0}" -eq 0 ]; then
@@ -1145,7 +1075,7 @@ if [ "$activation" = reload ]; then
     exit 1
   fi
 elif ! systemctl daemon-reload \
-  || ! assert_path1_units_have_no_dropins \
+  || ! assert_path1_unit_has_no_dropins \
   || ! start_path1_runtime_services \
   || ! health_not_before_ms=$(node -e 'process.stdout.write(String(Date.now()))') \
   || ! systemctl start "$service_name" \
@@ -1165,7 +1095,6 @@ elif ! systemctl daemon-reload \
 fi
 if ! node "$script_root/managed-kernel-upgrade-state.mjs" validate-receipt-match \
   "$receipt_path" "$transaction_root/target-receipt.json" "$expected_new_digest" \
-  "$release_override_path" "$transaction_root/target-release-override.json" \
   || ! validate_active_builder_pin "$transaction_root" target "releases/$release_name" \
   || ! write_phase committed; then
   if rollback_transaction; then

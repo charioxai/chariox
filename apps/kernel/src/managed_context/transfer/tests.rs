@@ -5,6 +5,49 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+fn pending_context_transfer_blocks_idle_between_chunks_and_after_restart() {
+    let root = test_root("pending-activity");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(!store.has_pending_transfer(now));
+    let armed = store
+        .arm(arm_request(b"archive", now + 10_000), now)
+        .unwrap();
+    assert!(store.has_pending_transfer(now));
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now)
+        .unwrap();
+    assert!(store.has_pending_transfer(now + 1));
+    drop(store);
+    let store = ManagedContextTransferStore::open(root.clone()).unwrap();
+    assert!(store.has_pending_transfer(now + 1));
+    assert!(!store.has_pending_transfer(now + 10_000));
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: b"archive",
+                sha256: &sha256_bytes(b"archive"),
+            },
+            now + 2,
+        )
+        .unwrap();
+    store
+        .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 2)
+        .unwrap();
+    store
+        .retire_import(&armed.transfer_id, "test_failed", now + 2)
+        .unwrap();
+    assert!(!store.has_pending_transfer(now + 3));
+    drop(store);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn plain_workspace_launch_target_survives_transfer_store_restart() {
     use crate::managed_context::development::DevelopmentWorkspaceKind;
     let root = test_root("plain-launch-target");
@@ -453,53 +496,6 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
             .expect("durable launch target"),
         target
     );
-    fs::remove_dir_all(root).expect("remove transfer root");
-}
-
-#[test]
-fn credential_only_import_is_consumed_without_publishing_a_launch_target() {
-    let root = test_root("credential-only-commit");
-    let archive = b"credential package";
-    let now = current_time_ms();
-    let mut request = arm_request(archive, now + 10_000);
-    request.destination_parent = root.join("destinations");
-    let plan_digest = request.plan.plan_digest.clone();
-    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
-    let armed = store.arm(request, now).expect("arm transfer");
-    let caller = caller(&sha256_bytes(b"source-key"));
-    store
-        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
-        .expect("begin transfer");
-    store
-        .upload_chunk(
-            &armed.transfer_id,
-            &armed.capability,
-            &caller,
-            ManagedContextTransferChunk {
-                offset: 0,
-                bytes: archive,
-                sha256: &sha256_bytes(archive),
-            },
-            now + 2,
-        )
-        .expect("upload archive");
-    let ready = claimed(
-        store
-            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
-            .expect("claim import"),
-    );
-    let receipt = managed_package_receipt(&armed.transfer_id, archive, &ready.destination_root);
-    store
-        .commit_credential_import(&armed.transfer_id, &receipt, now + 4)
-        .expect("commit credential import");
-    assert_eq!(
-        store
-            .get_status(&armed.transfer_id, &armed.capability, &caller, now + 5)
-            .expect("credential import status")
-            .phase,
-        ManagedContextTransferPhase::Consumed
-    );
-    assert!(store.launch_target("context-1", &plan_digest).is_err());
     fs::remove_dir_all(root).expect("remove transfer root");
 }
 

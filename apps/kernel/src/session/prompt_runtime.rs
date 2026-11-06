@@ -120,6 +120,15 @@ impl PromptRuntimeState {
             .any(|state| state.active_prompt().is_some())
     }
 
+    pub(in crate::session) fn agents_with_prompt_work(&self) -> impl Iterator<Item = &str> {
+        self.prompt_states
+            .iter()
+            .filter(|(_, state)| {
+                state.active_prompt().is_some() || !state.queued_prompts().is_empty()
+            })
+            .map(|(agent_id, _)| agent_id.as_str())
+    }
+
     pub(in crate::session) fn has_any_prompt_work(&self) -> bool {
         self.prompt_states
             .values()

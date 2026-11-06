@@ -292,23 +292,38 @@ pub(super) fn verify_release_evidence(
         .map_err(|_| release_error("build attestation signature is invalid"))?;
     let attestation: BuildAttestation = serde_json::from_slice(&attestation_bytes)
         .map_err(|_| release_error("build attestation is invalid"))?;
+    let app_names = ["chariox-app-package", "chariox-app-wasm-worker"];
+    let app_count = manifest
+        .artifacts
+        .iter()
+        .filter(|artifact| app_names.contains(&artifact.name.as_str()))
+        .count();
+    if app_count != 0 && app_count != app_names.len() {
+        return Err(release_error(
+            "release manifest contains an incomplete App artifact set",
+        ));
+    }
+    let mut expected_names = vec![
+        "chariox-kernel",
+        "chariox-managed-bootstrap",
+        "chariox-relay",
+    ];
+    if app_count == app_names.len() {
+        expected_names.extend(app_names);
+    }
     if attestation.schema_version != 1
         || !is_git_object_id(&attestation.source_commit)
         || !is_git_object_id(&attestation.source_tree)
         || attestation.source_commit != source_commit
         || attestation.source_tree != source_tree
         || attestation.target != expected_release_target()
-        || attestation.artifacts.len() != 3
+        || attestation.artifacts.len() != expected_names.len()
     {
         return Err(release_error(
             "build attestation source identity or target is invalid",
         ));
     }
-    for (artifact, expected_name) in attestation.artifacts.iter().zip([
-        "chariox-kernel",
-        "chariox-managed-bootstrap",
-        "chariox-relay",
-    ]) {
+    for (artifact, expected_name) in attestation.artifacts.iter().zip(expected_names) {
         if artifact.name != expected_name {
             return Err(release_error(
                 "build attestation artifact order or identity is invalid",
@@ -346,6 +361,21 @@ pub(super) fn verify_release_evidence(
         return Err(release_error(
             "build attestation supervisor artifact does not match the signed release",
         ));
+    }
+    if app_count == app_names.len() {
+        for (index, name) in app_names.iter().enumerate() {
+            let path = read_pinned_release_artifact(
+                &manifest,
+                name,
+                &format!("/usr/local/bin/{name}"),
+                &active_release_path,
+            )?;
+            if digest_regular_file(&path)? != attestation.artifacts[index + 3].sha256 {
+                return Err(release_error(
+                    "build attestation App artifact does not match the signed release",
+                ));
+            }
+        }
     }
     Ok(VerifiedReleaseEvidence {
         digest: verified.digest,
@@ -387,9 +417,6 @@ pub(super) fn verify_managed_bootstrap_service_binding(
     if !service_text
         .lines()
         .any(|line| line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap")
-        || service_text.lines().any(|line| {
-            line.trim() == "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
-        })
     {
         return Err(release_error(
             "managed bootstrap service is not bound to the managed bootstrap binary",

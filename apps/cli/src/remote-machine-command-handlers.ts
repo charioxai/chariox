@@ -37,8 +37,7 @@ type RemoteMachineKernelSummary = {
 
 export type RemoteMachineCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone, display?: "toast") => void
-  addSshMachine?: (host: string, options: { install_id?: string; port?: number; release?: string }) => Promise<import("./remote-machine-api.js").SshMachineResult>
-  removeSshMachine?: (installId: string) => Promise<import("./remote-machine-api.js").SshMachineResult>
+  issueOwnMachineEnrollment?: (machineLabel?: string) => Promise<import("./remote-machine-api.js").OwnMachineEnrollment>
   refreshWaitingRoomData?: () => Promise<void>
   getRemoteMachines?: () => RemoteMachineSummary[]
   setRemoteMachines?: (machines: RemoteMachineSummary[]) => void
@@ -60,8 +59,8 @@ export async function handleRemoteMachineSlashCommand(
 ): Promise<void> {
   const args = command.args
   const subcommand = args[0]
-  if (subcommand === "add" || subcommand === "remove") {
-    await sshMachineCommand(deps, args)
+  if (subcommand === "add") {
+    await enrollOwnMachine(deps, args.slice(1).join(" ").trim())
     return
   }
   if (subcommand === "list") {
@@ -88,7 +87,7 @@ export async function handleRemoteMachineSlashCommand(
     await reimageManagedEnvironment(deps, args[1], args[2], args.length)
     return
   }
-  deps.flashFooter("usage: /machine add <link> [--relay-token-env VAR] | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
+  deps.flashFooter("usage: /machine add [name] | /machine linked | /machine unlink <name> | /machine list | /machine kernels <machine-ref> | /machine approve <machine-ref> | /machine forget <machine-ref> | /machine rename <machine-ref> <alias> | /machine reimage <environment-id> [confirm|cancel]", "error", "toast")
 }
 
 async function reimageManagedEnvironment(
@@ -293,34 +292,16 @@ function upsertRemoteMachine(
   )
 }
 
-// MP-07 / MP-08 / MP-11: rendering and input only; kernel owns all deployment policy.
-async function sshMachineCommand(deps: RemoteMachineCommandHandlerDeps, args: string[]): Promise<void> {
-  const usage = "usage: /machine add ssh <host> [--id <install-id>] [--port <port>] [--release <approved-release>] | /machine remove <install-id>"
+// The command holds a single-use code, so it goes to the footer for its owner and never into the transcript.
+/** The toast wraps at spaces, which would split a pasted command into several; break it at shell continuations instead. */
+function enrollmentCommandForDisplay(command: string): string {
+  return command.trim().replace(" && ", " && \\\n").replace(" | ", " | \\\n").replace(" --api-url ", " \\\n--api-url ")
+}
+
+async function enrollOwnMachine(deps: RemoteMachineCommandHandlerDeps, machineLabel: string): Promise<void> {
+  if (!deps.issueOwnMachineEnrollment) { deps.flashFooter("usage: /machine add [name]", "error", "toast"); return }
   try {
-    if (args[0] === "remove") {
-      if (args.length !== 2 || !deps.removeSshMachine) { deps.flashFooter(usage, "error", "toast"); return }
-      const result = await deps.removeSshMachine(args[1]!)
-      deps.flashFooter(`removed SSH install ${result.install_id}; private kernel state retained`, "info", "toast")
-      return
-    }
-    if (args[1] !== "ssh" || !args[2] || !deps.addSshMachine) { deps.flashFooter(usage, "error", "toast"); return }
-    const options: { install_id?: string; port?: number; release?: string } = {}
-    const seen = new Set<string>()
-    for (let i = 3; i < args.length; i += 2) {
-      const flag = args[i]!, value = args[i + 1]
-      if (!value || !["--id", "--port", "--release"].includes(flag) || seen.has(flag)) { deps.flashFooter(usage, "error", "toast"); return }
-      seen.add(flag)
-      if (flag === "--id") options.install_id = value
-      if (flag === "--release") options.release = value
-      if (flag === "--port") {
-        const port = Number(value)
-        if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 1024 || port > 65534 || [43118, 43119, 43120].includes(port)) { deps.flashFooter(usage, "error", "toast"); return }
-        options.port = port
-      }
-    }
-    deps.flashFooter(`installing Chariox on ${args[2]} over SSH`, "info")
-    const result = await deps.addSshMachine(args[2], options)
-    deps.flashFooter(`SSH install ${result.install_id} ${result.status}; kernel=${result.kernel_id ?? "-"} machine=${result.machine_id ?? "-"} release=${result.release_digest}. Select this Machine for project/context transfer; provider login stays on the target.`, "info", "toast")
-    await deps.refreshWaitingRoomData?.()
-  } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "SSH machine operation failed", "error", "toast") }
+    const { command, expires_at } = await deps.issueOwnMachineEnrollment(machineLabel || undefined)
+    deps.flashFooter(`Run this once in the new machine's shell before ${expires_at}:\n${enrollmentCommandForDisplay(command)}`, "info", "toast")
+  } catch (error) { deps.flashFooter(error instanceof Error ? error.message : "could not prepare the enrollment command", "error", "toast") }
 }

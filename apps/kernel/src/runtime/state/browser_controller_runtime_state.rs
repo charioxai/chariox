@@ -545,7 +545,26 @@ impl KernelRuntimeState {
                 }
             },
             Some(&execution_id),
-            self.manage_browser_environment_tab(session_id, &execution_id, tab_id, action),
+            async {
+                use crate::runtime::browser_controller_tab::BrowserTabAction;
+                match action {
+                    // Only a person changes the tab Chrome shows: an agent selecting a tab
+                    // keeps working in it from behind, and the view stays where it is.
+                    BrowserTabAction::Activate => {
+                        self.reconcile_browser_controller_environment(session_id)
+                            .await
+                    }
+                    BrowserTabAction::Close => {
+                        self.manage_browser_environment_tab(
+                            session_id,
+                            &execution_id,
+                            tab_id,
+                            action,
+                        )
+                        .await
+                    }
+                }
+            },
         )
         .await
     }

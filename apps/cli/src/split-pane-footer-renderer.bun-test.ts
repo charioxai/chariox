@@ -80,15 +80,18 @@ for (const historical of ["done", "cancelled"] as const) {
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11 EA2-80: the real footer reads the kernel outcome.
-for (const kind of ["interrupted_by_restart", "cancelled", "completed", "other"] as const) {
+for (const kind of ["interrupted_by_restart", "cancelled", "completed", "other", "usage_limit"] as const) {
   test(`EA2-80 footer renders ${kind} without turning cancellation into an error`, async () => {
     const harness = await createTestRenderer({ width: 120, height: 10, useThread: false })
     const box = new BoxRenderable(harness.renderer, { width: 120 })
     harness.renderer.root.add(box)
     const agent = { id: "agent-1", state: "Idle", provider: "codex" }
-    const reason = kind === "interrupted_by_restart" ? "The kernel restarted while this turn was running." : ""
-    const activity = { status: kind === "interrupted_by_restart" || kind === "other" ? "error" : "idle", busy: false,
-      prompt_status: "none", last_completed_turn: { turn_id: "turn-1", outcome: { kind, reason, retryable: true } } }
+    const reason = kind === "interrupted_by_restart"
+      ? "The kernel restarted while this turn was running."
+      : kind === "usage_limit" ? "You've hit your weekly limit · resets Oct 28, 9pm (UTC)" : ""
+    const failed = kind === "interrupted_by_restart" || kind === "other" || kind === "usage_limit"
+    const activity = { status: failed ? "error" : "idle", busy: false,
+      prompt_status: "none", last_completed_turn: { turn_id: "turn-1", outcome: { kind, reason, retryable: kind !== "usage_limit" } } }
     const options = {
       renderer: harness.renderer, state: createSplitPaneFooterRenderState(), primaryBox: box,
       auxiliaryBoxes: [], showAgentFooters: true, maxAgentsPerScreen: 1,

@@ -300,6 +300,8 @@ test('MP-11: every field of a child-frame delta is rebased into the frame slot; 
   assert.throws(() => frames.rebaseOp({ op: 'attr', id: 'n3', name: 'x', value: 'y', owner_id: 'n4' }, slot), /unrebased mirror op field/);
   assert.throws(() => frames.rebaseOp({ op: 'focus_ring', id: 'n3' }, slot), /unrebased mirror op/);
   assert.throws(() => frames.rebaseRecord({ ...record, label_for: 'n3' }, slot), /unrebased mirror record field/);
+  // Protocol 981: a child frame document's HTML mode travels as the child named it.
+  assert.deepEqual(frames.rebaseRecord({ id: 'n1', parent: 'n0', kind: 'document', document_mode: 'quirks' }, slot), { id: n(1), parent: n(0), kind: 'document', document_mode: 'quirks' });
 });
 
 test('MP-08: a page without opaque regions (and no attached frame) places no tiles without evaluating in the page', async () => {
@@ -1076,8 +1078,8 @@ test('MP-08/MP-10: sanitizing a sheet with a long inline data URL and an escape 
  assert.equal(out, '.a{content:"\\2022"}.b{background:url("mr:r1")}.c{background:url("mr:r1")}');
 });
 
-test('MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800', async () => {
-  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40]}];
+for (const distorted of [false, 'canvas']) test(`MP-08/MP-10: opaque area and stills use the live viewport beyond 1280 by 800 (${distorted})`, async () => {
+  const size={width:1610,height:900}, boxes=[{id:'n3',box:[1400,820,80,40],distorted}];
   assert.equal(regionArea(boxes,size),3200);
   assert.equal(regionOverBudget([{box:[0,0,1280,800]}],size),true);
   assert.equal(regionOverBudget([{box:[0,0,1000,800]}],size),false);

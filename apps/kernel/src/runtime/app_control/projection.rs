@@ -24,6 +24,31 @@ pub(super) fn installation(value: Installation) -> AppInstallationSummary {
             .map(|generation| generation.to_string()),
         admission_paused: value.admission_paused,
         data_kept,
+        events: Vec::new(),
+    }
+}
+
+/// The installation with the outgoing events of its active release, when it has one.
+pub(crate) fn installation_with_events(
+    store: &DurableKernelStateStore,
+    owner: &str,
+    value: Installation,
+) -> AppInstallationSummary {
+    let events = store
+        .active_app_event_catalog(owner, &value.installation_id)
+        .map(|catalog| {
+            catalog
+                .outgoing_events()
+                .map(|(name, title)| AppEventSummary {
+                    name: name.to_owned(),
+                    label: title.unwrap_or(name).to_owned(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    AppInstallationSummary {
+        events,
+        ..installation(value)
     }
 }
 

@@ -78,6 +78,7 @@ pub(crate) fn redact_response_for_user(
             agent_activity,
             agent_activity_revision,
             processes,
+            disk_usage,
         } => {
             let room_workflows =
                 crate::runtime::projection::RoomWorkflowInventory::project_with_history(
@@ -91,6 +92,7 @@ pub(crate) fn redact_response_for_user(
                 agent_activity: redact_agent_activity_for_session(agent_activity, &session),
                 agent_activity_revision,
                 processes,
+                disk_usage,
                 session,
             }
         }
@@ -918,6 +920,7 @@ mod tests {
             agent_activity: Default::default(),
             agent_activity_revision: 0,
             processes: Vec::new(),
+            disk_usage: Vec::new(),
         }
     }
 

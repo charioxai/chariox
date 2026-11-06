@@ -75,7 +75,7 @@ export class WindowPageCapture extends NativeWindowRegionCapture {
    this.regions=this.protection();
    await this.regions.refresh();
    this.poolRoot=await this.createRasterPool();
-   startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
+   await startNativeReadback(this,{width:region.width,height:region.height,window_region:region.window_region});
    if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MP-08: native window readback unavailable');
    if(!this.valid())throw Error('MP-11: native window lease retired');
    this.attested=true;return this;

@@ -7,6 +7,7 @@ use crate::provider::{
     resolve_claude_executable, resolve_opencode_executable, CodexClient, OpenCodeClient,
     OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
 };
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -22,7 +23,7 @@ use super::blocking::block_on_relay_query;
 #[cfg(test)]
 mod codex_refresh_tests;
 mod opencode_model_cache;
-mod probe_capture;
+use crate::runtime::bounded_process::capture as probe_capture;
 pub(crate) use opencode_model_cache::prepare_opencode_model_cache;
 
 pub(crate) const PROVIDER_CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
@@ -448,24 +449,12 @@ fn refresh_provider_account_profile_observation(
                 &environment,
                 config,
             )?;
-            let usage = if status.auth_state == "authenticated"
-                && !crate::provider::provider_account_credential_registered(
-                    owner_user_id,
-                    provider,
-                    &profile.profile_id,
-                )? {
-                let executable = resolve_claude_executable()?;
-                crate::provider::probe_claude_account_usage(
-                    &executable,
-                    &profile.profile_id,
-                    &environment,
-                )?
-            } else {
-                profile
-                    .usage
-                    .clone()
-                    .reconciled_freshness(crate::session::unix_epoch_ms())
-            };
+            // The kernel's usage refresher owns Claude's plan windows; a status
+            // check never reads them.
+            let usage = profile
+                .usage
+                .clone()
+                .reconciled_freshness(crate::session::unix_epoch_ms());
             (status, usage)
         }
         Some("opencode") => (
@@ -1264,7 +1253,7 @@ pub(crate) fn logout_provider_response(
                 command.env_remove(name);
             }
             let status = command
-                .status()
+                .bounded_status()
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "logout_provider",
                     message: format!("failed to run Claude logout: {error}"),

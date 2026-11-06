@@ -25,7 +25,6 @@ const PATH1_UNIT = "chariox-path1-managed-bootstrap.service"
 const ALLOWED_UNITS = new Set([
   PATH1_UNIT,
   "chariox-managed-bootstrap.service",
-  "chariox-disposable-worker-bootstrap.service",
   "chariox-rootless-docker.service",
   "chariox-slice-broker.service",
 ])

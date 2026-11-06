@@ -127,6 +127,18 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-readback.mjs"),
     ),
     (
+        "kernel-browser-native-codec.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-native-codec.mjs"),
+    ),
+    (
+        "install-display-codec.py",
+        include_bytes!("../../slice-linux-docker/docker/install-display-codec.py"),
+    ),
+    (
+        "display-codec-pin.json",
+        include_bytes!("../../slice-linux-docker/docker/display-codec-pin.json"),
+    ),
+    (
         "kernel-browser-visible-page.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-visible-page.mjs"),
     ),
@@ -471,6 +483,10 @@ const ASSETS: &[(&str, &[u8])] = &[
         include_bytes!("../../slice-linux-docker/docker/browser-controller-cdp.mjs"),
     ),
     (
+        "browser-submit-outcome.mjs",
+        include_bytes!("../../slice-linux-docker/docker/browser-submit-outcome.mjs"),
+    ),
+    (
         "browser-controller-compatibility.mjs",
         include_bytes!("../../slice-linux-docker/docker/browser-controller-compatibility.mjs"),
     ),
@@ -573,6 +589,18 @@ const ASSETS: &[(&str, &[u8])] = &[
     (
         "kernel-browser-screenshot.mjs",
         include_bytes!("../../slice-linux-docker/docker/kernel-browser-screenshot.mjs"),
+    ),
+    (
+        "kernel-browser-background.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-background.mjs"),
+    ),
+    (
+        "kernel-browser-card-verification.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-card-verification.mjs"),
+    ),
+    (
+        "kernel-browser-card-region.mjs",
+        include_bytes!("../../slice-linux-docker/docker/kernel-browser-card-region.mjs"),
     ),
     (
         "kernel-browser-host.mjs",

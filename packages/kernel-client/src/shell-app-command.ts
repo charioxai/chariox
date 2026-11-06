@@ -19,7 +19,7 @@ const usage = [
   "       app actions [--tab <target-id>] [--session <session-id>] [--json]",
   "       app open <installation-id> [--session <session-id>] | uninstall <installation-id> [--generation <n>] [--delete-data]",
   "       app automation list <installation-id>",
-  "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--delivery queue|inject] [--revision <n>]",
+  "       app automation add <installation-id> <automation-id> <event> <session-id> <workflow> [--queue <queue>] [--scheduled] [--revision <n>]",
   "       app automation disable <installation-id> <automation-id> <revision>",
   "       app inbox list <installation-id> | remove <installation-id> <route-id>",
   "       app inbox add <installation-id> <route-id> <event> <source-event-type> [--version <n>] [--connection <generator>/<connection-id>/<scope>]",
@@ -226,17 +226,11 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
   const [automationId, eventName, sessionId, publicationRef, ...flags] = rest
   let queueRef: string | undefined
   let scheduled = false
-  let deliveryMode: "queue" | "inject" = "queue"
   let expectedRevision = 0
   for (let index = 0; index < flags.length; index += 1) {
     const flag = flags[index]
     const value = flags[index + 1]
     if (flag === "--scheduled") scheduled = true
-    else if (flag === "--delivery") {
-      if (value !== "queue" && value !== "inject") return null
-      deliveryMode = value
-      index += 1
-    }
     else if (flag === "--queue" && value && queueRef === undefined) { queueRef = value; index += 1 }
     else if (flag === "--revision" && value && /^\d+$/.test(value)) { expectedRevision = Number(value); index += 1 }
     else return null
@@ -244,7 +238,7 @@ function automationRequest(args: string[]): Record<string, unknown> | null {
   return configureAppAutomationRequest({
     installationId: installation, automationId: automationId ?? "", expectedRevision,
     eventName: eventName ?? "", sessionId: sessionId ?? "", publicationRef: publicationRef ?? "",
-    ...(queueRef === undefined ? {} : { queueRef }), scheduled, deliveryMode,
+    ...(queueRef === undefined ? {} : { queueRef }), scheduled,
   })
 }
 
@@ -291,6 +285,8 @@ function formatInboxRoute(route: AppInboxRouteSummary): string {
 
 function workerFailureHint(worker: AppWorkerSummary): string {
   switch (worker.failure) {
+    case "app_lifecycle_disk_space":
+      return `: not enough free disk space on the host; app logs ${worker.installation_id} says how much to free`
     case "app_wasm_containment":
       return ": this computer cannot isolate the App worker, so the App was not started; your App data is retained. "
         + "On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact"
@@ -311,7 +307,7 @@ function formatWorker(worker: AppWorkerSummary, commandPrefix: string): string {
 
 function formatAutomation(automation: AppAutomationSummary): string {
   const scheduled = automation.scheduled ? " · scheduled" : ""
-  return `${automation.automation_id} · ${automation.event_name} v${automation.event_version} → workflow ${automation.publication_id} (queue ${automation.queue_id}) · ${automation.status} · revision ${automation.revision}${scheduled}${automation.delivery_mode === "inject" ? " · inject" : ""}`
+  return `${automation.automation_id} · ${automation.event_name} v${automation.event_version} → workflow ${automation.publication_id} (queue ${automation.queue_id}) · ${automation.status} · revision ${automation.revision}${scheduled}`
 }
 
 function formatInstallation(app: AppInstallationSummary): string {

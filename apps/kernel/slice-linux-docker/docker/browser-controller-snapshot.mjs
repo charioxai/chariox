@@ -25,7 +25,7 @@ export async function captureBrowserSnapshot({
   // truncate an echoed value and make exact-value redaction impossible.
   const rawConnection = connection;
   connection = {
-    send: async (...args) => redactObservation(await rawConnection.send(...args), protectedValues),
+    send: async (method, ...args) => redactSnapshotReply(method, await rawConnection.send(method, ...args), protectedValues),
   };
   const options = snapshotLimits(limits);
   const { frames, truncated: framesTruncated } = snapshotFrames(
@@ -54,7 +54,7 @@ export async function captureBrowserSnapshot({
       "browser frame tree changed during snapshot capture",
     );
   }
-  const compactedDom = compactDomSnapshot(dom, options);
+  const compactedDom = compactDomSnapshot(dom, options, accessibility.nodes);
   return {
     browser_generation: browserGeneration,
     target_id: targetId,
@@ -66,38 +66,161 @@ export async function captureBrowserSnapshot({
   };
 }
 
+// A protected value shorter than this is redacted only as a whole word of visible text, so it never
+// rewrites a URL, an id, a selector or a longer word (kernel: BARE_WORD_CHARS in room_secret_observation/spelling.rs).
+const BARE_WORD_CHARS = 8;
+
 // MD-N2 / MP-08/MP-10/MP-11: one variant policy for raw span protection
 // and ordinary observation redaction, including kernel-replayed retired values.
-export function observationProtectedVariants(protectedValues) {
-  const variants = new Set();
+// Each spelling says whether it matches as a whole word only; one that any long value also produces matches anywhere.
+export function observationSpellings(protectedValues) {
+  const spellings = new Map();
   for (const secret of protectedValues) {
     if (typeof secret !== "string" || !secret) continue;
+    const wholeWord = [...secret].length < BARE_WORD_CHARS;
     for (const variant of [secret, secret.toLowerCase(), secret.toUpperCase(),
       encodeURIComponent(secret), encodeURIComponent(secret).toLowerCase(),
       JSON.stringify(secret).slice(1, -1),
       secret.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;"),
       Buffer.from(secret).toString("base64"), Buffer.from(secret).toString("base64url"),
       Buffer.from(secret).toString("hex"), Buffer.from(secret).toString("hex").toUpperCase()]) {
-      variants.add(variant);
+      spellings.set(variant, (spellings.get(variant) ?? true) && wholeWord);
     }
   }
-  return [...variants].sort((a, b) => b.length - a.length);
+  return [...spellings].map(([text, wholeWord]) => ({ text, wholeWord })).sort((a, b) => b.text.length - a.text.length);
+}
+
+export function observationProtectedVariants(protectedValues) {
+  return observationSpellings(protectedValues).map(({ text }) => text);
+}
+
+const EDGE_BEFORE = "\"'`([{<>,;|*!:";
+const EDGE_AFTER = "\"'`)]}<>,;|*!?:";
+
+/** The match [start, end) stands alone in prose: no letter, digit, `_`, `-`, `.`, `/` or other URL, id or selector character touches it. */
+function isWholeWord(text, start, end) {
+  const before = text[start - 1];
+  const next = text[end];
+  const edgeBefore = before === undefined || /\s/u.test(before) || EDGE_BEFORE.includes(before);
+  const edgeAfter = next === undefined || /\s/u.test(next) || EDGE_AFTER.includes(next)
+    || (next === "." && (text[end + 1] === undefined || /\s/u.test(text[end + 1])));
+  return edgeBefore && edgeAfter;
+}
+
+/** Whether `redactText` would change `input`, without building the redacted copy. */
+export function containsProtected(input, spellings) {
+  for (const { text, wholeWord } of spellings) {
+    if (!wholeWord) { if (input.includes(text)) return true; continue; }
+    for (let found = input.indexOf(text); found !== -1; found = input.indexOf(text, found + text.length)) {
+      if (isWholeWord(input, found, found + text.length)) return true;
+    }
+  }
+  return false;
+}
+
+function redactText(input, spellings) {
+  for (const { text, wholeWord } of spellings) {
+    if (!wholeWord) { input = input.replaceAll(text, "[redacted]"); continue; }
+    let out = "", at = 0, found;
+    while ((found = input.indexOf(text, at)) !== -1) {
+      const end = found + text.length;
+      out += input.slice(at, found) + (isWholeWord(input, found, end) ? "[redacted]" : input.slice(found, end));
+      at = end;
+    }
+    input = out + input.slice(at);
+  }
+  return input;
 }
 
 export function redactObservation(value, protectedValues) {
-  const ordered = observationProtectedVariants(protectedValues);
+  return observationScrubber(protectedValues)(value);
+}
+
+// Inventory replies have a fixed schema. Only these fields originate on the
+// page; rewriting keys, enums or opaque IDs would break the next browser action.
+export function redactBrowserState(state, protectedValues) {
+  const scrub = observationScrubber(protectedValues);
+  const result = { ...state };
+  for (const [collection, fields] of [
+    ['tabs', ['title', 'url']],
+    ['dialogs', ['message', 'default_prompt', 'origin']],
+    ['downloads', ['name', 'path']],
+  ]) {
+    if (!Array.isArray(result[collection])) continue;
+    result[collection] = result[collection].map(item => {
+      const clean = { ...item };
+      for (const field of fields) {
+        if (collection === 'dialogs' && field === 'message' && clean.kind === 'permission') continue;
+        if (Object.hasOwn(clean, field)) clean[field] = scrub(clean[field]);
+      }
+      return clean;
+    });
+  }
+  return result;
+}
+
+function observationScrubber(protectedValues) {
+  const ordered = observationSpellings(protectedValues);
   const scrub = (input) => {
-    if (typeof input === "string") {
-      for (const variant of ordered) input = input.replaceAll(variant, "[redacted]");
-      return input;
-    }
+    if (typeof input === "string") return redactText(input, ordered);
     if (Array.isArray(input)) return input.map(scrub);
     if (input && typeof input === "object") return Object.fromEntries(
       Object.entries(input).map(([key, child]) => [scrub(key), scrub(child)]),
     );
     return input;
   };
-  return scrub(value);
+  return scrub;
+}
+
+// CDP keys, IDs, roles and enums are the transport contract. Only strings that
+// compaction exposes as page text pass through known-value redaction.
+function redactSnapshotReply(method, reply, protectedValues) {
+  if (method === "Page.getFrameTree") return reply;
+  const spellings = observationSpellings(protectedValues);
+  if (spellings.length === 0) return reply;
+  const text = value => redactText(value, spellings);
+  const result = structuredClone(reply);
+  if (method === "Accessibility.getFullAXTree") {
+    for (const node of result.nodes ?? []) {
+      for (const field of ["name", "description", "value"]) {
+        if (typeof node[field]?.value === "string") node[field].value = text(node[field].value);
+      }
+    }
+  } else if (method === "DOMSnapshot.captureSnapshot") {
+    // A CDP string can be shared by page text slots. Give each
+    // observed text slot its own redacted index instead of rewriting the pool.
+    const strings = result.strings ?? [];
+    const sourceLength = strings.length;
+    const textIndex = index => {
+      if (!Number.isSafeInteger(index) || index < 0 || index >= sourceLength) return index;
+      const redacted = text(strings[index]);
+      if (redacted === strings[index]) return index;
+      strings.push(redacted);
+      return strings.length - 1;
+    };
+    for (const document of result.documents ?? []) {
+      document.documentURL = textIndex(document.documentURL);
+      const nodes = document.nodes ?? {};
+      nodes.nodeName = (nodes.nodeName ?? []).map(textIndex);
+      nodes.nodeValue = (nodes.nodeValue ?? []).map(textIndex);
+      nodes.attributes = (nodes.attributes ?? []).map(indexes => indexes.map(textIndex));
+    }
+  }
+  return result;
+}
+
+// The compact snapshot is a fixed schema too. Attribute maps alone carry
+// page-owned keys; identifiers and announced control states remain intact.
+export function redactSnapshot(snapshot, protectedValues) {
+  if (observationSpellings(protectedValues).length === 0) return snapshot;
+  const text = observationScrubber(protectedValues);
+  return {
+    ...snapshot,
+    accessibility_nodes: snapshot.accessibility_nodes.map(node => ({...node,
+      name: text(node.name), description: text(node.description), value: text(node.value)})),
+    dom_documents: (snapshot.dom_documents ?? []).map(document => ({...document, url: text(document.url)})),
+    dom_nodes: snapshot.dom_nodes.map(node => ({...node, node_name: text(node.node_name), text: text(node.text), attributes: text(node.attributes)})),
+  };
 }
 
 function snapshotLimits(rawLimits) {
@@ -241,15 +364,20 @@ function announcedStates(properties) {
   ];
 }
 
-function compactDomSnapshot(rawSnapshot, options) {
+function compactDomSnapshot(rawSnapshot, options, accessibilityNodes) {
   const strings = Array.isArray(rawSnapshot?.strings) ? rawSnapshot.strings : [];
   const documents = Array.isArray(rawSnapshot?.documents)
     ? rawSnapshot.documents
     : [];
+  const documentCount = Math.min(documents.length, options.maxNodes);
+  // Reserve space for observed AX nodes so a late modal remains authorizable
+  // when decorative markup exhausts the DOM budget (for example SVG paths).
+  const observed = new Set(accessibilityNodes.map(node => node.node_ref));
+  let remainingObserved = documents.slice(0, documentCount).reduce((count, document) => count +
+    (document?.nodes?.backendNodeId ?? []).filter(id => observed.has(backendNodeReference(id))).length, 0);
   const compacted = [];
   const ownerByDocumentIndex = new Map();
   const shadowRoots = [];
-  const documentCount = Math.min(documents.length, options.maxNodes);
   for (let documentIndex = 0; documentIndex < documentCount; documentIndex += 1) {
     const document = documents[documentIndex];
     if (compacted.length >= options.maxNodes) {
@@ -262,19 +390,23 @@ function compactDomSnapshot(rawSnapshot, options) {
     const layoutBounds = boundsByNodeIndex(document?.layout);
     const contentDocuments = rareDataByIndex(nodes.contentDocumentIndex);
     const shadowRootTypes = rareDataByIndex(nodes.shadowRootType);
+    const retainedAncestor = [];
     for (
       let nodeIndex = 0;
       nodeIndex < backendNodeIds.length && compacted.length < options.maxNodes;
       nodeIndex += 1
     ) {
+      const parentIndex = arrayValue(nodes.parentIndex, nodeIndex);
+      const parentRef = Number.isSafeInteger(parentIndex)
+        ? retainedAncestor[parentIndex] ?? null : null;
+      retainedAncestor[nodeIndex] = parentRef;
       const nodeRef = backendNodeReference(backendNodeIds[nodeIndex]);
       if (!nodeRef) {
         continue;
       }
-      const parentIndex = arrayValue(nodes.parentIndex, nodeIndex);
-      const parentRef = Number.isSafeInteger(parentIndex)
-        ? backendNodeReference(backendNodeIds[parentIndex])
-        : null;
+      if (observed.has(nodeRef)) remainingObserved -= 1;
+      else if (compacted.length >= options.maxNodes - remainingObserved) continue;
+      retainedAncestor[nodeIndex] = nodeRef;
       const nodeType = arrayValue(nodes.nodeType, nodeIndex);
       const nodeName = snapshotString(
         strings,

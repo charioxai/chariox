@@ -15,16 +15,35 @@ const manifest = { manifest_version: 3, name: "Chariox tab groups", version: "1"
 const worker = `// MP-08/MP-11: driven by the kernel over CDP.
 const invalidateNativeState = payload => () => globalThis[${JSON.stringify(nativeWindowChangedBinding)}]?.(payload);
 // The payload only names the event kind (diagnostics); every kind but bounds retires the guards.
-for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(invalidateNativeState(kind));
+// Only the person changes the shown Tab: the Tab each window shows is tracked so a page opened by a Tab nobody
+// is looking at never takes the view. Agent input also keeps popups behind a shown opener.
+const shown = new Map(), made = new Map(), agentOpeners = new Map();
+// Chrome may report a page's new Tab as created inactive and activate it a moment later: a Tab activated right after its
+// creation by an opener that was not the shown Tab is put back behind it, like one created active.
+const keepActivated = (info, before) => {
+  const tab = made.get(info.tabId);
+  // Only the initial activation belongs to opening; subsequent selections belong to the person.
+  if (!tab?.initial) return;
+  tab.initial = false;
+  if (Date.now() - tab.at < 1500 && tab.opener !== undefined && before !== undefined && before !== info.tabId && (tab.agent || tab.opener !== before)) chrome.tabs.update(before, { active: true }).catch(() => {});
+};
+for (const [kind, event] of [['activated', chrome.tabs.onActivated], ['removed', chrome.tabs.onRemoved], ['windowRemoved', chrome.windows.onRemoved]]) event?.addListener?.(info => { if (kind === 'activated' && info) { const before = shown.get(info.windowId); shown.set(info.windowId, info.tabId); keepActivated(info, before); } invalidateNativeState(kind)(); });
 // Chrome also reports the zoom it applies to a newly committed page; only a changed factor can change the layout.
 chrome.tabs.onZoomChange?.addListener?.(info => invalidateNativeState(typeof info?.oldZoomFactor === 'number' && info.oldZoomFactor === info.newZoomFactor ? 'zoomsame' : 'zoom')());
 chrome.windows.onBoundsChanged?.addListener?.(invalidateNativeState(${JSON.stringify(nativeBoundsPayload)}));
 const targetTabs = async () => new Map((await chrome.debugger.getTargets()).filter(t => t.tabId !== undefined).map(t => [t.id, t.tabId]));
 // An extension API call every 20 s keeps this worker alive for the kernel.
 setInterval(() => chrome.runtime.getPlatformInfo(), 20000);
+chrome.tabs.query?.({ active: true })?.then?.(tabs => { for (const tab of tabs) if (!shown.has(tab.windowId)) shown.set(tab.windowId, tab.id); })?.catch?.(() => {});
+const keepShown = (tab, previous, agent) => {
+  if (tab.active && tab.openerTabId !== undefined && previous !== undefined && previous !== tab.id && (agent || tab.openerTabId !== previous)) chrome.tabs.update(previous, { active: true }).catch(() => {});
+};
 // MP-08/MP-10: page popups and second windows stay inside the shared browser.
 // The kernel identifies its internal keepalive before popup folding is enabled.
 let keepaliveTab = null;
+// Counts the person's selections: a fold decides its foreground before an asynchronous move, and a selection made
+// meanwhile is newer than that decision.
+let selectionEpoch = 0;
 const fold = async (id, tries = 100) => {
   if (id === keepaliveTab) return;
   const tab = await chrome.tabs.get(id);
@@ -36,16 +55,20 @@ const fold = async (id, tries = 100) => {
   // that existing page instead of leaving a popup without a tabbed window.
   if (!main) { await chrome.windows.create({ tabId: id, type: "normal", focused: true }); return; }
   if (tab.windowId === main.id) return;
+  const previous = shown.get(main.id), watched = !made.get(id)?.agent && tab.openerTabId !== undefined && tab.openerTabId === previous, epoch = selectionEpoch;
   try { await chrome.tabs.move(id, { windowId: main.id, index: -1 }); }
   catch (error) {
     if (!tries || !/dragging/.test(error?.message)) throw error;
     await new Promise(resolve => setTimeout(resolve, 100));
     return fold(id, tries - 1);
   }
-  await chrome.tabs.update(id, { active: true });
-  await chrome.windows.update(main.id, { focused: true });
+  if (epoch !== selectionEpoch) return;
+  if (watched) {
+    await chrome.tabs.update(id, { active: true });
+    if (epoch === selectionEpoch) await chrome.windows.update(main.id, { focused: true });
+  } else if (previous !== undefined) await chrome.tabs.update(previous, { active: true }).catch(() => {});
 };
-chrome.tabs.onCreated.addListener(tab => fold(tab.id).catch(() => {}));
+chrome.tabs.onCreated.addListener(tab => { const agent = Date.now() <= (agentOpeners.get(tab.openerTabId) ?? 0); made.set(tab.id, { opener: tab.openerTabId, agent, initial: true, at: Date.now() }); if (made.size > 64) made.delete(made.keys().next().value); keepShown(tab, shown.get(tab.windowId), agent); fold(tab.id).catch(() => {}); });
 chrome.tabs.onAttached.addListener(id => fold(id).catch(() => {}));
 // MP-08/MP-10/MP-11: one fresh native query supplies active identity and
 // dimensions. Parallel read-only inventory never caches admission authority;
@@ -86,8 +109,18 @@ const favicon = async target => {
   }
 };
 globalThis.charioxTabs = {
-  revision: 5,
+  revision: 9,
   favicon,
+  // Physical Chrome input and show_tab announce the person's choice before dispatch.
+  personSelection() { selectionEpoch++; for (const tab of made.values()) { tab.initial = false; tab.agent = false; } agentOpeners.clear(); },
+  // Capture the actor before dispatch; Chrome retains transient opening activation for five seconds.
+  // The next person's page or Chrome input retires it, even when they are watching an agent's Tab.
+  async openingInput(target, agent) {
+    const id = (await targetTabs()).get(target);
+    if (id === undefined) throw new Error('popup opener is unavailable');
+    if (agent) agentOpeners.set(id, Date.now() + 5000); else agentOpeners.delete(id);
+    while (agentOpeners.size > 64) agentOpeners.delete(agentOpeners.keys().next().value);
+  },
   async keepalive(target) { keepaliveTab = (await targetTabs()).get(target) ?? null; },
   async viewport(target) {
     if (target === undefined) return activeViewport();
@@ -102,10 +135,13 @@ globalThis.charioxTabs = {
     for (const { target_ids, title, color } of groups) {
       const tabIds = target_ids.map(id => ids.get(id)).filter(id => id !== undefined);
       if (!tabIds.length) continue;
-      const windowId = (await chrome.tabs.get(tabIds[0])).windowId;
-      const existing = (await chrome.tabGroups.query({ title, windowId }))[0];
-      const groupId = await chrome.tabs.group({ tabIds, ...(existing ? { groupId: existing.id } : { createProperties: { windowId } }) });
-      await chrome.tabGroups.update(groupId, { title, color, collapsed: false });
+      const members = await Promise.all(tabIds.map(id => chrome.tabs.get(id))), windowId = members[0].windowId;
+      // The title carries the agent's live mark, so the group is found by the Tabs it already holds.
+      const held = members.find(tab => Number.isInteger(tab.groupId) && tab.groupId !== -1 && tab.windowId === windowId);
+      // A title change (the spinner) must not regroup Tabs or touch how the person laid the strip out: a collapsed group stays collapsed.
+      const complete = held && members.every(tab => tab.groupId === held.groupId);
+      const groupId = complete ? held.groupId : await chrome.tabs.group({ tabIds, ...(held ? { groupId: held.groupId } : { createProperties: { windowId } }) });
+      await chrome.tabGroups.update(groupId, { title, color });
       tabIds.forEach(id => grouped.add(id));
     }
     const loose = (await chrome.tabs.query({})).filter(tab => tab.groupId !== -1 && !grouped.has(tab.id)).map(tab => tab.id);
@@ -160,7 +196,7 @@ export class ChromeTabGroups {
       for(let attempt=0;attempt<2;attempt++){
         const {sessionId}=await this.connection.send("Target.attachToTarget",{targetId:worker.targetId,flatten:true});
         await this.nativeState.attach(sessionId);
-        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 5",returnByValue:true},sessionId);
+        const {result}=await this.connection.send("Runtime.evaluate",{expression:"charioxTabs.revision === 9",returnByValue:true},sessionId);
         if(result?.value===true){
           if(this.keepaliveTarget)await this.connection.send("Runtime.evaluate",{expression:`charioxTabs.keepalive(${JSON.stringify(this.keepaliveTarget)})`,awaitPromise:true},sessionId);
           this.session=sessionId;return sessionId;
@@ -185,6 +221,8 @@ export class ChromeTabGroups {
   }
   /** CDP target id of the active Tab in the tabbed window, or null. */
   active(){return this.evaluate("charioxTabs.active()",'active');}
+  personSelection(){return this.evaluate("charioxTabs.personSelection()");}
+  openingInput(target,agent){return this.evaluate(`charioxTabs.openingInput(${JSON.stringify(target)},${Boolean(agent)})`);}
   favicon(target){return this.evaluate(`charioxTabs.favicon(${JSON.stringify(target)})`);}
   keepalive(target){this.keepaliveTarget=target;return this.evaluate(`charioxTabs.keepalive(${JSON.stringify(target)})`);}
   /** A target-specific read is geometry only, never active-Tab authority. */
@@ -194,9 +232,10 @@ export class ChromeTabGroups {
   cachedActive(){return this.nativeState.cachedActive();}
   cachedViewport(){return this.nativeState.cachedViewport();}
   close(){this.nativeState.close();}
-  /** groups: [{target_ids, label}] — one native group per agent label. */
+  /** groups: [{target_ids, label, mark?}] — one native group per agent label. */
   async sync(groups) {
-    const spec = groups.map(({ target_ids, label }) => ({ target_ids: [...target_ids].sort(), title: label, color: colorOf(label) }))
+    // The title carries the agent's live mark ("● Mara", a spinner while it acts); the colour stays the agent's own.
+    const spec = groups.map(({ target_ids, label, mark }) => ({ target_ids: [...target_ids].sort(), title: mark ? `${mark} ${label}` : label, color: colorOf(label) }))
       .sort((a, b) => a.title.localeCompare(b.title));
     const signature = JSON.stringify(spec);
     if (signature === this.signature) return false;

@@ -133,6 +133,8 @@ pub struct RequestPopupCustomChoiceArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestPopupArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub view: Option<RequestPopupViewArgs>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait: Option<bool>,
     pub message: String,
     pub choices: Vec<RequestPopupChoiceArgs>,
@@ -146,6 +148,42 @@ pub struct RequestPopupArgs {
     pub timeout_sec: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_on_timeout: Option<String>,
+    /// Person cards: the card closes by itself when this wake source occurs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<RequestPopupUntilArgs>,
+    /// Person cards: one kernel request the kernel runs the moment the person approves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<RequestPopupActionArgs>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupViewArgs {
+    pub browser_region: RequestPopupBrowserRegionArgs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupBrowserRegionArgs {
+    pub tab_id: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<crate::session::RuntimeInteractionBrowserVerification>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupActionArgs {
+    /// One externally tagged kernel request, as `chariox_kernel_request` takes it.
+    pub request: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestPopupUntilArgs {
+    /// The `wake_id` an `events.*` tool returned for a source this agent armed.
+    pub wake_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,7 +446,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. Declare command_environment (exact name and service origin) or command_stdin for vault.use_env, file for vault.write_file, totp for browser 2FA codes, or site for browser/HTTP/MCP use; create a separate entry for each use. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -480,7 +518,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: PASTE_SECRET_TO_SLICE_TOOL.to_string(),
-            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model. Prefer submit=false, then click the observed Next/Sign in button; submit=true requires a native form.".to_string(),
+            description: "Paste a browser credential into an editable password field after validating the current Chariox slice browser target. Unmasked fields are rejected before the secret is resolved, and the secret value is not returned to the model. Prefer submit=false, then click the observed Next/Sign in button; submit=true requires a native form and reports the page it lands on in submitted:{navigated,url,title} (a navigation is success, do not paste again).".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential_id"],
@@ -524,20 +562,45 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_POPUP_TOOL.to_string(),
-            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice. Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply.".to_string(),
+            description: "Ask a question through the shared Chariox interaction card. Use wait:false for questions you can keep working without: returns interaction_id and registration_id immediately; the attributed answer arrives in your durable event inbox and wakes you after you yield or finish this turn. Continue tools while pending, or yield on registration_id. Omit wait (or use true) only when work cannot continue without the answer; this blocks until an answer or timeout. Supply at least one fixed choice; the card always adds a Cancel choice, and a cancel reads as status cancelled with choice_id cancel (not a timeout). Set default_on_timeout to an existing choice id to return that reply on timeout; omit it to return status timed_out with no choice_id or reply. The provider cuts a blocking call after about 5 minutes and its card is withdrawn, so for a step a person must do (CAPTCHA, login, approval, anything that can take minutes) use wait:false and yield on the registration_id.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["message", "choices"],
                 "properties": {
                     "wait": {"type": "boolean", "default": true},
                     "title": {"type": "string"},
-                    "message": {"type": "string"},
+                    "message": {"type": "string", "description": "Instructions written directly to the person. For a browser verification, describe their steps: press Send Code, then enter the code from their email. Keep agent scheduling, tools and task bookkeeping out of the card."},
                     "level": {
                         "type": "string",
                         "enum": ["info", "warning", "critical"]
                     },
                     "timeout_sec": {"type": "integer", "minimum": 1},
                     "default_on_timeout": {"type": "string"},
+                    "view": {
+                        "type": "object", "required": ["browser_region"], "additionalProperties": false,
+                        "properties": {"browser_region": {
+                            "type": "object", "required": ["tab_id", "ref"], "additionalProperties": false,
+                            "properties": {"tab_id": {"type": "string", "minLength": 1}, "ref": {"type": "string", "minLength": 1},
+                                "verification": {"type":"object", "required":["challenge_id","url","accepted_json_pointer"], "additionalProperties":false,
+                                    "properties":{"challenge_id":{"type":"string","minLength":1,"maxLength":128},"url":{"type":"string"},"accepted_json_pointer":{"type":"string","minLength":2,"maxLength":128}},
+                                    "description":"For an actual site verification: one unique challenge id, exact same-origin POST URL without query/credentials, and JSON pointer to a boolean true on acceptance. Use wait:false and only Cancel, with no until or custom reply. The card remains on rejection, records only delivery/HTTP status/classification, and closes only on a positive response from this document. Show the card before requesting a fresh code; the person types inside its live region while you wait. Never infer acceptance from disappearance."}}
+                        }},
+                        "description": "Show a live browser element from your observed snapshot (tab_id and node_ref as ref). The kernel follows its position with a margin and closes the card with condition_met when the element disappears or its document changes. Uses the existing protected Tab display."
+                    },
+                    "until": {
+                        "type": "object",
+                        "required": ["wake_id"],
+                        "properties": {"wake_id": {"type": "string"}},
+                        "additionalProperties": false,
+                        "description": "With wait:false only. The wake_id of a source you armed (events.timer, events.process, events.terminal). When it occurs the card closes on every client by itself and you are told how it resolved; no answer is needed."
+                    },
+                    "action": {
+                        "type": "object",
+                        "required": ["request"],
+                        "properties": {"request": {"type": "object"}},
+                        "additionalProperties": false,
+                        "description": "A card that asks for one specific action. request is one kernel request (the shape chariox_kernel_request takes). The card shows the kernel's own description of exactly that request, not your title or message (they are ignored), and asks for the Chariox passkey. On approval the kernel runs it at once and returns its result; on Cancel nothing runs and status is cancelled. Blocks until decided (wait is ignored)."
+                    },
                     "custom_choice": {
                         "type": "object",
                         "required": ["id", "label"],
@@ -605,8 +668,18 @@ fn credential_creation_schema() -> Value {
                 "type":"object", "required":["target"], "additionalProperties":false,
                 "properties":{
                     "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
-                    "target":{"type":"object","required":["kind","origin"],"additionalProperties":false,
-                        "properties":{"kind":{"type":"string","enum":["site"]},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}}
+                    "target":{"oneOf":[
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"site"},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}},
+                        {"type":"object","required":["kind","name","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"command_environment"},"name":{"type":"string","description":"Exact environment variable name for vault.use_env"},"origin":{"type":"string"}}},
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"command_stdin"},"origin":{"type":"string"}}},
+                        {"type":"object","required":["kind","path"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"file"},"path":{"type":"string","description":"One absolute canonical workspace file path for vault.write_file"}}},
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"totp"},"origin":{"type":"string"}}}
+                    ]}
                 }
             },
             "id": {"type": "string"},
@@ -672,6 +745,86 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     spec.name = alias.to_string();
     spec.description = format!("{} Alias for `{}`.", spec.description, alias);
     Some(spec)
+}
+
+#[cfg(test)]
+mod creation_tests {
+    use super::*;
+
+    #[test]
+    fn credential_catalog_rejects_incomplete_or_mixed_use_targets() {
+        let spec = credential_runtime_tool_specs()
+            .into_iter()
+            .find(|s| s.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .unwrap();
+        for target in [
+            serde_json::json!({"kind":"command_environment","origin":"https://example.com"}),
+            serde_json::json!({"kind":"command_environment","name":"API_KEY"}),
+            serde_json::json!({"kind":"command_stdin"}),
+            serde_json::json!({"kind":"file","path":"/work/.env","origin":"https://example.com"}),
+            serde_json::json!({"kind":"site","origin":"https://example.com","name":"API_KEY"}),
+        ] {
+            let args = serde_json::json!({"credential":{"id":"invalid", "injection":{"kind":"env"},
+                "use_binding":{"target":target}}, "prompt":{"message":"Provide a value"}});
+            assert!(
+                super::super::validate_json_output_schema(
+                    "credential catalog",
+                    &spec.input_schema,
+                    &args.to_string()
+                )
+                .is_err(),
+                "incomplete or mixed target must be refused: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn credential_catalog_accepts_each_declared_use_target() {
+        let spec = credential_runtime_tool_specs()
+            .into_iter()
+            .find(|s| s.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .unwrap();
+        for (target, injection, allowed_use) in [
+            (
+                serde_json::json!({"kind":"site","origin":"https://example.com"}),
+                "browser",
+                "browser",
+            ),
+            (
+                serde_json::json!({"kind":"command_environment","name":"API_KEY","origin":"https://example.com"}),
+                "env",
+                "env",
+            ),
+            (
+                serde_json::json!({"kind":"command_stdin","origin":"https://example.com"}),
+                "env",
+                "env",
+            ),
+            (
+                serde_json::json!({"kind":"file","path":"/work/project/.env"}),
+                "file",
+                "file",
+            ),
+            (
+                serde_json::json!({"kind":"totp","origin":"https://example.com"}),
+                "totp",
+                "browser",
+            ),
+        ] {
+            let args = serde_json::json!({
+                "credential":{"id":"declared-use", "injection":{"kind":injection},
+                    "allowed_uses":[allowed_use], "use_binding":{"target":target}},
+                "prompt":{"message":"Provide a value for this use"}
+            });
+            super::super::validate_json_output_schema(
+                "credential catalog",
+                &spec.input_schema,
+                &args.to_string(),
+            )
+            .unwrap_or_else(|e| panic!("advertised {target} use must be creatable: {e}"));
+            serde_json::from_value::<RequestCredentialSecretArgs>(args).unwrap();
+        }
+    }
 }
 
 pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {

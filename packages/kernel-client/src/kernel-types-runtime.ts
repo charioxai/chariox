@@ -1,4 +1,3 @@
-import type { ProjectEnvironmentReview } from "./project-environment-review.js"
 import type { ExtensionGrant } from "./kernel-types-extensions.js"
 import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
 import type { PromptAttachmentPart, RuntimeProviderRun } from "./kernel-types-provider.js"
@@ -154,9 +153,11 @@ export type NativeInteractionOrigin =
 
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   asking_task_id?: string | null
+  related_agent_id?: string | null
+  /** Person cards: the wake source whose occurrence closes this card by itself. */
+  closes_with_wake?: string | null
   requester?: KernelAccessRequester | null
   provider_login?: import("./provider-login-projection.js").RuntimeProviderLogin | null
-  project_environment_review?: ProjectEnvironmentReview | null
   id: string
   kind: "choice" | "permission"
   level: "info" | "warning" | "critical"

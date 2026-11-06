@@ -1,6 +1,7 @@
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use std::time::Instant;
 
+mod allocator;
 mod kernel_arguments;
 
 #[cfg(all(not(test), not(debug_assertions)))]
@@ -16,6 +17,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Tokio is the M1 async runtime baseline for the daemon because upcoming PTY,
 // process, and signal-handling work all need a shared async execution model.
 fn main() -> Result<(), chariox_kernel::DaemonError> {
+    allocator::configure();
     #[cfg(all(feature = "native-display", target_os = "linux"))]
     if let Some(arg) = std::env::args_os().nth(1).filter(|arg| {
         arg == "--display-native-worker"
@@ -123,6 +125,20 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
     chariox_kernel::hot_reload::remember_start();
     chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
+    // Consume bootstrap-only environment before runtime/logger workers start.
+    #[cfg(unix)]
+    chariox_kernel::hot_reload::receive();
+    let process_started = Instant::now();
+    let config_started = Instant::now();
+    let config = DaemonConfig::load_from_env();
+    for name in [
+        "CHARIOX_RELAY_TOKEN",
+        "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+        "CHARIOX_CLOUD_RELAY_CONFIG_PATH",
+    ] {
+        std::env::remove_var(name);
+    }
+    let config_load_ms = config_started.elapsed().as_millis();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(chariox_kernel::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
@@ -131,11 +147,14 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
             operation: "daemon runtime",
             message: format!("failed to start Tokio runtime: {error}"),
         })?;
-    runtime.block_on(async_main())
+    runtime.block_on(async_main(config, process_started, config_load_ms))
 }
 
-async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
-    let process_started = Instant::now();
+async fn async_main(
+    config: DaemonConfig,
+    process_started: Instant,
+    config_load_ms: u128,
+) -> Result<(), chariox_kernel::DaemonError> {
     if let Ok(log_path) = chariox_kernel::logging::init_process_logger("daemon") {
         chariox_kernel::logging::info_with_fields(
             "daemon.main",
@@ -146,22 +165,13 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
         );
     }
     #[cfg(unix)]
-    chariox_kernel::hot_reload::receive();
+    chariox_kernel::hot_reload::adopt_received_processes();
     chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
-    let config_started = Instant::now();
-    let config = DaemonConfig::load_from_env();
-    for name in [
-        "CHARIOX_RELAY_TOKEN",
-        "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
-        "CHARIOX_CLOUD_RELAY_CONFIG_PATH",
-    ] {
-        std::env::remove_var(name);
-    }
     chariox_kernel::logging::info_with_fields(
         "daemon.startup",
         "daemon config loaded",
         serde_json::json!({
-            "config_load_ms": config_started.elapsed().as_millis(),
+            "config_load_ms": config_load_ms,
             "process_elapsed_ms": process_started.elapsed().as_millis(),
             "user_config_path": config.user_config_path().display().to_string(),
             "relay_configured": config.relay_url.is_some() && config.relay_token.is_some(),

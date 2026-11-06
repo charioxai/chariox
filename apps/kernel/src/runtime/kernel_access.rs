@@ -7,7 +7,7 @@ pub(crate) use sudo_request::SudoRequestFailure;
 pub(crate) const ACCESS_INTERACTION_SCOPE: &str = "kernel-access";
 use crate::local::{CoveredProcess, KernelAccessGrant};
 use process::ProcessIdentity;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -118,6 +118,8 @@ pub(crate) fn time_left(
 #[derive(Default)]
 pub(crate) struct AccessState {
     pub(crate) grants: BTreeMap<String, Grant>,
+    /// Revoking access fences the current provider identities, even while their runs stay live.
+    pub(crate) revoked_reach_runs: HashSet<String>,
     /// Admission wakes the idle pump so it can watch the new holder's exit.
     pub(crate) holder_changed: Arc<tokio::sync::Notify>,
     pub(crate) pending: BTreeMap<(u32, u64, String), KernelAccessGrant>,
@@ -133,8 +135,8 @@ pub(crate) struct AccessState {
     /// Holders whose `--no-wait` request the owner refused, let lapse or that was invalidated,
     /// so status says why instead of "not requested". Bounded, no secrets.
     pub(crate) request_outcomes: Vec<(ProcessIdentity, crate::local::KernelAccessStatusReason)>,
-    /// Requesters on other kernels that raised a sudo request here, by the grant id
-    /// their sudo entries carry. They live while their origin kernel keeps renewing the
+    /// Requesters on other kernels with queued exec or sudo work here, by the
+    /// origin grant id their retained authority carries. They live while their origin kernel keeps renewing the
     /// lease and until it says its grant ended; silence ends them here without it.
     pub(crate) remote_requesters: BTreeMap<String, RemoteRequester>,
     /// Grants that ended in memory but whose durable end is not complete. They

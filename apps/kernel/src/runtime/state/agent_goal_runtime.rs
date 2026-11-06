@@ -282,7 +282,7 @@ impl KernelRuntimeState {
         Box::pin(self.ensure_task_owner_interaction(task))
     }
 
-    fn publish_task_change(&self, session_id: &str) {
+    pub(super) fn publish_task_change(&self, session_id: &str) {
         let _ = self.owned.session_snapshot(session_id);
         self.owned
             .terminal_stream
@@ -618,7 +618,7 @@ impl KernelRuntimeState {
             unreachable!()
         };
         let committed = std::time::Instant::now();
-        self.retract_stale_task_owner_interactions(&next.room_id, std::slice::from_ref(&next))
+        self.retract_stale_task_owner_interactions(&next.room_id)
             .await;
         if action == "resume" {
             let resumed = async {

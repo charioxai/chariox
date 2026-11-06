@@ -16,6 +16,7 @@ pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 4;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSnapshotProjection {
     pub processes: Vec<crate::runtime::process_resources::SessionProcess>,
+    pub disk_usage: Vec<crate::runtime::disk_usage::DiskUsageEntry>,
     pub room_workflows: super::RoomWorkflowInventory,
     pub metadata: ProjectionMetadata,
     pub session: RuntimeSession,
@@ -176,6 +177,7 @@ impl SessionSnapshotProjection {
         app.session_state_projection_store()
             .project_external_observed_activity(session.id(), &mut agent_activity);
         Ok(Self {
+            disk_usage: Vec::new(),
             processes: crate::runtime::process_resources::for_session(
                 session_id,
                 app.providers(),

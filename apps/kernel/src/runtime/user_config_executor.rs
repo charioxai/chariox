@@ -39,6 +39,9 @@ pub(crate) async fn execute_user_config_request(
         LocalDaemonRequest::OwnerVault(request) => {
             runtime_state.owner_vault(command, request).await
         }
+        LocalDaemonRequest::SetProjectEnvironmentSecret(request) => {
+            runtime_state.set_project_environment_secret(command, request)
+        }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             execute_set_credential_secret_request(
                 config_projection,
@@ -80,6 +83,22 @@ pub(crate) async fn execute_user_config_request(
             Ok(LocalDaemonResponse::CredentialVaultUnlocked {
                 status,
                 action: action.to_string(),
+            })
+        }
+        LocalDaemonRequest::CreateCredentialVault(request) => {
+            let owner = runtime_state.owner_client_user_id(command)?;
+            let status = runtime_state
+                .create_credential_vault_for_owner(&owner, request)
+                .await?;
+            Ok(LocalDaemonResponse::CredentialVaultUnlocked {
+                status,
+                action: "created".to_string(),
+            })
+        }
+        LocalDaemonRequest::SealCredentialVaultKey(request) => {
+            runtime_state.owner_client_user_id(command)?;
+            Ok(LocalDaemonResponse::CredentialVaultKeySealed {
+                seed: runtime_state.seal_credential_vault_key(request)?,
             })
         }
         LocalDaemonRequest::ManageCredentialVault(request) => {
@@ -340,7 +359,10 @@ pub(crate) async fn execute_get_credential_vault_status_request(
     _request: GetCredentialVaultStatusRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let status = credential_vault_status(config_projection)?;
-    Ok(LocalDaemonResponse::CredentialVaultStatus { status })
+    let unlock = crate::local::VaultUnlockOptions::for_config(
+        &config_projection.snapshot().user_config.credential_vault,
+    );
+    Ok(LocalDaemonResponse::CredentialVaultStatus { status, unlock })
 }
 
 pub(crate) async fn execute_lock_credential_vault_request(

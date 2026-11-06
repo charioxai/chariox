@@ -22,13 +22,28 @@ pub(crate) fn request_session_scope(
     request: &LocalDaemonRequest,
 ) -> Option<SessionMembershipScope> {
     match request {
+        LocalDaemonRequest::ListAppInstallations(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::ListAppAutomations(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::DisableAppAutomation(request) => request
+            .session_id
+            .clone()
+            .map(SessionMembershipScope::SessionId),
+        LocalDaemonRequest::ConfigureAppAutomation(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::StopSessionProcesses(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
         LocalDaemonRequest::StartSessionProcessNow(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_) => None,
+        LocalDaemonRequest::IssueOwnMachineEnrollment(_) => None,
         LocalDaemonRequest::PrepareBrowserImport(request) => Some(
             SessionMembershipScope::SessionId(request.selection.session_id.clone()),
         ),
@@ -95,15 +110,6 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::UpdateProviderRunSelection(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
-        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => Some(
-            SessionMembershipScope::SessionId(request.session_id.clone()),
-        ),
         LocalDaemonRequest::ListSessionMembers(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -164,6 +170,12 @@ pub(crate) fn request_session_scope(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::CancelActivePrompt(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelAgentTask(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::CancelAgentWake(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::SteerActivePrompt(request) => Some(SessionMembershipScope::SessionId(
@@ -625,6 +637,7 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::Notes(_)
         | LocalDaemonRequest::Dictation(_)
         | LocalDaemonRequest::KernelBrowser(_)
+        | LocalDaemonRequest::ClientAppView(_)
         | LocalDaemonRequest::OpenUserAppView(_)
         | LocalDaemonRequest::ListUserAppViews(_)
         | LocalDaemonRequest::CloseUserAppView(_)
@@ -633,32 +646,20 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeUserAppViews(_)
         | LocalDaemonRequest::AnswerUserDomainInteraction(_)
         | LocalDaemonRequest::AcceptAppHostAction(_)
-        | LocalDaemonRequest::AdjustProjectEnvironment(_)
         | LocalDaemonRequest::ControlPlane(_)
-        | LocalDaemonRequest::CreateDisposableWorker(_)
-        | LocalDaemonRequest::GetDisposableWorker(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
-        | LocalDaemonRequest::DetectProjectEnvironment(_)
-        | LocalDaemonRequest::PreviewEnvironmentDiff(_)
-        | LocalDaemonRequest::SaveProjectEnvironmentRevision(_)
-        | LocalDaemonRequest::PlanProjectEnvironment(_)
-        | LocalDaemonRequest::ApplyProjectEnvironment(_)
-        | LocalDaemonRequest::CheckProjectEnvironment(_)
         | LocalDaemonRequest::GetEnvironmentOperation(_)
+        | LocalDaemonRequest::SaveProjectEnvironment(_)
+        | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
+        | LocalDaemonRequest::RunProjectEnvironmentSetup(_)
+        | LocalDaemonRequest::ImportProjectEnvironmentEntries(_)
+        | LocalDaemonRequest::DraftProjectEnvironment(_)
+        | LocalDaemonRequest::CheckProjectEnvironment(_)
+        | LocalDaemonRequest::ResolveEnvironmentProposal(_)
+        | LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(_)
+        | LocalDaemonRequest::RemoteEnvironmentOperation(_)
         | LocalDaemonRequest::CancelEnvironmentOperation(_)
-        | LocalDaemonRequest::RetryEnvironmentOperation(_)
-        | LocalDaemonRequest::ExportProjectEnvironment(_)
-        | LocalDaemonRequest::PreviewEnvironmentImport(_)
-        | LocalDaemonRequest::CommitEnvironmentImport(_)
         | LocalDaemonRequest::GetProjectEnvironment(_)
-        | LocalDaemonRequest::GetProjectEnvironmentManifest(_)
-        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
-        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
-        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
         | LocalDaemonRequest::QueryFreshRemoteMachineKernels(_)
-        | LocalDaemonRequest::ReleaseDisposableWorker(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::RestoreAppDataSnapshot(_)
         | LocalDaemonRequest::RevokeAppFileGrants(_)
         | LocalDaemonRequest::RequestKernelSudo(_)
@@ -697,14 +698,10 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::PutAppPackageUploadChunk(_)
         | LocalDaemonRequest::GetAppPackageUpload(_)
         | LocalDaemonRequest::AbortAppPackageUpload(_)
-        | LocalDaemonRequest::ListAppInstallations(_)
         | LocalDaemonRequest::GetAppInstallation(_)
         | LocalDaemonRequest::GetAppInstallationJournal(_)
         | LocalDaemonRequest::GetAppWorker(_)
         | LocalDaemonRequest::ControlAppWorker(_)
-        | LocalDaemonRequest::ListAppAutomations(_)
-        | LocalDaemonRequest::ConfigureAppAutomation(_)
-        | LocalDaemonRequest::DisableAppAutomation(_)
         | LocalDaemonRequest::UninstallApp(_)
         | LocalDaemonRequest::GetAppLogs(_)
         | LocalDaemonRequest::CreateAppInboxRoute(_)
@@ -728,7 +725,6 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::ArchiveProject(_)
         | LocalDaemonRequest::DeleteProject(_)
         | LocalDaemonRequest::RestoreProject(_)
-        | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
         | LocalDaemonRequest::SearchMetaagentCommands(_)
         | LocalDaemonRequest::GetMetaagentTurnOverview(_)
         | LocalDaemonRequest::GetMetaagentTurnBlob(_)
@@ -802,17 +798,9 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::StartCloudRelayLogin(_)
         | LocalDaemonRequest::PollCloudRelayLogin(_)
         | LocalDaemonRequest::LogoutCloudRelay(_)
-        | LocalDaemonRequest::PairCloudRelayClient(_)
-        | LocalDaemonRequest::PairCloudRelayMachine(_)
         | LocalDaemonRequest::ConnectCloudRelay(_)
         | LocalDaemonRequest::IssueCloudRelayClientToken(_)
         | LocalDaemonRequest::ResolveKernelClientConnection(_)
-        | LocalDaemonRequest::CreateCloudSessionInvite(_)
-        | LocalDaemonRequest::ShowCloudSessionInvite(_)
-        | LocalDaemonRequest::AcceptCloudSessionInvite(_)
-        | LocalDaemonRequest::RevokeCloudSessionInvite(_)
-        | LocalDaemonRequest::ListCloudSessionMembers(_)
-        | LocalDaemonRequest::ListCloudCollaborators(_)
         | LocalDaemonRequest::GetUserConfig(_)
         | LocalDaemonRequest::GetUserConfigSchema(_)
         | LocalDaemonRequest::SetUserConfigValue(_)
@@ -824,16 +812,10 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::GetCredentialVaultStatus(_)
         | LocalDaemonRequest::LockCredentialVault(_)
         | LocalDaemonRequest::UnlockCredentialVault(_)
+        | LocalDaemonRequest::CreateCredentialVault(_)
+        | LocalDaemonRequest::SealCredentialVaultKey(_)
         | LocalDaemonRequest::ManageCredentialVault(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
-        | LocalDaemonRequest::GetManagedEnvironment(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
-        | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
-        | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
-        | LocalDaemonRequest::CreateManagedEnvironment(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)

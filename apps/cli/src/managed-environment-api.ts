@@ -2,12 +2,22 @@ import type { ManagedContextLaunchTarget, ManagedContextTransferStatus } from "@
 import type { ManagedContextTransferTicket, ManagedEnvironmentCatalog, ManagedEnvironmentContextPlanInput, ManagedEnvironmentReimagePreflight, ManagedEnvironmentReimageResult, ManagedEnvironmentResult, ManagedEnvironmentSummary, ManagedEnvironmentPreReimageObservationAcknowledgement } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { CloudControlProfile } from "./cloud-control-auth.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { createManagedEnvironmentRequest, requestManagedEnvironmentLifecycleRequest, requestManagedEnvironmentReimageRequest } from "./ipc-requests.js"
+import type { CreateManagedEnvironmentInput, RequestManagedEnvironmentLifecycleInput, RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion, startManagedContextTransferRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
 import { managedEnvironmentJson } from "./managed-environment-cloud-http.js"
 import { prepareManagedEnvironmentReimageStop } from "./managed-environment-reimage-stop.js"
+
+export type ManagedEnvironmentShutdownPolicy =
+  | { readonly kind: "time_limit"; readonly durationSeconds: number }
+  | { readonly kind: "last_work_finished"; readonly warningSeconds: number }
+  | { readonly kind: "manual" }
+
+/** A create request whose shutdown is a policy the person chose rather than a fixed delay. */
+export type ManagedEnvironmentCreateInput = Omit<CreateManagedEnvironmentInput, "autoStopPolicy"> & {
+  readonly shutdownPolicy: ManagedEnvironmentShutdownPolicy
+}
 
 // MP-08 / MP-11: human control plane uses terminal authority; context export,
 // import, local launch and old-generation observation stay kernel-owned.
@@ -28,21 +38,21 @@ export async function getManagedEnvironmentReimagePreflight(profile: CloudContro
   if (preflight.environmentId !== environmentId) throw new Error("Cloud returned reimage preflight for a different managed environment")
   return preflight
 }
-export async function createManagedEnvironment(profile: CloudControlProfile, input: Parameters<typeof createManagedEnvironmentRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
+export async function createManagedEnvironment(profile: CloudControlProfile, input: ManagedEnvironmentCreateInput, client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
   await preflightProviderAccountPortability(client, input.contextPlan)
   const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, "/managed-environments", input)
   validateManagedEnvironmentResult(result)
   if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
 }
-export async function requestManagedEnvironmentLifecycle(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentLifecycleRequest>[0]): Promise<ManagedEnvironmentResult> {
+export async function requestManagedEnvironmentLifecycle(profile: CloudControlProfile, input: RequestManagedEnvironmentLifecycleInput): Promise<ManagedEnvironmentResult> {
   const {environmentId, ...body} = input
   const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, `/managed-environments/${encodeURIComponent(environmentId)}/lifecycle`, body)
   validateManagedEnvironmentResult(result, input.environmentId)
   if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
   return result
 }
-export async function requestManagedEnvironmentReimage(profile: CloudControlProfile, input: Parameters<typeof requestManagedEnvironmentReimageRequest>[0], client?: LocalIpcClient): Promise<ManagedEnvironmentReimageResult> {
+export async function requestManagedEnvironmentReimage(profile: CloudControlProfile, input: RequestManagedEnvironmentReimageInput, client?: LocalIpcClient): Promise<ManagedEnvironmentReimageResult> {
   await preflightProviderAccountPortability(client, input.contextPlan)
   await prepareManagedEnvironmentReimageStop(profile, input)
   const {environmentId, ...body} = input

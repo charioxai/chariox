@@ -79,7 +79,8 @@ impl KernelRuntimeState {
                         &workspace_root,
                         &read.path,
                     );
-                let mut payload = workspace_live_sync_read_payload(read);
+                let mut payload =
+                    workspace_live_sync_read_payload(read, args.offset_bytes, args.max_bytes)?;
                 add_workspace_live_sync_workspace_payload(&mut payload, &workspace_context);
                 Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
             }

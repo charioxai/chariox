@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto"
 import type { ManagedEnvironmentOperationSummary, ManagedEnvironmentSummary } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { CloudControlProfile } from "./cloud-control-auth.js"
-import type { requestManagedEnvironmentReimageRequest } from "./ipc-requests.js"
+import type { RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { managedEnvironmentJson } from "./managed-environment-cloud-http.js"
 
-type Request = Parameters<typeof requestManagedEnvironmentReimageRequest>[0]
+type Request = RequestManagedEnvironmentReimageInput
 type Admission = {environment: ManagedEnvironmentSummary & {runtimeGeneration: number}; operation: ManagedEnvironmentOperationSummary}
 type Binding = Pick<ManagedEnvironmentOperationSummary, "operationId" | "idempotencyKey" | "requestDigest" | "desiredRevision">
 

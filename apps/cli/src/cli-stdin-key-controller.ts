@@ -1,3 +1,4 @@
+import { isSelectionCopyKey } from "./selection-copy-key.js"
 import { isApprovalShortcut } from "./approval-shortcuts.js"
 import { shouldCycleFocusOnTabEvent } from "./hotkeys.js"
 import type { ParsedShortcut } from "./keybind.js"
@@ -6,16 +7,18 @@ export type CliStdinKeyEvent = ParsedShortcut & {
   alt?: boolean
 }
 
+export type CliStdinInputEvent = { type: string; key?: CliStdinKeyEvent }
+
 // OpenTUI's StdinParser: buffers sequences split across stdin chunks and
 // flushes a lone ESC after its timeout.
 export type CliStdinParser = {
   push(data: Uint8Array): void
-  drain(onEvent: (event: { type: string; key?: CliStdinKeyEvent }) => void): void
+  drain(onEvent: (event: CliStdinInputEvent) => void): void
 }
 
 export type CliStdinKeyControllerDeps = {
   roomWorkflowsOwnsInput?: () => boolean
-  createStdinParser: (onTimeoutFlush: () => void) => CliStdinParser
+  createStdinParser?: (onTimeoutFlush: () => void) => CliStdinParser
   kernelApprovalOwnsInput?: () => boolean
   providerAccountRecoveryOwnsInput?: (() => boolean) | undefined
   dialogOverlayOpen: () => boolean
@@ -41,7 +44,9 @@ export type CliStdinKeyControllerDeps = {
   handleWorkflowDetailPaneKey: (event: CliStdinKeyEvent) => boolean
   cycleAgentFocus: () => void
   copyPromptSelection: () => boolean
-  clearTextSelection?: () => void
+  replayCopyKey?: (event: CliStdinKeyEvent) => void
+  flushTextSelectionRebuild?: () => void
+  hasPromptSelection?: () => boolean
   hasActiveTurnWork: () => boolean
   requestPromptStop: () => void
   removePromptAttachmentsForEdit: (edit: "backspace" | "delete") => boolean
@@ -54,28 +59,31 @@ export type CliStdinKeyControllerDeps = {
 
 export type CliStdinKeyController = {
   handleData(chunk: Buffer | string): boolean
+  handleEvent(event: CliStdinInputEvent): boolean
 }
 
 export function createCliStdinKeyController(
   deps: CliStdinKeyControllerDeps,
 ): CliStdinKeyController {
-  // MP-08 / MP-10: decode complete events only. A mouse report split across
-  // chunks (after ESC, inside the CSI parameters) must never act as a key.
-  const parser = deps.createStdinParser(() => { drain() })
+  // The renderer owns production framing. An optional byte source exercises the same routing in parser regressions.
+  const parser = deps.createStdinParser?.(() => { drain() })
+  const flushSelectionRebuild = () => {
+    if (!deps.hasPromptSelection?.()) deps.flushTextSelectionRebuild?.()
+  }
   const drain = () => {
     let handled = false
-    parser.drain((event) => {
-      // Mouse reports and terminal responses keep the selection.
-      if (event.type === "paste") deps.clearTextSelection?.()
-      else if (event.type === "key" && event.key) handled = handleKey(event.key) || handled
-    })
+    parser?.drain(event => { handled = handleEvent(event) || handled })
     return handled
   }
+  const handleEvent = (event: CliStdinInputEvent): boolean => {
+    if (event.type === "paste") flushSelectionRebuild()
+    return event.type === "key" && event.key ? handleKey(event.key) : false
+  }
   const handleKey = (event: CliStdinKeyEvent): boolean => {
-    // F6 has a distinct legacy sequence, unlike Ctrl+Shift+C in terminals
-    // without extended keyboard support (where it is indistinguishable from Ctrl+C).
-    const copyKey = event.name === "f6" || (event.name === "c" && (event.meta || (event.ctrl && event.shift)))
-    if (event.eventType !== "release" && !copyKey) deps.clearTextSelection?.()
+    deps.replayCopyKey?.(event)
+    if (!event.name) return false
+    const copyKey = isSelectionCopyKey(event)
+    if (event.eventType !== "release" && !copyKey) flushSelectionRebuild()
     // OpenTUI's global key handler owns this dialog. Do not also dispatch
     // its terminal bytes into focused-agent or workflow shortcuts.
     if (deps.kernelApprovalOwnsInput?.() || isApprovalShortcut(event)) return true
@@ -203,8 +211,9 @@ export function createCliStdinKeyController(
     return false
   }
   return {
+    handleEvent,
     handleData(chunk) {
-      parser.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
+      parser?.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk)
       return drain()
     },
   }

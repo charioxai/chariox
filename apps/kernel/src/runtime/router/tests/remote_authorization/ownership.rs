@@ -116,7 +116,7 @@ async fn enrolled_owner_existing_run(check_read: bool) {
             interval_seconds: 3600,
             repeat: crate::session::AgentTriggerRepeat::Once,
         },
-        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: Some("existing owner's trigger".into()),
     });
     router

@@ -8,17 +8,11 @@ use crate::error::DaemonError;
 use crate::local::{
     AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, AgentUtilityResult,
     GenerateWorkspaceCommitMessageRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ProjectEnvironmentSetupUtilityInput, RunAgentUtilityRequest, SemanticRecallSearchUtilityInput,
-    WorkspaceCommitMessageUtilityInput,
+    RunAgentUtilityRequest, SemanticRecallSearchUtilityInput, WorkspaceCommitMessageUtilityInput,
 };
 use crate::provider::{ProviderRunState, ProviderUtilityExecutionPolicy, RuntimeProviderRun};
 use crate::runtime::history_requests::{
     knn_semantic_recall_search, semantic_recall_request_from_utility_input,
-};
-use crate::runtime::project_environment_setup_utility::{
-    parse_project_environment_setup_utility_output,
-    parse_project_environment_setup_utility_output_for_repair,
-    project_environment_setup_utility_prompt_assembly,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::semantic_recall_utility::{
@@ -28,18 +22,6 @@ use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workspace_commit_message_utility::workspace_commit_message_utility_prompt_assembly;
 
 pub(crate) const AGENT_UTILITY_TIMEOUT: Duration = Duration::from_secs(120);
-// Project discovery can need the same bounded budget as setup/validation.
-// Lightweight metadata discovery and ordinary utilities retain their limit.
-const PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn agent_utility_timeout(policy: ProviderUtilityExecutionPolicy) -> Duration {
-    match policy {
-        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery => PROJECT_ENVIRONMENT_DISCOVERY_TIMEOUT,
-        ProviderUtilityExecutionPolicy::ExistingRun
-        | ProviderUtilityExecutionPolicy::SessionCommand
-        | ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery => AGENT_UTILITY_TIMEOUT,
-    }
-}
 const AGENT_UTILITY_PROVIDER_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) async fn execute_run_agent_utility_request(
@@ -135,23 +117,6 @@ pub(crate) async fn run_agent_utility_on_provider_run(
         archive_config,
         request,
         provider_run,
-        false,
-    )
-    .await
-}
-
-pub(crate) async fn run_agent_utility_on_provider_run_for_project_environment_repair(
-    runtime_state: &KernelRuntimeState,
-    archive_config: UserArchiveHistoryConfig,
-    request: RunAgentUtilityRequest,
-    provider_run: RuntimeProviderRun,
-) -> Result<AgentUtilityResult, DaemonError> {
-    run_agent_utility_on_provider_run_with_policy(
-        runtime_state,
-        archive_config,
-        request,
-        provider_run,
-        true,
     )
     .await
 }
@@ -161,7 +126,6 @@ async fn run_agent_utility_on_provider_run_with_policy(
     archive_config: UserArchiveHistoryConfig,
     request: RunAgentUtilityRequest,
     provider_run: RuntimeProviderRun,
-    allow_project_environment_repair: bool,
 ) -> Result<AgentUtilityResult, DaemonError> {
     if provider_run.session_id() != request.session_id.as_str()
         || provider_run.agent_instance_id() != Some(request.agent_id.as_str())
@@ -186,18 +150,6 @@ async fn run_agent_utility_on_provider_run_with_policy(
         ) => {
             run_semantic_recall_search_utility(runtime_state, archive_config, provider_run, input)
                 .await?
-        }
-        (
-            AgentUtilityKind::ProjectEnvironmentSetup,
-            AgentUtilityInput::ProjectEnvironmentSetup(input),
-        ) => {
-            run_project_environment_setup_utility(
-                runtime_state,
-                provider_run,
-                input,
-                allow_project_environment_repair,
-            )
-            .await?
         }
         (kind, _) => {
             return Err(DaemonError::LocalTransport {
@@ -295,43 +247,10 @@ async fn run_semantic_recall_search_utility(
     })
 }
 
-async fn run_project_environment_setup_utility(
-    runtime_state: &KernelRuntimeState,
-    provider_run: RuntimeProviderRun,
-    input: ProjectEnvironmentSetupUtilityInput,
-    allow_definition_revision: bool,
-) -> Result<AgentUtilityOutput, DaemonError> {
-    let prompt = project_environment_setup_utility_prompt_assembly(&input)?;
-    let output = run_provider_utility_prompt(
-        runtime_state,
-        provider_run,
-        prompt.into(),
-        "run project environment setup utility",
-        ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
-        agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
-    )
-    .await?;
-    let definition = if allow_definition_revision {
-        parse_project_environment_setup_utility_output_for_repair(
-            &output,
-            input.definition.as_ref(),
-            &input.target_platform,
-        )?
-    } else {
-        parse_project_environment_setup_utility_output(
-            &output,
-            input.definition.as_ref(),
-            &input.target_platform,
-        )?
-    };
-    Ok(AgentUtilityOutput::ProjectEnvironmentSetup { definition })
-}
-
 fn agent_utility_operation(kind: &AgentUtilityKind) -> &'static str {
     match kind {
         AgentUtilityKind::WorkspaceCommitMessage => "run workspace commit message utility",
         AgentUtilityKind::SemanticRecallSearch => "run semantic recall search utility",
-        AgentUtilityKind::ProjectEnvironmentSetup => "run project environment setup utility",
     }
 }
 
@@ -364,6 +283,54 @@ pub(crate) async fn run_provider_utility_prompt_with_admission(
     timeout: Duration,
     admission: Option<crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
+    run_utility(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        admission,
+        None,
+    )
+    .await
+}
+
+/// Stop ends the request's own provider turn or child; the call returns only once that work ended,
+/// so a caller that holds its operation until then never reports work that is still running as over.
+pub(crate) async fn run_provider_utility_prompt_until_stopped(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    stop: crate::provider::UtilityStop,
+) -> Result<String, DaemonError> {
+    run_utility(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        None,
+        Some(stop),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_utility(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+    stop: Option<crate::provider::UtilityStop>,
+) -> Result<String, DaemonError> {
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
@@ -384,27 +351,21 @@ pub(crate) async fn run_provider_utility_prompt_with_admission(
                 timeout,
                 policy,
                 admission,
+                stop,
             )
             .await;
     }
-    tokio::task::spawn_blocking(move || match admission {
-        Some(admission) => crate::provider::run_blocking_provider_utility_prompt_with_admission(
+    tokio::task::spawn_blocking(move || {
+        crate::provider::run_blocking_provider_utility_prompt_with_admission(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
             timeout,
             operation,
             policy,
-            Some(admission),
-        ),
-        None => crate::provider::run_blocking_provider_utility_prompt(
-            &provider_run,
-            &prompt.visible_user_prompt,
-            &prompt.hidden_system_context,
-            timeout,
-            operation,
-            policy,
-        ),
+            admission,
+            stop.as_ref(),
+        )
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {
@@ -445,19 +406,6 @@ impl From<crate::runtime::semantic_recall_utility::SemanticRecallSearchUtilityPr
     }
 }
 
-impl From<crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt>
-    for AgentUtilityPromptParts
-{
-    fn from(
-        value: crate::runtime::project_environment_setup_utility::ProjectEnvironmentSetupUtilityPrompt,
-    ) -> Self {
-        Self {
-            visible_user_prompt: value.visible_user_prompt,
-            hidden_system_context: value.hidden_system_context,
-        }
-    }
-}
-
 fn random_hex_id() -> String {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -476,20 +424,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn project_discovery_budget_does_not_extend_metadata_or_existing_run_utilities() {
-        assert_eq!(
-            agent_utility_timeout(ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
-            Duration::from_secs(300),
-        );
-        for policy in [
-            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
-            ProviderUtilityExecutionPolicy::ExistingRun,
-        ] {
-            assert_eq!(agent_utility_timeout(policy), Duration::from_secs(120));
-        }
-    }
-
-    #[test]
     fn utility_operations_name_supported_kinds() {
         assert_eq!(
             agent_utility_operation(&AgentUtilityKind::WorkspaceCommitMessage),
@@ -498,10 +432,6 @@ mod tests {
         assert_eq!(
             agent_utility_operation(&AgentUtilityKind::SemanticRecallSearch),
             "run semantic recall search utility"
-        );
-        assert_eq!(
-            agent_utility_operation(&AgentUtilityKind::ProjectEnvironmentSetup),
-            "run project environment setup utility"
         );
     }
 }

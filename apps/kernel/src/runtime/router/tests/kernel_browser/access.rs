@@ -372,7 +372,7 @@ async fn check(native: bool) {
             interval_seconds: 600,
             repeat: crate::session::AgentTriggerRepeat::Once,
         },
-        busy_policy: crate::session::AgentTriggerBusyPolicy::Queue,
+        busy_policy: Some(crate::session::AgentTriggerBusyPolicy::Queue),
         prompt: None,
     });
     terminal(

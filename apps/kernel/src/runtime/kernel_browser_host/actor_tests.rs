@@ -1,5 +1,6 @@
 //! MD-3/MD-4: actual host ledger → controller cancellation, no Chromium dependency.
 use super::*;
+use crate::runtime::kernel_browser_actors::TAB_TAKEN_OVER_REFUSAL;
 use serde_json::json;
 use std::time::Instant;
 
@@ -337,7 +338,7 @@ done
                 policy
             )
             .unwrap_err(),
-            crate::error::HostFailure::Refused(crate::error::UserDomainRefusalReason::NotGranted)
+            crate::error::HostFailure::Other(message) if message == TAB_TAKEN_OVER_REFUSAL
         ));
         let state = host.actor_snapshot("alice").unwrap();
         assert_eq!(state["input_ownership"][0]["actor_id"], "terminal:a");
@@ -1850,7 +1851,10 @@ done
             )
         });
         std::thread::sleep(Duration::from_millis(150));
-        assert!(!takeover.is_finished(), "takeover was reported while the host could still run the previous owner's parked input");
+        assert!(
+            !takeover.is_finished(),
+            "takeover was reported while the host could still run the previous owner's parked input"
+        );
         drop(held);
         takeover.join().unwrap().unwrap();
         let sent = std::fs::read_to_string(&retired).unwrap();
@@ -1860,4 +1864,194 @@ done
         );
     });
     host.shutdown().unwrap();
+}
+
+#[test]
+fn mp10_same_terminal_lease_reconnect_keeps_takeover_before_idle_timeout() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-reconnect"));
+    let lease = host.lease_terminal("alice", "terminal:viewer");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:viewer", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(lease);
+    let _reconnected = host.lease_terminal("alice", "terminal:viewer");
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT / 2,
+    );
+    assert_eq!(
+        host.actor_snapshot("alice").unwrap()["input_ownership"][0]["actor_id"],
+        "terminal:viewer"
+    );
+}
+
+#[test]
+fn mp10_replacement_viewer_lease_recovers_takeover_until_the_person_goes_idle() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-replacement"));
+    let input = |tab: &str| json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}});
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let first = host.lease_terminal("alice", "terminal:a");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(first);
+    let second = host.lease_terminal("alice", "terminal:b");
+    let ownership =
+        |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
+    // The replacement watches before the person reaches the idle timeout.
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT / 2,
+    );
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(
+        model.lock().unwrap().begin(agent(), &input("a")).is_err(),
+        "the agent stays fenced while the person's replacement viewer is present"
+    );
+    // Disconnecting the replacement preserves the existing idle timeout.
+    drop(second);
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
+    model.lock().unwrap().reclaim_idle_takeovers(
+        Instant::now() + super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT,
+    );
+    assert!(host.actor_snapshot("alice").unwrap()["input_ownership"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn mp10_takeover_moves_to_the_viewer_that_stays_when_the_taking_viewer_leaves() {
+    let host = KernelBrowserHost::new(std::env::temp_dir().join("brtakeover-overlap"));
+    let input = |tab: &str| json!({"op":"input","tab_id":tab,"generation":1,"input":{"kind":"text","text":"synthetic-private-value"}});
+    let agent = || EnvironmentActor::new("agent:a", EnvironmentActorKind::Agent, "Agent");
+    let first = host.lease_terminal("alice", "terminal:a");
+    let second = host.lease_terminal("alice", "terminal:b");
+    let model = host.actor_model("alice").unwrap();
+    {
+        let mut model = model.lock().unwrap();
+        model
+            .reconcile(&json!({"generation":1,"tabs":[{"tab_id":"a","document_id":"d"}]}))
+            .unwrap();
+        model
+            .takeover(
+                EnvironmentActor::new("terminal:a", EnvironmentActorKind::Human, "Person"),
+                "a",
+                1,
+            )
+            .unwrap();
+    }
+    drop(first);
+    let timeout = super::super::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT;
+    model
+        .lock()
+        .unwrap()
+        .reclaim_idle_takeovers(Instant::now() + timeout / 2);
+    let ownership =
+        |host: &KernelBrowserHost| host.actor_snapshot("alice").unwrap()["input_ownership"].clone();
+    assert_eq!(ownership(&host)[0]["actor_id"], "terminal:b");
+    assert!(
+        model.lock().unwrap().begin(agent(), &input("a")).is_err(),
+        "the agent stays fenced while the person's other viewer is connected"
+    );
+    // The existing idle timeout still ends the takeover after the last viewer leaves.
+    drop(second);
+    assert!(model.lock().unwrap().begin(agent(), &input("a")).is_err());
+    model
+        .lock()
+        .unwrap()
+        .reclaim_idle_takeovers(Instant::now() + timeout);
+    assert!(ownership(&host).as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_person_key_reaches_the_host_while_an_agent_waits_for_person_idle() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-person-idle-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, r#"set -eu
+root=$1
+while IFS= read -r request; do
+ id=${request#*:}; id=${id%%,*}
+ case "$request" in
+ *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+ *'"method":"host.protect"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+ *'"text":"agent"'*)
+  printf started > "$root/started"
+  (while [ ! -f "$root/release" ]; do sleep 0.01; done
+   printf '{"id":%s,"ok":true,"result":{}}\n' "$id") & ;;
+ *'"method":"host.browser"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}}\n' "$id" ;;
+ *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
+ esac
+done
+"#).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.set_focus("alice", Some("agent"));
+    host.load("alice", "agent").unwrap();
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"state"}),
+        policy.clone(),
+    )
+    .unwrap();
+    host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"first person key"}}), policy.clone()).unwrap();
+    let (entered, result) = std::thread::scope(|scope| {
+        let agent = scope.spawn(|| {
+            let admission = host.admit("alice", "agent").unwrap();
+            host.protected_request_admitted("alice", Some(&admission), "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"agent"}}), policy.clone())
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let person_host = &host;
+        let person_policy = policy.clone();
+        let person = scope.spawn(move || {
+            sender.send(person_host.protected_request("alice", None, "host.browser", json!({"op":"input","tab_id":"host-tab-a","generation":1,"document_id":"d","input":{"kind":"text","text":"person"}}), person_policy)).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_millis(250));
+        std::fs::write(root.join("release"), "release").unwrap();
+        person.join().unwrap();
+        agent.join().unwrap().unwrap();
+        (root.join("started").exists(), result)
+    });
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(entered, "agent input must reach its host idle wait");
+    assert!(
+        result.is_ok_and(|r| r.is_ok()),
+        "person input must reach the host before the waiting agent settles"
+    );
 }

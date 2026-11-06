@@ -8,14 +8,15 @@ use crate::account_profile::{
 use crate::transport::relay_peer::RemoteProviderAccountSyncContext;
 
 impl KernelRuntimeState {
+    /// Returns the worker's profile id for the account: the home's when the worker made its copy, its own when it already held a login from that account.
     pub(super) async fn ensure_remote_profile_account(
         &self,
         agent_id: &str,
         update: &owned::OwnedRemoteAgentProfileUpdate,
         config: &crate::config::DaemonConfig,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<String, DaemonError> {
         let Some(provider) = crate::provider::canonical_provider_family(&update.provider) else {
-            return Ok(());
+            return Ok(update.account_profile.clone());
         };
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let owner = self.provider_account_authority_owner_user_id(agent.owner_user_id());
@@ -62,9 +63,10 @@ impl KernelRuntimeState {
                     provider: confirmed_provider,
                     account_profile,
                 } if confirmed_provider == provider
-                    && account_profile == update.account_profile =>
+                    && !account_profile.trim().is_empty()
+                    && account_profile != "default" =>
                 {
-                    Ok(())
+                    Ok(account_profile)
                 }
                 _ => Err(DaemonError::LocalTransport {
                     operation: "materialize remote profile account",
@@ -75,28 +77,37 @@ impl KernelRuntimeState {
             }
         }
         .await;
-        let status = registry.update_materialization_status(
-            &owner,
-            provider,
-            &update.account_profile,
-            ProviderAccountMaterializationStatus {
-                target_kind,
-                target_ref: update.worker_kernel_id.clone(),
-                state: if result.is_ok() {
-                    ProviderAccountMaterializationState::Materialized
-                } else {
-                    ProviderAccountMaterializationState::Error
-                },
-                observed_at_ms: crate::session::unix_epoch_ms(),
-                last_error: result
-                    .as_ref()
-                    .err()
-                    .map(|_| "selected account transfer failed; profile unchanged".to_string()),
-            },
-        );
+        // The home's record says "installed" only for the copy it made; a login the worker already held is asked about again.
+        let status = if result
+            .as_ref()
+            .is_ok_and(|confirmed| confirmed != &update.account_profile)
+        {
+            Ok(())
+        } else {
+            registry
+                .update_materialization_status(
+                    &owner,
+                    provider,
+                    &update.account_profile,
+                    ProviderAccountMaterializationStatus {
+                        target_kind,
+                        target_ref: update.worker_kernel_id.clone(),
+                        state: if result.is_ok() {
+                            ProviderAccountMaterializationState::Materialized
+                        } else {
+                            ProviderAccountMaterializationState::Error
+                        },
+                        observed_at_ms: crate::session::unix_epoch_ms(),
+                        last_error: result.as_ref().err().map(|_| {
+                            "selected account transfer failed; profile unchanged".to_string()
+                        }),
+                    },
+                )
+                .map(|_| ())
+        };
         // Never destroy an existing lease or discard queued work on failure.
-        result?;
+        let confirmed = result?;
         status?;
-        Ok(())
+        Ok(confirmed)
     }
 }

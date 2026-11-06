@@ -6,7 +6,6 @@ use crate::agent_move::{
 use crate::managed_context::development::{
     DevelopmentRepositoryRole, DevelopmentRepositorySelection,
 };
-use sha2::Digest;
 impl KernelRuntimeState {
     pub(super) async fn prepare_agent_move_source(
         &self,
@@ -165,20 +164,11 @@ impl KernelRuntimeState {
                 },
             })
             .collect();
-        let copied_project_id = format!(
-            "move-{:x}",
-            sha2::Sha256::digest(source.identity.operation_id.as_bytes())
-        );
-        let environment = self
-            .prepare_agent_move_environment_layer(
-                &project_id,
-                &repositories,
-                &source.identity.operation_id,
-                &source.identity.target_kernel_id,
-                &source.identity.target_public_key,
-                &copied_project_id,
-            )
-            .await?;
+        let checkouts: Vec<PathBuf> = repositories
+            .iter()
+            .map(|repository| repository.worktree_path.clone())
+            .collect();
+        self.register_environment_files(&project_id, &checkouts)?;
         let store = self.owned.agent_moves.clone();
         let config = self.owned.config_projection.snapshot();
         tokio::task::spawn_blocking(move || {
@@ -188,7 +178,6 @@ impl KernelRuntimeState {
                 repositories,
                 checkpoint.as_ref(),
                 &config,
-                environment,
             )
         })
         .await

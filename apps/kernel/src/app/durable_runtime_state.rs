@@ -2165,7 +2165,8 @@ mod tests {
                 .get_session(hidden_session.id())
                 .expect("hidden deployment runtime should remain")
                 .project_id(),
-            ""
+            // A leased hidden session keeps the Project binding it was created with.
+            project.id()
         );
         drop(app);
 
@@ -2176,7 +2177,7 @@ mod tests {
                 .get_session(hidden_session.id())
                 .expect("hidden deployment runtime should survive cleanup restart")
                 .project_id(),
-            ""
+            project.id()
         );
     }
 

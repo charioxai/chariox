@@ -1,5 +1,6 @@
 //! Workspace repository file listing projection.
 
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::error::DaemonError;
@@ -188,7 +189,7 @@ fn workspace_git_tracked_files(worktree_path: &str) -> Result<Vec<String>, Daemo
     let output = crate::process_spawn::command("git")
         .args(["ls-files", "-z", "-c", "-o", "--exclude-standard"])
         .current_dir(worktree_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "workspace repo files",
             message: error.to_string(),

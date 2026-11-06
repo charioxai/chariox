@@ -24,19 +24,25 @@ pub enum SessionProcessState {
     #[default]
     Running,
     /// Stopped before it grew, in line for room for its expected need.
-    Held {
-        reason: admission::WaitReason,
-        /// Place in line among commands waiting for the same reason, from 1.
-        position: u32,
-        need_bytes: u64,
-        free_bytes: u64,
-        command_line: String,
-    },
+    Held(Waiting),
     /// Stopped while growing into a full pool or disk; continues with room.
-    Paused {
-        reason: admission::WaitReason,
-        command_line: String,
-    },
+    Paused(Waiting),
+}
+
+/// The one description of a waiting command: the row clients show, the notice
+/// its agent reads and the event the room's followers get all come from it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Waiting {
+    pub reason: admission::WaitReason,
+    /// Place in line among commands waiting for the same reason, from 1.
+    pub position: u32,
+    pub need_bytes: u64,
+    pub free_bytes: u64,
+    pub command_line: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// When it began to wait (Unix ms).
+    pub since_ms: u64,
 }
 
 /// Whom a workload's processes are listed under when no run or terminal does:
@@ -57,7 +63,7 @@ pub(crate) fn for_session(
     terminals: &crate::room_terminal::RoomTerminalService,
 ) -> Vec<SessionProcess> {
     let mut rows = Vec::new();
-    for (owner, key) in keys_for_session(session_id, providers, terminals) {
+    for (owner, key) in observed_keys_for_session(session_id, providers, terminals) {
         let states = states_for_key(&key);
         rows.extend(
             samples_for_key(&key)
@@ -72,6 +78,34 @@ pub(crate) fn for_session(
     rows.sort_by_key(|row| row.process.pid);
     rows.dedup_by_key(|row| row.process.pid);
     rows
+}
+
+/// The row for a command: running, or waiting with everything clients show.
+pub(super) fn state_of(entry: &admission::Entry) -> SessionProcessState {
+    let Some(wait) = entry.wait else {
+        return SessionProcessState::Running;
+    };
+    let waiting = Waiting {
+        reason: wait.reason(),
+        position: entry.position,
+        need_bytes: entry.need,
+        free_bytes: entry.free,
+        command_line: entry
+            .seen
+            .as_ref()
+            .map(|seen| seen.line.clone())
+            .unwrap_or_default(),
+        cwd: entry
+            .seen
+            .as_ref()
+            .and_then(|seen| seen.cwd.as_ref())
+            .map(|cwd| cwd.display().to_string()),
+        since_ms: entry.since_ms,
+    };
+    match wait {
+        admission::Wait::Held(_) => SessionProcessState::Held(waiting),
+        admission::Wait::Paused(_) => SessionProcessState::Paused(waiting),
+    }
 }
 
 /// The waiting commands of one workload, by their own process.
@@ -89,25 +123,8 @@ pub(super) fn states_for_key(key: &str) -> std::collections::BTreeMap<u32, Sessi
         .admission
         .iter()
         .filter_map(|(pid, entry)| {
-            let command_line = entry
-                .seen
-                .as_ref()
-                .map(|seen| seen.line.clone())
-                .unwrap_or_default();
-            let state = match entry.wait? {
-                admission::Wait::Held(reason) => SessionProcessState::Held {
-                    reason,
-                    position: entry.position,
-                    need_bytes: entry.need,
-                    free_bytes: entry.free,
-                    command_line,
-                },
-                admission::Wait::Paused(reason) => SessionProcessState::Paused {
-                    reason,
-                    command_line,
-                },
-            };
-            Some((*pid, state))
+            let state = state_of(entry);
+            (state != SessionProcessState::Running).then_some((*pid, state))
         })
         .collect()
 }
@@ -118,17 +135,34 @@ pub(crate) fn keys_for_session(
     terminals: &crate::room_terminal::RoomTerminalService,
 ) -> Vec<(SessionProcessOwner, String)> {
     let mut keys = providers
-        .list_runs()
+        .run_owners_for_session(session_id)
         .into_iter()
-        .filter(|run| run.session_id() == session_id)
-        .filter_map(|run| {
-            run.agent_instance_id().map(|agent| {
-                (
-                    SessionProcessOwner::Agent(agent.to_string()),
-                    run.id().to_string(),
-                )
-            })
-        })
+        .map(|(agent, run)| (SessionProcessOwner::Agent(agent), run))
+        .collect::<Vec<_>>();
+    keys.extend(terminals.process_keys(session_id));
+    keys.extend(listed_keys(
+        |listing| listing.session_id == session_id,
+        false,
+    ));
+    keys
+}
+
+// Reads need only observed workloads. Command control uses keys_for_session,
+// which also includes launches that have not created their process domain yet.
+fn observed_keys_for_session(
+    session_id: &str,
+    providers: &crate::provider::ProviderProcessServiceStore,
+    terminals: &crate::room_terminal::RoomTerminalService,
+) -> Vec<(SessionProcessOwner, String)> {
+    let observed_keys = {
+        let mut registry = super::registry().lock().unwrap_or_else(|e| e.into_inner());
+        registry.retain(|_, state| state.strong_count() > 0);
+        registry.keys().cloned().collect::<Vec<_>>()
+    };
+    let mut keys = providers
+        .observed_run_owners_for_session(session_id, &observed_keys)
+        .into_iter()
+        .map(|(agent, run)| (SessionProcessOwner::Agent(agent), run))
         .collect::<Vec<_>>();
     keys.extend(terminals.process_keys(session_id));
     keys.extend(listed_keys(

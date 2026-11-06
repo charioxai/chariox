@@ -2,7 +2,7 @@
 use super::browser_controller_process::BrowserCancellation;
 use crate::session::*;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -10,6 +10,12 @@ use std::time::{Duration, Instant};
 /// desktop video subscriptions is live; the host display lease is 60 s.
 pub(crate) const DESKTOP_VIEWER_LEASE: Duration = Duration::from_secs(60);
 pub(crate) const DISPLAY_RESUME_GRACE: Duration = Duration::from_secs(5);
+/// MP-10: a person's Tab takeover outlives the viewer that took it (reload, network loss, relay link
+/// drop) and ends by Return control or after this long without input from the person.
+pub(crate) const TAKEOVER_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+/// What an agent reads when its action meets a Tab a person has taken over: the wait it should declare,
+/// so the kernel continues it when control returns.
+pub(crate) const TAB_TAKEN_OVER_REFUSAL: &str = "MD-3: human_takeover: a person has control of this browser Tab. Call chariox.events.blocked with the reason \"human_takeover: waiting for the person to return control\" and end your turn; the kernel continues you when they return control.";
 
 mod tabs;
 use tabs::BrowserTabActivity;
@@ -32,6 +38,10 @@ pub(crate) struct KernelBrowserActors {
     host_tabs: BTreeMap<String, String>,
     /// Desktop video subscription -> (human actor, lease expiry).
     desktop_viewers: BTreeMap<String, (String, Instant)>,
+    /// Human actor holding or awaiting a Tab takeover -> its last input; the takeover ends `TAKEOVER_IDLE_TIMEOUT` later.
+    takeover_input: BTreeMap<String, Instant>,
+    /// Human actors whose viewer went away while holding a Tab takeover.
+    orphaned_takeovers: BTreeSet<String>,
 }
 
 /// Internal display seam: the adapter must derive the user/actor from its caller.
@@ -61,6 +71,8 @@ impl Default for KernelBrowserActors {
             pointer_tabs: BTreeMap::new(),
             host_tabs: BTreeMap::new(),
             desktop_viewers: BTreeMap::new(),
+            takeover_input: BTreeMap::new(),
+            orphaned_takeovers: BTreeSet::new(),
         }
     }
 }
@@ -260,7 +272,8 @@ impl KernelBrowserActors {
     }
     /// MP-08/MP-11: dialog answers cannot reserve the lane held by the action
     /// that opened them, but still honor both active and pending human takeover.
-    pub(crate) fn check_dialog_takeover(&self, host_tab: &str) -> Result<(), String> {
+    pub(crate) fn check_dialog_takeover(&mut self, host_tab: &str) -> Result<(), String> {
+        self.reclaim_idle_takeovers(Instant::now());
         let tab = InputTarget::BrowserTab(self.tab(host_tab)?);
         let targets = [tab, InputTarget::Desktop];
         if targets
@@ -272,7 +285,7 @@ impl KernelBrowserActors {
                 .iter()
                 .any(|pending| targets.contains(&pending.target))
         {
-            return Err("MD-3: human owns browser input; release takeover first".into());
+            return Err(TAB_TAKEN_OVER_REFUSAL.into());
         }
         Ok(())
     }
@@ -285,7 +298,10 @@ impl KernelBrowserActors {
         params: &Value,
     ) -> Result<(String, Arc<BrowserCancellation>), String> {
         self.retire_lapsed_desktop_viewers(Instant::now());
+        self.reclaim_idle_takeovers(Instant::now());
         self.register(actor.clone())?;
+        self.adopt_orphaned_takeovers(&actor.actor_id);
+        self.note_person_input(&actor.actor_id);
         let mut request = if let Some(host_tab) = params["tab_id"].as_str() {
             let tab = self.tab(host_tab)?;
             let binding = self
@@ -377,9 +393,7 @@ impl KernelBrowserActors {
             .map_err(|_| "MD-3: browser action admission failed")?
         {
             ActionAdmission::Accepted { action_id } => action_id,
-            ActionAdmission::RejectedTakeover { .. } => {
-                return Err("MD-3: human owns browser input; release takeover first".into())
-            }
+            ActionAdmission::RejectedTakeover { .. } => return Err(TAB_TAKEN_OVER_REFUSAL.into()),
             _ => return Err("MD-3: browser action lane busy".into()),
         };
         if let (Some(x), Some(y)) = (input["x"].as_u64(), input["y"].as_u64()) {
@@ -516,7 +530,11 @@ impl KernelBrowserActors {
         }
         let tab = self.tab(host_tab)?;
         self.retire_lapsed_desktop_viewers(Instant::now());
+        self.reclaim_idle_takeovers(Instant::now());
         self.register(actor.clone())?;
+        self.adopt_orphaned_takeovers(&actor.actor_id);
+        self.takeover_input
+            .insert(actor.actor_id.clone(), Instant::now());
         let effect = self
             .ledger
             .request_takeover(
@@ -544,6 +562,7 @@ impl KernelBrowserActors {
             return Err("MD-3: stale browser generation".into());
         }
         let target = InputTarget::BrowserTab(self.tab(host_tab)?);
+        self.reclaim_idle_takeovers(Instant::now());
         // The person is one party to the kernel: a viewer that reconnected or reloaded is a new actor, and
         // returns the control an earlier connection of the same person took. An agent never releases it.
         let agent_requests = self
@@ -560,7 +579,9 @@ impl KernelBrowserActors {
             .map_or(actor_id.to_string(), |owner| owner.actor_id);
         self.ledger
             .release(&holder, &target)
-            .map_err(|_| "MD-3: only the input owner may release takeover".into())
+            .map_err(|_| "MD-3: only the input owner may release takeover")?;
+        self.end_takeover_bookkeeping(&holder);
+        Ok(())
     }
     fn is_human(&self, actor_id: &str) -> bool {
         self.actors
@@ -658,7 +679,12 @@ impl KernelBrowserActors {
     pub(crate) fn disconnect(&mut self, actor_id: &str) {
         self.desktop_viewers
             .retain(|_, (actor, _)| actor != actor_id);
-        self.ledger.release_actor_input(actor_id);
+        let keeps_takeover = self.is_human(actor_id) && self.ledger.owns_tab(actor_id);
+        if keeps_takeover {
+            self.ledger.release_actor_input_keeping_tabs(actor_id);
+        } else {
+            self.ledger.release_actor_input(actor_id);
+        }
         for action in self
             .ledger
             .actions()
@@ -669,19 +695,131 @@ impl KernelBrowserActors {
                 cancellation.request_cancel();
             }
         }
-        self.actors.remove(actor_id);
-        self.seen.remove(actor_id);
+        if keeps_takeover {
+            if let Some(remaining) = self.live_viewer_other_than(actor_id) {
+                self.transfer_takeover(actor_id, &remaining);
+                self.actors.remove(actor_id);
+                self.seen.remove(actor_id);
+            } else {
+                self.orphaned_takeovers.insert(actor_id.into());
+            }
+        } else {
+            self.takeover_input.remove(actor_id);
+            self.actors.remove(actor_id);
+            self.seen.remove(actor_id);
+        }
         self.pointers.remove(actor_id);
         self.pointer_tabs.remove(actor_id);
+    }
+
+    /// An authenticated viewer of the person connected, possibly under a new identity: it continues
+    /// the Tab takeovers whose viewer went away, until the person goes idle.
+    pub(crate) fn viewer_connected(&mut self, actor: EnvironmentActor) {
+        let actor_id = actor.actor_id.clone();
+        if self.register(actor).is_ok() {
+            self.adopt_orphaned_takeovers(&actor_id);
+        }
+    }
+
+    /// A viewer of the person that is still connected: it continues a takeover whose own viewer left,
+    /// so a takeover is only orphaned when no viewer of the person is left.
+    fn live_viewer_other_than(&self, actor_id: &str) -> Option<String> {
+        self.actors
+            .iter()
+            .find(|(id, actor)| {
+                id.as_str() != actor_id
+                    && actor.kind == EnvironmentActorKind::Human
+                    && !self.orphaned_takeovers.contains(id.as_str())
+            })
+            .map(|(id, _)| id.clone())
+    }
+
+    /// A renewed authenticated connection no longer has an orphan deadline.
+    fn reconnect(&mut self, actor_id: &str) {
+        self.orphaned_takeovers.remove(actor_id);
+    }
+
+    /// The person is one party to the kernel: a viewer of theirs that connects after the one that took a
+    /// Tab went away continues that takeover instead of finding the Tab fenced against itself.
+    fn adopt_orphaned_takeovers(&mut self, actor_id: &str) {
+        if !self.is_human(actor_id) {
+            return;
+        }
+        self.reconnect(actor_id);
+        let orphans = self
+            .orphaned_takeovers
+            .iter()
+            .filter(|orphan| orphan.as_str() != actor_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        for orphan in orphans {
+            self.transfer_takeover(&orphan, actor_id);
+            self.end_takeover_bookkeeping(&orphan);
+        }
+    }
+    /// A replacement viewer inherits the person's input time; connecting never renews it.
+    fn transfer_takeover(&mut self, from: &str, to: &str) {
+        self.ledger.transfer_tab_ownership(from, to);
+        if let Some(last) = self.takeover_input.remove(from) {
+            self.takeover_input
+                .entry(to.into())
+                .and_modify(|current| *current = (*current).max(last))
+                .or_insert(last);
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn elapse_idle_takeovers(&mut self) {
+        for last in self.takeover_input.values_mut() {
+            *last = Instant::now() - TAKEOVER_IDLE_TIMEOUT;
+        }
+    }
+    /// Input from the person (pointer, keyboard, scroll, navigation) is the only thing that keeps a takeover.
+    /// Frames, state reads and reconnects of their viewer never reach this.
+    fn note_person_input(&mut self, actor_id: &str) {
+        if self.is_human(actor_id) && self.ledger.owns_tab(actor_id) {
+            self.takeover_input.insert(actor_id.into(), Instant::now());
+        }
+    }
+    /// Returns control to the agent for every Tab whose person has sent no input for `TAKEOVER_IDLE_TIMEOUT`,
+    /// with or without a viewer of theirs connected. True when a takeover ended.
+    pub(crate) fn reclaim_idle_takeovers(&mut self, now: Instant) -> bool {
+        let idle = self
+            .takeover_input
+            .iter()
+            .filter(|(_, last)| now.saturating_duration_since(**last) >= TAKEOVER_IDLE_TIMEOUT)
+            .map(|(actor, _)| actor.clone())
+            .collect::<Vec<_>>();
+        let mut ended = false;
+        for actor in idle {
+            ended |= self.ledger.has_tab_takeover(&actor);
+            self.ledger.release_tab_input(&actor);
+            self.end_takeover_bookkeeping(&actor);
+        }
+        ended
+    }
+    /// Keep the idle clock until the person's last held or pending Tab takeover ends.
+    fn end_takeover_bookkeeping(&mut self, actor_id: &str) {
+        if self.ledger.has_tab_takeover(actor_id) {
+            return;
+        }
+        self.takeover_input.remove(actor_id);
+        if self.orphaned_takeovers.remove(actor_id) {
+            self.actors.remove(actor_id);
+            self.seen.remove(actor_id);
+        }
     }
 
     pub(crate) fn opened_tab(&mut self, actor: EnvironmentActor, tab: &str) {
         self.tab_activity.opened(actor, tab);
     }
+    pub(crate) fn set_attention(&mut self, tabs: std::collections::BTreeSet<String>) {
+        self.tab_activity.set_attention(tabs);
+    }
     pub(crate) fn agent_tab_groups(&self) -> Value {
         self.tab_activity.agent_groups()
     }
-    pub(crate) fn project_tabs(&self, state: &mut Value) {
+    pub(crate) fn project_tabs(&mut self, state: &mut Value) {
+        self.reclaim_idle_takeovers(Instant::now());
         self.tab_activity.project(state);
         let held = self.person_held_tabs();
         if let Some(tabs) = state.get_mut("tabs").and_then(Value::as_array_mut) {
@@ -753,7 +891,7 @@ mod tests {
     #[test]
     fn mp10_takeover_is_listed_on_the_tab_for_a_viewer_that_reloads() {
         let mut model = ready();
-        let listed = |model: &KernelBrowserActors| {
+        let listed = |model: &mut KernelBrowserActors| {
             let mut state =
                 json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"},{"tab_id":"host-tab-b"}]});
             model.project_tabs(&mut state);
@@ -762,32 +900,292 @@ mod tests {
                 state["tabs"][1]["taken_over"].clone(),
             )
         };
-        assert_eq!(listed(&model), (json!(false), json!(false)));
+        assert_eq!(listed(&mut model), (json!(false), json!(false)));
         model
             .takeover(human("terminal:a"), "host-tab-a", 1)
             .unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(true), json!(false)),
             "the person holds Tab a"
         );
         model.release("terminal:a", "host-tab-a", 1).unwrap();
-        assert_eq!(listed(&model), (json!(false), json!(false)));
+        assert_eq!(listed(&mut model), (json!(false), json!(false)));
         model
             .takeover(human("terminal:a"), "host-tab-a", 1)
             .unwrap();
         model.release("terminal:reloaded", "host-tab-a", 1).unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(false), json!(false)),
             "the person's reloaded viewer returns the control its earlier connection took"
         );
         let (_, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
         assert_eq!(
-            listed(&model),
+            listed(&mut model),
             (json!(false), json!(false)),
             "an agent acting is not a person's takeover"
         );
+    }
+    #[test]
+    fn mp10_takeover_survives_the_viewer_disconnect_and_follows_the_person_to_a_new_connection() {
+        let mut model = ready();
+        let held = |model: &mut KernelBrowserActors| {
+            let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"}]});
+            model.project_tabs(&mut state);
+            state["tabs"][0]["taken_over"].clone()
+        };
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        assert_eq!(
+            held(&mut model),
+            json!(true),
+            "the person still holds the Tab after the viewer went away"
+        );
+        assert!(
+            model.begin(agent(), &input("host-tab-a")).is_err(),
+            "the agent stays fenced while the person's viewer is away"
+        );
+        let (action, _) = model
+            .begin(human("terminal:new"), &input("host-tab-a"))
+            .expect("the person's reconnected viewer acts on the Tab it still holds");
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        assert_eq!(held(&mut model), json!(true));
+        model.release("terminal:new", "host-tab-a", 1).unwrap();
+        assert_eq!(held(&mut model), json!(false));
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_orphaned_takeover_ends_by_return_control_or_when_the_person_goes_idle() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        assert!(!model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT / 2));
+        assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+        assert!(model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT));
+        assert!(model.snapshot()["input_ownership"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(!model.snapshot()["actors"]
+            .to_string()
+            .contains("terminal:old"));
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        model.release("terminal:other", "host-tab-a", 1).unwrap();
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_same_actor_input_or_takeover_renews_its_idle_clock() {
+        for request_takeover in [false, true] {
+            let mut model = ready();
+            let person = human("terminal:viewer");
+            model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            model.disconnect(&person.actor_id);
+            let last = Instant::now() - TAKEOVER_IDLE_TIMEOUT / 2;
+            model.takeover_input.insert(person.actor_id.clone(), last);
+            let deadline = last + TAKEOVER_IDLE_TIMEOUT;
+            if request_takeover {
+                model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            } else {
+                let (action, _) = model.begin(person.clone(), &input("host-tab-a")).unwrap();
+                model.finish(&action, EnvironmentActionTerminal::Completed);
+            }
+            model.reclaim_idle_takeovers(deadline + Duration::from_secs(1));
+            assert!(
+                model.begin(agent(), &input("host-tab-a")).is_err(),
+                "a live viewer must keep the agent fenced past its old orphan deadline"
+            );
+            let (action, _) = model.begin(person.clone(), &input("host-tab-a")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+            model.release(&person.actor_id, "host-tab-a", 1).unwrap();
+        }
+    }
+    #[test]
+    fn mp10_returning_one_orphaned_tab_preserves_the_other_tabs_idle_clock() {
+        for resume_input in [false, true] {
+            let mut model = ready();
+            let person = human("terminal:old");
+            model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            model.takeover(person.clone(), "host-tab-b", 1).unwrap();
+            model.disconnect(&person.actor_id);
+            let last = Instant::now() - TAKEOVER_IDLE_TIMEOUT / 2;
+            model.takeover_input.insert(person.actor_id.clone(), last);
+            let deadline = last + TAKEOVER_IDLE_TIMEOUT;
+            model.release("terminal:reloaded", "host-tab-a", 1).unwrap();
+            assert_eq!(
+                model.takeover_input.get(&person.actor_id),
+                Some(&last),
+                "returning one Tab must leave the remaining Tab recoverable"
+            );
+            let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+            assert!(model.begin(agent(), &input("host-tab-b")).is_err());
+            if resume_input {
+                let (action, _) = model
+                    .begin(human("terminal:reloaded"), &input("host-tab-b"))
+                    .unwrap();
+                model.finish(&action, EnvironmentActionTerminal::Completed);
+                model.reclaim_idle_takeovers(deadline + Duration::from_secs(1));
+                assert!(model.begin(agent(), &input("host-tab-b")).is_err());
+                model.release("terminal:reloaded", "host-tab-b", 1).unwrap();
+            } else {
+                model.reclaim_idle_takeovers(deadline + Duration::from_secs(1));
+            }
+            let (action, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+        }
+    }
+    #[test]
+    fn mp10_an_agent_acts_again_once_the_idle_takeover_has_lapsed() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:old"), "host-tab-a", 1)
+            .unwrap();
+        model.disconnect("terminal:old");
+        assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+        model.takeover_input.insert(
+            "terminal:old".into(),
+            Instant::now() - TAKEOVER_IDLE_TIMEOUT,
+        );
+        let (action, _) = model
+            .begin(agent(), &input("host-tab-a"))
+            .expect("the lapsed takeover no longer fences the agent");
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+    }
+    #[test]
+    fn mp10_takeover_returns_after_three_idle_minutes_even_with_the_viewer_connected() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:viewer"), "host-tab-a", 1)
+            .unwrap();
+        // The viewer stays connected and busy with frames and state reads; none of that reaches the ledger.
+        let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"}]});
+        model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["taken_over"], json!(true));
+        assert!(!model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT / 2));
+        assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+        assert!(model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT));
+        let mut state = json!({"generation":1,"tabs":[{"tab_id":"host-tab-a"}]});
+        model.project_tabs(&mut state);
+        assert_eq!(state["tabs"][0]["taken_over"], json!(false));
+        assert!(
+            model.snapshot()["actors"]
+                .to_string()
+                .contains("terminal:viewer"),
+            "the connected viewer stays registered"
+        );
+        let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        assert!(
+            model
+                .takeover(human("terminal:viewer"), "host-tab-a", 1)
+                .is_ok(),
+            "the person can take over again"
+        );
+    }
+    #[test]
+    fn mp10_pending_takeover_keeps_its_idle_clock_after_another_tab_is_returned() {
+        for finish_before_timeout in [true, false] {
+            let mut model = ready();
+            let person = human("terminal:viewer");
+            model.takeover(person.clone(), "host-tab-a", 1).unwrap();
+            let (action, cancellation) = model.begin(agent(), &input("host-tab-b")).unwrap();
+            assert_eq!(
+                model.takeover(person, "host-tab-b", 1).unwrap(),
+                TakeoverOutcome::CancellationRequired {
+                    action_ids: vec![action.clone()]
+                }
+            );
+            assert!(cancellation.requested());
+            model.release("terminal:viewer", "host-tab-a", 1).unwrap();
+            if finish_before_timeout {
+                model.finish(&action, EnvironmentActionTerminal::Cancelled);
+            }
+            assert!(
+                model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT),
+                "the pending takeover expires whether cancellation has finished or not"
+            );
+            if !finish_before_timeout {
+                model.finish(&action, EnvironmentActionTerminal::Cancelled);
+            }
+            assert!(model.snapshot()["pending_input_takeovers"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            assert!(model.snapshot()["input_ownership"]
+                .as_array()
+                .unwrap()
+                .is_empty());
+            let (action, _) = model.begin(agent(), &input("host-tab-b")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+        }
+    }
+    #[test]
+    fn mp10_replacement_viewers_keep_the_original_idle_clock() {
+        for already_connected in [false, true] {
+            let mut model = ready();
+            model
+                .takeover(human("terminal:old"), "host-tab-a", 1)
+                .unwrap();
+            let last = Instant::now() - TAKEOVER_IDLE_TIMEOUT + Duration::from_secs(5);
+            model.takeover_input.insert("terminal:old".into(), last);
+            if already_connected {
+                model.viewer_connected(human("terminal:new"));
+            }
+            model.disconnect("terminal:old");
+            if !already_connected {
+                model.viewer_connected(human("terminal:new"));
+            }
+            assert_eq!(model.takeover_input.get("terminal:new"), Some(&last));
+            assert!(model.begin(agent(), &input("host-tab-a")).is_err());
+            assert!(model.reclaim_idle_takeovers(last + TAKEOVER_IDLE_TIMEOUT));
+            let (action, _) = model.begin(agent(), &input("host-tab-a")).unwrap();
+            model.finish(&action, EnvironmentActionTerminal::Completed);
+        }
+    }
+    #[test]
+    fn mp10_the_persons_input_restarts_the_idle_clock() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:viewer"), "host-tab-a", 1)
+            .unwrap();
+        model.takeover_input.insert(
+            "terminal:viewer".into(),
+            Instant::now() - TAKEOVER_IDLE_TIMEOUT + Duration::from_secs(5),
+        );
+        let (action, _) = model
+            .begin(human("terminal:viewer"), &input("host-tab-a"))
+            .unwrap();
+        model.finish(&action, EnvironmentActionTerminal::Completed);
+        assert!(
+            !model.reclaim_idle_takeovers(Instant::now() + Duration::from_secs(60)),
+            "input a minute ago keeps the takeover"
+        );
+        assert!(model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT));
+    }
+    #[test]
+    fn mp10_the_agents_refusal_names_the_wait_it_should_declare() {
+        let mut model = ready();
+        model
+            .takeover(human("terminal:viewer"), "host-tab-a", 1)
+            .unwrap();
+        let refusal = model
+            .begin(agent(), &input("host-tab-a"))
+            .err()
+            .expect("the agent is fenced");
+        assert!(refusal.contains("human_takeover") && refusal.contains("chariox.events.blocked"));
     }
     #[test]
     fn mp08_chrome_input_tracks_home_commit_without_retargeting_or_replay() {
@@ -871,6 +1269,7 @@ mod tests {
             model.finish(&action, EnvironmentActionTerminal::Cancelled);
             model.takeover(human(&id), "host-tab-a", 1).unwrap();
             model.disconnect(&id);
+            model.reclaim_idle_takeovers(Instant::now() + TAKEOVER_IDLE_TIMEOUT);
             assert!(model.snapshot()["input_ownership"]
                 .as_array()
                 .unwrap()
@@ -951,6 +1350,36 @@ mod tests {
             .snapshot()
             .to_string()
             .contains("synthetic-private-value"));
+    }
+
+    #[test]
+    fn an_agent_group_names_the_tabs_a_person_is_asked_to_act_in() {
+        let mut model = ready();
+        model.opened_tab(agent(), "host-tab-a");
+        model.opened_tab(agent(), "host-tab-b");
+        assert_eq!(
+            model
+                .agent_tab_groups()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|g| g["needs_person"].clone())
+                .collect::<Vec<_>>(),
+            vec![json!(false), json!(false)]
+        );
+        model.set_attention(["host-tab-b".to_string()].into_iter().collect());
+        let groups = model.agent_tab_groups();
+        let needs = |tab: &str| {
+            groups
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|g| g["tab_id"] == tab)
+                .unwrap()["needs_person"]
+                .clone()
+        };
+        assert_eq!(needs("host-tab-a"), json!(false));
+        assert_eq!(needs("host-tab-b"), json!(true));
     }
 }
 

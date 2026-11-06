@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { addSshMachineRequest, removeSshMachineRequest, sshMachineMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
+import { issueOwnMachineEnrollmentRequest, ownMachineEnrollmentMinimumProtocolVersion, acceptAppHostActionRequest, appHostActionMinimumProtocolVersion, restoreAppDataSnapshotRequest, startSliceRequest, submitRoomEnvironmentBrowserActionRequest } from "@chariox/kernel-client/ipc-requests"
 import { requireKernelFeatureProtocol } from "./kernel-feature-minimum.js"
 
 test("MP-08 MP-10 native active steering requires allocated protocol 491", () => {
@@ -32,16 +32,11 @@ test("gates browser history and tab lifecycle by their separate existing minima"
 })
 
 test("new optional fields are gated without refusing compatible older shapes", () => {
-  const oldRequest = { CreateManagedEnvironment: {} }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(oldRequest, 341))
-  assert.throws(() => requireKernelFeatureProtocol({ CreateManagedEnvironment: { managedRepositoryRoot: "/project" } }, 341), /needs protocol ≥342; this kernel is 341/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol(startSliceRequest("slice", false), 370))
   assert.throws(() => requireKernelFeatureProtocol({ StartSlice: { interactive: true } }, 370), /needs protocol ≥371; this kernel is 370/)
   assert.throws(() => requireKernelFeatureProtocol({ RequestNativeProviderTurnInteraction: { origin: {} } }, 388), /needs protocol ≥405; this kernel is 388/)
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ JoinTerminalPairingLink: { pairing_link: "pair" } }, 348))
   assert.throws(() => requireKernelFeatureProtocol({ JoinTerminalPairingLink: { pairing_link: "pair", public_key_thumbprint: "thumbprint" } }, 348), /needs protocol ≥349; this kernel is 348/)
-  assert.throws(() => requireKernelFeatureProtocol({ GetDisposableWorker: { homeKernelId: "k", allocationId: "a" } }, 366), /Disposable worker control needs protocol ≥367; this kernel is 366/)
-  assert.throws(() => requireKernelFeatureProtocol({ KeepManagedEnvironmentRunning: { environmentId: "e" } }, 366), /Managed environment keep running needs protocol ≥367; this kernel is 366/)
 })
 
 test("unknown versions and unrelated requests retain existing transport behavior", () => {
@@ -76,14 +71,6 @@ test("MP-08/MP-11 owner context copy requires its allocated C5 protocol 520", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 520))
 })
 
-test("MP-08/MP-10/MP-11 retrying a held notification delivery requires protocol 670", () => {
-  const request = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: null, queue_ref: null, retry_delivery: true } }
-  assert.throws(() => requireKernelFeatureProtocol(request, 669), /Held notification retry needs protocol ≥670/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, 670))
-  const edit = { UpdateQueuedWorkflowPrompt: { session_id: "s", queue_item_ref: "q", prompt: "x", queue_ref: null } }
-  assert.doesNotThrow(() => requireKernelFeatureProtocol(edit, 435))
-})
-
 test("integration received-event listing and replay require protocol 911", () => {
   for (const request of [{ ListEventConnectionEvents: { connection_id: "c", limit: 50 } },
     { ReplayEventConnectionEvent: { connection_id: "c", delivery_id: "d" } }]) {
@@ -92,14 +79,12 @@ test("integration received-event listing and replay require protocol 911", () =>
   }
 })
 
-// MP-08 / MP-10: VERSION(P01).
-test("standalone and reserved Project Environment operations require protocol 487", () => {
-  for (const kind of ["GetProjectEnvironment", "ApplyProjectEnvironment", "PreviewEnvironmentImport", "CommitEnvironmentImport"]) {
-    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 472), /Project Environment needs protocol ≥487/)
-    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 487))
+test("the Environment requests require protocol 982", () => {
+  for (const kind of ["GetProjectEnvironment", "SaveProjectEnvironment", "SetProjectEnvironmentSecret", "RunProjectEnvironmentSetup", "ImportProjectEnvironmentEntries", "DraftProjectEnvironment", "RunRemoteProjectEnvironmentSetup", "RemoteEnvironmentOperation", "CheckProjectEnvironment", "ResolveEnvironmentProposal", "GetEnvironmentOperation", "CancelEnvironmentOperation"]) {
+    assert.throws(() => requireKernelFeatureProtocol({ [kind]: {} }, 981), /Project Environment needs protocol ≥982/)
+    assert.doesNotThrow(() => requireKernelFeatureProtocol({ [kind]: {} }, 982))
   }
 })
-
 
 test("MD-stack user App and browser surfaces require union protocol 443", () => {
   for (const name of ["OpenUserAppView", "ListUserAppViews", "CloseUserAppView", "GetUserAppViewFrontend", "CallUserAppView", "SubscribeUserAppViews", "AnswerUserDomainInteraction"]) {
@@ -120,17 +105,6 @@ test("MP-08 MP-10 exact prompt cancellation rejects old and unknown kernels", ()
   assert.doesNotThrow(() => requireKernelFeatureProtocol({ CancelActivePrompt: {} }, 490))
 })
 
-test("MP-08 / MP-11 automation inject refuses 490 before transport", () => {
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{}}, 490))
-  assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 490), /needs protocol ≥491/)
-  assert.doesNotThrow(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, 491))
-})
-
-test("MP-08 / MP-11 automation injection requires a confirmed kernel generation", () => {
-  for (const version of [undefined, 0, NaN]) assert.throws(() => requireKernelFeatureProtocol({ConfigureAppAutomation:{delivery_mode:"inject"}}, version), /kernel support unknown.*491/)
-})
-
-// MP-08/MP-10/MP-11: only the allocated resume contract may cross transport.
 test("MP-08/MP-10/MP-11 display resumption refuses unknown and pre-525 kernels", () => {
   for (const op of ["display_suspend", "display_resume"]) {
     const request = { KernelBrowser: { command: { op, subscription_id: "old", generation: 7 } } }
@@ -147,14 +121,12 @@ test("MP-08/MP-10/MP-11 shared Room offers require525 before an older kernel sil
  assert.doesNotThrow(()=>requireKernelFeatureProtocol(request,525))
 })
 
-// MP-07 / MP-08 / MP-11: SSH variants first shipped in the allocated C5 union.
-test("MP-07 / MP-08 / MP-11 SSH machine operations refuse older kernels before transport", () => {
-  for (const request of [addSshMachineRequest("linux-lan"), removeSshMachineRequest("owned-install")]) {
-    for (const version of [491, sshMachineMinimumProtocolVersion - 1]) {
-      assert.throws(() => requireKernelFeatureProtocol(request, version), /SSH machine management needs protocol ≥520.*update the kernel/)
-    }
-    assert.doesNotThrow(() => requireKernelFeatureProtocol(request, sshMachineMinimumProtocolVersion))
+test("own machine enrollment refuses older kernels before transport", () => {
+  const request = issueOwnMachineEnrollmentRequest("build box")
+  for (const version of [491, ownMachineEnrollmentMinimumProtocolVersion - 1]) {
+    assert.throws(() => requireKernelFeatureProtocol(request, version), /own machine enrollment needs protocol ≥971.*update the kernel/)
   }
+  assert.doesNotThrow(() => requireKernelFeatureProtocol(request, ownMachineEnrollmentMinimumProtocolVersion))
 })
 
 // An older kernel ignores `abort_pending` and would Return the agent instead of cancelling its Move.

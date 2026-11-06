@@ -97,7 +97,7 @@ struct PersistedReleaseDecision {
 struct ConfirmedActivity {
     cloud_sequence: u32,
     local_transition_sequence: u64,
-    running_agent_count: u8,
+    working_agent_count: u8,
     changed_at_ms: u64,
 }
 
@@ -254,7 +254,7 @@ impl ManagedKernelQuiescenceGate {
         inner.confirmed_activity = Some(ConfirmedActivity {
             cloud_sequence,
             local_transition_sequence,
-            running_agent_count: observation.running_agent_count,
+            working_agent_count: observation.working_agent_count,
             changed_at_ms: observation.changed_at_ms,
         });
     }
@@ -315,7 +315,7 @@ impl ManagedKernelQuiescenceGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (transition_sequence, observation) = current()?;
-        if observation.running_agent_count != 0 {
+        if observation.working_agent_count != 0 {
             return Ok(false);
         }
         let mut inner = self
@@ -326,7 +326,7 @@ impl ManagedKernelQuiescenceGate {
         if !confirmed.is_some_and(|confirmed| {
             confirmed.cloud_sequence == challenge.idle_sequence
                 && confirmed.local_transition_sequence == transition_sequence
-                && confirmed.running_agent_count == 0
+                && confirmed.working_agent_count == 0
                 && confirmed.changed_at_ms == observation.changed_at_ms
         }) {
             return Ok(false);
@@ -474,7 +474,7 @@ impl ManagedKernelQuiescenceGate {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (transition_sequence, observation) = current()?;
-        if observation.running_agent_count != 0 {
+        if observation.working_agent_count != 0 {
             return Err(quiescence_error(
                 "pre-dispatch keep-running release is not bound to current idle activity",
             ));
@@ -503,7 +503,7 @@ impl ManagedKernelQuiescenceGate {
         if !current_confirmation.is_some_and(|confirmed| {
             confirmed.cloud_sequence == challenge.idle_sequence
                 && confirmed.local_transition_sequence == transition_sequence
-                && confirmed.running_agent_count == 0
+                && confirmed.working_agent_count == 0
                 && confirmed.changed_at_ms == observation.changed_at_ms
         }) {
             return Err(quiescence_error(
@@ -601,10 +601,7 @@ impl super::KernelRuntimeState {
         self.owned.room_execs.report_work();
         self.owned.room_terminals.report_work();
         gate.reserve_if_current(challenge, || {
-            let running_agent_count = self.owned.managed_running_agent_count_unlocked();
-            self.owned
-                .managed_activity_transitions
-                .current_observation_with_sequence(running_agent_count)
+            self.owned.current_managed_activity_observation_unlocked()
         })
     }
 
@@ -622,10 +619,7 @@ impl super::KernelRuntimeState {
         self.owned.room_execs.report_work();
         self.owned.room_terminals.report_work();
         gate.apply_release(challenge, outcome, result_sequence, || {
-            let running_agent_count = self.owned.managed_running_agent_count_unlocked();
-            self.owned
-                .managed_activity_transitions
-                .current_observation_with_sequence(running_agent_count)
+            self.owned.current_managed_activity_observation_unlocked()
         })
     }
 }
@@ -962,7 +956,7 @@ fn persist_quiescence_state(
 
 fn quiescence_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
-        operation: "manage kernel auto-stop quiescence",
+        operation: "manage kernel quiescence",
         message: message.into(),
     }
 }
@@ -992,7 +986,13 @@ mod tests {
         let transitions =
             ManagedActivityTransitionState::new(store.clone(), Some("kernel-1".into()));
         transitions
-            .record_current_transition(|| (0, 0, 1_000))
+            .record_current_transition(|| {
+                (
+                    0,
+                    crate::runtime::state::ManagedActivityCounts::in_flight(0),
+                    1_000,
+                )
+            })
             .expect("persist initial idle observation");
         let mutation_lock = Arc::new(Mutex::new(()));
         let gate = ManagedKernelQuiescenceGate::restore(
@@ -1064,7 +1064,7 @@ mod tests {
             7,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1089,15 +1089,27 @@ mod tests {
             7,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
         transitions
-            .record_current_transition(|| (1, 1, 2_000))
+            .record_current_transition(|| {
+                (
+                    1,
+                    crate::runtime::state::ManagedActivityCounts::in_flight(1),
+                    2_000,
+                )
+            })
             .expect("persist busy transition");
         transitions
-            .record_current_transition(|| (2, 0, 3_000))
+            .record_current_transition(|| {
+                (
+                    2,
+                    crate::runtime::state::ManagedActivityCounts::in_flight(0),
+                    3_000,
+                )
+            })
             .expect("persist new idle transition");
 
         assert!(!gate
@@ -1132,7 +1144,7 @@ mod tests {
             challenge.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1224,7 +1236,7 @@ mod tests {
             challenge.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1311,7 +1323,7 @@ mod tests {
             challenge.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1347,7 +1359,7 @@ mod tests {
             canceled.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1398,7 +1410,7 @@ mod tests {
             canceled.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1516,7 +1528,7 @@ mod tests {
             challenge.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );
@@ -1524,7 +1536,13 @@ mod tests {
             let _admission = gate.admission_guard().expect("idle admission is open");
             let _mutation = mutation_lock.lock().expect("activity lock");
             transitions
-                .record_current_transition(|| (1, 1, 2_000))
+                .record_current_transition(|| {
+                    (
+                        1,
+                        crate::runtime::state::ManagedActivityCounts::in_flight(1),
+                        2_000,
+                    )
+                })
                 .expect("admitted work records its activity transition");
         }
         assert!(!gate
@@ -1545,7 +1563,7 @@ mod tests {
             challenge.idle_sequence,
             1,
             ManagedActivityObservation {
-                running_agent_count: 0,
+                working_agent_count: 0,
                 changed_at_ms: 1_000,
             },
         );

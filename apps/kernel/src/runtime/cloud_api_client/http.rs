@@ -95,36 +95,6 @@ where
         })?
 }
 
-pub(crate) async fn get_cloud_json<T>(api_url: String, path: String) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || get_cloud_json_blocking(api_url, &path))
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get cloud relay json",
-            message: error.to_string(),
-        })?
-}
-
-pub(crate) async fn get_cloud_json_authenticated<T>(
-    api_url: String,
-    path: String,
-    bearer_token: String,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        get_cloud_json_authenticated_blocking(api_url, &path, &bearer_token)
-    })
-    .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "get authenticated cloud json",
-        message: error.to_string(),
-    })?
-}
-
 pub(crate) async fn get_cloud_kernel_directory(
     profile: &crate::config::PersistedCloudRelayProfile,
 ) -> Result<serde_json::Value, DaemonError> {
@@ -303,47 +273,6 @@ where
         operation: "decode cloud relay response",
         message: error.to_string(),
     })
-}
-
-fn get_cloud_json_blocking<T>(api_url: String, path: &str) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let url = format!("{api_url}{path}");
-    let agent = crate::outbound_dial::agent_builder()
-        .timeout(CLOUD_API_REQUEST_TIMEOUT)
-        .build();
-    let response = agent.get(&url).call().map_err(cloud_transport_error)?;
-    let payload = response
-        .into_string()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "read cloud relay response",
-            message: error.to_string(),
-        })?;
-    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
-        operation: "decode cloud relay response",
-        message: error.to_string(),
-    })
-}
-
-fn get_cloud_json_authenticated_blocking<T>(
-    api_url: String,
-    path: &str,
-    bearer_token: &str,
-) -> Result<T, DaemonError>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let url = format!("{api_url}{path}");
-    let agent = crate::outbound_dial::agent_builder()
-        .timeout(CLOUD_API_REQUEST_TIMEOUT)
-        .build();
-    let response = agent
-        .get(&url)
-        .set("authorization", &format!("Bearer {bearer_token}"))
-        .call()
-        .map_err(cloud_transport_error)?;
-    decode_cloud_response(response)
 }
 
 fn post_cloud_json_authenticated_blocking<T>(

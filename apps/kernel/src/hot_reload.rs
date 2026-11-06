@@ -7,6 +7,7 @@
 //! (clients, the relay, idle provider processes) comes back as after any
 //! restart.
 
+use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -20,7 +21,7 @@ use crate::room_terminal::{RoomTerminalService, TerminalHandover};
 
 /// The handover this program writes and reads. A new program must print the
 /// same number for `--handover-format` before this one hands over to it.
-pub const HANDOVER_FORMAT: u32 = 12;
+pub const HANDOVER_FORMAT: u32 = 13;
 const HANDOVER_ENV: &str = "CHARIOX_HANDOVER";
 const VERIFY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -39,8 +40,14 @@ struct Handover {
     // Focus and grants list agents' user-domain tools: a provider that listed
     // them must not see its tools change.
     user_domain: crate::runtime::user_domain_access::AccessHandover,
+    // Provider runs the owner cut off from the gateway: a handed-over run keeps its
+    // id and tool token, so the revocation has to survive the swap with it.
+    revoked_reach_runs: Vec<String>,
     // A pipe holding the providers' launch credentials: they stay in memory.
     credentials_fd: Option<i32>,
+    // A memory file holding the unlocked Vault keys, so a program update does
+    // not lock the Vault again. Keys never reach the handover file.
+    vault_fd: Option<i32>,
     listeners: BTreeMap<String, i32>,
 }
 
@@ -124,11 +131,16 @@ struct Start {
 }
 
 static START: OnceLock<Start> = OnceLock::new();
+static RECEIVED_ADMISSION: Mutex<Vec<crate::runtime::process_resources::HeldCommand>> =
+    Mutex::new(Vec::new());
+static RECEIVED_JOBS: Mutex<Vec<crate::runtime::process_resources::ReleasedJobs>> =
+    Mutex::new(Vec::new());
 static RECEIVED_TERMINALS: Mutex<Vec<TerminalHandover>> = Mutex::new(Vec::new());
 static RECEIVED_PROVIDERS: Mutex<Vec<ProviderHandover>> = Mutex::new(Vec::new());
 static RECEIVED_ATTACHMENTS: Mutex<Vec<AttachmentHandover>> = Mutex::new(Vec::new());
 static RECEIVED_USER_DOMAIN: Mutex<Option<crate::runtime::user_domain_access::AccessHandover>> =
     Mutex::new(None);
+static RECEIVED_REVOKED_REACH_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 // Claimed by a new run of the same agent, until its runtime adopts the process.
 static ADOPTING: Mutex<BTreeMap<String, HandedOverProcess>> = Mutex::new(BTreeMap::new());
 
@@ -196,13 +208,17 @@ pub fn receive() {
     if let Some(fd) = handover.credentials_fd {
         receive_credentials(fd, &mut handover.providers);
     }
+    if let Some(fd) = handover.vault_fd {
+        receive_vault_unlocks(fd);
+    }
     for fd in handover.listeners.values() {
         set_close_on_exec(*fd, true);
     }
     *lock(&INHERITED_LISTENERS) = std::mem::take(&mut handover.listeners);
-    // Before any process is watched again, so its first sample finds them.
-    crate::runtime::process_resources::adopt_admission(std::mem::take(&mut handover.admission));
-    crate::runtime::process_resources::adopt_released(std::mem::take(&mut handover.released_jobs));
+    // Reading bootstrap environment must not start sampler/watchdog workers.
+    // Activate these only after startup finishes consuming the environment.
+    *lock(&RECEIVED_ADMISSION) = std::mem::take(&mut handover.admission);
+    *lock(&RECEIVED_JOBS) = std::mem::take(&mut handover.released_jobs);
     crate::logging::info_with_fields(
         "hot_reload.receive",
         "kernel program replaced in place",
@@ -216,6 +232,16 @@ pub fn receive() {
     *lock(&RECEIVED_PROVIDERS) = handover.providers;
     *lock(&RECEIVED_ATTACHMENTS) = handover.attachments;
     *lock(&RECEIVED_USER_DOMAIN) = Some(handover.user_domain);
+    *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
+}
+
+/// Start inherited watches after environment bootstrap, inside the runtime.
+pub fn adopt_received_processes() {
+    let held = std::mem::take(&mut *lock(&RECEIVED_ADMISSION));
+    let jobs = std::mem::take(&mut *lock(&RECEIVED_JOBS));
+    // Admission must precede the first watch sample.
+    crate::runtime::process_resources::adopt_admission(held);
+    crate::runtime::process_resources::adopt_released(jobs);
 }
 
 pub(crate) fn take_terminals() -> Vec<TerminalHandover> {
@@ -239,6 +265,12 @@ pub(crate) fn take_attachments() -> Vec<crate::attachment::RuntimeAttachment> {
 
 pub(crate) fn take_user_domain() -> Option<crate::runtime::user_domain_access::AccessHandover> {
     lock(&RECEIVED_USER_DOMAIN).take()
+}
+
+pub(crate) fn take_revoked_reach_runs() -> std::collections::HashSet<String> {
+    std::mem::take(&mut *lock(&RECEIVED_REVOKED_REACH_RUNS))
+        .into_iter()
+        .collect()
 }
 
 // Listening sockets stay open across the swap: a connection that arrives
@@ -311,6 +343,39 @@ fn receive_credentials(fd: i32, providers: &mut [ProviderHandover]) {
     }
 }
 
+/// Reads the Vault unlocks the previous program left and closes the
+/// descriptor: it is read once. A Vault that cannot be restored stays locked.
+fn receive_vault_unlocks(fd: i32) {
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    // SAFETY: the previous program named this file for this handover alone.
+    let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let mut body = zeroize::Zeroizing::new(Vec::new());
+    let restored = match file.read_to_end(&mut body) {
+        Ok(_) => crate::secret::adopt_vault_unlocks(&body)
+            .map(drop)
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    if let Err(error) = restored {
+        crate::logging::error_with_fields(
+            "hot_reload.receive",
+            "the Vault unlocks could not be restored; the Vault stays locked",
+            serde_json::json!({ "error": error }),
+        );
+    }
+}
+
+/// Hands the Vault's unlocked keys to the next program in a descriptor it
+/// inherits, or none when the Vault is locked.
+fn send_vault_unlocks() -> std::io::Result<Option<i32>> {
+    let body = crate::secret::hand_over_vault_unlocks().map_err(std::io::Error::other)?;
+    if body.is_empty() {
+        return Ok(None);
+    }
+    memory_file_for_next_program(c"chariox-handover-vault", &body).map(Some)
+}
+
 /// Hands the providers' credentials to the next program in a descriptor it
 /// inherits. Nothing reads it before `exec`, so writing must never wait for a
 /// reader.
@@ -328,16 +393,16 @@ fn send_credentials(providers: &[ProviderHandover]) -> std::io::Result<Option<i3
         })
         .collect();
     let body = zeroize::Zeroizing::new(serde_json::to_vec(&runs)?);
-    credentials_for_next_program(&body).map(Some)
+    memory_file_for_next_program(c"chariox-handover-credentials", &body).map(Some)
 }
 
-/// A file only in memory, of any size, read from its start.
+/// A file only in memory, of any size, read from its start. It carries keys
+/// and credentials: it is never a path on disk.
 #[cfg(target_os = "linux")]
-fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+fn memory_file_for_next_program(name: &std::ffi::CStr, body: &[u8]) -> std::io::Result<i32> {
     use std::io::{Seek, Write};
     use std::os::fd::{FromRawFd, IntoRawFd};
-    let fd =
-        unsafe { libc::memfd_create(c"chariox-handover-credentials".as_ptr(), libc::MFD_CLOEXEC) };
+    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
     if fd < 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -352,13 +417,13 @@ fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
 /// nothing reads it before `exec`. A larger body fails the hot reload instead
 /// of waiting for ever.
 #[cfg(not(target_os = "linux"))]
-fn credentials_for_next_program(body: &[u8]) -> std::io::Result<i32> {
+fn memory_file_for_next_program(_name: &std::ffi::CStr, body: &[u8]) -> std::io::Result<i32> {
     use std::io::Write;
     use std::os::fd::{FromRawFd, IntoRawFd};
     const PIPE_CAPACITY: usize = 16 << 10;
     if body.len() > PIPE_CAPACITY {
         return Err(std::io::Error::other(format!(
-            "{} bytes of launch credentials do not fit a pipe",
+            "{} bytes for the next program do not fit a pipe",
             body.len()
         )));
     }
@@ -403,6 +468,21 @@ pub(crate) fn provider_handed_over(session_id: &str, agent_id: &str) -> bool {
     lock(&RECEIVED_PROVIDERS)
         .iter()
         .any(|p| p.session_id == session_id && p.agent_id.as_deref() == Some(agent_id))
+}
+
+pub(crate) fn handed_over_run_id(
+    session_id: &str,
+    agent_id: Option<&str>,
+    adapter_key: &str,
+) -> Option<String> {
+    lock(&RECEIVED_PROVIDERS)
+        .iter()
+        .find(|p| {
+            p.session_id == session_id
+                && p.agent_id.as_deref() == agent_id
+                && p.process.adapter_key() == adapter_key
+        })
+        .map(|p| p.run_id.clone())
 }
 
 /// A new run of the agent takes the handed-over run's id and tool token, and
@@ -518,6 +598,15 @@ impl PreparedForTests {
         });
         Self
     }
+
+    /// What the next program receives of this swap, as it reads it from the handover file.
+    pub(crate) fn reload(&self) {
+        let prepared = lock(&PREPARED);
+        let body = serde_json::to_vec(&prepared.as_ref().expect("a prepared swap").handover)
+            .expect("the handover serializes");
+        let handover: Handover = serde_json::from_slice(&body).expect("the handover reads back");
+        *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
+    }
 }
 
 #[cfg(test)]
@@ -544,6 +633,13 @@ pub(crate) fn hand_over_claude(
 pub(crate) fn hand_over_user_domain(access: crate::runtime::user_domain_access::AccessHandover) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
         prepared.handover.user_domain = access;
+    }
+}
+
+/// Keeps the owner's gateway revocations of live provider runs for the next program.
+pub(crate) fn hand_over_revoked_reach_runs(runs: impl IntoIterator<Item = String>) {
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared.handover.revoked_reach_runs = runs.into_iter().collect();
     }
 }
 
@@ -670,7 +766,9 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
             released_jobs: Vec::new(),
             admission: Vec::new(),
             user_domain: Default::default(),
+            revoked_reach_runs: Vec::new(),
             credentials_fd: None,
+            vault_fd: None,
             listeners: lock(&LISTENERS).clone(),
         }),
         Ok(Err(error)) => {
@@ -703,6 +801,14 @@ fn replace_program() -> Option<String> {
     match send_credentials(&prepared.handover.providers) {
         Ok(fd) => prepared.handover.credentials_fd = fd,
         Err(error) => return Some(format!("the credentials could not be handed over: {error}")),
+    }
+    match send_vault_unlocks() {
+        Ok(fd) => prepared.handover.vault_fd = fd,
+        Err(error) => {
+            return Some(format!(
+                "the Vault unlocks could not be handed over: {error}"
+            ))
+        }
     }
     if let Err(error) = write_private(&prepared.path, &prepared.handover) {
         return Some(format!("the handover could not be written: {error}"));
@@ -737,6 +843,7 @@ fn replace_program() -> Option<String> {
                 .flat_map(ProviderHandover::fds),
         )
         .chain(prepared.handover.credentials_fd)
+        .chain(prepared.handover.vault_fd)
         .chain(prepared.handover.listeners.values().copied())
         .chain(crate::slice::hand_over_managed_docker_broker())
         .collect();
@@ -834,7 +941,7 @@ async fn verify(start: &Start) -> Result<(), String> {
             .arg("--handover-format")
             .env_clear()
             .kill_on_drop(true)
-            .output(),
+            .bounded_output(),
     )
     .await
     .map_err(|_| "the new kernel program did not answer in time".to_string())?
@@ -874,4 +981,79 @@ pub(crate) fn set_close_on_exec(fd: i32, close: bool) {
         flags & !libc::FD_CLOEXEC
     };
     unsafe { libc::fcntl(fd, libc::F_SETFD, flags) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use crate::secret::{
+        chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
+        create_chariox_encrypted_vault_for_test, unlock_existing_chariox_encrypted_vault,
+        VaultUnlockLease,
+    };
+
+    fn unlocked_vault() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-hot-reload-vault-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
+        unlock_existing_chariox_encrypted_vault(
+            &path,
+            "correct horse battery",
+            VaultUnlockLease::TtlMinutes(30),
+        )
+        .unwrap()
+        .expect("the passphrase opens the test Vault");
+        path
+    }
+
+    fn is_open(fd: i32) -> bool {
+        unsafe { libc::fcntl(fd, libc::F_GETFD) >= 0 }
+    }
+
+    #[test]
+    fn unlocked_vault_survives_the_swap_and_its_descriptor_is_read_once() {
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        let path = unlocked_vault();
+        let before = chariox_encrypted_vault_status(&path).unwrap();
+        let fd = send_vault_unlocks()
+            .unwrap()
+            .expect("an unlocked Vault is handed over");
+        // The new program starts with nothing unlocked.
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+
+        receive_vault_unlocks(fd);
+        assert_eq!(chariox_encrypted_vault_status(&path).unwrap(), before);
+        assert!(!is_open(fd), "the descriptor is consumed and closed");
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+    }
+
+    #[test]
+    fn locked_vault_hands_nothing_over() {
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        assert!(send_vault_unlocks().unwrap().is_none());
+    }
+
+    #[test]
+    fn restart_without_a_handover_starts_locked() {
+        let path = unlocked_vault();
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        std::env::remove_var(HANDOVER_ENV);
+        receive();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+    }
+
+    #[test]
+    fn handover_file_names_the_descriptor_not_the_keys() {
+        let handover = Handover {
+            vault_fd: Some(9),
+            ..Handover::default()
+        };
+        let json = serde_json::to_string(&handover).unwrap();
+        assert!(json.contains("\"vault_fd\":9"));
+        assert!(!json.contains("key"));
+    }
 }

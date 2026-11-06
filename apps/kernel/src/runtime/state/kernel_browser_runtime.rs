@@ -133,6 +133,7 @@ fn browser_tool_params(arguments: serde_json::Value) -> Result<serde_json::Value
             | KernelBrowserCommand::DisplayTakeover { .. }
             | KernelBrowserCommand::DisplayRelease { .. }
             | KernelBrowserCommand::DisplayActors
+            | KernelBrowserCommand::ShowTab { .. }
             | KernelBrowserCommand::Computer { .. }
     ) {
         return Err(host_error(
@@ -724,6 +725,8 @@ impl KernelRuntimeState {
             KernelBrowserDisplayRequest::Release { tab_id, generation } => {
                 host.release_input(&user, &actor, &tab_id, generation)
                     .map_err(host_error)?;
+                // An agent waiting for the person continues now, not at the next periodic sweep.
+                self.schedule_agent_lifecycle_sweep();
                 return Ok(serde_json::json!({"released":true}));
             }
             KernelBrowserDisplayRequest::Actors => {
@@ -1026,9 +1029,9 @@ impl KernelRuntimeState {
         let previous_catalog = self.runtime_catalog_signature_for_agent(&agent);
         let already_loaded = host.is_loaded(&user, agent.id());
         if !host.is_focused(&user, agent.id()) && !already_loaded {
-            let prompt = self.owner_requested_prompt(&agent).ok_or_else(|| {
-                host_error(crate::runtime::user_domain_access::NOT_REQUESTED_LOAD.into())
-            })?;
+            let Some(prompt) = self.owner_requested_prompt(&agent) else {
+                return self.block_for_browser_access(run, &agent).await;
+            };
             let lifetime = crate::runtime::kernel_browser_host::KernelBrowserHost::grant_lifetime(
                 arguments.lifetime_hours,
             )
@@ -1358,5 +1361,19 @@ mod document_tests {
             }}))
             .is_err());
         }
+    }
+
+    #[test]
+    fn an_agent_cannot_make_chrome_show_a_tab() {
+        // Only a person changes the tab Chrome shows (protocol 986).
+        let error = browser_tool_params(
+            serde_json::json!({"command":{"op":"show_tab","tab_id":"t","generation":1}}),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("terminal display adapter required"),
+            "{error}"
+        );
     }
 }

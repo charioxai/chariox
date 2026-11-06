@@ -42,6 +42,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
     assert!(!request_is_cacheable(&uninstall));
     for request in [
         serde_json::json!({"OpenUserAppView":{"installation_id":"todo","host":"client_native"}}),
+        serde_json::json!({"ClientAppView":{"Open":{"installation_id":"installed"}}}),
         serde_json::json!({"CallUserAppView":{"view_id":"user-app-fixture","method":"increment","input":{}}}),
         // The result carries a relay token; a replay creates another link.
         serde_json::json!({"CreateTerminalPairingLink":{}}),
@@ -70,6 +71,7 @@ fn requests_a_replay_runs_again_are_the_ones_the_kernel_client_never_resends() {
             "ControlAppWorker",
             "UninstallApp",
             "OpenUserAppView",
+            "ClientAppView",
             "CallUserAppView",
             "RespondToHandoff",
             "CreateTerminalPairingLink",
@@ -598,6 +600,30 @@ async fn persistent_command_cache_does_not_persist_oversized_results() {
         restored.reserve("command-huge", &fingerprint).await,
         CommandReservation::Dispatch
     ));
+
+    let _ = fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn persistent_command_cache_never_writes_an_own_machine_enrollment_code() {
+    let path = temp_cache_path("own-machine-enrollment-not-persisted");
+    let mut fingerprint = CommandResultCache::fingerprint_from_bytes_for_test(b"enroll");
+    fingerprint.command_type = "machine.enroll".to_string();
+    let cache = CommandResultCache::new_with_persistent_path(path.clone())
+        .expect("persistent cache should initialize");
+    cache
+        .insert_completed_for_test(
+            "command-enroll".to_string(),
+            fingerprint.clone(),
+            Some(serde_json::json!({ "command": "printf '%s\\n' ket_one-time-code" })),
+        )
+        .await;
+
+    let stored = fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        !stored.contains("ket_one-time-code"),
+        "the enrollment code reached the command result file"
+    );
 
     let _ = fs::remove_file(path);
 }

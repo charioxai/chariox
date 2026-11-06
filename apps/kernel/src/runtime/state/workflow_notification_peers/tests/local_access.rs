@@ -12,7 +12,11 @@ fn setup() -> (
     let (_, _, publication) = f.workflow("target");
     let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
     let source = f.source(&workflow);
-    let mut remote = summary(&source);
+    let mut remote = summaries(
+        &runtime.owned.session_store.read(),
+        std::slice::from_ref(&source),
+    )
+    .remove(0);
     remote.source_id = "remote-source".into();
     remote.kernel_id = "other-home".into();
     runtime
@@ -29,14 +33,9 @@ fn setup() -> (
 
 fn attach(f: &Fixture, source: &str, publication: &str) -> LocalDaemonRequest {
     LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-        delivery_mode: NotificationDeliveryMode::Queue,
         session_id: f.session.clone(),
         source_id: source.into(),
         publication_ref: publication.into(),
-        queue_ref: None,
-        ttl_days: 7,
-        events: WorkflowNotificationEvents::Both,
-        filters: serde_json::Value::Null,
     })
 }
 
@@ -60,6 +59,7 @@ async fn shared_access_notification_list_excludes_remote_cache_without_refresh()
     assert_eq!(
         sources
             .iter()
+            .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
             .map(|s| s.source_id.as_str())
             .collect::<Vec<_>>(),
         vec![source.source_id.as_str()],
@@ -81,7 +81,13 @@ async fn shared_access_notification_list_excludes_remote_cache_without_refresh()
         else {
             panic!()
         };
-        assert_eq!(sources.len(), 2);
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
+                .count(),
+            2
+        );
     }
     drop(shared);
     drop(runtime);

@@ -286,10 +286,6 @@ pub struct WorkflowQueuedPrompt {
     dispatched_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workflow_run_id: Option<String>,
-    /// Set while a notification send cannot be proven delivered or undelivered; the item is
-    /// held (never re-sent) until this deadline unless the user retries or discards it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    delivery_uncertain_until_ms: Option<u64>,
 }
 
 pub(crate) struct WorkflowQueuedPromptInput {
@@ -330,7 +326,6 @@ impl WorkflowQueuedPrompt {
             updated_at_ms: now,
             dispatched_at_ms: None,
             workflow_run_id: None,
-            delivery_uncertain_until_ms: None,
         }
     }
 
@@ -361,51 +356,6 @@ impl WorkflowQueuedPrompt {
         })
     }
 
-    pub(crate) fn notification_injection_pending(&self) -> bool {
-        self.publication_invocation.as_ref().is_some_and(|i| {
-            matches!(i.transport.as_str(), "app_event" | "workflow_notification")
-                && i.caller
-                    .get("delivery_mode")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("inject")
-                && matches!(
-                    self.status,
-                    WorkflowQueuedPromptStatus::Queued | WorkflowQueuedPromptStatus::Running
-                )
-        })
-    }
-    pub fn delivery_uncertain_until_ms(&self) -> Option<u64> {
-        self.delivery_uncertain_until_ms
-    }
-    pub(crate) fn notification_deadline_ms(&self) -> Option<u64> {
-        self.publication_invocation
-            .as_ref()?
-            .input
-            .get("deadline_ms")?
-            .as_u64()
-    }
-    /// A durable send intent exists, so neither a restart nor an ended turn proves the
-    /// notification did not land.
-    pub(crate) fn notification_send_unconfirmed(&self) -> bool {
-        self.status == WorkflowQueuedPromptStatus::Running
-            && self.notification_injection_pending()
-            && self
-                .publication_invocation
-                .as_ref()
-                .and_then(|i| i.caller.get("notification_steer"))
-                .is_some_and(|steer| {
-                    steer.get("remote_uncertain").is_some() || steer.get("submit_epoch").is_some()
-                })
-    }
-    pub(crate) fn set_delivery_uncertain_until(&mut self, deadline_ms: u64) {
-        self.delivery_uncertain_until_ms = Some(deadline_ms);
-        self.updated_at_ms = unix_epoch_ms();
-    }
-    pub(crate) fn notification_invocation_mut(
-        &mut self,
-    ) -> Option<&mut WorkflowPublicationInvocationEnvelope> {
-        self.publication_invocation.as_mut()
-    }
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()
     }
@@ -452,7 +402,6 @@ impl WorkflowQueuedPrompt {
     }
 
     pub(crate) fn mark_queued_for_retry(&mut self) {
-        self.delivery_uncertain_until_ms = None;
         self.status = WorkflowQueuedPromptStatus::Queued;
         self.updated_at_ms = unix_epoch_ms();
         self.dispatched_at_ms = None;
@@ -466,13 +415,11 @@ impl WorkflowQueuedPrompt {
     }
 
     pub fn mark_completed(&mut self) {
-        self.delivery_uncertain_until_ms = None;
         self.status = WorkflowQueuedPromptStatus::Completed;
         self.updated_at_ms = unix_epoch_ms();
     }
 
     pub fn mark_cancelled(&mut self) {
-        self.delivery_uncertain_until_ms = None;
         self.status = WorkflowQueuedPromptStatus::Cancelled;
         self.updated_at_ms = unix_epoch_ms();
     }

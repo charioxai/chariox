@@ -1,0 +1,217 @@
+[
+  {
+    "path": "apps/kernel/src/session/service/helpers.rs",
+    "method": "output",
+    "context": "completion: &Option<WorkflowCompletionSnapshot>, ) -> Result<Option<String>, DaemonError> { let Some(schema_ref) = edge.handoff_schema_ref() else { return Ok(None); }; let policy = edge .validation_policy() .unwrap_or(WorkflowHandoffValidationPolicy::Warn); let failure = |message: String| -> Result<Option<String>, DaemonError> { match policy { WorkflowHandoffValidationPolicy::Warn => Ok(Some(message)), WorkflowHandoffValidationPolicy::Halt => { Err(DaemonError::WorkflowHandoffValidationFailed { session_id: session_id.to_string(), workflow_id: workflow.id().to_string(), edge_id: edge.id().to_string(), message, }) } } }; let output = completion .as_ref() .and_then(|value| value"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turns.rs",
+    "method": "output",
+    "context": "{ session_id: session_id.to_string(), workflow_run_id: workflow_run_id.to_string(), } })?; let workflow_id_for_error = workflow_run.workflow_id().to_string(); let node_run = workflow_run .node_runs_mut() .iter_mut() .find(|node_run| node_run.id() == workflow_node_run_id) .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference { session_id: session_id.to_string(), workflow_id: workflow_id_for_error.clone(), reference: workflow_node_run_id.to_string(), message: , })?; let envelope = node_run.turn_envelope_mut().ok_or_else(|| { DaemonError::InvalidWorkflowGraphReference { session_id: session_id.to_string(), workflow_id: workflow_id_for_error, reference: workflow_node_run_id.to_string(), message: , } })?; envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Intermediate, None); workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new( format!( , workflow_node_run_id, unix_epoch_ms() ), workflow_node_run_id.to_string(), submission"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "= session.workflow_run_mut(workflow_run_id).ok_or_else(|| { DaemonError::WorkflowRunNotFound { session_id: session_id.to_string(), workflow_run_id: workflow_run_id.to_string(), } })?; let workflow_id_for_error = workflow_run.workflow_id().to_string(); let node_run = workflow_run .node_runs_mut() .iter_mut() .find(|node_run| node_run.id() == workflow_node_run_id) .ok_or_else(|| DaemonError::InvalidWorkflowGraphReference { session_id: session_id.to_string(), workflow_id: workflow_id_for_error, reference: workflow_node_run_id.to_string(), message: , })?; let completed_node_id = node_run.node_id().to_string(); let has_pending_final_output = node_run .turn_envelope() .and_then(|envelope| { envelope.pending_output_submission(WorkflowTurnSubmissionKind::Final) }) .is_some(); let should_clear_resolved_failures = validation_warnings.is_empty() && (completion .as_ref() .is_some_and(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "target_node.id().to_string(), context.workflow_run.invocation_prompt().map(str::to_string), edge_completion.clone(), edge.handoff_schema_ref().map(str::to_string), warning.clone(), ); let message = WorkflowMessage::new( self.next_workflow_message_id(), Some(context.source_node_run.id().to_string()), target_node.id().to_string(), , format!( , context.source_node_run.node_id(), target_node.id() ), serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport { operation: , message: error.to_string(), })?, ); let mut message = message; message.set_edge_id(edge.id().to_string()); message.set_source_node_iteration_index(context.source_node_run.iteration_index()); emitted_messages.push(message); } Ok((emitted_messages, validation_warnings)) } fn validate_workflow_handoff_selectors( session_id: &str, workflow: &WorkflowDefinition, outgoing_edges: &[&WorkflowEdgeDefinition], completion: Option<&WorkflowCompletionSnapshot>, ) -> Result<(), DaemonError> { let Some(output) = completion.and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "let to_node_id = handoff.get( ).and_then(Value::as_str); let matches_outgoing_edge = outgoing_edges.iter().any(|edge| { edge_id.is_some_and(|candidate| candidate == edge.id()) || to_node_id.is_some_and(|candidate| candidate == edge.to_node_id()) }); if matches_outgoing_edge { continue; } let selector = edge_id.or(to_node_id).unwrap_or( ); return Err(DaemonError::WorkflowHandoffValidationFailed { session_id: session_id.to_string(), workflow_id: workflow.id().to_string(), edge_id: selector.to_string(), message: .to_string(), }); } Ok(()) } fn workflow_edge_completion( edge: &WorkflowEdgeDefinition, completion: Option<&WorkflowCompletionSnapshot>, ) -> Option<Option<WorkflowCompletionSnapshot>> { let Some(output) = completion.and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "{ handoff .get( ) .and_then(Value::as_str) .is_some_and(|edge_id| edge_id == edge.id()) || handoff .get( ) .and_then(Value::as_str) .is_some_and(|node_id| node_id == edge.to_node_id()) })?; let message_value = handoff .get( ) .and_then(|output| output.get( )) .or_else(|| handoff.get( )) .cloned() .or_else(|| Self::workflow_handoff_inline_message(handoff)) .unwrap_or(Value::Null); if message_value.is_null() { return None; } let message = match message_value { Value::String(message) => message, other => other.to_string(), }; let artifacts = completion .and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "{ envelope .pending_output_submission(WorkflowTurnSubmissionKind::Final) .cloned() }); if let Some(envelope) = envelope { envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Intermediate, None); envelope.set_pending_output_submission(WorkflowTurnSubmissionKind::Final, None); } PendingWorkflowTurnOutputs { intermediate, final_output, } } fn fallback_terminal_completion_as_final_output( context: &WorkflowCompletionContext, completion: Option<&WorkflowCompletionSnapshot>, ) -> Option<WorkflowRunOutputSubmission> { let source_node = context.workflow.node(context.source_node_run.node_id())?; if !source_node.can_complete_workflow_run() { return None; } if context .workflow .edges() .iter() .any(|edge| edge.from_node_id() == source_node.id()) { return None; } let output = completion.and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "edge_id, message } } fn workflow_missing_output_failure() -> WorkflowMissingOutputFailure { WorkflowMissingOutputFailure { message: MISSING_WORKFLOW_OUTPUT_MESSAGE.to_string(), } } fn apply_workflow_node_completion( node_run: &mut WorkflowNodeRun, completion: Option<WorkflowCompletionSnapshot>, ) { node_run.set_status(WorkflowNodeRunStatus::Completed); node_run.set_summary(Some( completion .as_ref() .map(|value| value.summary().to_string()) .unwrap_or_else(|| .to_string()), )); node_run.set_completion(completion); } fn commit_pending_workflow_turn_outputs( workflow_run: &mut WorkflowRun, workflow_node_run_id: &str, pending_outputs: PendingWorkflowTurnOutputs, ) { if let Some(submission) = pending_outputs.intermediate { workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new( format!( , workflow_node_run_id, unix_epoch_ms() ), workflow_node_run_id.to_string(), submission"
+  },
+  {
+    "path": "apps/kernel/src/session/service/turn_completion.rs",
+    "method": "output",
+    "context": "MISSING_WORKFLOW_OUTPUT_MESSAGE.to_string(), } } fn apply_workflow_node_completion( node_run: &mut WorkflowNodeRun, completion: Option<WorkflowCompletionSnapshot>, ) { node_run.set_status(WorkflowNodeRunStatus::Completed); node_run.set_summary(Some( completion .as_ref() .map(|value| value.summary().to_string()) .unwrap_or_else(|| .to_string()), )); node_run.set_completion(completion); } fn commit_pending_workflow_turn_outputs( workflow_run: &mut WorkflowRun, workflow_node_run_id: &str, pending_outputs: PendingWorkflowTurnOutputs, ) { if let Some(submission) = pending_outputs.intermediate { workflow_run.add_intermediate_output(WorkflowIntermediateOutput::new( format!( , workflow_node_run_id, unix_epoch_ms() ), workflow_node_run_id.to_string(), submission.output().clone(), submission.valid(), submission.warning().map(str::to_string), )); } if let Some(submission) = pending_outputs.final_output { workflow_run.set_final_output( Some(submission"
+  },
+  {
+    "path": "apps/kernel/src/slice/local_docker/broker.rs",
+    "method": "output",
+    "context": "where I: IntoIterator<Item = S>, S: AsRef<OsStr>, { self.args .extend(args.into_iter().map(|arg| arg.as_ref().to_os_string())); self } pub(super) fn stdout(&mut self, _stdio: Stdio) -> &mut Self { self.quiet_stdout = true; self } pub(super) fn stderr(&mut self, _stdio: Stdio) -> &mut Self { self.quiet_stderr = true; self } pub(super) fn bounded_status(&mut self) -> io::Result<std::process::ExitStatus> { self.status() } pub(super) fn bounded_output(&mut self) -> io::Result<std::process::Output> { self"
+  },
+  {
+    "path": "apps/kernel/src/transport/relay_client/peer_client.rs",
+    "method": "wait",
+    "context": "fn send_peer_request_to_known_kernel_via_relay( config: &crate::config::DaemonConfig, state: &Arc<RwLock<RelayClientState>>, target: ClientTarget, target_public_key: &str, request: RelayPeerRequest, ) -> Result<RelayPeerResponse, DaemonError> { send_peer_request_to_known_kernel_via_relay_with_timeout( config, state, target, target_public_key, request, Duration::from_millis(config.relay_request_timeout_ms), ) .await } pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout( config: &crate::config::DaemonConfig, state: &Arc<RwLock<RelayClientState>>, target: ClientTarget, target_public_key: &str, request: RelayPeerRequest, response_timeout: impl Into<Option<Duration>> + Send, ) -> Result<RelayPeerResponse, DaemonError> { enqueue_peer_request_to_known_kernel_via_relay_with_timeout( config, state, target, target_public_key, request, response_timeout, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/transport/relay_client/peer_client.rs",
+    "method": "wait",
+    "context": "} }) .with_authority(authority)) } pub async fn send_peer_request_via_connected_relay( config: &crate::config::DaemonConfig, state: &Arc<RwLock<RelayClientState>>, target: ClientTarget, request: RelayPeerRequest, ) -> Result<RelayPeerResponse, DaemonError> { send_peer_request_via_connected_relay_with_timeout( config, state, target, request, Duration::from_millis(config.relay_request_timeout_ms), ) .await } pub async fn send_peer_request_via_connected_relay_with_timeout( config: &crate::config::DaemonConfig, state: &Arc<RwLock<RelayClientState>>, target: ClientTarget, request: RelayPeerRequest, response_timeout: impl Into<Option<Duration>> + Send, ) -> Result<RelayPeerResponse, DaemonError> { enqueue_peer_request_via_connected_relay_with_timeout( config, state, target, request, response_timeout, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/transport/relay_client/peer_client.rs",
+    "method": "wait",
+    "context": "&target_ref).await?; authorize()?; let public_key = kernel.public_key; relay_crypto::decode_public_key(&public_key)?; state .write() .await .remember_peer_public_key(target_ref.clone(), public_key.clone()); public_key } }; let waiter = match enqueue_peer_request_to_known_kernel_via_relay_authorized( config, state, target, &target_public_key, request, response_timeout, authorize, ) .await { Ok(waiter) => waiter, Err(error) => { state.write().await.forget_peer_public_key(&target_ref); return Err(error); } }; let authority = waiter .authority .clone() .expect( ); let state = Arc::clone(state); Ok(RelayPeerResponseWaiter::new(async move { let result = waiter"
+  },
+  {
+    "path": "apps/kernel/src/transport/relay_client/peer_client.rs",
+    "method": "wait",
+    "context": "response_timeout: Duration, ) -> Result< ( RelayPeerResponse, crate::runtime::relay_peer_authority::RelayPeerAuthority, ), DaemonError, > { send_peer_request_via_temporary_connection_with_optional_timeout_authenticated( config, target, request, Some(response_timeout), || Ok(()), ) .await } pub(crate) async fn send_peer_request_via_connected_relay_authorized( config: &crate::config::DaemonConfig, state: &Arc<RwLock<RelayClientState>>, target: ClientTarget, request: RelayPeerRequest, response_timeout: Duration, authorize: impl Fn() -> Result<(), DaemonError> + Send + Sync, ) -> Result<RelayPeerResponse, DaemonError> { enqueue_peer_request_via_connected_relay_authorized( config, state, target, request, response_timeout, authorize, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/app/workflow_runtime.rs",
+    "method": "output",
+    "context": "true; } let (Some(workflow_run_id), Some(workflow_node_run_id)) = (prompt.workflow_run_id(), prompt.workflow_node_run_id()) else { return true; }; let Ok(session) = app.sessions().get_session(session_id) else { return false; }; if session .workflow_run(workflow_run_id) .and_then(|workflow_run| { workflow_run .node_runs() .iter() .find(|node_run| node_run.id() == workflow_node_run_id) }) .is_some_and(|node_run| node_run.has_valid_pending_final_output()) { return true; } let Ok(history) = crate::app::KernelSessionReadService::new(app).session_history(session_id) else { return false; }; crate::scheduler::runtime::build_workflow_completion_snapshot_from_history( &session, history, session_id, workflow_run_id, workflow_node_run_id, provider_run_id.unwrap_or_default(), ) .and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/app/remote_agent_binding/cleanup.rs",
+    "method": "wait",
+    "context": ", &|| Ok(()), ) .await, ); } RemoteAgentCleanupResult { binding: self.binding, receipts, } } async fn request( &self, request: RelayPeerRequest, resource_id: &str, missing_code: &'static str, authorize: &(dyn Fn() -> Result<(), DaemonError> + Send + Sync), ) -> Result<CleanupReceipt, DaemonError> { let response = async { self.relays .enqueue_leased_worker_request_authorized( &self.config, ClientTarget { daemon_id: Some(self.binding.worker_kernel_id.clone()), daemon_alias: None, }, request, Duration::from_millis(self.config.relay_request_timeout_ms), authorize, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/store.rs",
+    "method": "wait",
+    "context": "pub(super) fn new(root: PathBuf) -> Result<Self, DaemonError> { let writer = writer::Writer::new(root.clone())?; Ok(Self { root, writer }) } pub(super) fn enqueue_save( &self, record: &TerminalRecord, ) -> Result<PendingWrite, DaemonError> { let body = serde_json::to_vec(record).map_err(|error| DaemonError::LocalTransport { operation: , message: error.to_string(), })?; self.writer.submit( writer::Operation::Save { id: record.terminal_id.clone(), body, }, false, ) } pub(super) fn save(&self, record: &TerminalRecord) -> Result<(), DaemonError> { self.enqueue_save(record)?"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/store.rs",
+    "method": "wait",
+    "context": "fn enqueue_save( &self, record: &TerminalRecord, ) -> Result<PendingWrite, DaemonError> { let body = serde_json::to_vec(record).map_err(|error| DaemonError::LocalTransport { operation: , message: error.to_string(), })?; self.writer.submit( writer::Operation::Save { id: record.terminal_id.clone(), body, }, false, ) } pub(super) fn save(&self, record: &TerminalRecord) -> Result<(), DaemonError> { self.enqueue_save(record)?.wait() } pub(super) fn remove(&self, terminal_id: &str) -> Result<(), DaemonError> { self.writer .submit( writer::Operation::Remove { id: terminal_id.into(), }, true, )?"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service.rs",
+    "method": "wait",
+    "context": "shell_pid, reports_first_prompt); let (owner, pending, summary) = { let mut state = self.lock(); let pending = match self.inner.store.enqueue_save(&terminal.record) { Ok(pending) => pending, Err(error) => { drop(state); if let Some(sweep) = &terminal.session_sweep { sweep.stop(); } pty.remove_process(&run_id)?; return Err(error); } }; let summary = terminal.summary(RoomTerminalDriver::Free); let owner = Arc::new(TerminalOwner::new(terminal, pty)); state.terminals.insert(terminal_id.clone(), owner.clone()); (owner, pending, summary) }; drop(creation); if let Err(error) = pending"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service.rs",
+    "method": "wait",
+    "context": "true); self.settle_outside_jobs(&mut owner.lock().terminal)?; self.inner.store.remove(terminal_id)?; self.report_work(); Ok(()) } pub(crate) fn stop_agent(&self, session_id: &str, agent_id: &str) -> Result<(), DaemonError> { for owner in self .owners_for_session(session_id) .into_iter() .filter(|owner| owner.opened_by == TerminalActor::Agent(agent_id.to_owned())) { self.pump_terminal(&owner, true); self.stop_owner(&owner, false)?; let pending = { let mut state = owner.lock(); if state.removed { continue; } let pending = self .inner .store .enqueue_save(&state.terminal.persisted_record())?; state.terminal.unsaved_since = None; pending }; pending"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service/outside_events.rs",
+    "method": "wait",
+    "context": "use super::*; impl RoomTerminalService { pub(crate) fn bind_outside_events(&self, store: crate::durable_state::DurableKernelStateStore) { *self .inner .outside_events .write() .expect( ) = Some(store); } pub(super) fn settle_outside_jobs(&self, terminal: &mut Terminal) -> Result<(), DaemonError> { if let Some(pending) = terminal.pending_outside.take() { pending"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service/outside_events.rs",
+    "method": "wait",
+    "context": "store: crate::durable_state::DurableKernelStateStore) { *self .inner .outside_events .write() .expect( ) = Some(store); } pub(super) fn settle_outside_jobs(&self, terminal: &mut Terminal) -> Result<(), DaemonError> { if let Some(pending) = terminal.pending_outside.take() { pending.wait()?; terminal.outside_ends.remove(0); } let store = self .inner .outside_events .read() .expect( ) .clone(); if let Some(store) = store { for end in &terminal.outside_ends { if let Some(pending) = store.enqueue_outside_publish_job(completion(terminal, end))? { pending"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service/handover.rs",
+    "method": "wait",
+    "context": "if state.removed || state.shutdown { continue; } state.handed_over = true; let TerminalState { terminal, pty, .. } = &mut *state; let Some(run_id) = terminal.run_id.clone() else { continue; }; let deadline = Instant::now() + HOLD_TIMEOUT; while !pty.hold_output(&run_id, Duration::from_millis(200))? { terminal.pump_output(pty, Instant::now()); if Instant::now() >= deadline { return Err(refused(format!( , terminal.record.terminal_id ))); } } terminal.pump_output(pty, Instant::now()); handovers.push(terminal.handover(pty.handover(&run_id)?)); let record = terminal.persisted_record(); self.inner.store.enqueue_save(&record)?"
+  },
+  {
+    "path": "apps/kernel/src/room_terminal/service/pump_task.rs",
+    "method": "wait",
+    "context": "{ pty, terminal, waiters, .. } = &mut *state; waiters.clear(); if handed_over { continue; } if let Some(run_id) = &terminal.run_id { if let Some(sweep) = &terminal.session_sweep { sweep.stop(); } if let Err(error) = pty.remove_process(run_id) { crate::logging::error_with_fields( , , serde_json::json!({ : terminal.record.terminal_id, : error.to_string()}), ); } terminal.end(RoomTerminalOutcome::KernelRestarted); } terminal.unsaved_since = None; self.inner.store.enqueue_save(&terminal.persisted_record()) }; owner.pump_wake.notify_one(); owner.output_changed.notify_waiters(); if let Err(error) = pending.and_then(|pending| pending"
+  },
+  {
+    "path": "apps/kernel/src/durable_state/agent_lifecycle.rs",
+    "method": "wait",
+    "context": ")) } pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> { db.execute_batch( ).map_err(sql)?; let columns: Vec<String> = db .prepare( ) .map_err(sql)? .query_map([], |r| r.get(1)) .map_err(sql)? .collect::<Result<_, _>>() .map_err(sql)?; if !columns.iter().any(|c| c == ) { db.execute_batch( ) .map_err(sql)?; } index_task_lookups(db)?; outside::initialize(db)?; deadlines::initialize(db)?; wakes::initialize(db)?; leased_processes::initialize(db)?; worker_stops::initialize(db)?; workflow_tasks::initialize(db)?; migration::migrate(db) } impl DurableKernelStateStore { pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> { self.enqueue_agent_lifecycle(operation)?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
+    "method": "wait",
+    "context": "target_id: &str, document_id: &str, node_ref: &str, action: &BrowserLocatorAction, agent_id: Option<&str>, timeout_ms: u64, ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, String> { let fingerprint = action_fingerprint( target_id, document_id, node_ref, action, agent_id, timeout_ms, )?; let Some(ownership) = &self.ownership else { return Ok(Response::Action { result: None }); }; let active = match self .executions .register(session_id, execution_id, fingerprint, false)? { ExecutionAdmission::Replay(outcome) => return *outcome, ExecutionAdmission::Wait(record) => return record"
+  },
+  {
+    "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
+    "method": "wait",
+    "context": "clippy::too_many_arguments, reason = )] pub(super) fn perform_cancellable_tab_mutation( &self, session_id: &str, execution_id: &str, fingerprint: [u8; 32], unavailable: Response, target_id: &str, method: &str, params: serde_json::Value, finish: impl FnOnce(BrowserControllerRpcResponse) -> ExecutionOutcome, ) -> ExecutionOutcome { let Some(ownership) = &self.ownership else { return Ok(unavailable); }; let active = match self .executions .register(session_id, execution_id, fingerprint, false)? { ExecutionAdmission::Replay(outcome) => return *outcome, ExecutionAdmission::Wait(record) => return record"
+  },
+  {
+    "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
+    "method": "wait",
+    "context": "}) } else { result }; active.finish(outcome) } fn perform_cancellable_operation_inner( &self, session_id: &str, execution_id: &str, fingerprint: [u8; 32], unavailable: Response, consume_pending_import_cancellation: bool, operation: impl FnOnce(&mut StdioOwnership) -> ExecutionOutcome, ) -> ExecutionOutcome { let Some(ownership) = &self.ownership else { return Ok(unavailable); }; let active = match self.executions.register( session_id, execution_id, fingerprint, consume_pending_import_cancellation, )? { ExecutionAdmission::Replay(outcome) => return *outcome, ExecutionAdmission::Wait(record) => return record"
+  },
+  {
+    "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
+    "method": "wait",
+    "context": "} pub(crate) fn recover_cancellable_browser_upload( &self, session_id: &str, execution_id: &str, target_id: &str, document_id: &str, node_ref: &str, files: &BrowserUploadFiles, ) -> ExecutionOutcome { let fingerprint = upload_fingerprint(target_id, document_id, node_ref, files)?; self.recover_cancellable_operation(session_id, execution_id, fingerprint) } pub(super) fn recover_cancellable_operation( &self, session_id: &str, execution_id: &str, fingerprint: [u8; 32], ) -> ExecutionOutcome { match self .executions .recover(session_id, execution_id, fingerprint)? { RecoveryAdmission::Replay(outcome) => *outcome, RecoveryAdmission::Wait(record) => record"
+  },
+  {
+    "path": "apps/kernel/src/runtime/router/meta_runtime_command/summary.rs",
+    "method": "output",
+    "context": "summarize_meta_workflow_turn(turn: &crate::session::WorkflowTurnEnvelope) -> serde_json::Value { serde_json::json!({ : turn.delivery_token(), : turn.state(), : turn.rendered_prompt().is_some(), : turn.mailbox_content().is_some(), : turn.handoff_payloads_json().is_some(), : turn.runtime_tool_calls().len(), : turn .pending_output_submissions() .map(summarize_meta_workflow_pending_outputs), }) } fn summarize_meta_workflow_pending_outputs( submissions: &crate::session::WorkflowTurnOutputSubmissions, ) -> serde_json::Value { serde_json::json!({ : submissions .intermediate() .map(summarize_meta_workflow_output_submission), : submissions .final_output() .map(summarize_meta_workflow_output_submission), }) } fn summarize_meta_workflow_output_submission( submission: &crate::session::WorkflowRunOutputSubmission, ) -> serde_json::Value { serde_json::json!({ : submission.valid(), : submission.warning(), : submission.submitted_at_ms(), : summarize_meta_workflow_output_payload(submission"
+  },
+  {
+    "path": "apps/kernel/src/runtime/router/meta_runtime_command/summary.rs",
+    "method": "output",
+    "context": ": turn.runtime_tool_calls().len(), : turn .pending_output_submissions() .map(summarize_meta_workflow_pending_outputs), }) } fn summarize_meta_workflow_pending_outputs( submissions: &crate::session::WorkflowTurnOutputSubmissions, ) -> serde_json::Value { serde_json::json!({ : submissions .intermediate() .map(summarize_meta_workflow_output_submission), : submissions .final_output() .map(summarize_meta_workflow_output_submission), }) } fn summarize_meta_workflow_output_submission( submission: &crate::session::WorkflowRunOutputSubmission, ) -> serde_json::Value { serde_json::json!({ : submission.valid(), : submission.warning(), : submission.submitted_at_ms(), : summarize_meta_workflow_output_payload(submission.output()), }) } fn summarize_meta_workflow_completion( completion: &crate::session::WorkflowCompletionSnapshot, ) -> serde_json::Value { serde_json::json!({ : trim_meta_text(completion.summary(), 512), : completion"
+  },
+  {
+    "path": "apps/kernel/src/runtime/router/meta_runtime_command/summary.rs",
+    "method": "output",
+    "context": ": message.source_node_run_id(), : message.target_node_id(), : message.message_type(), : trim_meta_text(message.summary(), 512), : !message.handoff_payload().is_empty(), : message.consumed_by_node_run_id(), : message.created_at_ms(), }) } fn summarize_meta_workflow_failure( failure: &crate::session::WorkflowFailureEvent, ) -> serde_json::Value { serde_json::json!({ : failure.kind(), : failure.source_node_run_id(), : failure.edge_ids(), : trim_meta_text(failure.message(), 1024), : failure.timestamp_ms(), }) } fn summarize_meta_workflow_intermediate_output( output: &crate::session::WorkflowIntermediateOutput, ) -> serde_json::Value { serde_json::json!({ : output.id(), : output.source_node_run_id(), : output.valid(), : output.warning(), : output.timestamp_ms(), : summarize_meta_workflow_output_payload(output"
+  },
+  {
+    "path": "apps/kernel/src/runtime/kernel_browser_host.rs",
+    "method": "wait",
+    "context": "; let mirror_credit = method == && params[ ] == ; let display_subscribe = method == && params[ ] == ; let note = method == && matches!( params[ ].as_str(), Some( | | ) ); let display_release = method == && params[ ] == ; let mut result = if method == { let pending = backend.begin_app_view_request(method, params)?; drop(backend); pending"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/metaagent_task_runtime_state.rs",
+    "method": "wait",
+    "context": "{ operation: , message: format!( ), }); } let Some(remote_execution) = agent.remote_execution().cloned() else { return Ok(()); }; let mut config = self.config_snapshot().await; if let (Some(relay_url), Some(relay_token)) = ( remote_execution.relay_url.clone(), remote_execution.relay_token.clone(), ) { config.apply_remote_relay_override(relay_url, relay_token); } self.authorize_current_external_command()?; match tokio::time::timeout(std::time::Duration::from_secs(5), async { self.enqueue_leased_worker_request_authorized( &config, chariox_relay::protocol::ClientTarget { daemon_id: Some(remote_execution.worker_kernel_id.clone()), daemon_alias: None, }, crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentMetaMode { leased_agent_id: remote_execution.leased_agent_id.clone(), active, }, std::time::Duration::from_secs(5), || self.authorize_current_external_command(), ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_launch_runtime.rs",
+    "method": "wait",
+    "context": "request.provider_session_id.clone(), required_mcps, required_skills: Some(required_skills), remote_extension_manifest: manifest, provider_launch_credential, }; let relay_state = state.connected_relay_state_for_config(&relay_config).await; state.authorize_provider_launch_grant(grant_id.as_deref(), &request)?; match relay_state { Some(relay_state) => { crate::transport::relay_client::enqueue_peer_request_via_connected_relay_authorized( &relay_config, &relay_state, target, peer_request, std::time::Duration::from_millis( relay_config.relay_request_timeout_ms, ), || state.authorize_provider_launch_grant(grant_id.as_deref(), &request), ) .await } None => { let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized( &relay_config, target, peer_request, std::time::Duration::from_millis( relay_config.relay_request_timeout_ms, ), || state.authorize_provider_launch_grant(grant_id.as_deref(), &request), ) .await?; Ok(crate::transport::relay_client::RelayPeerResponseWaiter::ready( response, )) } } }, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/remote_prompt_worker_submission_runtime.rs",
+    "method": "wait",
+    "context": "let request = RelayPeerRequest::SubmitLeasedPrompt { leased_agent_id: remote_execution.leased_agent_id, expected_profile: crate::transport::relay_peer::RelayAgentExecutionProfile::from(&agent), provider_resume_state: Some(if fresh_workflow { crate::provider::ProviderResumeState::default() } else { agent.provider_resume_state().clone() }), prompt, hidden_system_context, attachments, workflow_context, git_context: Some(git_context), required_mcps, required_skills, remote_extension_manifest: manifest, provider_launch_credential, }; mark_transport_started.store(true, Ordering::Relaxed); let waiter = callback_state .enqueue_leased_worker_request(&config, target, request, response_timeout) .await?; Ok(waiter) }, ) .await; let result = match result { Ok(waiter) => { let result = match waiter"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/remote_agent_profile_runtime.rs",
+    "method": "wait",
+    "context": "{ .. } => , RelayPeerRequest::GetLeasedPromptReceipt { .. } => , _ => , }, }), ); let queued = tokio::time::timeout(REMOTE_PROFILE_QUEUE_DEADLINE, async { match self.connected_relay_state_for_config(config).await { Some(relay_state) => crate::transport::relay_client::enqueue_peer_request_via_connected_relay_with_timeout( config, &relay_state, target.clone(), request.clone(), response_timeout, ) .await .map(Some), None => Ok(None), } }) .await .map_err(|_| DaemonError::LocalTransport { operation: , message: format!( , REMOTE_PROFILE_QUEUE_DEADLINE.as_secs() ), })??; match queued { Some(waiter) => waiter"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/restart_recovery_runtime.rs",
+    "method": "wait",
+    "context": "-> DurableRestartRecoveryTask { self.owned.reconcile_inactive_local_steers(); let recovery_targets = self.durable_restart_recovery_targets(); let queued_recovery_targets = self.durable_restart_queued_recovery_targets(); let idle_queue_agents = self.durable_restart_idle_queue_agents(&queued_recovery_targets); let uncertain_steer_targets = self.durable_restart_uncertain_remote_steer_targets(); let unconfirmed_inbox_steers = self .owned .durable_state_store .agent_unconfirmed_leased_steers() .unwrap_or_else(|error| { crate::logging::warn_with_fields( , , serde_json::json!({ : error.to_string()}), ); Vec::new() }); crate::logging::info_with_fields( , , serde_json::json!({ : recovery_targets.len(), : queued_recovery_targets.len(), : uncertain_steer_targets.len(), : unconfirmed_inbox_steers.len(), }), ); let state = self.clone(); DurableRestartRecoveryTask(tokio::spawn(async move { state.owned.publication_activation"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/remote_completion_harvest.rs",
+    "method": "wait",
+    "context": "Err(error) => crate::logging::warn_with_fields( , , serde_json::json!({ : remote_execution.worker_kernel_id, : remote_execution.leased_agent_id, : error.to_string(), }), ), } } async fn request_remote_git_observations( &self, remote_execution: &crate::agent::RemoteAgentBinding, provider_run_id: &str, ) -> Result<RelayPeerResponse, DaemonError> { let binding = remote_execution.clone(); let config = self .with_app_side_effect(move |app| app.relay_config_for_remote_execution(&binding)) .await; self.enqueue_leased_worker_request( &config, ClientTarget { daemon_id: Some(remote_execution.worker_kernel_id.clone()), daemon_alias: None, }, RelayPeerRequest::ObserveLeasedGitAfter { leased_agent_id: remote_execution.leased_agent_id.clone(), provider_run_id: provider_run_id.to_string(), }, REMOTE_COMPLETION_HARVEST_RESPONSE_TIMEOUT, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_leased_process_home.rs",
+    "method": "wait",
+    "context": "Err(ledger::error( , )); } if relation == LeaseRelation::ReplacedSameWorker && matches!(action, Action::Start { .. }) { return Err(ledger::error( , )); } let mut config = self.config_snapshot().await; if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) { config.apply_remote_relay_override(url, token); } let response = tokio::time::timeout(timeout, async { self.enqueue_leased_worker_request( &config, chariox_relay::protocol::ClientTarget { daemon_id: Some(binding.worker_kernel_id.clone()), daemon_alias: None, }, RelayPeerRequest::LeasedWatchedProcess { leased_agent_id: binding.leased_agent_id.clone(), action, }, timeout, ) .await?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/room_terminal_runtime_state.rs",
+    "method": "wait",
+    "context": "RoomTerminalOperation::ReadOutput { wait_ms, .. } | RoomTerminalOperation::ExecRead { wait_ms, .. } => { (*wait_ms).min(MAX_WAIT.as_millis() as u64) } _ => 0, }; let timeout = Duration::from_millis(relay_config.relay_request_timeout_ms) .max(Duration::from_millis(blocking) + Duration::from_secs(20)); let worker_kernel_id = binding.worker_kernel_id.clone(); let response = self .enqueue_leased_worker_request_authorized( &relay_config, chariox_relay::protocol::ClientTarget { daemon_id: Some(binding.worker_kernel_id), daemon_alias: None, }, RelayPeerRequest::RoomTerminal { leased_agent_id: binding.leased_agent_id, actor, operation, }, timeout, || self.authorize_current_external_command(), ) .await .map_err(|error| worker_unreachable(&worker_kernel_id, error))?"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/workflow_completion_snapshot_owned_state.rs",
+    "method": "output",
+    "context": "serde_json::json!({ : session_id, : workflow_run_id, : workflow_node_run_id, : provider_run_id, : error.to_string(), }), ); return None; } }; crate::scheduler::runtime::build_workflow_completion_snapshot_from_history( &session, history, session_id, workflow_run_id, workflow_node_run_id, provider_run_id, ) } pub(super) fn workflow_prompt_has_completion_output( &self, session_id: &str, workflow_run_id: &str, workflow_node_run_id: &str, provider_run_id: &str, ) -> bool { if self.workflow_node_run_has_valid_pending_final_output( session_id, workflow_run_id, workflow_node_run_id, ) { return true; } self.workflow_completion_snapshot( session_id, workflow_run_id, workflow_node_run_id, Some(provider_run_id), ) .and_then(|snapshot| snapshot"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/sudo/leased.rs",
+    "method": "wait",
+    "context": "= self .owned .agent_store .get_agent(agent_id)? .remote_execution() .cloned() else { return Ok(()); }; let mut config = self.config_snapshot().await; if let (Some(url), Some(token)) = (remote.relay_url.clone(), remote.relay_token.clone()) { config.apply_remote_relay_override(url, token); } let response_timeout = Duration::from_millis(config.relay_request_timeout_ms); let request = RelayPeerRequest::UpdateLeasedSudo { leased_agent_id: remote.leased_agent_id, home_prompt_id: home_prompt_id.into(), grant, }; let target = chariox_relay::protocol::ClientTarget { daemon_id: Some(remote.worker_kernel_id.clone()), daemon_alias: None, }; match self .enqueue_leased_worker_request(&config, target, request, response_timeout) .await?"
+  }
+]

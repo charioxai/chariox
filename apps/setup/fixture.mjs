@@ -3,6 +3,8 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto"
 import { chmod, mkdir, readFile, readdir, writeFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path"
 import { spawnSync } from "node:child_process"
+import { SLICE_CONTEXT, SLICE_PROVISIONER } from "../../scripts/release-bundle.mjs"
+import { SLICE_DOCKERFILE } from "../../scripts/slice-build-context.mjs"
 const sha = b => createHash("sha256").update(b).digest("hex")
 export async function setupFixture(root, { version = "0.3.0", platform = "linux-x64", keys = generateKeyPairSync("ed25519"), kernel } = {}) {
   const name = `chariox-${version}-${platform}`, bundle = join(root, name)
@@ -16,7 +18,10 @@ export async function setupFixture(root, { version = "0.3.0", platform = "linux-
   await put("bin/chariox-kernel", kernel ?? '#!/bin/sh\nif [ "$1" = "--print-local-daemon-protocol-version" ]; then echo 479; exit 0; fi\nexit 64\n', 0o755)
   await put("bin/chariox", '#!/bin/sh\nexit 0\n', 0o755)
   await put("bin/chariox-setup", '#!/bin/sh\nexit 0\n', 0o755)
-  await put("bin/chariox-app-wasm-worker", "synthetic WASM worker; never executed\n", 0o755)
+  await put("bin/chariox-app-wasm-worker", "synthetic WASM worker; never executed\n", 0o555)
+  await put(`${SLICE_CONTEXT}/apps/kernel/slice-linux-docker/runtime-source-roots.txt`, "apps/kernel\n")
+  await put(`${SLICE_CONTEXT}/${SLICE_PROVISIONER}`, "#!/bin/sh\n", 0o755)
+  await put(`${SLICE_CONTEXT}/${SLICE_DOCKERFILE}`, "FROM scratch\nCOPY apps/kernel /kernel\n")
   const publicKeyHex = keys.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")
   const manifest = Buffer.from(JSON.stringify({ schema: "chariox.release-bundle.v1", version, platform, sourceCommit: "a".repeat(40), files: entries }))
   const signature = sign(null, manifest, keys.privateKey).toString("hex")

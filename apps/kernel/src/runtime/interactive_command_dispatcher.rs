@@ -27,6 +27,8 @@ pub(crate) fn is_interactive_command(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::SubmitPrompt(_)
                 | LocalDaemonRequest::SubmitPrompts(_)
                 | LocalDaemonRequest::CancelActivePrompt(_)
+                | LocalDaemonRequest::CancelAgentTask(_)
+                | LocalDaemonRequest::CancelAgentWake(_)
                 | LocalDaemonRequest::SteerQueuedPrompt(_)
                 | LocalDaemonRequest::SteerActivePrompt(_)
                 | LocalDaemonRequest::CancelQueuedPrompt(_)
@@ -103,6 +105,20 @@ pub(crate) fn dispatch_interactive_command<'a>(
             boxed_interactive_handler(move || async move {
                 agent_runtime
                     .dispatch_prompt_cancel(&command, request)
+                    .await
+            })
+        }
+        LocalDaemonRequest::CancelAgentTask(request) => {
+            boxed_interactive_handler(move || async move {
+                runtime_state
+                    .cancel_owner_agent_task(&command, request)
+                    .await
+            })
+        }
+        LocalDaemonRequest::CancelAgentWake(request) => {
+            boxed_interactive_handler(move || async move {
+                runtime_state
+                    .cancel_owner_agent_wake(&command, request)
                     .await
             })
         }

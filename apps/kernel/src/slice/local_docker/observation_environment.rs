@@ -16,12 +16,12 @@ pub(crate) fn fresh_local_docker_observation_environment(
     // Successful inventories establish absence. Docker errors never establish it.
     let containers = docker_command()
         .args(["ps", "-a", "--format", "{{.Names}}"])
-        .output()
+        .bounded_output()
         .ok()
         .filter(|output| output.status.success());
     let volumes = docker_command()
         .args(["volume", "ls", "--format", "{{.Name}}"])
-        .output()
+        .bounded_output()
         .ok()
         .filter(|output| output.status.success());
     absent(

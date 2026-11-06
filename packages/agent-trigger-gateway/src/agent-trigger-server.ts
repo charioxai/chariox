@@ -14,7 +14,7 @@ export function loopbackHost(value: string): string {
   return value
 }
 
-export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "subscribe" | "invoke" | "resend" | "conversation" | "onChange" | "close">, host: string, options: { base?: string; localOriginGuard?: boolean; csrfToken?: string } = {}) {
+export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "metadata" | "subscribe" | "invoke" | "resend" | "conversation" | "workspaceImage" | "onChange" | "close">, host: string, options: { base?: string; localOriginGuard?: boolean; csrfToken?: string } = {}) {
   loopbackHost(host)
   const meta = await client.metadata()
   if (meta.trigger.source.kind !== "http") throw Error("only an HTTP trigger has a gateway")
@@ -131,6 +131,14 @@ export async function buildAgentTriggerServer(client: Pick<AgentTriggerClient, "
     try { await client.resend(promptId) } catch { return failure(request, reply, 409, "this message is no longer waiting to be sent again") }
     reply.header("Cache-Control", "no-store")
     return reply.code(202).send({ prompt_id: promptId })
+  })
+  // Pictures a reply references in the agent's workspace, so this page shows them as the web terminal does.
+  app.get(base + "workspace-image", async (request, reply) => {
+    const path = (request.query as { path?: unknown }).path
+    if (typeof path !== "string" || !path) return reply.code(400).send({ error: "invalid image path" })
+    const image = await client.workspaceImage(path).catch(() => null)
+    if (!image) return reply.code(404).header("Cache-Control", "no-store").send({ error: "image unavailable" })
+    return reply.header("Cache-Control", "no-store").header("X-Content-Type-Options", "nosniff").type(image.mime).send(image.bytes)
   })
   app.get(base + "history", async (request, reply) => {
     const cursor = (request.query as { before?: string }).before

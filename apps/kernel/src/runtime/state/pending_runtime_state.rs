@@ -117,7 +117,10 @@ impl PendingInteraction {
     ) -> bool {
         self.passkey_prompt.is_some()
             || self.terminal_credential_owner.is_some()
-            || self.kernel_operation_owner.is_some()
+            || (self.kernel_operation_owner.is_some()
+                && !super::agent_task_owner_interactions::is_blocked_task_decision(
+                    interaction.id(),
+                ))
             || self.user_domain_interaction.is_some()
             || super::is_handoff_interaction_id(interaction.id())
             || interaction.provider_login_is_human_only()

@@ -160,8 +160,7 @@ async fn mk03_move_peer_binds_generation_and_refuses_stale_mutations() {
                     "identity":stale, "requirements_sha256":"0".repeat(64),
                     "workspace_sha256":"1".repeat(64), "native_sha256":null,
                     "target_project_id":"project", "target_account_profile":"selected",
-                    "backing_session_id":"room", "backing_agent_id":"agent",
-                    "environment_setup_operation_id":null
+                    "backing_session_id":"room", "backing_agent_id":"agent"
                 }))
                 .unwrap(),
             ),

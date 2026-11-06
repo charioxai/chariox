@@ -1143,6 +1143,15 @@ impl KernelRuntimeOwnedState {
         attachments: &[crate::session::PromptAttachment],
         prompt_origin: crate::session::PromptOrigin,
     ) -> Result<u64, DaemonError> {
+        if prompt_origin == crate::session::PromptOrigin::Notification {
+            // Bind before the provider write, including an uncertain steer. Its
+            // turn must retain every notification lineage it may have received.
+            self.durable_state_store.bind_agent_notification_steer(
+                session_id,
+                prompt_id,
+                active_prompt_id,
+            )?;
+        }
         // Resolve canonical ownership before the transcript/projection locks.
         let public_owner = self
             .session_store

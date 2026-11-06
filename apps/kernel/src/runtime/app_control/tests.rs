@@ -51,6 +51,7 @@ fn app_control_shared_router_projects_only_the_authenticated_owners_installation
         seed(&app.durable_state_store(), "bob", "todo-bob");
     });
     let list = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+        session_id: None,
         after: None,
         limit: Some(1),
     });
@@ -120,6 +121,7 @@ fn app_control_rejects_unverified_remote_and_oversized_or_forged_identity() {
         AppRequestErrorCode::StorageUnavailable
     );
     let request = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+        session_id: None,
         after: None,
         limit: None,
     });
@@ -154,6 +156,7 @@ async fn app_control_admission_is_bounded_and_invalid_pages_do_not_read() {
         let store = DurableKernelStateStore::open_owned(root.join("kernel.db")).unwrap();
         let service = AppControlService::new(store);
         let request = LocalDaemonRequest::ListAppInstallations(ListAppInstallationsRequest {
+            session_id: None,
             after: None,
             limit: Some(101),
         });

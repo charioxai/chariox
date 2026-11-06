@@ -565,13 +565,108 @@ fn scrub_covers_unpadded_standard_base64() {
         .contains(&unpadded));
 }
 
+// A short password or a mistaken label stays masked in prose but never rewrites a URL, id or longer word.
+#[test]
+fn a_short_value_is_masked_only_as_a_whole_word() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    store.register("room", "Token").unwrap();
+    store.register("room", "hunter").unwrap();
+    store
+        .register("room", "vaudit-long-secret-value-12345")
+        .unwrap();
+    let page = serde_json::json!({
+        "url": "https://dynv6.com/keys#key_token_1",
+        "path": "https://en.wikipedia.org/wiki/Token?x=1",
+        "id": "data-Token-field",
+        "longer": "Tokens and tokenizer, hunter2",
+        "prose": "Your Token is ready. The password hunter, then Token: ok",
+        "exact": "hunter",
+        "end": "type hunter.",
+        "long_in_url": "https://x.test/a?k=vaudit-long-secret-value-12345",
+    });
+    let scrubbed = store.scrub("room", page).unwrap();
+    for same in ["url", "path", "id", "longer"] {
+        assert_eq!(
+            scrubbed[same],
+            serde_json::json!({
+                "url": "https://dynv6.com/keys#key_token_1",
+                "path": "https://en.wikipedia.org/wiki/Token?x=1",
+                "id": "data-Token-field",
+                "longer": "Tokens and tokenizer, hunter2",
+            })[same],
+            "{same} must be left alone"
+        );
+    }
+    assert_eq!(
+        scrubbed["prose"],
+        "Your [redacted] is ready. The password [redacted], then [redacted]: ok"
+    );
+    assert_eq!(scrubbed["exact"], "[redacted]");
+    assert_eq!(scrubbed["end"], "type [redacted].");
+    assert_eq!(
+        scrubbed["long_in_url"], "https://x.test/a?k=[redacted]",
+        "a long value keeps today's matching"
+    );
+}
+
+#[test]
+fn a_short_value_split_across_stream_chunks_is_masked_as_a_whole_word() {
+    let variants = secret_spellings("hunter");
+    let mut parts = vec![
+        "say hun".to_string(),
+        "ter now".to_string(),
+        " tokenhunter".to_string(),
+    ];
+    assert!(redact_split_values(&mut parts, &variants));
+    assert_eq!(parts, ["say [redacted]", " now", " tokenhunter"]);
+}
+
+// A mistaken capture removed after a restart must stay removed: the sealed registry is loaded lazily.
+#[test]
+fn a_dropped_value_stays_dropped_in_a_room_not_yet_loaded_after_restart() {
+    let root = TestRoot::new();
+    let path = root.path().join("observations");
+    let key = crate::transport::relay_crypto::generate_private_key_base64();
+    let store = RoomSecretObservations::new(path.clone(), BTreeSet::new()).with_identity(&key);
+    store.register("room", "Token").unwrap();
+    store
+        .register("room", "vault-page-copy-regression-value")
+        .unwrap();
+    drop(store);
+
+    let restarted = RoomSecretObservations::new(path.clone(), BTreeSet::from(["room".into()]))
+        .with_identity(&key);
+    assert!(restarted
+        .drop_value("room", "cap-1", "Token", false)
+        .unwrap());
+    assert_eq!(
+        restarted.scrub_text_or_withhold("room", "Token page"),
+        "Token page"
+    );
+
+    let again =
+        RoomSecretObservations::new(path, BTreeSet::from(["room".into()])).with_identity(&key);
+    assert_eq!(
+        again.scrub_text_or_withhold("room", "Token page"),
+        "Token page"
+    );
+    assert_eq!(
+        again.scrub_text_or_withhold("room", "vault-page-copy-regression-value"),
+        "[redacted]"
+    );
+    assert!(!again
+        .drop_value("never-protected", "cap-1", "Token", false)
+        .unwrap());
+}
+
 #[test]
 fn vault_echo_scrubs_nested_tool_text_and_simple_transforms_and_room_isolation() {
     let root = TestRoot::new();
     let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
     let secret = "vault-page-copy-regression-value";
     store.register("room", secret).unwrap();
-    let variants = secret_variants(secret);
+    let variants = secret_spellings(secret);
     let input = serde_json::json!({"accessibility": variants.iter().map(|s| s.as_str()).collect::<Vec<_>>(), "dom": {secret: secret}, "ocr": secret});
     let scrubbed = store.scrub("room", input.clone()).unwrap();
     assert!(!scrubbed.to_string().contains(secret));
@@ -1792,4 +1887,45 @@ fn fresh_environment_reset_and_room_delete_recover_a_corrupt_sealed_registry() {
                 .is_empty());
         }
     }
+}
+
+#[test]
+fn peer_snapshot_compression_keeps_observation_scrubbing_before_encoding() {
+    let root = TestRoot::new();
+    let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+    let secret = "synthetic-peer-snapshot-secret";
+    store.register("room", secret).unwrap();
+    let snapshot = serde_json::from_value(serde_json::json!({
+        "browser_generation":1, "target_id":"target", "document_id":"document", "snapshot_revision":1,
+        "accessibility_nodes":[], "dom_documents":[{"document_index":0,"url":"https://example.test/","owner_node_ref":null}],
+        "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":3,
+            "node_name":"#text","text":secret,"attributes":{},"bounds":null}]
+    })).unwrap();
+    let result = store
+        .scrub_response(
+            "room",
+            Response::Snapshot {
+                snapshot: Some(snapshot),
+            },
+        )
+        .unwrap();
+    let reply = crate::transport::relay_peer::RelayPeerResponse::RoomBrowserController {
+        session_id: "room".into(),
+        slice_id: "slice".into(),
+        result,
+    };
+    let wire = serde_json::to_vec(&reply).unwrap();
+    let decoded: crate::transport::relay_peer::RelayPeerResponse =
+        serde_json::from_slice(&wire).unwrap();
+    let crate::transport::relay_peer::RelayPeerResponse::RoomBrowserController {
+        result: Response::Snapshot {
+            snapshot: Some(snapshot),
+        },
+        ..
+    } = decoded
+    else {
+        panic!("expected a decoded snapshot")
+    };
+    assert_eq!(snapshot.dom_nodes[0].text, "[redacted]");
+    assert!(!serde_json::to_string(&snapshot).unwrap().contains(secret));
 }

@@ -31,6 +31,7 @@ impl CommandRouter {
                     | LocalDaemonRequest::Notes(_)
                     | LocalDaemonRequest::Dictation(_)
                     | LocalDaemonRequest::CaptureVisibleRegion(_)
+                    | LocalDaemonRequest::ClientAppView(_)
                     | LocalDaemonRequest::OpenUserAppView(_)
                     | LocalDaemonRequest::ListUserAppViews(_)
                     | LocalDaemonRequest::CloseUserAppView(_)
@@ -147,6 +148,22 @@ impl CommandRouter {
         };
         log_command_completed(&trace, &result);
         result
+    }
+
+    /// The transport already admitted the paired gateway. Retain its requester
+    /// lease for the asynchronous pre-spawn continuation, through the normal router.
+    pub(crate) async fn dispatch_gateway_exec(
+        &self,
+        command: KernelCommand,
+        request: LocalDaemonRequest,
+        origin: &OnBehalfOf,
+        gateway_public_key: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut scoped = self.clone();
+        scoped.runtime_state = self
+            .runtime_state
+            .with_gateway_requester(origin, gateway_public_key)?;
+        scoped.dispatch(command, request).await
     }
 
     /// The gateway's own requests: attachment heartbeats, kernel files and pairing.
@@ -272,14 +289,18 @@ impl CommandRouter {
                 "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
             ));
         }
+        let operation = self.runtime_state.begin_file_operation()?;
         let request = request.clone();
         // Hashing and copying a large file must not stall the request loop.
-        let outcome = tokio::task::spawn_blocking(move || match &request {
-            LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
-            LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
-            LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
-            LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
-            _ => unreachable!("filtered above"),
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            match &request {
+                LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
+                LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
+                LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
+                LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
+                _ => unreachable!("filtered above"),
+            }
         })
         .await;
         outcome.unwrap_or_else(|join| Err(error(format!("kernel file task failed: {join}"))))

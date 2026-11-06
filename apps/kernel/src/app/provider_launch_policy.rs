@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use rand::distributions::{Alphanumeric, DistString};
 use std::path::{Path, PathBuf};
 
@@ -197,7 +198,7 @@ fn resolve_git_root(path: &Path) -> Option<PathBuf> {
         .arg(path)
         .arg("rev-parse")
         .arg("--show-toplevel")
-        .output()
+        .bounded_output()
         .ok()?;
     if !output.status.success() {
         return None;

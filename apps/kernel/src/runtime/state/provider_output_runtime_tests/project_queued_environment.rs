@@ -38,6 +38,7 @@ async fn ordinary_submission_retries_failed_project_promotion_in_fifo_order() {
 
 async fn run_case(case: Case) {
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(test)]
     let _env = crate::env_lock::lock();
     let workspace = crate::test_support::TestWorktree::new("queued-project-native-refresh");
     let mut config = crate::config::DaemonConfig::for_tests();
@@ -83,8 +84,8 @@ async fn run_case(case: Case) {
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    save_manifest(&app, &session);
-    std::fs::write(workspace.path().join(".env"), "APP_LABEL=before\n").unwrap();
+    let state_root = app.config().private_runtime_state_root();
+    save_record(&state_root, &session, 0, "APP_LABEL=before");
     app.launch_provider(
         crate::provider::LaunchProviderRequest::new(
             session.id(),
@@ -129,7 +130,7 @@ async fn run_case(case: Case) {
         .get_run_for_agent(session.id(), agent.id())
         .unwrap();
     if !matches!(case, Case::PromotionRetry) {
-        std::fs::write(workspace.path().join(".env"), "APP_LABEL=after\n").unwrap();
+        save_record(&state_root, &session, 1, "APP_LABEL=after");
     }
     if matches!(case, Case::ReplacementFailure) {
         std::fs::remove_file(&fixture).unwrap();
@@ -502,39 +503,23 @@ async fn wait_for_prompt_delivery(
     .expect("provider must acknowledge delivery of the matching native turn");
 }
 
-fn save_manifest(app: &DaemonApp, session: &crate::session::RuntimeSession) {
-    ProjectEnvironmentStore::new(&app.config().private_runtime_state_root())
-        .save(&StoredProjectEnvironment {
-            source: None,
-            manifest: ProjectEnvironmentManifest {
-                schema_version: 1,
-                project_id: session.project_id().into(),
-                evidence_digest: ProjectEnvironmentEvidence::default().digest(),
-                entries: vec![ProjectEnvironmentEntry {
-                    name: "APP_LABEL".into(),
-                    workspace_id: session.workspace_id().into(),
-                    kind: ProjectEnvironmentEntryKind::Variable,
-                    classification: ProjectEnvironmentClassification::NonSecret,
-                    excluded: false,
-                    uses: vec![ProjectEnvironmentUse {
-                        path: "app.ts".into(),
-                        line: 1,
-                    }],
-                    locator: ProjectEnvironmentLocator::EnvFile {
-                        path: ".env".into(),
-                        key: "APP_LABEL".into(),
-                    },
-                    status: ProjectEnvironmentEntryStatus::Found,
-                }],
-                private_files: vec![],
-                toolchain_hints: vec![],
-                package_hints: vec![],
-                service_hints: vec![],
+/// The Secret keeps the Vault in play for the launch, so the queued turn waits for it like a real one.
+fn save_record(
+    state_root: &std::path::Path,
+    session: &crate::session::RuntimeSession,
+    revision: u64,
+    variables: &str,
+) {
+    ProjectEnvironmentStore::new(state_root)
+        .save(
+            session.project_id(),
+            revision,
+            ProjectEnvironmentRecord {
+                schema: PROJECT_ENVIRONMENT_SCHEMA,
+                variables: variables.into(),
+                secrets: vec!["SYNTHETIC_TOKEN".into()],
+                ..Default::default()
             },
-            evidence: ProjectEnvironmentEvidence::default(),
-            reported_missing: Default::default(),
-            reviewed_manifest: None,
-            last_review: None,
-        })
+        )
         .unwrap();
 }

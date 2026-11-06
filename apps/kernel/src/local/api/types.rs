@@ -23,7 +23,6 @@ mod control_plane;
 mod created_resource;
 mod daemon;
 mod dictation;
-mod disposable_worker;
 mod event_publication;
 mod external_provider_session;
 mod history;
@@ -37,9 +36,8 @@ mod managed_environment;
 mod metaagent;
 mod notes;
 mod outside_events;
-mod project_environment_aggregate;
-mod project_environment_manifest;
-mod project_environment_setup;
+mod own_machine_enrollment;
+mod project_environment;
 mod prompt_control;
 mod prompt_settings;
 mod provider_control;
@@ -52,7 +50,6 @@ mod room_terminal;
 mod screenshot;
 mod session_control;
 mod slice;
-mod ssh_machine;
 mod terminal_command_catalog;
 mod terminal_interaction;
 mod usage_snapshot;
@@ -76,7 +73,6 @@ pub use control_plane::*;
 pub use created_resource::*;
 pub use daemon::*;
 pub use dictation::*;
-pub use disposable_worker::*;
 pub use event_publication::*;
 pub use external_provider_session::*;
 pub use history::*;
@@ -90,9 +86,8 @@ pub use managed_environment::*;
 pub use metaagent::*;
 pub use notes::*;
 pub use outside_events::*;
-pub use project_environment_aggregate::*;
-pub use project_environment_manifest::*;
-pub use project_environment_setup::*;
+pub use own_machine_enrollment::*;
+pub use project_environment::*;
 pub use prompt_control::*;
 pub use prompt_settings::*;
 pub use provider_control::*;
@@ -105,7 +100,6 @@ pub use room_terminal::*;
 pub use screenshot::*;
 pub use session_control::*;
 pub use slice::*;
-pub use ssh_machine::*;
 pub use terminal_command_catalog::*;
 pub use terminal_interaction::*;
 pub use usage_snapshot::*;
@@ -151,7 +145,7 @@ pub use workspace::*;
 /// Version 348 projects owner-authorized managed activity and operation history.
 /// Version 349 binds CLI relay and display requests to a persisted terminal key.
 /// Version 350 exposes paired writable-layer and persistent-home slice caps in user config and
-/// coordinates the signed managed auto-stop quiescence HTTP contract.
+/// coordinates the signed managed quiescence HTTP contract.
 /// Version 351 adds home-bound disposable Cloud worker controls and managed keep-running.
 /// Versions 344–365 also exist on a divergent Apps branch and do not imply these controls.
 /// Version 366 adds explicit kernel control capabilities to RelayStatus.
@@ -464,5 +458,32 @@ pub use workspace::*;
 /// MP-08/MP-09/MP-10/MP-11: 963 binds every captured Vault entry to one declared use (peer412).
 /// Connected service machine requests use the ordinary Chariox access grant.
 /// MP-08/MP-09/MP-10/MP-11: 965 integrates declared Vault uses and enrolled-kernel machine authority (peer414).
+/// 971 replaces AddSshMachine/RemoveSshMachine with IssueOwnMachineEnrollment (peer420).
 /// MP-08/MP-09/MP-10/MP-11: 966 integrates WASM Apps with Landing965 (peer415).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 966;
+/// Environments 972 replace the Project Environment requests with one saved record per Project,
+/// its presence on this kernel and Setup runs (peer421 drops the leased Project environment requests).
+/// Environments 973 add Import from another kernel of the same user and Draft with agent (peer422).
+/// Protocol 990 binds Environment file chunks to their complete content digest (peer 429).
+/// MP-08 / MP-09 / MP-10 / MP-11: 996 carries bounded lossless peer snapshots.
+/// Protocol 987 adds exact owner cancellation of retained agent tasks and timers.
+/// MP-08/MP-09/MP-10/MP-11: 986 adds the person-only kernel browser `show_tab` op (peer415).
+/// OSS boundary: 967 removes the 25 retired Cloud controls (human session invites and collaborators, relay pairing,
+/// managed-environment and disposable-worker requests) and their responses; peer 416 pairs the embedded union.
+/// MP-08/MP-10: 981 names a quirks-mode frame document in its mirror v2 record (`compat`), so the viewer lays frames out in their source's mode.
+/// Allocated 983 gives a waiting command one row: `SessionProcessState` `held` and `paused` carry the
+/// same fields (reason, place in line, need, free, command line, folder, waiting since), and an
+/// outside `process` event carries that row (peer424).
+/// Allocated 985 adds what a process holds on disk to its row: `disk_written_bytes`,
+/// `deleted_open_bytes` (deleted files it keeps open) and `outlived` (it kept running after the
+/// command that started it ended). The peer protocol is unchanged (424).
+/// Allocated 991 carries current disk occupancy in the existing process feed.
+/// MP-08/MP-09/MP-10/MP-11: 974 adds the agent reach identity and "ask before agents acquire machines"; 966 integrated WASM Apps (peer415).
+/// MP-08 / MP-09 / MP-10 / MP-11: 989 integrates working-agent activity with reach.
+/// Vault unlock 984 makes the owner pick a duration on every unlock (`UnlockCredentialVault.duration`,
+/// the unlock options in `CredentialVaultStatus`, a duration on Vault-unlock choices; peer425).
+/// MP-08/MP-09/MP-10/MP-11: 992 adds positive browser-card verification conditions and non-secret receipts (peer431).
+/// MP-08/MP-09/MP-10/MP-11: 993 keeps lifecycle capabilities discoverable without an acquisition offer (peer432).
+/// Environments 982 hold an operation read until it changes, add MCPs and Skills that project files declare, and Check without a model (peer423 carries them in the record).
+/// MP-08/MP-09/MP-10/MP-11: 994 adds per-exit workflow notification sources, agent notification triggers and drops subscription options (peer422).
+/// MP-08/MP-09/MP-10/MP-11: 998 adds source-side listeners and durable queued notification expiry (peer 437).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 999;

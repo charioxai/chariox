@@ -1,4 +1,4 @@
-# Sudo windows (protocol 484)
+# Sudo windows (protocol 974)
 
 MP-08 / MP-10 / MP-11 A04. In a Chariox terminal, focus a local regular agent
 and enter `/sudo <prompt>`. Every connected host terminal receives one passkey
@@ -114,8 +114,14 @@ Its `request` argument is one serialized
 {"request":{"ListSessions":null}}
 ```
 
+A Room agent in a live window reaches the owner's other kernels with the `chariox-reach`
+`request` tool and its `kernel` argument: the window adds there what it adds at home
+(`docs/KERNEL_ACCESS.md`, agent reach). Without a window the agent already does what a
+Room agent without `/sudo` may do at home on every kernel, including creating a room;
+only what needs `/sudo` at home needs it elsewhere (`reach_requires_sudo`).
+
 External agents holding a process-bound local-kernel grant can request a window
-over that kernel's Unix socket. A sudo window is one turn on that kernel: it does
+over that kernel's Unix socket. That window is one turn on that kernel: it does
 not reach other machines, and a request with `--kernel` is refused:
 
 ```sh
@@ -135,21 +141,19 @@ earlier turn has no authority in a later turn. Sudo Unix terminal subscriptions 
 limited to the window session and owner attachments; ordinary external grants
 can subscribe across their local kernel. Leased sudo execution
 remains a separate leg.
-earlier turn has no authority in a later turn. Unix terminal subscriptions are
-limited to the window session and owner attachments.
 
 A leased agent (running on a worker kernel) is elevated by its home kernel only
 (MP-08/MP-09/MP-10/MP-11 A10). The window is bound to the agent's execution
 lease; any other placement ends it. Before each elevated leased turn, and on
 Extend and at the end, the home sends the worker `UpdateLeasedSudo` (relay
-peer protocol 83) naming the exact leased home prompt, the window revision and
+peer protocol) naming the exact leased home prompt, the window revision and
 the time left. The worker lists `chariox_kernel_request` only for that turn
 and forwards every call home, where the same window, turn and lease are checked
 again before any effect; the worker fence can only narrow authority. Other
 leased agents on the worker, including ones the elevated agent delegates to,
 never see the tool. The fence lives in worker memory: a worker restart drops it,
 and the next renewal for that window ends it at home (`worker_restarted`).
-Workers older than peer protocol 83 are refused, `/sudo` entered on a worker
+A worker that cannot take `UpdateLeasedSudo` is refused, `/sudo` entered on a worker
 for a leased backing agent is refused, and shell CLI elevation stays local-only.
 
 Forgetting a machine (`/machine forget`) revokes its trust (G06). Every leased
@@ -222,6 +226,11 @@ Two file tools complete the set:
   every `{{NAME}}` replaced by its Vault value and returns only the path, size
   and placeholder names. The agent's own later read of that file is its own
   action and is not scrubbed.
+- `chariox.vault.remove_capture {credential_id}` removes a capture the same agent made in
+  the same session (for example a label captured by mistake) and stops masking its value
+  in observations. The result names the removed entry (`credential_id`, `label`, `length`);
+  the value is never returned and no person approves it. Entries of the owner, of another
+  agent and generated entries are refused. A person removes any entry in the Vault window.
 
 Capture source does not determine destination: each entry grants only the use
 and injection selected by its binding. A retry must preserve that binding.

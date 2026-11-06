@@ -18,23 +18,6 @@ use super::{drain_codex_events, CodexRuntimeState};
 
 const CODEX_UTILITY_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-pub fn run_codex_utility_prompt(
-    run: &RuntimeProviderRun,
-    prompt: &str,
-    hidden_system_context: &str,
-    timeout: Duration,
-    policy: ProviderUtilityExecutionPolicy,
-) -> Result<String, DaemonError> {
-    run_codex_utility_prompt_with_admission(
-        run,
-        prompt,
-        hidden_system_context,
-        timeout,
-        policy,
-        None,
-    )
-}
-
 pub(crate) fn run_codex_utility_prompt_with_admission(
     run: &RuntimeProviderRun,
     prompt: &str,
@@ -42,6 +25,7 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     timeout: Duration,
     policy: ProviderUtilityExecutionPolicy,
     admission: Option<crate::provider::ProviderUtilityAdmission>,
+    stop: Option<&crate::provider::UtilityStop>,
 ) -> Result<String, DaemonError> {
     let endpoint = run
         .structured_endpoint()
@@ -138,6 +122,11 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     let mut output = String::new();
     let mut completed = false;
     while Instant::now() < deadline {
+        // Interrupts only this utility's own thread; the agent's conversation is untouched.
+        if stop.is_some_and(|stop| stop.is_stopped()) {
+            let _ = abort_codex_turn(run.id(), &mut state);
+            return Err(stopped_utility(run, "codex_utility_stopped"));
+        }
         let poll = drain_codex_events(run, &mut state, None)?;
         for chunk in poll.chunks {
             if chunk.kind == TerminalOutputKind::ProviderOutput {
@@ -179,6 +168,14 @@ pub(crate) fn run_codex_utility_prompt_with_admission(
     Ok(output)
 }
 
+fn stopped_utility(run: &RuntimeProviderRun, operation: &'static str) -> DaemonError {
+    DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation,
+        message: "the utility was stopped before it answered".to_string(),
+    }
+}
+
 fn hidden_context_for_provider(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
@@ -216,7 +213,10 @@ mod tests {
     fn mp08_mp11_discovery_preserves_multiline_json() {
         let output = "\n{\n  \"definition\": null,\n  \"missing_user_inputs\": []\n}\n";
         assert_eq!(
-            codex_utility_output(output, ProviderUtilityExecutionPolicy::ReadOnlyDiscovery),
+            codex_utility_output(
+                output,
+                ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery
+            ),
             output.trim()
         );
         assert_eq!(
@@ -308,16 +308,119 @@ mod tests {
                 structured_endpoint: Some(endpoint),
             },
         );
-        let output = run_codex_utility_prompt(
+        let output = run_codex_utility_prompt_with_admission(
             &run,
             "Generate definition",
             "",
             Duration::from_secs(3),
-            ProviderUtilityExecutionPolicy::ReadOnlyDiscovery,
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            None,
+            None,
         );
         let methods = server.join().unwrap();
         assert_eq!(methods, ["initialize", "thread/start", "turn/start"]);
         assert_eq!(output.unwrap(), expected);
+    }
+
+    #[test]
+    fn a_stop_after_submission_interrupts_only_the_utility_turn() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("ws://{}", listener.local_addr().unwrap());
+        let (submitted_tx, submitted_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut socket = accept(stream).unwrap();
+            let mut methods = Vec::new();
+            while let Ok(message) = socket.read() {
+                let Message::Text(text) = message else {
+                    continue;
+                };
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let method = request["method"].as_str().unwrap_or("").to_string();
+                if method == "initialized" || request.get("id").is_none() {
+                    continue;
+                }
+                methods.push(method.clone());
+                let result = match method.as_str() {
+                    "initialize" => json!({"userAgent":"fixture"}),
+                    "thread/start" => json!({"thread":{"id":"utility-thread"},"model":"fixture"}),
+                    "turn/start" => json!({"turn":{"id":"utility-turn"}}),
+                    _ => json!({}),
+                };
+                socket
+                    .send(Message::Text(
+                        json!({"id":request["id"],"result":result})
+                            .to_string()
+                            .into(),
+                    ))
+                    .unwrap();
+                match method.as_str() {
+                    // The model keeps working: no completion until it is interrupted.
+                    "turn/start" => submitted_tx.send(()).unwrap(),
+                    "turn/interrupt" => socket
+                        .send(Message::Text(
+                            json!({"method":"turn/completed","params":{"threadId":"utility-thread","turn":{"id":"utility-turn","status":"interrupted","items":[]}}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap(),
+                    "thread/backgroundTerminals/clean" => break,
+                    _ => {}
+                }
+            }
+            methods
+        });
+        let request = LaunchProviderRequest::new("session", "codex", "codex", "default", "fixture");
+        let run = RuntimeProviderRun::new(
+            "utility-run",
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: "fixture".into(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: vec![],
+                pty_env: BTreeMap::new(),
+                pty_env_remove: vec![],
+                working_directory: None,
+                structured_endpoint: Some(endpoint),
+            },
+        );
+        let stop = crate::provider::UtilityStop::default();
+        let stopper = {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                submitted_rx.recv().unwrap();
+                stop.stop();
+            })
+        };
+        let started = Instant::now();
+        let output = run_codex_utility_prompt_with_admission(
+            &run,
+            "Draft the Environment",
+            "",
+            Duration::from_secs(30),
+            ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+            None,
+            Some(&stop),
+        );
+        stopper.join().unwrap();
+        let methods = server.join().unwrap();
+        assert!(
+            methods.iter().any(|method| method == "turn/interrupt"),
+            "the provider turn was not interrupted: {methods:?}"
+        );
+        assert!(matches!(
+            output,
+            Err(DaemonError::ProviderProtocol {
+                operation: "codex_utility_stopped",
+                ..
+            })
+        ));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
 

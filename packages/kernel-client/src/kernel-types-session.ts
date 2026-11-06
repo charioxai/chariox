@@ -25,7 +25,6 @@ import type {
   WorkflowWatchdogDefinition,
   RoomWorkflowInventory,
 } from "./kernel-types-workflow.js"
-import type { ProjectEnvironmentDefinition } from "./kernel-types-project-environment.js"
 import type { SessionHistoryOutline } from "./kernel-types-history.js"
 
 /** MP-08 / MP-10: protocol 508 bundles existing, caller-scoped replies. */
@@ -119,18 +118,28 @@ export type RuntimeProject = {
   created_at_ms: number
   updated_at_ms: number
   archived_at_ms?: number | null
-  environment_definition?: ProjectEnvironmentDefinition | null
 }
 
 export type MetaagentTaskStatus = "active" | "paused" | "blocked" | "completed" | "aborted"
 
 export type AgentTriggerBusyPolicy = "queue" | "steer"
 
+/** What a notification trigger listens to: one exit of a workflow, or one outgoing event of an installed App. */
+export type AgentTriggerNotificationSource =
+  | { workflow: { source_id: string } }
+  | { app: { installation_id: string; event_name: string } }
+
 export type AgentTriggerSource = { kind: "http"; ingress_id: string; port: number } | {
   kind: "schedule"
   interval_seconds: number
   repeat: "once" | "every"
   next_run_at_ms: number
+} | {
+  kind: "notification"
+  source: AgentTriggerNotificationSource
+  subscription_id: string
+  /** The source as the picker named it when the trigger was created. */
+  display_name: string
 }
 
 /** Protocol 900: what fires prompts into an agent's own conversation. */
@@ -423,6 +432,7 @@ export type AgentGoal = {
   final_answer: string | null; evidence: string[]
 }
 export type AgentTaskExecution = {
+  owner_action?: "browser_access"
   goal?: AgentGoal | null
   task_id: string; room_id: string; owner_user_id: string; agent_id: string; prompt_id: string
   provider_run_id: string | null; revision: number; blocked_revision: number

@@ -1017,13 +1017,36 @@ impl KernelRuntimeState {
                 return Ok(cancellation);
             }
             self.authorize_prompt_command(authority)?;
-            if let Some(cancellation) = owned.cancel_local_prompt_if_matches(
+            let session = owned.session_store.get_session(session_id)?;
+            let exact_prompt_id = expected_prompt_id
+                .map(str::to_string)
+                .or_else(|| {
+                    owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, target_agent_id)
+                        .map(|prompt| prompt.id().to_string())
+                })
+                .ok_or_else(|| DaemonError::NoActivePrompt {
+                    session_id: session_id.into(),
+                })?;
+            match owned.cancel_local_prompt_if_matches(
                 session_id,
                 target_agent_id,
                 attachment_id,
-                expected_prompt_id,
-            )? {
-                return Ok(cancellation);
+                Some(&exact_prompt_id),
+            ) {
+                Ok(Some(cancellation)) => return Ok(cancellation),
+                Err(DaemonError::NoActiveProviderRun { .. }) => {
+                    return self
+                        .cancel_local_prompt_without_provider(
+                            session_id,
+                            target_agent_id,
+                            &exact_prompt_id,
+                        )
+                        .await;
+                }
+                Err(error) => return Err(error),
+                Ok(None) => {}
             }
             if expected_prompt_id.is_some() {
                 return Err(DaemonError::NoActivePrompt {
@@ -1518,6 +1541,37 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A client that ends a turn itself leaves no provider event to settle the turn's task, so the
+    /// completion does it, the way a native TUI turn's end does. A failure stays for the ledger sweep.
+    async fn settle_task_of_completed_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+        completed: &crate::session::PromptQueueItem,
+    ) {
+        let Some(run) = provider_run_id else {
+            return;
+        };
+        let settled = match self
+            .owned
+            .settle_agent_task(session_id, agent_id, completed, run, false)
+        {
+            Ok(settlement) => {
+                self.finish_agent_task_settlement(settlement, completed)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        if let Err(error) = settled {
+            crate::logging::warn_with_fields(
+                "daemon.agent_lifecycle",
+                "completed prompt task settlement retained for sweep",
+                serde_json::json!({"error": crate::secret_redaction::redact_secrets(&error.to_string())}),
+            );
+        }
+    }
+
     pub(crate) async fn complete_agent_prompt_with_external_authority(
         &self,
         session_id: &str,
@@ -1567,6 +1621,13 @@ impl KernelRuntimeState {
                         &completion.completion.completed,
                     )
                     .await;
+                    self.settle_task_of_completed_prompt(
+                        session_id,
+                        target_agent_id,
+                        owned_provider_run_id.as_deref(),
+                        &completion.completion.completed,
+                    )
+                    .await;
                     if completion.completion.completed.workflow_run_id().is_some() {
                         let dispatches = owned.workflow_complete_prompt(
                             session_id,
@@ -1607,6 +1668,13 @@ impl KernelRuntimeState {
                 let completion_result = completion.completion;
                 self.observe_git_after_completed_prompt(
                     Some(session_id),
+                    owned_provider_run_id.as_deref(),
+                    &completion_result.completed,
+                )
+                .await;
+                self.settle_task_of_completed_prompt(
+                    session_id,
+                    target_agent_id,
                     owned_provider_run_id.as_deref(),
                     &completion_result.completed,
                 )

@@ -1,6 +1,8 @@
 use crate::support::kernel_websocket::*;
 use chariox_kernel::attachment::ClientCapabilityLevel;
-use chariox_kernel::local::{AttachToSessionRequest, LaunchProviderRunRequest, LocalDaemonRequest};
+use chariox_kernel::local::{
+    AttachToSessionRequest, GetProviderRunRequest, LaunchProviderRunRequest, LocalDaemonRequest,
+};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use serde_json::json;
@@ -121,7 +123,7 @@ fn kernel_websocket_reports_async_provider_launch_failure() {
 }
 
 #[test]
-fn kernel_websocket_replaces_starting_provider_launch() {
+fn kernel_websocket_joins_an_identical_starting_launch_and_refuses_a_different_one() {
     crate::run_kernel_websocket_runtime_test(async {
         let workspace = ExecutionWorkspace::new();
         let mut config = DaemonConfig::for_tests();
@@ -182,28 +184,64 @@ fn kernel_websocket_replaces_starting_provider_launch() {
             "Starting"
         );
 
-        let second_launch = send_request(
-            &mut socket,
-            "launch-provider-second",
+        let launch = |model: &str| {
             LocalDaemonRequest::LaunchProviderRun(LaunchProviderRunRequest {
                 session_id: session_id.clone(),
-                agent_id: Some(agent_id),
+                agent_id: Some(agent_id.clone()),
                 adapter_key: "dev-stub".to_string(),
                 provider: "claude-code".to_string(),
                 account_profile: "default".to_string(),
-                model: "opus".to_string(),
+                model: model.to_string(),
                 variant: None,
                 structured_endpoint: None,
                 provider_session_id: None,
                 native_checkpoint_binding: None,
                 native_tui: false,
+            })
+        };
+
+        // The same launch again joins the run that is starting.
+        let joined = send_request(&mut socket, "launch-provider-identical", launch("sonnet")).await;
+        assert_eq!(provider_run_id_from_launch_response(&joined), first_run_id);
+
+        // Other parameters while it starts are refused and leave it alone.
+        send_frame(
+            &mut socket,
+            json!({
+                "type": "request",
+                "request_id": "launch-provider-different",
+                "request": launch("opus"),
             }),
         )
         .await;
-        let second_run_id = provider_run_id_from_launch_response(&second_launch);
-        assert_ne!(first_run_id, second_run_id);
-        wait_for_provider_run_state(&mut socket, &first_run_id, "Ended").await;
-        wait_for_provider_run_state(&mut socket, &second_run_id, "Running").await;
+        let refused = wait_for_error_response(&mut socket, "launch-provider-different").await;
+        assert_eq!(
+            refused["error"]["code"], "kernel_request_failed",
+            "{refused}"
+        );
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains(&format!("`{first_run_id}`"))),
+            "the refusal should name the starting run: {refused}"
+        );
+        let first_run = send_request(
+            &mut socket,
+            "first-run-after-refusal",
+            LocalDaemonRequest::GetProviderRun(GetProviderRunRequest {
+                provider_run_id: first_run_id.clone(),
+            }),
+        )
+        .await;
+        assert_eq!(
+            response_variant(&first_run, "ProviderRun")["provider_run"]["state"],
+            "Starting"
+        );
+        assert_eq!(
+            response_variant(&first_run, "ProviderRun")["provider_run"]["model"],
+            "sonnet"
+        );
+        wait_for_provider_run_state(&mut socket, &first_run_id, "Running").await;
 
         let _ = shutdown_tx.send(());
         server

@@ -3,6 +3,8 @@
 //! Provider CLIs continue to own credential formats. This registry stores only
 //! stable Chariox selection metadata and host-local provider root locators.
 
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 #[path = "account_profile_copy.rs"]
 mod account_copy;
 #[path = "account_profile_usage.rs"]
@@ -347,7 +349,36 @@ pub struct ProviderAccountUsageSnapshot {
 pub const PROVIDER_USAGE_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
 pub(crate) const PROVIDER_USAGE_REFRESH_RETRY_AFTER_MS: u64 = 5 * 60 * 1_000;
 
+impl ProviderAccountUsageMeter {
+    /// A window whose reset time has passed no longer describes the account:
+    /// the percent it carried belongs to the previous window. The meter stays
+    /// listed, with its observation time, as "not measured yet" until a new
+    /// reading replaces it. A stale percent is never shown and zero is never assumed.
+    pub(crate) fn expire_measurement(&mut self, now_ms: u64) {
+        if self
+            .resets_at_ms
+            .is_some_and(|resets_at_ms| resets_at_ms <= now_ms)
+            && self.state != ProviderAccountUsageMeterState::Unknown
+        {
+            self.used_percent = None;
+            self.used = None;
+            self.remaining = None;
+            self.state = ProviderAccountUsageMeterState::Unknown;
+        }
+    }
+}
+
 impl ProviderAccountUsageSnapshot {
+    /// Marks how the readings arrived: `event` for provider output during a
+    /// turn, `refresh` for the kernel's own periodic or on-demand read.
+    pub(crate) fn with_reading_source(mut self, source: &str) -> Self {
+        self.source = source.to_string();
+        for meter in &mut self.meters {
+            meter.source = source.to_string();
+        }
+        self
+    }
+
     pub fn unavailable(profile_id: impl Into<String>, provider: impl Into<String>) -> Self {
         let provider = provider.into();
         Self {
@@ -372,6 +403,9 @@ impl ProviderAccountUsageSnapshot {
     /// Snapshots without meters (including `provider_not_observed`) are honest
     /// missing data and stay untouched; error states are never masked.
     pub fn reconciled_freshness(mut self, now_ms: u64) -> Self {
+        for meter in &mut self.meters {
+            meter.expire_measurement(now_ms);
+        }
         if self.meters.is_empty() {
             return self;
         }
@@ -904,6 +938,15 @@ struct StoredProviderAccountProfile {
     replica_root_identity: Option<(u64, u64)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     managed_context_replica: Option<ManagedContextReplicaBinding>,
+    /// Which account of which kernel a managed-context transfer installed here, so a lease from that kernel can use it instead of making a second copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    transferred_from: Option<TransferredAccountOrigin>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TransferredAccountOrigin {
+    source_kernel_id: String,
+    source_profile_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1143,6 +1186,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
+                transferred_from: None,
             });
             changed = true;
         }
@@ -1453,7 +1497,12 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
         usage: ProviderAccountUsageSnapshot,
     ) {
-        if let Err(error) = self.update_usage(owner_user_id, provider, profile_id, usage) {
+        if let Err(error) = self.update_usage(
+            owner_user_id,
+            provider,
+            profile_id,
+            usage.with_reading_source("event"),
+        ) {
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "observed provider usage not recorded",
@@ -1694,6 +1743,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1754,6 +1804,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -1812,6 +1863,7 @@ impl ProviderAccountProfileRegistry {
             replica_previous_default_profile_id: None,
             replica_root_identity: None,
             managed_context_replica: None,
+            transferred_from: None,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -2935,6 +2987,61 @@ impl ProviderAccountProfileRegistry {
         })
     }
 
+    /// Remembers which account of which kernel the managed-context transfer installed as `receipt`'s profile.
+    pub(crate) fn record_transfer_origin(
+        &self,
+        owner_user_id: &str,
+        receipt: &ManagedContextProviderAccountReceipt,
+        source_kernel_id: &str,
+        source_profile_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut document = self.write_document()?;
+        let original = document.clone();
+        let Some(stored) = document.profiles.iter_mut().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == receipt.provider
+                && stored.public.profile_id == receipt.profile_id
+        }) else {
+            return Err(registry_error(
+                "record transferred account origin",
+                "the transferred account profile is missing",
+            ));
+        };
+        stored.transferred_from = Some(TransferredAccountOrigin {
+            source_kernel_id: source_kernel_id.to_string(),
+            source_profile_id: source_profile_id.to_string(),
+        });
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// The profile a managed-context transfer installed from `source_profile_id` of `source_kernel_id`, if it is still here.
+    pub(crate) fn transferred_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        source_kernel_id: &str,
+        source_profile_id: &str,
+    ) -> Result<Option<ProviderAccountProfile>, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        Ok(self
+            .read_document()?
+            .profiles
+            .iter()
+            .find(|stored| {
+                stored.public.owner_user_id == owner_user_id
+                    && stored.public.provider == provider
+                    && stored.transferred_from.as_ref().is_some_and(|origin| {
+                        origin.source_kernel_id == source_kernel_id
+                            && origin.source_profile_id == source_profile_id
+                    })
+            })
+            .map(|stored| stored.public.clone()))
+    }
+
     fn materialize_replica_internal(
         &self,
         owner_user_id: &str,
@@ -3293,6 +3400,7 @@ impl ProviderAccountProfileRegistry {
             existing.replica_previous_default_profile_id = previous_default_profile_id.clone();
             existing.replica_root_identity = replica_root_identity;
             existing.managed_context_replica = managed_context_binding;
+            existing.transferred_from = None;
             existing.public.clone()
         } else {
             let public = new_public_profile(
@@ -3313,6 +3421,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: previous_default_profile_id.clone(),
                 replica_root_identity,
                 managed_context_replica: managed_context_binding,
+                transferred_from: None,
             });
             public
         };
@@ -3434,6 +3543,7 @@ impl ProviderAccountProfileRegistry {
                 replica_previous_default_profile_id: None,
                 replica_root_identity: None,
                 managed_context_replica: None,
+                transferred_from: None,
             };
         } else {
             document.profiles.remove(index);
@@ -4626,7 +4736,7 @@ fn collect_claude_keychain_credentials(
 ) -> Result<(), DaemonError> {
     let output = crate::process_spawn::command("security")
         .args(["find-generic-password", "-s", service, "-w"])
-        .output()
+        .bounded_output()
         .map_err(registry_io("export Claude Keychain credentials"))?;
     if !output.status.success() || output.stdout.is_empty() {
         return Ok(());
@@ -6500,6 +6610,65 @@ mod tests {
     }
 
     #[test]
+    fn a_window_past_its_reset_is_not_measured_yet_and_a_live_window_keeps_its_percent() {
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut ended = usage_meter(now_ms - 6 * 60 * 60 * 1000);
+        ended.resets_at_ms = Some(now_ms - 60 * 60 * 1000);
+        ended.used_percent = Some(99.0);
+        ended.state = ProviderAccountUsageMeterState::Warning;
+        let mut live = usage_meter(now_ms - 60_000);
+        live.meter_id = "rate_limit/seven_day".to_string();
+        live.resets_at_ms = Some(now_ms + 60 * 60 * 1000);
+        live.used_percent = Some(5.0);
+        let usage = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![ended, live],
+            now_ms - 60_000,
+        )
+        .reconciled_freshness(now_ms);
+
+        assert_eq!(usage.meters[0].used_percent, None);
+        assert_eq!(
+            usage.meters[0].state,
+            ProviderAccountUsageMeterState::Unknown
+        );
+        assert_eq!(usage.meters[0].observed_at_ms, now_ms - 6 * 60 * 60 * 1000);
+        assert_eq!(usage.meters[1].used_percent, Some(5.0));
+        assert_eq!(
+            usage.meters[1].state,
+            ProviderAccountUsageMeterState::Healthy
+        );
+    }
+
+    #[test]
+    fn readings_from_provider_output_are_stamped_as_events() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "claude", "Work")
+            .unwrap();
+        let now_ms = crate::session::unix_epoch_ms();
+        let mut reading = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![usage_meter(now_ms)],
+            now_ms,
+        );
+        reading.source = "claude.status_line".to_string();
+
+        registry.record_observed_usage("owner-a", "claude", &profile.profile_id, reading);
+
+        let usage = registry
+            .get("owner-a", "claude", &profile.profile_id)
+            .unwrap()
+            .usage;
+        assert_eq!(usage.source, "event");
+        assert_eq!(usage.meters[0].source, "event");
+        assert_eq!(usage.meters[0].observed_at_ms, now_ms);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn reconciled_freshness_downgrades_only_aging_observed_snapshots() {
         let now_ms = 10_000_000_000_000;
         let fresh = ProviderAccountUsageSnapshot {
@@ -7913,6 +8082,98 @@ mod tests {
         let _ = fs::remove_dir_all(target_root);
         assert!(refresh_result.is_err());
         assert_eq!(published_auth.unwrap(), r#"{"token":"first"}"#);
+    }
+
+    #[test]
+    fn a_login_the_transfer_installed_is_found_by_the_account_and_kernel_it_came_from() {
+        crate::test_support::isolated_env_test!();
+        std::env::remove_var("CODEX_HOME");
+        let (_source_root, source) = fixture();
+        let source_profile = source
+            .create_managed("owner-a", "codex", "Source default")
+            .unwrap();
+        source
+            .set_default("owner-a", "codex", &source_profile.profile_id)
+            .unwrap();
+        let environment = source
+            .resolve_environment("owner-a", "codex", "default")
+            .unwrap();
+        fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"token":"source"}"#,
+        )
+        .unwrap();
+        let materialization = source
+            .export_managed_context_materialization("owner-a", "codex", "default")
+            .unwrap();
+        let (target_root, target) = fixture();
+        target
+            .migrate_effective_defaults("owner-a", &target_root.join("home"))
+            .unwrap();
+        let receipt = target
+            .materialize_managed_context_replica(
+                "owner-a",
+                "context-a",
+                &"a".repeat(64),
+                &materialization,
+            )
+            .unwrap();
+
+        assert!(
+            target
+                .transferred_profile(
+                    "owner-a",
+                    "codex",
+                    "home-kernel",
+                    &source_profile.profile_id
+                )
+                .unwrap()
+                .is_none(),
+            "nothing says where the login came from until the transfer records it"
+        );
+        target
+            .record_transfer_origin(
+                "owner-a",
+                &receipt,
+                "home-kernel",
+                &source_profile.profile_id,
+            )
+            .unwrap();
+
+        let found = target
+            .transferred_profile(
+                "owner-a",
+                "codex",
+                "home-kernel",
+                &source_profile.profile_id,
+            )
+            .unwrap()
+            .expect("the installed login");
+        assert_eq!(found.profile_id, receipt.profile_id);
+        for (kernel, profile) in [
+            ("other-kernel", source_profile.profile_id.as_str()),
+            ("home-kernel", "another-account"),
+        ] {
+            assert!(
+                target
+                    .transferred_profile("owner-a", "codex", kernel, profile)
+                    .unwrap()
+                    .is_none(),
+                "only that account of that kernel"
+            );
+        }
+        assert!(
+            target
+                .transferred_profile(
+                    "owner-b",
+                    "codex",
+                    "home-kernel",
+                    &source_profile.profile_id
+                )
+                .unwrap()
+                .is_none(),
+            "only that owner's"
+        );
     }
 
     #[test]

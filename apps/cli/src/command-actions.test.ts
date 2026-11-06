@@ -69,6 +69,46 @@ test("/trigger creates, changes, removes and lists the focused agent's triggers"
   assert.match(calls[10] ?? "", /^notice:Triggers\ntrigger-1  every 3s · steer · next .* · 2 fired$/)
 })
 
+test("/trigger notification subscribes the focused agent to a named source and lists it", async () => {
+  const calls: string[] = []
+  const source = (id: string, name: string, available = true) => ({ source_id: id, kernel_id: "Studio", session_id: "room", workflow_id: "w", exit_node_id: "n", exit_ordinal: 1, name, display_name: name, available })
+  const trigger = {
+    id: "trigger-9",
+    agent_id: "agent-1",
+    source: { kind: "notification" as const, source: { workflow: { source_id: "wf_b" } }, subscription_id: "sub", display_name: "Release pipeline-2" },
+    busy_policy: "queue" as const,
+    prompt: "Summarize failures",
+    enabled: true,
+    created_at_ms: 0,
+    fired: 1,
+    coalesced: 0,
+  }
+  const session = makeSession({ agent_triggers: [trigger] })
+  const handlers = createCommandActionHandlers(makeCommandDeps({
+    sessionState: () => session,
+    sendAgentTriggerRequest: async (request: Record<string, unknown>) => { calls.push(JSON.stringify(request)); return { session } },
+    listNotificationSources: async () => [source("wf_a", "Release pipeline-1"), source("wf_b", "Release pipeline-2"), source("wf_c", "Deploy", false)],
+    appendNotice: (message: string) => calls.push(`notice:${message}`),
+    flashFooter: (message: string, tone: string) => calls.push(`${tone}:${message}`),
+  }))
+  const run = (raw: string) => {
+    const command = parseSlashCommand(raw)
+    assert.equal(command?.kind, "trigger")
+    return handlers.handleTriggerCommand(command as Extract<typeof command, { kind: "trigger" }>)
+  }
+  await run("/trigger notification Studio/Release pipeline-2 Summarize failures")
+  await run("/trigger notification Missing")
+  await run("/trigger notification Deploy")
+  await run("/trigger")
+  assert.deepEqual(calls.slice(0, 4), [
+    JSON.stringify({ CreateAgentTrigger: { session_id: "session-1", agent_id: "agent-1", source: { kind: "notification", source: { workflow: { source_id: "wf_b" } } }, prompt: "Summarize failures" } }),
+    "info:trigger on a notification",
+    "error:no such source \"Missing\"; /workflow trigger notification list shows them",
+    "error:Deploy is not available: its kernel is offline",
+  ])
+  assert.match(calls[4] ?? "", /^notice:Triggers\ntrigger-9  Notification · Release pipeline-2 · queue · listening · 1 fired$/)
+})
+
 test("/trigger list retains unconfirmed firings after their once trigger retired", async () => {
   const notices: string[] = []
   const delivery = { prompt_id: "firing-1", trigger_id: "retired-trigger", agent_id: "agent-1", origin: "schedule", prompt: "Review the restart invariant", busy_policy: "steer" as const, state: "not_confirmed" as const, recorded_at_ms: 1 }
@@ -350,25 +390,6 @@ test("parseMcpInstallConfig supports stdio and streamable HTTP MCPs", () => {
     },
   )
   assert.equal(parseMcpInstallConfig(["install", "bad", "--command", "npx", "--url", "https://example.test/mcp"]), null)
-})
-
-// MP-08 / MP-10 / MP-11: post-launch Environment/Adjust uses kernel authority.
-test("MP-08 / MP-10 / MP-11 /env project shows saved decisions and Adjust opens the current session review", async () => {
-  const requests: unknown[] = []
-  const notices: string[] = []
-  const handlers = createCommandActionHandlers(makeCommandDeps({
-    sessionState: () => makeSession({project_id: "project-1"}),
-    focusedAgentId: () => "agent-1",
-    sendRoomEnvironmentRequest: async <T>(request: unknown): Promise<T> => {
-      requests.push(request)
-      return {ProjectEnvironmentManifest: {manifest: {schema_version: 1, project_id: "project-1", evidence_digest: "a".repeat(64), entries: [], private_files: [{workspace_id: "web", path: "notes.md", bring: true, reason: "Project notes"}], toolchain_hints: [], package_hints: [], service_hints: []}}} as T
-    },
-    appendNotice: (message: string) => notices.push(message),
-  }))
-  await handlers.handleEnvCommand({kind: "env", raw: "/env project", args: ["project"]})
-  assert.match(notices[0]!, /Bring notes.md — Project notes/)
-  await handlers.handleEnvCommand({kind: "env", raw: "/env project adjust", args: ["project", "adjust"]})
-  assert.deepEqual(requests, [{GetProjectEnvironmentManifest: {projectId: "project-1", agentId: "agent-1"}}, {AdjustProjectEnvironment: {sessionId: "session-1", agentId: "agent-1"}}])
 })
 
 // MP-08 / MP-09 / MP-10 / MP-11 A12: retain sudo and the displayed goal revision.

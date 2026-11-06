@@ -42,6 +42,7 @@ fn app_dev_register_snapshot_and_default_source() {
     let response = LocalDaemonResponse::AppInstallation {
         installation: AppInstallationSummary {
             installation_id: "dev".into(),
+            events: vec![],
             app_id: "com.example.dev".into(),
             channel: InstallationChannel::Dev,
             dev_room_id: Some("room".into()),
@@ -71,6 +72,6 @@ fn app_dev_register_snapshot_and_default_source() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "edf5b3b73b2e8bfe8131efea5afad28b5fcbcd0c334c61f46d62d37858346a1e"
+        "eb486de5a243cd6a2534d97ac631cfad96a3b05ed083b937ee448a8031252c4d"
     );
 }

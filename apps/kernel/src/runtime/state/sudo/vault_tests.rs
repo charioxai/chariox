@@ -86,6 +86,156 @@ async fn generate(f: &Fixture, request_id: &str, origin: &str) -> Result<Value, 
     .await
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: owner-client "once" covers an agent operation too.
+async fn client_unlock_once(f: &Fixture) {
+    use crate::local::{
+        LocalDaemonRequest, UnlockCredentialVaultRequest, VaultPassphrase, VaultUnlockDuration,
+        VaultUnlockSurface,
+    };
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    let request = LocalDaemonRequest::UnlockCredentialVault(UnlockCredentialVaultRequest {
+        passphrase: VaultPassphrase::new(PASSKEY),
+        duration: VaultUnlockDuration::Once,
+        surface: VaultUnlockSurface::VaultWindow,
+    });
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "owner-once",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    f.router.dispatch(command, request).await.unwrap();
+    assert!(crate::secret::chariox_vault_single_use_unlocked(vault_path(f)).unwrap());
+}
+
+fn assert_vault_locked(f: &Fixture) {
+    assert!(
+        !crate::secret::chariox_encrypted_vault_status(vault_path(f))
+            .unwrap()
+            .unlocked,
+        "the agent operation must consume the owner's single-use unlock",
+    );
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_is_consumed_by_agent_generation() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    client_unlock_once(&f).await;
+    assert_eq!(
+        generate(&f, "first-once", SITE).await.unwrap()["created"],
+        true
+    );
+    assert_vault_locked(&f);
+    // A new request must ask again; an idempotent retry is not another write.
+    let next = generate(&f, "second-once", SITE);
+    tokio::pin!(next);
+    tokio::select! {
+        result = &mut next => panic!("a second generation bypassed the unlock: {result:?}"),
+        () = async {
+            owner_unlocks(&f, &f.request.session_id, || {}).await;
+        } => {}
+    }
+    assert_eq!(next.await.unwrap()["created"], true);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_notification_is_consumed_by_waiting_agent_generation() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let generate = generate(&f, "notified-once", SITE);
+    let owner = async {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if !f
+                    .state
+                    .owned
+                    .session_snapshot(&f.request.session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        client_unlock_once(&f).await;
+    };
+    let (created, ()) = tokio::join!(generate, owner);
+    assert_eq!(created.unwrap()["created"], true);
+    assert_vault_locked(&f);
+    assert!(f
+        .state
+        .owned
+        .session_snapshot(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .is_empty());
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_is_consumed_by_agent_browser_fill() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "fill-once", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for tool in [PASTE, FILL] {
+        crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+        client_unlock_once(f).await;
+        assert_eq!(
+            call(f, tool, paste_args(&handle)).await.unwrap(),
+            json!({"inserted": true})
+        );
+        assert!(inserted(&login).is_some());
+        assert_vault_locked(f);
+    }
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn single_use_owner_unlock_covers_browser_fill_with_signing_key_preparation() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signed-fill-once", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut config = f.state.owned.config_projection.snapshot();
+    let session = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    config.user_config.web_bot_auth.projects = vec![session.project_id().to_owned()];
+    config.user_config.web_bot_auth.signature_agent = Some("https://signer.example.com".into());
+    f.state.owned.config_projection.update(config);
+    crate::secret::lock_chariox_encrypted_vault(vault_path(f)).unwrap();
+    client_unlock_once(f).await;
+    assert_eq!(
+        call(f, PASTE, paste_args(&handle)).await.unwrap(),
+        json!({"inserted": true})
+    );
+    assert!(inserted(&login).is_some());
+    assert_vault_locked(f);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault creation needs no elevation.
 #[tokio::test]
 async fn vopen_plain_agent_generates_for_one_origin_without_a_prompt() {
@@ -243,7 +393,7 @@ async fn a06_a_generated_handle_never_takes_a_slot_that_holds_a_value() {
 
 /// Answers the Vault unlock interactions as the owner, after `during` runs.
 /// Returns early when `during` already withdrew the prompt.
-async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
+pub(super) async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
     let pending = |prefix: &str| {
         f.state
             .owned
@@ -287,6 +437,132 @@ async fn owner_unlocks(f: &Fixture, session: &str, during: impl FnOnce()) {
         .unwrap();
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a plain prompt agent (no workflow turn) manages the Vault through the
+// credential dispatcher; the same call used to fall into the workflow resolver ("no active workflow turn").
+#[tokio::test]
+async fn vflag_plain_agent_reads_vault_status_and_opens_the_popup() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    for tool in ["chariox.manage_credential_vault", "manage_credential_vault"] {
+        let status = call(&f, tool, json!({"action": "status"})).await.unwrap();
+        assert_eq!(status["action"], "status");
+        assert_eq!(status["status"]["unlocked"], false);
+    }
+    let popup = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "popup"}),
+    );
+    let unlock = owner_unlocks(&f, &f.request.session_id, || {});
+    let (result, ()) = tokio::join!(popup, unlock);
+    assert_eq!(result.unwrap()["action"], "unlocked");
+    let status = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "status"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status["status"]["unlocked"], true);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a provider that gives up on a waiting popup call (its tool timeout)
+// must not leave a card nobody can answer.
+#[tokio::test]
+async fn vflag_popup_card_is_withdrawn_when_its_waiting_call_is_gone() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let mut waiting = Box::pin(call(
+        &f,
+        "chariox.request_popup",
+        json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]}),
+    ));
+    tokio::select! {
+        result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
+        () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+    }
+    let open = || {
+        f.state
+            .owned
+            .session_snapshot(&f.request.session_id)
+            .unwrap()
+            .active_interactions()
+            .len()
+    };
+    assert_eq!(open(), 1);
+    drop(waiting);
+    assert_eq!(open(), 0);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the provider never tells a card that its waiting call was cut, so a blocking
+// card ends itself before the provider's 300 s cut; only wait:false cards may stay open longer.
+#[tokio::test]
+async fn vflag_blocking_popup_card_ends_before_the_provider_cut() {
+    crate::test_support::isolated_env_test!();
+    for action in [false, true] {
+        for (asked, expected) in [(None, 280), (Some(900), 280), (Some(30), 30)] {
+            let f = fixture();
+            let mut arguments = json!({"message": "Open the page", "choices": [{"id": "done", "label": "Done", "reply": "Done"}]});
+            if action {
+                arguments["action"] = json!({"request": {"AliasSession": {"session_id": f.request.session_id, "alias": "after-approval"}}});
+            }
+            if let Some(seconds) = asked {
+                arguments["timeout_sec"] = json!(seconds);
+            }
+            let mut waiting = Box::pin(call(&f, "chariox.request_popup", arguments));
+            tokio::select! {
+                result = &mut waiting => panic!("popup resolved by itself: {result:?}"),
+                () = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+            }
+            let snapshot = f
+                .state
+                .owned
+                .session_snapshot(&f.request.session_id)
+                .unwrap();
+            let cards = snapshot.active_interactions();
+            assert_eq!(cards.len(), 1);
+            assert_eq!(
+                cards[0].timeout_sec(),
+                Some(expected),
+                "action {action}, asked {asked:?}"
+            );
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(expected)).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), &mut waiting)
+                .await
+                .expect("card settles before provider timeout")
+                .unwrap();
+            assert_eq!(result["status"], "timed_out");
+            if action {
+                assert_eq!(result["ran"], false);
+            }
+            assert!(f
+                .state
+                .owned
+                .session_snapshot(&f.request.session_id)
+                .unwrap()
+                .active_interactions()
+                .is_empty());
+            tokio::time::resume();
+        }
+    }
+}
+
+#[tokio::test]
+async fn vflag_unknown_runtime_tool_is_not_a_workflow_error() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let error = call(&f, "chariox.no_such_tool", json!({}))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("unknown runtime tool `chariox.no_such_tool`"),
+        "{error}"
+    );
+    assert!(!error.contains("workflow turn"), "{error}");
+}
+
 #[tokio::test]
 async fn vopen_generation_survives_sudo_expiry_during_vault_unlock() {
     crate::test_support::isolated_env_test!();
@@ -318,10 +594,13 @@ while IFS= read -r request; do
  [ -f "$1/opened" ] && tabs="$tabs"',{"tab_id":"host-tab-new","document_id":"doc-login"}'
  case "$request" in
   *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
-  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"vaudit-captured-fixture-value"}}\n' "$id" ;;
-  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*'"read":"qr"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/qr.b64")" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*'"read":"node","reveal_node_ref":null'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"Or enter the secret: jbsw y3dp ehpk 3pxp"}}\n' "$id" ;;
+  *'"method":"host.secret"'*'"op":"capture"'*) printf '%s' "$request" > "$1/capture"; printf '{"id":%s,"ok":true,"result":{"value":"%s"}}\n' "$id" "$(cat "$1/value" 2>/dev/null || echo vaudit-captured-fixture-value)" ;;
+  *'"method":"host.secret"'*) printf '%s' "$request" | grep -o '"plain_target":true' > "$1/plain" || true; printf '%s' "$request" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p' > "$1/echo"; printf '%s' "$request" | sed -n 's/.*"vault_factor_input":\(true\|false\).*/\1/p' > "$1/factor_input"; printf '%s' "$request" | sed -n 's/.*"_app_view_tab":"\([^"]*\)".*/\1/p' > "$1/app_view_tab"; if printf '%s' "$request" | grep -q '"submit":true'; then printf '{"id":%s,"ok":true,"result":{"inserted":true,"submitted":{"navigated":true,"url":"http://127.0.0.1:8123/welcome","title":"Welcome"}}}\n' "$id"; else printf '{"id":%s,"ok":true,"result":{}}\n' "$id"; fi ;;
   *'"method":"host.'*'"op":"open"'*) : > "$1/opened"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[%s,{"tab_id":"host-tab-new","document_id":"doc-login"}]}}\n' "$id" "$tabs" ;;
-  *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
+  *'"op":"stop"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","tabs":[]}}\n' "$id" ;;
+  *'"op":"state"'*|*'"op":"start"'*|*'"op":"navigate"'*|*'"op":"input"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[%s]}}\n' "$id" "$tabs" ;;
   *'"op":"snapshot"'*) : > "$1/snapshot-observed"; echo=$(cat "$1/echo" 2>/dev/null || true); printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target-login","document_id":"doc-login","snapshot_revision":1,"accessibility_nodes":[],"dom_documents":[{"document_index":0,"url":"http://127.0.0.1:8123/login","owner_node_ref":null}],"shadow_roots":[],"dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,"node_name":"INPUT","text":"echo %s","attributes":{"type":"password","id":"password"},"bounds":null}]}}}\n' "$id" "$echo" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
   *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
@@ -344,9 +623,13 @@ async fn login_room_at(site: &str) -> Login {
 }
 
 async fn login_room_with_fixture(f: Fixture, site: &str) -> Login {
+    login_room_with_controller(f, site, LOGIN_CONTROLLER).await
+}
+
+async fn login_room_with_controller(f: Fixture, site: &str, controller: &str) -> Login {
     let root = crate::test_support::TestWorktree::new("a06-login-controller");
     let script = root.path().join("controller.sh");
-    std::fs::write(&script, LOGIN_CONTROLLER.replace(SITE, site)).unwrap();
+    std::fs::write(&script, controller.replace(SITE, site)).unwrap();
     let host = &f.state.owned.kernel_browser_host;
     host.install_fixture_backend("local", &script, root.path());
     host.protected_request(
@@ -429,6 +712,29 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
             false,
         )
         .unwrap();
+}
+
+// A submit that navigates is the submit working: the agent gets the page it landed on, not an error.
+#[tokio::test]
+async fn vpaste_submit_that_navigates_reports_the_resulting_page() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut args = paste_args(&handle);
+    args["submit"] = json!(true);
+    let result = call(f, PASTE, args).await.unwrap();
+    assert_eq!(
+        result,
+        json!({"inserted": true, "submitted": {"navigated": true,
+            "url": "http://127.0.0.1:8123/welcome", "title": "Welcome"}})
+    );
+    let secret = stored(f, &handle);
+    assert!(!result.to_string().contains(secret.as_str()));
 }
 
 #[tokio::test]
@@ -1199,6 +1505,7 @@ async fn terminal_secret_rechecks_credential_kind_after_vault_unlock() {
 }
 
 const CAPTURE: &str = "chariox.vault.capture_browser";
+const REMOVE: &str = "chariox.vault.remove_capture";
 const FILL: &str = "chariox.vault.fill_field";
 const CAPTURED: &str = "vaudit-captured-fixture-value";
 
@@ -1291,6 +1598,578 @@ async fn vaudit_s3_capture_browser_stores_and_protects_a_page_value() {
     assert!(!login.root.path().join("capture").exists());
 }
 
+// A value already in the Vault is protected in observations; capturing it again for another use
+// must still store the page's value, not the redaction marker.
+#[tokio::test]
+async fn vflag_capture_of_an_already_protected_value_stores_the_value() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let first = call(f, CAPTURE, capture_args("first")).await.unwrap();
+    let second = call(f, CAPTURE, capture_args("second")).await.unwrap();
+    let (first, second) = (
+        first["credential_id"].as_str().unwrap().to_string(),
+        second["credential_id"].as_str().unwrap().to_string(),
+    );
+    assert_ne!(first, second);
+    assert_eq!(stored(f, &first).as_str(), CAPTURED);
+    assert_eq!(stored(f, &second).as_str(), CAPTURED);
+}
+
+// The outer runtime-tool scrub must preserve the snapshot schema as well as the browser boundary.
+#[tokio::test]
+async fn vflag_capture_schema_label_preserves_the_next_snapshot_through_mcp() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(login.root.path().join("value"), "text").unwrap();
+    call(f, CAPTURE, capture_args("schema-label"))
+        .await
+        .unwrap();
+    std::fs::write(login.root.path().join("echo"), "text").unwrap();
+    let observed = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{
+        "op":"snapshot","tab_id":"host-tab-new","generation":1}}),
+    )
+    .await
+    .unwrap();
+    let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot =
+        serde_json::from_value(observed["snapshot"].clone()).expect("next snapshot remains usable");
+    assert_eq!(snapshot.dom_nodes[0].text, "echo [redacted]");
+    assert_eq!(snapshot.dom_nodes[0].node_ref, "backend:7");
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 review P1: distinct keys may own identical bytes.
+#[tokio::test]
+async fn vflag_remove_capture_preserves_the_same_value_owned_by_a_distinct_key() {
+    crate::test_support::isolated_env_test!();
+    // A plain field cannot rely on the browser's password-field masking.
+    let controller = LOGIN_CONTROLLER
+        .replace(r#""type":"password""#, r#""type":"text""#)
+        .replace(
+            " case \"$request\" in",
+            r#" case "$request" in
+  *'"method":"host.protect"'*) printf '%s' "$request" > "$1/protection"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;"#,
+        );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    let first = call(f, CAPTURE, capture_args("equal-first")).await.unwrap();
+    let second = call(f, CAPTURE, capture_args("equal-second"))
+        .await
+        .unwrap();
+    let first = first["credential_id"].as_str().unwrap();
+    let second = second["credential_id"].as_str().unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    assert_ne!(
+        registry.get(first).unwrap().unwrap().source,
+        registry.get(second).unwrap().unwrap().source
+    );
+    call(f, FILL, paste_args(second)).await.unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(CAPTURED));
+    assert!(std::fs::read_to_string(login.root.path().join("plain"))
+        .unwrap()
+        .contains(r#""plain_target":true"#));
+    call(f, REMOVE, json!({"credential_id": first}))
+        .await
+        .unwrap();
+    assert_eq!(stored(f, second).as_str(), CAPTURED);
+    assert!(registry.get(first).unwrap().is_none());
+    let observed = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command": {
+            "op": "snapshot", "tab_id": "host-tab-new", "generation": 1
+        }}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        observed["snapshot"]["dom_nodes"][0]["attributes"]["type"],
+        "text"
+    );
+    assert_eq!(
+        observed["snapshot"]["dom_nodes"][0]["text"], "echo [redacted]",
+        "removing another key must not expose the retained entry through the outer MCP response"
+    );
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let policy: Value = serde_json::from_str(
+        &f.state
+            .owned
+            .kernel_browser_secret_observations
+            .capture_policy(&scope)
+            .unwrap(),
+    )
+    .unwrap();
+    let expected_hash = format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(CAPTURED.as_bytes())
+    );
+    assert!(
+        policy["targets"].as_array().unwrap().iter().any(|target| {
+            target["kind"] == "browser"
+                && target["target_id"] == "target-login"
+                && target["document_id"] == "doc-login"
+                && target["node_ref"] == "backend:7"
+                && target["value_hash"] == expected_hash
+        }),
+        "the retained plain field still needs its exact model-frame mask"
+    );
+    // The next model observation must send those masks to the host, where
+    // snapshots and frames share the protection policy.
+    let delivered: Value = serde_json::from_str(
+        &std::fs::read_to_string(login.root.path().join("protection")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(delivered["params"]["targets"], policy["targets"]);
+    assert_eq!(delivered["params"]["values"], policy["values"]);
+    assert_eq!(
+        f.state
+            .owned
+            .room_secret_observations
+            .scrub_text_or_withhold(&f.request.session_id, CAPTURED),
+        "[redacted]"
+    );
+    call(f, REMOVE, json!({"credential_id": second}))
+        .await
+        .unwrap();
+    assert_eq!(
+        f.state
+            .owned
+            .kernel_browser_secret_observations
+            .scrub_text_or_withhold(&scope, CAPTURED),
+        CAPTURED,
+        "removing the last owner still undoes mistaken protection"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 review P2: the outer MCP scrub preserves control replies.
+#[tokio::test]
+async fn vflag_capture_schema_label_preserves_state_and_control_through_mcp() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(login.root.path().join("value"), "Tabs").unwrap();
+    call(f, CAPTURE, capture_args("state-schema-label"))
+        .await
+        .unwrap();
+    for command in [
+        json!({"op":"state"}),
+        json!({"op":"open","url":SITE}),
+        json!({"op":"navigate","tab_id":"host-tab-new","generation":1,"url":SITE}),
+        json!({"op":"input","tab_id":"host-tab-new","generation":1,"input":{"kind":"key","key":"ArrowDown"}}),
+    ] {
+        let command_name = command["op"].as_str().unwrap().to_string();
+        let arguments = if command["op"] == "input" {
+            json!({"document_id":"doc-login", "command":command})
+        } else {
+            json!({"command":command})
+        };
+        let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
+        assert_eq!(result["generation"], 1, "{} keeps generation", command_name);
+        assert!(
+            result["tabs"].is_array(),
+            "capturing Tabs must preserve browser inventory through every boundary"
+        );
+        assert_eq!(result["tabs"][0]["tab_id"], "host-tab-new");
+    }
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    f.state
+        .owned
+        .kernel_browser_host
+        .set_focus("local", Some(agent));
+    let stopped = call(
+        f,
+        "chariox.kernel_browser",
+        json!({"command":{"op":"stop"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stopped["state"], "stopped");
+    assert_eq!(stopped["tabs"], json!([]));
+}
+
+#[tokio::test]
+async fn vflag_capture_inventory_schema_collisions_preserve_outer_runtime_results() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER
+        .replace(
+            r#""result":{"generation":1"#,
+            r#""result":{"state":"ready","generation":1"#,
+        )
+        .replace(
+            r#""tab_id":"host-tab-new","document_id":"doc-login""#,
+            r#""tab_id":"host-tab-new","document_id":"doc-login","title":"Tabs generation ready host-tab-new""#,
+        );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    for (index, label) in ["Tabs", "generation", "ready", "host-tab-new"]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(login.root.path().join("value"), label).unwrap();
+        call(
+            f,
+            CAPTURE,
+            capture_args(&format!("inventory-schema-{index}")),
+        )
+        .await
+        .unwrap();
+    }
+    for command in [
+        json!({"op":"state"}),
+        json!({"op":"open","url":SITE}),
+        json!({"op":"navigate","tab_id":"host-tab-new","generation":1,"url":SITE}),
+        json!({"op":"input","tab_id":"host-tab-new","generation":1,"input":{"kind":"key","key":"ArrowDown"}}),
+    ] {
+        let operation = command["op"].as_str().unwrap().to_string();
+        let arguments = if operation == "input" {
+            json!({"document_id":"doc-login", "command":command})
+        } else {
+            json!({"command":command})
+        };
+        let result = call(f, "chariox.kernel_browser", arguments).await.unwrap();
+        assert_eq!(result["state"], "ready", "{operation} keeps its state enum");
+        assert_eq!(result["generation"], 1, "{operation} keeps generation");
+        let tabs = result["tabs"]
+            .as_array()
+            .expect("capturing Tabs preserves the fixed inventory key");
+        let tab = tabs
+            .iter()
+            .find(|tab| tab["tab_id"] == "host-tab-new")
+            .expect("the filled tab keeps its opaque identity");
+        assert_eq!(tab["document_id"], "doc-login");
+        assert_eq!(
+            tab["title"], "[redacted] [redacted] [redacted] [redacted]",
+            "{operation} still scrubs page-derived title text"
+        );
+    }
+}
+
+#[tokio::test]
+async fn vflag_remove_capture_preserves_a_slot_referenced_by_an_alias() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let captured = call(f, CAPTURE, capture_args("shared-slot")).await.unwrap();
+    let id = captured["credential_id"].as_str().unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let mut alias = registry.get(id).unwrap().unwrap();
+    alias.id = "same-binding-alias".into();
+    registry.upsert(alias).unwrap();
+
+    let result = call(f, REMOVE, json!({"credential_id": id})).await;
+    assert_eq!(stored(f, "same-binding-alias").as_str(), CAPTURED);
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("Another entry uses this value"));
+    assert!(registry.get(id).unwrap().is_some());
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    assert_eq!(
+        f.state
+            .owned
+            .kernel_browser_secret_observations
+            .scrub_text_or_withhold(&scope, CAPTURED),
+        "[redacted]"
+    );
+}
+
+// A label captured by mistake ("Token") is undone by the agent that made the capture: the entry goes,
+// and the word is no longer masked in what the agent observes.
+#[tokio::test]
+async fn vflag_agent_removes_its_own_capture_and_the_value_is_no_longer_masked() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(login.root.path().join("value"), "Token").unwrap();
+    let wrong = call(f, CAPTURE, capture_args("label")).await.unwrap();
+    let wrong = wrong["credential_id"].as_str().unwrap().to_string();
+    let scope = crate::runtime::kernel_browser_host::KernelBrowserHost::profile_key("local");
+    let protection = &f.state.owned.kernel_browser_secret_observations;
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, "Token page"),
+        "[redacted] page"
+    );
+    std::fs::write(login.root.path().join("value"), CAPTURED).unwrap();
+    let kept = call(f, CAPTURE, capture_args("value")).await.unwrap();
+    let kept = kept["credential_id"].as_str().unwrap().to_string();
+
+    let removed = call(f, REMOVE, json!({"credential_id": wrong}))
+        .await
+        .unwrap();
+    assert_eq!(removed["removed"][0]["credential_id"], wrong.as_str());
+    assert_eq!(removed["removed"][0]["label"], "Stripe secret key");
+    assert_eq!(removed["removed"][0]["length"], 5);
+    assert!(
+        !removed.to_string().contains("Token"),
+        "the value is never returned"
+    );
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, "Token page"),
+        "Token page"
+    );
+    assert_eq!(
+        protection.scrub_text_or_withhold(&scope, &format!("key {CAPTURED}")),
+        "key [redacted]",
+        "the other capture stays masked"
+    );
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    assert!(registry.get(&wrong).unwrap().is_none());
+    assert!(registry.get(&kept).unwrap().is_some());
+    assert!(
+        call(f, REMOVE, json!({"credential_id": wrong}))
+            .await
+            .is_err(),
+        "already removed"
+    );
+
+    // Not a capture of this agent: an owner entry and a generated entry are refused.
+    owner_credential(f, "owner-entry", &[SITE], None);
+    let refused = call(f, REMOVE, json!({"credential_id": "owner-entry"}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("only a capture that this agent made"),
+        "{refused}"
+    );
+    owner_credential(
+        f,
+        "other-agents-capture",
+        &[SITE],
+        Some(&f.request.session_id),
+    );
+    assert!(
+        call(f, REMOVE, json!({"credential_id": "other-agents-capture"}))
+            .await
+            .is_err()
+    );
+}
+
+// A page's manual setup key or QR code becomes a TOTP seed bound to the one site.
+#[tokio::test]
+async fn capture_browser_stores_a_page_totp_key_or_qr_as_a_site_bound_seed() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    std::fs::write(
+        login.root.path().join("qr.b64"),
+        crate::runtime::state::kernel_browser_qr::FIXTURE_QR_PNG,
+    )
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    let totp_args = |request_id: &str, node_ref: &str, read: &str| {
+        let mut args = capture_args(request_id);
+        args["node_ref"] = json!(node_ref);
+        args["read"] = json!(read);
+        args["totp"] = json!(true);
+        args.as_object_mut().unwrap().remove("reveal_node_ref");
+        args
+    };
+    let key = call(f, CAPTURE, totp_args("key", "backend:7", "node"))
+        .await
+        .unwrap();
+    assert_eq!(key["totp"], true);
+    assert!(
+        !key.to_string().to_lowercase().contains("jbsw"),
+        "the model never gets the seed"
+    );
+    let handle = key["credential_id"].as_str().unwrap().to_string();
+    assert_code(f, &handle, 6, 30);
+    let credential = registry.get(&handle).unwrap().unwrap();
+    assert_eq!(
+        credential.injection,
+        crate::config::UserCredentialInjectionConfig::Totp(crate::config::TotpConfig::default())
+    );
+    assert_eq!(
+        credential.metadata.unwrap().use_binding.unwrap().target,
+        crate::config::VaultUseTarget::Totp {
+            origin: SITE.into()
+        }
+    );
+    let again = call(f, CAPTURE, totp_args("key", "backend:7", "node"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+    let mut plain = totp_args("key", "backend:7", "node");
+    plain["totp"] = json!(false);
+    assert!(
+        call(f, CAPTURE, plain).await.is_err(),
+        "a retry cannot turn a seed into a password"
+    );
+
+    let qr = call(f, CAPTURE, totp_args("qr", "backend:7", "qr"))
+        .await
+        .unwrap();
+    let request = std::fs::read_to_string(login.root.path().join("capture")).unwrap();
+    assert!(request.contains(r#""read":"qr""#), "{request}");
+    let handle = qr["credential_id"].as_str().unwrap().to_string();
+    assert_code(f, &handle, 8, 45);
+    match registry.get(&handle).unwrap().unwrap().injection {
+        crate::config::UserCredentialInjectionConfig::Totp(config) => {
+            assert_eq!(
+                (config.digits, config.period_s),
+                (8, 45),
+                "URI parameters are kept"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // A value that is not an authenticator key stores nothing and is not echoed.
+    let stored_before = crate::credential::load_user_credentials().unwrap().len();
+    let mut wrong = totp_args("wrong", "backend:7", "node");
+    wrong["reveal_node_ref"] = json!("backend:7");
+    let error = call(f, CAPTURE, wrong).await.unwrap_err().to_string();
+    assert!(
+        error.contains("authenticator setup key") && !error.contains(CAPTURED),
+        "{error}"
+    );
+    assert_eq!(
+        crate::credential::load_user_credentials().unwrap().len(),
+        stored_before
+    );
+}
+
+#[tokio::test]
+async fn reviewer_capture_browser_accepts_standalone_lowercase_and_padded_totp_keys() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    for (id, seed) in [
+        ("lowercase-key", "abcdefghijklmnop".to_string()),
+        ("padded-key", data_encoding::BASE32.encode(b"abcdefghijk")),
+    ] {
+        std::fs::write(login.root.path().join("value"), &seed).unwrap();
+        let mut args = capture_args(id);
+        args["totp"] = json!(true);
+        args["read"] = json!("node");
+        let captured = call(f, CAPTURE, args).await.unwrap();
+        assert_eq!(captured["totp"], true);
+        assert_eq!(captured["created"], true);
+        assert!(!captured.to_string().contains(&seed));
+        let handle = captured["credential_id"].as_str().unwrap();
+        assert_eq!(stored(f, handle).len(), 6);
+    }
+}
+
+/// The injected code is the RFC 6238 code of the fictional page seed (SHA-1, as the fixture URI says).
+fn assert_code(f: &Fixture, handle: &str, digits: u32, period: u64) {
+    use hmac::{Hmac, Mac};
+    let seed = data_encoding::BASE32_NOPAD
+        .decode(b"JBSWY3DPEHPK3PXP")
+        .unwrap();
+    let code_at = |seconds: u64| {
+        let mut mac = Hmac::<sha1::Sha1>::new_from_slice(&seed).unwrap();
+        mac.update(&(seconds / period).to_be_bytes());
+        let digest = mac.finalize().into_bytes();
+        let offset = usize::from(digest[19] & 15);
+        let number =
+            u32::from_be_bytes(digest[offset..offset + 4].try_into().unwrap()) & 0x7fff_ffff;
+        format!(
+            "{:0width$}",
+            number % 10u32.pow(digits),
+            width = digits as usize
+        )
+    };
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let (before, code, after) = (now(), stored(f, handle), now());
+    assert!(
+        [code_at(before), code_at(after)].contains(&*code),
+        "the Vault computes a code from the captured seed"
+    );
+}
+
+// Browser capture can bind a page value to one command environment variable instead of a site.
+#[tokio::test]
+async fn capture_browser_binds_a_page_value_to_one_command_environment() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let binding =
+        json!({"target":{"kind":"command_environment","name":"RESEND_API_KEY","origin":SITE}});
+    let mut args = capture_args("env");
+    args["use_binding"] = binding.clone();
+    let result = call(f, CAPTURE, args.clone()).await.unwrap();
+    assert!(
+        !result.to_string().contains(CAPTURED),
+        "the model never gets the value"
+    );
+    let handle = result["credential_id"].as_str().unwrap().to_string();
+    let service = f.state.home_runtime_secret_service().unwrap();
+    let target = crate::config::VaultUseTarget::CommandEnvironment {
+        name: "RESEND_API_KEY".into(),
+        origin: SITE.into(),
+    };
+    assert_eq!(
+        service
+            .workspace_secret_input_for_target(&handle, &target)
+            .unwrap(),
+        CAPTURED
+    );
+    let other = crate::config::VaultUseTarget::CommandEnvironment {
+        name: "OTHER_KEY".into(),
+        origin: SITE.into(),
+    };
+    assert!(
+        service
+            .workspace_secret_input_for_target(&handle, &other)
+            .is_err(),
+        "one entry, one use"
+    );
+    assert!(
+        service
+            .browser_secret_input_for_target_url(&handle, &format!("{SITE}/login"))
+            .is_err(),
+        "a command-bound entry is not a site password"
+    );
+    let again = call(f, CAPTURE, args).await.unwrap();
+    assert_eq!(
+        (again["credential_id"].as_str(), again["created"].as_bool()),
+        (Some(handle.as_str()), Some(false))
+    );
+
+    std::fs::remove_file(login.root.path().join("capture")).unwrap();
+    let mut both = capture_args("both");
+    both["use_binding"] = binding;
+    both["use_on"] = json!([SITE]);
+    assert!(
+        call(f, CAPTURE, both).await.is_err(),
+        "a site and a command use are exclusive"
+    );
+    let mut outside = capture_args("outside");
+    outside["use_binding"] = json!({"target":{"kind":"file","path":"/etc/capture-target"}});
+    assert!(
+        call(f, CAPTURE, outside).await.is_err(),
+        "a file outside the workspace is refused"
+    );
+    assert!(
+        !login.root.path().join("capture").exists(),
+        "a refused destination reveals nothing"
+    );
+}
+
 // VAUDIT S3: fill_field puts a captured value into a plain field on an allowed origin only.
 #[tokio::test]
 async fn vaudit_s3_fill_field_fills_plain_targets_on_the_exact_origin() {
@@ -1354,5 +2233,49 @@ async fn vault_tools_and_resource_register_do_not_depend_on_the_sudo_window() {
     .await
     .unwrap();
     assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 1);
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
+#[tokio::test]
+async fn vflag_capture_cursor_and_resize_schema_preserves_outer_runtime_results() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER.replace(
+        r#"  *'"op":"stop"'*)"#,
+        r#"  *'"op":"pointer_cursor"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"cursor":"pointer"}}\n' "$id" ;;
+  *'"op":"resize"'*) printf '{"id":%s,"ok":true,"result":{"width":1280,"height":800}}\n' "$id" ;;
+  *'"op":"stop"'*)"#,
+    );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    for (index, label) in ["generation", "cursor", "pointer", "width", "height"]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(login.root.path().join("value"), label).unwrap();
+        call(
+            f,
+            CAPTURE,
+            capture_args(&format!("cursor-resize-schema-{index}")),
+        )
+        .await
+        .unwrap();
+    }
+    for (command, expected) in [
+        (
+            json!({"op":"pointer_cursor","tab_id":"host-tab-new","generation":1,"x":10,"y":10}),
+            json!({"generation":1,"cursor":"pointer"}),
+        ),
+        (
+            json!({"op":"resize","tab_id":"host-tab-new","generation":1,"width":1280,"height":800}),
+            json!({"width":1280,"height":800}),
+        ),
+    ] {
+        let operation = command["op"].as_str().unwrap().to_string();
+        let result = call(f, "chariox.kernel_browser", json!({"command":command}))
+            .await
+            .unwrap();
+        assert_eq!(result, expected, "{operation} preserves fixed metadata");
+    }
     f.state.shutdown_cleanup().await.unwrap();
 }

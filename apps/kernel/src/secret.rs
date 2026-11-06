@@ -25,18 +25,22 @@ pub(crate) use http_boundary::HttpSecretBoundary;
 use http_boundary::{decode_http_response, http_error};
 mod vault;
 pub(crate) use vault::remove_installed_transferred_vault;
+pub(crate) use vault::take_chariox_vault_single_use_unlock;
 use vault::vault_store_for_config;
 pub(crate) use vault::vault_store_for_config as web_bot_auth_vault_store;
+#[cfg(unix)]
+pub(crate) use vault::{adopt_vault_unlocks, hand_over_vault_unlocks};
 pub use vault::{
     change_chariox_encrypted_vault_passphrase, chariox_encrypted_vault_status,
     chariox_vault_single_use_unlocked, clear_all_chariox_encrypted_vault_unlocks,
-    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
-    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
-    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, sync_chariox_encrypted_vault,
-    unlock_chariox_encrypted_vault, unlock_existing_chariox_encrypted_vault,
-    validate_installed_transferred_vault, validate_transferred_vault_snapshot_for_export,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultPasskeyVerifier, VaultUnlockLease,
+    create_vault_from_key_seed, export_transferred_vault_snapshot, export_vault_key_seed,
+    extend_chariox_encrypted_vault, install_transferred_vault_snapshot,
+    is_chariox_vault_locked_error, lock_chariox_encrypted_vault, restore_transferred_vault_unlock,
+    sync_chariox_encrypted_vault, unlock_chariox_encrypted_vault,
+    unlock_existing_chariox_encrypted_vault, validate_installed_transferred_vault,
+    validate_transferred_vault_snapshot_for_export, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultKeySeed, VaultPasskeyVerifier,
+    VaultUnlockLease,
 };
 #[cfg(test)]
 pub(crate) use vault::{
@@ -699,7 +703,30 @@ impl RuntimeSecretService {
 
     pub fn resolve_mcp_secret(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
+        if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.use_binding.is_some())
+        {
+            return Err(secret_error(
+                "credential_policy",
+                "a bound MCP credential needs an observed HTTP destination".into(),
+            ));
+        }
         self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
+        self.resolve_secret(credential)
+    }
+
+    pub fn resolve_http_mcp_secret(
+        &self,
+        credential_id: &str,
+        url: &str,
+    ) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
+        let target = url::Url::parse(url)
+            .map_err(|_| secret_error("credential_policy", "invalid MCP endpoint URL".into()))?;
+        self.ensure_host_allowed(credential, &target)?;
         self.resolve_secret(credential)
     }
 
@@ -1060,7 +1087,7 @@ impl RuntimeSecretService {
                 (&binding.target, requested),
                 (
                     crate::config::VaultUseTarget::Site { .. },
-                    UserCredentialUse::Browser | UserCredentialUse::Http
+                    UserCredentialUse::Browser | UserCredentialUse::Http | UserCredentialUse::Mcp
                 ) | (
                     crate::config::VaultUseTarget::Totp { .. },
                     UserCredentialUse::Browser
@@ -1257,6 +1284,11 @@ fn hex_bytes(bytes: &[u8]) -> String {
         let _ = write!(hex, "{byte:02x}");
     }
     hex
+}
+
+/// See `totp::locate`: the setup key inside the text a page element shows.
+pub(crate) fn locate_totp_key(text: &str) -> Option<Zeroizing<String>> {
+    totp::locate(text)
 }
 
 pub(crate) fn normalize_vault_credential_input(

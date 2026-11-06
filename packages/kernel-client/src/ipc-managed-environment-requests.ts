@@ -21,9 +21,6 @@ export type ManagedEnvironmentReimageReceiptStatus =
   | "fresh_equivalent"
   | "failed_closed"
 
-export const managedEnvironmentReimagePreflightMinimumProtocolVersion = 341
-export const managedEnvironmentCreateMinimumProtocolVersion = 342
-export const managedEnvironmentShutdownObservationMinimumProtocolVersion = 370
 
 export type ManagedEnvironmentAutoStopPolicy = {
   readonly minimumRuntimeSeconds: number
@@ -110,7 +107,7 @@ export type ManagedEnvironmentSummary = {
   readonly contextManifestDigest: string | null
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
   readonly runtimeStartedAt?: string | null
-  readonly runningAgentCount?: 0 | 1 | null
+  readonly workingAgentCount?: number | null
   readonly lastActivityReportedAt?: string | null
   readonly lastActivityChangedAt?: string | null
   readonly autoStopWarningAt?: string | null
@@ -243,37 +240,7 @@ export type ManagedContextTransferTicket = {
   }
 }
 
-export function listManagedEnvironmentCatalogRequest() {
-  return { ListManagedEnvironmentCatalog: null } as const
-}
-
-export function getManagedEnvironmentRequest(environmentId: string) {
-  return { GetManagedEnvironment: { environmentId } } as const
-}
-
-export function getManagedEnvironmentReimagePreflightRequest(environmentId: string) {
-  return { GetManagedEnvironmentReimagePreflight: { environmentId } } as const
-}
-
-export const managedEnvironmentReimageReceiptMinimumProtocolVersion = 345
-
-export function getManagedEnvironmentReimageReceiptRequest(environmentId: string) {
-  return { GetManagedEnvironmentReimageReceipt: { environmentId } } as const
-}
-
-export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {
-  return { PrepareManagedEnvironmentContextTransfer: { environmentId } } as const
-}
-
-export function prepareManagedEnvironmentGitCredentialEnrollmentRequest(input: {
-  readonly environmentId: string
-  readonly sourceTargetId: string
-  readonly gitCredentials: ManagedEnvironmentGitCredentials
-}) {
-  return { PrepareManagedEnvironmentGitCredentialEnrollment: input } as const
-}
-
-export function createManagedEnvironmentRequest(input: {
+export type CreateManagedEnvironmentInput = {
   readonly clientRequestId: string
   readonly name: string
   readonly region: string
@@ -281,19 +248,15 @@ export function createManagedEnvironmentRequest(input: {
   readonly managedRepositoryRoot?: string
   readonly autoStopPolicy: ManagedEnvironmentAutoStopPolicy
   readonly contextPlan: ManagedEnvironmentContextPlanInput
-}) {
-  return { CreateManagedEnvironment: input } as const
 }
 
-export function requestManagedEnvironmentLifecycleRequest(input: {
+export type RequestManagedEnvironmentLifecycleInput = {
   readonly environmentId: string
   readonly action: ManagedEnvironmentLifecycleAction
   readonly idempotencyKey: string
-}) {
-  return { RequestManagedEnvironmentLifecycle: input } as const
 }
 
-export function requestManagedEnvironmentReimageRequest(input: {
+export type RequestManagedEnvironmentReimageInput = {
   readonly environmentId: string
   readonly expectedGeneration: number
   readonly expectedProviderServerId: string
@@ -305,8 +268,6 @@ export function requestManagedEnvironmentReimageRequest(input: {
   readonly expectedRuntimeSourceTree: string
   readonly contextPlan: ManagedEnvironmentContextPlanInput
   readonly idempotencyKey: string
-}) {
-  return { RequestManagedEnvironmentReimage: input } as const
 }
 
 export function observeManagedEnvironmentPreReimageRequest(input: {

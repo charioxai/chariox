@@ -150,3 +150,51 @@ fn user_app_view_protocol_443_kernel_browser_host_selection_snapshot() {
         .is_err());
     }
 }
+
+#[test]
+fn client_app_view_delivery_protocol_roundtrip() {
+    for value in [
+        serde_json::json!({"ClientAppView":{"Open":{"installation_id":"installed"}}}),
+        serde_json::json!({"ClientAppView":{"Read":{"view_id":"v","offset":0,"max_bytes":65536}}}),
+        serde_json::json!({"ClientAppView":{"Check":{"view_id":"v"}}}),
+        serde_json::json!({"ClientAppView":{"Close":{"view_id":"v"}}}),
+    ] {
+        let parsed: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    }
+}
+
+#[test]
+fn client_app_view_protocol_999_snapshot_and_hash() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("client-app-view-999.json")).unwrap();
+    assert_eq!(snapshot["local"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        snapshot["relayPeer"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+    for request in snapshot["requests"].as_array().unwrap() {
+        let parsed: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *request);
+        let mut forged = request.clone();
+        let fields = forged["ClientAppView"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+            .next()
+            .unwrap();
+        fields["owner_id"] = serde_json::json!("foreign-owner");
+        assert!(serde_json::from_value::<LocalDaemonRequest>(forged).is_err());
+    }
+    for response in snapshot["responses"].as_array().unwrap() {
+        let parsed: LocalDaemonResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), *response);
+    }
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+        ),
+        "fea8737df48f3415497cdd288c8c7c26cf90ca39527862f0c24b2dae7856a85b"
+    );
+}

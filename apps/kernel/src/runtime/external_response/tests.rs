@@ -63,23 +63,22 @@ fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
 #[test]
 fn external_response_preserves_workflow_notification_metadata() {
     let source = serde_json::json!({
-        "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
+        "kind":"workflow_exit", "source_id":"source", "owner_user_id":"local", "kernel_id":"home",
         "session_id":"source-room", "workflow_id":"source-workflow",
-        "enabled":true, "available":true
+        "exit_node_id":"node-1", "enabled":true, "available":true
     });
     let subscription = serde_json::json!({
         "subscription_id":"subscription", "source_id":"source", "owner_user_id":"local",
         "target_kernel_id":"home", "session_id":"target-room", "workflow_id":"target-workflow",
         "publication_id":"publication", "endpoint_id":"endpoint", "queue_id":"queue",
-        "ttl_days":7, "source_available":true, "source_kernel_id":"home",
-        "events":"both", "filters":{"release":"candidate"}, "delivery_mode":"queue"
+        "source_available":true, "source_kernel_id":"home"
     });
     for value in [
         serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
         serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
         serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
         serde_json::json!({"WorkflowNotifications":{
-            "sources":[], "subscriptions":[subscription],
+            "sources":[], "subscriptions":[subscription], "listeners":[subscription],
             "diagnostics":[{"source_id":"source", "occurrence_id":"occurrence", "code":"expired"}]
         }}),
     ] {
@@ -275,7 +274,10 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         http_headers.insert("Authorization".into(), CANARY.into());
     }
     vec![
-        LocalDaemonResponse::AgentSpawned { agent, event_subscription_error: None},
+        LocalDaemonResponse::AgentSpawned {
+            agent,
+            event_subscription_error: None,
+        },
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {
             credential: credential.clone(),
@@ -316,9 +318,6 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
                 user_code: Some(CANARY.into()),
             },
         },
-        serde_json::from_value(serde_json::json!({"EnvironmentProviderAuthorizationLink":{"link":{
-            "provider":"codex","linked_profile_ref":null,"authorization_url":CANARY,"expires_at_ms":1}}}))
-        .unwrap(),
     ]
 }
 
@@ -405,16 +404,16 @@ fn external_response_terminal_retains_owner_replies() {
 #[test]
 fn external_response_preserves_notification_metadata_and_sudo_extension() {
     let source = serde_json::json!({
-        "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
-        "session_id":"room", "workflow_id":"workflow", "enabled":true,
-        "available":true, "name":"review", "output_fields":["finding"]
+        "kind":"workflow_exit", "source_id":"source", "owner_user_id":"owner", "kernel_id":"home",
+        "session_id":"room", "workflow_id":"workflow", "exit_node_id":"node-1",
+        "enabled":true, "available":true, "name":"review"
     });
     let subscription = serde_json::json!({
         "subscription_id":"subscription", "source_id":"source", "owner_user_id":"owner",
         "target_kernel_id":"worker", "target_kind":"workflow_endpoint", "session_id":"room",
         "workflow_id":"workflow", "publication_id":"publication", "endpoint_id":"endpoint",
-        "queue_id":"queue", "ttl_days":7, "source_available":true,
-        "source_kernel_id":"home", "events":"success", "filters":{}, "delivery_mode":"queue"
+        "queue_id":"queue", "source_available":true,
+        "source_kernel_id":"home"
     });
     let turn = serde_json::json!({
         "entry_id":"sudo:window", "session_id":"room", "agent_id":"agent",
@@ -426,7 +425,7 @@ fn external_response_preserves_notification_metadata_and_sudo_extension() {
         serde_json::json!({"WorkflowNotificationSourceRegistered":{"source":source}}),
         serde_json::json!({"WorkflowNotificationAttached":{"subscription":subscription}}),
         serde_json::json!({"WorkflowNotificationDetached":{"subscription_id":"subscription"}}),
-        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"diagnostics":[]}}),
+        serde_json::json!({"WorkflowNotifications":{"sources":[],"subscriptions":[],"listeners":[],"diagnostics":[]}}),
         serde_json::json!({"KernelSudoExtended":{"turn":turn}}),
     ];
     for reply in replies {
@@ -602,15 +601,11 @@ async fn external_response_register_and_remove_existing_literal_credentials() {
 }
 
 #[test]
-fn mp07_mp08_mp11_ssh_receipts_share_the_typed_and_cached_public_boundary() {
-    let response = LocalDaemonResponse::SshMachine {
-        machine: crate::local::SshMachineResult {
-            install_id: "byom-owned".into(),
-            status: "ready".into(),
-            kernel_id: Some("kernel-owned".into()),
-            machine_id: Some("machine-owned".into()),
-            release_digest: format!("sha256:{}", "a".repeat(64)),
-            state_retained: false,
+fn own_machine_enrollment_reaches_agents_unchanged() {
+    let response = LocalDaemonResponse::OwnMachineEnrollment {
+        enrollment: crate::local::OwnMachineEnrollmentCommand {
+            command: " (curl -fsSL https://downloads.example/install.sh)".into(),
+            expires_at: "2026-11-03T13:10:00Z".into(),
         },
     };
     let expected = serde_json::to_value(&response).unwrap();

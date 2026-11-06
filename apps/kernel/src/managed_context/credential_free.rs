@@ -1,4 +1,5 @@
 //! MP-08 / MP-11: detect Vault-routed content; reject plaintext secrets before target mutation.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[path = "credential_free/config.rs"]
 mod config;
 mod history;
@@ -80,6 +81,20 @@ fn free_text(text: &str) -> Result<(), DaemonError> {
     json::validate_tokens(text)
 }
 
+fn secret_looking_project_path(path: &str) -> bool {
+    path.split('/').any(|part| {
+        part.starts_with(".env")
+            || part.ends_with(".pem")
+            || part.ends_with(".key")
+            || part.ends_with(".tfvars")
+            || part.starts_with("id_rsa")
+            || part.starts_with("id_ed25519")
+            || part.to_ascii_lowercase().contains("credential")
+            || part == "secrets"
+            || part == ".ssh"
+    })
+}
+
 /// MP-08/MP-11: the one guard for source export, target admission, Git history
 /// and packaged Extensions. `Err` means Vault-routed (or refused where no Vault
 /// route exists). Content is copied as data only when it is fully classified:
@@ -88,7 +103,7 @@ pub(crate) fn validate_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonError
     let name = path.to_ascii_lowercase();
     if text::credential_format(path)
         || credential_text(path)
-        || crate::project_environment::secret_looking_project_path(&name)
+        || secret_looking_project_path(&name)
         || name.split('/').any(|part| {
             matches!(
                 part,
@@ -209,7 +224,7 @@ fn git(root: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, DaemonError> {
     // MP-11: signal only this scan's child; distinguish our policy kill
     // from a target shutdown interrupting an otherwise retryable import.
     let killed_for_refusal = refused_output && child.id() > 1 && child.kill().is_ok();
-    let status = child.wait().map_err(|_| scan_unavailable())?;
+    let status = child.bounded_wait().map_err(|_| scan_unavailable())?;
     drop(stdout);
     scan_git_status(status, killed_for_refusal)?;
     if refused_output {
@@ -267,11 +282,6 @@ pub(crate) fn validate_development_archive(
         &artifacts,
     )
     .map_err(|_| refused())?;
-    // MP-11: sealed Project environment values could contain source secrets.
-    // The owner-managed mode transfers code/setup metadata, never this layer.
-    if manifest.project_environment.is_some() {
-        return Err(refused());
-    }
     let sealed = manifest
         .vault_artifacts
         .iter()

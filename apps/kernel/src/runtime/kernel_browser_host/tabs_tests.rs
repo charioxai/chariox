@@ -283,3 +283,79 @@ done
     host.shutdown().unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn owner_approved_browser_recovery_lists_tabs_without_prior_leases_or_focus() {
+    let root = std::env::temp_dir().join(format!(
+        "chariox-owner-tabs-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let script = root.join("controller.sh");
+    std::fs::write(&script, POPUP_AFTER_INPUT_CONTROLLER).unwrap();
+    let host = KernelBrowserHost::new(root.clone());
+    host.install_fixture_backend("alice", &script, &root);
+    host.backend("alice")
+        .unwrap()
+        .lock()
+        .unwrap()
+        .start()
+        .unwrap();
+    host.set_focus("alice", Some("mara"));
+    host.load("alice", "mara").unwrap();
+    let policy = json!({"values":[],"targets":[],"unknown":false});
+    let before = host
+        .protected_request(
+            "alice",
+            Some("mara"),
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    assert_eq!(before["tabs"].as_array().unwrap().len(), 2);
+    host.revoke_grants("alice", Some("mara"));
+    host.request_grant(
+        "alice",
+        "ben",
+        "another-prompt",
+        Duration::from_secs(3600),
+        None,
+        "another-room",
+    )
+    .unwrap();
+    let background = host
+        .protected_request(
+            "alice",
+            Some("ben"),
+            "host.browser",
+            json!({"op":"state"}),
+            policy.clone(),
+        )
+        .unwrap();
+    assert_eq!(
+        background["tabs"].as_array().unwrap().len(),
+        0,
+        "an ordinary unfocused prompt still has only its retained tabs"
+    );
+    let fence = host.acquisition_fence("alice", "mara");
+    host.request_task_grant("alice", "mara", "verification-task", 1, fence, "room")
+        .unwrap();
+    assert!(host.inner.lock().unwrap().access.focused("alice").is_none());
+    let restored = host
+        .protected_request(
+            "alice",
+            Some("mara"),
+            "host.browser",
+            json!({"op":"state"}),
+            policy,
+        )
+        .unwrap();
+    host.shutdown().unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        restored["tabs"].as_array().unwrap().len(),
+        2,
+        "the owner's browser approval includes discovery of the tabs the task can use"
+    );
+}

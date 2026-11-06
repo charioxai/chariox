@@ -20,7 +20,6 @@ impl CommandRouter {
         caller_user_id: &str,
         view_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
-        super::retired_cloud_controls::require_kernel_authority(request)?;
         if let LocalDaemonRequest::ControlPlane(request) = request {
             return crate::runtime::control_plane::execute(
                 &self.config_projection.snapshot(),
@@ -139,11 +138,8 @@ impl CommandRouter {
             )
             .map(Some);
         }
-        if matches!(
-            request,
-            LocalDaemonRequest::AddSshMachine(_) | LocalDaemonRequest::RemoveSshMachine(_)
-        ) {
-            return crate::runtime::ssh_machine_control::execute(
+        if let LocalDaemonRequest::IssueOwnMachineEnrollment(request) = request {
+            return crate::runtime::own_machine_enrollment::execute(
                 self.config_projection.snapshot(),
                 command,
                 request.clone(),

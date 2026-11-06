@@ -39,6 +39,7 @@ function agentTriggerStripItem(trigger: AgentTrigger): AgentTriggerStripItem {
 
 export function agentTriggerSourceLabel(trigger: Pick<AgentTrigger, "source">): string {
   if (trigger.source.kind === "http") return "HTTP"
+  if (trigger.source.kind === "notification") return `Notification · ${trigger.source.display_name}`
   const { interval_seconds: seconds, repeat } = trigger.source
   return `${repeat === "every" ? "every" : "in"} ${formatInterval(seconds)}`
 }

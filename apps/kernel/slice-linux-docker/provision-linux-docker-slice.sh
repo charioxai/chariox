@@ -22,7 +22,7 @@ fi
 
 unset IFS
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd -P)"
 
 # The Path-1 extension helper supplies only its pinned local socket. Caller
 # Docker config and credential helpers remain available after it drops UID.
@@ -99,6 +99,7 @@ SLICE_OWNER_PUBLIC_KEY="${CHARIOX_SLICE_OWNER_PUBLIC_KEY:-}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
+SLICE_EXPLICIT_SOURCE_BUILD=0
 SLICE_RUNTIME_BUILD_PROFILE="${CHARIOX_SLICE_RUNTIME_BUILD_PROFILE:-release}"
 SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL="${CHARIOX_SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL:-3}"
 SLICE_EXTENSION_DOCKERFILE="${CHARIOX_SLICE_EXTENSION_DOCKERFILE:-}"
@@ -267,11 +268,13 @@ run_with_file_stdin_timeout() {
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
+Usage: $(basename "$0") [build-source-image|build-image|provision|recover|status|stop|destroy|import-provider-auth|remove-provider-auth|start-provider-login|start-desktop|validate-screen|start-runtime|start-providers|shell]
        $(basename "$0") [login-codex|logout-codex|login-opencode|logout-opencode]
 
-This Docker path is a provider/runtime validation fallback for Mac hosts when
-the Lume Ubuntu prebuilt image is unavailable.
+build-source-image constructs runtime layers on the release builder. Managed
+build-image/provision verifies and loads the signed image; it never builds
+missing image layers from the network. Ordinary installations build locally
+when their bundle does not ship an image.
 
 CHARIOX_SLICE_DOCKER_PIDS_LIMIT caps container processes and threads (default:
 1024). Set a positive integer to tune it for the workload. Reused containers
@@ -556,6 +559,7 @@ refresh_slice_support_files() {
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-capture-presentation.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-capture-presentation.mjs" "Browser Controller runtime dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-focus-world.mjs" "Browser Controller focus world dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cursor.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cursor.mjs" "Browser Controller cursor dependency"
+  copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-submit-outcome.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-submit-outcome.mjs" "Browser Controller submit outcome dependency"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-display.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-display.mjs" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical-display.py" "$SLICE_NAME:/opt/chariox-slice/canonical-display.py" "Canonical display support"
   copy_required_slice_overlay "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/canonical_vnc.py" "$SLICE_NAME:/opt/chariox-slice/canonical_vnc.py" "Canonical display support"
@@ -813,7 +817,54 @@ docker_build() {
   fail "Docker Buildx is required to build the slice runtime image"
 }
 
+released_image_directory() {
+  [[ -d "$REPO_ROOT/../slice-image" ]] || return 1
+  (cd "$REPO_ROOT/../slice-image" && pwd)
+}
+
+released_image_loaded() {
+  local tag="$1" layers="$2" image_id="$3" loaded
+  loaded="$(docker image inspect -f '{{range .RootFS.Layers}}{{.}},{{end}}' "$tag" 2>/dev/null)" || return 1
+  [[ "$(docker image inspect -f '{{.Id}}' "$tag" 2>/dev/null)" == "$image_id" && "$loaded" == "$layers," ]] && image_runtime_compatible "$tag" && image_selkies_capable "$tag"
+}
+
+load_released_image() {
+  local image="$1" directory description tag archive size sha256 layers image_id
+  directory="$(released_image_directory)" || return 1
+  description="$(python3 "$SCRIPT_DIR/released-slice-image.py" describe "$directory" \
+    "$SLICE_RUNTIME_SOURCE_REVISION" "$SLICE_RELAY_PEER_PROTOCOL_VERSION" "$(docker_target_arch)")" || exit 1
+  IFS=$'\t' read -r tag archive size sha256 layers image_id <<<"$description"
+  python3 "$SCRIPT_DIR/released-slice-image.py" verify "$archive" "$size" "$sha256" || exit 1
+  if released_image_loaded "$image_id" "$layers" "$image_id"; then
+    log "release runtime image $tag is already loaded"
+  else
+    log "loading the signed release's runtime image ($size bytes); no build is needed"
+    if ! { python3 "$SCRIPT_DIR/released-slice-image.py" stream "$archive" \
+      | run_guarded_command unbounded -- docker load -q; }; then
+      fail "docker load of the release runtime image failed. Free disk space for Docker (about $((size * 3 / 1000000000 + 1)) GB) and start the slice again."
+    fi
+    if ! released_image_loaded "$image_id" "$layers" "$image_id"; then
+      docker rmi "$image_id" >/dev/null 2>&1 || true
+      fail "the loaded release runtime image does not match the signed release; it was removed. Reinstall the Chariox release bundle."
+    fi
+  fi
+  docker tag "$image_id" "$tag"
+  docker tag "$image_id" "$image"
+  if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ && -n "${CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT:-}" ]]; then
+    node "$REPO_ROOT/apps/kernel/slice-linux-docker/protected-image-proof.mjs" --record-standard-build "$image"
+  fi
+  log "release runtime image ready as $image (protocol $SLICE_RELAY_PEER_PROTOCOL_VERSION, runtime $SLICE_RUNTIME_SOURCE_REVISION)"
+}
+
 build_standard_runtime_image() {
+  if released_image_directory >/dev/null; then
+    load_released_image "$1"
+    return
+  fi
+  if [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" && "${SLICE_EXPLICIT_SOURCE_BUILD:-0}" != 1 ]]; then
+    fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+  fi
+
   local image="$1"
   local target_arch
   target_arch="$(docker_target_arch)"
@@ -864,6 +915,11 @@ build_image() {
     || fail "could not read relay peer protocol version from the kernel source"
   [[ -n "$SLICE_RUNTIME_SOURCE_REVISION" ]] \
     || fail "could not fingerprint the kernel and relay runtime source"
+  if released_image_directory >/dev/null; then
+    load_released_image "$SLICE_BASE_IMAGE"
+  elif [[ -f "$SCRIPT_DIR/prebuilt/.managed-release" && "$SLICE_EXPLICIT_SOURCE_BUILD" != 1 ]]; then
+    fail "prebuilt runtime image is missing; install the complete signed release before starting a slice"
+  fi
   case "$SLICE_BUILD_IMAGE" in
     auto|always|never) ;;
     *) fail "CHARIOX_SLICE_BUILD_IMAGE must be auto, always, or never" ;;
@@ -1889,6 +1945,11 @@ main() {
   case "$action" in
     -h|--help|help)
       usage
+      ;;
+    build-source-image)
+      require_docker
+      SLICE_EXPLICIT_SOURCE_BUILD=1
+      build_image
       ;;
     build-image)
       require_docker

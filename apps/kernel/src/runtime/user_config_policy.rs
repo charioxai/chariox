@@ -67,6 +67,16 @@ pub(crate) async fn user_config_mutation_effects(
         }]);
     }
 
+    if path == "agents.ask_before_acquiring_machines" {
+        return Ok(vec![UserConfigMutationEffect {
+            kind: "runtime_config".to_string(),
+            path: path.to_string(),
+            message: "asking before an agent acquires a machine updated for this running kernel"
+                .to_string(),
+            provider_reload: None,
+        }]);
+    }
+
     if path == "relay.accept_remote_leases" {
         return Ok(vec![UserConfigMutationEffect {
             kind: "runtime_config".to_string(),

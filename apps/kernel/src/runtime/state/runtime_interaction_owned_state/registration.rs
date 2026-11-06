@@ -85,10 +85,17 @@ impl KernelRuntimeOwnedState {
                 ));
             }
         }
+        // Kernel action cards keep their human authority and also belong to
+        // the requesting agent's exact prompt/run.
+        let lifetime_agent = interaction.agent_id().or_else(|| {
+            interaction
+                .native_origin()
+                .and(interaction.related_agent_id())
+        });
         // Resolve agent identity before taking the session write guard; session
         // updates must not acquire the agent store in the opposite lock order.
         let mut remote_binding = None;
-        if let Some(agent_id) = interaction.agent_id() {
+        if let Some(agent_id) = lifetime_agent {
             let agent = self.agent_store.get_agent(agent_id)?;
             remote_binding = agent.remote_execution().cloned();
             if agent.session_id() != session_id {
@@ -118,13 +125,20 @@ impl KernelRuntimeOwnedState {
                     || interaction.kind() != crate::session::RuntimeInteractionKind::Permission
                     || interaction.default_on_timeout().is_some()
                     || interaction.custom_choice().is_some()
-                    || !interaction.timeout_sec().is_some_and(|seconds| {
-                        seconds >= 1
-                            && (seconds <= 3600
-                                || interaction
-                                    .kernel_operation_id()
-                                    .is_some_and(|id| id.starts_with("access-")))
-                    })
+                    || !match interaction.timeout_sec() {
+                        Some(seconds) => {
+                            seconds >= 1
+                                && (seconds <= 3600
+                                    || interaction
+                                        .kernel_operation_id()
+                                        .is_some_and(|id| id.starts_with("access-")))
+                        }
+                        None => {
+                            super::super::agent_task_owner_interactions::is_blocked_task_decision(
+                                interaction.id(),
+                            ) && interaction.kernel_operation_id() == Some(interaction.id())
+                        }
+                    }
                 {
                     return Err(interaction_error("Invalid kernel operation decision"));
                 }
@@ -246,7 +260,7 @@ impl KernelRuntimeOwnedState {
         {
             return Err(interaction_error(super::INTERACTION_ALREADY_PENDING));
         }
-        let agent_lifetime = interaction.agent_id().map(|agent_id| {
+        let agent_lifetime = lifetime_agent.map(|agent_id| {
             if interaction.asking_task_id().is_some() {
                 return super::super::PendingAgentInteractionLifetime {
                     agent_id: agent_id.into(),
@@ -360,14 +374,9 @@ impl KernelRuntimeOwnedState {
             user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
-            kernel_operation_deadline: kernel_operation_owner.map(|_| {
-                std::time::Instant::now()
-                    + std::time::Duration::from_secs(
-                        interaction
-                            .timeout_sec()
-                            .expect("validated decision timeout"),
-                    )
-            }),
+            kernel_operation_deadline: kernel_operation_owner
+                .and_then(|_| interaction.timeout_sec())
+                .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };

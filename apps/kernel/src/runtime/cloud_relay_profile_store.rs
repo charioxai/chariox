@@ -16,24 +16,6 @@ pub(crate) fn required_cloud_relay_profile(
         })
 }
 
-pub(crate) fn required_cloud_relay_profile_with_session(
-    config_projection: &DaemonConfigProjectionStore,
-) -> Result<PersistedCloudRelayProfile, DaemonError> {
-    let profile = required_cloud_relay_profile(config_projection)?;
-    if profile
-        .cloud_session_token
-        .as_deref()
-        .unwrap_or("")
-        .is_empty()
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "load cloud relay session",
-            message: "this operation requires a browser/client session; kernel enrollment does not confer human account authority".to_string(),
-        });
-    }
-    Ok(profile)
-}
-
 pub(crate) async fn persist_cloud_profile(
     runtime_state: &KernelRuntimeState,
     profile: PersistedCloudRelayProfile,

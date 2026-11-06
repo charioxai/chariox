@@ -10,6 +10,7 @@ pub(crate) use super::provider_activation::StartedProviderLaunch;
 use super::provider_launch_policy::failed_provider_resume_state_replacement;
 use super::provider_liveness::clear_active_provider_run_session_pointer;
 pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
+use super::provider_processes::ProviderLaunchProcessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
 impl DaemonApp {
@@ -146,9 +147,8 @@ impl DaemonApp {
             }),
         );
         if run.endpoint_mode() == AgentEndpointMode::Managed {
-            if let Err(error) = self
-                .pty
-                .spawn_for_run_with_credentials(&run, &started.provider_credential_env)
+            if let Err(error) = ProviderLaunchProcessRuntime::new(self)
+                .spawn_for_launch_with_credentials(&run, &started.provider_credential_env)
             {
                 crate::logging::error_with_fields(
                     "daemon.app",
@@ -171,12 +171,12 @@ impl DaemonApp {
                     self.update_provider_run_projection(outcome.into_run());
                 }
                 if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
-                    match ProviderRunActivationState::resume_provider_run_for_session(
+                    match ProviderRunActivationState::restore_provider_launch_predecessor(
                         self,
-                        run.session_id(),
+                        &run,
                         previous_active_run_id,
                     ) {
-                        Ok(resumed_run) => {
+                        Ok(Some(resumed_run)) => {
                             self.record_notice(
                                 run.session_id(),
                                 Some(resumed_run.id()),
@@ -188,6 +188,7 @@ impl DaemonApp {
                                 ),
                             );
                         }
+                        Ok(None) => {}
                         Err(resume_error) => {
                             self.record_notice(
                                 run.session_id(),
@@ -204,7 +205,6 @@ impl DaemonApp {
                 }
                 return Err(error);
             }
-            ProviderProcessTracker::new(self).register_managed_run(&run)?;
         }
         self.update_provider_run_projection(run.clone());
         Ok(started)
@@ -469,7 +469,7 @@ impl DaemonApp {
         let prepared =
             self.prepare_app_provider_launch_request(request.clone(), "launch provider run")?;
         if let Some(run) =
-            ProviderRunActivationState::reusable_native_tui_run_for_launch(self, &prepared)?
+            ProviderRunActivationState::reusable_provider_run_for_launch(self, &prepared)?
         {
             if leased {
                 self.mark_leased_provider_run(run.id());
@@ -522,9 +522,8 @@ impl DaemonApp {
             }
             self.update_provider_run_projection(run.clone());
             if run.endpoint_mode() == AgentEndpointMode::Managed {
-                self.pty
-                    .spawn_for_run_with_credentials(&run, &provider_credential_env)?;
-                ProviderProcessTracker::new(self).register_managed_run(&run)?;
+                ProviderLaunchProcessRuntime::new(self)
+                    .spawn_for_launch_with_credentials(&run, &provider_credential_env)?;
             }
             self.providers
                 .initialize_runtime_with_credentials(&run, &provider_credential_env)?;

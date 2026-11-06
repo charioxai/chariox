@@ -1,6 +1,6 @@
 //! Notification peer adapter: existing discovery, owner-bound E2EE transport,
 //! bounded picker refresh. No directory, scheduler, or credential ownership.
-use super::workflow_notification_router::{source_available, summary};
+use super::workflow_notification_router::{source_available, summaries};
 use super::*;
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
@@ -39,11 +39,45 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    pub(crate) fn notification_peer_owner(
+    /// Environment requests also run on a leased worker and on its selected home, so only a
+    /// slice, which has no Cloud profile, is outside the same-owner channel.
+    fn ensure_environment_peer_kernel(&self) -> Result<(), DaemonError> {
+        if self
+            .owned
+            .config_projection
+            .snapshot()
+            .daemon_id
+            .starts_with("slice:")
+        {
+            return Err(store::error(
+                "Environment requests between kernels need a home kernel or a worker",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
         self.ensure_notification_home_role().ok()?;
+        self.authenticated_owner_of(identity)
+    }
+
+    /// The owner of an Environment request, home or leased worker. A worker additionally pins its
+    /// selected home, which the peer admission checks before this runs.
+    pub(crate) fn environment_peer_user_id(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
+        self.ensure_environment_peer_kernel().ok()?;
+        self.authenticated_owner_of(identity)
+    }
+
+    fn authenticated_owner_of(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
         if identity.subject.starts_with("slice:") {
             return None;
         }
@@ -65,6 +99,19 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
         self.ensure_notification_home_role()?;
+        self.send_same_owner_peer_request(owner, kernel, request, TIMEOUT)
+            .await
+    }
+
+    /// One request to another kernel of the same authenticated owner, end-to-end encrypted.
+    pub(crate) async fn send_same_owner_peer_request(
+        &self,
+        owner: &str,
+        kernel: &str,
+        request: RelayPeerRequest,
+        timeout: Duration,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        self.ensure_environment_peer_kernel()?;
         let config = self.owned.config_projection.snapshot();
         if config
             .cloud_relay
@@ -81,7 +128,7 @@ impl KernelRuntimeState {
         // retains sender/response correlation and encryption key verification.
         let (_, kernels) = self.owned.notification_inventory_projection.snapshot();
         if let Some(peer) = kernels.iter().find(|p| p.kernel_id == kernel) {
-            return crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(&config,&self.owned.relay_state,target,&peer.public_key,request,TIMEOUT).await;
+            return crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(&config,&self.owned.relay_state,target,&peer.public_key,request,timeout).await;
         }
         // Existing peer discovery handles reconnect and targets not in the picker.
         crate::transport::relay_client::send_peer_request_via_connected_relay_with_timeout(
@@ -89,7 +136,7 @@ impl KernelRuntimeState {
             &self.owned.relay_state,
             target,
             request,
-            TIMEOUT,
+            timeout,
         )
         .await
     }
@@ -171,7 +218,9 @@ impl KernelRuntimeState {
                     {
                         if sources.len() > 1024
                             || sources.iter().any(|s| {
-                                s.kernel_id != kernel || s.fields.len() > 14 || s.name.len() > 512
+                                s.kernel_id != kernel
+                                    || s.name.len() > 512
+                                    || s.display_name.len() > 520
                             })
                         {
                             continue;
@@ -214,8 +263,12 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_notification_profile_owner(owner)?;
+        let room_member_listing = self.is_room_member_listing(&request, owner);
+        if !room_member_listing {
+            self.ensure_notification_profile_owner(owner)?;
+        }
         if self.notification_grant().is_none()
+            && !room_member_listing
             && matches!(&request, LocalDaemonRequest::ListWorkflowNotifications(_))
         {
             self.refresh_notification_sources(owner).await?;
@@ -272,7 +325,7 @@ impl KernelRuntimeState {
                         &subscription.source_kernel_id,
                         RelayPeerRequest::SubscribeWorkflowNotifications {
                             protocol_version: VERSION,
-                            source_workflow_ref: subscription.source_id.clone(),
+                            source_id: subscription.source_id.clone(),
                             target_ref: subscription.clone(),
                         },
                     )
@@ -334,11 +387,13 @@ impl KernelRuntimeState {
                             .owned
                             .durable_state_store
                             .notification_inventory(owner)?;
-                        let sources = sources
-                            .into_iter()
-                            .filter(|s| s.enabled && source_available(&sessions, s))
-                            .map(|s| summary(&s))
-                            .collect();
+                        let sources = summaries(
+                            &sessions,
+                            &sources
+                                .into_iter()
+                                .filter(|s| s.enabled && source_available(&sessions, s))
+                                .collect::<Vec<_>>(),
+                        );
                         Ok(RelayPeerResponse::WorkflowNotificationSources {
                             protocol_version: VERSION,
                             sources,
@@ -346,7 +401,7 @@ impl KernelRuntimeState {
                     }
                     RelayPeerRequest::SubscribeWorkflowNotifications {
                         protocol_version: VERSION,
-                        source_workflow_ref,
+                        source_id,
                         target_ref,
                     } => {
                         let (sources, _, _) = self
@@ -356,7 +411,7 @@ impl KernelRuntimeState {
                         let source = sources
                             .into_iter()
                             .find(|s| {
-                                s.source_id == source_workflow_ref
+                                s.source_id == source_id
                                     && s.enabled
                                     && source_available(&sessions, s)
                             })
@@ -413,18 +468,24 @@ impl KernelRuntimeState {
                             })
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
-                        let target = WorkflowNotificationTarget::resolve(
-                            &sessions,
-                            owner,
-                            &sub.session_id,
-                            &sub.publication_id,
-                            Some(&sub.queue_id),
-                        )
-                        .map_err(|e| store::error(e.to_string()))?;
-                        if sessions.get_session(&sub.session_id)?.owner_user_id() != owner
-                            || target.target().endpoint_id != sub.endpoint_id
-                        {
-                            return Err(store::error("notification target changed"));
+                        if sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                            if !self.owned.agent_notification_target_live(&sub) {
+                                return Err(store::error("notification target changed"));
+                            }
+                        } else {
+                            let target = WorkflowNotificationTarget::resolve(
+                                &sessions,
+                                owner,
+                                &sub.session_id,
+                                &sub.publication_id,
+                                Some(&sub.queue_id),
+                            )
+                            .map_err(|e| store::error(e.to_string()))?;
+                            if sessions.get_session(&sub.session_id)?.owner_user_id() != owner
+                                || target.target().endpoint_id != sub.endpoint_id
+                            {
+                                return Err(store::error("notification target changed"));
+                            }
                         }
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Accept {
@@ -697,7 +758,7 @@ mod tests {
             user_id: Some("local".into()),
             public_key_thumbprint: None,
         };
-        assert!(runtime.notification_peer_owner(&identity).is_none());
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
     }
 
     #[test]
@@ -715,12 +776,12 @@ mod tests {
             public_key_thumbprint: None,
         };
         assert_eq!(
-            runtime.notification_peer_owner(&identity).as_deref(),
+            runtime.same_owner_peer_user_id(&identity).as_deref(),
             Some("local")
         );
         config.relay_url = Some("ws://operator-relay:49100".into());
         runtime.owned.config_projection.update(config);
-        assert!(runtime.notification_peer_owner(&identity).is_none());
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
     }
 
     #[test]
@@ -739,6 +800,74 @@ mod tests {
             )
             .is_err());
     }
+    fn machine_identity(subject: &str) -> chariox_relay::protocol::RelayCallerIdentity {
+        chariox_relay::protocol::RelayCallerIdentity {
+            realm_id: "wfnotify-fixture".into(),
+            subject: subject.into(),
+            subject_kind: RelaySubjectKind::Machine,
+            expires_at_ms: crate::session::unix_epoch_ms() + 60_000,
+            token_id: None,
+            user_id: Some("local".into()),
+            public_key_thumbprint: None,
+        }
+    }
+
+    // Environment Import runs on a leased worker and asks the source kernel itself.
+    #[tokio::test]
+    async fn environment_import_reaches_the_source_from_a_leased_worker() {
+        let mut f = Fixture::for_kernel("environment-worker");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        config.kernel_runtime_role = crate::config::KernelRuntimeRole::RemoteLeaseWorker;
+        runtime.owned.config_projection.update(config);
+        let error = runtime
+            .send_same_owner_peer_request(
+                "local",
+                "source-kernel",
+                RelayPeerRequest::ReadProjectEnvironment {
+                    project_id: "project".into(),
+                },
+                Duration::from_millis(500),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            !error.to_string().contains("home kernel"),
+            "the worker refused to ask: {error}"
+        );
+        let identity = machine_identity("home-machine");
+        assert_eq!(
+            runtime.environment_peer_user_id(&identity).as_deref(),
+            Some("local")
+        );
+        // Notifications keep their home-only restriction.
+        assert!(runtime.same_owner_peer_user_id(&identity).is_none());
+    }
+
+    #[tokio::test]
+    async fn environment_peer_path_stays_closed_to_slices() {
+        let mut f = Fixture::for_kernel("environment-slice");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        assert!(runtime
+            .environment_peer_user_id(&machine_identity("slice:child"))
+            .is_none());
+        config.daemon_id = "slice:child".into();
+        runtime.owned.config_projection.update(config);
+        assert!(runtime
+            .environment_peer_user_id(&machine_identity("home-machine"))
+            .is_none());
+        assert!(runtime
+            .send_same_owner_peer_request(
+                "local",
+                "source-kernel",
+                RelayPeerRequest::ReadProjectEnvironment {
+                    project_id: "project".into(),
+                },
+                Duration::from_millis(500),
+            )
+            .await
+            .is_err());
+    }
+
     #[tokio::test]
     async fn security_f9_member_cannot_refresh_profile_owner_inventory() {
         let mut f = Fixture::for_kernel("notification-home");
@@ -753,36 +882,69 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+    // A room member lists this room's sources only: nothing cached from other kernels and
+    // nothing of the owner's other rooms.
     #[tokio::test]
-    async fn security_f9_member_cannot_list_profile_owner_inventory() {
+    async fn member_lists_only_this_rooms_sources() {
         let mut f = Fixture::for_kernel("notification-home");
-        let (_, runtime, _) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
-        let result = runtime
-            .execute_workflow_notification_command(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone(),
-                }),
-                "member",
-            )
-            .await;
-        assert!(result.is_err());
+        let mut room = f.sessions.get_session(&f.session).unwrap();
+        room.add_member(
+            "member",
+            Some("local".into()),
+            crate::session::CollaborationLevel::Full,
+        );
+        f.sessions.restore_session(room);
+
+        let (workflow, _, _) = f.workflow("source");
+        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
+        let source = f.source(&workflow);
+        let mut remote = summaries(
+            &runtime.owned.session_store.read(),
+            std::slice::from_ref(&source),
+        )
+        .remove(0);
+        remote.source_id = "remote-source".into();
+        remote.kernel_id = "other-home".into();
+        runtime
+            .owned
+            .durable_state_store
+            .notify(NotificationOperation::Cache {
+                owner: "local".into(),
+                kernel: remote.kernel_id.clone(),
+                sources: vec![remote],
+            })
+            .unwrap();
+        for standalone in [false, true] {
+            if standalone {
+                config.cloud_relay = None;
+                runtime.owned.config_projection.update(config.clone());
+            }
+            let LocalDaemonResponse::WorkflowNotifications { sources, .. } = runtime
+                .execute_workflow_notification_command(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: f.session.clone(),
+                        },
+                    ),
+                    "member",
+                )
+                .await
+                .unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(
+                sources
+                    .iter()
+                    .filter(|s| s.kind == crate::local::NotificationSourceKind::WorkflowExit)
+                    .map(|s| s.source_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![source.source_id.as_str()],
+                "standalone={standalone}"
+            );
+        }
     }
 
-    #[test]
-    fn security_f9_standalone_member_cannot_list_session_owner_inventory() {
-        let mut f = Fixture::for_kernel("notification-home");
-        let (_, runtime, mut config) = peer(&mut f, "ws://127.0.0.1:1", "test-only");
-        config.cloud_relay = None;
-        runtime.owned.config_projection.update(config);
-        assert!(runtime
-            .execute_workflow_notification_request(
-                LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
-                    session_id: f.session.clone()
-                }),
-                "member"
-            )
-            .is_err());
-    }
     async fn relay_drill() {
         let relay_config = RelayConfig {
             host: "127.0.0.1".into(),
@@ -889,14 +1051,9 @@ mod tests {
         let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = target_runtime
             .execute_workflow_notification_command(
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-                    delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                     session_id: target.session.clone(),
                     source_id: source_record.source_id.clone(),
                     publication_ref: bp.clone(),
-                    queue_ref: None,
-                    ttl_days: 7,
-                    events: WorkflowNotificationEvents::Both,
-                    filters: serde_json::Value::Null,
                 }),
                 "local",
             )
@@ -915,7 +1072,7 @@ mod tests {
             user_id: Some("other-owner".into()),
             public_key_thumbprint: None,
         };
-        assert!(source_runtime.notification_peer_owner(&identity).is_none());
+        assert!(source_runtime.same_owner_peer_user_id(&identity).is_none());
         let mut bad = subscription.clone();
         bad.owner_user_id = "other-owner".into();
         assert!(target_runtime
@@ -924,7 +1081,7 @@ mod tests {
                 &sc.daemon_id,
                 RelayPeerRequest::SubscribeWorkflowNotifications {
                     protocol_version: VERSION,
-                    source_workflow_ref: source_record.source_id.clone(),
+                    source_id: source_record.source_id.clone(),
                     target_ref: bad,
                 }
             )
@@ -1089,7 +1246,7 @@ mod tests {
                         session_id: source.session.clone(),
                         workflow_ref: a.clone(),
                         enabled: false,
-                        output_fields: None,
+                        exit_node_id: "exit-1".into(),
                     },
                 ),
                 "local",
@@ -1149,7 +1306,7 @@ mod tests {
             },
             RelayPeerRequest::SubscribeWorkflowNotifications {
                 protocol_version: VERSION,
-                source_workflow_ref: source_record.source_id.clone(),
+                source_id: source_record.source_id.clone(),
                 target_ref: subscription.clone(),
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {

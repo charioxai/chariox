@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use base64::Engine;
 use std::io::Read;
 use wait_timeout::ChildExt;
@@ -901,7 +902,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                     cancellation.clear_process_group(process_group);
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 return Err(DaemonError::LocalTransport {
                     operation: "run_slice_screen_command",
                     message: "slice screen command did not expose stdin".to_string(),
@@ -913,7 +914,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                     cancellation.clear_process_group(process_group);
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 if cancellation.as_ref().is_some_and(|value| value.requested()) {
                     return Err(computer_input_cancelled());
                 }
@@ -930,7 +931,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                 cancellation.clear_process_group(process_group);
             }
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
                 message: "slice screen command did not expose stdout".to_string(),
@@ -942,7 +943,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                 cancellation.clear_process_group(process_group);
             }
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
             drop(stdout);
             return Err(DaemonError::LocalTransport {
                 operation: "run_slice_screen_command",
@@ -971,7 +972,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                     cancellation.clear_process_group(process_group);
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 if cancellation.as_ref().is_some_and(|value| value.requested()) {
@@ -988,7 +989,7 @@ async fn run_slice_screen_command_inner_with_output_policy(
                     cancellation.clear_process_group(process_group);
                 }
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.bounded_wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
                 if cancellation.as_ref().is_some_and(|value| value.requested()) {

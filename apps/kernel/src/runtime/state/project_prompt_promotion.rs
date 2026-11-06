@@ -12,12 +12,15 @@ impl KernelRuntimeOwnedState {
             return true;
         }
         // A failed manifest read must defer rather than reuse stale inputs.
+        let Some(project) = self.session_store.environment_project(session) else {
+            return false;
+        };
         let config = self.config_projection.snapshot();
         !matches!(
             crate::project_environment::ProjectEnvironmentStore::new(
                 &config.private_runtime_state_root(),
             )
-            .load(session.project_id()),
+            .load(project.id()),
             Ok(None)
         )
     }
@@ -97,6 +100,13 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
     ) -> Option<crate::session::PromptQueueItem> {
+        self.owned
+            .expire_queued_agent_notifications(
+                session_id,
+                agent_id,
+                crate::session::unix_epoch_ms(),
+            )
+            .ok()?;
         loop {
             let session = self.owned.session_store.get_session(session_id).ok()?;
             // Settlement, profile completion and ordinary backlog retries share

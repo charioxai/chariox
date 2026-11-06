@@ -85,12 +85,11 @@ pub(crate) fn workspace_live_sync_user_ignore_patterns(worktree_path: &Path) -> 
                 .lines()
                 .filter_map(workspace_live_sync_normalize_ignore_pattern),
         );
-        if name == ".gitignore" {
-            rules.extend(crate::project_environment::project_private_file_rules(
-                worktree_path,
-            ));
-        }
     }
+    // The Project's Files outside Git are listed on purpose, so they pass the ignore rules.
+    rules.extend(crate::project_environment::environment_file_rules(
+        worktree_path,
+    ));
     for name in [".worktreeinclude", ".chariox/worktreeinclude"] {
         for line in std::fs::read_to_string(worktree_path.join(name))
             .unwrap_or_default()
@@ -101,9 +100,6 @@ pub(crate) fn workspace_live_sync_user_ignore_patterns(worktree_path: &Path) -> 
             }
         }
     }
-    rules.extend(crate::project_environment::project_private_secret_files(
-        worktree_path,
-    ));
     rules
 }
 

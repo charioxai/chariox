@@ -124,7 +124,6 @@ impl KernelRuntimeState {
                 stdin,
                 timeout,
             },
-            (),
         )
         .await?;
         use super::super::agent_process_watch::KernelCommandExit;

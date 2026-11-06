@@ -435,6 +435,12 @@ test("parseSlashCommand parses extension commands", () => {
     args: ["register", "py"],
   })
 
+  assert.deepEqual(parseSlashCommand("/environment status"), {
+    kind: "env",
+    raw: "/environment status",
+    args: ["status"],
+  })
+
   assert.deepEqual(parseSlashCommand("/script list"), {
     kind: "script",
     raw: "/script list",
@@ -485,4 +491,11 @@ test("Continue is an exact slash action rather than a provider prompt", async ()
   let calls = 0
   await executeSlashCommand("/continue", { onContinue: () => { calls++ } } as Parameters<typeof executeSlashCommand>[1])
   assert.equal(calls, 1)
+})
+
+test("/trigger notification keeps its words for the source and the prompt", () => {
+  const parsed = parseSlashCommand("/trigger notification Studio/Release pipeline-1 summarize failures")
+  assert.deepEqual(parsed, { kind: "trigger", raw: "/trigger notification Studio/Release pipeline-1 summarize failures", action: { type: "notification", words: ["Studio/Release", "pipeline-1", "summarize", "failures"] }, error: null })
+  const bare = parseSlashCommand("/trigger notification") as { error: string | null }
+  assert.match(bare.error ?? "", /notification <source> \[prompt\]/)
 })

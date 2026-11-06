@@ -3,7 +3,10 @@ use std::time::Duration;
 
 mod utility_admission;
 pub(crate) use utility_admission::ProviderUtilityAdmission;
+mod utility_stop;
+pub(crate) use utility_stop::UtilityStop;
 mod account_credential;
+mod account_endpoints;
 mod claude;
 mod claude_runtime;
 pub(crate) use claude_runtime::usage::{
@@ -55,6 +58,7 @@ mod service;
 pub(crate) mod startup_diagnostic;
 mod termination;
 mod types;
+mod usage_read_error;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
@@ -78,8 +82,7 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    probe_claude_account_usage, verify_claude_account_credential, verify_claude_setup_token,
-    ClaudeCredentialCheckError,
+    verify_claude_account_credential, verify_claude_setup_token, ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;
@@ -123,25 +126,29 @@ pub use launch_contract::{
     canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
     default_provider_control_capabilities, external_provider_import_model,
     external_provider_session_providers, normalize_provider_resume_model,
-    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
-    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
-    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
-    RuntimeMcpBinding,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, reach_mcp_url,
+    AgentExecutionMode, AgentPermissionLevel, ExternalProviderImportMetadata,
+    ExternalProviderObservedCursor, LaunchProviderRequest, ProviderLaunchResult,
+    ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
 };
+#[cfg(test)]
+#[cfg(test)]
+pub(crate) use managed_isolation::managed_provider_isolation_env_remove;
 pub(crate) use managed_isolation::{
     apply_managed_provider_isolation, command_from_provider_launch,
     managed_isolated_utility_command, managed_isolated_utility_launch,
-    managed_provider_control_env_remove, managed_provider_isolation_env_remove,
-    managed_provider_isolation_required, managed_provider_parent_credential_env_remove,
-    provider_account_environment_on_kernel, provider_reported_transcript_on_kernel,
-    MANAGED_SLICE_PUBLICATION_ROOT_ENV, MANAGED_SLICE_SERVICE_ROOT_ENV,
+    managed_provider_control_env_remove, managed_provider_isolation_required,
+    managed_provider_parent_credential_env_remove, provider_account_environment_on_kernel,
+    provider_reported_transcript_on_kernel, MANAGED_SLICE_PUBLICATION_ROOT_ENV,
+    MANAGED_SLICE_SERVICE_ROOT_ENV,
 };
 #[cfg(test)]
 pub(crate) use managed_isolation::{
     MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
-    dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
+    dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,
+    shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{
     apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
@@ -171,8 +178,9 @@ pub use registry::{AgentEndpointAdapter, ProviderRegistry};
 pub(crate) use run_actor::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     ProviderNativeInteractionBridge, ProviderNativeInteractionResolution,
-    ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
+    ProviderOutputPromptIdentity, ProviderPromptSubmitAcknowledgement, ProviderPromptSubmitReceipt,
     ProviderRunActorCompletionSignal, ProviderRunActorMailbox, ProviderRunOperationLanes,
+    ProviderRunOperationPermit,
 };
 pub(crate) use runtime_run::{
     projected_leased_provider_run_id, worker_provider_run_id_from_projected_leased_id,
@@ -191,6 +199,7 @@ pub use types::{
     AgentEndpointMode, ControlCapability, ControlCapabilityMode, ControlOperation,
     ProviderClientInterface, ProviderRunState,
 };
+pub(crate) use usage_read_error::ProviderUsageReadError;
 pub(crate) use workspace_live_sync_policy::{
     native_tui_hidden_instructions_block, NATIVE_TUI_HIDDEN_INSTRUCTIONS_END,
     NATIVE_TUI_HIDDEN_INSTRUCTIONS_START, WORKSPACE_LIVE_SYNC_INSTRUCTIONS_SOURCE_PATH,
@@ -301,15 +310,15 @@ pub(crate) fn provider_run_uses_claude_native_bridge(run: &RuntimeProviderRun) -
         && (!run.client_interface().is_chariox() || provider_run_is_claude_headless(run))
 }
 
-/// Claude `-p` runs in Build mode with the `Required` level route tool
-/// approvals through the runtime MCP `chariox.permission_prompt` tool, as
+/// Claude `-p` runs in Plan mode, or Build mode with the `Required` level, route tool
+/// permission decisions through the runtime MCP `chariox.permission_prompt` tool, as
 /// their launch flags say; native TUI runs use the hook instead. Other runs
 /// neither list nor answer it.
 pub(crate) fn provider_run_uses_claude_permission_prompt_tool(run: &RuntimeProviderRun) -> bool {
     run.adapter_key() == "claude"
         && provider_run_uses_structured_prompt_io(run)
-        && run.execution_mode() == AgentExecutionMode::Build
-        && run.permission_level() == AgentPermissionLevel::Required
+        && (run.execution_mode() == AgentExecutionMode::Plan
+            || run.permission_level() == AgentPermissionLevel::Required)
 }
 
 pub(crate) fn provider_run_uses_structured_prompt_io(run: &RuntimeProviderRun) -> bool {
@@ -417,7 +426,6 @@ pub(crate) fn provider_run_uses_runtime_structured_utility_prompt(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderUtilityExecutionPolicy {
     ExistingRun,
-    ReadOnlyDiscovery,
     /// MP-08: No source reads, commands, MCPs, host instructions or prior thread.
     MetadataOnlyDiscovery,
     /// A provider command on the run's own session, such as Claude's
@@ -431,7 +439,7 @@ impl ProviderUtilityExecutionPolicy {
     }
 
     pub(crate) fn is_read_only_discovery(self) -> bool {
-        matches!(self, Self::ReadOnlyDiscovery | Self::MetadataOnlyDiscovery)
+        matches!(self, Self::MetadataOnlyDiscovery)
     }
 
     /// The prompt goes out as given, without the kernel's turn context.
@@ -456,9 +464,12 @@ pub(crate) fn run_blocking_provider_utility_prompt(
         operation,
         policy,
         None,
+        None,
     )
 }
 
+/// `stop` ends this request's own utility turn and returns once it has ended.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     run: &RuntimeProviderRun,
     visible_user_prompt: &str,
@@ -467,25 +478,18 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
     admission: Option<ProviderUtilityAdmission>,
+    stop: Option<&UtilityStop>,
 ) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
-        "codex" => match admission {
-            Some(admission) => codex_runtime::run_codex_utility_prompt_with_admission(
-                run,
-                visible_user_prompt,
-                hidden_system_context,
-                timeout,
-                policy,
-                Some(admission),
-            ),
-            None => codex_runtime::run_codex_utility_prompt(
-                run,
-                visible_user_prompt,
-                hidden_system_context,
-                timeout,
-                policy,
-            ),
-        },
+        "codex" => codex_runtime::run_codex_utility_prompt_with_admission(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            admission,
+            stop,
+        ),
         "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
             operation,
             message: "protected utility submission is unavailable for the OpenCode adapter".into(),
@@ -496,6 +500,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
             hidden_system_context,
             timeout,
             policy,
+            stop,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,

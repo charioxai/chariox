@@ -268,7 +268,7 @@ fn a_required_agent_asks_per_input_and_a_denial_types_nothing() {
         let session_id = room.session_id.clone();
         let answerer = tokio::spawn(async move {
             let mut answered = Vec::new();
-            for choice in ["deny", "allow"] {
+            for choice in ["deny", "allow_once"] {
                 let interaction_id = loop {
                     let session = router
                         .runtime_state
@@ -336,6 +336,135 @@ fn a_required_agent_asks_per_input_and_a_denial_types_nothing() {
             serde_json::json!({ "terminal_id": id }),
         )
         .await;
+    });
+}
+
+/// Answers the Room's next open question with `choice`; returns the choice ids it offered.
+fn answer_next(room: &Room, choice: &'static str) -> tokio::task::JoinHandle<Vec<String>> {
+    let router = room.router.clone();
+    let session_id = room.session_id.clone();
+    tokio::spawn(async move {
+        let interaction = loop {
+            let session = router
+                .runtime_state
+                .session_snapshot(&session_id)
+                .await
+                .unwrap();
+            if let Some(interaction) = session.active_interactions().first() {
+                break interaction.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        router
+            .runtime_state
+            .resolve_runtime_interaction(&session_id, interaction.id(), choice, None)
+            .await
+            .expect("interaction resolves");
+        interaction
+            .choices()
+            .iter()
+            .map(|choice| choice.id().to_string())
+            .collect()
+    })
+}
+
+async fn type_text(room: &Room, token: &str, terminal_id: &str, text: &str) -> RuntimeToolResult {
+    call(
+        room,
+        token,
+        "chariox.terminal_send",
+        serde_json::json!({ "terminal_id": terminal_id, "text": text, "enter": true }),
+    )
+    .await
+}
+
+#[test]
+fn allow_for_this_session_stops_the_questions_until_the_permission_level_changes() {
+    run("terminal-tools-allow-session", || async {
+        let room = room(
+            "terminal_tools_allow_session",
+            Some(AgentPermissionLevel::Required),
+        );
+        let (first_agent, first) = (&room.first.0, &room.first.1);
+        let (_, second) = (&room.second.0, &room.second.1);
+        let first_terminal = open(&room, first).await;
+        let second_terminal = open(&room, second).await;
+
+        let answered = answer_next(&room, "allow_session");
+        let granted = tokio::time::timeout(
+            Duration::from_secs(20),
+            type_text(&room, first, &first_terminal, "echo one"),
+        )
+        .await
+        .expect("the answered question lets the input through");
+        assert!(granted.ok, "{:?}", granted.payload);
+        assert_eq!(
+            answered.await.unwrap(),
+            ["allow_once", "allow_session", "deny"],
+            "the question offers the session choice"
+        );
+
+        // No answerer: a second question would block this call until the test times out.
+        let remembered = tokio::time::timeout(
+            Duration::from_secs(15),
+            type_text(&room, first, &first_terminal, "echo two"),
+        )
+        .await
+        .expect("an allowed agent is not asked again");
+        assert!(remembered.ok, "{:?}", remembered.payload);
+
+        // The grant belongs to that agent alone.
+        let answered = answer_next(&room, "deny");
+        let other = type_text(&room, second, &second_terminal, "echo other").await;
+        assert_eq!(other.payload["reason"], "permission_denied");
+        answered.await.unwrap();
+
+        // A change of the agent's permissions ends it, even when it changes back.
+        for level in [AgentPermissionLevel::Yolo, AgentPermissionLevel::Required] {
+            room.router
+                .runtime_state
+                .update_agent_config(
+                    &room.session_id,
+                    first_agent,
+                    crate::session::DEFAULT_LOCAL_USER_ID,
+                    None,
+                    Some(Some(level)),
+                    None,
+                    None,
+                )
+                .await
+                .expect("the permission level updates");
+        }
+        // The permission change ended the agent's run; its next run is a fresh one.
+        let relaunched = {
+            let mut app = room.router.app.lock().await;
+            launch_test_provider(
+                &mut app,
+                &room.session_id,
+                first_agent,
+                "dev-stub",
+                "dev-stub",
+                "model",
+            )
+            .runtime_mcp_auth_token()
+            .expect("token")
+            .to_string()
+        };
+        let first = &relaunched;
+        let answered = answer_next(&room, "deny");
+        let asked_again = type_text(&room, first, &first_terminal, "echo three").await;
+        assert_eq!(asked_again.payload["reason"], "permission_denied");
+        answered.await.unwrap();
+
+        for (token, terminal_id) in [(first, &first_terminal), (second, &second_terminal)] {
+            call(
+                &room,
+                token,
+                "chariox.terminal_close",
+                serde_json::json!({ "terminal_id": terminal_id }),
+            )
+            .await;
+        }
     });
 }
 

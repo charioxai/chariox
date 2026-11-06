@@ -535,6 +535,8 @@ pub struct CharioxUserConfig {
     pub credential_vault: UserCredentialVaultConfig,
     #[serde(default)]
     pub web_bot_auth: UserWebBotAuthConfig,
+    #[serde(default)]
+    pub agents: UserAgentsConfig,
 }
 
 impl Default for CharioxUserConfig {
@@ -554,6 +556,7 @@ impl Default for CharioxUserConfig {
             workflow: UserWorkflowConfig::default(),
             credential_vault: UserCredentialVaultConfig::default(),
             web_bot_auth: UserWebBotAuthConfig::default(),
+            agents: UserAgentsConfig::default(),
         }
     }
 }
@@ -597,6 +600,13 @@ pub struct UserUiConfig {
     pub max_agents_per_screen: Option<u32>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub worktree_aliases: std::collections::BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserAgentsConfig {
+    /// On by default: an agent of the kernel owner needs the person's yes before each acquisition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask_before_acquiring_machines: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -801,10 +811,26 @@ fn persist_user_config(path: &PathBuf, config: &CharioxUserConfig) -> Result<(),
             message: error.to_string(),
         })?;
     }
-    let payload = toml::to_string_pretty(config).map_err(|error| DaemonError::LocalTransport {
-        operation: "persist user config",
-        message: error.to_string(),
-    })?;
+    let mut document =
+        toml::Table::try_from(config).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist user config",
+            message: error.to_string(),
+        })?;
+    // The owner edits this list by hand while the kernel runs; keep the file's current one.
+    let standing_holders = kernel_access::standing_holder_entries(path);
+    if !standing_holders.is_empty() {
+        if let Some(toml::Value::Table(section)) = document.get_mut("kernel_access") {
+            section.insert(
+                "standing_holders".into(),
+                toml::Value::Array(standing_holders),
+            );
+        }
+    }
+    let payload =
+        toml::to_string_pretty(&document).map_err(|error| DaemonError::LocalTransport {
+            operation: "persist user config",
+            message: error.to_string(),
+        })?;
     write_private_file(path, payload.as_bytes()).map_err(|error| DaemonError::LocalTransport {
         operation: "persist user config",
         message: error.to_string(),

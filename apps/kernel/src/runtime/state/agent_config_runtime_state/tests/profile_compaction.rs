@@ -437,6 +437,7 @@ async fn profile_compaction_session_command_accepts_empty_output() {
             std::time::Duration::from_secs(2),
             crate::provider::ProviderUtilityExecutionPolicy::SessionCommand,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -652,7 +653,6 @@ async fn empty_profile_queue_does_not_prepare_project_or_request_a_vault_unlock(
         .session_store
         .get_session(&session_id)
         .unwrap();
-    let evidence = crate::project_environment::ProjectEnvironmentEvidence::default();
     crate::project_environment::ProjectEnvironmentStore::new(
         &runtime
             .owned
@@ -660,23 +660,15 @@ async fn empty_profile_queue_does_not_prepare_project_or_request_a_vault_unlock(
             .snapshot()
             .private_runtime_state_root(),
     )
-    .save(&crate::project_environment::StoredProjectEnvironment {
-        source: None,
-        manifest: crate::project_environment::ProjectEnvironmentManifest {
-            schema_version: 1,
-            project_id: session.project_id().into(),
-            evidence_digest: evidence.digest(),
-            entries: vec![],
-            private_files: vec![],
-            toolchain_hints: vec![],
-            package_hints: vec![],
-            service_hints: vec![],
+    .save(
+        session.project_id(),
+        0,
+        crate::project_environment::ProjectEnvironmentRecord {
+            schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
+            secrets: vec!["SYNTHETIC_TOKEN".into()],
+            ..Default::default()
         },
-        evidence,
-        reported_missing: Default::default(),
-        reviewed_manifest: None,
-        last_review: None,
-    })
+    )
     .unwrap();
     for account in [None, Some("missing-account".into())] {
         let result = tokio::time::timeout(

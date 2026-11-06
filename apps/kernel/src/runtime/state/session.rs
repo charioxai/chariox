@@ -230,6 +230,7 @@ impl KernelRuntimeOwnedState {
                 "agent_id": agent.id(),
             }),
         );
+        self.grant_project_registrations(session_snapshot.project_id(), agent.id());
         self.session_store
             .write()
             .set_focused_agent(session.id(), Some(agent.id().to_string()))?;

@@ -21,7 +21,7 @@ pub(super) struct PasteArgs {
 pub(super) fn paste_spec() -> RuntimeToolSpec {
     RuntimeToolSpec {
         name: PASTE.into(),
-        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button.".into(),
+        description: "MD-5: insert a Vault credential into an observed editable text field in a user-domain tab. Use tab/generation/document_id/node_ref from a fresh snapshot. Secret bytes never enter tool arguments/results. TOTP handles compute a current code at insertion; backup_codes consumes an unused code. Default submit=false; use ordinary input to click a separate sign-in button. With submit=true the field's native form is submitted and the result carries submitted:{navigated,url,title}: a form that navigates is a successful submit, so continue from that page and do not paste again.".into(),
         input_schema: json!({"type":"object","properties":{"credential_id":{"type":"string"},"tab_id":{"type":"string"},"generation":{"type":"integer","minimum":1},"document_id":{"type":"string"},"node_ref":{"type":"string"},"submit":{"type":"boolean","default":false}},"required":["credential_id","tab_id","generation","document_id","node_ref"],"additionalProperties":false}),
     }
 }
@@ -90,6 +90,11 @@ impl KernelRuntimeState {
         params: Value,
         protect: bool,
     ) -> Result<Value, DaemonError> {
+        if method == "host.browser" {
+            self.owned
+                .kernel_browser_host
+                .set_attention(user, self.pending_handoff_tabs(user));
+        }
         let model_mutation = admission.is_some_and(KernelBrowserAdmission::is_agent)
             && (method == "host.secret"
                 || (method == "host.browser"
@@ -105,6 +110,7 @@ impl KernelRuntimeState {
                                 | "display_input"
                         )
                     )));
+        let capture = method == "host.secret" && params["op"] == "capture";
         let tab = params["tab_id"].as_str().map(str::to_owned);
         if model_mutation && self.handoff_model_write_blocked(user, tab.as_deref()) {
             return Err(host_error("owner_step_pending: wait for the owner's hand-off completion before changing this tab".into()));
@@ -136,6 +142,25 @@ impl KernelRuntimeState {
             && ((params["op"] == "screenshot" && params["display_subscription_id"].is_string())
                 || params["op"] == "display_subscribe");
         let mirror = method == "host.browser" && params["op"] == "mirror_next";
+        let snapshot = method == "host.browser" && params["op"] == "snapshot";
+        let card_region = method == "host.browser" && params["op"] == "popup_region";
+        let browser_state = method == "host.browser"
+            && matches!(
+                params["op"].as_str(),
+                Some(
+                    "start"
+                        | "state"
+                        | "open"
+                        | "close"
+                        | "navigate"
+                        | "resize"
+                        | "pointer_cursor"
+                        | "input"
+                        | "dialog"
+                        | "cancel_download"
+                        | "stop"
+                )
+            );
         let input =
             matches!(method.as_str(), "host.browser" | "host.computer") && params["op"] == "input";
         let at = std::time::Instant::now();
@@ -150,10 +175,27 @@ impl KernelRuntimeState {
         .map_err(|_| host_error("MD-5: browser task failed".into()))?
         .map_err(|message| protection.scrub_error(&scope, message.into_daemon("kernel_browser")))?;
         crate::transport::kernel_browser_display::timing("protected_host_ipc", at);
-        if !protect {
+        // The capture reply is the value itself, headed for the Vault and never for the model:
+        // scrubbing it would store the redaction marker when the value is already protected.
+        if !protect || capture {
             return Ok(result);
         }
-        scrub_browser_result(protection, &scope, result, pixels, display, mirror)
+        if card_region {
+            // The controller returns only binding IDs, geometry and fixed result
+            // labels. Scrub the site origin without corrupting keys or IDs when
+            // a protected value happens to be a short protocol substring.
+            let mut result = result;
+            if let Some(origin) = result.pointer_mut("/region/origin") {
+                *origin = protection.scrub(&scope, origin.take())?;
+            }
+            return Ok(result);
+        }
+        if browser_state {
+            return protection.scrub_kernel_browser_state(&scope, result);
+        }
+        scrub_browser_result(
+            protection, &scope, result, pixels, display, mirror, snapshot,
+        )
     }
 
     pub(super) async fn revoke_kernel_browser_observation_values(
@@ -280,27 +322,30 @@ impl KernelRuntimeState {
             &args.credential_id,
             &format!("Use attempted in browser by {}", agent.id()),
         )?;
-        self.insert_kernel_browser_secret(
-            user,
-            &admission,
-            &args,
-            &service,
-            url,
-            SecretFillContext {
-                actor: None,
-                signing_material,
-                plain,
-            },
-        )
-        .await?;
+        let inserted = self
+            .insert_kernel_browser_secret(
+                user,
+                &admission,
+                &args,
+                &service,
+                url,
+                SecretFillContext {
+                    actor: None,
+                    signing_material,
+                    plain,
+                },
+            )
+            .await?;
         service.record_vault_activity(
             &args.credential_id,
             &format!("Used in browser by {}", agent.id()),
         )?;
-        Ok(RuntimeToolResult {
-            ok: true,
-            payload: json!({"inserted":true}),
-        })
+        // A submit that left the page is the submit working: say where it went.
+        let mut payload = json!({"inserted":true});
+        if let Some(submitted) = inserted.get("submitted") {
+            payload["submitted"] = submitted.clone();
+        }
+        Ok(RuntimeToolResult { ok: true, payload })
     }
 
     pub(super) async fn kernel_browser_terminal_paste_secret(
@@ -421,7 +466,7 @@ impl KernelRuntimeState {
         service: &crate::secret::RuntimeSecretService,
         url: String,
         context: SecretFillContext<'_>,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Value, DaemonError> {
         let protection = &self.owned.kernel_browser_secret_observations;
         let scope = KernelBrowserHost::profile_key(user);
         // Reuse Room registration before any input handler, including failures.
@@ -480,8 +525,7 @@ impl KernelRuntimeState {
             params["observed_by"] = json!(actor);
         }
         self.kernel_browser_bound_operation(user, Some(admission), "host.secret", params, true)
-            .await?;
-        Ok(())
+            .await
     }
 
     pub(super) async fn kernel_browser_secret_target_url(
@@ -590,7 +634,11 @@ fn scrub_browser_result(
     pixels: bool,
     display: bool,
     mirror: bool,
+    snapshot: bool,
 ) -> Result<Value, DaemonError> {
+    if snapshot {
+        return protection.scrub_kernel_snapshot_result(scope, result);
+    }
     if display && result["source_kind"] == "region" {
         // MP-11: these are trusted lease/codec fields, never page observations.
         protection.require(scope, false)?;
@@ -717,6 +765,75 @@ struct SecretFillContext<'a> {
 mod tests {
     use super::*;
     #[test]
+    fn mp08_mp11_snapshot_schema_survives_a_captured_schema_label() {
+        use super::super::room_secret_observation::RoomSecretObservations;
+        let root = crate::test_support::TestWorktree::new("snapshot-schema-label");
+        let store = RoomSecretObservations::new(root.path().join("observations"), BTreeSet::new());
+        for secret in [
+            "name",
+            "value",
+            "backend:7",
+            "textbox",
+            "snapshot",
+            "generation",
+            "PRIVATE-SECRET-ELEMENT",
+        ] {
+            store.register("snapshot", secret).unwrap();
+        }
+        let result = json!({"generation":1,"snapshot":{
+            "browser_generation":1,"target_id":"name","document_id":"value","snapshot_revision":1,
+            "accessibility_nodes":[{"node_ref":"backend:7","parent_ref":null,"child_refs":[],
+                "role":"textbox","name":"Account name","description":"value","value":"name",
+                "ignored":false,"disabled":false,"focused":false}],
+            "dom_documents":[{"document_index":0,"url":"https://example.com/","owner_node_ref":null}],
+            "dom_nodes":[{"node_ref":"backend:7","parent_ref":null,"document_index":0,"node_type":1,
+                "node_name":"INPUT","text":"name","attributes":{"aria-label":"Account name"},"bounds":null},
+                {"node_ref":"backend:8","parent_ref":null,"document_index":0,"node_type":1,
+                "node_name":"PRIVATE-SECRET-ELEMENT","text":"","attributes":{},"bounds":null}]}});
+        let worker_snapshot = serde_json::from_value(result["snapshot"].clone()).unwrap();
+        let worker = store
+            .scrub_response(
+                "snapshot",
+                crate::transport::room_browser_controller::RoomBrowserControllerResult::Snapshot {
+                    snapshot: Some(worker_snapshot),
+                },
+            )
+            .expect("worker snapshot schema remains valid");
+        let crate::transport::room_browser_controller::RoomBrowserControllerResult::Snapshot {
+            snapshot: Some(worker_snapshot),
+        } = worker
+        else {
+            panic!("snapshot reply")
+        };
+        assert_eq!(
+            worker_snapshot.accessibility_nodes[0].name,
+            "Account [redacted]"
+        );
+        assert_eq!(worker_snapshot.target_id, "name");
+        let output =
+            scrub_browser_result(&store, "snapshot", result, false, false, false, true).unwrap();
+        let snapshot: crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot =
+            serde_json::from_value(output["snapshot"].clone()).expect("snapshot schema remains valid");
+        assert_eq!(snapshot.target_id, "name");
+        assert_eq!(snapshot.document_id, "value");
+        assert_eq!(snapshot.accessibility_nodes[0].node_ref, "backend:7");
+        assert_eq!(snapshot.accessibility_nodes[0].role, "textbox");
+        assert_eq!(snapshot.accessibility_nodes[0].name, "Account [redacted]");
+        assert_eq!(snapshot.accessibility_nodes[0].value, "[redacted]");
+        assert_eq!(snapshot.dom_nodes[0].text, "[redacted]");
+        assert_eq!(snapshot.dom_nodes[1].node_name, "[redacted]");
+        assert_eq!(
+            snapshot.dom_nodes[0].attributes["aria-label"],
+            "Account [redacted]"
+        );
+        assert_eq!(
+            store.scrub("snapshot", json!({"name":"value"})).unwrap(),
+            json!({"[redacted]":"[redacted]"}),
+            "arbitrary page maps still scrub their keys"
+        );
+    }
+
+    #[test]
     fn mp08_mp11_region_lease_schema_survives_short_secret_scrubbing() {
         use super::super::room_secret_observation::RoomSecretObservations;
         let root = crate::test_support::TestWorktree::new("region-lease-boundary");
@@ -726,7 +843,8 @@ mod tests {
         }
         let lease = serde_json::json!({"source_kind":"region","binding_id":"r","document_id":"d","subscription_id":"s","codec":"avc1.420033","css_width":100,"css_height":50,"sequence":3,"device_scale_factor":2});
         assert_eq!(
-            scrub_browser_result(&store, "region", lease.clone(), false, true, false).unwrap(),
+            scrub_browser_result(&store, "region", lease.clone(), false, true, false, false)
+                .unwrap(),
             lease
         );
         assert_ne!(
@@ -734,6 +852,7 @@ mod tests {
                 &store,
                 "region",
                 serde_json::json!({"text":"r"}),
+                false,
                 false,
                 false,
                 false
@@ -751,13 +870,22 @@ mod tests {
         // Short credentials must not corrupt protocol keys, node IDs or hashes.
         store.register(scope, "a").unwrap();
         let packet = json!({"hash":"a".repeat(64),"root":"n1","nodes":[{"id":"n1","parent":null,"children":[],"kind":"tile","tag":"div","reason":"protected_text"}],"resources":[],"tiles":[]});
-        let wire = scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap();
+        let wire =
+            scrub_browser_result(&store, scope, packet.clone(), false, false, true, false).unwrap();
         assert!(
             wire == packet,
             "MP-11: the final host mirror tree/hash must reach the client unchanged"
         );
-        let ordinary =
-            scrub_browser_result(&store, scope, json!({"text":"a"}), false, false, false).unwrap();
+        let ordinary = scrub_browser_result(
+            &store,
+            scope,
+            json!({"text":"a"}),
+            false,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
         assert!(
             ordinary["text"] != "a",
             "MP-11: ordinary observations must still pass through the kernel scrubber"
@@ -774,7 +902,8 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|packet| {
-                    scrub_browser_result(&store, scope, packet.clone(), false, false, true).unwrap()
+                    scrub_browser_result(&store, scope, packet.clone(), false, false, true, false)
+                        .unwrap()
                 })
                 .collect::<Vec<_>>();
             assert!(
@@ -810,16 +939,19 @@ mod tests {
         let result = json!({"display_frame":frame,"frame_sent":true,"generation":1,
             "title":"AAAA stripes frame","url":"https://example.org/stripes/frame",
             "text":"AAAA stripes frame"});
-        let wire = scrub_browser_result(&store, "stripe", result, true, true, false).unwrap();
+        let wire =
+            scrub_browser_result(&store, "stripe", result, true, true, false, false).unwrap();
         assert_eq!(wire["display_frame"], frame);
         assert_eq!(wire["frame_sent"], true);
         assert_eq!(wire["generation"], 1);
-        for key in ["title", "url", "text"] {
+        for key in ["title", "text"] {
             let text = wire[key].as_str().unwrap();
             for secret in ["AAAA", "stripes", "frame"] {
                 assert!(!text.contains(secret));
             }
         }
+        // A short value is masked as a whole word of visible text only, never inside a URL.
+        assert_eq!(wire["url"], "https://example.org/stripes/frame");
         let mut reply = json!({"KernelBrowser":{"result":wire}});
         let (id, sequence, event) =
             crate::transport::kernel_browser_display::take_display_event(&mut reply).unwrap();
@@ -842,16 +974,19 @@ mod tests {
             true,
             true,
             false,
+            false,
         )
         .unwrap();
-        for key in ["title", "url"] {
-            for secret in ["AAAA", "stripes", "frame"] {
-                assert!(!metadata["display_frame"][key]
-                    .as_str()
-                    .unwrap()
-                    .contains(secret));
-            }
+        for secret in ["AAAA", "stripes", "frame"] {
+            assert!(!metadata["display_frame"]["title"]
+                .as_str()
+                .unwrap()
+                .contains(secret));
         }
+        assert_eq!(
+            metadata["display_frame"]["url"],
+            "https://example.org/stripes/frame"
+        );
         assert!(metadata["observation"].get("frame").is_none());
         let scalar = scrub_browser_result(
             &store,
@@ -859,6 +994,7 @@ mod tests {
             json!("AAAA stripes frame"),
             true,
             true,
+            false,
             false,
         )
         .unwrap();
@@ -870,6 +1006,7 @@ mod tests {
             json!({"display_frame":"invalid"}),
             true,
             true,
+            false,
             false
         )
         .is_err());

@@ -41,39 +41,36 @@ impl CommandRouter {
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
-            | LocalDaemonRequest::PairCloudRelayClient(_)
-            | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
-            | LocalDaemonRequest::ResolveKernelClientConnection(_)
-            | LocalDaemonRequest::CreateCloudSessionInvite(_)
-            | LocalDaemonRequest::ShowCloudSessionInvite(_)
-            | LocalDaemonRequest::AcceptCloudSessionInvite(_)
-            | LocalDaemonRequest::RevokeCloudSessionInvite(_)
-            | LocalDaemonRequest::ListCloudSessionMembers(_)
-            | LocalDaemonRequest::ListCloudCollaborators(_)) => boxed_handler(|| async move {
-                execute_cloud_relay_request(
-                    &self.runtime_state,
-                    &self.config_projection,
-                    &self.provider_catalog_projection,
-                    &self.remote_relay_inventory_projection,
-                    Arc::clone(&self.relay_state),
-                    request,
-                )
-                .await
-            }),
+            | LocalDaemonRequest::ResolveKernelClientConnection(_)) => {
+                boxed_handler(|| async move {
+                    execute_cloud_relay_request(
+                        &self.runtime_state,
+                        &self.config_projection,
+                        &self.provider_catalog_projection,
+                        &self.remote_relay_inventory_projection,
+                        Arc::clone(&self.relay_state),
+                        request,
+                    )
+                    .await
+                })
+            }
             request @ (LocalDaemonRequest::GetUserConfig(_)
             | LocalDaemonRequest::GetUserConfigSchema(_)
             | LocalDaemonRequest::SetUserConfigValue(_)
             | LocalDaemonRequest::SetWorkspaceLiveSyncMode(_)
             | LocalDaemonRequest::UnsetUserConfigValue(_)
             | LocalDaemonRequest::OwnerVault(_)
+            | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::DeleteCredentialSecret(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetCredentialVaultStatus(_)
             | LocalDaemonRequest::LockCredentialVault(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
+            | LocalDaemonRequest::CreateCredentialVault(_)
+            | LocalDaemonRequest::SealCredentialVaultKey(_)
             | LocalDaemonRequest::ManageCredentialVault(_)) => boxed_handler(|| async move {
                 execute_user_config_request(
                     &self.config_projection,

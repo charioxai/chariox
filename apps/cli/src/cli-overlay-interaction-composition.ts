@@ -1,7 +1,10 @@
+import { getRelayStatus } from "./relay-api.js"
 import { createSessionProcessController } from "./session-process-controller.js"
-import { createProjectEnvironmentReadController, projectEnvironmentPageSize, projectEnvironmentTextWidth } from "./project-environment-read-controller.js"
-import { MouseButton } from "@opentui/core"
-import { createEffect, on } from "solid-js"
+import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
+import { createProjectEnvironmentController } from "./project-environment-controller.js"
+import { randomUUID } from "node:crypto"
+import { MouseButton, type Selection } from "@opentui/core"
+import { createEffect, on, onCleanup } from "solid-js"
 
 import { createCliDialogOverlayController } from "./cli-dialog-overlay-controller.js"
 import {
@@ -28,6 +31,8 @@ type AnyFn = (...args: any[]) => any
 
 export type CliOverlayInteractionCompositionDeps = {
   client: any
+  /** The user's other kernels an Environment can import from. */
+  environmentSourceKernels: () => Promise<readonly import("./project-environment-projection.js").EnvironmentSourceKernel[]>
   renderer: any
   dimensions: AnyFn
   appLogger: any
@@ -44,6 +49,7 @@ export type CliOverlayInteractionCompositionDeps = {
   promptInputRefController: {
     current: AnyFn
     currentOrNull: AnyFn
+    focus: () => void
   }
   describeRenderableDebug: AnyFn
   scheduleTimer: AnyFn
@@ -68,7 +74,6 @@ export type CliOverlayInteractionCompositionDeps = {
   flashFooter: AnyFn
   attachBinding: AnyFn
   applyWaitingRoomSessionLifecycleAction: AnyFn
-  retainPromptFocus: AnyFn
 }
 
 export function createCliOverlayInteractionComposition(deps: CliOverlayInteractionCompositionDeps) {
@@ -101,14 +106,26 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       ? deps.sessionState().agents?.find((agent: {id: string}) => agent.id === row.owner.id)?.alias ?? row.owner.id
       : row.owner.id,
     render: () => dialogOverlayController.render(), schedule: deps.scheduleTimer,
-    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
+    pageSize: () => dialogPageSize(deps.dimensions().height),
   })
-  const environmentController = createProjectEnvironmentReadController({
-    send: request => deps.client.send(request),
-    pageSize: () => projectEnvironmentPageSize(deps.dimensions().height),
-    textWidth: () => projectEnvironmentTextWidth(deps.dimensions().width),
+  const environmentController = createProjectEnvironmentController({
+    client: () => deps.client.currentClient(),
+    kernelId: async client => (await getRelayStatus(client as Parameters<typeof getRelayStatus>[0])).daemon_id,
+    otherKernels: deps.environmentSourceKernels,
+    pageSize: () => dialogPageSize(deps.dimensions().height),
+    textWidth: () => dialogTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),
+    schedule: deps.scheduleTimer,
+    newOperationId: randomUUID,
+    now: Date.now,
   })
+  // The dialog shows one kernel's Environment; switching kernels ends it.
+  onCleanup(deps.client.onClientChanged(() => { if (environmentController.isOpen()) environmentController.close() }))
+  const handleEnvironmentPaste = (event: { text: string; preventDefault(): void }) => {
+    if (environmentController.handlePaste(event.text)) event.preventDefault()
+  }
+  deps.renderer.keyInput.on("paste", handleEnvironmentPaste)
+  onCleanup(() => deps.renderer.keyInput.off("paste", handleEnvironmentPaste))
   const dialogOverlayController = createCliDialogOverlayController<any, any>({
     getOpenState: () => ({
       processesOpen: processController.isOpen(),
@@ -119,7 +136,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
       managedMachineOpen: deps.managedMachineDialogOpen(),
     }),
     closeProcesses: processController.close,
-    closeEnvironment: environmentController.close,
+    closeEnvironment: environmentController.dismiss,
     getCurrentFocus: deps.currentFocusedRenderable,
     getPromptFocus: () => deps.promptInputRefController.current() as any,
     describeFocus: deps.describeRenderableDebug,
@@ -152,7 +169,7 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
         onDismiss,
         processConfirmation: processController.confirming(),
         processLines: processController.visibleLines(),
-        environmentLines: environmentController.visibleLines(),
+        environmentView: environmentController.view(),
         sessions: sessionBrowserSessions(),
         normalizeSessionBrowserIndex,
         sessionBrowserProject: sessionBrowserProjectionController.selectedProject(),
@@ -232,15 +249,18 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     logWarning: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
   })
-  const copySelection = clipboardController.copySelection
 
   const promptSurfaceMouseController = createPromptSurfaceMouseController({
     delayMs: 0,
     scheduleTimer: deps.scheduleTimer,
-    isPrimaryButton: (event: { button: MouseButton }) => event.button === MouseButton.LEFT,
-    copySelection,
-    retainPromptFocus: deps.retainPromptFocus,
+    isPrimaryButton: (event: { button: MouseButton; isDragging?: boolean }) => event.button === MouseButton.LEFT,
+    copyText: clipboardController.copyTextWithFeedback,
+    retainPromptFocus: () => deps.promptInputRefController.focus(),
   })
+
+  const onSelection = (selection: Selection) => promptSurfaceMouseController.handleSelection(selection.getSelectedText())
+  deps.renderer.on("selection", onSelection)
+  onCleanup(() => deps.renderer.off("selection", onSelection))
 
   return {
     assignDialogOverlayBox: dialogOverlayController.assignOverlayBox,
@@ -248,7 +268,11 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     closeHotkeys: dialogOverlayController.closeHotkeys,
     closeSessionBrowserDialog,
     closeTerminalPairingDialog: dialogOverlayController.closeTerminalPairing,
-    copyPromptSelection: () => clipboardController.copyPromptSelection() || clipboardController.copySelection(),
+    captureCopyKey: clipboardController.captureCopyKey,
+    capturePaste: clipboardController.capturePaste,
+    replayCopyKey: clipboardController.replayCopyKey,
+    discardCopyInput: clipboardController.discardCopyInput,
+    copyPromptSelection: clipboardController.copyCapturedSelection,
     dialogOverlayOpen: dialogOverlayController.isOpen,
     handleHotkeysToggleShortcut: hotkeysToggleController.handle,
     handlePromptSelectionSurfaceMouseUp: promptSurfaceMouseController.handleMouseUp,

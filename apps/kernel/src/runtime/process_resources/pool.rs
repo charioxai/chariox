@@ -5,6 +5,8 @@
 //! the same pass: a heavy command waits for room, and a growing one is paused
 //! before anything is stopped.
 use super::*;
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::sync::Weak;
 use std::time::Instant;
@@ -16,7 +18,7 @@ const RUNAWAY_BYTES_PER_SECOND: u64 = 128 * MIB;
 const SETTLE: Duration = Duration::from_secs(1);
 
 pub(super) struct Pool {
-    ceiling: u64,
+    pub(super) ceiling: u64,
     /// Pressure starts when less than this is left under the ceiling.
     margin: u64,
     /// The host's own free memory counts too (the kernel's shared pool).
@@ -25,14 +27,18 @@ pub(super) struct Pool {
     budget: Mutex<Weak<cgroup::Budget>>,
     members: Mutex<Vec<Weak<Mutex<Observation>>>>,
     stopped_at: Mutex<BTreeMap<String, Instant>>,
-    ledger: Mutex<admission::Ledger>,
-    volume: Box<admission::Volume>,
+    pub(super) ledger: Mutex<admission::Ledger>,
+    pub(super) launches: Mutex<BTreeMap<String, super::launch::Reservation>>,
+    pub(super) launch_generation: std::sync::atomic::AtomicU64,
+    pub(super) volume: Box<admission::Volume>,
 }
 
 /// One command of a workload: the root's own process or a subtree under it.
 #[derive(Clone, Copy)]
 pub(super) struct CommandUse {
     pub pid: u32,
+    /// Bytes of deleted files its processes still hold open.
+    pub deleted_open: u64,
     /// Its process group: the shell's job it belongs to.
     pub group: Option<u32>,
     pub resident: u64,
@@ -49,6 +55,33 @@ pub(super) struct CommandUse {
 pub(super) enum Cause {
     Pressure,
     Cap(u64),
+}
+
+/// Headroom and launch consumption from the same sample: a newer observation
+/// must not release memory that this headroom has not yet charged.
+pub(super) struct MemoryRoom {
+    pub memory: u64,
+    pub growing: u64,
+    observed: BTreeMap<String, u64>,
+}
+
+impl MemoryRoom {
+    pub(super) fn remaining(
+        &self,
+        launches: &BTreeMap<String, super::launch::Reservation>,
+    ) -> BTreeMap<String, u64> {
+        launches
+            .iter()
+            .map(|(id, launch)| {
+                (
+                    id.clone(),
+                    launch
+                        .memory
+                        .saturating_sub(self.observed.get(id).copied().unwrap_or(0)),
+                )
+            })
+            .collect()
+    }
 }
 
 impl Pool {
@@ -72,6 +105,8 @@ impl Pool {
             members: Mutex::default(),
             stopped_at: Mutex::default(),
             ledger: Mutex::new(admission::Ledger::new(peaks)),
+            launches: Mutex::default(),
+            launch_generation: std::sync::atomic::AtomicU64::new(0),
             volume,
         }
     }
@@ -134,7 +169,7 @@ impl Pool {
             .collect()
     }
 
-    fn members(&self) -> Vec<Arc<Mutex<Observation>>> {
+    pub(super) fn members(&self) -> Vec<Arc<Mutex<Observation>>> {
         self.members
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -167,16 +202,30 @@ impl Pool {
                 self.stop_one(&members, Some(&unit), Cause::Cap(cap));
             }
         }
-        let (memory, growing) = self.room(&members);
+        let sampled = self.room(&members);
+        let growing = sampled.growing;
+        let launches = self.launches.lock().unwrap_or_else(|e| e.into_inner());
+        let launch_memory = sampled.remaining(&launches);
+        // Unused predictions gate admission, not pressure. Charging them here
+        // can strand a paused descendant while its parent keeps the reservation.
         let room = admission::Room {
-            memory,
-            tight: memory < self.margin.max(growing),
+            memory: sampled.memory,
+            tight: sampled.memory < self.margin.max(growing),
             light,
             growth_room: admission::growth_room(self.ceiling),
+            capacity: self.ceiling.saturating_sub(self.margin),
             volume: &*self.volume,
+            launches: &launches,
+            launch_memory,
         };
         let may_stop = ledger.pass(&members, current, &room);
+        let refused = ledger.take_refused(current);
+        let fillers = ledger.take_fillers(current);
+        let capacity = room.capacity;
+        drop(launches);
         drop(ledger);
+        self.end_oversized(current, refused, capacity);
+        self.end_fillers(current, fillers);
         // Paused and held commands do not grow: with nothing growing the
         // pool waits rather than stops.
         if may_stop && growing > 0 && self.pressed(&members) {
@@ -184,21 +233,100 @@ impl Pool {
         }
     }
 
+    /// A command filling a nearly full disk ends now, with the reason in its
+    /// own error stream.
+    fn end_fillers(
+        &self,
+        current: &Arc<Mutex<Observation>>,
+        fillers: Vec<(u32, admission::Filling)>,
+    ) {
+        let control = current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        let Some(control) = control else {
+            return;
+        };
+        for (pid, filling) in fillers {
+            let notice = super::waits::filling_line(&filling);
+            crate::logging::warn_with_fields(
+                "process_resources.disk_stop",
+                notice.trim_end(),
+                serde_json::json!({"pid": pid, "free_bytes": filling.free, "floor_bytes": filling.floor,
+                    "written_bytes": filling.written, "deleted_open_bytes": filling.deleted_open,
+                    "rate_bytes_per_second": filling.rate}),
+            );
+            let _ = control.send(WatchCommand::DiskStop { pid, notice });
+        }
+    }
+
+    /// A command whose known peak exceeds the whole pool can never run here:
+    /// it ends now, with the reason in its own error stream.
+    fn end_oversized(
+        &self,
+        current: &Arc<Mutex<Observation>>,
+        refused: Vec<(u32, u64)>,
+        capacity: u64,
+    ) {
+        let control = current
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .control
+            .clone();
+        let Some(control) = control else {
+            return;
+        };
+        for (pid, needs) in refused {
+            let notice = format!(
+                "chariox: stopped this command: it needs about {} and this machine's memory pool is {}, so it can never fit here. Run it on a larger machine or lower its memory use.\n",
+                super::waits::size(needs),
+                super::waits::size(capacity),
+            );
+            crate::logging::warn_with_fields(
+                "process_resources.memory_stop",
+                notice.trim_end(),
+                serde_json::json!({"pid": pid, "needs_bytes": needs, "pool_bytes": capacity}),
+            );
+            let _ = control.send(WatchCommand::MemoryStop {
+                pid,
+                limit_bytes: capacity,
+                notice,
+            });
+        }
+    }
+
     /// Memory left under the pressure line, and how fast running commands
     /// grow together (bytes per second): admission pauses before the line.
     /// Waiting commands do not count as growing.
-    fn room(&self, members: &[Arc<Mutex<Observation>>]) -> (u64, u64) {
+    pub(super) fn room(&self, members: &[Arc<Mutex<Observation>>]) -> MemoryRoom {
+        let mut observed = BTreeMap::<String, u64>::new();
+        #[cfg(target_os = "linux")]
+        let mut cgroup_observed = BTreeMap::<String, u64>::new();
         let (outside_cgroup, growing) = members
             .iter()
             .map(|member| member.lock().unwrap_or_else(|e| e.into_inner()))
             .fold((0u64, 0u64), |(outside, growing), member| {
+                let resident = member.resident();
+                if member.in_cgroup {
+                    #[cfg(target_os = "linux")]
+                    // Leaves share their unit's controller; only the unit has counters.
+                    if let Some(charged) = member
+                        .cgroup
+                        .as_deref()
+                        .and_then(std::path::Path::parent)
+                        .and_then(cgroup::unreclaimable)
+                    {
+                        cgroup_observed
+                            .entry(member.unit.clone())
+                            .or_insert(charged);
+                    }
+                } else {
+                    let memory = observed.entry(member.unit.clone()).or_default();
+                    *memory = memory.saturating_add(resident);
+                }
                 (
-                    outside
-                        + if member.in_cgroup {
-                            0
-                        } else {
-                            member.resident()
-                        },
+                    outside + if member.in_cgroup { 0 } else { resident },
                     growing
                         + member
                             .commands
@@ -222,6 +350,17 @@ impl Pool {
             .map_or(0, |budget| budget.used());
         #[cfg(not(target_os = "linux"))]
         let charged: u64 = 0;
+        // Never credit more domain charge than the aggregate headroom included.
+        #[cfg(target_os = "linux")]
+        {
+            let mut remaining = charged;
+            for (unit, memory) in cgroup_observed {
+                let credited = memory.min(remaining);
+                remaining -= credited;
+                let memory = observed.entry(unit).or_default();
+                *memory = memory.saturating_add(credited);
+            }
+        }
         let mut room = self
             .ceiling
             .saturating_sub(self.margin)
@@ -231,7 +370,11 @@ impl Pool {
                 room = room.min(host);
             }
         }
-        (room, growing)
+        MemoryRoom {
+            memory: room,
+            growing,
+            observed,
+        }
     }
 
     fn pressed(&self, members: &[Arc<Mutex<Observation>>]) -> bool {
@@ -263,6 +406,38 @@ impl Pool {
         let key = unit.unwrap_or_default().to_string();
         if stopped_at.get(&key).is_some_and(|at| at.elapsed() < SETTLE) {
             return;
+        }
+        // A paused command holds memory and makes no progress: it yields
+        // before a running command does, the newest first.
+        if matches!(cause, Cause::Pressure) {
+            if let Some(waiting) = admission::youngest_paused(members) {
+                let notice = format!(
+                    "chariox: stopped this waiting command under memory pressure: the pool is full, so the newest waiting command ends first ({} MiB resident) and the oldest running one can finish. Run it again; it starts when there is room.\n",
+                    waiting.resident / MIB
+                );
+                crate::logging::warn_with_fields(
+                    "process_resources.memory_stop",
+                    notice.trim_end(),
+                    serde_json::json!({
+                        "pid": waiting.pid,
+                        "resident_bytes": waiting.resident,
+                        "ceiling_bytes": self.ceiling,
+                        "waiting": true,
+                    }),
+                );
+                if waiting
+                    .control
+                    .send(WatchCommand::MemoryStop {
+                        pid: waiting.pid,
+                        limit_bytes: self.ceiling,
+                        notice,
+                    })
+                    .is_ok()
+                {
+                    stopped_at.insert(key, Instant::now());
+                }
+                return;
+            }
         }
         let snapshot = members
             .iter()
@@ -391,7 +566,7 @@ fn machine_memory() -> Option<u64> {
 fn machine_memory() -> Option<u64> {
     let output = crate::process_spawn::command("sysctl")
         .args(["-n", "hw.memsize"])
-        .output()
+        .bounded_output()
         .ok()?;
     String::from_utf8(output.stdout).ok()?.trim().parse().ok()
 }

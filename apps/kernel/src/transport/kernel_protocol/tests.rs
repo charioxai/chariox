@@ -709,6 +709,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
     );
     SessionSnapshotProjection {
         processes: Vec::new(),
+        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -743,6 +744,7 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
     session.create_workflow_run(workflow_run);
     SessionSnapshotProjection {
         processes: Vec::new(),
+        disk_usage: Vec::new(),
         room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
             &session,
             crate::session::DEFAULT_LOCAL_USER_ID,
@@ -1359,4 +1361,30 @@ fn control_plane_refusals_keep_their_typed_boundary() {
         assert_eq!(mapped.message, "Action required");
         assert!(!mapped.retryable);
     }
+}
+
+#[test]
+fn an_ordinary_frame_is_encoded_without_a_second_json_tree() {
+    let projection = session_snapshot_with_agent();
+    let frame = KernelOutgoingFrame::Event {
+        kernel: None,
+        event_id: 1,
+        event: Box::new(KernelEvent::SessionSnapshot {
+            room_workflows: projection.room_workflows,
+            session: Box::new(projection.session),
+            provider_run: Box::new(None),
+            agent_activity: Box::new(projection.agent_activity),
+            agent_activity_revision: 0,
+        }),
+    };
+    super::FRAME_VALUE_TREES.with(|n| n.set(0));
+
+    let encoded = serialize_frame(&frame).expect("session snapshot should serialize");
+
+    assert!(serde_json::from_str::<serde_json::Value>(&encoded).is_ok());
+    assert_eq!(
+        super::FRAME_VALUE_TREES.with(|n| n.get()),
+        0,
+        "a frame with nothing to redact built a JSON tree"
+    );
 }

@@ -3,6 +3,8 @@
 //! leaves them behind. Everything still in the leader's session ends with it,
 //! by exact PID.
 
+#[cfg(any(test, not(target_os = "linux")))]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 const DETACH_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Who belongs to a terminal's shell, captured while the shell still runs.
@@ -104,7 +106,7 @@ fn parent_links() -> Vec<(i32, i32)> {
 fn parent_links() -> Vec<(i32, i32)> {
     let Ok(output) = crate::process_spawn::command("ps")
         .args(["-A", "-o", "pid=,ppid="])
-        .output()
+        .bounded_output()
     else {
         return Vec::new();
     };
@@ -148,7 +150,7 @@ fn ps_session_members(session_leader: i32) -> Vec<i32> {
     }
     let Ok(output) = crate::process_spawn::command("ps")
         .args(["-A", "-o", "pid=,stat="])
-        .output()
+        .bounded_output()
     else {
         return Vec::new();
     };

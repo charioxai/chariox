@@ -17,7 +17,6 @@ const SYSTEMD_STATES = new Set(["active", "reloading", "inactive", "failed", "ac
 const SERVICE_ALLOWLIST = new Set([
   "chariox-path1-managed-bootstrap.service",
   "chariox-managed-bootstrap.service",
-  "chariox-disposable-worker-bootstrap.service",
   "chariox-rootless-docker.service",
   "chariox-slice-broker.service",
 ])

@@ -25,7 +25,6 @@ import {
   sep,
 } from "node:path"
 import { fileURLToPath } from "node:url"
-import { allocationWorkerBindingDigest } from "../../deploy/managed-kernel/allocation-worker-receipt.mjs"
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url))
 const upgrade = join(repositoryRoot, "deploy/managed-kernel/upgrade-image.sh")
@@ -98,7 +97,7 @@ async function effectiveCharioxIdentity() {
   return { uid: 0, gid: 0 }
 }
 
-async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, includeWorkerService = false, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true, unitLabel = label) {
+async function makeRelease(root, label, protocol, privateKey, publicKey, transitionPolicy = null, builderKeys = null, manifestSchema = 3, includeAppArtifacts = true, unitLabel = label) {
   const rootfs = join(root, `image-${label}`)
   const kernel = join(rootfs, "usr/local/bin/chariox-kernel")
   const supervisor = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
@@ -187,13 +186,10 @@ async function makeRelease(root, label, protocol, privateKey, publicKey, transit
     )
   }
   const artifacts = []
-  if (includeWorkerService) {
-    const path = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
-    const source = join(rootfs, path)
-    await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-disposable-worker-bootstrap.service")))
-    artifactSpecs.push(["chariox-disposable-worker-bootstrap.service", path, source, "file"])
-  }
   if (builderKeys) {
+    const imageRoot = join(rootfs, "usr/lib/chariox/slice-image")
+    await put(join(imageRoot, "chariox-slice-linux.tar.gz"), "signed image fixture")
+    artifactSpecs.push(["chariox-slice-image", "/usr/lib/chariox/slice-image", imageRoot, "tree"])
     const path = "/etc/systemd/system/chariox-path1-managed-bootstrap.service"
     const source = join(rootfs, path)
     await put(source, await readFile(join(repositoryRoot, "deploy/managed-kernel/chariox-path1-managed-bootstrap.service")))
@@ -238,8 +234,6 @@ async function makeHarness(context, {
   targetProtocol = 325,
   currentTransitionPolicy = null,
   targetTransitionPolicy = null,
-  receiptKind = "managed_environment",
-  workerCapableCurrent = false,
   path1Release = false,
   rotateBuilder = false,
   currentManifestSchema = 3,
@@ -262,11 +256,11 @@ async function makeHarness(context, {
   if (targetBuilderKeys) await put(nextTrustedBuilderKey, rawPublicKey(targetBuilderKeys.publicKey).toString("base64"), 0o600)
   const current = await makeRelease(
     root, "current", currentProtocol, privateKey, publicKey, currentTransitionPolicy,
-    path1Release || workerCapableCurrent || receiptKind === "allocation_worker", builderKeys, currentManifestSchema,
+    builderKeys, currentManifestSchema,
     currentAppArtifacts, runtimeUnitsChange ? "current" : "units",
   )
   const target = await makeRelease(
-    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, true, targetBuilderKeys, targetManifestSchema,
+    root, "target", targetProtocol, privateKey, publicKey, targetTransitionPolicy, targetBuilderKeys, targetManifestSchema,
     true, runtimeUnitsChange ? "target" : "units",
   )
   const installRoot = join(root, "host")
@@ -289,12 +283,6 @@ async function makeHarness(context, {
   await chmod(dirname(releases), 0o755)
   await chmod(releases, 0o755)
   await cp(current.rootfs, currentRelease, { recursive: true, preserveTimestamps: true })
-  if (!runtimeUnitsChange) {
-    // As upgrade-image.sh stages every release it installs.
-    for (const unit of ["chariox-rootless-docker", "chariox-slice-disk-quota-allocator"]) {
-      await mkdir(join(currentRelease, `etc/systemd/system/${unit}.service.d`), { mode: 0o755 })
-    }
-  }
   await symlink(`releases/${current.digest.slice("sha256:".length)}`, join(installRoot, "usr/lib/chariox/current"))
   await symlink("current/usr/lib/chariox/slice-build-context", join(installRoot, "usr/lib/chariox/slice-build-context"))
   if (path1Release) {
@@ -310,61 +298,8 @@ async function makeHarness(context, {
       await symlink(target, join(installRoot, path))
     }
   }
-  const receiptPath = join(installRoot, receiptKind === "allocation_worker"
-    ? "var/lib/chariox/disposable-worker/bootstrap-receipt.json"
-    : "var/lib/chariox/managed/bootstrap-receipt.json")
-  const binding = {
-    allocationId: "allocation-1",
-    expectedHomeKernelId: "home-kernel-1",
-    userId: "owner-1",
-    realmId: "realm-1",
-    workerMachineId: "machine-1",
-    workerKernelId: "kernel-1",
-    imageDigest: `sha256:${"a".repeat(64)}`,
-    runtimeReleaseDigest: current.digest,
-    managerOperationId: "operation-1",
-    managerOperationFence: 7,
-    managerRequestDigest: `sha256:${"b".repeat(64)}`,
-    senderKeyThumbprint: `sha256:${"c".repeat(64)}`,
-  }
-  let bindingDigest = `sha256:${createHash("sha256").update(JSON.stringify(binding)).digest("hex")}`
-  const receipt = receiptKind === "allocation_worker" ? {
-    schemaVersion: 1, status: "confirmed", allocationId: "allocation-1",
-    machineId: "machine-1", kernelId: "kernel-1", relayPublicKey: "relay-public-key",
-    runtimeReleaseDigest: current.digest, confirmedAt: "2026-09-11T00:00:00Z",
-    homeCaller: { accountId: "account-1", userId: "owner-1", realmId: "realm-1",
-      machineId: "home-machine-1", kernelId: "home-kernel-1", relayPublicKey: "home-key" },
-  } : receiptKind === "disposable_worker" ? {
-    schemaVersion: 1,
-    kind: "disposable_worker",
-    status: "exchanged",
-    cloudApiUrl: "https://cloud.example.test",
-    relayPublicKey: "relay-public-key",
-    bindingDigest,
-    binding,
-    enrollmentReceipt: {
-      grantId: "grant-1",
-      allocationId: binding.allocationId,
-      workerMachineId: binding.workerMachineId,
-      workerKernelId: binding.workerKernelId,
-      imageDigest: binding.imageDigest,
-      runtimeReleaseDigest: binding.runtimeReleaseDigest,
-      exchangedAt: "2026-09-11T00:00:00Z",
-    },
-    cloudRelay: {
-      apiUrl: "https://cloud.example.test",
-      email: "worker@example.test",
-      accountId: "account-1",
-      userId: binding.userId,
-      accountSlug: "account-one",
-      realmId: binding.realmId,
-      relayUrl: "wss://relay.example.test",
-      issuerId: "issuer-1",
-      machineId: binding.workerMachineId,
-      machineAlias: "Disposable worker",
-      machineCredential: `mcred_${"d".repeat(43)}`,
-    },
-  } : {
+  const receiptPath = join(installRoot, "var/lib/chariox/managed/bootstrap-receipt.json")
+  const receipt = {
     schemaVersion: 1,
     status: "confirmed",
     environmentId: "environment-1",
@@ -375,7 +310,6 @@ async function makeHarness(context, {
     confirmedAt: "2026-09-11T00:00:00Z",
     contextPlan: { schemaVersion: 1, repositories: [{ id: "repo-1", url: "ssh://example.invalid/repo" }] },
   }
-  if (receiptKind === "allocation_worker") bindingDigest = allocationWorkerBindingDigest(receipt)
   await put(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
   const persistent = {
     credential: join(installRoot, "home/chariox/.chariox/vault/vault.json"),
@@ -440,41 +374,28 @@ if [ "$1" = "show" ]; then
         printf 'no\n'
       fi
       ;;
-    *--property=NeedDaemonReload*chariox-disposable-worker-bootstrap.service)
-      if [ -f "$HARNESS_STATE/disk-worker-drop-in" ] && [ ! -f "$HARNESS_STATE/systemd-reloaded" ]; then
-        printf 'yes\n'
-      else
-        printf 'no\n'
-      fi
-      ;;
     *--property=DropInPaths*chariox-path1-managed-bootstrap.service)
       if [ -f "$HARNESS_STATE/home-drop-in" ] \
         || { [ -f "$HARNESS_STATE/disk-home-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
         printf '%s\n' /etc/systemd/system/chariox-path1-managed-bootstrap.service.d/50-hardening.conf
       fi
       ;;
-    *--property=DropInPaths*chariox-disposable-worker-bootstrap.service)
-      if [ -f "$HARNESS_STATE/worker-drop-in" ] \
-        || { [ -f "$HARNESS_STATE/disk-worker-drop-in" ] && [ -f "$HARNESS_STATE/systemd-reloaded" ]; }; then
-        printf '%s\n' /etc/systemd/system/chariox-disposable-worker-bootstrap.service.d/50-hardening.conf
-      fi
-      ;;
   esac
   exit 0
 fi
 if [ "$1" = "daemon-reload" ]; then
-  if [ -f "$HARNESS_STATE/disk-home-drop-in" ] || [ -f "$HARNESS_STATE/disk-worker-drop-in" ]; then
+  if [ -f "$HARNESS_STATE/disk-home-drop-in" ]; then
     printf 'present\n' > "$HARNESS_STATE/systemd-reloaded"
   fi
-  if [ -f "$HARNESS_STATE/worker-drop-in-after-reload" ]; then
-    rm -f -- "$HARNESS_STATE/worker-drop-in-after-reload"
-    printf 'present\n' > "$HARNESS_STATE/worker-drop-in"
+  if [ -f "$HARNESS_STATE/home-drop-in-after-reload" ]; then
+    rm -f -- "$HARNESS_STATE/home-drop-in-after-reload"
+    printf 'present\n' > "$HARNESS_STATE/home-drop-in"
   fi
 fi
 presence="$CHARIOX_MANAGED_UPGRADE_ROOT/home/chariox/.chariox/kernels/active/kernel-1.json"
 if [ "$1" = "stop" ]; then
   case "\${2:-}" in
-    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service)
   if [ -f "$HARNESS_STATE/write-legacy-home-on-stop" ]; then
     legacy_home="$CHARIOX_MANAGED_UPGRADE_ROOT/var/lib/chariox/home"
     mkdir -p "$legacy_home"
@@ -495,7 +416,7 @@ if [ "$1" = reload ] && [ -f "$HARNESS_STATE/refuse-reload-once" ]; then
   exit 0
 fi
 case "\${2:-}" in
-  chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+  chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service)
 if [ "$1" = "start" ] || [ "$1" = reload ]; then
   if [ -f "$HARNESS_STATE/rebind-grant-once" ]; then
     rm -f -- "$HARNESS_STATE/rebind-grant-once"
@@ -551,7 +472,7 @@ esac
 if [ "$1" = "start" ] \
   && [ -f "$HARNESS_STATE/crash-after-supervisor-start" ]; then
   case "\${2:-}" in
-    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service)
       rm -f -- "$HARNESS_STATE/crash-after-supervisor-start"
       kill -KILL "$PPID"
       exit 1
@@ -560,7 +481,7 @@ if [ "$1" = "start" ] \
 fi
 if [ "$1" = "is-active" ]; then
   case "\${3:-}" in
-    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service|chariox-disposable-worker-bootstrap.service)
+    chariox-managed-bootstrap.service|chariox-path1-managed-bootstrap.service)
       if [ -f "$HARNESS_STATE/fail-health-once" ]; then
         rm -f "$HARNESS_STATE/fail-health-once"
         exit 1
@@ -711,7 +632,7 @@ exec /usr/bin/stat "$@"
   const run = (extraEnv = {}, args = [target.rootfs, current.digest, target.digest, trustedKey]) =>
     spawnSync(updaterPath, args, { encoding: "utf8", env: { ...env, ...extraEnv } })
   return {
-    root, installRoot, receiptPath, receipt, bindingDigest, persistent, charioxIdentity,
+    root, installRoot, receiptPath, receipt, persistent, charioxIdentity,
     current, target, trustedKey, trustedBuilderKey, nextTrustedBuilderKey, state, run,
   }
 }

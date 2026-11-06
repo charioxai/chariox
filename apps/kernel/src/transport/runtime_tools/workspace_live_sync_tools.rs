@@ -28,6 +28,10 @@ pub struct WorkspaceLiveSyncReadArtifactArgs {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    #[serde(default)]
+    pub offset_bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
 }
 
 #[allow(dead_code)]
@@ -119,12 +123,14 @@ pub fn workspace_live_sync_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     let canonical = vec![
         RuntimeToolSpec {
             name: READ_ARTIFACT_TOOL.to_string(),
-            description: "Read a workspace-relative artifact through Chariox workspace live sync and return content with snapshot/version metadata. Text/structured artifacts return content_text; opaque artifacts return content_base64.".to_string(),
+            description: "Read a workspace-relative artifact through Chariox workspace live sync. Returns a bounded page (default/max 8192 bytes), snapshot/version metadata, total_bytes and next_offset_bytes (null at EOF). Continue with offset_bytes=next_offset_bytes using the same path/domain; restart if version changes. Text/structured pages return content_text at UTF-8 boundaries; opaque pages return independently decodable content_base64.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["path"],
                 "properties": {
                     "path": {"type": "string"},
+                    "offset_bytes": {"type": "integer", "minimum": 0, "description": "Byte offset; use next_offset_bytes from the previous page. Text offsets must be UTF-8 character boundaries."},
+                    "max_bytes": {"type": "integer", "minimum": 4, "maximum": 8192, "description": "Maximum source bytes per page (default 8192); text pages may end earlier to preserve UTF-8."},
                     "domain": {
                         "type": "string",
                         "enum": ["text", "structured", "opaque"]

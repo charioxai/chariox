@@ -378,12 +378,6 @@ impl KernelRuntimeOwnedState {
             mcp_servers,
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
-        request = super::restore_agent_move_preparation_environment(
-            &config,
-            &self.durable_state_store,
-            &self.agent_moves,
-            request,
-        )?;
         if let Some(checkpoint) = self.agent_moves.checkpoint_for_launch(&request)? {
             request = request.with_native_checkpoint(checkpoint);
         }
@@ -407,6 +401,7 @@ impl KernelRuntimeOwnedState {
             .and_then(|id| self.agent_store.get_agent(id).ok());
         crate::project_environment::attach_project_provider_environment(
             &self.config_projection.snapshot(),
+            &self.session_store,
             &session,
             agent.as_ref(),
             request,
@@ -2047,6 +2042,8 @@ mod tests {
             false,
         )
         .expect("provider credential should store");
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).expect("vault should lock");
+        crate::secret::clear_vault_secret_process_cache().expect("secret cache should clear");
 
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
@@ -2295,7 +2292,7 @@ mod tests {
             .resolve_terminal_runtime_interaction(
                 session_id,
                 passphrase_interaction.id(),
-                "passphrase",
+                "unlock_once",
                 Some("correct horse battery staple"),
                 Some(crate::session::DEFAULT_LOCAL_USER_ID),
             )

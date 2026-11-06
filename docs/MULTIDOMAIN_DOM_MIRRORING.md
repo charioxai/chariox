@@ -186,7 +186,9 @@ v2 follows rrweb's model instead of a per-credit computed-style dump:
   element so the transform and opacity are not applied twice. Only a failing
   document copy (snapshot/observer failure) selects whole-page video. Region and
   mask records carry their layout size; sizes and a mask's display are
-  reconciled every drain.
+  reconciled every drain. A frame document is laid out in the compat mode of its source (981): the viewer builds it
+  in standards mode unless its record says `compat: "quirks"` (a frame's initial viewer document is quirks mode, which
+  stretches `height: 100%` tables such as an image grid's rows); a top-level quirks page stays in the standards-mode sandbox.
 - **UA state (492).** State without an attribute footprint is sampled from a
   declared set (elements with `popover`, dialogs, checkboxes, custom elements)
   on toggle/close/input/change, attribute changes, morphs and the 2 s cursor:

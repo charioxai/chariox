@@ -408,10 +408,6 @@ impl RuntimeProviderRun {
         &self.pty_env
     }
 
-    pub(crate) fn preparation_base_path(&self) -> Option<&str> {
-        self.preparation_base_path.as_deref()
-    }
-
     pub(crate) fn requested_provider_env_remove(&self) -> Option<&[String]> {
         self.requested_provider_env_remove.as_deref()
     }
@@ -463,14 +459,6 @@ impl RuntimeProviderRun {
 
     pub(crate) fn remote_extension_manifest_revision(&self) -> u64 {
         self.remote_extension_manifest_revision
-    }
-
-    pub(super) fn advance_manifest_revision_after_snapshot_restore(&mut self, current: &Self) {
-        self.remote_extension_manifest_revision = self
-            .remote_extension_manifest_revision
-            .max(current.remote_extension_manifest_revision)
-            .checked_add(1)
-            .expect("provider manifest revision exhausted");
     }
 
     pub fn provider_config_overrides(&self) -> &BTreeMap<String, serde_json::Value> {
@@ -644,15 +632,6 @@ impl RuntimeProviderRun {
         Ok(())
     }
 
-    pub(crate) fn preparation_environment_matches(&self, home: &str, path: &str) -> bool {
-        self.pty_env.get("HOME").is_some_and(|value| value == home)
-            && self.pty_env.get("PATH").is_some_and(|value| value == path)
-            && super::managed_isolation::managed_launch_has_preparation_home(
-                &self.pty_args,
-                Path::new(home),
-            )
-    }
-
     pub(crate) fn preparation_environment(&self) -> Option<(String, String)> {
         let home = self.pty_env.get("HOME")?;
         if !super::managed_isolation::is_kernel_preparation_home(Path::new(home)) {
@@ -742,6 +721,24 @@ impl RuntimeProviderRun {
 
     pub fn clear_terminal_diagnostic(&mut self) {
         self.terminal_diagnostic = None;
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn adopt_handed_over_identity(
+        &mut self,
+        id: String,
+        token: Option<String>,
+        endpoint: Option<String>,
+    ) {
+        self.id = id;
+        if self.runtime_mcp_auth_token.is_some() {
+            if let Some(token) = token {
+                self.runtime_mcp_auth_token = Some(token);
+            }
+        }
+        if endpoint.is_some() {
+            self.structured_endpoint = endpoint;
+        }
     }
 
     pub fn set_runtime_mcp_auth_token(&mut self, auth_token: Option<String>) {

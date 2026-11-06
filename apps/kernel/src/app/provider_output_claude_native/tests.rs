@@ -1311,6 +1311,9 @@ fn native_interrupt_control_prompt_is_not_user_history() {
     assert!(claude_native_prompt_is_internal_control(
         "  [Request interrupted by user]\n"
     ));
+    assert!(claude_native_prompt_is_internal_control(
+        "[Request interrupted by user for tool use]"
+    ));
     assert!(!claude_native_prompt_is_internal_control(
         "Please explain why the request was interrupted by the user."
     ));
@@ -2897,6 +2900,37 @@ fn claude_resume_repair_of_an_interrupted_call_is_not_a_tool_result() {
     let drain = drain_claude_transcript_file(&transcript, &mut ClaudeTranscriptCursor::default());
 
     assert!(drain.chunks.is_empty(), "{:?}", drain.chunks);
+    let _ = fs::remove_dir_all(dir);
+}
+
+#[test]
+fn claude_transcript_result_of_a_stopped_call_is_cancelled_not_failed() {
+    let dir = std::env::temp_dir().join(format!(
+        "chariox-claude-transcript-stopped-call-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::create_dir_all(&dir);
+    let transcript = dir.join("session.jsonl").display().to_string();
+    let call = serde_json::json!({
+        "type": "assistant", "uuid": "assistant-1",
+        "message": { "id": "msg-1", "role": "assistant", "content": [
+            { "type": "tool_use", "id": "toolu_stopped", "name": "Bash", "input": { "command": "sleep 100" } }
+        ] }
+    });
+    let stopped = serde_json::json!({
+        "type": "user", "uuid": "user-stopped",
+        "message": { "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_stopped", "is_error": true,
+              "content": "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed." }
+        ] }
+    });
+    fs::write(&transcript, format!("{call}\n{stopped}\n")).expect("transcript should write");
+    let drain = drain_claude_transcript_file(&transcript, &mut ClaudeTranscriptCursor::default());
+
+    let result: Value = serde_json::from_str(&drain.chunks.last().expect("result chunk").text)
+        .expect("result is JSON");
+    assert_eq!(result["status"], "cancelled");
+    assert_eq!(result["tool"], "Bash");
     let _ = fs::remove_dir_all(dir);
 }
 

@@ -116,7 +116,7 @@ function fakeAdmission({
     },
   }
   const io = {
-    readStorageInput: () => ({ role: "managed", serial: SERIAL, sizeGb: 10 }),
+    readStorageInput: () => ({ serial: SERIAL, sizeGb: 10 }),
     readBinding: () => binding,
     writeBinding: (value) => { binding = value },
     ensureMountpoint: () => true,

@@ -265,9 +265,16 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             .await
             {
                 Ok(response)
-                    if remote_provider_account_response_matches(&response, &expected_account) =>
+                    if remote_provider_account_confirmed(&response, &expected_account)
+                        .is_some() =>
                 {
-                    if let Err(error) = update_remote_binding_materialization_status(
+                    let confirmed = remote_provider_account_confirmed(&response, &expected_account);
+                    // The home's own record says "installed" only for the copy it made; a login the worker already held is asked about again.
+                    if confirmed
+                        .as_ref()
+                        .is_some_and(|account| account.profile_id == expected_account.profile_id)
+                    {
+                        if let Err(error) = update_remote_binding_materialization_status(
                         &plan.provider_account_profiles,
                         &account_owner_user_id,
                         &plan.agent,
@@ -287,7 +294,8 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
                         .await;
                         return Err(error);
                     }
-                    materialized_account = Some(expected_account);
+                    }
+                    materialized_account = confirmed;
                 }
                 Ok(other) => {
                     let _ = update_remote_binding_materialization_status(
@@ -938,12 +946,15 @@ impl DaemonApp {
                     authorize,
                 ) {
                     Ok(response)
-                        if remote_provider_account_response_matches(
-                            &response,
-                            &expected_account,
-                        ) =>
+                        if remote_provider_account_confirmed(&response, &expected_account)
+                            .is_some() =>
                     {
-                        if let Err(error) = self
+                        let confirmed =
+                            remote_provider_account_confirmed(&response, &expected_account);
+                        if confirmed.as_ref().is_some_and(|account| {
+                            account.profile_id == expected_account.profile_id
+                        }) {
+                            if let Err(error) = self
                             .provider_account_profiles
                             .update_materialization_status(
                                 &account_owner_user_id,
@@ -961,7 +972,8 @@ impl DaemonApp {
                             cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                             return Err(error);
                         }
-                        materialized_account = Some(expected_account);
+                        }
+                        materialized_account = confirmed;
                     }
                     Ok(other) => {
                         let _ = self.provider_account_profiles.update_materialization_status(
@@ -1910,17 +1922,26 @@ pub(crate) async fn cleanup_remote_agent_binding_refresh(
     .await;
 }
 
-fn remote_provider_account_response_matches(
+/// The worker's profile for the account: the home's stable id when the worker made its copy, or the worker's own id when it already held a login from this account (a transfer installed it). Never an alias.
+fn remote_provider_account_confirmed(
     response: &RelayPeerResponse,
     expected: &crate::account_profile::ProviderAccountReplicaMetadata,
-) -> bool {
-    matches!(
-        response,
+) -> Option<crate::account_profile::ProviderAccountReplicaMetadata> {
+    match response {
         RelayPeerResponse::RemoteProviderAccountEnsured {
             provider,
             account_profile,
-        } if provider == &expected.provider && account_profile == &expected.profile_id
-    )
+        } if provider == &expected.provider
+            && !account_profile.trim().is_empty()
+            && account_profile != "default" =>
+        {
+            Some(crate::account_profile::ProviderAccountReplicaMetadata {
+                profile_id: account_profile.clone(),
+                ..expected.clone()
+            })
+        }
+        _ => None,
+    }
 }
 
 fn installed_remote_account_metadata(
@@ -2143,7 +2164,7 @@ mod tests {
         );
     }
     #[test]
-    fn remote_account_receipt_matches_the_materialized_profile_id_not_its_alias() {
+    fn remote_account_receipt_names_the_workers_profile_never_an_alias() {
         let expected = crate::account_profile::ProviderAccountReplicaMetadata {
             owner_user_id: "user-home".to_string(),
             provider: "codex".to_string(),
@@ -2152,21 +2173,42 @@ mod tests {
             origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
             is_default: true,
         };
+        let ensured = |provider: &str, account_profile: &str| {
+            crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
+                provider: provider.to_string(),
+                account_profile: account_profile.to_string(),
+            }
+        };
 
-        assert!(super::remote_provider_account_response_matches(
-            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
-                provider: "codex".to_string(),
-                account_profile: "codex-1-vfx4dshw".to_string(),
-            },
-            &expected,
-        ));
-        assert!(!super::remote_provider_account_response_matches(
-            &crate::transport::relay_peer::RelayPeerResponse::RemoteProviderAccountEnsured {
-                provider: "codex".to_string(),
-                account_profile: "default".to_string(),
-            },
-            &expected,
-        ));
+        assert_eq!(
+            super::remote_provider_account_confirmed(
+                &ensured("codex", "codex-1-vfx4dshw"),
+                &expected
+            ),
+            Some(expected.clone()),
+            "the copy the worker made carries the home's id"
+        );
+        assert_eq!(
+            super::remote_provider_account_confirmed(
+                &ensured("codex", "codex-1-worker"),
+                &expected
+            )
+            .map(|account| account.profile_id),
+            Some("codex-1-worker".to_string()),
+            "a login the worker already held is used under its own id"
+        );
+        assert!(
+            super::remote_provider_account_confirmed(&ensured("codex", "default"), &expected)
+                .is_none()
+        );
+        assert!(
+            super::remote_provider_account_confirmed(&ensured("codex", " "), &expected).is_none()
+        );
+        assert!(super::remote_provider_account_confirmed(
+            &ensured("claude", "codex-1-vfx4dshw"),
+            &expected
+        )
+        .is_none());
     }
 
     #[test]

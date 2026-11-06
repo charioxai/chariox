@@ -3,8 +3,11 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, DECODED_TASKS};
 
-/// Tasks decoded while a turn that already has its task ends, after `finished` earlier turns.
-fn decoded_at_turn_end(finished: usize) -> usize {
+/// Tasks decoded by `act` on a turn that already has its task, after `finished` earlier turns.
+fn decoded_during(
+    finished: usize,
+    act: impl FnOnce(&KernelRuntimeState, &str, &str, &crate::session::PromptQueueItem),
+) -> usize {
     let worktree = crate::test_support::TestWorktree::new("turn-task");
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -34,10 +37,14 @@ fn decoded_at_turn_end(finished: usize) -> usize {
         let prompt = format!("turn-{i}");
         begin(&prompt);
         store
-            .agent_lifecycle(Operation::EndFailedTurn {
-                task: prompt.clone(),
+            .agent_lifecycle(Operation::Settle {
+                room: room.id().into(),
+                agent: agent.id().into(),
                 prompt,
-                reason: "provider run failed".into(),
+                run: format!("run-{i}"),
+                has_answer: true,
+                cancelled: false,
+                now: crate::session::unix_epoch_ms(),
             })
             .unwrap();
     }
@@ -50,18 +57,42 @@ fn decoded_at_turn_end(finished: usize) -> usize {
         crate::session::PromptStatus::Running,
     );
     DECODED_TASKS.with(|n| n.set(0));
-    runtime
-        .owned
-        .ensure_agent_task(room.id(), agent.id(), &current, None)
-        .unwrap();
-    let task = store
-        .agent_turn_task(room.id(), agent.id(), "current")
-        .unwrap()
-        .unwrap();
-    assert!(!store
-        .agent_has_other_unfinished_task(room.id(), agent.id(), &task.task_id)
-        .unwrap());
+    act(&runtime, room.id(), agent.id(), &current);
     DECODED_TASKS.with(|n| n.get())
+}
+
+/// Tasks decoded while a turn that already has its task ends, after `finished` earlier turns.
+fn decoded_at_turn_end(finished: usize) -> usize {
+    decoded_during(finished, |runtime, room, agent, current| {
+        let store = &runtime.owned.durable_state_store;
+        runtime
+            .owned
+            .ensure_agent_task(room, agent, current, None)
+            .unwrap();
+        let task = store
+            .agent_turn_task(room, agent, "current")
+            .unwrap()
+            .unwrap();
+        assert!(!store
+            .agent_has_other_unfinished_task(room, agent, &task.task_id)
+            .unwrap());
+    })
+}
+
+/// Tasks decoded when a prompt is admitted again, after `finished` earlier turns.
+fn decoded_at_admission(finished: usize) -> usize {
+    decoded_during(finished, |runtime, room, _agent, current| {
+        let created = runtime
+            .owned
+            .admit_agent_task(&crate::app::KernelPreparedPromptSubmission {
+                session_id: room.into(),
+                prompt: current.clone(),
+                force_queue: false,
+                refresh_projection: false,
+            })
+            .unwrap();
+        assert!(!created, "the turn already had its task");
+    })
 }
 
 #[test]
@@ -70,5 +101,60 @@ fn a_turn_end_reads_only_its_own_task() {
     assert_eq!(
         few, many,
         "a turn end decoded {few} tasks after 2 earlier turns and {many} after 30"
+    );
+}
+
+#[test]
+fn an_admission_reads_only_its_own_task() {
+    let (few, many) = (decoded_at_admission(2), decoded_at_admission(30));
+    assert_eq!(
+        few, many,
+        "an admission decoded {few} tasks after 2 earlier turns and {many} after 30"
+    );
+}
+
+/// Tasks decoded by the legacy goal offer that every lifecycle sweep makes, after `finished` earlier turns.
+fn decoded_at_legacy_goal_offer(finished: usize) -> usize {
+    decoded_during(finished, |runtime, _room, _agent, _current| {
+        runtime.offer_legacy_goal_adoption().unwrap();
+    })
+}
+
+#[test]
+fn a_room_without_legacy_runs_reads_no_tasks_for_the_goal_offer() {
+    let (few, many) = (
+        decoded_at_legacy_goal_offer(2),
+        decoded_at_legacy_goal_offer(30),
+    );
+    assert_eq!(
+        (few, many),
+        (0, 0),
+        "the goal offer decoded {few} tasks after 2 earlier turns and {many} after 30"
+    );
+}
+
+/// Tasks decoded by a lifecycle sweep, after `finished` earlier turns whose tasks it has already settled.
+fn decoded_at_sweep(finished: usize) -> usize {
+    decoded_during(finished, |runtime, _room, _agent, _current| {
+        let sweep = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        sweep
+            .block_on(runtime.sweep_agent_lifecycle_for_test())
+            .unwrap();
+        DECODED_TASKS.with(|n| n.set(0));
+        sweep
+            .block_on(runtime.sweep_agent_lifecycle_for_test())
+            .unwrap();
+    })
+}
+
+#[test]
+fn a_sweep_reads_only_the_tasks_that_can_need_it() {
+    let (few, many) = (decoded_at_sweep(2), decoded_at_sweep(30));
+    assert_eq!(
+        few, many,
+        "a sweep decoded {few} tasks after 2 finished turns and {many} after 30"
     );
 }

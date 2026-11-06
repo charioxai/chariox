@@ -133,7 +133,6 @@ if [ -e "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
   || [ -L "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" ]; then
   require_regular_file "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"
 fi
-require_regular_file "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-rootless-docker.service"
 require_regular_file "$image_root/etc/systemd/system/chariox-slice-broker.service"
 if [ "$managed_provider_topology" = path1 ]; then
@@ -279,10 +278,8 @@ repair_root_control_tree() {
 
 repair_root_control_state() {
   repair_root_control_tree "$state_root/managed" "managed control state"
-  repair_root_control_tree "$state_root/disposable-worker" "disposable-worker control state"
   repair_root_control_tree "$state_root/kernels" "managed kernel presence state"
   repair_root_control_file "$state_root/managed-bootstrap.json" "managed bootstrap state"
-  repair_root_control_file "$state_root/disposable-worker-bootstrap.json" "disposable-worker bootstrap state"
 }
 
 validate_state_root_entries() {
@@ -293,9 +290,7 @@ validate_state_root_entries() {
   if ! unknown_state_entry=$(find "$state_root" -mindepth 1 -maxdepth 1 \
     ! \( \
       -name managed-bootstrap.json -o \
-      -name disposable-worker-bootstrap.json -o \
       -name managed -o \
-      -name disposable-worker -o \
       -name kernels -o \
       -name home -o \
       -name home-migration.json -o \
@@ -537,14 +532,11 @@ if [ ! -e "$published_release" ]; then
     "$pending_release/usr" \
     "$pending_release/usr/local" \
     "$pending_release/usr/local/bin" \
-    "$pending_release/usr/libexec" \
     "$pending_release/usr/lib" \
     "$pending_release/usr/lib/chariox" \
     "$pending_release/etc" \
     "$pending_release/etc/systemd" \
-    "$pending_release/etc/systemd/system" \
-    "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
-    "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
+    "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-app-package" "$pending_release/usr/local/bin/chariox-app-package"
@@ -560,18 +552,23 @@ if [ ! -e "$published_release" ]; then
   if path_exists "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service"; then
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-path1-managed-bootstrap.service" "$pending_release/etc/systemd/system/chariox-path1-managed-bootstrap.service"
   fi
-  install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$pending_release/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service" "$pending_release/etc/systemd/system/chariox-rootless-docker.service"
   # Modern signed releases include these artifacts for shared-host verification too;
   # older shared-host releases omit the set and remain installable.
   if [ "$managed_provider_topology" = path1 ] \
     || path_exists "$image_root/etc/systemd/system/chariox-data-volume-admission.service"; then
+    install -d -o root -g root -m 0755 \
+      "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d" \
+      "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-data-volume-admission.service" "$pending_release/etc/systemd/system/chariox-data-volume-admission.service"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-rootless-docker.service.d/50-chariox-data-volume.conf"
     install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf" "$pending_release/etc/systemd/system/chariox-slice-disk-quota-allocator.service.d/50-chariox-data-volume.conf"
   fi
   install -o root -g root -m 0644 "$image_root/etc/systemd/system/chariox-slice-broker.service" "$pending_release/etc/systemd/system/chariox-slice-broker.service"
   (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-build-context" "$pending_release/usr/lib/chariox/slice-build-context")
+  if path_exists "$image_root/usr/lib/chariox/slice-image"; then
+    (umask 000; cp -RP "$image_root/usr/lib/chariox/slice-image" "$pending_release/usr/lib/chariox/slice-image")
+  fi
   verify_selected_release "$pending_release" "$expected_release_digest" "$trusted_public_key"
   node "$script_root/managed-kernel-upgrade-state.mjs" sync-tree "$pending_release"
   mv "$pending_release" "$published_release"
@@ -595,7 +592,6 @@ elif path_exists "$install_root/etc/systemd/system/chariox-path1-managed-bootstr
   echo "Path-1 managed-home service link is present but the signed release does not declare that service" >&2
   exit 1
 fi
-atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service" "$install_root/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-rootless-docker.service" "$install_root/etc/systemd/system/chariox-rootless-docker.service"
 atomic_symlink "../../../usr/lib/chariox/current/etc/systemd/system/chariox-slice-broker.service" "$install_root/etc/systemd/system/chariox-slice-broker.service"
 if [ "$managed_provider_topology" = path1 ]; then

@@ -1,6 +1,6 @@
 {
-  "local_protocol": 966,
-  "peer_protocol": 415,
+  "local_protocol": 999,
+  "peer_protocol": 438,
   "abort": {
     "MoveAgentToLocal": {
       "session_id": "room",
@@ -9,9 +9,18 @@
     }
   },
   "agent_move_statuses": [
-    {"state": "waiting_for_turn", "target_ref": "kernel-b"},
-    {"state": "moving"},
-    {"state": "failed", "target_ref": "kernel-b", "reason": "Project setup failed"}
+    {
+      "state": "waiting_for_turn",
+      "target_ref": "kernel-b"
+    },
+    {
+      "state": "moving"
+    },
+    {
+      "state": "failed",
+      "target_ref": "kernel-b",
+      "reason": "Project setup failed"
+    }
   ],
   "peer_requests": [
     {
@@ -157,8 +166,7 @@
       "requirements": {
         "agent_configuration_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
         "extensions": {},
-        "skills": [],
-        "environment_definition": null
+        "skills": []
       }
     },
     {
@@ -198,8 +206,7 @@
         "target_project_id": "target-project",
         "target_account_profile": "selected",
         "backing_session_id": "backing-room",
-        "backing_agent_id": "backing-agent",
-        "environment_setup_operation_id": null
+        "backing_agent_id": "backing-agent"
       }
     }
   ],
@@ -260,8 +267,7 @@
         "target_project_id": "target-project",
         "target_account_profile": "selected",
         "backing_session_id": "backing-room",
-        "backing_agent_id": "backing-agent",
-        "environment_setup_operation_id": null
+        "backing_agent_id": "backing-agent"
       }
     },
     {
@@ -288,8 +294,7 @@
           "target_project_id": "target-project",
           "target_account_profile": "selected",
           "backing_session_id": "backing-room",
-          "backing_agent_id": "backing-agent",
-          "environment_setup_operation_id": null
+          "backing_agent_id": "backing-agent"
         },
         "committed_at_ms": 1
       }

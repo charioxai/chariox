@@ -20,7 +20,7 @@ const rebaseCss = (text, slot) => text.replace(/mr:r([0-9]{1,6})/g, (_, n) => `m
 // field cannot travel from a child frame un-rebased.
 const same = value => value;
 const id = slot => value => rebaseId(value, slot);
-const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, fragment: same, size: same, display: same, reason: same, state: same, foreign: same,
+const RECORD = slot => ({ id: id(slot), parent: value => value === null ? null : rebaseId(value, slot), kind: same, tag: same, ns: same, text: same, form: same, scroll: same, fragment: same, document_mode: same, size: same, display: same, reason: same, state: same, foreign: same,
   attrs: attrs => attrs.style ? { ...attrs, style: rebaseCss(attrs.style, slot) } : attrs, res: key => rebaseKey(key, slot), css: text => rebaseCss(text, slot), adopted: list => list.map(text => rebaseCss(text, slot)) });
 const OPS = {
   children: slot => ({ children: list => list.map(id(slot)), nodes: list => list.map(record => rebaseRecord(record, slot)) }),
@@ -114,6 +114,9 @@ export class MirrorFrames {
   // A child document mounted under its owner (an element of `host`, at slot `hostSlot`): its records, ops and resources in
   // viewer ids, with the cross-origin frames it hosts attached below it.
   async mount(host, hostSlot, stream, owner, frame, policy, tab, depth) {
+    // A src mutation can replace the mirror owner while Chrome keeps its frame.
+    // Its observer belongs to this subscription: only the new owner may drain it.
+    for (const previous of [...stream.frames.values()]) if (previous.child.frame.id === frame.id) this.forget(stream, previous);
     const slot = ++stream.frameSlot;
     const child = await this.world(host, frame, stream.id);
     const loaderId = await this.loaderId(child);

@@ -30,7 +30,7 @@ mod transcript;
 mod workspace_trust;
 
 pub(crate) use context_delivery::clear_claude_context_delivery_for_settled_prompt;
-pub(crate) use permission::format_claude_permission_message;
+pub(crate) use permission::{claude_permission_title, format_claude_permission_message};
 pub(super) use startup_exit::claude_native_startup_exit;
 
 use attachments::{
@@ -932,7 +932,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             &account_owner_user_id,
             provider_run.provider(),
             provider_run.account_profile(),
-            snapshot,
+            snapshot.with_reading_source("event"),
         )?;
         Ok(())
     }
@@ -1381,7 +1381,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id,
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some("Approve Claude Code tool?".to_string()),
+            Some(claude_permission_title(&Value::Null)),
             claude_rendered_permission_details(&recent),
             vec![
                 RuntimeInteractionChoice::new(
@@ -1474,10 +1474,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             write_claude_permission_passthrough(context_file, request_id);
             return Ok(());
         };
-        let tool_name = event
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .unwrap_or("tool");
         let interaction_id = format!("claude-native-permission-{provider_run_id}-{request_id}");
         write_claude_native_marker(context_file, &format!("permission:{interaction_id}"));
         write_claude_hook_permission_tombstone(context_file, event);
@@ -1487,7 +1483,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             agent_id.to_string(),
             RuntimeInteractionKind::Permission,
             RuntimeInteractionLevel::Warning,
-            Some(format!("Approve Claude Code {tool_name}?")),
+            Some(claude_permission_title(event)),
             format_claude_permission_message(event),
             vec![
                 RuntimeInteractionChoice::new(

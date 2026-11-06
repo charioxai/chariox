@@ -18,7 +18,9 @@ The Rust configuration API accepts explicit trusted kernel operations. The kerne
 resolves existing workflow publication, endpoint and queue ownership, retains its
 workflow/session guards, and checks those exact normalized records in the same
 writer transaction as configuration CAS. Every change increments the binding
-revision; reactivation repeats target authorization. Deactivation cannot grant
+revision; reactivation repeats target authorization. A collaborator must control
+both the proposed target and the existing target; the writer compares the
+authorized existing target in the configuration transaction. Deactivation cannot grant
 active access. No public App/terminal permission request path is provided here.
 The SDK 0.4 event declaration supplies signed `schemaVersion` and `direction`
 (`outgoing`, `incoming`, or `both`) and requires kernel protocol 292. Only
@@ -167,3 +169,14 @@ The existing kernel event adapter and normalized workflow writer are the intende
 downstream authority. Public automation management, production activation/pump
 validation, App inbox/source generation fencing, schedule supersession, and the AEGS/AEDS
 migration remain separate integration work.
+
+MP-08 / MP-09 / MP-10 / MP-11: agent targets retain the same App admission and
+receipt path. The kernel associates their ordinary durable prompt with the
+receipt's original Room and agent. Removing an active or steered prompt settles
+that receipt as delivered; cancelling a prompt that was still queued settles it
+as failed. These are delivery states, independent of the task's semantic result.
+Prompt-state events and receipt settlement share the committing writer. A late
+association reconciles against committed prompt history and rejects missing
+history. Terminal agent receipts use the existing retention and capacity rules.
+Deferred agent receipts keep their original deadlines and attempt counts; pending
+agent work sorts by eligibility time so a disabled subscriber cannot pin a page.

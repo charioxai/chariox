@@ -41,13 +41,17 @@ pub(crate) fn projected_session_state_response(
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     // The label is read before the session, so a state is never older than its revision.
     let agent_activity_revision = session_projection.change_sequence();
-    let (session, processes) = match runtime_state.session_state_response(request.clone()) {
-        Ok(LocalDaemonResponse::SessionState {
-            session, processes, ..
-        }) => (session, processes),
-        Ok(_) => unreachable!("session state request returned a different response"),
-        Err(error) => return Some(Err(error)),
-    };
+    let (session, processes, disk_usage) =
+        match runtime_state.session_state_response(request.clone()) {
+            Ok(LocalDaemonResponse::SessionState {
+                session,
+                processes,
+                disk_usage,
+                ..
+            }) => (session, processes, disk_usage),
+            Ok(_) => unreachable!("session state request returned a different response"),
+            Err(error) => return Some(Err(error)),
+        };
     let caller_user_id =
         &runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
     if !session.has_member(caller_user_id) {
@@ -79,6 +83,7 @@ pub(crate) fn projected_session_state_response(
         agent_activity: redact_agent_activity_for_session(agent_activity, &redacted_session),
         agent_activity_revision,
         processes,
+        disk_usage,
         session: redacted_session,
     }))
 }

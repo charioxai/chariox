@@ -136,10 +136,11 @@ impl KernelRuntimeOwnedState {
             }
         }
         match request {
+            // A room agent lists this room's notification sources to subscribe itself.
+            LocalDaemonRequest::ListWorkflowNotifications(_) => Ok(()),
             LocalDaemonRequest::RegisterWorkflowNotificationSource(_)
             | LocalDaemonRequest::AttachWorkflowNotification(_)
-            | LocalDaemonRequest::DetachWorkflowNotification(_)
-            | LocalDaemonRequest::ListWorkflowNotifications(_) => {
+            | LocalDaemonRequest::DetachWorkflowNotification(_) => {
                 Err(DaemonError::LocalTransport {
                     operation: "workflow.notifications",
                     message: "workflow notifications require the owning user's command".into(),

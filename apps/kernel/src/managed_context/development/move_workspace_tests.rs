@@ -205,8 +205,7 @@ fn git_state(root: &Path) -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn mk02_directory_uses_project_private_file_choices() {
-    use crate::project_environment::*;
+fn mk02_directory_brings_the_environment_files_outside_git() {
     let root = test_root("move-directory-selection");
     let _cleanup = PlainWorkspaceCleanup(root.clone());
     let directory = root.join("notes");
@@ -222,33 +221,17 @@ fn mk02_directory_uses_project_private_file_choices() {
     fs::create_dir_all(directory.join("unselected/empty")).unwrap();
     fs::write(directory.join("private/needed.bin"), b"selected\0bytes\n").unwrap();
     fs::write(directory.join("private/stays.txt"), "stay home\n").unwrap();
-    let mut manifest = ProjectEnvironmentManifest {
-        schema_version: 1,
-        project_id: "move-project".into(),
-        evidence_digest: "fixture".into(),
-        entries: vec![],
-        private_files: vec![],
-        toolchain_hints: vec![],
-        package_hints: vec![],
-        service_hints: vec![],
-    };
-    let workspace = directory.to_string_lossy().into_owned();
-    for path in ["selected.txt", "private/needed.bin"] {
-        manifest.private_files.push(ProjectPrivateFileDecision {
-            workspace_id: workspace.clone(),
-            path: path.into(),
-            bring: true,
-            secret_looking: false,
-            reason: "explicitly selected".into(),
-        });
-    }
-    register_project_file_rules(&manifest, &BTreeMap::from([(workspace, directory.clone())]));
+    let listed = ["selected.txt".to_string(), "private/needed.bin".to_string()];
+    crate::project_environment::register_environment_files(
+        std::slice::from_ref(&directory),
+        &listed,
+    );
     let result = export_development_context(DevelopmentContextExportRequest {
         project_id: "move-project".into(),
         repositories: vec![selection(&directory, true)],
         archive_path: root.join("selected.tar.gz"),
     });
-    forget_project_file_rules(&manifest);
+    crate::project_environment::register_environment_files(std::slice::from_ref(&directory), &[]);
     let exported = result.unwrap();
     let paths: Vec<_> = exported.manifest.repositories[0]
         .overlay
@@ -387,27 +370,6 @@ fn mk02_directory_partial_component_inclusion_below_ignored_directory() {
 }
 
 #[test]
-fn mk02_directory_glob_inclusion_reaches_vault_review() {
-    for pattern in ["**/.env", "private*/.env"] {
-        let root = test_root("move-directory-glob-review");
-        let _cleanup = PlainWorkspaceCleanup(root.clone());
-        let directory = root.join("notes");
-        fs::create_dir_all(directory.join("private-extra")).unwrap();
-        fs::write(directory.join(".gitignore"), "private-extra/\n").unwrap();
-        fs::write(directory.join(".charioxignore"), format!("!{pattern}\n")).unwrap();
-        fs::write(directory.join("private-extra/.env"), b"APP_TITLE=fixture\n").unwrap();
-        let items =
-            vault_artifacts::review_items(&BTreeMap::from([("notes".into(), directory)])).unwrap();
-        assert!(
-            items
-                .iter()
-                .any(|item| item.path == "notes/private-extra/.env"),
-            "glob-selected protected files must reach the source Vault review"
-        );
-    }
-}
-
-#[test]
 fn mk02_root_policy_does_not_traverse_ignored_unreadable_directory() {
     for expert_file in [false, true] {
         let root = test_root("move-ignored-unreadable-directory");
@@ -426,18 +388,14 @@ fn mk02_root_policy_does_not_traverse_ignored_unreadable_directory() {
             repositories: vec![selection(&directory, true)],
             archive_path: root.join("selected.tar.gz"),
         });
-        let reviewed =
-            vault_artifacts::review_items(&BTreeMap::from([("notes".into(), directory)]));
         // Restore access before assertions so a failed regression still cleans up.
         fs::set_permissions(&ignored, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
-            exported.is_ok() && reviewed.is_ok(),
-            "ignored unreadable directory entered Copy ({:?}) or Vault review ({:?})",
+            exported.is_ok(),
+            "ignored unreadable directory entered Copy ({:?})",
             exported.as_ref().err(),
-            reviewed.as_ref().err(),
         );
         let exported = exported.expect("an ignored unreadable directory must not enter Copy");
-        reviewed.expect("an ignored unreadable directory must not enter Vault review");
         assert!(!exported.manifest.repositories[0]
             .directories
             .iter()

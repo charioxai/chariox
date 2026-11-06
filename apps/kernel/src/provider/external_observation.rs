@@ -262,9 +262,19 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             .and_then(|body| body.trim_start().strip_prefix("The summary below covers the earlier portion of the conversation."))
             .is_some_and(|body| body.trim_start().starts_with("Summary:"));
         self.user_prompt_is_compaction_control(text)
-            || text == "[Request interrupted by user]"
+            || self.user_prompt_is_interrupt_marker(text)
             || (text.starts_with("<task-notification>") && text.ends_with("</task-notification>"))
             || continuation
+    }
+
+    /// Claude records a stop as a user turn: "[Request interrupted by user]", or "… for tool use"
+    /// when the stop cancelled a tool call. Neither is the person's prompt.
+    pub(crate) fn user_prompt_is_interrupt_marker(self, text: &str) -> bool {
+        self.provider.trim().eq_ignore_ascii_case("claude")
+            && matches!(
+                text.trim(),
+                "[Request interrupted by user]" | "[Request interrupted by user for tool use]"
+            )
     }
 
     pub(crate) fn user_prompt_is_compaction_control(self, text: &str) -> bool {

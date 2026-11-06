@@ -43,6 +43,7 @@ mod types;
 pub(crate) use types::{DelegateGoneReason, ReplyOutcome};
 #[cfg(test)]
 mod wake_tests;
+mod wakeable;
 mod wakes;
 mod workflow_tasks;
 use super::{DurableKernelStateStore, DurableWriterRequest};
@@ -52,7 +53,9 @@ use serde::Serialize;
 use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
-pub use types::{AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState};
+pub use types::{
+    AgentObligation, AgentTaskExecution, AgentWait, AgentWake, ExecutionState, TaskOwnerAction,
+};
 mod wake_receipts;
 pub(crate) use types::{
     unresolved_source_outcome, InboxEvent, Operation, Outcome, Registration, WakeEnd,
@@ -143,6 +146,27 @@ impl DurableKernelStateStore {
             params![room, agent],
         )
     }
+    /// One task by its immutable identity, without reading its agent's history.
+    pub(crate) fn agent_task(&self, task: &str) -> Result<Option<AgentTaskExecution>, DaemonError> {
+        Ok(self
+            .read_tasks("agent.lifecycle.task", "task_id=?1", [task])?
+            .pop())
+    }
+    /// The tasks a lifecycle sweep can act on: unfinished or unreadable ones, cancelled ones whose
+    /// terminal outcome is not recorded yet, and finished ones that carry obligations. Every other
+    /// finished task is complete, so the sweep does not read it.
+    pub(crate) fn agent_tasks_to_sweep(&self) -> Result<Vec<AgentTaskExecution>, DaemonError> {
+        self.read_tasks(
+            "agent.lifecycle.sweep_tasks",
+            "rowid IN (\
+             SELECT rowid FROM agent_tasks WHERE state IN ('working','waiting','blocked') \
+             UNION SELECT rowid FROM agent_tasks WHERE state IS NULL \
+             UNION SELECT rowid FROM agent_tasks WHERE obligated=1 \
+             UNION SELECT rowid FROM agent_tasks INDEXED BY agent_tasks_cancelled_pending \
+              WHERE state='cancelled' AND terminal_outcome_recorded=0)",
+            [],
+        )
+    }
     /// The agent's task for one turn. Tasks are kept after they finish, so the reads made on
     /// every turn take it by index instead of decoding the agent's whole history.
     pub(crate) fn agent_turn_task(
@@ -184,13 +208,15 @@ impl DurableKernelStateStore {
         task: &str,
     ) -> Result<bool, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.unfinished")?;
-        db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_tasks WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
-             AND (state IS NULL OR state NOT IN ('done','cancelled')))",
-            params![room, agent, task],
-            |r| r.get(0),
-        )
-        .map_err(sql)
+        // The planner otherwise prefers the per-agent history index before ANALYZE.
+        let mut q = db.prepare("SELECT EXISTS(SELECT 1 FROM agent_tasks INDEXED BY agent_tasks_unfinished WHERE room_id=?1 AND agent_id=?2 AND task_id<>?3 \
+             AND (state IS NULL OR state NOT IN ('done','cancelled')))").map_err(sql)?;
+        let exists = q
+            .query_row(params![room, agent, task], |r| r.get(0))
+            .map_err(sql)?;
+        #[cfg(test)]
+        UNFINISHED_TASK_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        Ok(exists)
     }
     fn read_tasks(
         &self,
@@ -204,6 +230,8 @@ impl DurableKernelStateStore {
                 "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE {filter} ORDER BY rowid"
             ))
             .map_err(sql)?;
+        #[cfg(test)]
+        q.reset_status(rusqlite::StatementStatus::VmStep);
         let rows = q
             .query_map(values, |r| {
                 Ok((
@@ -215,12 +243,16 @@ impl DurableKernelStateStore {
                 ))
             })
             .map_err(sql)?;
-        rows.map(|row| {
-            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
-            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
-                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
-        })
-        .collect()
+        let tasks = rows
+            .map(|row| {
+                let (id, room, agent, prompt, payload) = row.map_err(sql)?;
+                Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                    .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+            })
+            .collect();
+        #[cfg(test)]
+        TASK_QUERY_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        tasks
     }
     /// The room's unfinished tasks and its `finished` most recent finished ones, in ledger
     /// order. Older finished tasks are not read, so a long room costs a read no more.
@@ -230,14 +262,17 @@ impl DurableKernelStateStore {
         finished: usize,
     ) -> Result<Vec<AgentTaskExecution>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.visible_tasks")?;
-        // An unreadable payload counts as unfinished; decoding quarantines it below.
+        // Unfinished tasks and unreadable ones (state NULL, so decoding quarantines them), plus the
+        // most recent `finished` done or cancelled ones, each found through the (room, state) index.
         let mut q = db
             .prepare(
-                "WITH t AS (SELECT rowid AS r,task_id,room_id,agent_id,prompt_id,payload,\
-                 CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') END \
-                 IN ('done','cancelled') AS finished FROM agent_tasks WHERE room_id=?1) \
-                 SELECT task_id,room_id,agent_id,prompt_id,payload FROM t WHERE finished IS NOT 1 \
-                 OR r IN (SELECT r FROM t WHERE finished ORDER BY r DESC LIMIT ?2) ORDER BY r",
+                "SELECT task_id,room_id,agent_id,prompt_id,payload FROM agent_tasks WHERE rowid IN (\
+                 SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state IN ('working','waiting','blocked') \
+                 UNION ALL SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state IS NULL \
+                 UNION ALL SELECT rowid FROM (\
+                  SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='done' ORDER BY rowid DESC LIMIT ?2) \
+                  UNION ALL SELECT rowid FROM (SELECT rowid FROM agent_tasks WHERE room_id=?1 AND state='cancelled' ORDER BY rowid DESC LIMIT ?2) \
+                  ORDER BY rowid DESC LIMIT ?2)) ORDER BY rowid",
             )
             .map_err(sql)?;
         let rows = q
@@ -250,13 +285,17 @@ impl DurableKernelStateStore {
                     r.get::<_, String>(4)?,
                 ))
             })
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
             .map_err(sql)?;
-        rows.map(|row| {
-            let (id, room, agent, prompt, payload) = row.map_err(sql)?;
-            Ok(decode_task(&id, &room, &agent, &prompt, &payload)
-                .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
-        })
-        .collect()
+        #[cfg(test)]
+        VISIBLE_TASK_STEPS.with(|n| n.set(q.get_status(rusqlite::StatementStatus::VmStep)));
+        rows.into_iter()
+            .map(|(id, room, agent, prompt, payload)| {
+                Ok(decode_task(&id, &room, &agent, &prompt, &payload)
+                    .unwrap_or_else(|_| quarantine::task(id, room, agent, prompt)))
+            })
+            .collect()
     }
     /// Whether the task's terminal outcome is recorded. It is published only once the task's
     /// resources are settled, so a cancelled task that has it needs no further cancellation.
@@ -271,6 +310,31 @@ impl DurableKernelStateStore {
             |r| r.get(0),
         )
         .map_err(sql)
+    }
+    /// Passive owner notices are delivered with the next ordinary task context,
+    /// without creating a provider turn or displacing pending source receipts.
+    pub(crate) fn agent_task_cancellation_notices(
+        &self,
+        room: &str,
+        agent: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.cancellation_notices")?;
+        let mut q = db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.kind')='task_cancelled' AND json_extract(payload,'$.state') IN ('pending','acknowledged') ORDER BY sequence LIMIT 128").map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (sequence, source, occurrence, payload) = row.map_err(sql)?;
+            decode_inbox(sequence, room, agent, &source, &occurrence, &payload)
+        })
+        .collect()
     }
     pub(crate) fn agent_registrations(&self, task: &str) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.subscriptions")?;
@@ -292,7 +356,7 @@ impl DurableKernelStateStore {
         work: Option<&str>,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.front")?;
-        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND (?3 IS NULL OR {WORK_CORRELATED})) ELSE 1 END ORDER BY sequence LIMIT 1"),params![room,agent,work],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
@@ -304,7 +368,7 @@ impl DurableKernelStateStore {
         agent: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.urgent")?;
-        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('submitting','uncertain','blocked') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' AND json_extract(payload,'$.urgent')=1 AND json_extract(payload,'$.attempted_at_ms') IS NULL) ELSE 1 END ORDER BY CASE WHEN json_valid(payload) AND json_extract(payload,'$.state')='pending' THEN 1 ELSE 0 END,sequence LIMIT 1",params![room,agent],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
         row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
             .transpose()
     }
@@ -325,7 +389,7 @@ impl DurableKernelStateStore {
         &self,
     ) -> Result<Vec<(String, String)>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.pending_recipients")?;
-        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' ORDER BY room_id,agent_id").map_err(sql)?;
+        let mut q = db.prepare("SELECT DISTINCT room_id,agent_id FROM agent_inbox WHERE room_id>'' AND json_valid(payload) AND json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled' ORDER BY room_id,agent_id").map_err(sql)?;
         let rows = q
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(sql)?;
@@ -503,6 +567,8 @@ fn for_turn(
 }
 #[cfg(test)]
 thread_local! {
+    /// Virtual machine steps of the last visible-tasks read on this thread.
+    pub(crate) static VISIBLE_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
     pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -577,7 +643,7 @@ fn save(tx: &Transaction<'_>, task: &AgentTaskExecution) -> Result<(), DaemonErr
         .map_err(sql)?
         .map(|s| decode::<AgentTaskExecution>(&s))
         .transpose()?;
-    tx.execute("INSERT INTO agent_tasks VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
+    tx.execute("INSERT INTO agent_tasks(task_id,room_id,agent_id,prompt_id,payload) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(task_id) DO UPDATE SET prompt_id=excluded.prompt_id,payload=excluded.payload",params![task.task_id,task.room_id,task.agent_id,task.prompt_id,encode(task)?]).map_err(sql)?;
     outside::publish_task(tx, task, previous.as_ref())?;
     if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled) {
         tx.execute("UPDATE agent_registrations SET payload=json_set(payload,'$.live',json('false')) WHERE task_id=?1 AND json_valid(payload)", [&task.task_id]).map_err(sql)?;
@@ -610,6 +676,23 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
                 .map_err(sql)?;
         }
     }
+    if !columns
+        .iter()
+        .any(|column| column == "terminal_outcome_recorded")
+    {
+        // A cancelled task and its terminal source commit separately. Remember that
+        // completion durably, so every later sweep reads only the pending work.
+        db.execute_batch(
+            "SAVEPOINT task_terminal_projection;
+             ALTER TABLE agent_tasks ADD COLUMN terminal_outcome_recorded INTEGER NOT NULL DEFAULT 0
+                 CHECK(terminal_outcome_recorded IN (0,1));
+             UPDATE agent_tasks AS t SET terminal_outcome_recorded=1 WHERE EXISTS(
+                 SELECT 1 FROM agent_source_occurrences o WHERE o.room_id=t.room_id
+                 AND o.source_id=t.task_id AND o.occurrence_id='task-terminal-'||t.task_id);
+             RELEASE task_terminal_projection;",
+        )
+        .map_err(sql)?;
+    }
     let registration_columns: Vec<String> = db
         .prepare("PRAGMA table_xinfo(agent_registrations)")
         .map_err(sql)?
@@ -626,9 +709,15 @@ fn index_task_lookups(db: &Connection) -> Result<(), DaemonError> {
     }
     db.execute_batch(
         "CREATE INDEX IF NOT EXISTS agent_tasks_state ON agent_tasks(state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_cancelled_pending ON agent_tasks(task_id)
+             WHERE state='cancelled' AND terminal_outcome_recorded=0;
+         CREATE INDEX IF NOT EXISTS agent_tasks_unfinished ON agent_tasks(room_id,agent_id)
+             WHERE state IS NULL OR state NOT IN ('done','cancelled');
          CREATE INDEX IF NOT EXISTS agent_tasks_live ON agent_tasks(room_id,agent_id,state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_visible ON agent_tasks(room_id,state);
          CREATE INDEX IF NOT EXISTS agent_tasks_pending_prompt ON agent_tasks(pending_prompt_id);
          CREATE INDEX IF NOT EXISTS agent_tasks_obligated ON agent_tasks(room_id,obligated,state);
+         CREATE INDEX IF NOT EXISTS agent_tasks_obligated_any ON agent_tasks(obligated);
          CREATE INDEX IF NOT EXISTS agent_registrations_task ON agent_registrations(task_id);
          CREATE INDEX IF NOT EXISTS agent_registrations_source ON agent_registrations(source_id);",
     )
@@ -770,7 +859,7 @@ fn registrations(tx: &Connection, task: &str) -> Result<Vec<Registration>, Daemo
     })
     .collect()
 }
-fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+fn current_prompt(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if goals::is_check(task, prompt)
         && completion::evaluation(task).is_some_and(|e| e.result.is_none())
     {
@@ -779,6 +868,10 @@ fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
     if task.prompt_id != prompt {
         return Err(error("origin_prompt_id is not this running turn's. Retry with the task_id and origin_prompt_id from this turn's <chariox-task-context>; never reuse ids from an earlier turn"));
     }
+    Ok(())
+}
+fn current(task: &AgentTaskExecution, prompt: &str) -> Result<(), DaemonError> {
+    current_prompt(task, prompt)?;
     if task.state != ExecutionState::Working || task.pending_prompt_id.is_some() {
         return Err(error("this turn can no longer change its task: it is waiting, finished or already ending. End the turn without more tools"));
     }
@@ -823,6 +916,7 @@ fn new_task(
         blocked_revision: 0,
         state: ExecutionState::Working,
         reason: String::new(),
+        owner_action: None,
         obligations: vec![],
         wait: None,
         last_progress_at_ms: now,
@@ -1175,3 +1269,9 @@ impl PendingLifecycleOutcome {
             .map_err(|_| error("writer response lost; intent uncertain"))?
     }
 }
+
+#[cfg(test)]
+thread_local! { static UNFINISHED_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+thread_local! { static TASK_QUERY_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }

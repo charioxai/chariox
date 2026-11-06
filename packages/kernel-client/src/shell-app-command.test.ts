@@ -90,6 +90,12 @@ test("a worker that could not be isolated tells the user what the host needs", a
     + "your App data is retained. On Linux, App files need Landlock (Linux 5.13 or later); on macOS, reinstall Chariox so its signed App worker is intact")
 })
 
+test("a worker refused for low host disk space points at the App log that says how much to free", async () => {
+  const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_disk_space", updated_at_ms: 1 }
+  const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
+  assert.equal(result.message, "docs · failed · app_lifecycle_disk_space: not enough free disk space on the host; app logs docs says how much to free")
+})
+
 test("a worker refused for an ordinary preparation failure adds no hint", async () => {
   const worker = { installation_id: "docs", phase: "failed", enabled: true, failure: "app_lifecycle_preparation", updated_at_ms: 1 }
   const result = await executeAppCommand(["worker", "docs"], { send: async () => ({ AppWorker: { worker } }) })
@@ -270,12 +276,9 @@ test("App worker start causes distinguish readiness cancellation from deadline",
   }
 })
 
- test("MP-08 / MP-10 App automation attach supports inject", async () => {
-  let request: Record<string, unknown> | undefined
-  const result = await executeAppCommand(["automation", "add", "app", "sub", "changed", "s", "p", "--delivery", "inject"], { send: async sent => {
-    request = sent
-    return { AppAutomation: { installation_id: "app", automation: { automation_id: "sub", revision: 1, event_name: "changed", event_version: 1, session_id: "s", publication_id: "p", endpoint_id: "e", queue_id: "q", scheduled: false, status: "active", delivery_mode: "inject" } } }
-  } })
-  assert.equal(result.ok, true)
-  assert.equal((request?.ConfigureAppAutomation as { delivery_mode: string }).delivery_mode, "inject")
+ test("MP-08 / MP-10 App automation attach has no delivery option", async () => {
+  let sent = 0
+  const result = await executeAppCommand(["automation", "add", "app", "sub", "changed", "s", "p", "--delivery", "inject"], { send: async () => { sent++; return {} } })
+  assert.equal(result.ok, false)
+  assert.equal(sent, 0)
  })

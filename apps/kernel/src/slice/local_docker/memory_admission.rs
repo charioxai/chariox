@@ -319,7 +319,7 @@ fn docker_numeric_output(args: &[&str], operation: &'static str) -> Result<u64, 
 fn docker_output(args: &[&str], operation: &'static str) -> Result<String, DaemonError> {
     let output = docker_command()
         .args(args)
-        .output()
+        .bounded_output()
         .map_err(|error| memory_measurement_error(&format!("failed to {operation}: {error}")))?;
     if !output.status.success() {
         return Err(memory_measurement_error(&format!(

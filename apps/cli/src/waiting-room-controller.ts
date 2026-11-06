@@ -1,3 +1,4 @@
+import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-api.js"
 import {
   catalogModelOptions,
   selectConfiguredVariant,
@@ -29,12 +30,11 @@ import {
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
-  ManagedEnvironmentAutoStopPolicy,
   ManagedEnvironmentContextPlanInput,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import {
   DEFAULT_MANAGED_REPOSITORY_ROOT,
-  managedEnvironmentAutoStopPolicy,
+  managedEnvironmentShutdownPolicy,
   managedEnvironmentContextPlanInput,
   managedEnvironmentDraftBlockReason,
   managedEnvironmentIdFromMachineRef,
@@ -65,7 +65,7 @@ export type WaitingRoomLaunchConfig = {
         computeClass: string
         region: string
         managedRepositoryRoot: string
-        autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+        shutdownPolicy: ManagedEnvironmentShutdownPolicy
         contextPlan: ManagedEnvironmentContextPlanInput
       }
     | { kind: "existing"; environmentId: string }
@@ -414,7 +414,7 @@ function waitingRoomManagedLaunchSelection(
       computeClass: state.managedComputeClass ?? "",
       region: state.managedRegion ?? "",
       managedRepositoryRoot: state.managedRepositoryRoot ?? DEFAULT_MANAGED_REPOSITORY_ROOT,
-      autoStopPolicy: managedEnvironmentAutoStopPolicy(state),
+      shutdownPolicy: managedEnvironmentShutdownPolicy(state),
       contextPlan: managedEnvironmentContextPlanInput(state, remote),
     }
   }

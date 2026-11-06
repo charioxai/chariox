@@ -27,6 +27,7 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     protobuf-compiler \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
+COPY fixtures fixtures
 COPY patches/ureq patches/ureq
 COPY adapters/rust adapters/rust
 COPY apps/aegs-dummy apps/aegs-dummy
@@ -251,6 +252,7 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-focus-world.mjs /opt/chariox-slice/browser-focus-world.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cursor.mjs /opt/chariox-slice/browser-controller-cursor.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-submit-outcome.mjs /opt/chariox-slice/browser-submit-outcome.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/selkies-capture.py /opt/chariox-slice/selkies-capture.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-resources.mjs /opt/chariox-slice/browser-controller-resources.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-response-bodies.mjs apps/kernel/slice-linux-docker/docker/browser-memory.mjs apps/kernel/slice-linux-docker/docker/browser-renderer-recovery.mjs /opt/chariox-slice/
@@ -374,6 +376,8 @@ CMD ["sleep", "infinity"]
 
 # MP-08/MP-10/MP-11: Room uses the kernel shared producer on its existing display.
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cdp-pipe.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-background.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-native-codec.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-chrome-window.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-page-geometry.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-compositor.mjs \
@@ -391,6 +395,8 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/kernel-browser-cd
      apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-header.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-host.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-card-verification.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-recovery.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-input-queue.mjs \

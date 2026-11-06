@@ -65,7 +65,11 @@ pub fn start(scratch: &Path, env: &[(&str, OsString)], open_files: Option<u64>) 
     std::io::Write::write_all(&mut file, token.as_bytes()).unwrap();
     let port = free_port();
     let log = std::fs::File::create(scratch.join("kernel.log")).unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_chariox-kernel"));
+    // Run the same entry-point drill against retained control builds too.
+    let binary = std::env::var_os("CHARIOX_TEST_KERNEL_BINARY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_chariox-kernel")));
+    let mut command = Command::new(binary);
     if let Some(limit) = open_files {
         // SAFETY: setrlimit is async-signal-safe; it runs between fork and exec.
         unsafe {

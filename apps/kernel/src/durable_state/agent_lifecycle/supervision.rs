@@ -50,6 +50,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if stored.0 != success {
                 return Err(error("conflicting terminal source occurrence"));
             }
+            if id == format!("task-terminal-{source}") {
+                tx.execute(
+                    "UPDATE agent_tasks SET terminal_outcome_recorded=1 WHERE room_id=?1 AND task_id=?2",
+                    params![room, source],
+                ).map_err(sql)?;
+            }
             public_answer = stored
                 .1
                 .map(|v| decode::<serde_json::Value>(&v))
@@ -133,6 +139,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         Operation::Sweep {
             now,
             busy_recipients,
+            vault_wait_recipients,
             held_work,
         } => {
             let mut changed = vec![];
@@ -257,6 +264,37 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 }
             }
             for mut e in events {
+                if e.state == "pending" && e.kind == "task_cancelled" {
+                    continue;
+                }
+                if e.state == "submitting"
+                    && e.submit_epoch.is_none()
+                    && e.provider_run_id.is_none()
+                    && e.target_prompt_id.is_none()
+                    && vault_wait_recipients
+                        .iter()
+                        .any(|(room, agent)| room == &e.room_id && agent == &e.agent_id)
+                {
+                    // Waiting for owner input before I/O does not consume a provider receipt window.
+                    e.attempted_at_ms = Some(now);
+                    save_event(tx, &e)?;
+                    continue;
+                }
+                let mut owner_held = false;
+                if refused_wake(&e) {
+                    for task in live_tasks(tx, &e.room_id, &e.agent_id)? {
+                        if task.state == ExecutionState::Blocked
+                            && task.wait.is_some()
+                            && delivery_belongs_to_task(tx, &e, &task)?
+                        {
+                            owner_held = true;
+                            break;
+                        }
+                    }
+                }
+                if owner_held {
+                    continue;
+                }
                 let mut clock_quarantined = false;
                 let deadline_start = if e.state == "pending" {
                     // Busy refusals are normal queueing, not missing receipts.
@@ -393,7 +431,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         } => {
             let mut t = load(tx, &task)?;
             if t.owner_user_id.is_empty() || t.owner_user_id != owner || t.revision != revision {
-                return Err(error("stale or foreign owner cancellation"));
+                return Err(error("stale or foreign owner cancellation; reload the task in its owning room and retry"));
             }
             if !matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled) {
                 cancel_intent(tx, &mut t)?;
@@ -410,7 +448,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let mut t = load(tx, &task)?;
             // Admission must not abandon a goal, owned work, or an uncertain receipt.
             let unresolved: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('pending','blocked','submitting','uncertain') ELSE 1 END)",
+                "SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.state') IN ('blocked','submitting','uncertain') OR (json_extract(payload,'$.state')='pending' AND json_extract(payload,'$.kind') IS NOT 'task_cancelled') ELSE 1 END)",
                 params![t.room_id, t.agent_id], |r| r.get(0),
             ).map_err(sql)?;
             if t.state != ExecutionState::Blocked
@@ -472,9 +510,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     }
                 }
             }
+            let retry_wake = resume && t.wait.is_some() && pending_refused_wake(tx, &t)?;
             let blocked_revision = t.blocked_revision;
             super::goals::clock(&mut t, now);
-            t.state = if resume {
+            t.state = if retry_wake {
+                ExecutionState::Waiting
+            } else if resume {
                 ExecutionState::Working
             } else {
                 ExecutionState::Cancelled
@@ -482,8 +523,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if !resume {
                 cancel_intent(tx, &mut t)?;
             }
+            t.owner_action = None;
             t.no_progress_wakes = 0;
-            t.wait = None;
+            if !retry_wake {
+                t.wait = None;
+            }
             t.revision += 1;
             if resume {
                 if let Some(g) = &mut t.goal {
@@ -491,12 +535,16 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     g.continuation_sequence += 1;
                     g.next_check_in_ms = None;
                 }
-                t.pending_prompt_id = Some(format!(
-                    "{}{}-{}",
-                    super::goals::OWNER_RESUME_PROMPT_PREFIX,
-                    t.task_id,
-                    t.revision
-                ));
+                t.pending_prompt_id = if retry_wake {
+                    None
+                } else {
+                    Some(format!(
+                        "{}{}-{}",
+                        super::goals::OWNER_RESUME_PROMPT_PREFIX,
+                        t.task_id,
+                        t.revision
+                    ))
+                };
                 t.last_progress_at_ms = now;
                 if let Some(goal) = &t.goal {
                     migration::audit(
@@ -565,6 +613,21 @@ pub(super) fn cancel_intent(
         )
         .map_err(sql)?;
     }
+    let notice = occurrence(
+        &task.room_id,
+        &task.agent_id,
+        &task.task_id,
+        "owner-cancelled",
+        "task_cancelled",
+        serde_json::json!({
+            "cancelled_task_id": task.task_id,
+            "reason": task.reason,
+            "message": "The owner cancelled this task and its retained work. Keep it cancelled unless the owner starts new work.",
+        }),
+    );
+    // A cancellation is context for the next turn, never a new turn that
+    // revives stopped work. It remains in the inbox until the agent handles it.
+    event(tx, notice)?;
     Ok(())
 }
 
@@ -602,6 +665,39 @@ fn delivery_belongs_to_task(
         if for_turn(tx, &event.room_id, &event.agent_id, prompt)?
             .is_some_and(|bound| bound.task_id == task.task_id)
         {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn refused_wake(event: &InboxEvent) -> bool {
+    event.state == "pending"
+        && event.kind != "message"
+        && event.attempted_at_ms.is_some()
+        && event.submit_epoch.is_none()
+}
+
+fn pending_refused_wake(
+    tx: &Transaction<'_>,
+    task: &AgentTaskExecution,
+) -> Result<bool, DaemonError> {
+    let mut query = tx.prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state')='pending'").map_err(sql)?;
+    let sequences = query
+        .query_map(params![task.room_id, task.agent_id], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    for sequence in sequences {
+        let event = get_event(
+            tx,
+            &task.room_id,
+            &task.agent_id,
+            u64::try_from(sequence).map_err(|_| error("corrupt inbox sequence"))?,
+        )?;
+        if refused_wake(&event) && delivery_belongs_to_task(tx, &event, task)? {
             return Ok(true);
         }
     }

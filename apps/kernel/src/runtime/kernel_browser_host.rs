@@ -29,6 +29,7 @@ pub(crate) struct KernelBrowserHost {
     authority_epoch: Arc<AtomicU64>,
     web_bot_auth_revision: Arc<AtomicU64>,
     terminal_leases: terminal_lease::TerminalLeases,
+    person_inputs: Arc<person_input::PersonInputs>,
 }
 #[derive(Default)]
 struct HostState {
@@ -150,6 +151,7 @@ impl KernelBrowserHost {
             authority_epoch: Arc::default(),
             web_bot_auth_revision: Arc::default(),
             terminal_leases: Arc::default(),
+            person_inputs: Arc::default(),
         })
     }
     // MD-DISPLAY-04: queued credits wait asynchronously, away from the
@@ -500,6 +502,17 @@ impl KernelBrowserHost {
         }
         self.check_admission(admission)?;
         let browser = self.backend(user)?;
+        let input = method == "host.browser" && params["op"] == "input";
+        let agent_tab = (input && admission.is_some_and(|a| a.agent.is_some()))
+            .then(|| params["tab_id"].as_str().map(str::to_owned))
+            .flatten();
+        let _person_input = if input && admission.is_none_or(|a| a.agent.is_none()) {
+            params["tab_id"]
+                .as_str()
+                .map(|tab| self.person_inputs.begin(user, tab))
+        } else {
+            None
+        };
         // MP-08/MP-10/MP-11: mutations keep their existing serial admission,
         // but never hold the shared controller lock during input/CDP waits.
         // Takeover/cancellation use the actor model and remain independent.
@@ -524,7 +537,6 @@ impl KernelBrowserHost {
         } else {
             None
         };
-        let input = method == "host.browser" && params["op"] == "input";
         let op_label = params["op"]
             .as_str()
             .filter(|op| op.len() <= 32 && op.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
@@ -532,11 +544,26 @@ impl KernelBrowserHost {
             .to_string();
         let requested = std::time::Instant::now();
         let queued = std::time::Instant::now();
-        let _mutation_guard = mutation_lane
-            .as_ref()
-            .map(|lane| lane.lock())
-            .transpose()
-            .map_err(|_| "MD-3: browser mutation lane poisoned")?;
+        // The host's idle wait must not own this lane or an actor reservation:
+        // otherwise the newer person keys it is waiting for cannot reach it.
+        let _mutation_guard = loop {
+            if let Some(tab) = agent_tab.as_deref() {
+                self.person_inputs
+                    .wait(user, tab, || self.check_admission(admission))?;
+            }
+            let guard = mutation_lane
+                .as_ref()
+                .map(|lane| lane.lock())
+                .transpose()
+                .map_err(|_| "MD-3: browser mutation lane poisoned")?;
+            if let Some(tab) = agent_tab.as_deref() {
+                if !self.person_inputs.quiet(user, tab)? {
+                    drop(guard);
+                    continue;
+                }
+            }
+            break guard;
+        };
         if input {
             crate::transport::kernel_browser_display::timing("input_mutation_queue", queued);
         }
@@ -618,6 +645,7 @@ impl KernelBrowserHost {
                     Some(
                         "state"
                             | "snapshot"
+                            | "popup_region"
                             | "screenshot"
                             | "unsubscribe"
                             | "display_subscribe"
@@ -637,6 +665,9 @@ impl KernelBrowserHost {
             self.check_admission(admission)?;
         }
         let mut params = params;
+        if input {
+            params["_person_idle_checked"] = agent_tab.is_some().into();
+        }
         if let Some(admission) = admission.filter(|admission| admission.agent.is_some()) {
             let agent = admission.agent.as_deref().unwrap();
             params["_agent_input"] = true.into();
@@ -731,7 +762,7 @@ impl KernelBrowserHost {
         if method == "host.browser"
             && matches!(params["op"].as_str(), Some("dialog" | "cancel_download"))
         {
-            let ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
+            let mut ledger = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
             if admission.is_some_and(|admission| admission.revoked_in_actor_lock()) {
                 return Err("MP-11: not_granted: browser authority revoked".into());
             }
@@ -840,7 +871,7 @@ impl KernelBrowserHost {
         let note = method == "host.browser"
             && matches!(
                 params["op"].as_str(),
-                Some("note_selection" | "pointer_cursor")
+                Some("note_selection" | "pointer_cursor" | "popup_region")
             );
         // Dropping a display stream releases its compositor on the controller, which can take seconds
         // (the Browser view does it right after a navigation paints): input must not queue behind it.
@@ -989,7 +1020,13 @@ impl KernelBrowserHost {
                         state.access.opened_tab(user, agent, id)?;
                     }
                 }
-                if state.access.focused(user) != Some(agent) {
+                // Owner approval covers browser tabs the task may discover and
+                // claim, including after revocation removed its old leases.
+                let browser_tabs_approved = matches!(
+                    state.access.grant(user, agent)?.cause,
+                    super::user_domain_access::GrantCause::OwnerDecision { .. }
+                );
+                if state.access.focused(user) != Some(agent) && !browser_tabs_approved {
                     let grant = state.access.grant(user, agent)?;
                     for field in ["tabs", "dialogs", "downloads"] {
                         if let Some(tabs) = payload.get_mut(field).and_then(Value::as_array_mut) {
@@ -1005,6 +1042,7 @@ impl KernelBrowserHost {
                 }
                 if let Some(tab) = payload["agent_activity"]["tab_id"].as_str() {
                     if state.access.focused(user) != Some(agent)
+                        && !browser_tabs_approved
                         && !state
                             .access
                             .grant(user, agent)?
@@ -1037,7 +1075,21 @@ impl KernelBrowserHost {
         self.check_admission(admission)?;
         result
     }
+    /// The Tabs this owner's open hand-off cards ask them to act in; their agents' native groups say so.
+    pub(crate) fn set_attention(&self, user: &str, tabs: BTreeSet<String>) {
+        if let Ok(model) = self.actor_model(user) {
+            if let Ok(mut model) = model.lock() {
+                model.set_attention(tabs);
+            }
+        }
+    }
     fn actor_model(&self, user: &str) -> Result<Arc<Mutex<KernelBrowserActors>>, String> {
+        // Same order as `lease_terminal`: a viewer that connected before the model existed is
+        // registered here, so a takeover can move to it when the viewer that took it leaves.
+        let leases = self
+            .terminal_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut state = self
             .inner
             .lock()
@@ -1048,7 +1100,17 @@ impl KernelBrowserHost {
         Ok(state
             .actors
             .entry(user.into())
-            .or_insert_with(|| Arc::new(Mutex::new(KernelBrowserActors::default())))
+            .or_insert_with(|| {
+                let mut model = KernelBrowserActors::default();
+                for (_, viewer) in leases.keys().filter(|(leased, _)| leased == user) {
+                    model.viewer_connected(EnvironmentActor::new(
+                        viewer,
+                        EnvironmentActorKind::Human,
+                        "Human",
+                    ));
+                }
+                Arc::new(Mutex::new(model))
+            })
             .clone())
     }
     /// Protocol 556: park, outside the protection barrier, until a Browser state read could differ from
@@ -1077,6 +1139,28 @@ impl KernelBrowserHost {
                 .map_err(|error| error.to_string())
         })?;
         Ok(reply["signal"].as_u64())
+    }
+    /// A person holding one Tab of `user`'s browser.
+    #[cfg(test)]
+    pub(crate) fn seed_person_takeover_for_test(&self, user: &str, actor: &str) {
+        let model = self.actor_model(user).unwrap();
+        model
+            .lock()
+            .unwrap()
+            .reconcile(&serde_json::json!({"generation":1,"tabs":[{"tab_id":"host-tab-a","document_id":"d"}]}))
+            .unwrap();
+        self.request_takeover(
+            user,
+            EnvironmentActor::new(actor, EnvironmentActorKind::Human, "Human"),
+            "host-tab-a",
+            1,
+        )
+        .unwrap();
+    }
+    /// The idle sweep as it runs `idle` after the person's last input.
+    #[cfg(test)]
+    pub(crate) fn reclaim_idle_takeovers_after_for_test(&self, idle: std::time::Duration) -> bool {
+        self.reclaim_idle_takeovers_at(std::time::Instant::now() + idle)
     }
     #[cfg(test)]
     pub(crate) fn request_takeover(
@@ -1142,7 +1226,30 @@ impl KernelBrowserHost {
         let model = self.actor_model(user)?;
         let mut model = model.lock().map_err(|_| "MD-3: actor lock poisoned")?;
         model.retire_lapsed_desktop_viewers(std::time::Instant::now());
+        model.reclaim_idle_takeovers(std::time::Instant::now());
         Ok(model.snapshot())
+    }
+
+    /// Ends every Tab takeover whose person went quiet, whichever viewer is open. True when one ended.
+    pub(crate) fn reclaim_idle_takeovers(&self) -> bool {
+        self.reclaim_idle_takeovers_at(std::time::Instant::now())
+    }
+    fn reclaim_idle_takeovers_at(&self, now: std::time::Instant) -> bool {
+        let models = self
+            .inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .actors
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        models.iter().fold(false, |ended, model| {
+            let released = model
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .reclaim_idle_takeovers(now);
+            ended | released
+        })
     }
 
     pub(crate) fn disconnect_terminal(&self, user: &str, actor: &str) {
@@ -1394,8 +1501,10 @@ mod tests {
             crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
             "https://www.hetzner.com/firewalls",
         );
-        assert!(model.begin(browser_actor(None, &params), &params).is_ok(),
-            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity");
+        assert!(
+            model.begin(browser_actor(None, &params), &params).is_ok(),
+            "MP-08/MP-10/MP-11 A07: a scoped owner action uses the authenticated takeover actor, never the shared kernel-adapter identity"
+        );
     }
 
     #[test]
@@ -1654,6 +1763,7 @@ mod dialog_tests;
 mod native_input_tests;
 
 mod access;
+mod person_input;
 mod terminal_lease;
 pub(crate) use terminal_lease::TerminalLease;
 #[cfg(test)]

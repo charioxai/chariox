@@ -49,7 +49,7 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
+const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "").replace(/\/$/, "")
 const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const runMultiUser = process.env.CHARIOX_CLOUD_HOSTED_MULTI_USER === "1"
 const runSecondKernel = process.env.CHARIOX_CLOUD_HOSTED_SECOND_KERNEL === "1"
@@ -83,6 +83,7 @@ async function main() {
     log("module-composition-ok")
     return
   }
+  if (!apiUrl) throw new Error("set CHARIOX_CLOUD_HOSTED_API_URL to the hosted service under test")
   const ports = await makePorts()
   const runId = `hosted-cloud-relay-${process.pid}-${Date.now()}`
   const rootDir = await mkdtemp(path.join(os.tmpdir(), "chariox-hosted-relay-"))

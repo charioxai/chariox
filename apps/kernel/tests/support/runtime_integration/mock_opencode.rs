@@ -318,24 +318,25 @@ fn handle_mock_opencode_request(
                     .collect(),
             )
         }
-        ("GET", path) if path.starts_with("/session/") && path.ends_with("/message") => {
+        ("GET", path) if path.starts_with("/session/") && path.contains("/message?limit=") => {
             let response_delay = state
                 .lock()
                 .expect("mock state should not be poisoned")
                 .message_response_delay;
             thread::sleep(response_delay);
             let state = state.lock().expect("mock state should not be poisoned");
-            let session_id = path
+            let (session_id, limit) = path
                 .strip_prefix("/session/")
-                .and_then(|value| value.strip_suffix("/message"))
+                .and_then(|value| value.split_once("/message?limit="))
+                .expect("history requests name a session and a limit");
+            let limit = limit.parse::<usize>().expect("history limit is a number");
+            // Like OpenCode, a bounded history read returns the newest messages.
+            let messages = state
+                .sessions
+                .get(session_id)
+                .map(|session| session.messages.clone())
                 .unwrap_or_default();
-            Value::Array(
-                state
-                    .sessions
-                    .get(session_id)
-                    .map(|session| session.messages.clone())
-                    .unwrap_or_default(),
-            )
+            Value::Array(messages[messages.len().saturating_sub(limit)..].to_vec())
         }
         ("POST", path) if path.starts_with("/session/") && path.ends_with("/prompt_async") => {
             let payload: Value =

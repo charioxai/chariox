@@ -105,6 +105,8 @@ async fn mp08_vault_restart_or_abandoned_wait_can_retry_before_the_pump() {
                 room: None,
             },
             agent,
+            &crate::config::UserCredentialVaultConfig::default(),
+            60,
         );
         let mut snapshot = state.owned.session_store.get_session(session).unwrap();
         snapshot.add_active_interaction(orphan.clone());
@@ -198,7 +200,7 @@ async fn mp08_vault_unlock_resumes_other_sessions_and_keeps_one_prompt_per_sessi
         .resolve_terminal_runtime_interaction(
             &sessions[1].0,
             card.id(),
-            "passphrase",
+            "unlock_kernel",
             Some("restart passphrase"),
             Some(crate::session::DEFAULT_LOCAL_USER_ID),
         )
@@ -230,6 +232,8 @@ fn mp09_managed_kernel_registers_a_vault_prompt_without_hanging() {
                 room: None,
             },
             &agent,
+            &crate::config::UserCredentialVaultConfig::default(),
+            60,
         );
         let _receiver = registering
             .create_terminal_credential_interaction(&session, card)
@@ -252,6 +256,8 @@ async fn mp11_vault_retry_cannot_replace_another_live_decision() {
             room: None,
         },
         agent,
+        &crate::config::UserCredentialVaultConfig::default(),
+        60,
     );
     let _receiver = state
         .create_terminal_credential_interaction(session, card.clone())
@@ -404,5 +410,25 @@ async fn a_request_that_passes_every_check_still_asks_for_the_unlock() {
             let card = card.expect("an allowed request asks for the unlock");
             assert!(card.message().contains("needs the Vault"), "{}", card.message());
         }
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a person must find the card, so an agent's tool call waits longer
+// than a launch, which ends quickly with retry guidance.
+#[test]
+fn vflag_agent_tools_get_a_longer_unlock_card_than_launches() {
+    for tool in [
+        "vault_generate",
+        "credential_vault_manage",
+        "runtime_tool_http_request_with_credential",
+    ] {
+        assert_eq!(vault_unlock_card_seconds(tool), 280, "{tool}");
+    }
+    for launch in [
+        "launch provider run",
+        "restore interrupted prompt",
+        "new launch",
+    ] {
+        assert_eq!(vault_unlock_card_seconds(launch), 60, "{launch}");
     }
 }

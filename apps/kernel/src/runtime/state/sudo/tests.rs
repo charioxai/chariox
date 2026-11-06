@@ -127,15 +127,10 @@ async fn a12_external_sudo_keeps_the_agent_decision_quota() {
 // MP-08/MP-11: even an owner-authorized sudo turn cannot perform owner review.
 #[tokio::test]
 async fn mp08_mp11_owner_context_review_rejects_sudo_agent_approval() {
-    owner_context_review_rejects_sudo(false).await;
+    owner_context_review_rejects_sudo().await;
 }
 
-#[tokio::test]
-async fn mp08_mp11_source_project_owner_review_rejects_sudo_agent_approval() {
-    owner_context_review_rejects_sudo(true).await;
-}
-
-async fn owner_context_review_rejects_sudo(source_project: bool) {
+async fn owner_context_review_rejects_sudo() {
     let f = fixture();
     let turn = running(&f);
     let worktree = crate::test_support::TestWorktree::new("sudo-owner-context-review");
@@ -148,20 +143,7 @@ async fn owner_context_review_rejects_sudo(source_project: bool) {
         ..Default::default()
     });
     f.state.owned.config_projection.update(config);
-    let development = if source_project {
-        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
-            project_id: session.project_id().into(),
-            repositories: vec![
-                crate::managed_context::development::DevelopmentSourceRepositoryBinding {
-                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
-                    workspace_id: session.workspace_id().into(),
-                    worktree_id: None,
-                },
-            ],
-        }
-    } else {
-        crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
-    };
+    let development = crate::managed_context::package::ManagedContextDevelopmentSelection::Empty;
     let reviewer = f.state.clone();
     let task = tokio::spawn(async move {
         reviewer
@@ -690,15 +672,11 @@ async fn sudo_cannot_pair_invite_or_read_or_replace_relay_identity() {
         serde_json::json!({"ApproveRemoteMachine":{"machine_ref":"fixture"}}),
         serde_json::json!({"CreateSessionInvite":{"session_id":"fixture"}}),
         serde_json::json!({"JoinSessionInvite":{"invite_token":"fixture","user_id":"fixture"}}),
-        serde_json::json!({"CreateCloudSessionInvite":{"session_id":"fixture"}}),
-        serde_json::json!({"AcceptCloudSessionInvite":{"invite_token":"fixture"}}),
         serde_json::json!({"ConfigureRelay":{"relay_url":"wss://fixture.invalid","relay_token":"fixture"}}),
         serde_json::json!({"CloudRelayStatus":null}),
         serde_json::json!({"StartCloudRelayLogin":{"api_url":"https://fixture.invalid"}}),
         serde_json::json!({"PollCloudRelayLogin":{"api_url":"https://fixture.invalid","device_code":"fixture"}}),
         serde_json::json!({"LogoutCloudRelay":{}}),
-        serde_json::json!({"PairCloudRelayClient":{"client_id":"fixture"}}),
-        serde_json::json!({"PairCloudRelayMachine":{"machine_id":"fixture"}}),
         serde_json::json!({"ConnectCloudRelay":null}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value.clone()).unwrap();
@@ -2097,7 +2075,6 @@ fn sudo_review_auth_and_credential_enrollment_are_forbidden() {
         serde_json::json!({"ImportSliceProviderAuth":{"slice_ref":"fixture","provider":"codex","account_profile":"default"}}),
         serde_json::json!({"RequestCredentialEnrollmentInteraction":{"session_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1,"provider_authorization_url":"https://example.com"}}),
         serde_json::json!({"ArmDeploymentCredentialEnrollment":{"session_id":"fixture","attachment_id":"fixture","agent_id":"fixture","enrollment_id":"fixture","profile_id":"fixture","target_version":1}}),
-        serde_json::json!({"PrepareManagedEnvironmentGitCredentialEnrollment":{"environmentId":"fixture","sourceTargetId":"fixture","gitCredentials":{"kind":"none"}}}),
     ] {
         let request: LocalDaemonRequest = serde_json::from_value(value).unwrap();
         assert!(
@@ -2278,4 +2255,28 @@ fn agent_archive_cannot_be_escalated_with_sudo() {
             });
         assert!(super::policy::sudo_request_forbidden(&request));
     }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a live owner window already authorizes acquisition.
+#[tokio::test]
+async fn reach_machine_acquisition_uses_the_live_sudo_window() {
+    let f = fixture_with_options(None, true);
+    running(&f);
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        f.router.dispatch_reach_tool_call(
+            "sudo-fixture-bearer",
+            "request",
+            serde_json::json!({"request": {"ControlPlane": {
+                "action": "acquire", "capability_revision": "r1", "request_id": "sudo-acquire"
+            }}}),
+        ),
+    )
+    .await
+    .expect("an existing sudo window must not wait on another acquisition card");
+    // The absent service's definitive code survives the sudo response boundary.
+    assert!(
+        matches!(&result, Err(DaemonError::ExternalRequestFailed { code, retryable: false }) if code == "control_plane_unavailable"),
+        "{result:?}"
+    );
 }

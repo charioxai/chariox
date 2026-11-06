@@ -3,12 +3,13 @@ import {FOCUS_WORLD,ensureFocusWorld,recordFocusWorld} from './browser-focus-wor
 import { BrowserResponseBodies, responseBufferLimits } from './browser-controller-response-bodies.mjs';
 import { BrowserMemory } from './browser-memory.mjs';
 import { BrowserRendererRecovery } from './browser-renderer-recovery.mjs';
-import { recordBrowserFill, finishBrowserFill } from './browser-protection-regions.mjs';
+import { recordBrowserFill, finishBrowserFill, browserFillReplaced } from './browser-protection-regions.mjs';
+import { awaitSubmitOutcome } from './browser-submit-outcome.mjs';
 import { createHash } from "node:crypto";
 import { BrowserWebBotAuth } from "./browser-controller-web-bot-auth.mjs";
 import { artifactBytes, BrowserArtifactError, BrowserPassiveCapture, readCompletedDownload, withUploadArtifacts } from "./browser-controller-artifacts.mjs";
 import { captureProtectedBrowserImage } from "./browser-controller-image.mjs";
-import { captureBrowserValue } from "./browser-controller-capture.mjs";
+import { captureBrowserValue, realUrlOfObserved } from "./browser-controller-capture.mjs";
 import { observeBrowserNote } from "./browser-controller-notes.mjs";
 import { readPointerCursor } from "./browser-controller-cursor.mjs";
 import { redactObservation } from "./browser-controller-snapshot.mjs";
@@ -1102,6 +1103,10 @@ export class BrowserCdpClient {
       );
     }
     const sessionId = await this.ensureTargetSession(connection, targetId);
+    if (rawRequest?.action?.expected_document_url) {
+      const expected = await realUrlOfObserved(connection, sessionId, rawRequest.node_ref, rawRequest.action.expected_document_url, this.protectedValues);
+      rawRequest = { ...rawRequest, action: { ...rawRequest.action, expected_document_url: expected } };
+    }
     try {
       const dispatch = async (inputTimestamp, inputToken) => {
         const result = await withBrowserActionFrame({
@@ -1127,8 +1132,23 @@ export class BrowserCdpClient {
             let result;
             try { result = await performBrowserAction(options); }
             catch (error) { await finishBrowserFill(connection, target).catch(() => {}); throw error; }
-            await finishBrowserFill(connection, target);
-            return result;
+            if (!rawRequest.action.submit) {
+              await finishBrowserFill(connection, target);
+              return result;
+            }
+            // A submit may replace the document: report that as the success it is.
+            const { submit_handled_by_page: pageHandled, ...rest } = result;
+            const submitted = await awaitSubmitOutcome({
+              pageHandled,
+              replaced: () => browserFillReplaced(connection, target),
+              page: async () => {
+                const { targetInfo } = await connection.send("Target.getTargetInfo", { targetId });
+                const { result: ready } = await connection.send("Runtime.evaluate", { expression: 'document.readyState !== "loading"', returnByValue: true }, sessionId);
+                return { url: targetInfo.url, title: targetInfo.title, ready: ready?.value === true };
+              },
+            });
+            await finishBrowserFill(connection, target, { submitted: true });
+            return { ...rest, submitted };
           }
           return performBrowserAction(options);
         });
@@ -1152,6 +1172,7 @@ export class BrowserCdpClient {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    const expectedDocumentUrl = await realUrlOfObserved(connection, sessionId, rawRequest?.node_ref, rawRequest?.expected_document_url, this.protectedValues);
     const value = await captureBrowserValue({
       connection,
       sessionId,
@@ -1160,12 +1181,13 @@ export class BrowserCdpClient {
       nodeRef: rawRequest?.node_ref,
       revealNodeRef: rawRequest?.reveal_node_ref ?? null,
       read: rawRequest?.read ?? "node",
-      expectedDocumentUrl: rawRequest?.expected_document_url,
+      expectedDocumentUrl,
       signal,
       click: (nodeRef) => this.performAction({ target_id: targetId, document_id: documentId, node_ref: nodeRef,
-        action: { kind: "click", expected_document_url: rawRequest.expected_document_url }, timeout_ms: 10_000 }, { signal }),
+        action: { kind: "click", expected_document_url: expectedDocumentUrl }, timeout_ms: 10_000 }, { signal }),
     }).catch((error) => { throw normalizeControllerError(error); });
-    this.protectedValues.add(value);
+    // A QR capture returns the picture of the element, not a secret to scrub.
+    if ((rawRequest?.read ?? "node") !== "qr") this.protectedValues.add(value);
     return value;
   }
 
@@ -1424,7 +1446,7 @@ export class BrowserCdpClient {
       if (request.kind === "identity") {
         artifact = artifactBytes(Buffer.from(JSON.stringify(geometry)), "browser-identity.json", "application/json");
       } else if (request.kind === "image") {
-        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
+        const captured = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId, viewport, geometry, protectedValues: this.protectedValues, fillTargets:[...this.fillTargets.values()] });
         artifact = artifactBytes(captured.bytes, "browser-tab.png", "image/png");
         redaction = captured.redaction;
       } else if (request.kind === "network") {

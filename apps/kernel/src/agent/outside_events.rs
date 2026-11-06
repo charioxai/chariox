@@ -13,19 +13,27 @@ impl AgentService {
         agent: &AgentInstance,
         state: EventSessionState,
     ) -> Result<(), crate::error::DaemonError> {
-        if let Some(store) = &self.outside_events {
-            store.outside_publish(
-                agent.session_id(),
-                Some(agent.id()),
-                OutsideEventValue::Session { state },
-                match state {
-                    EventSessionState::AgentAdded => "agent added",
-                    EventSessionState::AgentRemoved => "agent removed",
-                    EventSessionState::Ended => "session ended",
-                },
-                EventRefs::default(),
-            )?;
-        }
-        Ok(())
+        publish_membership(self.outside_events.as_ref(), agent, state)
     }
+}
+
+pub(super) fn publish_membership(
+    store: Option<&crate::durable_state::DurableKernelStateStore>,
+    agent: &AgentInstance,
+    state: EventSessionState,
+) -> Result<(), crate::error::DaemonError> {
+    if let Some(store) = store {
+        store.outside_publish(
+            agent.session_id(),
+            Some(agent.id()),
+            OutsideEventValue::Session { state },
+            match state {
+                EventSessionState::AgentAdded => "agent added",
+                EventSessionState::AgentRemoved => "agent removed",
+                EventSessionState::Ended => "session ended",
+            },
+            EventRefs::default(),
+        )?;
+    }
+    Ok(())
 }

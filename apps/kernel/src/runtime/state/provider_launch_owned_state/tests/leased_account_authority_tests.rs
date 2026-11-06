@@ -544,3 +544,200 @@ async fn mp11_amfix_exact_profile_launch_matches_admission_and_home_alias() {
         "cloud-owner"
     );
 }
+
+// A leased helper retains the source Project in its hidden session, so every process and
+// Environment tool uses that Project even in a newly created checkout.
+#[tokio::test]
+async fn leased_agent_launch_takes_the_inputs_of_the_project_holding_its_folder() {
+    leased_project_inputs(false, false).await;
+}
+
+// MP-08/MP-10/MP-11: create the linked checkout through the leased-agent entry point.
+#[tokio::test]
+async fn leased_linked_worktree_launch_takes_project_inputs() {
+    leased_project_inputs(true, false).await;
+}
+
+#[tokio::test]
+async fn leased_linked_worktree_copies_listed_ignored_environment_files() {
+    leased_project_inputs(true, true).await;
+}
+
+async fn leased_project_inputs(linked_worktree: bool, check_files: bool) {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let root = crate::test_support::TestWorktree::new("leased-project-inputs");
+    std::env::set_var("CHARIOX_HOME", root.path().join("state"));
+    let mut config = crate::config::DaemonConfig::load_from_env();
+    config.accept_remote_leases = true;
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "cloud-owner".into(),
+        ..Default::default()
+    });
+    let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+    let registry = app.provider_account_profile_registry();
+    let profile = registry
+        .create_managed("cloud-owner", "codex", "selected")
+        .unwrap();
+    registry
+        .update_observation(
+            "cloud-owner",
+            "codex",
+            &profile.profile_id,
+            crate::account_profile::ProviderAccountAuthState::Authenticated,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+    let folder = root.path().join("checkout");
+    std::fs::create_dir_all(&folder).unwrap();
+    let folder = folder.canonicalize().unwrap();
+    if linked_worktree {
+        for args in [
+            vec!["init"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "Initial",
+            ],
+        ] {
+            let output = crate::process_spawn::command("git")
+                .args(args)
+                .current_dir(&folder)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "Git repository setup failed");
+        }
+        std::fs::write(folder.join(".gitignore"), ".env.local\n.unlisted\n").unwrap();
+        std::fs::write(folder.join(".env.local"), "SYNTHETIC=listed-file\n").unwrap();
+        std::fs::write(folder.join(".unlisted"), "not-listed\n").unwrap();
+    }
+    let (project_session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                folder.display().to_string(),
+                folder.display().to_string(),
+            )
+            .with_owner_user_id("cloud-owner"),
+        )
+        .unwrap();
+    let project_id = project_session.project_id().to_string();
+    assert!(!project_id.is_empty());
+    crate::project_environment::ProjectEnvironmentStore::new(
+        &app.config().private_runtime_state_root(),
+    )
+    .save(
+        &project_id,
+        0,
+        crate::project_environment::ProjectEnvironmentRecord {
+            schema: crate::project_environment::PROJECT_ENVIRONMENT_SCHEMA,
+            variables: "LEASED_LABEL=from-the-project".into(),
+            files: vec![".env.local".into()],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let leased = {
+        let mut leases = crate::app::RemoteLeaseRuntime::new(&mut app);
+        let lease = leases
+            .create_execution_lease("home", "session", "agent", false, "cloud-owner")
+            .unwrap();
+        leases
+            .create_leased_agent_from_base_directory(
+                &folder,
+                &lease.id,
+                "codex",
+                &profile.profile_id,
+                Some("model".into()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                linked_worktree.then(|| crate::agent::GitWorktreePlacement {
+                    target_directory: Some(root.path().join("checkout-task").display().to_string()),
+                    branch: Some("leased-task".into()),
+                    from_ref: Some("HEAD".into()),
+                }),
+            )
+            .unwrap()
+    };
+    let hidden = app
+        .sessions
+        .get_session(&leased.backing_session_id)
+        .unwrap();
+    assert!(hidden.is_hidden());
+    assert_eq!(hidden.project_id(), project_id);
+    let checkout = std::path::PathBuf::from(hidden.worktree_id());
+    if linked_worktree {
+        assert_ne!(checkout, folder);
+        assert!(
+            checkout.join(".git").is_file(),
+            "a real linked Git worktree"
+        );
+    }
+    if check_files {
+        use std::os::unix::fs::PermissionsExt;
+        assert!(
+            checkout.join(".env.local").is_file(),
+            "the leased worktree must receive the listed ignored file before launch"
+        );
+        assert_eq!(
+            std::fs::read(checkout.join(".env.local")).unwrap(),
+            b"SYNTHETIC=listed-file\n"
+        );
+        assert_eq!(
+            std::fs::metadata(checkout.join(".env.local"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(
+            !checkout.join(".unlisted").exists(),
+            "unlisted files stay behind"
+        );
+        return;
+    }
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert_eq!(
+        runtime.tool_project(&hidden, "cloud-owner").unwrap().id(),
+        project_id
+    );
+    assert!(runtime.tool_project(&hidden, "someone-else").is_err());
+    let request = runtime
+        .prepare_provider_launch_request_with_vault(
+            crate::provider::LaunchProviderRequest::new(
+                &leased.backing_session_id,
+                "codex",
+                "codex",
+                &profile.profile_id,
+                "model",
+            )
+            .with_agent_id(&leased.backing_agent_id)
+            .with_working_directory(checkout.clone()),
+            "leased agent launch takes its Project's inputs",
+        )
+        .await
+        .unwrap();
+    assert!(request.project_environment_revision.is_some());
+    assert!(request
+        .provider_credential_env
+        .iter()
+        .any(|(name, value)| name == "LEASED_LABEL" && value == "from-the-project"));
+    let shell = runtime
+        .project_environment_for_shell(&leased.backing_session_id)
+        .unwrap();
+    assert!(shell
+        .iter()
+        .any(|(name, value)| name == "LEASED_LABEL" && value == "from-the-project"));
+}

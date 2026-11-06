@@ -50,6 +50,10 @@ pub struct RuntimeInteractionChoice {
     /// decisions may set it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     requires_passkey: bool,
+    /// A Vault unlock answer: this choice unlocks for this long, with the
+    /// passphrase as the custom reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vault_unlock: Option<crate::local::VaultUnlockDuration>,
 }
 
 impl RuntimeInteractionChoice {
@@ -65,7 +69,17 @@ impl RuntimeInteractionChoice {
             reply: reply.into(),
             style,
             requires_passkey: false,
+            vault_unlock: None,
         }
+    }
+
+    pub(crate) fn unlocking_vault(mut self, duration: crate::local::VaultUnlockDuration) -> Self {
+        self.vault_unlock = Some(duration);
+        self
+    }
+
+    pub fn vault_unlock(&self) -> Option<crate::local::VaultUnlockDuration> {
+        self.vault_unlock
     }
 
     /// Marks a critical approval: the kernel accepts it only with a verified
@@ -223,9 +237,18 @@ impl NativeInteractionOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeInteraction {
+    /// Kernel-resolved presentation; agents supply only the observed element reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    view: Option<RuntimeInteractionView>,
     /// Protocol 936: a question owned by a durable task, rather than one turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     asking_task_id: Option<String>,
+    /// The agent a kernel-owned task decision is about; this is presentation, not authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    related_agent_id: Option<String>,
+    /// Person cards: the existing wake source whose occurrence closes this card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    closes_with_wake: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -250,8 +273,6 @@ pub struct RuntimeInteraction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_origin: Option<NativeInteractionOrigin>,
     requested_at_ms: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    project_environment_review: Option<crate::project_environment::ProjectEnvironmentReview>,
     /// Ephemeral provider-native login UI, never model context or history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_login: Option<RuntimeProviderLogin>,
@@ -261,6 +282,66 @@ pub struct RuntimeInteraction {
     /// Local only: when a forwarded decision stops being actionable.
     #[serde(skip)]
     decision_expires_at: Option<tokio::time::Instant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionView {
+    pub browser_region: RuntimeInteractionBrowserRegion,
+}
+
+/// CSS pixels in the existing Tab display. No page text or pixel bytes are copied into the card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionBrowserRegion {
+    pub tab_id: String,
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub generation: u64,
+    pub document_id: String,
+    pub origin: String,
+    pub rect: RuntimeInteractionBrowserRect,
+    pub viewport_width: u32,
+    pub viewport_height: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification: Option<RuntimeInteractionBrowserVerification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_result: Option<RuntimeInteractionBrowserVerificationResult>,
+}
+
+/// A positive HTTP result for this card's exact document and challenge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInteractionBrowserVerification {
+    pub challenge_id: String,
+    pub url: String,
+    pub accepted_json_pointer: String,
+}
+
+/// Fixed labels and transport metadata only; no request or response values.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeInteractionBrowserVerificationResult {
+    pub challenge_id: String,
+    pub request_id: String,
+    pub input_delivered: bool,
+    pub http_status: Option<u16>,
+    pub result: RuntimeInteractionBrowserVerificationOutcome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeInteractionBrowserVerificationOutcome {
+    Delivered,
+    Rejected,
+    Accepted,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeInteractionBrowserRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -303,7 +384,10 @@ impl RuntimeInteraction {
         default_on_timeout: Option<String>,
     ) -> Self {
         Self {
+            view: None,
             asking_task_id: None,
+            related_agent_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -318,7 +402,6 @@ impl RuntimeInteraction {
             default_on_timeout,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
-            project_environment_review: None,
             provider_login: None,
             handoff: None,
             requester: None,
@@ -327,8 +410,40 @@ impl RuntimeInteraction {
         }
     }
 
+    pub fn related_agent_id(&self) -> Option<&str> {
+        self.related_agent_id.as_deref()
+    }
+    pub(crate) fn with_related_agent_id(mut self, agent: String) -> Self {
+        self.related_agent_id = Some(agent);
+        self
+    }
+
     pub fn asking_task_id(&self) -> Option<&str> {
         self.asking_task_id.as_deref()
+    }
+
+    pub fn view(&self) -> Option<&RuntimeInteractionView> {
+        self.view.as_ref()
+    }
+
+    pub(crate) fn with_view(mut self, view: RuntimeInteractionView) -> Self {
+        self.view = Some(view);
+        self
+    }
+
+    /// Asking again after an answer that did not work: the card leads with what went wrong.
+    pub(crate) fn noting_problem(mut self, problem: &str) -> Self {
+        self.message = format!("{problem}\n{}", self.message);
+        self
+    }
+
+    pub fn closes_with_wake(&self) -> Option<&str> {
+        self.closes_with_wake.as_deref()
+    }
+
+    pub(crate) fn closing_with_wake(mut self, wake_id: String) -> Self {
+        self.closes_with_wake = Some(wake_id);
+        self
     }
 
     pub(crate) fn with_asking_task_id(mut self, task: String) -> Self {
@@ -365,14 +480,6 @@ impl RuntimeInteraction {
         self
     }
 
-    pub fn with_project_environment_review(
-        mut self,
-        review: crate::project_environment::ProjectEnvironmentReview,
-    ) -> Self {
-        self.project_environment_review = Some(review);
-        self
-    }
-
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -391,6 +498,12 @@ impl RuntimeInteraction {
 
     pub(crate) fn valid_subject(&self) -> bool {
         self.subject.valid()
+            && self.related_agent_id.as_ref().is_none_or(|agent| {
+                self.kernel_operation_id().is_some()
+                    && !agent.is_empty()
+                    && agent.len() <= 128
+                    && !agent.chars().any(char::is_control)
+            })
             && self.handoff.as_ref().is_none_or(|h| {
                 h.valid()
                     && self.id == RuntimeHandoff::interaction_id(&h.obligation_id)
@@ -444,7 +557,10 @@ impl RuntimeInteraction {
         choices: Vec<RuntimeInteractionChoice>,
     ) -> Self {
         Self {
+            view: None,
             asking_task_id: None,
+            related_agent_id: None,
+            closes_with_wake: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),
@@ -459,7 +575,6 @@ impl RuntimeInteraction {
             default_on_timeout: None,
             native_origin: None,
             requested_at_ms: unix_epoch_ms(),
-            project_environment_review: None,
             provider_login: None,
             handoff: None,
             requester: None,
@@ -471,6 +586,12 @@ impl RuntimeInteraction {
     /// A kernel decision that must close before its subject expires.
     pub(crate) fn with_timeout_sec(mut self, seconds: u64) -> Self {
         self.timeout_sec = Some(seconds);
+        self
+    }
+
+    /// Task owner decisions live until their task is resolved or cancelled.
+    pub(crate) fn without_timeout(mut self) -> Self {
+        self.timeout_sec = None;
         self
     }
 

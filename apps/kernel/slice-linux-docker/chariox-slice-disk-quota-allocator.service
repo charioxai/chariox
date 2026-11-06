@@ -1,7 +1,7 @@
 [Unit]
 Description=Chariox managed slice XFS project quota allocator
 After=local-fs.target
-Before=chariox-rootless-docker.service chariox-managed-bootstrap.service chariox-path1-managed-bootstrap.service chariox-disposable-worker-bootstrap.service
+Before=chariox-rootless-docker.service chariox-managed-bootstrap.service chariox-path1-managed-bootstrap.service
 RequiresMountsFor=/var/lib/chariox-docker/data
 
 [Service]

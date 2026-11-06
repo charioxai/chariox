@@ -1,5 +1,264 @@
 # Managed Path-1 parity inventory (MP-11)
 
+
+## MP-08 / MP-09 / MP-10 / MP-11 disk maintenance isolation (2026-11-05)
+
+Disk maintenance runs separately from the shared wake ticks. One paced pass
+owns scanning, trimming and notification admission, including cold provider
+launches that need the owner's Vault unlock. Filesystem jobs are awaited
+serially, prompt admission has a bounded wait, and scheduler shutdown cancels
+the maintenance task. No pacing lock spans a scan or a prompt interaction.
+The regression leaves a real encrypted-Vault cold-launch interaction unanswered
+while another Room's timer fires, checks that another maintenance pass does not
+start, and verifies cancellation removes the pending unlock. This focused proof
+does not close the broader ordinary/managed parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11 remembered output volumes (2026-11-05)
+
+Ordinary and managed admission remember a sampled writer's resolved output
+directory and receiving device, rather than its process descriptor path. Hold,
+resume and reservations verify that device through the nearest surviving path;
+a destination that cannot be resolved or whose device changed remains unknown.
+The real-writer regression samples growth, exits, removes the output, reloads
+saved peaks and reruns the same command. No client wire shape changes.
+
+## MP-08 / MP-09 / MP-10 / MP-11 Room membership read isolation (2026-11-05)
+
+Ordinary and managed kernels use the same default-agent creation path. It releases
+the agent roster lock before awaiting the outside membership event's durable
+result. Membership operations remain ordered, publication stays synchronous, and
+publication errors still reach the caller. Unrelated roster reads can proceed
+while that event commits. The real-writer regression is
+`a_membership_commit_does_not_block_another_rooms_session_state`; it holds SQLite's
+writer while another Room reads through GetSessionState. This changes no wire
+shape and does not establish the KR-06 quiet-host latency or stability gates.
+
+## MP-08 / MP-09 / MP-10 / MP-11 relay renewal recovery (2026-11-04)
+
+Ordinary and managed kernels use the issuer's signed runtime-token expiry for
+renewal rather than assuming the requested lifetime was granted. Token
+rejections invalidate the refused token, and bounded socket writes release the
+connector for its existing retry/backoff path. Reauthentication queued on a
+socket is not evidence that the relay received it. These changes add no runtime
+authority to Cloud or the relay and change no serialized protocol shape.
+
+Graceful kernel shutdown waits for the serialized Cloud presence publisher to
+send its final OFFLINE intent, within a bounded deadline. Otherwise a stopped
+kernel stays advertised as ONLINE until heartbeat expiry, causing later browser
+clients to attempt stale targets and eventually receive bootstrap failures.
+Connection status also checks the selected relay URL during transport changes.
+
+Web briefly retains events that precede subscription binding, preserves ingress
+order across binding, and quietly expires unknown or retired subscriptions.
+The shared directory bounds simultaneous registration waits. Real Web/TUI Room
+traffic across renewals, forced expiry/rejection and stalled-write recovery are
+separate acceptance cells in the end-to-end plan; focused regressions alone do
+not close the broader MP-10 matrix or the MP-11 security-anchor review.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 agent resume and parked work (2026-11-04)
+
+The shared Codex adapter resumes with the official app-server `excludeTurns`
+option. Native conversation history stays in Codex; recovery reads bounded
+summary pages instead of falling back to an unbounded `thread/read`. Failure
+to prepare a resumed thread settles prompt dispatch directly, including when
+the failed connection cannot carry another output poll.
+
+The runtime MCP response boundary bounds large tool output before Codex, Claude
+or OpenCode can retain it in native history. Truncated output is identified in
+both text and structured content; ordinary screenshots retain their image
+blocks. Claude resumes through its official CLI event stream. OpenCode baseline
+and reconciliation requests explicitly select the latest 100 messages through
+its native session API. Its HTTP reader rejects bodies over 32 MiB, including
+aggregate chunked bodies, without retrying or replacing the saved session.
+
+Local993 / peer432 keeps oversized workspace artifacts retrievable through
+`chariox.read_artifact`. Ordinary and forwarded reads share bounded pages:
+`offset_bytes` selects the next page, `max_bytes` defaults to 8192 (range
+4–8192), and `next_offset_bytes` is null at EOF. Text and structured pages keep
+UTF-8 boundaries; opaque pages carry independently decodable base64. Every page
+retains its artifact version and snapshot metadata. Restart at offset 0 if the
+version changes between pages. This preserves the shared MCP history bound
+without discarding the remainder of a file.
+
+Local987 adds owner cancellation of an exact retained task or timer. The
+ordinary Stop route also resolves parked work when no prompt is active. Task
+cancellation retains its reason, settles owned sources and informs the agent
+on its next wake; cancelling one timer preserves its task. These operations
+use the same durable authority on ordinary and managed kernels. Peer framing,
+relay authority and managed automatic shutdown policy are unchanged (MP-09).
+Focused regressions and the live resume drill cover this seam; they do not
+close the wider MP-10 matrix or MP-11 security-anchor review.
+
+Required regression scenarios for this seam are:
+
+| Acceptance ID | Required evidence |
+| --- | --- |
+| `apps-agent-model/ARTIFACT-PAGING` | A real Codex agent, prompted through the built TUI on the real kernel, retrieves text and opaque pages near the end of the project protocol document. The same drill fails on the pre-fix kernel because range arguments return truncated prefixes. MCP entry-point regressions reconstruct entire oversized text, structured and opaque artifacts under the response limit, including escaped control characters and UTF-8 boundaries. |
+| `apps-agent-model/RESUME-64MIB` | A real Codex agent accumulates more than 64 MiB of native tool history on the base, fails to resume after restart, then completes a turn through the built CLI on the fixed kernel with the same agent and native thread. MCP regressions prove large output is bounded before native persistence and startup failures settle. Audit Claude and OpenCode and run their native restart paths. A provider usage limit must settle definitively and preserve its reason for the person; an exhausted account blocks that provider's restart leg. |
+| `apps-agent-model/PARKED-OWNER-CANCEL` | The built CLI cancels parked tasks and independent timers without an active prompt. A real provider receives the cancellation reason on its next wake. Entry-point regressions cover unrelated active work, stale revisions, foreign owners, removed completion subscriptions, idempotency and acknowledgement. |
+
+These are ordinary-kernel regression scenarios. Managed placement, hosted
+transport, browser sites and the wider parity matrix retain their separate
+acceptance rows.
+
+## MP-08 / MP-09 / MP-10 / MP-11 bounded peer Browser observations
+
+Local 996 / peer 435 transports the private Browser snapshot field as lossless
+zlib data inside the existing authenticated encryption. Home retains document
+validation, element-reference authority and status/text/accessibility projection.
+Both placements preserve the complete bounded observation; no node reduction,
+new display dependency or longer relay deadline is introduced. The receiver
+rejects oversized declared output before decoding, stops expansion at the
+declared length plus one byte (32 MiB hard cap), and rejects corrupt, truncated
+or trailing data. The existing snapshot validation still runs after decoding.
+Real signed A3 baseline timeouts and candidate transport/placement results are
+recorded separately; this source change does not close the MP parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11 binary pre-spawn admission (995/434)
+
+Ordinary and managed kernels use the same immutable binary launch intent and
+shared resource pool before a user program is spawned. A queued launch owns its
+existing stdin/output offsets and reader lease without a PID. Local Start now
+and cancel keep that exec identity. Dispatch rechecks the original authority
+and Room ownership. Gateway exec retains the existing renewable requester lease
+and a memory-only gateway admission generation. Original grant end, lease expiry
+and target revocation end queued authority; re-pairing cannot revive it. The
+changed admission anchors are `state/gateway_requester.rs`, gateway
+`requester_watch.rs` and `origins.rs`. Already-observed held/paused processes retain
+their current process controls. Queued work participates in the existing managed activity
+fence. No shutdown trigger, Cloud authority or provider launch path changes.
+
+A binary's reservation covers its entire process domain. For each resource,
+reserved growth is the prediction minus observed consumption, counted once per
+domain. The domain reserves the larger of the remaining binary prediction and
+its descendants' remaining predictions, independently for memory and each disk
+volume. Descendant growth beyond the binary prediction still counts. Admission,
+enforcement and resumption all let a descendant use its domain's unused
+reservation; learning and pressure controls stay active. Ordinary commands and
+binary launches account for each other's remaining predictions.
+
+Pressure is judged only on actual headroom; unused predictions gate admission.
+A paused descendant that fits its domain's reserved capacity resumes when
+actual pressure clears, even while its parent retains a near-capacity launch
+reservation and waits for that descendant. The enforcement regressions exercise
+both growing descendants and actual pressure followed by resumption.
+
+Memory admission and enforcement use the same observation snapshot; cgroup
+credit comes from that domain's charge and is bounded by the pool's sampled
+charge. Disk reservations decrease by observed cumulative writes, retaining the
+high-water mark when a writer exits. Write consumption is fixed before reading
+filesystem free space; reservation checking and insertion remain atomic.
+Completion saves observed binary peaks through the ordinary cache writer in the
+blocking cleanup task, before publishing the final outcome. Queue-only agent
+owners have no process-only Kill all menu; their queued commands retain Start
+now and Cancel.
+
+Focused regressions are `room_exec::queue_tests` and the real native-client drill
+`scripts/e2e-stack/room-exec/pre-spawn.mjs`. They do not close selected-kernel or
+paid-VM placement, verified context transfer, durable remote result recovery,
+hosted Web DPR1/2 or the broader MP parity matrix. Those requirements remain
+unfinished; no old direct-exec S3 result is relabeled as queue placement proof.
+`scripts/e2e-stack/room-exec/reservation-peaks.mjs` additionally checks native
+concurrent admission and actual binary learning, cache reload and automatic
+admission after reservation pressure clears. `reservation-domains.mjs` covers
+a learned parent and child alongside another native binary, plus actual output
+on an isolated filesystem while its writer remains alive. Focused regressions
+also cover ordinary/binary disk predictions in both admission directions.
+Its `--liveness` memory case requires two heavy growing descendants to finish
+under a near-capacity parent prediction without waiting for that parent to exit.
+## MP-08 / MP-09 / MP-10 / MP-11 client App view feasibility (AV1)
+
+The shared renderer candidate in `packages/app-view-host` is pinned into Cloud's
+built web assets. AV1's 2026-11-05 acceptance contract explicitly includes the
+owner-authorized `chromium-network-service-ipv6-route-probe` exemption: only
+Network Service `connect()` on an attributed `AF_INET6 SOCK_DGRAM` socket to
+`[2001:4860:4860::8888]:443`, no sends/writes on that socket, complete trace and
+zero strict receiver/probe wire packets. Every other operation retains the
+strict gate, including DNS, TCP, other destinations and other processes.
+
+The shared final assessment used by the real built-Cloud browser drill records
+each exempted PID/TID, destination, result and source trace. Raw non-loopback
+findings remain visible. Both pinned Chrome155 engines passed the complete
+DPR1/2 matrix: each has 72/72 frame/policy checks, 72/72 controls, 4/4 references
+and 81/81 strict captures. AV1 is accepted WITH this named exemption. The .39
+and .79 runs audit 129 and 123 exempt connects respectively, with zero strict
+receiver/probe wire packets or capture drops. Tested OSS 8b93dfb54b and Cloud
+e52b13392a; exact source/artifact/capture identity is in the r6 evidence linked
+from the AV1 document. This is not a zero-sockets claim. Round 4's rejected
+namespace/feature attempts and original gate results remain historical evidence.
+See [`APP_VIEW_HOST_AV1.md`](APP_VIEW_HOST_AV1.md) for the exact five conditions,
+source research, fail-first regressions and browser evidence.
+
+Round7 closes the filtered-matrix acceptance finding: the shared assessment
+requires the complete case/DPR set, rejecting subsets, empty filters and duplicate
+rows. Both complete Chrome155.39/.79 reruns pass; actual fetch-only and unmatched
+runs exit1 with `complete-attack-matrix`. The30 named route-probe tests remain.
+Evidence is pinned in `appview/r7/AV1_IDENTITY.json` under the same evidence root.
+
+The signed-entry verifier, parent/source-bound host lifecycle, opaque iframe,
+pre-script bootstrap, inherited policy, dedicated restricted browser/profile
+and Cloud static response remain the security anchors. Ordinary Web tabs cannot
+apply the required launch settings. There is no App-open cutover, new protocol,
+managed activity lease or shutdown-policy change. Real ordinary/managed
+Room/backend/provider/Web/TUI/relay opens require AV2–AV5 and remain deferred;
+AV1 does not close the wider MP parity matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11 signed App asset transport (AV2 first slice)
+
+Local999 / peer438 adds owner-scoped descriptor, bounded entry chunks and a
+60second immutable-release delivery lease. The production Web adapter verifies
+signed controls and file hashes and uses a scoped256MiB memory cache; every cache
+hit still needs a fresh authorized descriptor. Ordinary and managed placements
+share this service; idle delivery registrations hold no managed activity fence.
+
+The first real hosted WSS exit passes signed Excalidraw asset delivery at DPR1/2:
+7,788,348 bytes in119 chunks per cold read,64KiB maximum, fresh cache admission
+and rejected reads after Close. The base rejects the request at both DPRs and
+fails the normal workflow at feature admission. This is a transport slice only:
+reference execution, normal App-open/Room UI, live-page revocation/update staging,
+TUI, managed parity, performance and soaks remain unproven. The test page's normal
+waiting-room shell remains Connecting. See `APP_VIEW_DELIVERY_AV2.md` and the r7
+identity/cleanup receipts. No broader MP item or full AV2 acceptance is closed.
+## MP-08 / MP-09 / MP-10 / MP-11 exited terminal activity
+
+A terminal owner remembers its observed PTY exit, which is permanent for that
+owner. Rendering, pumping or persistence of its retained output cannot turn lock
+contention into a new busy/idle activity cycle and renew last-work shutdown.
+A live terminal with a busy owner still counts conservatively as work; its
+managed admission fence is unchanged. Ordinary and managed terminals use the
+same owner. Real-PTY regressions cover both states through the terminal service.
+This adds no serialized shape and does not establish production-signed or paid
+shutdown acceptance by itself.
+
+## MP-08 / MP-09 / MP-10 / MP-11 transfer-aware shutdown admission
+
+Kernel-file requests and managed-context import disk tasks hold activity until the
+actual blocking task finishes, including after their requesting future is cancelled.
+They acquire the existing managed stop admission fence before starting; a stop
+reservation refuses new file work. Managed-context capabilities also count as
+pending work between chunks until completion/failure or their existing expiry.
+Publication and its Cloud receipt remain work across async gaps. The existing
+signed activity count and quiescence contract carry these observations unchanged;
+no public serialized shape or protocol number changes. General file reads/writes
+remain ordinary resumable chunk requests; a home agent should select manual or a
+time limit for a sequence of calls with long gaps. Focused regressions and isolated
+live drills are separate evidence; this entry does not close the three-hour or
+production-signed paid acceptance rows.
+
+## MP-08 / MP-09 / MP-10 / MP-11 admission intent and activity persistence
+
+Environment admission publishes one counted provisional owner before releasing the
+stop fence and operation registry. Intent reads and atomic durable writes run
+outside those mutexes; duplicates wait for that owner's publication, and failed
+publication retracts it. Polling rechecks the registry generation after disk reads.
+Activity mutations capture ordered transition identities and timestamps under the
+mutation boundary, then drain the journal and SQLite outside it. Stop rejects
+unacknowledged activity, so a delayed idle write cannot replace newer busy work.
+The pending journal still precedes database appends and acknowledges committed
+sequences on restart. These focused source regressions do not replace the final
+head's isolated shutdown-policy drill or production-signed paid validation.
+
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 
 Local954 / peer403 adds nullable `disk_io_bytes` to the existing session process
@@ -827,8 +1086,8 @@ fixtures only. The unchanged activation/recovery/upgrade/service-policy Node
 fixtures pass 130/130 without skips using synthetic releases and mocked host
 services. No VM or staging was contacted. Available builder2 Cloud
 `f6cfd0066d75844dbab795cdf715789ec5fa37d6` is stale/unpaired; no paired Cloud
-result is claimed. The complete trigger/cost/deletion ledger and coordinator
-commands are in `docs/MANAGED_SHUTDOWN_ACCEPTANCE_RUNBOOK.md`. Public command,
+result is claimed. The shutdown-trigger drill and its runbook were retired with the Cloud
+rental controls. Public command,
 source, resource and cleanup receipts remain external under
 `/root/.codex/evidence/browser-resume-20260930/b214/`.
 
@@ -2140,3 +2399,70 @@ These paths are common to ordinary and managed kernels. No placement branch,
 provider execution rule, relay admission, signing/trust or managed automatic
 shutdown behavior changes (MP-09). Focused router/storage and hosted owner-to-agent
 drills cover this seam only; they do not close the entire MP-10 comparison matrix.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11 person cards (2026-11-04)
+
+Local 988 / peer 427 adds a provider-neutral acquisition offer to the existing
+Cloud capability. Cloud resolves specifications and currency/period terms from
+its provider catalogue; the kernel writes the confirmation text and binds it to
+the capability revision. OSS contains no compute-provider catalogue or pricing
+logic. A missing approved signed placement blocks both live rental legs.
+
+The same interaction and browser-grant paths resolve `view.browser_region` on
+ordinary and managed kernels. The kernel follows browser-owned geometry, publishes
+only changed crops, and resolves a removed/replaced element with `condition_met`.
+Revocation or a failed observation source gives an explicit unavailable result.
+Clients project the existing folded question stripes, a half-height scrolling
+pile, and the shared protected browser display inside the existing popup.
+
+A Vault wait before provider I/O pauses the inbox receipt clock. Declining or
+expiring that unlock blocks the retained task with the actual Vault reason;
+explicit Resume retries the original answer once. This does not weaken receipts
+for attempts that reached the provider, change browser observation protection,
+or alter managed shutdown activity/policy (MP-09). Focused regressions and hosted
+provider drills cover these seams; they do not close the entire MP-10 matrix or
+replace MP-11 security-anchor review.
+
+
+## MP-08 / MP-09 / MP-10 / MP-11: positive browser-card verification (992/431)
+
+A verification card binds one challenge to its asking task, card, agent observer,
+Tab, browser generation and document. Its optional generic `verification`
+condition names an exact same-origin POST URL and a JSON pointer whose value
+must be boolean true in a successful HTTP response. Only requests started while
+that card watches the same frame and document count. A controller-isolated
+listener acknowledges trusted input inside that region. The helper requires
+the bound field value in the request JSON, URL-encoded form or multipart text field and a user gesture; the value stays
+in private helper memory and is never included in a receipt. The challenge ID
+is the card operation nonce, not a fabricated server-issued challenge ID. Responses from a different
+endpoint, document or older overlapping attempt cannot complete the card.
+
+The kernel projects only request delivery, HTTP status and fixed result labels.
+No request body, response body, headers, code or token enters the receipt. The
+person sees and types in the existing live popup region; verification cards have
+only Cancel and use a durable nonblocking question. A rejection stays visible in
+the same card, including when a page framework replaces the crop anchor during an outstanding geometry poll. A
+missing element or navigation is never positive verification. Capture the new
+credential through Vault and prove its declared authenticated use separately.
+
+The no-email owned-service rehearsal lives in
+`scripts/e2e-stack/vault-autonomy/challenge-hosted-live.mjs`. It covers request
+ordering, rejection and acceptance, page rerender, Vault capture and an
+authenticated API call at desktop DPR1/DPR2. It is supplementary;
+it does not establish real Vercel acceptance or close the full MP matrix.
+
+## MP-08 / MP-09 / MP-10 / MP-11: lifecycle discovery without a purchase offer (993/432)
+
+An enrolled kernel keeps its machine capability revision and lifecycle actions
+when the connected service cannot quote a new machine or has no placements.
+The capability's `offer` is null in that case, and acquisition requires a fresh
+non-null offer plus its advertised action. Enrollment revocation and resource
+revision checks continue to fence Stop, Release and saved-state deletion.
+The service's purchase outage must not strand an existing paid resource.
+
+Focused coverage: Cloud's production control-plane route discovers capabilities
+for the first time during catalogue, quote and empty-placement failures, then
+stops and releases an existing allocation. The OSS protocol snapshot round-trips
+the lifecycle-only descriptor and pins its hash. These checks cover this seam;
+they do not close the MP-10 ordinary/managed matrix or the MP-11 anchor review.

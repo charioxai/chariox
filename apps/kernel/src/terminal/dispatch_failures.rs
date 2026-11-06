@@ -57,6 +57,22 @@ fn operation_failure_summary(operation: &str) -> &'static str {
 
 /// Public projection of older durable failures; retain private ledger diagnostics.
 pub(crate) fn public_task_failure_reason(reason: &str) -> String {
+    let lower = reason.to_ascii_lowercase();
+    if lower.contains("user_domain_not_granted")
+        || lower.contains("chariox.load_kernel_browser")
+        || lower.contains("grant state changed")
+    {
+        return "Browser access ended. Allow browser access to continue.".into();
+    }
+    if ["retained obligations", "attributed result", "condition_met"]
+        .iter()
+        .any(|word| lower.contains(word))
+    {
+        return "Waiting for the result.".into();
+    }
+    if lower.contains("retained instructions") {
+        return "This task needs your help to continue.".into();
+    }
     if reason.contains("Provider prompt dispatch failed: provider protocol `") {
         if let Some((_, operation)) = reason.split_once("provider protocol `") {
             if let Some((operation, _)) = operation.split_once('`') {
@@ -73,6 +89,22 @@ pub(crate) fn public_task_failure_reason(reason: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn owner_task_failure_uses_plain_browser_and_waiting_words() {
+        assert_eq!(
+            public_task_failure_reason(
+                "chariox.load_kernel_browser failed: user_domain_not_granted"
+            ),
+            "Browser access ended. Allow browser access to continue."
+        );
+        assert_eq!(
+            public_task_failure_reason(
+                "Waiting for an attributed result and condition_met receipt; retained obligations"
+            ),
+            "Waiting for the result."
+        );
+    }
 
     #[test]
     fn ea2_75_refused_dispatch_errors_use_the_same_calm_recovery_text() {

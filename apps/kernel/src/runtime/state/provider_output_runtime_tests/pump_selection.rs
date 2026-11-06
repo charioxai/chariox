@@ -1,4 +1,110 @@
 use super::*;
+#[tokio::test]
+async fn a_spawn_failure_keeps_another_agents_running_pointer_without_resuming_it() {
+    let worktree = crate::test_support::TestWorktree::new("pump-selection-spawn-failure-pointer");
+    let mut app =
+        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, target) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .expect("session should be created");
+    let other = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_alias("other"),
+        )
+        .expect("other agent should spawn");
+    let session_id = session.id().to_string();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let other_run = runtime
+        .owned
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                &session_id,
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(other.id()),
+        )
+        .expect("other agent launches")
+        .run;
+    runtime
+        .owned
+        .provider_store
+        .mark_run_running(other_run.id())
+        .expect("other run is running");
+    let predicted = format!(
+        "provider-run-{}",
+        runtime
+            .owned
+            .provider_store
+            .list_runs()
+            .iter()
+            .filter_map(|run| run.id().strip_prefix("provider-run-")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1
+    );
+    let _spawn_failure = crate::provider::ProviderLifecycleFailureInjection::install(
+        &predicted,
+        crate::provider::ProviderLifecycleFailureStage::Spawn,
+    );
+    let error = runtime
+        .start_provider_launch_with_grant(
+            crate::local::LaunchProviderRunRequest {
+                session_id: session_id.clone(),
+                agent_id: Some(target.id().to_string()),
+                adapter_key: "dev-stub".into(),
+                provider: "dev-stub".into(),
+                account_profile: "default".into(),
+                model: "default".into(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+                native_checkpoint_binding: None,
+            },
+            "local".to_string(),
+            None,
+        )
+        .await
+        .err()
+        .expect("the injected spawn failure must surface");
+    assert!(
+        matches!(&error, DaemonError::PtySpawn { provider_run_id, .. } if *provider_run_id == predicted),
+        "{error:?}"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(&predicted)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap()
+            .active_provider_run_id(),
+        Some(other_run.id()),
+        "the other agent's pointer must be restored"
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(other_run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Running,
+        "the other agent's run must not be resumed or stopped"
+    );
+}
 
 #[tokio::test]
 async fn owned_prompt_mirror_refreshes_projected_external_active_prompt() {
@@ -725,5 +831,92 @@ async fn idle_headless_mailbox_remains_selected_by_the_runtime_owner() {
     assert!(
         provider_run_ids_for_owned_output_pump(&runtime.owned, &stored).contains(run.id()),
         "idle headless hooks lost their sole mailbox reader"
+    );
+}
+
+#[tokio::test]
+async fn attach_reuses_the_target_agents_identical_starting_run() {
+    let worktree = crate::test_support::TestWorktree::new("launch-target-starting");
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
+    let (session, target) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let other = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub").with_alias("other"),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let request = |agent: &str| {
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "default",
+        )
+        .with_agent_id(agent)
+    };
+    let original = runtime
+        .owned
+        .start_provider_launch(request(target.id()))
+        .unwrap();
+    let unrelated = runtime
+        .owned
+        .start_provider_launch(request(other.id()))
+        .unwrap();
+    let control_keys = crate::runtime::process_resources::keys_for_session(
+        session.id(),
+        &runtime.owned.provider_store,
+        &runtime.owned.room_terminals,
+    );
+    assert!(
+        control_keys.iter().any(|(_, id)| id == original.run.id()),
+        "command control must keep a Starting run before its process domain exists"
+    );
+    let reused = runtime
+        .owned
+        .reusable_provider_run_for_launch(&request(target.id()))
+        .unwrap()
+        .expect("attach must join the target's launch rather than spawn a competitor");
+    assert_eq!(reused.id(), original.run.id());
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(original.run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Starting
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(unrelated.run.id())
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Starting
+    );
+    assert_eq!(runtime.owned.provider_store.list_runs().len(), 2);
+    let mut different = request(target.id());
+    different.model = "another-model".into();
+    assert!(runtime
+        .owned
+        .reusable_provider_run_for_launch(&different)
+        .is_err());
+    runtime
+        .owned
+        .provider_store
+        .mark_run_running(original.run.id())
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .reusable_provider_run_for_launch(&request(target.id()))
+            .unwrap()
+            .is_none(),
+        "an intentional launch after startup must retain the ordinary replacement path"
     );
 }

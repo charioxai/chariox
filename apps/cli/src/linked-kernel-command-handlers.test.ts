@@ -74,15 +74,15 @@ test("kernel add shows the kernel's refusal verbatim without the transport wrapp
   harness.assertNothingLeaked()
 })
 
-test("machine add still reaches the SSH installer and no longer pairs a link", async () => {
+test("machine add asks for an enrollment command and no longer pairs a link", async () => {
   const harness = createHarness()
-  const ssh: unknown[] = []
+  const asked: unknown[] = []
   const deps = {
     ...harness.deps,
-    addSshMachine: async (host: string) => { ssh.push(host); return { install_id: "i", status: "ready", kernel_id: null, machine_id: null, release_digest: "sha256:x", state_retained: false } },
+    issueOwnMachineEnrollment: async (label?: string) => { asked.push(label); return { command: " (true)", expires_at: "2026-11-03T13:10:00Z" } },
   }
-  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add ssh lan", args: ["add", "ssh", "lan"] })
-  assert.deepEqual(ssh, ["lan"])
+  await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: "/machine add lan", args: ["add", "lan"] })
+  assert.deepEqual(asked, ["lan"])
   await handleRemoteMachineSlashCommand(deps, { kind: "machine", raw: `/machine add ${LINK}`, args: ["add", LINK] })
   assert.deepEqual(harness.joins, [])
 })

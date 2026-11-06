@@ -3,6 +3,7 @@ use super::*;
 mod assessment_sources;
 mod goal_waits;
 mod goal_yields;
+mod wakeable_agents;
 struct Fixture {
     root: std::path::PathBuf,
     store: DurableKernelStateStore,
@@ -1013,6 +1014,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
         } else if state == "blocked" {
             f.apply(Operation::Sweep {
                 now: 1_001 + DELIVERY_TIMEOUT_MS,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: Vec::new(),
             });
@@ -1038,6 +1040,7 @@ fn teardown_settles_inflight_deliveries(state: &str) {
         }
         f.apply(Operation::Sweep {
             now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+            vault_wait_recipients: Vec::new(),
             busy_recipients: vec![],
             held_work: Vec::new(),
         });
@@ -2599,6 +2602,7 @@ mod driver_sources {
             } else if state == "blocked" {
                 f.apply(Operation::Sweep {
                     now: 1_001 + DELIVERY_TIMEOUT_MS,
+                    vault_wait_recipients: Vec::new(),
                     busy_recipients: vec![],
                     held_work: Vec::new(),
                 });
@@ -2624,6 +2628,7 @@ mod driver_sources {
             }
             f.apply(Operation::Sweep {
                 now: 3_000 + 2 * DELIVERY_TIMEOUT_MS,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: vec![],
                 held_work: Vec::new(),
             });
@@ -3012,6 +3017,7 @@ mod driver_sources {
             f.apply(Operation::FireWakes { now });
             f.apply(Operation::Sweep {
                 now,
+                vault_wait_recipients: Vec::new(),
                 busy_recipients: Vec::new(),
                 held_work: Vec::new(),
             });
@@ -3113,4 +3119,73 @@ fn a02_task_cancellation_settles_the_obligation_of_an_already_fired_timer() {
     assert_eq!(task.state, ExecutionState::Cancelled);
     let timer = task.obligations.iter().find(|o| o.id == "t1").unwrap();
     assert_eq!(timer.status, "cancelled", "{task:?}");
+}
+
+#[test]
+fn blocked_question_admission_preserves_turn_and_work_boundaries() {
+    let f = Fixture::new();
+    let template = f.create("template", "process", None, None);
+    f.apply(Operation::Block {
+        task: "p".into(),
+        prompt: "p".into(),
+        reason: "Owner decision required".into(),
+    });
+    let blocked = f.task();
+    let arm = |kind: &str, prompt: &str| {
+        let mut wake = template.clone();
+        wake.id = format!("blocked-{kind}");
+        wake.registration_id = format!("completion-{}", wake.id);
+        wake.kind = kind.into();
+        wake.state = if kind == "timer" {
+            "scheduled"
+        } else {
+            "starting"
+        }
+        .into();
+        wake.next_due_ms = Some(1_000);
+        f.store.agent_lifecycle(Operation::ArmWake {
+            task: "p".into(),
+            prompt: prompt.into(),
+            wake: Box::new(wake),
+        })
+    };
+    for kind in ["timer", "process"] {
+        assert!(arm(kind, "p").is_err(), "blocked work cannot start {kind}");
+    }
+    assert!(arm("interaction", "stale").is_err());
+    assert_eq!(
+        f.task(),
+        blocked,
+        "refused admissions must not mutate the task"
+    );
+    assert!(
+        f.store
+            .agent_lifecycle(Operation::WakeVerified {
+                id: template.id.clone(),
+                now: 20,
+            })
+            .is_err(),
+        "blocked work cannot confirm a process start"
+    );
+    arm("interaction", "p").unwrap();
+    f.apply(Operation::WakeVerified {
+        id: "blocked-interaction".into(),
+        now: 20,
+    });
+    assert_eq!(f.wake("blocked-interaction").state, "running");
+    f.apply(Operation::CancelWake {
+        id: "blocked-interaction".into(),
+        task: "p".into(),
+        prompt: Some("p".into()),
+        pending: false,
+    });
+    assert_eq!(f.wake("blocked-interaction").state, "cancelled");
+    assert_eq!(f.task().state, ExecutionState::Blocked);
+    assert_eq!(f.task().blocked_revision, blocked.blocked_revision);
+    f.apply(Operation::CancelTask {
+        task: "p".into(),
+        owner: "owner".into(),
+        revision: f.task().revision,
+    });
+    assert!(arm("interaction", "p").is_err(), "closed tasks cannot ask");
 }

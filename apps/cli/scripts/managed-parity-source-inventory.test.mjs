@@ -633,12 +633,10 @@ test("native release artifact exporter is inventoried separately from release ac
 test("current Path-1 source keeps the slice lease in the kernel launch boundary", () => {
   const source = (path) => readFileSync(new URL(path, import.meta.url), "utf8");
   const bootstrap = source("../../../apps/kernel/src/managed_bootstrap/mod.rs");
-  const worker = source("../../../apps/kernel/src/managed_bootstrap/worker.rs");
   const supervisor = source("../../../apps/kernel/src/managed_bootstrap/supervisor.rs");
   const broker = source("../../../apps/kernel/src/slice/local_docker/broker.rs");
   const provider = source("../../../apps/kernel/src/provider/managed_isolation.rs");
 
-  assert.match(worker, /super::supervisor::spawn_with_broker_lease\(&mut command,\s*topology\)/);
   const kernelBrokerEnvStart = bootstrap.indexOf("pub(crate) const PATH1_KERNEL_SLICE_BROKER_ENVS");
   const kernelBrokerEnvEnd = bootstrap.indexOf("];", kernelBrokerEnvStart);
   assert.ok(kernelBrokerEnvStart >= 0 && kernelBrokerEnvEnd > kernelBrokerEnvStart);
@@ -1140,18 +1138,6 @@ test("slice placement observations remain separate from independent removal find
   });
 });
 
-test("manual audit anchors include generic utility resource functions", () => {
-  withFixture({}, (fixture) => {
-    const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "shared-provider-utility-capture-budget");
-    const source = readFileSync(new URL("../../../apps/kernel/src/local/provider_requests/catalog/probe_capture.rs", import.meta.url), "utf8");
-    fixture.addFile(rule.path, source, "100644", rule.blob);
-    const report = collect(fixture);
-    const entries = report.entries.filter((entry) => entry.path === rule.path && entry.candidateOrigin === "manual_source_rule");
-    assert.deepEqual(entries.map((entry) => entry.symbol).sort(), ["capture", "drain"]);
-    assert.ok(entries.every((entry) => entry.semanticDisposition.status === "unreviewed"));
-  });
-});
-
 test("machine enrollment data shapes get explicit candidates without widening source review", () => {
   withFixture({}, (fixture) => {
     const rule = SOURCE_AUDIT_RULES.find((rule) => rule.id === "managed-bootstrap-machine-profile-shape");
@@ -1163,7 +1149,7 @@ test("machine enrollment data shapes get explicit candidates without widening so
     assert.equal(candidate?.sourceClassification.status, "source_inspected");
     assert.equal(candidate?.sourceClassification.classification, "machine_bound_deployment_enrollment");
     assert.equal(candidate?.semanticDisposition.status, "unreviewed");
-    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 64)
+    assert.ok(report.entries.filter((entry) => entry.path === rule.path && entry.line > 52)
       .every((entry) => entry.sourceClassification === null));
   });
 });
@@ -1971,9 +1957,9 @@ for (const pinned of FINAL_ARCHIVE_DECLARATIONS) {
 
 // MP-11: frozen independent conclusions may bind only the reviewed source.
 test("MP-11 independent ledger covers each inspected scope without authorizing scope expansion", () => {
-  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 134);
+  assert.equal(new Set(INDEPENDENT_REVIEW_GROUPS.map(group => group.ruleId)).size, 133);
   assert.ok(INDEPENDENT_REVIEW_GROUPS.every(group => SOURCE_AUDIT_RULES.some(rule => rule.id === group.ruleId)));
-  assert.equal(SOURCE_AUDIT_RULES.length, 147);
+  assert.equal(SOURCE_AUDIT_RULES.length, 146);
   assert.equal(new Set(DEFAULT_SEMANTIC_DISPOSITIONS.map(review => review.id)).size, DEFAULT_SEMANTIC_DISPOSITIONS.length);
   const first = DEFAULT_SEMANTIC_DISPOSITIONS[0];
   assert.equal(evaluateSemanticDisposition(first.anchor, { commit: first.sourceCommit, tree: first.sourceTree }, DEFAULT_SEMANTIC_DISPOSITIONS).status, "reviewed");
@@ -2411,8 +2397,11 @@ test("MP-11 new native/config formats retain selectors after literal/hash bounda
 test("MP-11 current bounded reviews do not repin the historical review module", () => {
   const root = new URL("../../..", import.meta.url).pathname;
   const path = "apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs";
-  const original = execFileSync("git", ["show", "9334141d420f8a32393f206102c5b8b4a1b0b609:" + path], { cwd: root });
-  assert.deepEqual(readFileSync(join(root, path)), original);
+  const frozen = execFileSync("git", ["show", "9334141d420f8a32393f206102c5b8b4a1b0b609:" + path], { cwd: root, encoding: "utf8" });
+  // The only change since the freeze: the group of the probe capture audit rule, removed together with that rule.
+  const original = frozen.replace(/  \{\n    "ruleId": "shared-provider-utility-capture-budget",[\s\S]*?\n  \},\n/, "");
+  assert.ok(original.length < frozen.length, "the removed rule's group is in the frozen module");
+  assert.ok(readFileSync(join(root, path), "utf8") === original, "the current reviews differ from the frozen module beyond the removed rule's group");
   for (const review of CURRENT_SEMANTIC_REVIEWS) {
     assert.ok(review.independentReview.rationale.startsWith("MP-"));
     assert.ok(review.independentReview.reviewer.includes("scanner implementer"));

@@ -133,13 +133,8 @@ Do not run worker captures on the reserved builder. Fresh allocation has its
 own receipt; the following reimage commands apply only to approved reuse.
 
 ```bash
-# MP-07/MP-10: normal local home-kernel read, after finalized product reimage.
-# HOME_KERNEL_URL is explicit ws://127.0.0.1:PORT/kernel, not hosted wss.
-node "$OSS_CHECKOUT/apps/cli/scripts/path1-cloud-reimage-capture.mjs" \
-  --kernel "$HOME_KERNEL_URL" --environment "$ENVIRONMENT_ID" \
-  --operation "$OPERATION_ID" --generation "$GENERATION" \
-  --release "$RELEASE_DIGEST" --commit "$OSS_COMMIT" --tree "$OSS_TREE" \
-  --output "$EVIDENCE/cloud-reimage.json"
+# MP-07/MP-10: HOME_KERNEL_URL is explicit ws://127.0.0.1:PORT/kernel, not hosted wss.
+# cloud-reimage.json comes from the Cloud repo's capture; the kernel no longer proxies it.
 node "$OSS_CHECKOUT/apps/cli/scripts/path1-fresh-relay-capture.mjs" \
   --kernel "$HOME_KERNEL_URL" --machine "$MACHINE_REF" \
   --output "$EVIDENCE/fresh-relay.json"
@@ -217,25 +212,7 @@ node "$OSS_CHECKOUT/apps/cli/scripts/live-managed-browser-computer-parity-drill.
   --config "$PRIVATE_CAMPAIGN_CONFIG" --transport-module "$TRANSPORT_MODULE" \
   --inspector-module "$INSPECTOR_MODULE" --evidence-root "$EVIDENCE/hosted"
 
-# MP-09/MP-10: creates/deletes ONE approved agent-small target per scenario.
-# Interactive OWNER required for product UI actions; command is not read-only.
-node "$OSS_CHECKOUT/apps/cli/scripts/live-managed-shutdown-trigger-drill.mjs" \
-  --scenario "$SHUTDOWN_SCENARIO" --kernel-url "$HOME_KERNEL_URL" \
-  --region "$APPROVED_REGION" --compute-class agent-small \
-  --max-billable-seconds "$APPROVED_MAX_SECONDS" \
-  --confirm-one-target CREATE-AND-DELETE-ONE-MANAGED-TARGET \
-  --output "$EVIDENCE/$SHUTDOWN_SCENARIO.json"
 ```
-
-MP-09 supported scenario IDs: `shutdown_agents_done`, `shutdown_idle_15m`,
-`shutdown_idle_30m`, `shutdown_minimum_3h`, `shutdown_disabled`,
-`shutdown_keep_running`, `shutdown_restart_reconciliation`,
-`shutdown_all_clients_disconnected`, `shutdown_manual`, `shutdown_custom`,
-`shutdown_explicit_lifecycle_reconciliation`, `shutdown_deployment_reconciliation`.
-Caps are scenario-dependent (600–12600 seconds minimum, 14400 maximum in
-frozen parser). The no-ACK 3600-second stale-heartbeat policy and real provider
-STOP/disk verification require the B2-14 reviewed campaign; this parser does
-not expose a no-ACK scenario. Do not shorten minimum-runtime or no-ACK proof.
 
 MP-08/MP-10 remaining exact command prerequisites: g2fix native/provider
 matrix, b207 real model-visible byte/Web/TUI conjunction, kbrowser host profile

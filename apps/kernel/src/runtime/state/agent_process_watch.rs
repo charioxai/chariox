@@ -6,6 +6,7 @@ use super::agent_process_group::signal_session;
 use super::agent_process_output::{drain, room_protector, Output, Signal};
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::HashMap;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
@@ -64,7 +65,7 @@ impl OwnedChild {
                 // when group inspection failed. Do not signal a group.
                 if child.id() > 1 {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = child.bounded_wait();
                 }
                 Err(error)
             }
@@ -419,7 +420,7 @@ impl KernelRuntimeState {
                 // Only the direct child just spawned by this call is eligible.
                 if child.id() > 1 {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    let _ = child.bounded_wait();
                 }
                 self.settle_failed_process_launch(
                     &wake,

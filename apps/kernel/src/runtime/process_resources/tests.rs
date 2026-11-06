@@ -759,25 +759,6 @@ fn watched_sleep(unit: &str) -> (std::process::Child, ProcessDomain, String) {
 /// then must not stop the tree it watches, which the new program adopts.
 #[cfg(unix)]
 #[test]
-fn a_ps_ended_by_a_signal_does_not_stop_the_tree_it_samples() {
-    use std::os::unix::process::ExitStatusExt;
-    let killed = std::process::ExitStatus::from_raw(libc::SIGKILL);
-    assert!(
-        matches!(sampling::ps_refusal(killed), sampling::SamplingError::Ended),
-        "a signal ended ps, which says nothing of the tree"
-    );
-    let refused = std::process::ExitStatus::from_raw(1 << 8);
-    assert!(
-        matches!(
-            sampling::ps_refusal(refused),
-            sampling::SamplingError::Unusable(_)
-        ),
-        "a ps that exits with a failure cannot give the columns"
-    );
-}
-
-#[cfg(unix)]
-#[test]
 fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
     let (mut child, _domain, key) = watched_sleep("descriptors-short");
     let pid = child.id();
@@ -833,17 +814,21 @@ fn a_kernel_short_of_resources_for_a_moment_keeps_the_tree_it_watches() {
 
 #[cfg(unix)]
 #[test]
-fn a_missing_ps_ends_the_tree_it_watches() {
-    let (mut child, _domain, _key) = watched_sleep("ps-missing");
-    let _failing = PsFailing::with(libc::ENOENT);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while child.try_wait().unwrap().is_none() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "a tree nobody can meter kept running"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+fn a_missing_ps_keeps_the_last_snapshot_without_ending_work() {
+    let (mut child, _domain, key) = watched_sleep("ps-missing");
+    let before = samples_for_key(&key);
+    let failing = PsFailing::with(libc::ENOENT);
+    std::thread::sleep(Duration::from_millis(600));
+    let alive = child.try_wait().unwrap().is_none();
+    let after = samples_for_key(&key);
+    drop(failing);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "a failed sampler refresh ended running work");
+    assert_eq!(
+        before, after,
+        "failed refresh replaced the last good sample"
+    );
 }
 
 // MP-08 / MP-09 / MP-10 / MP-11: disk is active-process I/O, never filesystem capacity.

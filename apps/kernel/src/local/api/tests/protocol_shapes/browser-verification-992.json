@@ -1,0 +1,53 @@
+{
+  "local": 999,
+  "peer": 438,
+  "arguments": {
+    "wait": false,
+    "message": "Verify in this page",
+    "choices": [
+      {
+        "id": "cancel",
+        "label": "Cancel",
+        "reply": "cancel"
+      }
+    ],
+    "view": {
+      "browser_region": {
+        "tab_id": "tab-1",
+        "ref": "backend:7",
+        "verification": {
+          "challenge_id": "challenge-1",
+          "url": "https://example.com/verify",
+          "accepted_json_pointer": "/accepted"
+        }
+      }
+    }
+  },
+  "region": {
+    "tab_id": "tab-1",
+    "ref": "backend:7",
+    "generation": 1,
+    "document_id": "document-1",
+    "origin": "https://example.com",
+    "rect": {
+      "x": 16,
+      "y": 24,
+      "width": 320,
+      "height": 240
+    },
+    "viewport_width": 1280,
+    "viewport_height": 800,
+    "verification": {
+      "challenge_id": "challenge-1",
+      "url": "https://example.com/verify",
+      "accepted_json_pointer": "/accepted"
+    },
+    "verification_result": {
+      "challenge_id": "challenge-1",
+      "request_id": "request-1",
+      "input_delivered": true,
+      "http_status": 422,
+      "result": "rejected"
+    }
+  }
+}

@@ -528,7 +528,7 @@ impl InlineShellFixture {
             expected_binding: binding,
             development_destination_root: target.clone(),
             target_private_key: "unused".into(),
-            project_environment_target: None,
+            context_import_target: None,
             provider_account_target: None,
             git_credential_target: None,
         })

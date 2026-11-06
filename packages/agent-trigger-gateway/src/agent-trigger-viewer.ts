@@ -2,6 +2,8 @@ import { renderTranscriptHtml, renderTerminalEntriesByTurn, renderFreeformTransc
 import type { Conversation } from "./agent-trigger-client.js"
 import { unconfirmedHtml } from "./agent-trigger-unconfirmed.js"
 import { applyOutputRecords, reconcileSnapshot } from "./agent-trigger-live.js"
+import { setMarkdownWorkspaceImageLoader } from "@chariox/transcript-view/markdown/markdown-images"
+import { AgentTriggerImages } from "./agent-trigger-images.js"
 const main = document.querySelector<HTMLElement>("main[data-trigger-base]")!
 const base = main.dataset.triggerBase!
 const csrf = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content
@@ -31,6 +33,7 @@ function render() {
 }
 function apply(value: Conversation, older = false) {
   reconcileSnapshot(live, value)
+  workspaceImages.refresh(turns.values())
   if (older || turns.size === value.turns.length) nextCursor = value.nextCursor
   more.hidden = !nextCursor
   unconfirmed.innerHTML = unconfirmedHtml(value.unconfirmed)
@@ -39,6 +42,14 @@ function apply(value: Conversation, older = false) {
   input.disabled = send.disabled = !value.online || !value.enabled
   render()
 }
+const workspaceImages = new AgentTriggerImages(async reference => {
+  const response = await fetch(`${base}workspace-image?path=${encodeURIComponent(reference)}`, { headers: csrfHeaders })
+  if (!response.ok) return { kind: "unavailable", message: "image unavailable" }
+  const blob = await response.blob()
+  return { kind: "loaded", src: URL.createObjectURL(blob), sizeBytes: blob.size }
+})
+setMarkdownWorkspaceImageLoader(workspaceImages.load)
+window.addEventListener("pagehide", event => { if (!event.persisted) workspaceImages.clear() })
 apply(JSON.parse(document.querySelector("#initial-conversation")!.textContent!) as Conversation)
 output.scrollTop = output.scrollHeight
 output.addEventListener("click", event => {

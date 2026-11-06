@@ -4,13 +4,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use crate::error::DaemonError;
 use crate::session::{PromptDetachEffect, RuntimeSession, SessionService};
 
-use super::{AttachRequest, AttachmentEvent, ClientCapabilityLevel, RuntimeAttachment};
+use super::{AttachRequest, ClientCapabilityLevel, RuntimeAttachment};
 
 #[derive(Debug, Clone, Default)]
 pub struct AttachmentService {
     attachments: BTreeMap<String, RuntimeAttachment>,
     last_heartbeat_at_ms: BTreeMap<String, u64>,
-    events: Vec<AttachmentEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,10 +98,6 @@ impl AttachmentServiceStore {
 
     pub fn get_attachment(&self, attachment_id: &str) -> Result<RuntimeAttachment, DaemonError> {
         self.read().get_attachment(attachment_id)
-    }
-
-    pub fn list_events(&self) -> Vec<AttachmentEvent> {
-        self.read().list_events().to_vec()
     }
 
     pub fn list_session_attachment_ids(&self, session_id: &str) -> Vec<String> {
@@ -210,10 +205,6 @@ impl AttachmentService {
             .insert(attachment_id.clone(), attachment.clone());
         self.last_heartbeat_at_ms
             .insert(attachment_id.clone(), crate::session::unix_epoch_ms());
-        self.events.push(AttachmentEvent::Joined {
-            session_id: request.session_id,
-            attachment_id,
-        });
 
         Ok(attachment)
     }
@@ -241,10 +232,6 @@ impl AttachmentService {
 
         let (_, effect) =
             sessions.remove_attachment_from_session(attachment.session_id(), attachment_id)?;
-        self.events.push(AttachmentEvent::Left {
-            session_id: attachment.session_id().to_string(),
-            attachment_id: attachment.id().to_string(),
-        });
 
         Ok((attachment, effect))
     }
@@ -255,10 +242,6 @@ impl AttachmentService {
                 attachment_id: attachment_id.to_string(),
             }
         })
-    }
-
-    pub fn list_events(&self) -> &[AttachmentEvent] {
-        &self.events
     }
 
     pub fn list_session_attachment_ids(&self, session_id: &str) -> Vec<String> {
@@ -331,13 +314,6 @@ impl AttachmentService {
             })
             .collect();
 
-        for attachment in &removed_attachments {
-            self.events.push(AttachmentEvent::Left {
-                session_id: attachment.session_id().to_string(),
-                attachment_id: attachment.id().to_string(),
-            });
-        }
-
         removed_attachments
     }
 
@@ -394,7 +370,7 @@ mod tests {
     use crate::config::DaemonConfig;
     use crate::session::{CreateSessionRequest, SessionService};
 
-    use super::{AttachRequest, AttachmentEvent, AttachmentService};
+    use super::{AttachRequest, AttachmentService};
 
     fn session_service() -> SessionService {
         SessionService::new(&DaemonConfig::for_tests())
@@ -448,7 +424,6 @@ mod tests {
         assert_eq!(session.attachment_ids().len(), 2);
         assert!(session.has_attachment(first.id()));
         assert!(session.has_attachment(second.id()));
-        assert_eq!(attachments.list_events().len(), 2);
     }
 
     #[test]
@@ -484,10 +459,6 @@ mod tests {
         assert_eq!(detached.id(), first.id());
         assert!(!session.has_attachment(first.id()));
         assert!(session.has_attachment(second.id()));
-        assert!(attachments.list_events().iter().any(|event| matches!(
-            event,
-            AttachmentEvent::Left { attachment_id, .. } if attachment_id == first.id()
-        )));
     }
 
     #[test]
@@ -561,5 +532,36 @@ mod tests {
         assert!(attachments
             .stale_terminal_attachment_ids(31_000, 30_000)
             .is_empty());
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: a client attaching and detaching, as every short-lived
+    // Room client does, must leave nothing behind.
+    #[test]
+    fn attaching_and_detaching_leaves_nothing_behind() {
+        let mut sessions = session_service();
+        let session_id = create_session(&mut sessions);
+        let mut attachments = AttachmentService::new();
+        let mut cycle = |client: &str| {
+            let attachment = attachments
+                .attach(
+                    &mut sessions,
+                    AttachRequest::new(&session_id, client, ClientCapabilityLevel::FullTerminal),
+                )
+                .expect("the client should attach");
+            attachments
+                .detach(&mut sessions, attachment.id())
+                .expect("the client should detach");
+        };
+        cycle("warm-up");
+        let ((), kept) = crate::test_support::allocation::measure(|| {
+            for n in 0..500 {
+                cycle(&format!("client-{n}"));
+            }
+        });
+        assert!(
+            kept.retained <= 4096,
+            "500 attach and detach cycles left {} bytes behind",
+            kept.retained
+        );
     }
 }

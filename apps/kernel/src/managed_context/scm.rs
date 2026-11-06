@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -1247,7 +1248,7 @@ fn terminate_child_descendants(_process_group: u32) {}
 fn terminate_child_tree(child: &mut Child) {
     terminate_child_descendants(child.id());
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.bounded_wait();
 }
 
 fn scm_error(message: impl Into<String>) -> DaemonError {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::bounded_process::BoundedChildExt as _;
 
 /// MP-08/MP-11: amaro 1.1.5, byte-identical to official Node 22.22.1's type
 /// stripper. It runs inside the isolated compiler for every Node build.
@@ -281,7 +282,7 @@ fn discover_node_path(
         }
         if child.id() > 1 {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         }
     }
     Err(crate::DaemonError::LocalTransport {

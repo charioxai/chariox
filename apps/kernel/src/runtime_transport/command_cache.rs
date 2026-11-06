@@ -206,6 +206,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             // Owner inputs and revealed values stay out of transport receipts.
             // Each operation must also recheck current owner/unlock authority.
             | LocalDaemonRequest::OwnerVault(_)
+            | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
             | LocalDaemonRequest::RequestVaultSecret(_)
             | LocalDaemonRequest::ExtendKernelSudo(_)
             | LocalDaemonRequest::RenewKernelSudoRequester(_)
@@ -232,6 +233,7 @@ pub(crate) fn request_is_cacheable(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ConfigureAppAutomation(_)
             | LocalDaemonRequest::DisableAppAutomation(_)
             | LocalDaemonRequest::OpenUserAppView(_)
+            | LocalDaemonRequest::ClientAppView(_)
             | LocalDaemonRequest::CloseUserAppView(_)
             | LocalDaemonRequest::CallUserAppView(_)
             | LocalDaemonRequest::SubscribeUserAppViews(_)
@@ -1056,6 +1058,8 @@ fn should_persist_completed_result(fingerprint: &CommandFingerprint) -> bool {
             | "credential_enrollment.interaction.request"
             | "interaction.respond"
             | "native_provider.interaction.request"
+            // The one-time enrollment code is written nowhere, not even to this owner-only file.
+            | "machine.enroll"
     )
 }
 

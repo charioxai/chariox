@@ -23,11 +23,15 @@ impl KernelRuntimeState {
                 .and_then(|agent_id| owned.agent_store.get_agent(agent_id).ok());
             let launch_request =
                 crate::app::apply_metaagent_launch_policy(launch_request, agent.as_ref());
-            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
-                owned
-                    .provider_run_projection
-                    .mark_leased_provider_run(run.id());
-                return Ok(run);
+            if launch_request.client_interface
+                == crate::provider::ProviderClientInterface::NativeTui
+            {
+                if let Some(run) = owned.reusable_provider_run_for_launch(&launch_request)? {
+                    owned
+                        .provider_run_projection
+                        .mark_leased_provider_run(run.id());
+                    return Ok(run);
+                }
             }
             if crate::provider::canonical_provider_family(&launch_request.provider)
                 == Some("claude")
@@ -354,7 +358,6 @@ impl KernelRuntimeState {
                         .await?;
                 }
                 if state.remote_agent_is_home_managed_slice(&agent) {
-                    state.ensure_slice_project_environment(&agent).await?;
                     state.ensure_remote_skill_packages_for_agent(&agent).await?;
                 }
                 let mut relay_config = state.owned.config_projection.snapshot();
@@ -490,7 +493,7 @@ impl KernelRuntimeState {
                 .prepare_provider_launch_request_with_vault(launch_request, "launch provider run")
                 .await?;
             self.authorize_provider_launch_grant(external_grant_id, &request)?;
-            if let Some(run) = owned.reusable_native_tui_run_for_launch(&launch_request)? {
+            if let Some(run) = owned.reusable_provider_run_for_launch(&launch_request)? {
                 return Ok(ProviderLaunchStartOutcome::Reused(run));
             }
             crate::logging::info_with_fields(
@@ -551,10 +554,8 @@ impl KernelRuntimeState {
                     let recipients = owned
                         .attachment_store
                         .list_session_attachment_ids(run.session_id());
-                    match owned
-                        .resume_provider_run_for_session(run.session_id(), previous_active_run_id)
-                    {
-                        Ok(resumed_run) => {
+                    match owned.restore_provider_launch_predecessor(&run, previous_active_run_id) {
+                        Ok(Some(resumed_run)) => {
                             owned.record_notice(
                                 run.session_id(),
                                 Some(resumed_run.id()),
@@ -566,6 +567,7 @@ impl KernelRuntimeState {
                                 ),
                             );
                         }
+                        Ok(None) => {}
                         Err(resume_error) => {
                             owned.record_notice(
                                 run.session_id(),

@@ -15,6 +15,7 @@ export type TriggerCommandAction =
   | { type: "update"; triggerId: string; change: "on" | "off" | "queue" | "steer" }
   | { type: "remove"; triggerId: string }
   | { type: "resend"; promptId: string }
+  | { type: "notification"; words: string[] }
 
 export type ParsedSlashCommand =
   | { kind: "exit"; raw: string }
@@ -367,7 +368,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     return {
       kind: "env",
       raw: trimmed,
-      args: trimmed.replace(/^\/(?:env|environment)\s*/, "").trim().split(/\s+/).filter(Boolean),
+      args: trimmed.replace(/^\/(?:environment|env)\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/script")) {
@@ -437,7 +438,7 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
 }
 
 export const TRIGGER_USAGE =
-  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id>"
+  "usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id>"
 
 function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kind: "trigger" }> {
   const [verb = "list", ...rest] = command.slice("/trigger".length).trim().split(/\s+/).filter(Boolean)
@@ -446,6 +447,9 @@ function parseTriggerCommand(command: string): Extract<ParsedSlashCommand, { kin
   }
   if (verb === "every" || verb === "in") {
     return parseScheduleTrigger(command, rest.join(" "), verb === "every" ? "every" : "once", `/trigger ${verb}`)
+  }
+  if (verb === "notification" && rest.length > 0) {
+    return { kind: "trigger", raw: command, action: { type: "notification", words: rest }, error: null }
   }
   const triggerId = rest[0]
   if (triggerId && rest.length === 1) {

@@ -92,7 +92,7 @@ fn mp08_mp10_mp11_initial_session_view_denies_nonmember_before_attachment() {
     assert!(harness
         .dispatch_as_user("foreign-user", view_request(session.id(), None))
         .is_err());
-    let before = serde_json::to_value(
+    let mut before = serde_json::to_value(
         harness
             .dispatch(LocalDaemonRequest::GetSessionState(
                 GetSessionStateRequest {
@@ -105,7 +105,7 @@ fn mp08_mp10_mp11_initial_session_view_denies_nonmember_before_attachment() {
     assert!(harness
         .dispatch(view_request("missing-session", None))
         .is_err());
-    let after = serde_json::to_value(
+    let mut after = serde_json::to_value(
         harness
             .dispatch(LocalDaemonRequest::GetSessionState(
                 GetSessionStateRequest {
@@ -115,6 +115,13 @@ fn mp08_mp10_mp11_initial_session_view_denies_nonmember_before_attachment() {
             .unwrap(),
     )
     .unwrap();
+    // Disk occupancy is sampled independently of session mutations.
+    for response in [&mut before, &mut after] {
+        response["SessionState"]
+            .as_object_mut()
+            .unwrap()
+            .remove("disk_usage");
+    }
     assert_eq!(before, after);
 }
 

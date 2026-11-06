@@ -1,6 +1,8 @@
 import {PermissionGrantCoordinator,createChromeSessionPermissionStateStore,isLiveConnectorDocument}
   from './permission-coordinator.mjs';
 import {installBrowserImportExternalPortBroker} from './external-port-broker.mjs';
+// Written by package-extension.mjs from the build's connected service.
+import {browserImportWebOrigins} from './web-origins.mjs';
 
 const cleanupAlarm = 'browser-import-permission-cleanup-v1';
 const permissionCoordinator = new PermissionGrantCoordinator(
@@ -60,4 +62,4 @@ chrome.runtime.onConnect.addListener(port => {
 
 // Additive to the permission lease coordinator so the durable metadata-only
 // lifecycle can be integrated without replacing either authority.
-installBrowserImportExternalPortBroker(chrome);
+installBrowserImportExternalPortBroker(chrome,browserImportWebOrigins);

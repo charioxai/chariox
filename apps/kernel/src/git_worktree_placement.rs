@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::path::{Path, PathBuf};
 
 use crate::agent::GitWorktreePlacement;
@@ -428,7 +429,7 @@ pub(crate) fn is_git_worktree(base_directory: impl AsRef<Path>) -> bool {
     crate::process_spawn::command("git")
         .args(["rev-parse", "--is-inside-work-tree"])
         .current_dir(base_directory.as_ref())
-        .output()
+        .bounded_output()
         .is_ok_and(|output| {
             output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
         })
@@ -539,7 +540,7 @@ pub(crate) fn prepare_git_worktree(
         ]
     };
     let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
-    run_git(&repo_root, &arg_refs, operation)?;
+    run_git_for(&repo_root, &arg_refs, operation, Work::Mutation)?;
     resolve_existing_worktree(&target, Path::new("."), operation)
 }
 
@@ -566,7 +567,7 @@ pub(crate) fn remove_git_worktree(
         run_git(&repo_root, &["worktree", "prune"], operation)?;
         return Ok(());
     }
-    run_git(
+    run_git_for(
         &repo_root,
         &[
             "worktree",
@@ -575,6 +576,7 @@ pub(crate) fn remove_git_worktree(
             &worktree_directory.display().to_string(),
         ],
         operation,
+        Work::Mutation,
     )?;
     run_git(&repo_root, &["worktree", "prune"], operation)?;
     Ok(())
@@ -616,10 +618,19 @@ fn git_branch_exists(
 }
 
 fn run_git(cwd: &Path, args: &[&str], operation: &'static str) -> Result<String, DaemonError> {
+    run_git_for(cwd, args, operation, Work::Query)
+}
+
+fn run_git_for(
+    cwd: &Path,
+    args: &[&str],
+    operation: &'static str,
+    work: Work,
+) -> Result<String, DaemonError> {
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(cwd)
-        .output()
+        .output_for(work)
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: format!(
@@ -752,6 +763,47 @@ mod tests {
             .expect("shared workspace cleanup should be a no-op");
         assert!(directory.exists());
         std::fs::remove_dir(directory).expect("temporary directory should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worktree_checkout_with_a_slow_hook_outlives_the_query_cap() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let repository = plain_temp_directory("slow-checkout");
+        run_test_git(&repository, &["init", "-b", "main"]);
+        run_test_git(
+            &repository,
+            &["config", "user.email", "tests@example.invalid"],
+        );
+        run_test_git(&repository, &["config", "user.name", "Chariox Tests"]);
+        std::fs::write(repository.join("README.md"), "seed\n").unwrap();
+        run_test_git(&repository, &["add", "."]);
+        run_test_git(&repository, &["commit", "-m", "seed"]);
+        let hook = repository.join(".git/hooks/post-checkout");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nsleep 3\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let target = repository.with_extension("instance");
+        let placement = GitWorktreePlacement {
+            target_directory: Some(target.display().to_string()),
+            branch: Some("slow-checkout".to_string()),
+            from_ref: Some("HEAD".to_string()),
+        };
+        let selected = crate::runtime::bounded_process::with_test_command_limit(
+            std::time::Duration::from_secs(1),
+            || {
+                prepare_workflow_runtime_worktree_or_reuse_directory(
+                    &placement,
+                    &repository,
+                    None,
+                    "prepare slow checkout",
+                )
+            },
+        )
+        .expect("a checkout hook slower than the query cap must complete");
+        assert!(Path::new(&selected).join("README.md").exists());
+        let _ = std::fs::remove_dir_all(&target);
+        let _ = std::fs::remove_dir_all(&repository);
     }
 
     #[cfg(unix)]

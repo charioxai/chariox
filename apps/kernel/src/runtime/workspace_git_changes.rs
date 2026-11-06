@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -54,7 +55,7 @@ pub(crate) fn workspace_git_diff_text(
             "--",
         ])
         .current_dir(worktree_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "workspace git diff",
             message: error.to_string(),
@@ -79,7 +80,7 @@ pub(crate) fn workspace_git_status_by_path(
     let output = crate::process_spawn::command("git")
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .current_dir(worktree_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "workspace git status",
             message: error.to_string(),
@@ -110,7 +111,7 @@ fn workspace_git_numstat(
     let output = crate::process_spawn::command("git")
         .args(["diff", "--numstat", "--find-renames", compare_ref, "--"])
         .current_dir(worktree_path)
-        .output()
+        .bounded_output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "workspace git diff",
             message: error.to_string(),

@@ -53,6 +53,7 @@ mod local_browser;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
+mod peer_trace;
 mod remote_inventory;
 mod request_errors;
 mod request_timing;
@@ -111,8 +112,6 @@ use subscriptions::{
 
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
-#[cfg(test)]
-pub(crate) use connection_state::TestPeerRequestObservation;
 pub(crate) use connection_state::{RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind};
 #[cfg(test)]
 pub use connector::{

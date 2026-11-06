@@ -65,6 +65,7 @@ test('a Linux bundle is assembled, signed and verified, and any change is refuse
   assert.ok(manifest.files.some(file => file.path === 'bin/chariox-app-wasm-worker'));
   assert.ok(!manifest.files.some(file => /^(runtime|libexec)\//.test(file.path)));
   const mode = path => manifest.files.find(file => file.path === path).mode;
+  assert.equal(mode('bin/chariox-app-wasm-worker'), '0555');
   assert.deepEqual(['bin/chariox', 'install.sh', 'LICENSE',
     'share/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh'].map(mode),
     ['0755', '0755', '0644', '0755']);
@@ -144,6 +145,7 @@ test('a macOS bundle carries only executables the signing receipt codesigned and
   assert.deepEqual(manifest.macosSigning, { identity: receipt.identity, teamId: 'TEAM123456', notarySubmissionId: 'submission-1',
     receiptSha256: sha256(await readFile(receiptPath)) });
   assert.ok(!manifest.files.some(file => file.path.startsWith('deploy/') || file.path === 'install.sh' || file.path.includes('chariox-app-storage')));
+  assert.equal(manifest.files.find(file => file.path === 'bin/chariox-app-wasm-worker').mode, '0555');
   await signBundle(options.output, releaseKeyPath);
   assert.equal((await verifyBundle(options.output, releasePublic)).platform, 'darwin-arm64');
 });
@@ -216,7 +218,11 @@ test('install.sh --check accepts only the bundle signed by its release key', { s
   assert.equal(accepted.status, 0, accepted.stderr);
   assert.match(accepted.stdout, /is Chariox 0\.2\.0, signed by the release key/);
   assert.match(check(keyHex(generateKeyPairSync('ed25519').privateKey)).stderr, /does not verify with the release key/);
-  await writeFile(join(options.output, 'bin/chariox-app-wasm-worker'), 'changed');
+  // The bundle ships the worker read-only (0555), so a non-root user cannot overwrite it in place.
+  const worker = join(options.output, 'bin/chariox-app-wasm-worker');
+  await chmod(worker, 0o755);
+  await writeFile(worker, 'changed');
+  await chmod(worker, 0o555);
   assert.match(check(releasePublic).stderr, /bin\/chariox-app-wasm-worker does not match the signed manifest/);
   assert.match(execFileSync(join(options.output, 'install.sh'), ['--help'], { encoding: 'utf8' }), /usage: sudo \.\/install\.sh/);
 });

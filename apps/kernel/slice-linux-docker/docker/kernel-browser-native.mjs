@@ -161,7 +161,7 @@ export class LinuxCapture {
    this.regions=new NativeRegionProtection(this.connection,this.sessionId,{policy:this.policy,browser:this.browser,tab:this.tab,scale:this.scale,record:reason=>this.timing('region_frame_masked '+reason,performance.timeOrigin+performance.now())});
    for(let attempt=0;;attempt++){try{await this.regions.refresh();break}catch(error){if(attempt>=4||!/region fence retired/.test(error?.message??''))throw error;}}
    this.poolRoot=await this.createRasterPool();
-   startNativeReadback(this,readback);
+   await startNativeReadback(this,readback);
    if(!await this.waitForCurrentSample())throw nativeReadbackFailure(this,'MD-DISPLAY: native readback unavailable');
    this.phase='attestation';await this.admitSurface();
    if(documentOwner)documentOwner.assertCurrent();else await assertCurrentDocument(this.connection,this.sessionId,this.tab.target_id,this.tab.document_id);

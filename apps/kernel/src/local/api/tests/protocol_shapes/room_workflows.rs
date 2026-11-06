@@ -84,6 +84,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
         agent_activity: std::collections::BTreeMap::new(),
         agent_activity_revision: 0,
         processes: Vec::new(),
+        disk_usage: Vec::new(),
     };
     let event = crate::transport::kernel_protocol::KernelEvent::SessionSnapshot {
         room_workflows: inventory,
@@ -110,7 +111,7 @@ fn mp08_mp11_session_state_and_snapshot_hash_required_room_workflows() {
     );
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&shape).unwrap())),
-        "628cb03a194b3ab41a12f55d462e9b4cef488981355582dd32c3c7acbb67fe8e"
+        "d4f16e437d1106d893ceb8bda8458333a4da54ec85b885c084f28f4fc3e3cfb7"
     );
 }
 

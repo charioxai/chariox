@@ -69,7 +69,6 @@ impl UserDomainRefusalReason {
             | "MD-N4: load the requested user-domain tools first"
             | "MD-3: unknown user-domain tab; refresh state"
             | "MD-N1: note unavailable"
-            | "MD-3: human owns browser input; release takeover first"
             | "MD-3: only the input owner may release takeover"
             | "MD-3: admitted local provider run required"
             | "MD-N4: one admitted local provider run required"

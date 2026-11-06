@@ -15,9 +15,9 @@ use crate::runtime::state::{
     KernelRuntimeState, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceOutcome,
 };
 
-const POLL_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/poll";
-const ACK_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/ack";
-const RELEASE_ACK_ENDPOINT: &str = "/v1/managed-kernels/auto-stop/quiescence/release-ack";
+const POLL_ENDPOINT: &str = "/v1/managed-kernels/quiescence/poll";
+const ACK_ENDPOINT: &str = "/v1/managed-kernels/quiescence/ack";
+const RELEASE_ACK_ENDPOINT: &str = "/v1/managed-kernels/quiescence/release-ack";
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_FAILURE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const FAILURE_WARNING_SUMMARY_INTERVAL: u8 = 5;
@@ -193,7 +193,7 @@ impl ManagedKernelQuiescenceClient {
                     if warning_state.should_warn() {
                         // Keep the retry summary bounded and omit error/request material.
                         crate::logging::warn_with_fields(
-                            "managed_kernel.auto_stop_quiescence",
+                            "managed_kernel.quiescence",
                             "quiescence poll failed; retrying while durable admission state is retained",
                             json!({
                                 "consecutive_failures": schedule.consecutive_failures,
@@ -283,7 +283,7 @@ impl ManagedKernelQuiescenceClient {
     fn signed_poll_request(&self) -> Result<Value, DaemonError> {
         let values = BTreeMap::from([
             ("protocolVersion", json!(1)),
-            ("action", json!("auto_stop_quiescence_poll")),
+            ("action", json!("quiescence_poll")),
             ("accountId", json!(self.binding.account_id)),
             ("environmentId", json!(self.binding.environment_id)),
             ("machineId", json!(self.binding.machine_id)),
@@ -292,7 +292,7 @@ impl ManagedKernelQuiescenceClient {
         let signature = hmac_signature(&self.binding.machine_credential, &values)?;
         let request = PollRequest {
             protocol_version: 1,
-            action: "auto_stop_quiescence_poll",
+            action: "quiescence_poll",
             account_id: &self.binding.account_id,
             environment_id: &self.binding.environment_id,
             machine_id: &self.binding.machine_id,
@@ -310,7 +310,7 @@ impl ManagedKernelQuiescenceClient {
     ) -> Result<Value, DaemonError> {
         let mut values = challenge_values(challenge);
         values.insert("protocolVersion", json!(1));
-        values.insert("action", json!("auto_stop_quiescence_ack"));
+        values.insert("action", json!("quiescence_ack"));
         values.insert("decision", json!(decision));
         self.signed_body(values)
     }
@@ -323,7 +323,7 @@ impl ManagedKernelQuiescenceClient {
     ) -> Result<Value, DaemonError> {
         let mut values = identity_values(&self.binding);
         values.insert("protocolVersion", json!(1));
-        values.insert("action", json!("auto_stop_quiescence_release_ack"));
+        values.insert("action", json!("quiescence_release_ack"));
         values.insert("challengeId", json!(challenge.challenge_id));
         values.insert("stopOperationId", json!(challenge.stop_operation_id));
         values.insert("nonce", json!(challenge.nonce));
@@ -452,7 +452,7 @@ fn is_utc_millisecond_timestamp(value: &str) -> bool {
 
 fn quiescence_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
-        operation: "manage kernel auto-stop quiescence",
+        operation: "manage kernel quiescence",
         message: message.into(),
     }
 }
@@ -499,7 +499,7 @@ mod tests {
             .expect("poll request should sign");
         assert_eq!(
             serde_json::to_string(&poll).expect("poll payload should serialize"),
-            r#"{"accountId":"account-1","action":"auto_stop_quiescence_poll","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","protocolVersion":1,"signature":"sha256:2d8160d958ced5fd810ab82baf032d91ff72fff9c1324a04d6acf4aac01b4005"}"#,
+            r#"{"accountId":"account-1","action":"quiescence_poll","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","protocolVersion":1,"signature":"sha256:23a98577c943c3e6210626d1250db778c4f8a7808fbb2c9ae67e6382ac558528"}"#,
         );
 
         let reserve = client
@@ -507,7 +507,7 @@ mod tests {
             .expect("reservation ack should sign");
         assert_eq!(
             serde_json::to_string(&reserve).expect("reservation payload should serialize"),
-            r#"{"accountId":"account-1","action":"auto_stop_quiescence_ack","challengeId":"challenge-1","decision":"fenced","desiredRevision":4,"environmentId":"environment-1","idleDeadlineAt":"2026-09-26T00:00:00.000Z","idleSequence":8,"kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","protocolVersion":1,"signature":"sha256:d1200d83260be01c766316b0f661ce7607969fafd409e540ffa68dd2c5253bd2","stopOperationId":"stop-operation-1"}"#,
+            r#"{"accountId":"account-1","action":"quiescence_ack","challengeId":"challenge-1","decision":"fenced","desiredRevision":4,"environmentId":"environment-1","idleDeadlineAt":"2026-09-26T00:00:00.000Z","idleSequence":8,"kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","protocolVersion":1,"signature":"sha256:267a750ee90d9440e71e46b0415050c986846d94062f37f724e5af360795acaf","stopOperationId":"stop-operation-1"}"#,
         );
     }
 
@@ -583,7 +583,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&release).expect("release payload should serialize"),
-            r#"{"accountId":"account-1","action":"auto_stop_quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"signature":"sha256:d2a9120425277132c10100e4c96ab3ee8172ae79ff82f8296ca6cae8c99502ec","stopOperationId":"stop-operation-1"}"#,
+            r#"{"accountId":"account-1","action":"quiescence_release_ack","challengeId":"challenge-1","environmentId":"environment-1","kernelId":"kernel-1","machineCredential":"mcred_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","machineId":"machine-1","nonce":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","outcome":"keep_running","protocolVersion":1,"resultSequence":1,"signature":"sha256:5304023c0c5bf7a29b822371f25a08648fce5b36184a47c57c1a2b4fab324140","stopOperationId":"stop-operation-1"}"#,
         );
         assert!(release["signature"]
             .as_str()

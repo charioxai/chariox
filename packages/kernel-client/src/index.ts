@@ -2,7 +2,6 @@ export * from "./ipc.js"
 export * from "./ipc-requests.js"
 export * from "./ipc-event-publication-requests.js"
 export * from "./ipc-prompt-settings-requests.js"
-export * from "./project-environment-setup-orchestration.js"
 export * from "./kernel-transport-requests.js"
 export * from "./shell-core.js"
 export * from "./shell-capability-format.js"
@@ -88,9 +87,6 @@ export type * from "./kernel-types.js"
 
 export { roomBrowserArtifactRequest, roomBrowserArtifactMinimumProtocolVersion, type RoomBrowserArtifactOperation } from "./ipc-room-environment-requests.js"
 
-export * from "./project-environment-aggregate.js"
-
-export * from "./project-environment-aggregate-requests.js"
 export * from "./notes.js"
 
 export * from "./user-domain-refusal.js"

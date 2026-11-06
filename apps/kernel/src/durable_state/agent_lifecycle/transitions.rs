@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
+    let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });
     match op {
         Operation::Outside(mutation) => super::outside::apply(tx, mutation),
         Operation::SetDeadline {
@@ -473,6 +474,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             task,
             prompt,
             reason,
+        }
+        | Operation::BlockForBrowserAccess {
+            task,
+            prompt,
+            reason,
         } => {
             let mut t = load(tx, &task)?;
             if t.prompt_id != prompt {
@@ -487,15 +493,26 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 return Err(error("blocked requires an owner action"));
             }
             let reason = crate::secret_redaction::redact_secrets(&reason).into_owned();
-            if t.state == ExecutionState::Blocked && t.reason == reason {
+            let owner_action = if browser_access {
+                Some(TaskOwnerAction::BrowserAccess)
+            } else if t.state == ExecutionState::Blocked {
+                t.owner_action.clone()
+            } else {
+                None
+            };
+            if t.state == ExecutionState::Blocked
+                && t.reason == reason
+                && t.owner_action == owner_action
+            {
                 return Ok(Outcome::Task(t));
             }
             super::goals::clock(&mut t, crate::session::unix_epoch_ms());
             // Refreshing the reason must keep the existing owner Resume/Cancel valid.
-            if t.state == ExecutionState::Working {
+            if t.state == ExecutionState::Working || t.owner_action != owner_action {
                 t.blocked_revision = t.revision + 1;
             }
             t.state = ExecutionState::Blocked;
+            t.owner_action = owner_action;
             t.reason = reason;
             t.revision += 1;
             if let Some(goal) = &t.goal {
@@ -684,6 +701,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::ProcessMatched { .. }
         | Operation::ProcessExited { .. }
         | Operation::CancelWake { .. }
+        | Operation::CancelOwnerTimer { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
     }

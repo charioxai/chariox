@@ -4,7 +4,6 @@ import { constants } from "node:fs"
 import { lstat, open, readFile, readdir, rename, symlink, unlink, writeFile } from "node:fs/promises"
 import { basename, dirname, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
-import { allocationWorkerBindingDigest } from "./allocation-worker-receipt.mjs"
 
 const MAX_RECEIPT_BYTES = 96 * 1024
 const REQUIRED_RECEIPT_KEYS = [
@@ -20,7 +19,6 @@ const REQUIRED_RECEIPT_KEYS = [
 // Mirrors the kernel's BootstrapReceipt. Release-bound freshness evidence and
 // provider rebuild fields stay unsupported: an upgrade would invalidate them.
 const OPTIONAL_RECEIPT_KEYS = ["contextPlan", "generation", "managedRepositoryRoot"]
-const RELEASE_OVERRIDE_KEYS = ["bindingDigest", "kind", "runtimeReleaseDigest", "schemaVersion"]
 const TRANSITION_POLICY_KEYS = ["protocol", "rollbackTo", "schemaVersion", "upgradeFrom"]
 const TRANSITION_POLICY_PATH = "usr/lib/chariox/slice-build-context/apps/kernel/managed-upgrade-protocol-transitions.json"
 
@@ -44,38 +42,11 @@ function exactKeys(value, expected) {
     && actual.every((key, index) => key === sortedExpected[index])
 }
 
-async function readOptionalReleaseOverride(path, bindingDigest) {
-  if (!path) return null
-  const metadata = await lstat(path).catch((error) => {
-    if (error.code === "ENOENT") return null
-    throw error
-  })
-  if (!metadata) return null
-  if (metadata.isSymbolicLink() || !metadata.isFile() || metadata.size > MAX_RECEIPT_BYTES) {
-    fail("disposable worker release override must be a bounded regular file")
-  }
-  let value
-  try {
-    value = JSON.parse(await readFile(path, "utf8"))
-  } catch {
-    fail("disposable worker release override is invalid JSON")
-  }
-  if (!exactKeys(value, RELEASE_OVERRIDE_KEYS)
-    || value.schemaVersion !== 1
-    || value.kind !== "disposable_worker_release"
-    || value.bindingDigest !== bindingDigest
-    || !validDigest(value.runtimeReleaseDigest)) {
-    fail("disposable worker release override is invalid")
-  }
-  return value
-}
-
-async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
+async function readReceipt(path, expectedDigest) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error) =>
     fail(`managed bootstrap receipt cannot be read: ${error.message}`),
   )
   let receipt
-  let receiptBytes
   try {
     const metadata = await handle.stat({ bigint: true })
     if (!metadata.isFile() || metadata.size > BigInt(MAX_RECEIPT_BYTES)) {
@@ -89,8 +60,7 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
       offset += bytesRead
     }
     if (offset > MAX_RECEIPT_BYTES) fail("managed bootstrap receipt must be a bounded regular file")
-    receiptBytes = bytes.subarray(0, offset)
-    receipt = JSON.parse(receiptBytes.toString("utf8"))
+    receipt = JSON.parse(bytes.subarray(0, offset).toString("utf8"))
   } catch {
     fail("managed bootstrap receipt is invalid JSON")
   } finally {
@@ -99,21 +69,9 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
     fail("managed bootstrap receipt is invalid")
   }
-  if (Object.hasOwn(receipt, "allocationId")) {
-    const bindingDigest = allocationWorkerBindingDigest(receipt)
-    const releaseOverride = await readOptionalReleaseOverride(releaseOverridePath, bindingDigest)
-    const effectiveDigest = releaseOverride?.runtimeReleaseDigest ?? receipt.runtimeReleaseDigest
-    if (expectedDigest && effectiveDigest !== expectedDigest) fail("allocation worker release does not pin the expected release")
-    return { kind: "allocation_worker", receipt, bytes: receiptBytes, releaseOverride, bindingDigest }
-  }
-  if (receipt.kind === "disposable_worker") {
-    fail("legacy disposable worker bootstrap is unsupported; reprovision through the allocation-worker service")
-  }
-  if (releaseOverridePath && await lstat(releaseOverridePath).then(() => true, (error) => {
-    if (error.code === "ENOENT") return false
-    throw error
-  })) {
-    fail("ordinary managed bootstrap receipt cannot use a disposable worker release override")
+  // The disposable worker was removed; its receipts are unsupported, never upgraded.
+  if (Object.hasOwn(receipt, "allocationId") || receipt.kind === "disposable_worker") {
+    fail("disposable worker receipts are unsupported; reprovision the machine as a managed kernel")
   }
   const keys = Object.keys(receipt)
   if (
@@ -143,7 +101,7 @@ async function readReceipt(path, expectedDigest, releaseOverridePath = null) {
   if (expectedDigest && receipt.runtimeReleaseDigest !== expectedDigest) {
     fail("managed bootstrap receipt does not pin the expected release")
   }
-  return { kind: "managed_environment", receipt, bytes: receiptBytes, releaseOverride: null }
+  return receipt
 }
 
 async function fsyncDirectory(path) {
@@ -257,17 +215,6 @@ async function atomicSidecar(source, destination, ownerTemplate) {
   await fsyncDirectory(dirname(destination))
 }
 
-async function removeStateFile(path) {
-  const metadata = await lstat(path).catch((error) => {
-    if (error.code === "ENOENT") return null
-    throw error
-  })
-  if (!metadata) return
-  if (metadata.isSymbolicLink() || !metadata.isFile()) fail("managed kernel state sidecar is invalid")
-  await unlink(path)
-  await fsyncDirectory(dirname(path))
-}
-
 async function readTransitionPolicy(releaseRoot, expectedProtocol) {
   const path = resolve(releaseRoot, TRANSITION_POLICY_PATH)
   const rootPrefix = `${resolve(releaseRoot)}/`
@@ -355,31 +302,15 @@ async function atomicSymlink(target, destination) {
 
 async function run(args) {
   const [operation, ...values] = args
-  if (operation === "supervisor-service" && values.length === 2) {
-    const state = await readReceipt(resolve(values[0]), null, resolve(values[1]))
-    process.stdout.write(state.kind === "allocation_worker"
-      ? "chariox-disposable-worker-bootstrap.service\n" : "chariox-managed-bootstrap.service\n")
-    return
-  }
-  if (operation === "prepare-receipt" && values.length === 6) {
-    const [source, expectedCurrent, target, destination, releaseOverridePath, targetOverridePath] =
+  if (operation === "prepare-receipt" && values.length === 4) {
+    const [source, expectedCurrent, target, destination] =
       values.map((value, index) => index === 1 || index === 2 ? value : resolve(value))
     if (!validDigest(expectedCurrent) || !validDigest(target) || expectedCurrent === target) {
       fail("managed release digest transition is invalid")
     }
-    const state = await readReceipt(source, expectedCurrent, releaseOverridePath)
-    if (state.kind === "managed_environment") {
-      state.receipt.runtimeReleaseDigest = target
-      await writeFile(destination, `${JSON.stringify(state.receipt, null, 2)}\n`, { flag: "wx", mode: 0o600 })
-    } else {
-      await writeFile(destination, state.bytes, { flag: "wx", mode: 0o600 })
-      await writeFile(targetOverridePath, `${JSON.stringify({
-        schemaVersion: 1,
-        kind: "disposable_worker_release",
-        bindingDigest: state.bindingDigest,
-        runtimeReleaseDigest: target,
-      }, null, 2)}\n`, { flag: "wx", mode: 0o600 })
-    }
+    const receipt = await readReceipt(source, expectedCurrent)
+    receipt.runtimeReleaseDigest = target
+    await writeFile(destination, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx", mode: 0o600 })
     return
   }
   // MP-07: a settled root unit may replay only its exact Cloud transaction.
@@ -405,21 +336,16 @@ async function run(args) {
     } finally { await handle.close() }
     return
   }
-  if (operation === "validate-receipt" && (values.length === 2 || values.length === 3)) {
+  if (operation === "validate-receipt" && values.length === 2) {
     if (!validDigest(values[1])) fail("expected managed release digest is invalid")
-    await readReceipt(resolve(values[0]), values[1], values[2] ? resolve(values[2]) : null)
+    await readReceipt(resolve(values[0]), values[1])
     return
   }
-  if (operation === "validate-receipt-match" && (values.length === 3 || values.length === 5)) {
+  if (operation === "validate-receipt-match" && values.length === 3) {
     if (!validDigest(values[2])) fail("expected managed release digest is invalid")
-    const actual = await readReceipt(
-      resolve(values[0]), values[2], values[3] ? resolve(values[3]) : null,
-    )
-    const expected = await readReceipt(
-      resolve(values[1]), values[2], values[4] ? resolve(values[4]) : null,
-    )
-    if (!isDeepStrictEqual(actual.receipt, expected.receipt)
-      || !isDeepStrictEqual(actual.releaseOverride, expected.releaseOverride)) {
+    const actual = await readReceipt(resolve(values[0]), values[2])
+    const expected = await readReceipt(resolve(values[1]), values[2])
+    if (!isDeepStrictEqual(actual, expected)) {
       fail("managed bootstrap receipt identity changed during upgrade")
     }
     return
@@ -434,10 +360,6 @@ async function run(args) {
   }
   if (operation === "atomic-sidecar" && values.length === 3) {
     await atomicSidecar(resolve(values[0]), resolve(values[1]), resolve(values[2]))
-    return
-  }
-  if (operation === "remove-state-file" && values.length === 1) {
-    await removeStateFile(resolve(values[0]))
     return
   }
   if (operation === "validate-protocol-transition" && values.length === 4) {

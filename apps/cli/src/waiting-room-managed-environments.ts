@@ -1,5 +1,5 @@
+import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-api.js"
 import type {
-  ManagedEnvironmentAutoStopPolicy,
   ManagedEnvironmentCatalog,
   ManagedEnvironmentContextPlanInput,
   ManagedEnvironmentContextSourceOption,
@@ -24,9 +24,6 @@ import {
   NEW_MANAGED_MACHINE_REF,
   managedEnvironmentIdFromMachineRef,
 } from "@chariox/kernel-client/waiting-room-runtime-placement"
-
-const customMinimumOptions = [0, 900, 1800, 3600, 10800, 21600] as const
-const customIdleOptions: readonly (number | null)[] = [0, 300, 900, 1800, 3600, null]
 
 export function waitingRoomManagedCatalogRemoteState(
   catalog: ManagedEnvironmentCatalog | undefined,
@@ -112,11 +109,7 @@ export function normalizeWaitingRoomManagedDraft(
       ? 0
       : modulo(state.managedProviderAccountIndex ?? 0, providerAccounts.length),
     managedGitCredentialSource: state.managedGitCredentialSource ?? "none",
-    managedAutoStopPreset: state.managedAutoStopPreset ?? "idle_15m",
-    managedCustomMinimumRuntimeSeconds: state.managedCustomMinimumRuntimeSeconds ?? 0,
-    managedCustomIdleDelaySeconds: state.managedCustomIdleDelaySeconds === undefined
-      ? 900
-      : state.managedCustomIdleDelaySeconds,
+    managedAutoStopPreset: state.managedAutoStopPreset ?? "agents_done",
     ...(computeClass ? { managedComputeClass: computeClass } : {}),
     ...(region ? { managedRegion: region } : {}),
     ...(selectedSource ? { managedContextSourceTargetId: selectedSource } : {}),
@@ -312,38 +305,11 @@ export function cycleManagedGitCredentials(state: WaitingRoomState): WaitingRoom
 export function cycleManagedAutoStopPreset(state: WaitingRoomState, delta: number): WaitingRoomState {
   const options: readonly NonNullable<WaitingRoomState["managedAutoStopPreset"]>[] = [
     "agents_done",
-    "idle_15m",
-    "idle_30m",
-    "minimum_3h",
+    "time_3h",
     "manual",
-    "custom",
   ]
-  const index = Math.max(0, options.indexOf(state.managedAutoStopPreset ?? "idle_15m"))
-  return { ...state, managedAutoStopPreset: options[modulo(index + delta, options.length)] ?? "idle_15m" }
-}
-
-export function cycleManagedCustomMinimum(state: WaitingRoomState, delta: number): WaitingRoomState {
-  const index = Math.max(0, customMinimumOptions.indexOf(
-    (state.managedCustomMinimumRuntimeSeconds ?? 0) as (typeof customMinimumOptions)[number],
-  ))
-  return {
-    ...state,
-    managedCustomMinimumRuntimeSeconds: customMinimumOptions[
-      modulo(index + delta, customMinimumOptions.length)
-    ] ?? 0,
-  }
-}
-
-export function cycleManagedCustomIdle(state: WaitingRoomState, delta: number): WaitingRoomState {
-  const current = state.managedCustomIdleDelaySeconds === undefined
-    ? 900
-    : state.managedCustomIdleDelaySeconds
-  const index = Math.max(0, customIdleOptions.indexOf(current))
-  const next = customIdleOptions[modulo(index + delta, customIdleOptions.length)]
-  return {
-    ...state,
-    managedCustomIdleDelaySeconds: next === undefined ? 0 : next,
-  }
+  const index = Math.max(0, options.indexOf(state.managedAutoStopPreset ?? "agents_done"))
+  return { ...state, managedAutoStopPreset: options[modulo(index + delta, options.length)] ?? "agents_done" }
 }
 
 export function managedKernelContextLabel(state: WaitingRoomState, remote: WaitingRoomRemoteState): string {
@@ -354,38 +320,18 @@ export function managedKernelContextLabel(state: WaitingRoomState, remote: Waiti
 }
 
 export function managedAutoStopLabel(state: WaitingRoomState): string {
-  switch (state.managedAutoStopPreset ?? "idle_15m") {
-    case "agents_done": return "when all agents finish"
-    case "idle_15m": return "15 min after agents finish"
-    case "idle_30m": return "30 min after agents finish"
-    case "minimum_3h": return "after 3 h, when agents finish"
+  switch (state.managedAutoStopPreset ?? "agents_done") {
+    case "agents_done": return "30 s after last work finishes"
+    case "time_3h": return "stop after 3 h, including active work"
     case "manual": return "manual"
-    case "custom": return "custom"
   }
 }
 
-export function managedDurationLabel(seconds: number | null | undefined): string {
-  if (seconds === undefined) return "Unavailable"
-  if (seconds === null) return "never"
-  if (seconds === 0) return "immediately"
-  if (seconds % 3600 === 0) return `${seconds / 3600} h`
-  if (seconds % 60 === 0) return `${seconds / 60} min`
-  return `${seconds} s`
-}
-
-export function managedEnvironmentAutoStopPolicy(state: WaitingRoomState): ManagedEnvironmentAutoStopPolicy {
-  switch (state.managedAutoStopPreset ?? "idle_15m") {
-    case "agents_done": return { minimumRuntimeSeconds: 0, idleDelaySeconds: 0 }
-    case "idle_15m": return { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 }
-    case "idle_30m": return { minimumRuntimeSeconds: 0, idleDelaySeconds: 1800 }
-    case "minimum_3h": return { minimumRuntimeSeconds: 10800, idleDelaySeconds: 0 }
-    case "manual": return { minimumRuntimeSeconds: 0, idleDelaySeconds: null }
-    case "custom": return {
-      minimumRuntimeSeconds: state.managedCustomMinimumRuntimeSeconds ?? 0,
-      idleDelaySeconds: state.managedCustomIdleDelaySeconds === undefined
-        ? 900
-        : state.managedCustomIdleDelaySeconds,
-    }
+export function managedEnvironmentShutdownPolicy(state: WaitingRoomState): ManagedEnvironmentShutdownPolicy {
+  switch (state.managedAutoStopPreset ?? "agents_done") {
+    case "agents_done": return { kind: "last_work_finished", warningSeconds: 30 }
+    case "time_3h": return { kind: "time_limit", durationSeconds: 10800 }
+    case "manual": return { kind: "manual" }
   }
 }
 

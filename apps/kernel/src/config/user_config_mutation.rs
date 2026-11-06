@@ -121,6 +121,12 @@ impl CharioxUserConfig {
                 self.relay.accept_remote_leases =
                     Some(parse_config_bool("relay.accept_remote_leases", &value)?)
             }
+            "agents.ask_before_acquiring_machines" => {
+                self.agents.ask_before_acquiring_machines = Some(parse_config_bool(
+                    "agents.ask_before_acquiring_machines",
+                    &value,
+                )?)
+            }
             "history.operational.backend" => {
                 self.history.operational.backend =
                     HistoryOperationalBackend::parse("history.operational.backend", &value)?
@@ -548,6 +554,9 @@ impl CharioxUserConfig {
             "relay.url" => self.relay.url = None,
             "secret_link.page_url" => self.secret_link.page_url = None,
             "relay.accept_remote_leases" => self.relay.accept_remote_leases = None,
+            "agents.ask_before_acquiring_machines" => {
+                self.agents.ask_before_acquiring_machines = None
+            }
             "history.operational.backend" => {
                 return Err(DaemonError::InvalidConfig {
                     field: "history.operational.backend",

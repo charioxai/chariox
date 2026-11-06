@@ -19,6 +19,20 @@ pub enum AgentTriggerRepeat {
     Every,
 }
 
+/// What a notification trigger listens to: one exit of a workflow, or one
+/// outgoing event of an installed App.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum AgentTriggerNotificationSource {
+    Workflow {
+        source_id: String,
+    },
+    App {
+        installation_id: String,
+        event_name: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentTriggerSource {
@@ -30,6 +44,14 @@ pub enum AgentTriggerSource {
         interval_seconds: u64,
         repeat: AgentTriggerRepeat,
         next_run_at_ms: u64,
+    },
+    /// Every occurrence of the source is queued as a prompt of the agent.
+    Notification {
+        source: AgentTriggerNotificationSource,
+        /// The subscription that carries the occurrences to this trigger.
+        subscription_id: String,
+        /// The source as the picker named it when the trigger was created.
+        display_name: String,
     },
 }
 
@@ -219,11 +241,53 @@ impl AgentTrigger {
         }
     }
 
-    pub(crate) fn claim_http_dispatch(&mut self) -> bool {
-        if !matches!(self.source, AgentTriggerSource::Http { .. })
-            || !self.enabled
-            || self.dispatch_in_flight
-        {
+    /// A notification trigger always queues: its busy policy is fixed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Every field of a new notification trigger is required and distinct."
+    )]
+    pub(crate) fn notification(
+        id: String,
+        agent_id: &str,
+        owner: &str,
+        source: AgentTriggerNotificationSource,
+        subscription_id: String,
+        display_name: String,
+        prompt: String,
+        now_ms: u64,
+    ) -> Self {
+        Self {
+            id,
+            agent_id: agent_id.into(),
+            created_by_user_id: Some(owner.into()),
+            source: AgentTriggerSource::Notification {
+                source,
+                subscription_id,
+                display_name,
+            },
+            busy_policy: AgentTriggerBusyPolicy::Queue,
+            prompt,
+            enabled: true,
+            created_at_ms: now_ms,
+            fired: 0,
+            coalesced: 0,
+            last_fired_at_ms: None,
+            last_outcome: None,
+            last_error: None,
+            dispatch_in_flight: false,
+            dispatch_generation: 0,
+        }
+    }
+
+    /// An outside input (HTTP request or notification) claims the trigger for one firing.
+    pub(crate) fn claim_input_dispatch(&mut self, kind: TriggerInputKind) -> bool {
+        let matches_kind = match kind {
+            TriggerInputKind::Http => matches!(self.source, AgentTriggerSource::Http { .. }),
+            TriggerInputKind::Notification => {
+                matches!(self.source, AgentTriggerSource::Notification { .. })
+            }
+        };
+        if !matches_kind || !self.enabled || self.dispatch_in_flight {
             return false;
         }
         self.dispatch_in_flight = true;
@@ -292,7 +356,7 @@ impl AgentTrigger {
     pub fn next_run_at_ms(&self) -> u64 {
         match &self.source {
             AgentTriggerSource::Schedule { next_run_at_ms, .. } => *next_run_at_ms,
-            AgentTriggerSource::Http { .. } => u64::MAX,
+            AgentTriggerSource::Http { .. } | AgentTriggerSource::Notification { .. } => u64::MAX,
         }
     }
 
@@ -420,9 +484,26 @@ impl AgentTriggers {
     }
 }
 
+/// Where an outside input to a trigger comes from; it names the quoted block in the prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerInputKind {
+    Http,
+    Notification,
+}
+
+impl TriggerInputKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Notification => "notification",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentTriggerDispatch {
     pub(crate) payload: Option<serde_json::Value>,
+    pub(crate) input_kind: TriggerInputKind,
     pub(crate) claim_generation: u64,
     pub session_id: String,
     pub trigger_id: String,

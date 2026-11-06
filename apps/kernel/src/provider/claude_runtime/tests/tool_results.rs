@@ -4,12 +4,21 @@ use crate::provider::claude_runtime::{drain_claude_events, process::ClaudeRuntim
 use std::time::{Duration, Instant};
 
 fn drain(messages: Vec<serde_json::Value>) -> ProviderPromptSignalBatch {
+    drain_in_mode(messages, AgentExecutionMode::Build)
+}
+
+fn drain_in_mode(
+    messages: Vec<serde_json::Value>,
+    mode: AgentExecutionMode,
+) -> ProviderPromptSignalBatch {
     let (mut state, _) = parser_state();
+    state.active_execution_mode = mode;
     let (sender, receiver) = std::sync::mpsc::channel();
     state.output.receiver = receiver;
     let run = RuntimeProviderRun::new(
         "run-1",
-        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet"),
+        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+            .with_execution_mode(mode),
         ProviderLaunchResult {
             endpoint_mode: AgentEndpointMode::Managed,
             process_label: "test-claude".to_string(),
@@ -26,6 +35,64 @@ fn drain(messages: Vec<serde_json::Value>) -> ProviderPromptSignalBatch {
         sender.send(ClaudeRuntimeMessage::Stdout(message)).unwrap();
     }
     drain_claude_events(&run, &mut state).expect("provider stream should drain")
+}
+
+#[test]
+fn rejected_plan_callback_preserves_output_drained_before_the_turn_ended() {
+    let (mut state, _) = parser_state();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    state.output.receiver = receiver;
+    state.active_execution_mode = AgentExecutionMode::Plan;
+    let run = RuntimeProviderRun::new(
+        "run-1",
+        &LaunchProviderRequest::new("session-1", "claude", "claude", "default", "sonnet")
+            .with_execution_mode(AgentExecutionMode::Plan),
+        ProviderLaunchResult {
+            endpoint_mode: AgentEndpointMode::Managed,
+            process_label: "test-claude".into(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-claude-runtime".into()),
+        },
+    );
+    sender
+        .send(ClaudeRuntimeMessage::Stdout(
+            json!({"type":"assistant","message":{"content":[
+                {"type":"text","text":"This turn finished without that plan call."}
+            ]}}),
+        ))
+        .unwrap();
+    sender
+        .send(ClaudeRuntimeMessage::Stdout(
+            json!({"type":"result","subtype":"success","result":""}),
+        ))
+        .unwrap();
+    let (batch, result) = crate::provider::claude_runtime::publish_claude_plan(
+        &run,
+        &mut state,
+        Some("ended-plan"),
+        "Late proposal",
+    );
+    assert!(
+        result.is_err(),
+        "the absent native call must not publish a proposal"
+    );
+    assert!(
+        batch.prompt_completed,
+        "the actual provider completion must survive"
+    );
+    assert!(
+        batch.terminal_failure.is_none(),
+        "a stale callback must not fail the provider turn"
+    );
+    assert!(batch
+        .chunks
+        .iter()
+        .any(|chunk| chunk.bytes == b"This turn finished without that plan call."));
 }
 
 #[test]

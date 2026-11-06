@@ -188,6 +188,7 @@ pub(super) async fn handle_prepared_daemon_request(
                 crate::runtime::kernel_gateway::origins::Named {
                     kernel: c.origin_kernel.as_str(),
                     name: c.origin_name.as_deref(),
+                    harness: c.harness.as_str(),
                 }
             });
             match router
@@ -870,8 +871,11 @@ async fn dispatch_on_behalf_of(
     gateway_public_key: &str,
 ) -> RelayDispatchOutcome {
     use crate::runtime::kernel_gateway::ledger::{is_repeatable, Failure, Settled};
-    // The paired gateway carries an external agent's request; it is not a person's terminal.
-    caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    // A decision answered through the paired gateway is the external agent's, not a person's.
+    // Everything else keeps the paired gateway's terminal class, so its attachments can run shells.
+    if matches!(request, LocalDaemonRequest::RespondToInteraction(_)) {
+        caller.connection_class = Some(crate::local::KernelConnectionClass::ExternalAgent);
+    }
     if let Err(error) = router
         .runtime_state()
         .authorize_on_behalf_of_request(on_behalf_of, &request)
@@ -962,6 +966,11 @@ async fn dispatch_on_behalf_of(
         .run(&key, fingerprint, async {
             let outcome = if matches!(request, LocalDaemonRequest::RequestKernelSudo(_)) {
                 remote_sudo_outcome(router, &command, on_behalf_of, &request).await
+            } else if matches!(&request, LocalDaemonRequest::RoomTerminal(terminal) if matches!(terminal.operation, crate::local::RoomTerminalOperation::ExecOpen { .. })) {
+                match router.dispatch_gateway_exec(command.clone(), request, on_behalf_of, gateway_public_key).await {
+                    Ok(response) => RelayDispatchOutcome::Response(serde_json::to_value(response).expect("typed exec response serializes")),
+                    Err(error) => RelayDispatchOutcome::RelayError(map_relay_error(&error)),
+                }
             } else {
                 dispatch_relay_client_request(
                     router,

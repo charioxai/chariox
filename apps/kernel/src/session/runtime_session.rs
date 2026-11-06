@@ -188,7 +188,13 @@ impl RuntimeSession {
         &mut self,
         tasks: Vec<crate::durable_state::agent_lifecycle::AgentTaskExecution>,
     ) {
-        self.agent_tasks = tasks;
+        self.agent_tasks = tasks
+            .into_iter()
+            .map(|mut task| {
+                task.reason = crate::terminal::public_task_failure_reason(&task.reason);
+                task
+            })
+            .collect();
     }
     pub(crate) fn set_sudo_windows(&mut self, windows: Vec<crate::local::KernelSudoTurn>) {
         self.sudo_windows = windows;
@@ -335,11 +341,6 @@ impl RuntimeSession {
         }
         self.project_id = project_id.into();
         true
-    }
-
-    pub(crate) fn clear_project_id_for_hidden_restore(&mut self) {
-        debug_assert!(self.hidden);
-        self.project_id.clear();
     }
 
     pub(crate) fn migrate_default_project_scope(
@@ -777,6 +778,10 @@ impl RuntimeSession {
         self.prompt_runtime.has_any_prompt_work()
     }
 
+    pub fn agents_with_prompt_work(&self) -> impl Iterator<Item = &str> {
+        self.prompt_runtime.agents_with_prompt_work()
+    }
+
     pub fn scheduler_state(&self) -> SchedulerState {
         self.prompt_runtime.scheduler_state()
     }
@@ -1028,6 +1033,20 @@ impl RuntimeSession {
         self.active_interactions.push(interaction);
         self.active_interactions
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
+    }
+
+    pub(crate) fn update_active_interaction_view(
+        &mut self,
+        id: &str,
+        view: super::RuntimeInteractionView,
+    ) {
+        if let Some(interaction) = self
+            .active_interactions
+            .iter_mut()
+            .find(|interaction| interaction.id() == id)
+        {
+            *interaction = interaction.clone().with_view(view);
+        }
     }
 
     pub fn remove_active_interaction(

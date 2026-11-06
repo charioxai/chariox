@@ -7,7 +7,6 @@ pub(crate) use internal_prompts::{
 };
 mod metaagent_task;
 mod owner;
-mod project_environment;
 mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
@@ -47,13 +46,6 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
-pub(crate) use project_environment::KERNEL_COMPUTED_INPUT_ATTESTATION;
-pub use project_environment::{
-    ProjectEnvironmentDefinition, ProjectEnvironmentDefinitionOrigin,
-    ProjectEnvironmentDefinitionSource, ProjectEnvironmentInput, ProjectEnvironmentInputKind,
-    ProjectEnvironmentPathBase, ProjectEnvironmentPathEntry, ProjectEnvironmentSetupStep,
-    ProjectEnvironmentSetupStepKind, PROJECT_ENVIRONMENT_DEFINITION_SCHEMA_VERSION,
-};
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, AppPanelLayout, AppPanelPlacement,
@@ -89,35 +81,37 @@ pub use types::{
     HandoffChangeOp, HandoffKind, HandoffReason, HandoffTarget, MetaagentTask, MetaagentTaskStatus,
     PromptAttachment, PromptCancellation, PromptCompletion, PromptDetachEffect, PromptOrigin,
     PromptQueueItem, PromptStatus, PromptSubmissionOutcome, QueuedMetaagentTask, RuntimeHandoff,
-    RuntimeInteraction, RuntimeInteractionChoice, RuntimeInteractionChoiceStyle,
-    RuntimeInteractionCustomChoice, RuntimeInteractionInputKind, RuntimeInteractionKind,
-    RuntimeInteractionLevel, RuntimeInteractionSubject, RuntimeProviderLogin, RuntimeSession,
-    RuntimeWorktreeAssignment, SchedulerState, SessionAgentDefaults,
-    SessionCollaborationAgentCounts, SessionConfigState, SessionExecutionMode, SessionInvite,
-    SessionMember, SessionStatus, WorkflowArtifactRef, WorkflowCanvasLayout,
-    WorkflowCanvasLayoutPatch, WorkflowCanvasPoint, WorkflowCodeSourceBinding,
-    WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
-    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEdgeEndpointSide,
-    WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy,
-    WorkflowFailurePolicyMode, WorkflowHandoffPayload, WorkflowIntermediateOutput, WorkflowMessage,
-    WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace,
-    WorkflowOrigin, WorkflowOriginReason, WorkflowOriginSurface, WorkflowOutputPayload,
-    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
-    WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
-    WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
-    WorkflowRuntimeToolCallEvent, WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy,
-    WorkflowScheduleTrigger, WorkflowSchemaDefinition, WorkflowTurnEnvelope,
-    WorkflowTurnOutputSubmissions, WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind,
-    WorkflowWatchdogDefinition, WorkflowWatchdogPolicy, WorkspaceLinkAttachment,
-    WorkspaceLinkDefinition, WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID,
-    DEFAULT_SESSION_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_AGENTS,
-    DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT, DEFAULT_WORKFLOW_CODE_MAX_EDGES,
-    DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS, DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES,
-    DEFAULT_WORKFLOW_CODE_MAX_NODES, DEFAULT_WORKFLOW_CODE_MAX_QUEUES,
-    DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES, DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS,
-    DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES, DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS,
-    DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT, DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS,
-    DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
+    RuntimeInteraction, RuntimeInteractionBrowserRect, RuntimeInteractionBrowserRegion,
+    RuntimeInteractionBrowserVerification, RuntimeInteractionBrowserVerificationOutcome,
+    RuntimeInteractionBrowserVerificationResult, RuntimeInteractionChoice,
+    RuntimeInteractionChoiceStyle, RuntimeInteractionCustomChoice, RuntimeInteractionInputKind,
+    RuntimeInteractionKind, RuntimeInteractionLevel, RuntimeInteractionSubject,
+    RuntimeInteractionView, RuntimeProviderLogin, RuntimeSession, RuntimeWorktreeAssignment,
+    SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
+    SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
+    WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
+    WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOrigin, WorkflowOriginReason,
+    WorkflowOriginSurface, WorkflowOutputPayload, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt,
+    WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun,
+    WorkflowRunOutputSubmission, WorkflowRunStatus, WorkflowRuntimeToolCallEvent,
+    WorkflowScheduleDefinition, WorkflowScheduleOverlapPolicy, WorkflowScheduleTrigger,
+    WorkflowSchemaDefinition, WorkflowTurnEnvelope, WorkflowTurnOutputSubmissions,
+    WorkflowTurnRuntimeState, WorkflowTurnSubmissionKind, WorkflowWatchdogDefinition,
+    WorkflowWatchdogPolicy, WorkspaceLinkAttachment, WorkspaceLinkDefinition,
+    WorktreeIsolationMode, DEFAULT_LOCAL_USER_ID, DEFAULT_SESSION_MAX_AGENTS,
+    DEFAULT_WORKFLOW_CODE_MAX_AGENTS, DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT,
+    DEFAULT_WORKFLOW_CODE_MAX_EDGES, DEFAULT_WORKFLOW_CODE_MAX_ENDPOINTS,
+    DEFAULT_WORKFLOW_CODE_MAX_GENERATED_PROMPT_BYTES, DEFAULT_WORKFLOW_CODE_MAX_NODES,
+    DEFAULT_WORKFLOW_CODE_MAX_QUEUES, DEFAULT_WORKFLOW_CODE_MAX_SCHEMA_BYTES,
+    DEFAULT_WORKFLOW_CODE_MAX_WATCHDOGS, DEFAULT_WORKFLOW_CODE_SCRIPT_MEMORY_BYTES,
+    DEFAULT_WORKFLOW_CODE_SCRIPT_TIMEOUT_MS, DEFAULT_WORKFLOW_RUN_MAX_TURNS_SAFETY_LIMIT,
+    DEFAULT_WORKFLOW_SCHEDULE_MAX_RUNS, DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{
@@ -146,8 +140,9 @@ pub(crate) fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 pub use agent_triggers::{
-    AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerOutcome,
-    AgentTriggerRepeat, AgentTriggerSource, TriggerDelivery, TriggerDeliveryState,
+    AgentTrigger, AgentTriggerBusyPolicy, AgentTriggerDispatch, AgentTriggerNotificationSource,
+    AgentTriggerOutcome, AgentTriggerRepeat, AgentTriggerSource, TriggerDelivery,
+    TriggerDeliveryState, TriggerInputKind,
 };
 
 pub(crate) use service::{PreparedWorkflowQueueRun, WorkflowQueueRun};

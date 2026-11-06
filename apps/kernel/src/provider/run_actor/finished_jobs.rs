@@ -52,7 +52,15 @@ pub(crate) struct FinishedProviderRunSelectionSyncJob {
     pub(crate) result: Result<OpenCodeRunSelection, DaemonError>,
 }
 
+// Every finished batch settles through exactly one registered prompt identity.
+// Proposals, including their retries, never consume an ordinary poll's identity.
+pub(crate) enum ProviderOutputPromptIdentity {
+    InFlightPoll,
+    Captured(String),
+}
+
 pub(crate) struct FinishedProviderOutputPollJob {
+    pub(crate) prompt_identity: ProviderOutputPromptIdentity,
     pub(crate) provider_run_id: String,
     pub(crate) result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
     pub(crate) settlement_retry_attempt: u32,

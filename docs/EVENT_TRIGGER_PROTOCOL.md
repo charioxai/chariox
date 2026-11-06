@@ -1,14 +1,15 @@
 # Event trigger protocol
 
-Status: implementation contract; local daemon protocol 452 (MP-08 / MP-10).
+Status: implementation contract; local daemon protocol 998 / relay peer 437 (MP-08 / MP-10).
 
 ## Boundaries
 
 An enabled `event_based` workflow publication accepts two source kinds: App
-outgoing events through App automations, and the owning user's workflow completion
+outgoing events through App automations, and the owning user's workflow exit
 notifications. Both use source-neutral kernel target admission and ordinary workflow
 queues. App signing, event schema and capability checks remain in the App adapter.
-Agents never own subscriptions or emit workflow notifications.
+An agent subscribes only itself (an agent trigger of kind `notification`); no agent
+emits workflow notifications or subscribes another agent.
 
 Protocol 365 retired direct AEGS-to-workflow bindings and their create/list/status/
 transfer/test requests, exported binding templates, `event_context`, `event_action`
@@ -93,172 +94,128 @@ App adapter has narrower 64 KiB payload/prompt ceilings; it does not silently
 truncate. Artifact references are metadata and confer no file, URL or credential
 access.
 
-## Private workflow notifications (local 452 / peer 82, main: local 491 / peer 101; MP-08 / MP-10 / MP-11)
+## Private workflow notifications (local 998 / peer 437; MP-08 / MP-10 / MP-11)
 
-MP-11 F8 is closed by the existing lease-scoped authorization: leased-resource
-requests must match the authenticated `LeaseCallerBinding`, and a mismatch
-returns typed `unauthorized`. Remote lease workers reject kernel-wide
-List/Subscribe/Unsubscribe/Deliver notification requests, including requests
-from authenticated same-owner hosted peers, because these requests have no
-agent or lease selector. A future notification selector requires a separately
-allocated protocol change; this decision changes no protocol shape or version.
+A subscription has no options. Nothing about it is configurable except its source
+and its target: there are no events, filters, output fields, queue names, delivery
+modes or retention fields on any request, and every former option field is refused as
+unknown. Retention is one kernel constant, 7 days (`NOTIFICATION_RETENTION_MS`),
+applied to undelivered workflow and App occurrences alike through the existing deadline
+check.
 
-Workflows are a second source kind beside Apps. `RegisterWorkflowNotificationSource
-{session_id, workflow_ref, enabled, output_fields?}` controls **Send notifications
-when runs finish**. The session owner owns the source. Its ID survives switches;
-registration has no historical replay. After transfer, registration creates a new
-owner-scoped ID. Completion selects only the current owner's enabled source.
-Successful `Completed` runs with valid final output emit that output. `Failed` runs
-emit status and recorded provenance, without final output, failure detail or output
-fields. Intermediate outputs and cancelled runs do not emit. There is no emit tool.
-Completion and source receipts commit in the normal workflow transaction.
+**Sources.** Each *exit* of a workflow is its own source.
+`RegisterWorkflowNotificationSource {session_id, workflow_ref, exit_node_id, enabled}`
+(`exit_node_id` is an exit node id or the Exit inspector's `exit-N`) is the exit's
+"Generate a notification when the workflow finishes" switch. The source id is stable
+per exit. A run emits only when it finishes through an exit whose switch is on, carrying
+that exit's final output; a run that fails before reaching an exit, a cancelled run and
+intermediate outputs emit nothing. There is no emit tool. Completion and source receipts
+commit in the normal workflow transaction.
 
-`AttachWorkflowNotification {session_id, source_id, publication_ref, queue_ref?,
-ttl_days?, events?, filters?, delivery_mode?}` is same-user only. Target session, publication and
-endpoint must belong to the owner; the publication is enabled and `event_based`.
-Events are `success` (default), `failure`, or `both`. TTL defaults to seven days and
-must be 1–30 days. Reattach reuses the binding; TTL changes affect new occurrences.
-Attach rejects cycles visible in the local graph. `DetachWorkflowNotification
-{session_id, subscription_id}` disables local admission and sends a peer unsubscribe
-when remote. If the peer is offline, its outstanding sends get refused by the target
-and expire; no additional unsubscribe scheduler is introduced.
+**Naming.** The workflow is the proxy: `display_name` is its alias (or id). When more
+than one exit of the same workflow has the switch on, the exits are named
+`<name>-<ordinal>`, the ordinal being the exit's position among the workflow's exits (the
+Exit inspector's `exit-N`). Source summaries carry `exit_node_id`, `exit_ordinal`,
+`name` and `display_name`; names are derived from the workflow's current definition.
 
-The envelope carries `source_id`, `occurrence_id` (run ID), `status`, optional final
-`output`, optional opaque `subject`, opaque `fields`, kernel-derived `ancestry`
-and immutable `deadline_ms`. The kernel copies the triggering App/generator metadata
-exactly from recorded invocation provenance, including nested values. Subject is
-passed through only when supplied as a string by that generator; the kernel never
-constructs or parses it. Up to eight declared output fields (names at most 64 ASCII
-letters/digits/underscores) are projected from the structured final-output message.
-Output values are small scalars, with strings at most 512 bytes. Existing trigger
-fields cannot be overwritten by agent output. Failure carries recorded provenance
-and bare status, without output fields, errors, trace or node details. Omitted/null
-`output_fields` preserves the declaration on a switch. All domain semantics belong
-to generators/Apps; fixture-specific field names are not kernel policy.
+**Subscribers.** A workflow entry point or an agent.
+`AttachWorkflowNotification {session_id, source_id, publication_ref}` subscribes an
+enabled `event_based` publication of the owner; an occurrence always queues a run on the
+publication's own queue. Attach refuses an exit of workflow W for an entry point of W
+(local or remote) with `workflow notification cycle`; longer cycles are stopped at delivery
+by ancestry. `DetachWorkflowNotification {session_id, subscription_id}` disables local
+admission and sends a peer unsubscribe when remote.
 
-Filters use the shared AEGS/SDK semantics: AND across dotted fields, scalar equality,
-metadata-array membership and expected any-of arrays. The source evaluates filters
-before persisting a delivery; the target checks the current binding again before
-acceptance. Source metadata lists declared output fields and generic subject/status fields.
-Opaque trigger metadata may be filtered by arbitrary dotted paths; the picker must
-allow entering a field path instead of treating its suggestions as an allowlist. Attach configuration
-never accepts caller-supplied owner, output, subject or ancestry.
+An agent subscribes itself with `CreateAgentTrigger` whose source is
+`{kind:"notification", source:{workflow:{source_id}}}` (an App event is
+`{app:{installation_id,event_name}}`, see Apps below). The request carries no
+`busy_policy` (a value is refused) and `UpdateAgentTrigger` refuses one: a notification is
+always queued as a prompt of the agent, and the agent's pane shows it as an ordinary
+queued prompt it can send now or cancel. The prompt is the trigger's own text followed by the
+quoted occurrence in `<chariox-trigger-input kind="notification">` (output and
+`display_name`, `<` and `>` escaped), under the `runtime/notification` template. The
+subscription is the same `app_automations` row a workflow subscriber has, with
+`target_kind: agent`, `agent_id` and `trigger_id`; its receipt stays `accepted` until the
+prompt is queued, then becomes `queued` with the prompt id. An agent target has no workflow
+queue; its row carries the constant queue id `agent`.
 
-An ancestry entry is `[kernel_id, session_id, workflow_id]` encoded as a JSON tuple.
-The kernel links ancestry to the durable queue receipt and records it in the run's
-kernel-created invocation context. It survives payload expiry. Admission drops a
-notification whose target is already in its ancestry, with
-`workflow_notification_loop_dropped`; completion also fences repeat identities.
-A 256-entry bound drops with its own diagnostic. These rules apply across kernels
-and arbitrary local graph changes, including A→B→A and A→B→C→A.
+**Lifecycle.** A subscription lasts as long as its agent trigger. Deleting the trigger
+detaches at once (local disable plus peer unsubscribe). An agent archived, removed, a room
+ended, or a collaborator who left are caught by the pump's reconcile step each pass:
+a subscription whose agent or trigger is gone is detached, the source's next delivery is
+refused at the target, and nothing is queued.
 
-The named notification router uses direct delivery locally and the existing E2EE
-relay peer channel remotely. Peer 82 adds `ListWorkflowNotificationSources`,
-`SubscribeWorkflowNotifications {source_workflow_ref, target_ref}`,
-`UnsubscribeWorkflowNotifications` and `DeliverWorkflowNotification`. Each request
-carries `protocol_version:82`; incompatible peers fail before activation. Remote
-requests require an unexpired sender-key-bound kernel or machine identity, matching
-realm and owner. The relay authenticates the registered sender kernel; Kernel claims
-also require an exact canonical sender subject. Existing home-kernel peer requests
-project to Machine identity, as execution leases already do. Shared-token/unbound peers do not authorize private streams.
-The subscriber kernel owns target admission; the source records its authenticated
-remote subscription locally. Relay remains ciphertext transport.
+**Guests.** A room member and a member's agent list and subscribe to this room's
+workflow sources only (and, with Apps, this room's installations' events): nothing of
+the owner's other rooms or kernels, no remote sources, no cached kernel inventory.
 
-Bindings use `app_automations.source_kind=workflow_completion`; source pending and
-target accepted/queued receipts use `app_outbox`, beside `app_event`. App-specific
-signature, catalog, schema and capability checks remain in the App adapter. The
-existing App pump and atomic queue handoff serve both kinds; no new scheduler,
-provider execution path, Cloud directory, AEGS registration or AEDS call is added.
-Round-1 delivery tables migrate transactionally into these shared tables, preserving
-pending deadlines and queue links, and are removed. Legacy subscribers select success.
+**Room tool.** `chariox.room.run_command` admits `trigger notification <source> [prompt]`
+and `trigger remove <trigger-id>` for the calling agent only; the request carries the
+caller's agent id and no agent argument (naming another agent is refused). `<source>` is a
+display name, `<kernel>/<name>`, a source id, or `app:<installation>/<event>`; the longest
+run of leading words that names exactly one source wins.
 
-Persist-before-send and retry continue until ACK or expiry. ACKs are `accepted`,
-`duplicate`, `expired`, `filtered` or `loop_dropped`; ACK never means run completion.
-Terminal ACKs settle source retryable receipts on both local and peer routes,
-including when an edited binding filters out an already-captured occurrence.
-The target retains accepted work while busy, paused or full. Deduplication prevents
-repeated queue insertion; conflicting occurrence content is refused. An uncertain
-writer commit fences further transitions until restart. Ordinary dispatch checks
-notification deadlines and visibly cancels expired queued work.
+**Envelope.** `{source_id, display_name, occurrence_id, output, ancestry, deadline_ms}`.
+`deadline_ms` is the emit time plus the retention constant. There is no status, subject or
+fields: a notification says that the exit finished and what it produced.
 
-Every App automation and workflow-notification binding has `delivery_mode:queue|inject`
-(default `queue`). Both adapters admit to the same durable receipt and workflow queue.
-`inject` selects the endpoint entry agent only when its workflow has exactly one
-active run and that endpoint's entry turn is active. It persists the exact run/turn
-before using ordinary provider steering. The item stays durably accepted until
-provider acceptance. Structured-provider mailbox enqueue is not acceptance: both
-finished-submit reapers correlate the actual result with the durable injection.
-Codex hidden-context failures before steering and explicit negative RPC replies
-permit queue fallback. Write, read, malformed-reply and disconnect errors do not
-prove non-acceptance: the exact local provider run, target prompt/turn, agent and
-submit epoch remain durably held. Every local path, including native Claude,
-Claude-headless and plain PTY writers, persists this same send intent before I/O.
-A lost native hook acknowledgement or durable settlement cannot authorize another
-write or a new workflow invocation. A restart also holds an unsettled local submit
-intent, even if the original turn ended. Local providers have no authoritative
-steer-receipt reconciliation API, so unknown outcomes expire without replay or
-queue fallback; this can delay or expire an input that never reached the provider.
-A buffered output error cannot acknowledge an injected notification. Remote send
-intent pins the worker, machine, execution lease, turn and provider run before I/O. An uncertain remote outcome must reconcile
-through `ReconcileLeasedPromptSteerReceipt` before replay or fallback, even when the
-original turn has ended. Dispatching/unavailable/conflicting receipts remain held
-until an exact accepted/rejected receipt or expiry. Idle/ended turns with no
-uncertain send fall back to an ordinary queued run. Several active workflow runs fall back with
-`notification_inject_multiple_runs_queued`. An ended turn during dispatch falls back
-with `notification_inject_turn_ended_queued`. Provider errors retain the pending
-item rather than assert acceptance. Incoming ancestry is linked to the target run
-before steering, so that run's completion keeps the no-loop fence. No agent owns
-any subscription. Run-scoped subscription creation remains design only below.
+**Ancestry and loops.** An ancestry entry is `[kernel_id, session_id, workflow_id]` encoded
+as a JSON tuple, or `agent:<agent_id>` for an agent target. The kernel records ancestry in
+the durable receipt and the run's kernel-created invocation context. Admission drops a
+notification whose target is already in its ancestry with `workflow_notification_loop_dropped`
+(A→B→A, A→B→C→A); a 256-entry bound drops with its own diagnostic. Every other occurrence is
+delivered: there is no coalescing.
 
-New payloads and prompts use the reused App path's **64 KiB** ceilings (not the AEDS
-1 MiB transport ceiling). Final output reserves 8 KiB for envelope fields. Source
-persistence and target acceptance both reserve the rendered prompt's 51-byte header:
-the entire encoded envelope is limited to 65,485 bytes, so its prompt fits 65,536 bytes.
-Refusal leaves no delivery receipt; completion retains a visible
-`workflow_notification_prompt_limit` diagnostic. At most 32 artifacts remain metadata only: no fetch,
-host-file read or provider attachment promotion. There are at most 1,024 local sources
-and active subscriptions per owner, 32 subscribers per source, 1,024 pending receipts
-and 16 MiB pending payload per subscription, measured as UTF-8 bytes for both new and
-already retained envelopes. Oversize/backpressure is diagnostic and cannot
-roll back successful workflow completion. New envelope output, subject and fields use the shared secret redaction policy before source forwarding and receipt persistence. Delivery also protects retained pre-redaction envelopes before local queueing or peer forwarding. Legacy accepted bytes retain their original
-TTL; editing a binding's TTL affects new occurrences only, and admission of older
-pending occurrences and duplicate ACKs uses the fixed 30-day protocol ceiling.
-The current completion `status` is reserved while copying opaque trigger metadata,
-so chained workflows with different outcomes filter on their own status.
-Settled receipt payloads expire; deduplication tombstones remain for 30 days after
-deadline before bounded reclamation. Causal ancestry remains in recorded runs.
+**Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
+channel. Peer 437 carries the per-exit source fields in `ListWorkflowNotificationSources`,
+renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{source_id,
+target_ref}`, admits an agent `target_ref` (the subscriber kernel owns target admission), and
+`DeliverWorkflowNotification` carries the reduced envelope. Remote requests require an
+unexpired sender-key-bound kernel or machine identity, matching realm and owner. Remote lease
+workers reject kernel-wide notification requests. Relay remains ciphertext transport.
 
-`ListWorkflowNotifications {session_id}` is the shared TUI/web picker request. Local
-sources come from kernel state. Picker open refreshes the existing waiting-room
-kernel inventory, then fans out source-list requests (four concurrent, three-second
-fanout deadline, at most 128 kernels). Responses contain source IDs, names, events
-and filter fields, never outputs or history. Last results persist per owner/kernel.
-Directory changes refresh lists without a new polling loop. Offline/missing sources
-are unavailable and cannot attach; consumers show **source not available**. Source
-delete/transfer does not revoke, migrate or rewrite pending deliveries; they expire.
-No notification-specific heartbeat or ping is introduced.
+**Delivery.** Bindings use `app_automations.source_kind=workflow_completion`; pending and
+accepted/queued receipts use `app_outbox`, beside `app_event`. Persist-before-send and retry
+continue until ACK or expiry. ACKs are `accepted`, `duplicate`, `expired` and `loop_dropped`;
+ACK never means run completion. The target retains accepted work while busy, paused or full.
+Deduplication prevents repeated queue insertion; conflicting occurrence content is refused.
+An uncertain writer commit fences further transitions until restart. Workflow-target
+occurrences are queued by the existing App pump and atomic queue handoff; agent-target
+occurrences are queued by the pump's agent step through the agent trigger path.
+
+**Limits.** Payloads and prompts use the App path's 64 KiB ceilings; the final output
+reserves 8 KiB for envelope fields, and source persistence and target acceptance both
+reserve the rendered prompt's header (the encoded envelope is limited so its prompt fits
+65,536 bytes). Oversize refusals leave no receipt and a visible diagnostic. At most 1,024
+sources and active subscriptions per owner, 32 subscribers per source and 1,024 pending
+receipts. Envelope output uses the shared secret redaction policy before forwarding and
+persistence.
+
+`ListWorkflowNotifications {session_id}` is the shared TUI/web picker request. The owner
+sees local sources and the cached sources of other kernels (a picker open refreshes the
+kernel inventory, four concurrent source-list requests, three-second deadline, at most 128
+kernels); a room member sees this room's sources only. Offline sources are unavailable and
+cannot be attached.
 
 Shared shell/TUI commands:
 
-- `/workflow notifications on|off [workflow] [--fields verdict,review_url]`
+- `/workflow notifications on|off <workflow> <exit>`
 - `/workflow trigger notification list`
-- `/workflow trigger notification attach <source> [success|failure|both]
-  [--publication <ref>] [--ttl <1..30>] [--filter opaque.field=value] [--delivery queue|inject]`
+- `/workflow trigger notification attach <source>`
 - `/workflow trigger notification detach <subscription-id>`
+- `/trigger notification <source> [prompt]` (the focused agent)
 
-Attach resolves the selected workflow's unique enabled notification trigger, or the
-explicit publication. Web uses these same requests; its **My workflows** picker next
-to Apps and settings switch belong in Cloud, using the kernel as runtime authority.
+**Apps (not yet built).** App outgoing events stay App automations delivered through AEGS and
+the App pump; an agent target for them (an App automation row with `target_kind: agent`) and
+the picker's `events` on the App installation summary are specified in `NOTIF_PLAN.md`. The
+installation summary already carries `events: [{name, label}]`; the agent-target App variant
+of `CreateAgentTrigger` is refused until it lands.
 
 ### Run-scoped subscriptions — design only (MP-08 / MP-10 / MP-11)
 
-Subscribers always belong to workflow endpoints. A future run-scoped subscription
-is owned by that workflow and created by one of its running runs, using the same
-generic opaque subject/field filters. Delivery resumes that same waiting run.
-It ends with the run, TTL, or an incoming generator occurrence carrying the generic
-`subject_closed:true` marker. A signed action manifest may declare that its result
-opens a subject; the kernel does not interpret domain-specific lifecycle events.
-This round adds neither run-scoped creation nor agent-owned subscriptions/tools.
+A future run-scoped subscription is owned by a workflow and created by one of its running
+runs. Delivery resumes that same waiting run and it ends with the run. This round adds
+neither run-scoped creation nor agent-created subscriptions for other agents.
 
 ## AEGS subscription reconciliation
 
@@ -352,3 +309,53 @@ MP-08 / MP-11: completion-occurrence diagnostics retain the most recent 4,096
 rows across the kernel. Upgrade, capture and sweep bound this window; durable
 terminal run state retains completion deduplication, and pending App receipts
 are independent of diagnostic retention.
+
+## Blocked-task decision sources
+
+MP-08 / MP-09 / MP-10 / MP-11, local 998 / peer 437: every Room also has
+an `owner_action` source named **Agent needs your action**. The kernel registers
+it with the same source inventory used by notifying exits. Agents and workflow
+entry points subscribe through the same notification reference, trigger, receipt,
+retention and routing operations. The source's `kind` distinguishes it from a
+`workflow_exit`; its workflow/exit identifiers are reserved kernel source identifiers.
+
+Creating a blocked-task owner decision emits one occurrence per interaction ID
+(task plus blocked revision). Re-projecting or rewording the same decision does
+not emit it again. Its final-output text is a JSON locator with title, Room,
+agent, task and interaction identifiers. Task reasons, prompts, approval choices
+and secret values are excluded. Resolving the decision still uses the existing
+kernel-owned interaction and its ordinary owner admission.
+
+Delivery to an agent is always queued and may be steered from the general queued
+prompt row. This source does not supply an outbound service. Outside-Chariox
+email, web push or an outgoing App requires a separately configured destination
+and delivery adapter; the current Cloud has no such service.
+
+The Room tools are `chariox.notification_sources {}`,
+`chariox.notification_subscribe {source,prompt?}`, and
+`chariox.notification_unsubscribe {trigger_id}`. They bind to the calling agent,
+reject other-agent and delivery-policy arguments, and recheck its provider epoch.
+App events retain App catalog/schema admission and the App receipt pump. Their
+automation summaries distinguish `workflow_endpoint` and `agent` targets; agent
+subscriptions are lifetime configuration and are excluded from App-set copies.
+
+For a browser collaborator's picker, `ListAppInstallations` accepts an optional
+`session_id`. The kernel checks live Room membership and returns only installations
+bound to that Room's agents, with the active release's event summaries. The owner
+continues to see their kernel's installations. Room agents cannot use this field
+to list another Room. Pagination remains `after` / `limit`.
+
+The AX subscribe/unsubscribe result contains `trigger_id`, `source`, and `enabled`;
+it does not include the Room snapshot. A notification manually steered into an
+existing turn contributes its ancestry to that turn before the provider write.
+
+`ListAppAutomations` and `DisableAppAutomation` accept the same optional Room
+context. Collaborators may list and remove their own Room targets; naming an
+owner's automation does not confer control. Both routes keep the existing App
+catalog, revision and writer checks. Archiving an agent also detaches its App
+subscriptions immediately, including when its App worker is stopped.
+
+
+Source-side listeners (998/437): `WorkflowNotifications.listeners` reports durable subscriptions to enabled sources in the requested producer Room, including workflow and agent targets in other Rooms or kernels. `subscriptions` remains the inventory of bindings whose target is the requested Room on this kernel. The profile owner can inspect source listeners across Rooms and kernels. Room agents, collaborators and grant-bound callers receive listener details only for targets in their current Room on the current kernel. Both projections are kernel-owned; clients must not infer source listeners from target bindings.
+
+An agent notification keeps its original deadline in kernel-owned durable prompt metadata. Ordinary prompt edits cannot extend it. Recovery restores it, and queue promotion and manual Steer expire undelivered notifications before dispatch. App admission failures defer only that receipt while independent subscribers continue; deferral preserves the original deadline.

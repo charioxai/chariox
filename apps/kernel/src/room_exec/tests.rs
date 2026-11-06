@@ -1,6 +1,6 @@
 use super::*;
 
-fn open(service: &RoomExecService, script: &str) -> String {
+pub(super) fn open(service: &RoomExecService, script: &str) -> String {
     service
         .open(
             "room",
@@ -14,7 +14,10 @@ fn open(service: &RoomExecService, script: &str) -> String {
         .unwrap()
 }
 
-async fn collect(service: &RoomExecService, id: &str) -> (Vec<u8>, Vec<u8>, ExecOutcome) {
+pub(super) async fn collect(
+    service: &RoomExecService,
+    id: &str,
+) -> (Vec<u8>, Vec<u8>, ExecOutcome) {
     let mut cursor = 0;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();

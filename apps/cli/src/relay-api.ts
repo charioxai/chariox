@@ -16,8 +16,6 @@ import {
   issueCloudRelayClientTokenRequest,
   joinTerminalPairingLinkRequest,
   logoutCloudRelayRequest,
-  pairCloudRelayClientRequest,
-  pairCloudRelayMachineRequest,
   pollCloudRelayLoginRequest,
   relayStatusRequest,
   relayClientKeyBindingMinimumProtocolVersion,
@@ -162,26 +160,6 @@ export async function logoutCloudRelay(
   if (response !== "CloudRelayLoggedOut") {
     throw new Error("unexpected response variant: expected CloudRelayLoggedOut")
   }
-}
-
-export async function pairKernelCloudRelayClient(
-  client: LocalIpcClient,
-  clientId: string,
-  alias?: string,
-): Promise<RelayCloudProfile> {
-  const response = await client.send<Record<string, unknown>>(pairCloudRelayClientRequest(clientId, alias))
-  const payload = expectVariant<{ profile: KernelCloudRelayProfile }>(response, "CloudRelayClientPaired")
-  return relayCloudProfileFromKernel(payload.profile)
-}
-
-export async function pairKernelCloudRelayMachine(
-  client: LocalIpcClient,
-  machineId: string,
-  alias?: string,
-): Promise<RelayCloudProfile> {
-  const response = await client.send<Record<string, unknown>>(pairCloudRelayMachineRequest(machineId, alias))
-  const payload = expectVariant<{ profile: KernelCloudRelayProfile }>(response, "CloudRelayMachinePaired")
-  return relayCloudProfileFromKernel(payload.profile)
 }
 
 export async function getKernelCloudRelayProfile(client: LocalIpcClient): Promise<RelayCloudProfile | null> {

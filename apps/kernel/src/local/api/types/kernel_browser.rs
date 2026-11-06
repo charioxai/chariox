@@ -211,6 +211,11 @@ pub enum KernelBrowserCommand {
         generation: u64,
         url: String,
     },
+    /// Protocol 986: a person asks Chrome itself to show a Tab. The host refuses an agent.
+    ShowTab {
+        tab_id: String,
+        generation: u64,
+    },
     Snapshot {
         tab_id: String,
         generation: u64,

@@ -1,0 +1,12 @@
+{
+  "machine_type": "Standard",
+  "vcpu": 2,
+  "ram_gb": 4.5,
+  "disk_gb": 40,
+  "location": "Europe",
+  "terms": {
+    "amount": "0.01",
+    "currency": "EUR",
+    "period": "hour"
+  }
+}

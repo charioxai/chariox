@@ -558,6 +558,22 @@ fn completed_codex_turn_resume_state(
     Some(ProviderResumeState::from_codex_thread_id(thread_id))
 }
 
+pub(super) fn execute_claude_plan_proposal(
+    registry: &ProviderRunRuntimeRegistry,
+    run: &RuntimeProviderRun,
+    tool_use_id: Option<&str>,
+    plan: &str,
+) -> (ProviderPromptSignalBatch, Result<(), DaemonError>) {
+    let (slot, mut state) = match registry.take_claude_runtime(run.id()) {
+        Ok(runtime) => runtime,
+        Err(error) => return (ProviderPromptSignalBatch::default(), Err(error)),
+    };
+    let result =
+        super::super::claude_runtime::publish_claude_plan(run, &mut state, tool_use_id, plan);
+    registry.restore_claude_runtime_if_live(run.id(), &slot, state);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::super::codex_runtime::{CodexAssistantCompletion, CodexPollResult};

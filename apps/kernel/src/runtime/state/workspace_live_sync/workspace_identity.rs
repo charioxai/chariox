@@ -1,6 +1,7 @@
 //! Workspace live sync workspace identity matching, rejection payloads, and git fingerprinting.
 
 use super::*;
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 
 pub(in crate::runtime::state) fn add_workspace_live_sync_workspace_payload(
     payload: &mut serde_json::Value,
@@ -130,7 +131,7 @@ fn git_output(workspace_root: &Path, args: &[&str]) -> Option<String> {
         .arg("-C")
         .arg(workspace_root)
         .args(args)
-        .output()
+        .bounded_output()
         .ok()?;
     output
         .status

@@ -936,3 +936,15 @@ fn a02_agent_message_defaults_are_nonurgent_and_no_reply() {
         .unwrap();
     assert_eq!(spec.input_schema["properties"]["urgent"]["type"], "boolean");
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: the provider cuts a blocking popup call at about five minutes, so the
+// tool itself tells agents to hand a person-sized step over with wait:false.
+#[test]
+fn vflag_popup_tool_tells_agents_to_use_wait_false_for_human_steps() {
+    let spec = credential_runtime_tool_specs()
+        .into_iter()
+        .find(|spec| spec.name == REQUEST_POPUP_TOOL)
+        .expect("popup tool is advertised");
+    assert!(spec.description.contains("use wait:false and yield"));
+    assert!(spec.description.contains("about 5 minutes"));
+}

@@ -6,6 +6,14 @@ fn task_needs_owner_interaction(task: &AgentTaskExecution) -> bool {
     task.state == ExecutionState::Blocked && !task.goal.as_ref().is_some_and(|goal| goal.paused)
 }
 
+/// The decision a blocked task raises: Resume or Cancel. It belongs to the owner but not to their terminal,
+/// so a holder or an agent driving the room may answer it like any routine question.
+pub(super) const BLOCKED_TASK_DECISION_PREFIX: &str = "task-blocked-";
+
+pub(super) fn is_blocked_task_decision(interaction_id: &str) -> bool {
+    interaction_id.starts_with(BLOCKED_TASK_DECISION_PREFIX)
+}
+
 impl KernelRuntimeOwnedState {
     /// Admission cannot wait for the asynchronous task pump to release ended decisions.
     pub(super) fn sweep_stale_task_owner_interactions(&self) -> Result<(), DaemonError> {
@@ -14,16 +22,15 @@ impl KernelRuntimeOwnedState {
             .write()
             .iter()
             .filter(|(id, pending)| {
-                id.starts_with("task-blocked-") && pending.belongs_to(&self.session_store)
+                is_blocked_task_decision(id) && pending.belongs_to(&self.session_store)
             })
             .map(|(_, pending)| pending.session_id.clone())
             .collect::<BTreeSet<_>>();
         if rooms.is_empty() {
             return Ok(());
         }
-        let tasks = self.durable_state_store.agent_tasks(None, None)?;
         for room in rooms {
-            self.retract_stale_task_owner_interactions(&room, &tasks)?;
+            self.retract_stale_task_owner_interactions(&room)?;
         }
         Ok(())
     }
@@ -33,51 +40,45 @@ impl KernelRuntimeOwnedState {
     pub(super) fn retract_stale_task_owner_interactions(
         &self,
         room: &str,
-        tasks: &[AgentTaskExecution],
     ) -> Result<(), DaemonError> {
         let Ok(session) = self.session_store.get_session(room) else {
             return Ok(());
         };
+        let tasks = self.durable_state_store.agent_tasks(Some(room), None)?;
         let stale = session
             .active_interactions()
             .iter()
             .map(|i| i.id())
             .filter(|id| {
-                let Some(rest) = id.strip_prefix("task-blocked-") else {
+                let Some(rest) = id.strip_prefix(BLOCKED_TASK_DECISION_PREFIX) else {
                     return false;
                 };
-                tasks.iter().any(|t| {
-                    rest.strip_prefix(t.task_id.as_str())
-                        .and_then(|r| r.strip_prefix('-'))
-                        .and_then(|r| r.parse::<u64>().ok())
-                        .is_some_and(|revision| {
-                            !task_needs_owner_interaction(t) || revision != t.blocked_revision
-                        })
-                })
+                let Some((task_id, revision)) = rest.rsplit_once('-') else {
+                    return true;
+                };
+                let Ok(revision) = revision.parse::<u64>() else {
+                    return true;
+                };
+                tasks
+                    .iter()
+                    .find(|task| task.task_id == task_id)
+                    .is_none_or(|task| {
+                        !task_needs_owner_interaction(task) || revision != task.blocked_revision
+                    })
             })
             .map(str::to_owned)
             .collect::<Vec<_>>();
         for id in stale {
             self.timeout_runtime_interaction(room, &id)?;
-            self.record_notice_for_agent(
-                room, None, None, self.attachment_store.list_session_attachment_ids(room),
-                format!("Task decision `{id}` withdrawn because the task ended or its owner decision was superseded. Late answers are refused."),
-            );
+            tracing::debug!(interaction_id=%id, room_id=room, "resolved task owner decision withdrawn");
         }
         Ok(())
     }
 }
 
 impl KernelRuntimeState {
-    pub(super) async fn retract_stale_task_owner_interactions(
-        &self,
-        room: &str,
-        tasks: &[AgentTaskExecution],
-    ) {
-        if let Err(error) = self
-            .owned
-            .retract_stale_task_owner_interactions(room, tasks)
-        {
+    pub(super) async fn retract_stale_task_owner_interactions(&self, room: &str) {
+        if let Err(error) = self.owned.retract_stale_task_owner_interactions(room) {
             tracing::warn!(%error, room_id=room, "task owner decision withdrawal failed; interaction admission will retry");
         }
     }
@@ -92,45 +93,100 @@ impl KernelRuntimeState {
             return Ok(());
         }
         if !task_needs_owner_interaction(&task) {
-            self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+            self.retract_stale_task_owner_interactions(&task.room_id)
                 .await;
             return Ok(());
         }
-        let id = format!("task-blocked-{}-{}", task.task_id, task.blocked_revision);
+        let id = format!(
+            "{BLOCKED_TASK_DECISION_PREFIX}{}-{}",
+            task.task_id, task.blocked_revision
+        );
         let session = self.owned.session_store.get_session(&task.room_id)?;
-        let message = crate::terminal::public_task_failure_reason(&task.reason);
+        let browser_access = task.owner_action
+            == Some(crate::durable_state::agent_lifecycle::TaskOwnerAction::BrowserAccess)
+            && self
+                .owned
+                .agent_store
+                .get_agent(&task.agent_id)
+                .is_ok_and(|agent| agent.remote_execution().is_none());
+        let message = if browser_access {
+            "Browser access ended. Allow this agent to use your browser tabs and continue?"
+                .to_owned()
+        } else {
+            crate::terminal::public_task_failure_reason(&task.reason)
+        };
         if let Some(existing) = session.active_interactions().iter().find(|i| i.id() == id) {
-            if existing.message() != message {
-                let mutation = self.owned.begin_managed_activity_mutation();
-                let mut sessions = self.owned.session_store.write();
-                let mut latest = sessions.get_session(&task.room_id)?;
-                let reworded = latest.remove_active_interaction(&id).map(|current| {
-                    latest.add_active_interaction(current.with_message(message));
-                    sessions.restore_session(latest);
+            let live = self
+                .owned
+                .pending_interactions
+                .write()
+                .get(&id)
+                .is_some_and(|pending| {
+                    pending.belongs_to(&self.owned.session_store)
+                        && pending
+                            .responder
+                            .lock()
+                            .expect("interaction responder")
+                            .as_ref()
+                            .is_some_and(|sender| !sender.is_closed())
                 });
-                // The count reads the Room store: record it after this write lock is released.
-                drop(sessions);
-                if reworded.is_some() {
+            if live {
+                if existing.message() != message
+                    || existing.related_agent_id() != Some(task.agent_id.as_str())
+                {
+                    let mutation = self.owned.begin_managed_activity_mutation();
+                    let mut sessions = self.owned.session_store.write();
+                    let mut latest = sessions.get_session(&task.room_id)?;
+                    if let Some(current) = latest.remove_active_interaction(&id) {
+                        latest.add_active_interaction(
+                            current
+                                .with_message(message)
+                                .with_related_agent_id(task.agent_id.clone()),
+                        );
+                        sessions.restore_session(latest);
+                    }
+                    drop(sessions);
                     mutation.record();
+                    self.owned.session_snapshot(&task.room_id)?;
+                    self.owned
+                        .terminal_stream
+                        .notify_terminal_projection_change(&task.room_id);
                 }
-                self.owned.session_snapshot(&task.room_id)?;
-                self.owned
-                    .terminal_stream
-                    .notify_terminal_projection_change(&task.room_id);
+                self.owned.emit_task_owner_notification(&task, &id)?;
+                return Ok(());
             }
-            return Ok(());
+            // Hot reload retains the task's decision, but an in-memory reply channel must be reattached.
+            self.owned.timeout_runtime_interaction(&task.room_id, &id)?;
         }
         let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
             &id,
             &id,
-            "Agent needs your action",
+            if browser_access {
+                "Allow browser access"
+            } else {
+                "Agent needs your action"
+            },
             &message,
             vec![
                 crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
-                crate::session::RuntimeInteractionChoice::new("resume", "Resume", "resume", None),
+                crate::session::RuntimeInteractionChoice::new(
+                    if browser_access {
+                        "allow_browser"
+                    } else {
+                        "resume"
+                    },
+                    if browser_access {
+                        "Allow browser"
+                    } else {
+                        "Resume"
+                    },
+                    "resume",
+                    None,
+                ),
             ],
         )
-        .with_timeout_sec(900);
+        .without_timeout()
+        .with_related_agent_id(task.agent_id.clone());
 
         let rx = self
             .create_kernel_operation_interaction(
@@ -139,16 +195,23 @@ impl KernelRuntimeState {
                 interaction,
             )
             .await?;
+        let notification = self.owned.emit_task_owner_notification(&task, &id);
         let state = self.as_kernel();
         tokio::spawn(async move {
             if let Ok(answer) = rx.await {
                 if answer.status == "timed_out" {
                     return;
                 }
-                let resume = answer.choice_id.as_deref() == Some("resume");
-                state.resolve_agent_task_owner_action(&task, resume).await;
+                use super::agent_task_owner_resolution::OwnerTaskAction;
+                let action = match answer.choice_id.as_deref() {
+                    Some("allow_browser") => OwnerTaskAction::AllowBrowser,
+                    Some("resume") => OwnerTaskAction::Resume,
+                    _ => OwnerTaskAction::Cancel,
+                };
+                state.resolve_agent_task_owner_action(&task, action).await;
             }
         });
+        notification?;
         Ok(())
     }
 
@@ -215,8 +278,7 @@ impl KernelRuntimeState {
         if retired.state == ExecutionState::Blocked {
             return Ok(false);
         }
-        self.retract_stale_task_owner_interactions(room, std::slice::from_ref(&retired))
-            .await;
+        self.retract_stale_task_owner_interactions(room).await;
         Ok(true)
     }
 }

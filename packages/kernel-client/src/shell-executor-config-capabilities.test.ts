@@ -268,6 +268,7 @@ test("executeShellCommand unlocks the Vault with a hidden passphrase and no sess
   const client = {
     send: async (request: Record<string, unknown>) => {
       requests.push(request)
+      if ("GetCredentialVaultStatus" in request) return { CredentialVaultStatus: { status: { unlocked: false }, unlock: { durations: [], default: { kind: "minutes", minutes: 60 } } } }
       return { CredentialVaultUnlocked: { action: "unlocked", status: { unlocked: true } } }
     },
   }
@@ -279,13 +280,21 @@ test("executeShellCommand unlocks the Vault with a hidden passphrase and no sess
   assert.equal(unlocked.ok, true)
   assert.equal(unlocked.message, "vault unlocked")
   assert.deepEqual(prompts, ["Vault passphrase: "])
-  assert.deepEqual(requests, [{ UnlockCredentialVault: { passphrase: "correct horse" } }])
+  assert.deepEqual(requests, [{ GetCredentialVaultStatus: null }, { UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "minutes", minutes: 60 }, surface: "terminal" } }], "no length given: the kernel's preselected one")
   assert.equal(JSON.stringify(unlocked).includes("correct horse"), false)
+  requests.length = 0
+  await executeShellCommand(parseShellCommand("credential vault unlock once"), context, { client, readSecret })
+  assert.deepEqual(requests, [{ UnlockCredentialVault: { passphrase: "correct horse", duration: { kind: "once" }, surface: "terminal" } }])
+  requests.length = 0
+  const unknown = await executeShellCommand(parseShellCommand("credential vault unlock forever"), context, { client, readSecret })
+  assert.equal(unknown.ok, false)
+  assert.match(unknown.message ?? "", /Use once, kernel/)
+  assert.deepEqual(requests, [], "a length that is not understood sends nothing")
 
   const hidden = await executeShellCommand(parseShellCommand("credential vault unlock"), context, { client })
   assert.equal(hidden.ok, false)
   assert.match(hidden.message ?? "", /hidden input/)
-  assert.equal(requests.length, 1)
+  assert.deepEqual(requests, [], "nothing is sent without hidden input")
 })
 
 test("executeShellCommand installs and updates MCP servers", async () => {

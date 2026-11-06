@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -41,6 +42,7 @@ const CODEX_SESSION_ENV_VARS: &[&str] = &[
 ];
 
 pub fn resolve_codex_executable() -> Result<PathBuf, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     resolve_codex_executable_unlocked()
 }
@@ -66,6 +68,7 @@ fn resolve_codex_executable_unlocked() -> Result<PathBuf, DaemonError> {
 pub fn plan_codex_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     plan_codex_launch_unlocked(request)
 }
@@ -148,7 +151,8 @@ pub fn logout_codex(provider_account_env: &BTreeMap<String, String>) -> Result<(
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .bounded_output()
+        .map(|output| output.status)
         .map_err(|error| DaemonError::LocalTransport {
             operation: "logout_codex",
             message: format!("failed to start `codex logout`: {error}"),

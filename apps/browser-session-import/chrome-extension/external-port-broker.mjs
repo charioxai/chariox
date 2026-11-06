@@ -1,12 +1,13 @@
-export const browserImportWebOrigins = Object.freeze(['https://chariox.com','https://staging.chariox.com']);
 const externalName = 'chariox-browser-import-v1';
 const connectorName = 'browser-import-web-session-v1';
 const maximumSessions = 8;
 
 export class BrowserImportExternalPortBroker {
-  constructor({extensionId}) {
+  constructor({extensionId,webOrigins}) {
     if (!extensionIdValue(extensionId)) throw new Error('browser import extension identity unavailable');
+    if (!Array.isArray(webOrigins) || webOrigins.length<1) throw new Error('browser import web origin unavailable');
     this.extensionId=extensionId;
+    this.webOrigins=Object.freeze([...webOrigins]);
     this.sessions=new Map();
   }
 
@@ -32,7 +33,7 @@ export class BrowserImportExternalPortBroker {
   }
 
   connectExternal(port) {
-    if (!validWebPort(port)) { disconnect(port); return; }
+    if (!validWebPort(port,this.webOrigins)) { disconnect(port); return; }
     let session=null;
     const onMessage=value=>{
       if (!session) {
@@ -77,8 +78,8 @@ export class BrowserImportExternalPortBroker {
   }
 }
 
-export function installBrowserImportExternalPortBroker(chrome) {
-  const broker=new BrowserImportExternalPortBroker({extensionId:chrome.runtime.id});
+export function installBrowserImportExternalPortBroker(chrome,webOrigins) {
+  const broker=new BrowserImportExternalPortBroker({extensionId:chrome.runtime.id,webOrigins});
   chrome.runtime.onConnect.addListener(port=>{ if (port.name===connectorName) broker.connectConnector(port); });
   chrome.runtime.onConnectExternal.addListener(port=>{ if (port.name===externalName) broker.connectExternal(port); });
   return broker;
@@ -111,8 +112,8 @@ function validConnectorPort(port,id) { try { const url=new URL(port.sender?.url)
   return port.name===connectorName && port.sender?.id===id && Number.isSafeInteger(port.sender?.tab?.id)
     && port.sender.tab.incognito===false && url.origin===expected.origin && url.pathname===expected.pathname;
   } catch { return false; } }
-function validWebPort(port) { try { const url=new URL(port.sender?.url); return port.name===externalName
-    && browserImportWebOrigins.includes(url.origin) && port.sender?.origin===url.origin
+function validWebPort(port,webOrigins) { try { const url=new URL(port.sender?.url); return port.name===externalName
+    && webOrigins.includes(url.origin) && port.sender?.origin===url.origin
     && port.sender?.id===undefined && Number.isSafeInteger(port.sender?.tab?.id)
     && port.sender.tab.incognito===false; } catch { return false; } }
 function source(value) { return plain(value) && exact(value,['current_profile','hostname','store_id'])

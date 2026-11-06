@@ -959,10 +959,21 @@ fn memory_domain(pid: i32) -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
-fn is_process_domain(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .is_some_and(|leaf| leaf.starts_with("process-"))
+fn is_process_domain(path: &str, kernel_pid: u32) -> bool {
+    // A lane may inherit its executor's process-* domain without delegation.
+    // Only domains created by this test kernel establish a takeover obligation.
+    let path = Path::new(path);
+    path.file_name()
+        .is_some_and(|leaf| leaf.to_string_lossy().starts_with("process-"))
+        && path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .is_some_and(|budget| {
+                budget
+                    .to_string_lossy()
+                    .starts_with(&format!("chariox-{kernel_pid}-"))
+            })
 }
 
 #[cfg(target_os = "linux")]
@@ -1027,9 +1038,9 @@ fn a_hot_reload_keeps_a_job_an_exited_terminal_left_running_and_it_stays_control
         // Where the kernel can create memory domains, the new program holds
         // the job in a domain of its own budget.
         let moved = memory_domain(pid);
-        if domain.as_deref().is_some_and(is_process_domain) {
+        if domain.as_deref().is_some_and(|path| is_process_domain(path, kernel.child.id())) {
             assert!(
-                moved.as_deref().is_some_and(is_process_domain) && moved != domain,
+                moved.as_deref().is_some_and(|path| is_process_domain(path, kernel.child.id())) && moved != domain,
                 "the job was not moved into the new program's memory domain: {domain:?} -> {moved:?}"
             );
         }
@@ -1093,7 +1104,10 @@ fn a_hot_reload_keeps_the_child_a_released_job_forked_just_before_it_ended() {
         // delegation) only sampled processes are known, so a child forked
         // between two samples cannot be recovered. The job has not forked
         // yet: stop it and leave nothing behind.
-        if !memory_domain(pid).as_deref().is_some_and(is_process_domain) {
+        if !memory_domain(pid)
+            .as_deref()
+            .is_some_and(|path| is_process_domain(path, kernel.child.id()))
+        {
             eprintln!("skipped: the job has no kernel-created process cgroup on this host");
             let stopped = request(
                 &mut socket,
@@ -1370,10 +1384,7 @@ fn an_adopted_terminal_keeps_its_memory_domain() {
         domain
     });
     // Only where the kernel can create memory domains (cgroup v2 delegation).
-    if !domain
-        .file_name()
-        .is_some_and(|name| name.to_string_lossy().starts_with("process-"))
-    {
+    if !is_process_domain(&domain.to_string_lossy(), kernel.child.id()) {
         return;
     }
     // The new program owns the domain again: it ends with the process.
@@ -2041,7 +2052,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
         }
         let pid = kernel.child.id() as i32;
         assert!(pid > 1);
-        let started_before_the_swap = lines(&record.join("starts"));
+        let started_before_the_swap = app_servers_beyond_usage_reads(&record);
         std::fs::write(record.join("swap"), "").unwrap();
         let signalled = epoch_ms();
         unsafe { libc::kill(pid, libc::SIGUSR2) };
@@ -2238,7 +2249,7 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
                 state["SessionState"]["session"]["prompt_states"][&agent_id]["active_prompt"]
                     .is_null()
                     && lines(&record.join("prompts")) == ["prompt 1"]
-                    && lines(&record.join("starts")) == started_before_the_swap,
+                    && app_servers_beyond_usage_reads(&record) == started_before_the_swap,
                 "the agent got another turn after the handed-over one: {state}"
             );
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -2247,17 +2258,43 @@ fn codex_turn_across_a_hot_reload(finish_in_gap: bool, beside_claude: bool) {
     });
     // One app-server ran the whole turn, and it got the prompt once.
     assert_eq!(lines(&record.join("prompts")), ["prompt 1"]);
-    // The new program starts no app-server: one would hold the kernel while it
-    // boots (1.7 s for the real Codex) and delay every handed-over turn.
+    // The new program starts no app-server but its usage timer's: one would
+    // hold the kernel while it boots (1.7 s for the real Codex) and delay
+    // every handed-over turn.
     assert_eq!(
-        lines(&record.join("starts")),
+        app_servers_beyond_usage_reads(&record),
         started_before_the_swap,
-        "a Codex app-server started after the hot reload"
+        "a Codex app-server started after the hot reload: {:?}",
+        lines(&record.join("calls"))
     );
     // On one connection: the thread was started once and never resumed.
     let threads = lines(&record.join("threads"));
     assert_eq!(threads.len(), 1, "{threads:?}");
     assert!(threads[0].starts_with("thread/start "), "{threads:?}");
+}
+
+/// The fake Codex app-servers started for anything but the kernel's usage
+/// timer (989de4d0cd), which only reads rate limits and usage.
+fn app_servers_beyond_usage_reads(record: &Path) -> Vec<String> {
+    let calls = lines(&record.join("calls"));
+    lines(&record.join("starts"))
+        .into_iter()
+        .filter(|start| {
+            let pid = start.trim_start_matches("app-server ");
+            let methods: Vec<&str> = calls
+                .iter()
+                .filter_map(|call| call.split_once(' '))
+                .filter(|(caller, _)| *caller == pid)
+                .map(|(_, method)| method)
+                .collect();
+            let usage_read =
+                |method: &&str| matches!(*method, "account/rateLimits/read" | "account/usage/read");
+            !(methods.iter().any(usage_read)
+                && methods.iter().all(|method| {
+                    usage_read(method) || matches!(*method, "initialize" | "initialized")
+                }))
+        })
+        .collect()
 }
 
 fn epoch_ms() -> u64 {

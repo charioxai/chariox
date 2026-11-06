@@ -12,28 +12,29 @@ export type QueuedJob = {
 
 type Waiting = Exclude<SessionProcessState, { kind: "running" }>
 
-/** The agent's waiting commands in line order: held ones by their place in
- * line (memory first), then paused ones. A row leaves when its command runs. */
+/** The agent's waiting commands in line order: memory first, then disk, each by place in
+ * line. A row leaves when its command runs. */
 export function queuedJobsForAgent(processes: readonly SessionProcess[] | undefined, agentId: string | null | undefined): QueuedJob[] {
   if (!agentId) return []
-  const order = (state: Waiting) => [state.kind === "held" ? 0 : 1, state.reason === "memory" ? 0 : 1, state.kind === "held" ? state.position : 0]
+  const order = (state: Waiting) => [state.reason === "memory" ? 0 : 1, state.position]
   return (processes ?? [])
     .filter((row): row is SessionProcess & { state: Waiting } => row.owner.kind === "agent" && row.owner.id === agentId && row.state?.kind !== undefined && row.state.kind !== "running")
     .sort((a, b) => {
       const [x, y] = [order(a.state), order(b.state)]
-      return x[0]! - y[0]! || x[1]! - y[1]! || x[2]! - y[2]! || a.pid - b.pid
+      return x[0]! - y[0]! || x[1]! - y[1]! || a.pid - b.pid
     })
     .map(row => ({
       processId: row.process_id,
       command: row.state.command_line || row.command,
       wait: queuedJobWaitLabel(row.state),
-      detail: row.state.kind === "held" ? `Needs about ${gigabytes(row.state.need_bytes)}; ${gigabytes(row.state.free_bytes)} free` : null,
+      detail: `Needs about ${gigabytes(row.state.need_bytes)}; ${gigabytes(row.state.free_bytes)} free`,
     }))
 }
 
 export function queuedJobWaitLabel(state: Waiting): string {
-  if (state.kind === "paused") return state.reason === "memory" ? "paused at the memory limit" : "waiting for disk space"
-  return `waiting for ${state.reason === "disk" ? "disk space" : "memory"}, ${ordinal(Math.max(1, state.position))} in line`
+  const place = `${ordinal(Math.max(1, state.position))} in line`
+  if (state.kind === "paused" && state.reason === "memory") return `paused at the memory limit, ${place}`
+  return `waiting for ${state.reason === "disk" ? "disk space" : "memory"}, ${place}`
 }
 
 function gigabytes(bytes: number): string {

@@ -137,7 +137,7 @@ mod tests {
                 }) => result.expect("Vault interaction"),
             };
             state.owned.dictation.handle("alice", DictationCommand::SetService { service: DictationProvider::Local }).await.unwrap();
-            state.owned.resolve_runtime_interaction(session.id(), interaction.id(), "passphrase", Some("synthetic-passphrase"), Some("alice"), false).unwrap();
+            state.owned.resolve_runtime_interaction(session.id(), interaction.id(), "unlock_kernel", Some("synthetic-passphrase"), Some("alice"), false).unwrap();
             pending.await
         });
         assert!(

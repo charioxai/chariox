@@ -83,17 +83,17 @@ test("managed kernel upgrade requires an explicit valid provider topology before
   }
 })
 
-test("Path-1 upgrade drop-in guard checks reload freshness and both effective services", async (context) => {
+test("Path-1 upgrade drop-in guard checks reload freshness and the effective service", async (context) => {
   const source = await readFile(upgrade, "utf8")
-  const guard = source.match(/assert_path1_units_have_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
+  const guard = source.match(/assert_path1_unit_has_no_dropins\(\) \{\n[\s\S]*?^\}/m)?.[0]
   assert.ok(guard)
   assert.match(guard, /systemctl show --property=NeedDaemonReload --value "\$unit"/)
   assert.match(guard, /systemctl show --property=DropInPaths --value "\$unit"/)
   assert.ok(guard.indexOf("--property=NeedDaemonReload") < guard.indexOf("--property=DropInPaths"))
-  assert.match(source, /select_supervisor_service\nassert_path1_units_have_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
-  assert.ok(source.indexOf("\nassert_path1_units_have_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
-  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_units_have_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  health_not_before_ms=/)
-  assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_units_have_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
+  assert.match(source, /"managed bootstrap receipt"\nassert_path1_unit_has_no_dropins\nif \[ "\$recover_only" -eq 1 \]; then/)
+  assert.ok(source.indexOf("\nassert_path1_unit_has_no_dropins\n") < source.indexOf("\nrecover_transaction\n"))
+  assert.match(source, /systemctl daemon-reload \|\| return 1\n  assert_path1_unit_has_no_dropins \|\| return 1\n  start_path1_runtime_services \|\| return 1\n  health_not_before_ms=/)
+  assert.match(source, /if ! systemctl daemon-reload \\\n  \|\| ! assert_path1_unit_has_no_dropins \\\n  \|\| ! start_path1_runtime_services \\\n/)
 
   const scratch = await mkdtemp(join(tmpdir(), "chariox-upgrade-dropin-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -101,40 +101,28 @@ test("Path-1 upgrade drop-in guard checks reload freshness and both effective se
   await put(join(bin, "systemctl"), `#!/bin/sh
 case "$*" in
   *--property=NeedDaemonReload*chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_NEED_DAEMON_RELOAD:-no}" ;;
-  *--property=NeedDaemonReload*chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_NEED_DAEMON_RELOAD:-no}" ;;
   *--property=DropInPaths*chariox-path1-managed-bootstrap.service) printf '%s' "\${SYSTEMD_HOME_DROP_IN_PATHS:-}" ;;
-  *--property=DropInPaths*chariox-disposable-worker-bootstrap.service) printf '%s' "\${SYSTEMD_WORKER_DROP_IN_PATHS:-}" ;;
 esac
 `, 0o755)
-  const command = `managed_provider_topology=path1\n${guard}\nassert_path1_units_have_no_dropins\n`
+  const command = `managed_provider_topology=path1\n${guard}\nassert_path1_unit_has_no_dropins\n`
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` }
   const clean = spawnSync("/bin/sh", ["-c", command], { encoding: "utf8", env })
   assert.equal(clean.status, 0, clean.stderr)
-  for (const [name, unit] of [
-    ["SYSTEMD_HOME_DROP_IN_PATHS", "chariox-path1-managed-bootstrap.service"],
-    ["SYSTEMD_WORKER_DROP_IN_PATHS", "chariox-disposable-worker-bootstrap.service"],
-  ]) {
-    const inherited = spawnSync("/bin/sh", ["-c", command], {
-      encoding: "utf8",
-      env: { ...env, [name]: "/etc/systemd/system/50-hardening.conf" },
-    })
-    assert.equal(inherited.status, 1)
-    assert.match(inherited.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} has systemd drop-ins`))
-  }
-  for (const [name, unit] of [
-    ["SYSTEMD_HOME_NEED_DAEMON_RELOAD", "chariox-path1-managed-bootstrap.service"],
-    ["SYSTEMD_WORKER_NEED_DAEMON_RELOAD", "chariox-disposable-worker-bootstrap.service"],
-  ]) {
-    const stale = spawnSync("/bin/sh", ["-c", command], {
-      encoding: "utf8",
-      env: { ...env, [name]: "yes" },
-    })
-    assert.equal(stale.status, 1)
-    assert.match(stale.stderr, new RegExp(`Path-1 service ${unit.replaceAll(".", "\\.")} needs systemd daemon-reload`))
-  }
+  const inherited = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_HOME_DROP_IN_PATHS: "/etc/systemd/system/50-hardening.conf" },
+  })
+  assert.equal(inherited.status, 1)
+  assert.match(inherited.stderr, /Path-1 service chariox-path1-managed-bootstrap\.service has systemd drop-ins/)
+  const stale = spawnSync("/bin/sh", ["-c", command], {
+    encoding: "utf8",
+    env: { ...env, SYSTEMD_HOME_NEED_DAEMON_RELOAD: "yes" },
+  })
+  assert.equal(stale.status, 1)
+  assert.match(stale.stderr, /Path-1 service chariox-path1-managed-bootstrap\.service needs systemd daemon-reload/)
 })
 
-test("repository release policy admits the target and two retained releases", async (context) => {
+test("repository release policy admits the target and the retained current release", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-release-policy-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const current = join(root, "current")
@@ -145,8 +133,8 @@ test("repository release policy admits the target and two retained releases", as
   const policy = JSON.parse(policyBytes)
   const runtimeTypes = await readFile(join(repositoryRoot, "apps/kernel/src/local/api/types.rs"), "utf8")
   const runtimeProtocol = Number(runtimeTypes.match(/LOCAL_DAEMON_PROTOCOL_VERSION: u32 = (\d+);/)[1])
-  // MP-08/MP-09/MP-10/MP-11: the target and current and previous releases are reciprocal.
-  assert.deepEqual(admittedPredecessorProtocols, [629, 636])
+  // MP-08/MP-09/MP-10/MP-11: signed A3 (966) and the new target are reciprocal.
+  assert.deepEqual(admittedPredecessorProtocols, [966])
   const admittedProtocols = [...admittedPredecessorProtocols, runtimeProtocol]
   assert.deepEqual(policy, {
     schemaVersion: 1,
@@ -191,7 +179,7 @@ test("Path-1 upgrade fixture has a verified builder attestation and both supervi
   await put(releaseKey, rawPublicKey(releaseKeys.publicKey).toString("base64"))
   await put(builderKey, rawPublicKey(builderKeys.publicKey).toString("base64"))
   const release = await makeRelease(
-    root, "path1", 325, releaseKeys.privateKey, releaseKeys.publicKey, null, true, builderKeys,
+    root, "path1", 325, releaseKeys.privateKey, releaseKeys.publicKey, null, builderKeys,
   )
   const result = spawnSync(process.execPath, [
     verifyRelease, release.rootfs, release.digest, releaseKey, "path1", builderKey,
@@ -229,7 +217,7 @@ test("managed kernel upgrade atomically advances the release and receipt without
 })
 
 test("managed kernel upgrade replaces the running kernel in place when its units and home stay the same", async (context) => {
-  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const harness = await makeHarness(context, { runtimeUnitsChange: false })
   const before = await persistentSnapshot(harness.persistent)
   const result = harness.run()
   assert.equal(result.status, 0, result.stderr)
@@ -247,7 +235,7 @@ test("managed kernel upgrade replaces the running kernel in place when its units
 })
 
 test("a managed kernel that does not replace itself is rolled back by stop, switch back and start", async (context) => {
-  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const harness = await makeHarness(context, { runtimeUnitsChange: false })
   await put(join(harness.state, "refuse-reload-once"), "refuse\n")
   const result = harness.run()
   assert.equal(result.status, 1)
@@ -268,7 +256,7 @@ test("a managed kernel that does not replace itself is rolled back by stop, swit
 })
 
 test("managed kernel upgrade restarts the kernel for a home migration even when its units stay the same", async (context) => {
-  const harness = await makeHarness(context, { workerCapableCurrent: true, runtimeUnitsChange: false })
+  const harness = await makeHarness(context, { runtimeUnitsChange: false })
   const canonicalHome = join(harness.installRoot, "home/chariox")
   const legacyHome = join(harness.installRoot, "var/lib/chariox/home")
   const legacyReceipt = join(legacyHome, "managed/bootstrap-receipt.json")
@@ -286,10 +274,9 @@ test("managed kernel upgrade restarts the kernel for a home migration even when 
 
 
 
-test("Path-1 upgrade rejects effective home or worker drop-ins before recovery or service mutation", async (context) => {
+test("Path-1 upgrade rejects an effective home drop-in before recovery or service mutation", async (context) => {
   for (const [marker, unit] of [
     ["home-drop-in", "chariox-path1-managed-bootstrap.service"],
-    ["worker-drop-in", "chariox-disposable-worker-bootstrap.service"],
   ]) {
     const harness = await makeHarness(context)
     await put(join(harness.state, marker), "present\n")
@@ -311,7 +298,6 @@ test("Path-1 upgrade rejects effective home or worker drop-ins before recovery o
 test("Path-1 upgrade refuses an unreloaded on-disk drop-in before pending transaction recovery or service mutation", async (context) => {
   const services = [
     ["disk-home-drop-in", "chariox-path1-managed-bootstrap.service"],
-    ["disk-worker-drop-in", "chariox-disposable-worker-bootstrap.service"],
   ]
   for (const phase of ["prepared", "stopped"]) {
     for (const [diskDropIn, blockedUnit] of services) {
@@ -344,16 +330,13 @@ test("Path-1 upgrade refuses an unreloaded on-disk drop-in before pending transa
         .trim().split("\n").slice(beforeSystemctl)
       assert.ok(calls.every((call) => call.startsWith("show --property=")), calls.join("\n"))
       assert.ok(calls.includes("show --property=NeedDaemonReload --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
-      assert.ok(calls.includes("show --property=NeedDaemonReload --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
-      assert.ok(calls.includes("show --property=DropInPaths --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
-      assert.ok(calls.includes("show --property=DropInPaths --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
       assert.deepEqual(await treeSnapshot(transactionRoot), beforeTransaction)
       assert.deepEqual(await treeSnapshot(harness.installRoot), beforeInstall)
     }
   }
 })
 
-test("Path-1 upgrade starts the selected supervisor after both effective units pass the drop-in check", async (context) => {
+test("Path-1 upgrade starts the selected supervisor after the effective unit passes the drop-in check", async (context) => {
   const harness = await makeHarness(context, { path1Release: true })
   const result = harness.run({
     CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
@@ -362,7 +345,6 @@ test("Path-1 upgrade starts the selected supervisor after both effective units p
   assert.equal(result.status, 0, result.stderr)
   const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
   assert.ok(calls.includes("show --property=DropInPaths --value chariox-path1-managed-bootstrap.service"), calls.join("\n"))
-  assert.ok(calls.includes("show --property=DropInPaths --value chariox-disposable-worker-bootstrap.service"), calls.join("\n"))
   assert.ok(calls.includes("daemon-reload"), calls.join("\n"))
   const findCall = (call) => calls.indexOf(call)
   assert.ok(findCall("stop chariox-path1-managed-bootstrap.service") < findCall("stop chariox-rootless-docker.service"), calls.join("\n"))
@@ -382,17 +364,17 @@ test("Path-1 upgrade starts the selected supervisor after both effective units p
     `releases/${harness.target.digest.slice("sha256:".length)}`)
 })
 
-test("Path-1 upgrade leaves the kernel stopped and rollback pending when a worker drop-in appears after reload", async (context) => {
+test("Path-1 upgrade leaves the kernel stopped and rollback pending when a home drop-in appears after reload", async (context) => {
   const harness = await makeHarness(context, { path1Release: true })
   const priorReceipt = await readFile(harness.receiptPath, "utf8")
   const priorRelease = await readlink(join(harness.installRoot, "usr/lib/chariox/current"))
-  await put(join(harness.state, "worker-drop-in-after-reload"), "present\n")
+  await put(join(harness.state, "home-drop-in-after-reload"), "present\n")
   const result = harness.run({
     CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
     CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
   })
   assert.equal(result.status, 1, result.stderr)
-  assert.match(result.stderr, /Path-1 service chariox-disposable-worker-bootstrap\.service has systemd drop-ins/)
+  assert.match(result.stderr, /Path-1 service chariox-path1-managed-bootstrap\.service has systemd drop-ins/)
   assert.match(result.stderr, /Path-1 systemd drop-ins blocked activation; rollback remains pending; verify the managed kernel service state before retry/)
   const calls = (await readFile(join(harness.state, "systemctl.log"), "utf8")).trim().split("\n")
   assert.ok(calls.includes("daemon-reload"), calls.join("\n"))
@@ -542,13 +524,13 @@ test("managed kernel upgrade validates the signed candidate before planning lega
   await createRootPrivateDirectory(dirname(legacyReceipt))
   await rename(harness.receiptPath, legacyReceipt)
   await put(
-    join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
+    join(harness.target.rootfs, "etc/systemd/system/chariox-rootless-docker.service"),
     "[Service]\nExecStart=/unexpected\n",
   )
 
   const result = harness.run()
   assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /chariox-disposable-worker-bootstrap.service is corrupted/)
+  assert.match(result.stderr, /chariox-rootless-docker.service is corrupted/)
   assert.equal(await lstat(legacyHome).then(() => true, () => false), true)
   assert.equal(await lstat(canonicalHome).then(() => true, () => false), false)
   assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
@@ -574,50 +556,19 @@ test("managed kernel upgrade rejects a symlinked legacy state entry before stopp
   assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
 })
 
-test("managed upgrade rejects a corrupted declared worker service before stopping the kernel", async (context) => {
-  const harness = await makeHarness(context)
-  await put(
-    join(harness.target.rootfs, "etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
-    "[Service]\nExecStart=/unexpected\n",
-  )
-  const result = harness.run()
-  assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /chariox-disposable-worker-bootstrap.service is corrupted/)
-  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
-})
-
-test("legacy managed release rejects an unsigned extra worker service before stopping the kernel", async (context) => {
-  const harness = await makeHarness(context)
-  await put(
-    join(harness.installRoot, "usr/lib/chariox/current/etc/systemd/system/chariox-disposable-worker-bootstrap.service"),
-    "[Service]\nExecStart=/unexpected\n",
-  )
-  const result = harness.run()
-  assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /undeclared worker service/)
-  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
-})
-
-for (const failHealth of [false, true]) test(`Path-1 builder rotation ${failHealth ? "restores the previous pin on rollback" : "activates the next independent pin"}`, async (context) => {
-  const harness = await makeHarness(context, { path1Release: true, rotateBuilder: true })
-  const runtimePin = join(harness.installRoot, "etc/chariox/trusted-builder-public-key")
-  const previousPin = await readFile(harness.trustedBuilderKey, "utf8")
-  const nextPin = await readFile(harness.nextTrustedBuilderKey, "utf8")
-  await put(runtimePin, previousPin, 0o644)
-  await put(join(harness.state, "check-builder-pin-on-start"), "check\n")
-  if (failHealth) await put(join(harness.state, "fail-health-once"), "fail\n")
-  const result = harness.run({
-    CHARIOX_MANAGED_PROVIDER_TOPOLOGY: "path1",
-    CHARIOX_TRUSTED_BUILDER_PUBLIC_KEY: harness.trustedBuilderKey,
-    CHARIOX_NEXT_TRUSTED_BUILDER_PUBLIC_KEY: harness.nextTrustedBuilderKey,
-  })
-  assert.equal(result.status, failHealth ? 1 : 0, result.stderr)
-  if (failHealth) assert.match(result.stderr, /health check failed; restored previous/)
-  assert.equal(await readFile(runtimePin, "utf8"), failHealth ? previousPin : nextPin)
-  assert.equal((await stat(runtimePin)).mode & 0o777, 0o644)
-  assert.equal((await readFile(join(harness.state, "builder-pin-starts"), "utf8")).trim().split("\n").length, failHealth ? 2 : 1)
-  const selected = failHealth ? harness.current : harness.target
-  assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), `releases/${selected.digest.slice(7)}`)
+test("managed upgrade refuses a current or target release that carries the removed disposable-worker service", async (context) => {
+  const workerUnit = "etc/systemd/system/chariox-disposable-worker-bootstrap.service"
+  for (const carrier of [
+    (harness) => join(harness.installRoot, "usr/lib/chariox/current", workerUnit),
+    (harness) => join(harness.target.rootfs, workerUnit),
+  ]) {
+    const harness = await makeHarness(context)
+    await put(carrier(harness), "[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker\n")
+    const result = harness.run()
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /release carries the removed disposable-worker service/)
+    assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
+  }
 })
 
 test("Path-1 builder rotation supports simultaneous release-signing key rotation", async (context) => {
@@ -744,156 +695,25 @@ test("managed kernel recovery restores a hotpatch facade after interrupted activ
   assert.equal(await readlink(facade), hotpatch)
 })
 
-test("allocation worker upgrade preserves the receipt written by the active bootstrap", async (context) => {
-  const harness = await makeHarness(context, { workerCapableCurrent: true })
-  // Keep this shape aligned with WorkerReceipt in managed_bootstrap/worker.rs,
-  // not the disabled pre-allocation bootstrap's binding/enrollmentReceipt shape.
-  const receipt = {
-    schemaVersion: 1,
-    status: "confirmed",
-    allocationId: "allocation-1",
-    machineId: "machine-1",
-    kernelId: "kernel-1",
-    relayPublicKey: "relay-public-key",
-    runtimeReleaseDigest: harness.current.digest,
-    homeCaller: {
-      accountId: "account-1", userId: "owner-1", realmId: "realm-1",
-      machineId: "home-machine-1", kernelId: "home-kernel-1", relayPublicKey: "home-relay-key",
-    },
-    confirmedAt: "2026-09-11T00:00:00Z",
+test("managed upgrade refuses a disposable-worker receipt before service mutation", async (context) => {
+  const allocationWorkerReceipt = {
+    schemaVersion: 1, status: "confirmed", allocationId: "allocation-1",
+    machineId: "machine-1", kernelId: "kernel-1", relayPublicKey: "relay-public-key",
+    runtimeReleaseDigest: null, confirmedAt: "2026-09-11T00:00:00Z",
+    homeCaller: { accountId: "account-1", userId: "owner-1", realmId: "realm-1",
+      machineId: "home-machine-1", kernelId: "home-kernel-1", relayPublicKey: "home-key" },
   }
-  const receiptBytes = `${JSON.stringify(receipt, null, 2)}\n`
-  const activeReceiptPath = harness.receiptPath
-  await chmod(dirname(activeReceiptPath), 0o700)
-  await put(activeReceiptPath, receiptBytes, 0o640)
-  const before = await persistentSnapshot(harness.persistent)
-  const result = harness.run()
-  assert.equal(result.status, 0, result.stderr)
-  assert.equal(await readFile(activeReceiptPath, "utf8"), receiptBytes)
-  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
-  const serviceLog = await readFile(join(harness.state, "systemctl.log"), "utf8")
-  assert.match(serviceLog, /start chariox-disposable-worker-bootstrap.service/)
-  assert.doesNotMatch(serviceLog, /(?:start|stop) chariox-managed-bootstrap.service/)
-  const rollback = harness.run({}, [harness.current.rootfs, harness.target.digest, harness.current.digest, harness.trustedKey])
-  assert.equal(rollback.status, 0, rollback.stderr)
-  assert.equal(await readFile(activeReceiptPath, "utf8"), receiptBytes)
-  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
-})
-
-test("legacy worker upgrade is rejected before service mutation", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "disposable_worker" })
-  const receipt = await readFile(harness.receiptPath, "utf8")
-  const result = harness.run()
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /legacy disposable worker bootstrap is unsupported/)
-  assert.equal(await readFile(harness.receiptPath, "utf8"), receipt)
-  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
-})
-
-test("managed kernel upgrade preserves an exact disposable worker receipt and persistent state", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
-  const before = await persistentSnapshot(harness.persistent)
-  const receiptBefore = await readFile(harness.receiptPath, "utf8")
-  const result = harness.run()
-  assert.equal(result.status, 0, result.stderr)
-  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBefore)
-  assert.deepEqual(await persistentSnapshot(harness.persistent), before)
-  assert.deepEqual(
-    JSON.parse(await readFile(join(dirname(harness.receiptPath), "release-override.json"), "utf8")),
-    {
-      schemaVersion: 1,
-      kind: "disposable_worker_release",
-      bindingDigest: harness.bindingDigest,
-      runtimeReleaseDigest: harness.target.digest,
-    },
-  )
-})
-
-
-
-test("ordinary managed upgrade rejects a worker release override before service mutation", async (context) => {
-  const harness = await makeHarness(context)
-  await put(
-    join(dirname(harness.receiptPath), "release-override.json"),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      kind: "disposable_worker_release",
-      bindingDigest: `sha256:${"a".repeat(64)}`,
-      runtimeReleaseDigest: harness.current.digest,
-    })}\n`,
-    0o640,
-  )
-  const result = harness.run()
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /ordinary managed bootstrap receipt cannot use/)
-  assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
-})
-
-test("disposable worker upgrade rejects altered Cloud authority before service mutation", async (context) => {
-  for (const mutate of [
-    (receipt) => { receipt.homeCaller.kernelId = "other-home" },
-    (receipt) => { receipt.status = "exchanged" },
-    (receipt) => { receipt.homeCaller.accountId = "other-account" },
-    (receipt) => { receipt.unexpected = true },
-  ]) {
-    const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
-    const receipt = JSON.parse(await readFile(harness.receiptPath, "utf8"))
-    await put(join(dirname(harness.receiptPath), "release-override.json"), JSON.stringify({
-      schemaVersion: 1, kind: "disposable_worker_release", bindingDigest: harness.bindingDigest,
-      runtimeReleaseDigest: harness.current.digest,
-    }), 0o640)
-    mutate(receipt)
-    await put(harness.receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, 0o640)
+  const legacyWorkerReceipt = { schemaVersion: 1, kind: "disposable_worker", status: "exchanged" }
+  for (const worker of [allocationWorkerReceipt, legacyWorkerReceipt]) {
+    const harness = await makeHarness(context)
+    const bytes = `${JSON.stringify({ ...worker, runtimeReleaseDigest: harness.current.digest }, null, 2)}\n`
+    await put(harness.receiptPath, bytes, 0o640)
     const result = harness.run()
     assert.equal(result.status, 1)
-    assert.match(result.stderr, /allocation worker bootstrap receipt is invalid|disposable worker release override is invalid/)
+    assert.match(result.stderr, /disposable worker receipts are unsupported/)
+    assert.equal(await readFile(harness.receiptPath, "utf8"), bytes)
     assert.equal(await lstat(join(harness.state, "systemctl.log")).then(() => true, () => false), false)
   }
-})
-
-test("disposable worker rollback restores its prior signed-release override", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
-  const overridePath = join(dirname(harness.receiptPath), "release-override.json")
-  await put(overridePath, `${JSON.stringify({
-    schemaVersion: 1,
-    kind: "disposable_worker_release",
-    bindingDigest: harness.bindingDigest,
-    runtimeReleaseDigest: harness.current.digest,
-  }, null, 2)}\n`, 0o640)
-  const before = await readFile(overridePath, "utf8")
-  await put(join(harness.state, "fail-health-once"), "fail\n")
-  const result = harness.run()
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
-  assert.equal(await readFile(overridePath, "utf8"), before)
-})
-
-test("disposable worker rollback removes a newly staged release override", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
-  const receiptBefore = await readFile(harness.receiptPath, "utf8")
-  const overridePath = join(dirname(harness.receiptPath), "release-override.json")
-  await put(join(harness.state, "fail-health-once"), "fail\n")
-  const result = harness.run()
-  assert.equal(result.status, 1)
-  assert.match(result.stderr, /health check failed; restored previous managed kernel release/)
-  assert.equal(await lstat(overridePath).then(() => true, () => false), false)
-  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBefore)
-})
-
-test("disposable worker upgrade recovers an interruption without rewriting Cloud authority", async (context) => {
-  const harness = await makeHarness(context, { receiptKind: "allocation_worker" })
-  const receiptBefore = await readFile(harness.receiptPath, "utf8")
-  await put(join(harness.state, "crash-before-symlink"), "crash\n")
-  const interrupted = harness.run()
-  assert.equal(interrupted.signal, "SIGKILL")
-  const retried = harness.run()
-  assert.equal(retried.status, 0, retried.stderr)
-  assert.equal(await readFile(harness.receiptPath, "utf8"), receiptBefore)
-  assert.equal(
-    JSON.parse(await readFile(join(dirname(harness.receiptPath), "release-override.json"), "utf8"))
-      .runtimeReleaseDigest,
-    harness.target.digest,
-  )
 })
 
 test("managed kernel health rejects an unrelated listener without a fresh matching kernel presence", async (context) => {
@@ -1684,7 +1504,6 @@ test("managed kernel upgrade remains a dedicated offline release operation", asy
   assert.match(contents, /CHARIOX_MANAGED_UPGRADE_HEALTH_TIMEOUT_MS:-120000/)
   assert.match(contents, /managed_provider_topology=\$\{CHARIOX_MANAGED_PROVIDER_TOPOLOGY-\}/)
   assert.match(contents, /service_name=chariox-path1-managed-bootstrap\.service/)
-  assert.match(contents, /select_supervisor_service\(\)/)
   assert.match(contents, /verify_selected_release\(\)/)
   assert.match(contents, /path1_unit=chariox-path1-managed-bootstrap\.service/)
   assert.match(serviceContents, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)

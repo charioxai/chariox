@@ -77,6 +77,9 @@ impl Docker {
     fn status(self) -> std::io::Result<ExitStatus> {
         EVENTS.lock().unwrap().push(self.0.join(" ")); Ok(ExitStatus::from_raw(0))
     }
+    fn bounded_status(&mut self) -> std::io::Result<ExitStatus> {
+        EVENTS.lock().unwrap().push(self.0.join(" ")); Ok(ExitStatus::from_raw(0))
+    }
 }
 mod local_docker {
     use super::*;

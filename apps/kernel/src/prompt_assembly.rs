@@ -51,6 +51,7 @@ const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
 const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_AGENT_TRIGGER: &str = include_str!("provider/runtime_agent_trigger_instructions.md");
+const RUNTIME_NOTIFICATION: &str = include_str!("provider/runtime_notification_instructions.md");
 const RUNTIME_SCHEDULED_PROMPT: &str =
     include_str!("provider/runtime_scheduled_prompt_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
@@ -99,8 +100,6 @@ const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
     include_str!("provider/semantic_recall_search_instructions.md");
-const UTILITY_PROJECT_ENVIRONMENT_SETUP: &str =
-    include_str!("provider/project_environment_setup_instructions.md");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -264,7 +263,11 @@ impl PromptTemplateRegistry {
                     && metadata.len() <= 64 * 1024 => {}
             _ => return Err(prompt_settings_error("invalid user rules", "user-rules.md")),
         }
-        let body = crate::project_environment::read_user_rules_file(&root)?;
+        let body = fs::read_to_string(&path)
+            .map_err(|_| prompt_settings_error("invalid user rules", "user-rules.md"))?;
+        if body.contains('\0') {
+            return Err(prompt_settings_error("invalid user rules", "user-rules.md"));
+        }
         Ok(Some(body))
     }
 
@@ -664,6 +667,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
         "runtime/agent-trigger" => ("External trigger context", "runtime", "provider-agent"),
+        "runtime/notification" => ("Notification context", "runtime", "provider-agent"),
         "runtime/scheduled-prompt" => ("Scheduled prompt context", "runtime", "provider-agent"),
         id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
         id if id.starts_with("runtime/") => {
@@ -1078,6 +1082,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/agent-trigger", RUNTIME_AGENT_TRIGGER),
+        BundledPromptTemplate::new("runtime/notification", RUNTIME_NOTIFICATION),
         BundledPromptTemplate::new("runtime/scheduled-prompt", RUNTIME_SCHEDULED_PROMPT),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
@@ -1143,10 +1148,6 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "utility/semantic-recall-search",
             UTILITY_SEMANTIC_RECALL_SEARCH,
         ),
-        BundledPromptTemplate::new(
-            "utility/project-environment-setup",
-            UTILITY_PROJECT_ENVIRONMENT_SETUP,
-        ),
     ]
 }
 
@@ -1202,7 +1203,6 @@ fn prompt_component_tag(template_id: &str) -> String {
         }
         "utility/workspace-commit-message" => "workspace-commit-message-instructions",
         "utility/semantic-recall-search" => "semantic-recall-search-instructions",
-        "utility/project-environment-setup" => "project-environment-setup-instructions",
         _ => return template_id.replace('/', "-"),
     }
     .to_string()
@@ -1422,6 +1422,45 @@ mod tests {
                 .contains("Do not substitute a provider CLI started from Bash"),
             "MP-08/MP-10/MP-11: a requested Room helper must remain a kernel-owned agent"
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // MP-08: an agent knows the pane draws pictures, so a chart is written to a file and referenced, not drawn as text.
+    #[test]
+    fn mp08_runtime_instructions_say_the_pane_renders_images() {
+        let root = temp_prompt_root("pane-images-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Chart the costs",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        for expected in [
+            "renders Markdown inline",
+            "`![alt](path)`",
+            "write it to a PNG file",
+            "about 800 px wide with text at least 14 px high",
+            "also say in words what it shows",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "missing {expected}"
+            );
+        }
+        // Every client's Markdown renderer draws PNG, JPEG, GIF and WebP files; SVG files and
+        // fences or Mermaid would reach some of them as source text or an unsupported card.
+        for unsupported in ["svg", "SVG", "Mermaid"] {
+            assert!(
+                !envelope.hidden_system_context.contains(unsupported),
+                "the hint promises {unsupported}"
+            );
+        }
+        assert!(!envelope.visible_user_prompt.contains("![alt](path)"));
         fs::remove_dir_all(root).unwrap();
     }
 

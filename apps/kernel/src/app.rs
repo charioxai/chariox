@@ -93,9 +93,9 @@ pub(crate) use provider_output_claude_native::clear_claude_context_delivery_for_
 pub(crate) use provider_output_claude_native::tests::{startup_readiness_run, StartupTrustBridge};
 pub(crate) use provider_output_claude_native::{
     claude_headless_prompt_queued_behind_running_turn, claude_native_pending_prompt_cancel_input,
-    claude_native_recent_terminal_failure, claude_workspace_trust_declined,
-    format_claude_permission_message, ClaudeNativeDispatchAttempt, ClaudeNativeProcessOutcome,
-    NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
+    claude_native_recent_terminal_failure, claude_permission_title,
+    claude_workspace_trust_declined, format_claude_permission_message, ClaudeNativeDispatchAttempt,
+    ClaudeNativeProcessOutcome, NativePromptHandoffPolicy, CLAUDE_NATIVE_CONTEXT_REJECTION_MESSAGE,
 };
 pub(crate) use provider_tool_close::{ended_open_provider_tool_rows, ProviderToolEnding};
 pub(crate) use provider_tracking::{
@@ -141,17 +141,15 @@ pub(crate) use provider_launch_policy::{
     granted_mcp_servers_for_agent_launch, resolve_mcp_credentials_for_launch,
     sanitize_resume_state_for_launch, workspace_live_sync_protected_roots,
 };
-pub(crate) use provider_liveness::{
-    clear_active_provider_run_session_pointer, ProviderRunExitSessionSummary,
-};
+pub(crate) use provider_liveness::ProviderRunExitSessionSummary;
 pub(crate) use provider_processes::{
     stop_processes_left_by_dead_kernels, ProviderLaunchProcessRuntime, ProviderProcessReapSummary,
     ProviderProcessTracker,
 };
 pub(crate) use provider_run_read::ProviderRunReadService;
 pub(crate) use remote_lease::{
-    DrainedLeasedProjection, LeaseCallerBinding, LeasedProjectEnvironmentSetupTarget,
-    PreparedLeasedProviderRun, RemoteCompletionHarvest, RemoteLeaseRuntime,
+    DrainedLeasedProjection, LeaseCallerBinding, PreparedLeasedProviderRun,
+    RemoteCompletionHarvest, RemoteLeaseRuntime,
 };
 #[cfg(test)]
 pub(crate) use remote_lease::{
@@ -817,7 +815,9 @@ impl DaemonApp {
         &self.providers
     }
 
-    pub fn providers_mut(&self) -> std::sync::MutexGuard<'_, ProviderProcessService> {
+    pub fn providers_mut(
+        &self,
+    ) -> crate::runtime::checked_lock::CheckedMutexGuard<'_, ProviderProcessService> {
         self.providers.write()
     }
 
@@ -1236,3 +1236,6 @@ mod tests {
         let _ = std::fs::remove_file(state_path);
     }
 }
+
+#[cfg(test)]
+mod project_environment_managed_tests;

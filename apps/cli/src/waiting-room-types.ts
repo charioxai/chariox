@@ -23,8 +23,6 @@ export type WaitingRoomFocus =
   | "managed-provider-account"
   | "managed-git-credentials"
   | "managed-auto-stop"
-  | "managed-custom-minimum"
-  | "managed-custom-idle"
   | "project"
   | "project-entry"
   | "archived-projects"
@@ -94,9 +92,7 @@ export type WaitingRoomState = {
   managedProviderAccountSelection?: WaitingRoomManagedProviderAccountSelection[]
   managedProviderAccountIndex?: number
   managedGitCredentialSource?: "none" | "selected"
-  managedAutoStopPreset?: "agents_done" | "idle_15m" | "idle_30m" | "minimum_3h" | "manual" | "custom"
-  managedCustomMinimumRuntimeSeconds?: number
-  managedCustomIdleDelaySeconds?: number | null
+  managedAutoStopPreset?: "agents_done" | "time_3h" | "manual"
   projectNameDraft?: string
   projectSelectionId?: string
   showArchivedProjects?: boolean

@@ -1,9 +1,9 @@
-// MP-07 / MP-08 / MP-11: self-setup uses the SSH installer's verified lifecycle.
+// MP-07 / MP-08 / MP-11: self-setup uses the machine installer's verified lifecycle.
 import { createHash, verify } from "node:crypto"
 import { spawn } from "node:child_process"
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { join } from "node:path"
-import { runMachine, command, regular, tree, validateRequest } from "../kernel/ssh-machine/remote.mjs"
+import { runMachine, command, regular, tree, validateRequest } from "./machine/remote.mjs"
 import { launchdDefinition, launchdManager } from "./launchd.mjs"
 import { publicKeyFromHex, verifyBundle } from "../../scripts/release-bundle.mjs"
 
@@ -130,7 +130,7 @@ export async function deviceEnroll(binary, input, env, openBrowser, notice) {
 function kernelEnv(home, id, port) {
   const env = { ...process.env, HOME: home }
   for (const name of Object.keys(env)) if (name.startsWith("CHARIOX_")) delete env[name]
-  return { ...env, CHARIOX_HOME: `${home}/.chariox/dev/ssh-machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(port + 1) }
+  return { ...env, CHARIOX_HOME: `${home}/.chariox/dev/machines/${id}`, CHARIOX_KERNEL_HOST: "127.0.0.1", CHARIOX_KERNEL_PORT: String(port), CHARIOX_MCP_HOST: "127.0.0.1", CHARIOX_MCP_PORT: String(port + 1) }
 }
 // One exclusive link: refuse existing unowned CLI executables rather than replacing them.
 function cliNames(id) { return ["chariox", "chariox-setup"].map(name => ({ name, link: id === "local" ? name : `${name}-${id}` })) }
@@ -145,14 +145,15 @@ async function cliLink(home, root, id, remove = false) {
   }
 }
 export async function installLocal(options) {
-  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl = "https://chariox.com", installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
+  const { home = process.env.HOME, version, publicKeyHex, releaseBase = "https://github.com/charioxai/chariox/releases/download", apiUrl, installId = "local", port = 55139, action = "install", ticket, userId, extractorSource, openBrowser = async () => {}, notice = message => process.stdout.write(`${message}\n`), serviceManager, servicePersistence, kernelCommand } = options
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version ?? "")) fail("a pinned release version is required")
   const platform = targetPlatform(options.platform?.split("-")[0], options.platform?.split("-")[1])
 
+  if (!apiUrl) fail("a control plane URL is required (build Setup with one or pass --api-url)")
   publicUrl(apiUrl)
   validateRequest({ action, installId, port, releaseDigest: `sha256:${"a".repeat(64)}` })
   if (!home || !home.startsWith("/") || home === "/" || await realpath(home) !== home) fail("user HOME must be canonical and absolute")
-  const parent = await tree(home, ".local/share/chariox/ssh-machines")
+  const parent = await tree(home, ".local/share/chariox/machines")
   const root = join(parent, installId)
   const stage = await mkdtemp(join(parent, ".setup-"))
   try {

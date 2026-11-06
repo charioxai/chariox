@@ -182,7 +182,7 @@ export type WorkflowCommandHandlerDeps = {
   listQueuedWorkflowPrompts?: () => Promise<WorkflowQueuedPrompt[]>
   updateQueuedWorkflowPrompt?: (
     queueItemRef: string,
-    patch: { prompt?: string | null; queueRef?: string | null; retryDelivery?: boolean },
+    patch: { prompt?: string | null; queueRef?: string | null },
   ) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   removeQueuedWorkflowPrompt?: (queueItemRef: string) => Promise<{ queued_prompt: WorkflowQueuedPrompt; session: RuntimeSession }>
   clearWorkflowPromptQueue?: (workflowRef: string | null, queueRef: string) => Promise<{ queued_prompts: WorkflowQueuedPrompt[]; session: RuntimeSession }>

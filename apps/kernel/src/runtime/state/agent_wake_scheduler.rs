@@ -92,9 +92,16 @@ fn iso(ms: u64) -> String {
 
 impl KernelRuntimeState {
     pub(crate) async fn run_agent_wake_scheduler(&self) {
+        // JoinSet aborts the separate maintenance task when this scheduler is
+        // cancelled at kernel shutdown, including a pending Vault interaction.
+        let mut maintenance = tokio::task::JoinSet::new();
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
+            if maintenance.is_empty() {
+                let state = self.clone();
+                maintenance.spawn(async move { state.run_disk_maintenance().await });
+            }
             if let Err(error) = self
                 .tick_agent_deadlines(crate::session::unix_epoch_ms())
                 .await
@@ -106,6 +113,7 @@ impl KernelRuntimeState {
                     .recover_worker_leased_processes(crate::session::unix_epoch_ms())
                     .is_ok();
             }
+            self.deliver_process_waits();
             let monitor = &self.owned.agent_wakes;
             let paused = monitor.stall_fault.as_ref().is_some_and(|p| p.exists());
             if !paused
@@ -151,13 +159,20 @@ impl KernelRuntimeState {
                     self.notify_wake_owners(None, |_| format!("Kernel supervision sweep stalled since {}: wake delivery checks are degraded; timers still fire", iso(sweep)));
                 }
             }
-            tokio::time::sleep(Duration::from_millis(WAKE_TICK_MS)).await;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(WAKE_TICK_MS)) => {},
+                result = maintenance.join_next() => {
+                    tracing::warn!(?result, "disk maintenance stopped; restarting on the next tick");
+                    tokio::time::sleep(Duration::from_millis(WAKE_TICK_MS)).await;
+                }
+            }
         }
     }
 
     /// Fires due wakes and (from the scheduler only) arms new ones.
     async fn tick_agent_wakes(&self, now: u64, verify: bool) -> Result<(), DaemonError> {
         self.tick_interaction_wakes(now)?;
+        self.resume_browser_region_cards();
         let store = &self.owned.durable_state_store;
         for wake in store.agent_wakes(None, None)? {
             if matches!(wake.state.as_str(), "starting" | "running" | "cancelling")
@@ -201,6 +216,7 @@ impl KernelRuntimeState {
                 format!("Wake '{}' fired (due {})", wake.label, iso(due))
             };
             self.wake_notice(&wake, text);
+            self.close_cards_following(&wake);
             recipients.insert((wake.room_id, wake.agent_id));
         }
         for (room, agent) in recipients {
@@ -423,7 +439,9 @@ impl KernelRuntimeState {
     pub(super) fn schedule_wake_delivery(&self, wake: &AgentWake) {
         let state = self.clone();
         let (room, agent) = (wake.room_id.clone(), wake.agent_id.clone());
+        let wake = wake.clone();
         tokio::spawn(async move {
+            state.close_cards_following(&wake);
             let _ = Box::pin(state.deliver_agent_inbox(&room, &agent)).await;
             state.refresh_wake_projection(&room);
         });

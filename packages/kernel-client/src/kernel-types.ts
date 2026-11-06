@@ -1,6 +1,7 @@
+import type { SessionProcessState } from "./kernel-events.js"
 import type { TurnOutcome } from "./kernel-types-runtime.js"
 
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 966
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 999
 
 export type * from "./kernel-types-apps.js"
 
@@ -18,7 +19,6 @@ export type * from "./kernel-types-environment.js"
 export type * from "./kernel-types-project-environment.js"
 
 export type * from "./kernel-types-workflow-notifications.js"
-export type * from "./kernel-types-project-environment-aggregate.js"
 export type * from "./kernel-types-workflow-notifications.js"
 export type * from "./kernel-types-kernel-browser.js"
 export type * from "./kernel-types-room-terminal.js"
@@ -44,6 +44,7 @@ export type OutsideEvent = {
   | { type: "agent"; value: { run_state?: "idle" | "working" | "error"; task_state?: "working" | "waiting" | "blocked" | "done" | "cancelled"; reason?: string; prompt_id?: string; turn_id?: string; outcome?: TurnOutcome } }
   | { type: "interaction"; value: { state: "pending" | "resolved"; pointer?: { approval_id: string; kind: string; kernel: string; one_line: string; link?: string; expires_at: number }; question?: EventQuestion; resolution?: { via: "terminal" | "external_agent" | "timeout" | "cancelled"; choice_id?: string } } }
   | { type: "terminal"; value: { exit_code: number | null } }
+  | { type: "process"; value: { process_id: string; state: SessionProcessState; waited_ms?: number; ended?: string } }
   | { type: "steer"; value: { steer_id: string } }
   | { type: "session"; value: { state: "agent_added" | "agent_removed" | "ended" } }
   | { type: "gap"; value: { kernel: string; dropped: number; from: number; to: number } }

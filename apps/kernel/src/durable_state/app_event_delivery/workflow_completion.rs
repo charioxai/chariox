@@ -48,13 +48,12 @@ impl PreparedNotification {
             .ok_or_else(|| error("notification queue gone"))?;
         // ACK already exists. Busy/paused/full targets retain accepted inbox until deadline.
         if !queue.enabled()
-            || (sub.delivery_mode == crate::local::NotificationDeliveryMode::Queue
-                && session
-                    .workflow_runs()
-                    .iter()
-                    .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
-                    .count()
-                    >= workflow.max_concurrent() as usize)
+            || session
+                .workflow_runs()
+                .iter()
+                .filter(|r| r.workflow_id() == sub.workflow_id && !r.status().is_terminal())
+                .count()
+                >= workflow.max_concurrent() as usize
         {
             return Err(error("notification target busy or paused"));
         }
@@ -76,10 +75,10 @@ impl PreparedNotification {
             transport: "workflow_notification".into(),
             endpoint_id: sub.endpoint_id.clone(),
             queue_ref: Some(sub.queue_id.clone()),
-            input: serde_json::json!({"source_id":env.source_id,"occurrence_id":env.occurrence_id,"output":env.output,"status":env.status,"subject":env.subject,"payload":env.fields,"ancestry":env.ancestry,"deadline_ms":env.deadline_ms}),
+            input: serde_json::json!({"source_id":env.source_id,"display_name":env.display_name,"occurrence_id":env.occurrence_id,"output":env.output,"ancestry":env.ancestry,"deadline_ms":env.deadline_ms}),
             artifacts: vec![],
             mode: None,
-            caller: serde_json::json!({"kind":"workflow_completion","owner_id":sub.owner_user_id,"installation_id":env.source_id,"delivery_mode":sub.delivery_mode}),
+            caller: serde_json::json!({"kind":"workflow_completion","owner_id":sub.owner_user_id,"installation_id":env.source_id}),
         };
         let queued = sessions.prepare_workflow_prompt_with_publication_invocation(
             session.id(),

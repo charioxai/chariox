@@ -20,8 +20,8 @@ pub use identity::{
 };
 pub use manifest::{Build, ManifestV2, RequiredFeature, RuntimeEngineV2, RuntimeV2};
 pub use package::{
-    pack, verify, PackageDigests, PolicyV2, ReviewEntry, UnverifiedReview, VerifiedPackageV2,
-    MAX_REVIEWS, MAX_REVIEW_BYTES, REVIEW_DIR, REVIEW_SCHEMA,
+    pack, verify, PackageDigests, PolicyV2, ReviewEntry, SignedViewControls, UnverifiedReview,
+    VerifiedPackageV2, MAX_REVIEWS, MAX_REVIEW_BYTES, REVIEW_DIR, REVIEW_SCHEMA,
 };
 pub use ui_actions::{
     check_agreement, check_registration, UiActionDeclaration, UiActionEffect, UiActionField,

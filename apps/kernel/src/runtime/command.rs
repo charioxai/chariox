@@ -58,6 +58,16 @@ impl KernelCommand {
         .then(|| self.caller.caller_id.clone())
     }
 
+    /// A command a kernel owner's Room agent sent through its reach tools.
+    pub(crate) fn reach_caller_id(&self) -> Option<String> {
+        (self.caller.connection_class == Some(crate::local::KernelConnectionClass::KernelAgent)
+            && self
+                .caller
+                .caller_id
+                .starts_with(crate::runtime::state::reach::REACH_PREFIX))
+        .then(|| self.caller.caller_id.clone())
+    }
+
     /// A command an elevated provider turn submitted through its sudo grant.
     pub(crate) fn is_sudo_command(&self) -> bool {
         self.external_grant_id()
@@ -160,6 +170,13 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
             }
         }),
         LocalDaemonRequest::OwnerVault(_) => serde_json::json!({ "OwnerVault": "[redacted]" }),
+        LocalDaemonRequest::SetProjectEnvironmentSecret(request) => serde_json::json!({
+            "SetProjectEnvironmentSecret": {
+                "project_id": request.project_id,
+                "name": request.name,
+                "value": "[redacted]"
+            }
+        }),
         LocalDaemonRequest::SetCredentialSecret(request) => serde_json::json!({
             "SetCredentialSecret": {
                 "session_id": request.session_id,
@@ -170,6 +187,12 @@ fn local_request_payload(request: &LocalDaemonRequest) -> Value {
         }),
         LocalDaemonRequest::UnlockCredentialVault(_) => serde_json::json!({
             "UnlockCredentialVault": { "passphrase": "[redacted]" }
+        }),
+        LocalDaemonRequest::CreateCredentialVault(_) => serde_json::json!({
+            "CreateCredentialVault": { "origin": "[redacted]" }
+        }),
+        LocalDaemonRequest::SealCredentialVaultKey(request) => serde_json::json!({
+            "SealCredentialVaultKey": { "targetKernelId": request.target_kernel_id }
         }),
         LocalDaemonRequest::SetProviderAccountCredential(request) => serde_json::json!({
             "SetProviderAccountCredential": {

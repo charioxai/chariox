@@ -22,7 +22,15 @@ pub(crate) enum AppAutomationMutation {
         event_name: String,
         target: WorkflowAutomationTarget,
         scheduled: bool,
-        delivery_mode: crate::local::NotificationDeliveryMode,
+        previous_target: Option<WorkflowAutomationTarget>,
+    },
+    AgentDeferred {
+        receipt: chariox_app_runtime::app_outbox::Receipt,
+        retry_at_ms: u64,
+    },
+    AgentQueued {
+        receipt: chariox_app_runtime::app_outbox::Receipt,
+        prompt_id: String,
     },
     Deactivate {
         automation_id: String,
@@ -35,6 +43,8 @@ pub(crate) enum AppAutomationMutation {
 pub(crate) enum AppAutomationOutcome {
     Configured(AutomationConfiguration),
     Listed(Vec<AutomationConfiguration>),
+    Queued,
+    Deferred,
 }
 pub(super) struct AppAutomationRequest {
     owner: String,
@@ -103,12 +113,21 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), DaemonError>
     AppOutbox::initialize(connection).map_err(|error| DaemonError::LocalTransport {
         operation: "durable_state.migrate_app_automations",
         message: error.to_string(),
-    })
+    })?;
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('app_outbox') WHERE name='queued_agent_id')", [], |row| row.get(0)).map_err(storage)?;
+    if !exists {
+        connection
+            .execute_batch("ALTER TABLE app_outbox ADD COLUMN queued_agent_id TEXT;")
+            .map_err(storage)?;
+    }
+    connection.execute_batch("CREATE INDEX IF NOT EXISTS app_outbox_queued_agent ON app_outbox(queued_session_id,queued_agent_id,queued_prompt_id) WHERE state='queued' AND queued_agent_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS app_agent_prompt_history ON durable_state_events(subject_id,json_extract(payload_json,'$.agent_id'),sequence) WHERE kind='session.prompt_state.updated';").map_err(storage)?;
+    Ok(())
 }
 fn apply(
     connection: &mut Connection,
     owner: &str,
-    catalog: &EventCatalog,
+    catalog: &Arc<EventCatalog>,
     mutation: AppAutomationMutation,
     budget: &AppOperationBudget,
 ) -> Result<AppAutomationOutcome, AppAutomationError> {
@@ -124,9 +143,16 @@ fn apply(
             event_name,
             target,
             scheduled,
-            delivery_mode,
+            previous_target,
         } => {
             target.require_current(&tx, owner)?;
+            if let Some(previous_target) = previous_target {
+                let current = AppOutbox::configuration_in(&tx, catalog, owner, &automation_id)?;
+                previous_target.require_current(&tx, owner)?;
+                if &current.target != previous_target.target() {
+                    return Err(AppAutomationError::Unauthorized);
+                }
+            }
             budget.check()?;
             AppOutbox::configure_in(
                 &tx,
@@ -138,7 +164,6 @@ fn apply(
                 target.target(),
                 scheduled,
             )?;
-            tx.execute("UPDATE app_automations SET delivery_mode=?4 WHERE owner_id=?1 AND installation_id=?2 AND automation_id=?3",rusqlite::params![owner,catalog.installation_id(),automation_id,delivery_mode.name()])?;
             AppAutomationOutcome::Configured(AppOutbox::configuration_in(
                 &tx,
                 catalog,
@@ -158,6 +183,66 @@ fn apply(
             expected_revision,
             status,
         )?),
+        AppAutomationMutation::AgentDeferred {
+            receipt,
+            retry_at_ms,
+        } => {
+            let retry_at_ms = i64::try_from(retry_at_ms.min(receipt.expires_at_ms))
+                .map_err(|_| OutboxError::Invalid)?;
+            let revision = i64::try_from(receipt.revision).map_err(|_| OutboxError::Invalid)?;
+            let changed = tx.execute(
+                "UPDATE app_outbox SET next_attempt_at_ms=?1,revision=revision+1
+                 WHERE owner_id=?2 AND installation_id=?3 AND receipt_id=?4 AND revision=?5
+                 AND state IN ('accepted','retryable')",
+                rusqlite::params![
+                    retry_at_ms,
+                    owner,
+                    catalog.installation_id(),
+                    receipt.receipt_id,
+                    revision
+                ],
+            )?;
+            if changed != 1 {
+                return Err(OutboxError::Conflict.into());
+            }
+            AppAutomationOutcome::Deferred
+        }
+        AppAutomationMutation::AgentQueued { receipt, prompt_id } => {
+            let automation = chariox_app_runtime::app_outbox::VerifiedAutomation::load_in(
+                &tx,
+                Arc::clone(catalog),
+                owner,
+                &receipt.automation_id,
+                receipt.automation_revision,
+            )?;
+            let config = AppOutbox::configuration_in(&tx, catalog, owner, &receipt.automation_id)?;
+            if config.target.kind != chariox_app_runtime::app_outbox::AutomationTargetKind::Agent {
+                return Err(OutboxError::Invalid.into());
+            }
+            let steered = super::workflow_notifications::agent_steer::association_in(
+                &tx,
+                &receipt.receipt_id,
+            )?;
+            AppOutbox::mark_queued_in(
+                &tx,
+                &automation,
+                &receipt.receipt_id,
+                receipt.revision,
+                &prompt_id,
+                crate::session::unix_epoch_ms(),
+            )?;
+            if let Some(target) = steered {
+                super::workflow_notifications::agent_steer::restore_association_in(
+                    &tx,
+                    &receipt.receipt_id,
+                    &target,
+                )?;
+            }
+            tx.execute("UPDATE app_outbox SET queued_agent_id=?1 WHERE receipt_id=?2 AND owner_id=?3 AND installation_id=?4",
+                rusqlite::params![config.target.endpoint_id,receipt.receipt_id,owner,catalog.installation_id()])?;
+            super::app_event_maintenance::agent::reconcile_prompt_in(&tx, &receipt.receipt_id)?;
+            AppAutomationOutcome::Queued
+        }
         AppAutomationMutation::List => {
             AppAutomationOutcome::Listed(AppOutbox::configurations_in(&tx, catalog, owner)?)
         }

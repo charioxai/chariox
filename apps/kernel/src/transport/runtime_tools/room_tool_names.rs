@@ -3,6 +3,7 @@ use super::*;
 
 pub(crate) fn room_name(meta: &str) -> Option<String> {
     let name = match meta {
+        NOTIFICATION_SOURCES | NOTIFICATION_SUBSCRIBE | NOTIFICATION_UNSUBSCRIBE => meta.into(),
         META_HISTORY_SEARCH_TOOL => "chariox.history.search".into(),
         META_SESSION_OVERVIEW_TOOL => "chariox.room.overview".into(),
         META_RUN_COMMAND_TOOL => "chariox.room.run_command".into(),
@@ -54,7 +55,7 @@ pub(crate) fn canonical_room_tool_name(tool: &str) -> Option<&'static str> {
 pub(crate) fn room_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     meta_runtime_tool_specs().into_iter().filter_map(|mut spec| {
         spec.name = room_name(&spec.name)?;
-        if spec.name == "chariox.history.search" { return Some(spec); }
+        if spec.name == "chariox.history.search" || spec.name.starts_with("chariox.notification_") { return Some(spec); }
         if spec.name == "chariox.history.read" {
             spec.description = "Read a sanitized public event_ref returned by chariox.history.search. Room authorization and current protection are revalidated; no filesystem/blob fallback. Limited to the caller room, even under /sudo.".into();
             spec.input_schema = serde_json::json!({"type":"object","required":["event_ref"],"properties":{"event_ref":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false});

@@ -73,10 +73,11 @@
   {
     "id": "trigger",
     "label": "/trigger",
-    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
+    "description": "Usage: /trigger [list] | every|in <minutes> [--steer|--queue] <prompt> | notification <source> [prompt] | on|off|queue|steer <id> | remove <id> | resend <prompt-id> · prompts that fire into this agent",
     "value": "/trigger ",
     "examples": [
       "/trigger every 30 --steer Check the build",
+      "/trigger notification Release pipeline-2 Summarize what failed",
       "/trigger list"
     ],
     "searchAliases": [
@@ -788,17 +789,10 @@
     "surfaces": ["session", "waiting_room"],
     "children": [
       {
-        "id": "machine-add-ssh",
-        "label": "add ssh",
-        "description": "Install a chosen signed kernel on your computer using your SSH config",
-        "value": "/machine add ssh ",
-        "surfaces": ["session", "waiting_room"]
-      },
-      {
-        "id": "machine-remove-ssh",
-        "label": "remove",
-        "description": "Stop and uninstall an owned SSH installation, retaining its kernel state",
-        "value": "/machine remove ",
+        "id": "machine-add",
+        "label": "add",
+        "description": "Get the command that enrolls another computer of yours",
+        "value": "/machine add ",
         "surfaces": ["session", "waiting_room"]
       },
       {

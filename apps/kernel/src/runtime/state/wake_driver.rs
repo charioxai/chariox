@@ -122,8 +122,10 @@ impl KernelRuntimeState {
             reject_next: Arc::default(),
         }
     }
-    pub(crate) fn register_wake_driver(&self, driver: Arc<dyn WakeDriver>) {
-        self.owned.agent_wakes.drivers.register(driver);
+    /// The caller keeps the driver alive: one that reports through a `WakeSink` holds this
+    /// state, so a strong handle in the registry would keep the whole kernel alive.
+    pub(crate) fn register_wake_driver(&self, driver: Weak<dyn WakeDriver>) {
+        self.owned.agent_wakes.drivers.register_weak(driver);
     }
 }
 
@@ -310,6 +312,7 @@ impl KernelRuntimeState {
         {
             store.agent_lifecycle(cancel(false))?;
         }
+        self.close_cards_following(wake);
         Ok(())
     }
 }

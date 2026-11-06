@@ -34,9 +34,9 @@ const ARTIFACTS = [
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file", 0o755],
   ["chariox-managed-bootstrap.service", "/etc/systemd/system/chariox-managed-bootstrap.service", "file", 0o644],
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file", 0o644],
-  ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file", 0o644],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file", 0o644],
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file", 0o644],
+  ["chariox-slice-image", "/usr/lib/chariox/slice-image", "tree", 0o755],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree", 0o755],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file", 0o644],
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
@@ -360,8 +360,8 @@ function contextExecutable(pathFromRoot) {
   return EXECUTABLE_SUFFIXES.some((suffix) => pathFromRoot.endsWith(suffix))
 }
 
-async function hashContextDirectory(root) {
-  const treePath = await resolveDirectoryPath(root, CONTEXT_ROOT)
+async function hashContextDirectory(root, relativeRoot = CONTEXT_ROOT, maximumBytes = MAX_CONTEXT_BYTES) {
+  const treePath = await resolveDirectoryPath(root, relativeRoot)
   const rootMetadata = await lstat(treePath)
   if ((rootMetadata.mode & 0o7777) !== 0o755) fail("slice build context root mode is invalid")
   const hash = createHash("sha256")
@@ -392,7 +392,7 @@ async function hashContextDirectory(root) {
         const executable = contextExecutable(pathFromRoot)
         const expectedMode = executable ? 0o755 : 0o644
         if (mode !== expectedMode) fail("slice build context file mode is invalid")
-        if (metadata.size > MAX_CONTEXT_BYTES) fail("slice build context file exceeds its size limit")
+        if (metadata.size > maximumBytes) fail("slice build context file exceeds its size limit")
         hash.update("file:" + byteLength + ":" + pathFromRoot + ":" + mode + ":" + metadata.size + ":")
         const digest = createHash("sha256")
         const before = await lstat(path)
@@ -413,7 +413,7 @@ async function hashContextDirectory(root) {
           for await (const chunk of stream) {
             size += chunk.length
             counter.bytes += chunk.length
-            if (counter.bytes > MAX_CONTEXT_BYTES) fail("slice build context exceeds its size limit")
+            if (counter.bytes > maximumBytes) fail("slice build context exceeds its size limit")
             hash.update(chunk)
             if (pathFromRoot === RELAY_CONTEXT_PATH || pathFromRoot === SLICE_KERNEL_CONTEXT_PATH) {
               digest.update(chunk)
@@ -587,7 +587,7 @@ async function verifyAtRoot(options, root) {
     }
   }
   const releaseArtifacts = [...ARTIFACTS.slice(0, 2), ...appArtifacts,
-    ...ARTIFACTS.slice(2, 6), ...(hasDataVolumeAdmission ? DATA_VOLUME_ARTIFACTS : []), ...ARTIFACTS.slice(6)]
+    ...ARTIFACTS.slice(2, 5), ...(hasDataVolumeAdmission ? DATA_VOLUME_ARTIFACTS : []), ...ARTIFACTS.slice(5)]
   if (manifest.artifacts.length !== releaseArtifacts.length) {
     fail("release manifest does not contain the exact installed artifacts")
   }
@@ -631,6 +631,9 @@ async function verifyAtRoot(options, root) {
     if (digest !== expected) fail(name + " artifact digest does not match the signed release")
     actualDigests.set(name, digest)
   }
+  const image = await hashContextDirectory(root, "usr/lib/chariox/slice-image", Number.MAX_SAFE_INTEGER)
+  if (image.digest !== manifestArtifacts.get("chariox-slice-image").sha256) fail("slice image digest does not match the signed release")
+  actualDigests.set("chariox-slice-image", image.digest)
   const context = await hashContextDirectory(root)
   if (context.digest !== manifestArtifacts.get("chariox-slice-build-context").sha256) {
     fail("slice build context digest does not match the signed release")

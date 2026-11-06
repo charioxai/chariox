@@ -1,4 +1,5 @@
 //! Long-lived children must belong to the kernel process, not a temporary caller.
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use portable_pty::{CommandBuilder, SlavePty};
 use std::io;
 use std::process::{Child, Command};
@@ -22,6 +23,15 @@ fn make_killable(command: &mut Command) {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::process::CommandExt;
+        // A child inherits the kernel's own adjustment, so only a negative one
+        // needs lifting. Any pre_exec hook turns the spawn into a fork, which
+        // copies the whole kernel's page tables and stalls its other threads
+        // on every `ps` and `git` it starts.
+        if !lifts_adjustment(
+            &std::fs::read_to_string("/proc/self/oom_score_adj").unwrap_or_default(),
+        ) {
+            return;
+        }
         // Only async-signal-safe syscalls run between fork and exec, so a
         // refusal cannot be logged here. Killability is best effort: the
         // kernel is non-dumpable (PR_SET_DUMPABLE 0), which makes its
@@ -68,13 +78,18 @@ fn make_killable(command: &mut Command) {
     let _ = command;
 }
 
+/// Whether a child of a process with this `oom_score_adj` must lift the inherited immunity.
+fn lifts_adjustment(own: &str) -> bool {
+    own.starts_with('-')
+}
+
 pub(crate) fn spawn_command(mut command: Command) -> io::Result<Child> {
     make_killable(&mut command);
     on_owner(
         move || command.spawn(),
         |mut child| {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         },
     )
 }
@@ -136,7 +151,7 @@ pub(crate) fn spawn_pty(
         },
         |mut child| {
             let _ = child.kill();
-            let _ = child.wait();
+            let _ = child.bounded_wait();
         },
     )
 }

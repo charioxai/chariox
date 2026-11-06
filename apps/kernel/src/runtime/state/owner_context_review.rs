@@ -11,18 +11,12 @@ impl KernelRuntimeState {
         context_id: &str,
         target: &str,
     ) -> Result<(), DaemonError> {
-        if let ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } = development
-        {
-            let selections = repositories
-                .iter()
-                .map(crate::managed_context::outbound_service::resolve_repository_selection)
-                .collect::<Result<Vec<_>, _>>()?;
-            return self
-                .review_credential_free_project_context(project_id, &selections, context_id, target)
-                .await;
+        // A Project's Environment holds names and text only, so there is nothing to confirm for it.
+        if matches!(
+            development,
+            ManagedContextDevelopmentSelection::SourceProject { .. }
+        ) {
+            return Ok(());
         }
         // A kernel-only copy has no selected Project. Use an existing owner
         // session so the normal TUI/Web interaction projection remains the sole

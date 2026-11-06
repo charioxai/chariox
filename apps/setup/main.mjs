@@ -2,10 +2,10 @@
 import { createInterface } from "node:readline/promises"
 import { stdin, stdout } from "node:process"
 import { installLocal, publicUrl } from "./installer.mjs"
-import { command } from "../kernel/ssh-machine/remote.mjs"
+import { command } from "./machine/remote.mjs"
 
 export async function runSetup(build, argv = process.argv.slice(2)) {
-  const options = { ...build }
+  const options = { ...build, apiUrl: build.controlPlaneUrl }
   let login = false, enroll = false
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -59,7 +59,7 @@ export async function runSetup(build, argv = process.argv.slice(2)) {
     const { spawn } = await import("node:child_process")
     const path = `${options.home ?? process.env.HOME}/.local/bin/${!options.installId || options.installId === "local" ? "chariox" : `chariox-${options.installId}`}`
     await new Promise((yes, no) => {
-      const child = spawn(path, ["login", "--api-url", options.apiUrl ?? "https://chariox.com"], { stdio: "inherit" })
+      const child = spawn(path, ["login", "--api-url", options.apiUrl], { stdio: "inherit" })
       child.once("error", () => no(new Error("installed CLI login could not start")))
       child.once("close", code => code === 0 ? yes() : no(new Error("installed CLI login failed")))
     })

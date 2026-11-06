@@ -607,6 +607,11 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         expected_prompt_id: Option<&str>,
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -666,6 +671,11 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         expected_queue_id: Option<&str>,
     ) -> Result<Option<crate::app::KernelPromptDispatch>, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let idle_check_session = self.session_store.get_session(session_id)?;
         if self
             .prompt_state_owner
@@ -851,6 +861,11 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         expected_reservation: Option<u64>,
     ) -> Result<QueuedPromptSteerContext, DaemonError> {
+        self.expire_queued_agent_notifications(
+            session_id,
+            agent_id,
+            crate::session::unix_epoch_ms(),
+        )?;
         let _ = self.ensure_attachment_in_session(session_id, attachment_id)?;
         let target_agent = self.agent_store.get_agent(agent_id)?;
         if target_agent.session_id() != session_id {
@@ -1157,6 +1172,27 @@ impl KernelRuntimeOwnedState {
         persisted
     }
 
+    // Receipt settlement must distinguish a handoff from queued cancellation,
+    // including when the receipt is associated after the prompt leaves the queue.
+    fn persist_queued_prompt_steer_handoff(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        target_prompt_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state_store.append_event(
+            "session.prompt.steered",
+            Some(session_id.to_string()),
+            serde_json::json!({
+                "agent_id": agent_id,
+                "prompt_id": prompt_id,
+                "target_prompt_id": target_prompt_id,
+            }),
+        )?;
+        Ok(())
+    }
+
     fn commit_queued_prompt_steer(
         &self,
         session_id: &str,
@@ -1185,6 +1221,12 @@ impl KernelRuntimeOwnedState {
                 context.queued_prompt.prompt_origin(),
             )?,
         };
+        self.persist_queued_prompt_steer_handoff(
+            session_id,
+            agent_id,
+            prompt_id,
+            &target_active_prompt_id,
+        )?;
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&context.session, agent_id, prompt_id)
@@ -1335,7 +1377,25 @@ impl KernelRuntimeOwnedState {
     /// in the provider's turn. Reconcile its durable hold without replaying it.
     pub(super) fn reconcile_inactive_local_steers(&self) -> Vec<(String, String, String)> {
         let mut dropped = Vec::new();
-        for session in self.session_store.list_all_sessions() {
+        // Only a Room holding a submitted steer is copied; the scan costs no more per Room.
+        let holding_rooms: Vec<String> = self
+            .session_store
+            .read()
+            .all_session_refs()
+            .filter(|session| {
+                session.prompt_states().values().any(|prompt_state| {
+                    prompt_state
+                        .queued_prompts()
+                        .iter()
+                        .any(|prompt| prompt.local_steer_submitted())
+                })
+            })
+            .map(|session| session.id().to_owned())
+            .collect();
+        for room in holding_rooms {
+            let Ok(session) = self.session_store.get_session(&room) else {
+                continue;
+            };
             for (agent_id, prompt_state) in session.prompt_states() {
                 for prompt in prompt_state.queued_prompts() {
                     if !prompt.local_steer_submitted() {
@@ -1652,6 +1712,12 @@ impl KernelRuntimeOwnedState {
             prepared.prompt.attachments(),
             prepared.prompt.prompt_origin(),
         )?;
+        self.persist_queued_prompt_steer_handoff(
+            session_id,
+            agent_id,
+            prepared.prompt.id(),
+            &prepared.target_active_prompt_id,
+        )?;
         let prompt = self
             .prompt_state_owner
             .remove_queued_prompt(&session, agent_id, prepared.prompt.id())
@@ -1809,6 +1875,12 @@ impl KernelRuntimeOwnedState {
                     queued_prompt.prompt(),
                     queued_prompt.attachments(),
                     queued_prompt.prompt_origin(),
+                )?;
+                self.persist_queued_prompt_steer_handoff(
+                    session_id,
+                    agent_id,
+                    queued_prompt_id,
+                    target_home_prompt_id,
                 )?;
                 self.prompt_state_owner
                     .remove_queued_prompt(&session, agent_id, queued_prompt_id)

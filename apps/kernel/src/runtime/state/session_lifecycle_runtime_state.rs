@@ -53,7 +53,15 @@ impl KernelRuntimeState {
         };
         let slice_ref = slice_ref.clone();
         if slice_ref.is_none() && kernel_ref.is_none() {
+            let base_worktree = request.worktree_id.clone();
+            let placed = request.worktree_placement.is_some();
             request = prepare_local_session_worktree_placement(request)?;
+            if placed {
+                self.copy_environment_files_into_worktree(
+                    std::path::Path::new(&base_worktree),
+                    std::path::Path::new(&request.worktree_id),
+                )?;
+            }
         }
         request = canonicalize_session_workspace(request);
         let existing_project_ids = self
@@ -638,6 +646,10 @@ impl KernelRuntimeState {
             request.worktree_id.as_deref(),
             "agent.spawn",
         )?;
+        self.copy_environment_files_into_worktree(
+            std::path::Path::new(base_worktree),
+            std::path::Path::new(&resolved),
+        )?;
         request.worktree_id = Some(resolved);
         Ok(request)
     }
@@ -1006,6 +1018,7 @@ impl KernelRuntimeState {
             .await;
         for agent in owned.agent_store.get_session_agents(session_id) {
             self.revoke_agent_app_capability_grants(&agent).await?;
+            self.terminal_input_grants.forget(agent.id());
         }
         let worker_agents = self.agents_leased_to_workers(session_id);
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
@@ -1731,7 +1744,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1756,7 +1769,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("final idle activity should be durable");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert!(idle.changed_at_ms >= busy.changed_at_ms);
         assert!(runtime.owned.session_projection.change_sequence() > projection_sequence);
         // An ended session is retired from the live projection; its end is durable above.
@@ -1790,7 +1803,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1841,7 +1854,7 @@ mod tests {
         let (_, still_busy) = runtime
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
-        assert_eq!(still_busy.running_agent_count, 1);
+        assert_eq!(still_busy.working_agent_count, 1);
         assert!(runtime
             .owned
             .durable_state_store
@@ -1857,7 +1870,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("successful retry should persist idle activity");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert_eq!(
             runtime
                 .owned
@@ -1893,7 +1906,7 @@ mod tests {
         let (_, busy) = runtime
             .managed_activity_report_snapshot()
             .expect("busy activity should be durable");
-        assert_eq!(busy.running_agent_count, 1);
+        assert_eq!(busy.working_agent_count, 1);
         runtime
             .owned
             .session_snapshot(&session_id)
@@ -1928,7 +1941,7 @@ mod tests {
         let (_, still_busy) = runtime
             .managed_activity_report_snapshot()
             .expect("an unrelated activity hook must retain the durable busy state");
-        assert_eq!(still_busy.running_agent_count, 1);
+        assert_eq!(still_busy.working_agent_count, 1);
         assert!(runtime
             .owned
             .durable_state_store
@@ -1950,7 +1963,7 @@ mod tests {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("deleting the final busy session should persist idle activity");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         assert_eq!(
             runtime
                 .owned

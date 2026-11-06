@@ -59,8 +59,7 @@ impl CapabilityRuntimeStore {
             .capability_context(session_id, attachment_id, capability)
             .await?;
         let environment = if capability == "shell" {
-            self.state
-                .project_environment_for_shell(session_id, &snapshot.worktree_root)?
+            self.state.project_environment_for_shell(session_id)?
         } else {
             Default::default()
         };

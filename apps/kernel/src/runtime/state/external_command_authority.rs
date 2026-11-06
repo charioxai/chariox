@@ -61,6 +61,7 @@ impl KernelRuntimeState {
         state.room_request_origin = None;
         state.terminal_caller = false;
         state.forwarded_peer_binding = None;
+        state.gateway_requester = None;
         state
     }
 

@@ -5,11 +5,8 @@ import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("MP-08 / MP-10 protocol 437 notification contracts are owner/ancestry neutral", () => {
 
-  assert.deepEqual(registerWorkflowNotificationSourceRequest("s", "w", true), { RegisterWorkflowNotificationSource: { session_id: "s", workflow_ref: "w", enabled: true, output_fields: null } })
-  assert.deepEqual(attachWorkflowNotificationRequest("target", "source", "publication"), { AttachWorkflowNotification: { session_id: "target", source_id: "source", publication_ref: "publication", queue_ref: null, ttl_days: 7, events: "success", filters: null, delivery_mode: "queue" } })
+  assert.deepEqual(registerWorkflowNotificationSourceRequest("s", "w", "exit-1", true), { RegisterWorkflowNotificationSource: { session_id: "s", workflow_ref: "w", exit_node_id: "exit-1", enabled: true } })
+  assert.deepEqual(attachWorkflowNotificationRequest("target", "source", "publication"), { AttachWorkflowNotification: { session_id: "target", source_id: "source", publication_ref: "publication" } })
   assert.deepEqual(listWorkflowNotificationsRequest("s"), { ListWorkflowNotifications: { session_id: "s" } })
 })
 
- test("MP-08 / MP-10 attach carries inject and opaque dotted filters", () => {
-  assert.equal(attachWorkflowNotificationRequest("s", "src", "pub", null, 7, "both", { "opaque.category": ["a", "b"] }, "inject").AttachWorkflowNotification.delivery_mode, "inject")
- })

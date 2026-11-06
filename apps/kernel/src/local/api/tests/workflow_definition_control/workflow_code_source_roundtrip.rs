@@ -180,7 +180,7 @@ fn source_rebuild_enables_nonempty_queue_under_activity_boundary() {
         .runtime_state()
         .managed_activity_report_snapshot()
         .expect("idle activity should be readable before enabling rebuild");
-    assert_eq!(before.running_agent_count, 0);
+    assert_eq!(before.working_agent_count, 0);
 
     let response = fixture.rebuild(true, fixture.revision());
     assert!(matches!(
@@ -198,7 +198,7 @@ fn source_rebuild_enables_nonempty_queue_under_activity_boundary() {
         .runtime_state()
         .managed_activity_report_snapshot()
         .expect("busy activity should be readable after enabling rebuild");
-    assert_eq!(after.running_agent_count, 1);
+    assert_eq!(after.working_agent_count, 1);
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn source_rebuild_disables_nonempty_queue_under_activity_boundary() {
         .runtime_state()
         .managed_activity_report_snapshot()
         .expect("busy activity should be readable before disabling rebuild");
-    assert_eq!(before.running_agent_count, 1);
+    assert_eq!(before.working_agent_count, 1);
 
     fixture.rebuild(true, fixture.revision());
     let session = fixture.session();
@@ -226,7 +226,7 @@ fn source_rebuild_disables_nonempty_queue_under_activity_boundary() {
         .runtime_state()
         .managed_activity_report_snapshot()
         .expect("idle activity should be readable after disabling rebuild");
-    assert_eq!(after.running_agent_count, 0);
+    assert_eq!(after.working_agent_count, 0);
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn source_rebuild_preview_and_activity_noop_preserve_idle_epoch() {
         .runtime_state()
         .managed_activity_report_snapshot()
         .expect("idle activity should be readable before no-op rebuild");
-    assert_eq!(before.running_agent_count, 0);
+    assert_eq!(before.working_agent_count, 0);
     let revision = fixture.revision();
 
     assert!(matches!(

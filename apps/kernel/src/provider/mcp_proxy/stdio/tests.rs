@@ -29,7 +29,13 @@ fn process_for(
 ) -> Arc<Mutex<StdioMcpProcess>> {
     let key = config.definition_hash().expect("definition hash");
     supervisor
-        .process(&key, provider_run_id, session_id, config)
+        .process(
+            &key,
+            provider_run_id,
+            session_id,
+            config,
+            &Default::default(),
+        )
         .expect("stdio MCP process should start")
 }
 
@@ -108,6 +114,7 @@ fn busy_process_lookup_does_not_hold_the_supervisor_lock() {
                 "provider-run-busy-b",
                 "session-busy-b",
                 &lookup_config,
+                &Default::default(),
             )
             .is_ok();
         let _ = completed_tx.send(result);
@@ -149,14 +156,26 @@ fn closed_run_and_session_reject_late_process_ownership() {
     let mut supervisor = StdioMcpSupervisor::default();
 
     assert!(supervisor.release_run("provider-run-closed").is_empty());
-    let run_error = supervisor.process(&key, "provider-run-closed", "session-open", &config);
+    let run_error = supervisor.process(
+        &key,
+        "provider-run-closed",
+        "session-open",
+        &config,
+        &Default::default(),
+    );
     assert!(
         run_error.is_err(),
         "a released run must not reacquire ownership"
     );
 
     assert!(supervisor.release_session("session-closed").is_empty());
-    let session_error = supervisor.process(&key, "provider-run-open", "session-closed", &config);
+    let session_error = supervisor.process(
+        &key,
+        "provider-run-open",
+        "session-closed",
+        &config,
+        &Default::default(),
+    );
     assert!(
         session_error.is_err(),
         "a released session must not reacquire ownership"
@@ -309,4 +328,187 @@ readline.createInterface({input: process.stdin}).on('line', line => {
         retry.pointer("/result/content/0/text"),
         Some(&json!("recovered"))
     );
+}
+
+#[test]
+fn a_projects_secret_reaches_the_server_that_reads_its_variable() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+let buffer = ''
+process.stdin.on('data', (chunk) => {
+  buffer += chunk
+  let newline
+  while ((newline = buffer.indexOf('\n')) >= 0) {
+    const message = JSON.parse(buffer.slice(0, newline))
+    buffer = buffer.slice(newline + 1)
+    process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { key: process.env.ENVIMPL_PROJECT_KEY ?? null } })}\n`)
+  }
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let mut supervisor = StdioMcpSupervisor::default();
+    let key = config.definition_hash().expect("definition hash");
+    let project_environment = BTreeMap::from([(
+        "ENVIMPL_PROJECT_KEY".to_string(),
+        "synthetic-project-key".to_string(),
+    )]);
+    let process = supervisor
+        .process(
+            &key,
+            "provider-run-key",
+            "session-key",
+            &config,
+            &project_environment,
+        )
+        .expect("stdio MCP process should start");
+    let response = process
+        .lock()
+        .expect("process lock")
+        .dispatch(json!({"jsonrpc": "2.0", "id": "k", "method": "tools/call"}))
+        .expect("response");
+    assert_eq!(response["result"]["key"], json!("synthetic-project-key"));
+}
+
+#[test]
+fn project_mcp_processes_are_scoped_to_owner_and_resolved_environment() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+import readline from 'node:readline'
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+    account: process.env.ENVIMPL_PROJECT_KEY === 'synthetic-project-a' ? 'a' : 'b'
+  } }) + '\n')
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let key = config.definition_hash().unwrap();
+    let mut supervisor = StdioMcpSupervisor::default();
+    let values = |value: &str| BTreeMap::from([("ENVIMPL_PROJECT_KEY".into(), value.into())]);
+    let a = supervisor
+        .process(
+            &key,
+            "run-a",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let b = supervisor
+        .process(
+            &key,
+            "run-b",
+            "project-b-session",
+            &config,
+            &values("synthetic-project-b"),
+        )
+        .unwrap();
+    let same_values_other_owner = supervisor
+        .process(
+            &key,
+            "run-c",
+            "project-c-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let reused = supervisor
+        .process(
+            &key,
+            "run-a-2",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-a"),
+        )
+        .unwrap();
+    let rotated = supervisor
+        .process(
+            &key,
+            "run-a-2",
+            "project-a-session",
+            &config,
+            &values("synthetic-project-b"),
+        )
+        .unwrap();
+    for (process, account) in [(&a, "a"), (&b, "b"), (&rotated, "b")] {
+        let response = process
+            .lock()
+            .unwrap()
+            .dispatch(json!({"jsonrpc":"2.0", "id":1, "method":"tools/call"}))
+            .unwrap();
+        assert_eq!(response["result"]["account"], json!(account));
+    }
+    assert!(Arc::ptr_eq(&a, &reused));
+    assert!(!Arc::ptr_eq(&a, &same_values_other_owner));
+    assert!(!Arc::ptr_eq(&a, &rotated));
+    assert_eq!(supervisor.process_count(), 4);
+}
+
+#[test]
+fn a_rotated_value_restores_the_providers_handshake_on_the_replacement_process() {
+    crate::test_support::isolated_env_test!();
+    let Some(mut config) = node_stdio_config(
+        r#"
+import readline from 'node:readline'
+let initialized = false
+let notified = false
+const send = (value) => process.stdout.write(JSON.stringify(value) + '\n')
+readline.createInterface({ input: process.stdin }).on('line', (line) => {
+  const request = JSON.parse(line)
+  if (request.method === 'initialize') {
+    initialized = true
+    send({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: '2025-03-26', capabilities: {}, serverInfo: { name: 'rotation', version: '1' } } })
+  } else if (request.method === 'notifications/initialized') {
+    notified = true
+  } else if (!initialized || !notified) {
+    send({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'not initialized' } })
+  } else {
+    send({ jsonrpc: '2.0', id: request.id, result: { value: process.env.ENVIMPL_PROJECT_KEY } })
+  }
+})
+"#,
+    ) else {
+        return;
+    };
+    if let CharioxMcpTransportConfig::Stdio { env_vars, .. } = &mut config.transport {
+        env_vars.push("ENVIMPL_PROJECT_KEY".into());
+    }
+    let key = config.definition_hash().unwrap();
+    let mut supervisor = StdioMcpSupervisor::default();
+    let values = |value: &str| BTreeMap::from([("ENVIMPL_PROJECT_KEY".into(), value.into())]);
+    let original = supervisor
+        .process(&key, "run", "session", &config, &values("before"))
+        .unwrap();
+    {
+        let mut original = original.lock().unwrap();
+        original
+            .dispatch(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}))
+            .unwrap();
+        original
+            .dispatch(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .unwrap();
+    }
+    let rotated = supervisor
+        .process(&key, "run", "session", &config, &values("after"))
+        .unwrap();
+    assert!(!Arc::ptr_eq(&original, &rotated));
+    // The provider keeps its HTTP connection and never initializes again.
+    let response = rotated
+        .lock()
+        .unwrap()
+        .dispatch(json!({"jsonrpc":"2.0","id":2,"method":"tools/call"}))
+        .unwrap();
+    assert_eq!(response["result"]["value"], json!("after"), "{response}");
 }

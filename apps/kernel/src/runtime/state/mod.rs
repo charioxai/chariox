@@ -100,10 +100,12 @@ mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
 mod kernel_access;
+pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
 use outside_events::InteractionPhase;
+mod environment_tools;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -114,6 +116,7 @@ mod user_app_view_runtime;
 mod vault_command;
 mod vault_generate;
 mod vault_use;
+pub(crate) use card_action_state::APPROVE_CHOICE_ID;
 #[cfg(test)]
 pub(crate) use critical_approval_passkey::critical_approval_audit_payload;
 #[cfg(test)]
@@ -121,22 +124,23 @@ pub(crate) use sudo::leased::LEASED_SUDO_PEER_PROTOCOL_VERSION;
 pub(crate) use sudo::SudoWindowProjection;
 #[cfg(test)]
 pub(crate) use sudo::SUDO_WINDOW_LENGTH_FOR_TEST;
-pub(crate) use sudo::{is_sudo_control, is_sudo_prompt, sudo_window_minutes};
+pub(crate) use sudo::{
+    is_sudo_control, is_sudo_prompt, sudo_request_forbidden, sudo_window_minutes,
+};
 mod passkey_prompts;
 pub(crate) use passkey_prompts::INTERACTION_CLOSED;
 #[cfg(test)]
 pub(crate) use passkey_prompts::PASSKEY_ALREADY_ANSWERED;
 mod legacy_room_owner;
+mod metadata_utility_scratch;
 mod native_catalog_refresh;
 mod owner_context_review;
-mod project_environment_export;
-mod project_environment_files;
-mod project_environment_manifest;
-mod project_environment_placement;
-mod project_environment_remote;
-mod project_environment_review;
-mod project_environment_worker_export;
-mod project_environment_workspaces;
+mod project_environment;
+mod project_environment_check;
+mod project_environment_draft;
+mod project_environment_registrations;
+mod project_environment_remote_setup;
+mod project_environment_transfer;
 mod project_prompt_promotion;
 mod provider_output_deadline_store;
 mod provider_reload;
@@ -160,6 +164,7 @@ mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
 mod leased_agent_operations;
 mod managed_activity_runtime_state;
+mod managed_file_activity;
 mod managed_kernel_quiescence_state;
 pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
@@ -189,6 +194,7 @@ mod room_secret_observation;
 mod room_shared_display;
 mod room_terminal_runtime_state;
 mod runtime_tool_call_activity;
+mod terminal_input_grants;
 mod usage_snapshot;
 mod visible_region_capture;
 mod web_bot_auth_runtime;
@@ -205,8 +211,11 @@ pub(crate) struct KernelRuntimeState {
     interaction_answerer: Option<crate::runtime::command::KernelCaller>,
     relay_peer_authority: Option<crate::runtime::relay_peer_authority::RelayPeerAuthority>,
     forwarded_peer_binding: Option<forwarded_peer_authority::ForwardedPeerBinding>,
+    gateway_requester: Option<gateway_requester::GatewayRequester>,
     #[cfg(test)]
     app_lock_wait_probe: Option<Arc<tokio::sync::Notify>>,
+    #[cfg(test)]
+    disk_volume_probe: Option<DiskVolumeProbe>,
     #[cfg(test)]
     queue_promotion_exit_probe: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     app: Arc<Mutex<DaemonApp>>,
@@ -217,17 +226,20 @@ pub(crate) struct KernelRuntimeState {
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
     /// behind it any more, so restart recovery may supersede it instead of waiting for it.
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
+    /// The agents whose terminal input a person allowed for the session.
+    terminal_input_grants: terminal_input_grants::TerminalInputGrants,
     /// The only strong handle on the terminal wake driver. The driver holds a runtime copy made
     /// before this field was set, and the Room terminal service and wake registry hold it weakly,
     /// so dropping the runtime frees the kernel instead of leaving a cycle.
     terminal_wake_driver: Option<Arc<terminal_wake::TerminalWakeDriver>>,
     interaction_wake_driver: Option<Arc<interaction_wake::InteractionWakeDriver>>,
-    /// MP-08/MP-09/MP-11: terminals retain this callback weakly so it cannot
-    /// own the runtime state that owns the terminal service.
-    managed_terminal_activity: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// MP-08 / MP-09 / MP-10 / MP-11: work services retain this callback weakly
+    /// so it cannot own the runtime state that owns those services.
+    managed_work_activity: Option<Arc<dyn Fn() + Send + Sync>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -245,7 +257,6 @@ struct KernelRuntimeOwnedState {
     kernel_access: crate::runtime::kernel_access::AccessStore,
     sudo_turns: sudo::SudoStore,
     agent_auth_registrations: agent_auth::RegistrationClaims,
-    vault_capture_claims: vault_command::CaptureClaims,
     /// Window timer proof of life: entry -> (armed revision, alerted revision).
     sudo_timers: Arc<std::sync::Mutex<BTreeMap<String, (u64, u64)>>>,
     sudo_timer_changes: Arc<RuntimeChangeSignal>,
@@ -297,6 +308,9 @@ struct KernelRuntimeOwnedState {
     kernel_browser_secret_observations: room_secret_observation::RoomSecretObservations,
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
+    disk_usage: crate::runtime::disk_usage::DiskUsageStore,
+    active_file_operations: Arc<std::sync::atomic::AtomicUsize>,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -332,6 +346,7 @@ struct KernelRuntimeOwnedState {
     managed_activity_record_calls: Arc<std::sync::atomic::AtomicU64>,
     legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    provider_usage_refresher: Arc<crate::runtime::provider_usage_refresh::ProviderUsageRefresher>,
     provider_login_processes: ProviderLoginProcessStore,
     provider_auth_recovery_runs: Arc<std::sync::Mutex<BTreeSet<String>>>,
     claude_token_checks: Arc<claude_token_checks::ClaudeTokenChecks>,
@@ -365,6 +380,7 @@ struct KernelRuntimeOwnedState {
     connector_adapter_processes: crate::connector::ConnectorAdapterProcessPool,
     pending_provider_reloads: PendingProviderReloadStore,
     pending_interactions: PendingInteractionStore,
+    browser_region_cards: Arc<std::sync::Mutex<BTreeSet<String>>>,
     handoff_claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
     git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,
@@ -382,6 +398,7 @@ struct KernelRuntimeOwnedState {
     next_agent_lifecycle_sweep_ms: Arc<AtomicU64>,
     task_settlement_revisions: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     agent_wakes: Arc<agent_wake_scheduler::AgentWakeMonitor>,
+    vault_capture_claims: vault_command::CaptureClaims,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     slice_private_relay_connectors: crate::transport::relay_client::SlicePrivateRelayConnectors,
     notification_inventory_projection: crate::runtime::projection::RemoteRelayInventoryProjectionStore,
@@ -394,8 +411,9 @@ struct KernelRuntimeOwnedState {
     agent_trigger_gateways: agent_trigger_gateway::AgentTriggerGatewayStore,
     workflow_publication_runtimes:
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
-    project_environment_placements: project_environment_placement::ProjectEnvironmentPlacements,
-    project_environment_setups: project_environment_setup::ProjectEnvironmentSetupStore,
+    project_environment_setups: Arc<crate::project_environment::SetupRuns>,
+    environment_operations: Arc<crate::project_environment::EnvironmentOperations>,
+    environment_operation_changes: crate::project_environment::OperationChanges,
 }
 
 #[derive(Debug, Clone)]
@@ -466,10 +484,14 @@ mod agent_archive_runtime_state;
 mod agent_config_owned_state;
 mod agent_config_runtime_state;
 mod agent_lifecycle_owned_state;
+mod agent_notification_ancestry;
+mod agent_notification_app;
+mod agent_notification_expiry;
 mod agent_profile_compaction;
 mod agent_profile_owned_state;
 mod agent_trigger_gateway;
 mod agent_trigger_http;
+mod agent_trigger_notification;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
@@ -477,6 +499,7 @@ mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
+mod owner_action_notifications;
 mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -503,6 +526,7 @@ mod metaagent_task_runtime_state;
 pub(crate) use metaagent_task_runtime_state::parse_meta_slash_command;
 mod active_prompt_steering;
 mod external_command_authority;
+mod gateway_requester;
 mod project_runtime_state;
 mod prompt;
 mod prompt_activity_owned_state;
@@ -548,8 +572,6 @@ mod provider_process_runtime_state;
 pub(crate) use provider_process_runtime_state::*;
 mod forwarded_peer_authority;
 mod leased_profile_transition_runtime;
-mod project_environment_setup;
-pub(crate) use project_environment_setup::restore_agent_move_preparation_environment;
 mod provider_auth_recovery;
 #[cfg(test)]
 mod provider_output_runtime_tests;
@@ -580,7 +602,11 @@ mod claude_token_first_use;
 mod provider_login_workflow;
 mod runtime_interaction_owned_state;
 pub(crate) use runtime_interaction_owned_state::interaction_waits;
+mod browser_region_card;
+mod disk_pressure;
+mod disk_usage;
 mod owner_vault;
+mod process_waits;
 mod runtime_interaction_state;
 mod runtime_notice_owned_state;
 mod runtime_state_views;
@@ -596,12 +622,14 @@ mod slice_runtime_state;
 mod vault_owner_gate;
 mod vault_secret_request;
 pub(crate) use vault_secret_request::{SecretRequest, VAULT_SECRET_OPERATION};
+mod vault_creation;
 mod vault_unlock_request;
 mod vault_unlock_requests;
 pub(crate) use slice_runtime_state::SliceAgentRelaunchManifest;
 mod kernel_browser_audience;
 mod kernel_browser_command_error;
 mod kernel_browser_mirror;
+mod kernel_browser_qr;
 mod kernel_browser_receipts;
 mod kernel_browser_runtime;
 mod kernel_browser_secret_runtime;
@@ -652,7 +680,6 @@ mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
-pub(crate) mod notification_delivery;
 mod room_workflow_control_runtime_state;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
@@ -806,6 +833,7 @@ impl KernelRuntimeState {
             agent_runtime_projection,
             app_control,
             managed_kernel_registration,
+            managed_context_transfers,
             runtime_tool_call_activity,
             kernel_browser_host,
             dictation,
@@ -829,6 +857,7 @@ impl KernelRuntimeState {
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
                         app.managed_kernel_registration(),
+                        app.managed_context_transfer_store(),
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
                         app.dictation.clone(),
@@ -888,23 +917,31 @@ impl KernelRuntimeState {
                 .publication_control_state_root
                 .is_some(),
         ));
-        let project_environment_setups =
-            project_environment_setup::ProjectEnvironmentSetupStore::restore_from_durable_state(
-                &durable_state_store,
-            );
         let config = config_projection.snapshot();
-        let managed_activity_kernel_id = (managed_kernel_registration.is_some()
-            || (config.kernel_runtime_role == crate::config::KernelRuntimeRole::RemoteLeaseWorker
-                && std::env::var_os(crate::managed_bootstrap::worker::ACTIVITY_RECEIPT_ENV)
-                    .filter(|value| !value.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .is_some_and(|path| path.exists())))
-        .then(|| config.daemon_id.clone());
+        if let Err(error) =
+            crate::project_environment::remove_schema_1_state(&config.private_runtime_state_root())
+        {
+            crate::logging::warn_with_fields(
+                "daemon.project_environment",
+                "removing the schema 1 Project environments failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+        let managed_activity_kernel_id = managed_kernel_registration
+            .is_some()
+            .then(|| config.daemon_id.clone());
         let managed_activity_transitions =
             managed_activity_persistence::ManagedActivityTransitionState::new(
                 durable_state_store.clone(),
                 managed_activity_kernel_id.clone(),
             );
+        if let Err(error) = managed_activity_transitions.prepare() {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed activity could not be restored before runtime admission",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
         let managed_activity_mutation_lock = Arc::new(std::sync::Mutex::new(()));
         let managed_kernel_quiescence = managed_kernel_registration.as_ref().map(|_| {
             let kernel_id = config.daemon_id.clone();
@@ -916,7 +953,7 @@ impl KernelRuntimeState {
                 Ok(gate) => gate,
                 Err(error) => {
                     crate::logging::error_with_fields(
-                        "managed_kernel.auto_stop_quiescence",
+                        "managed_kernel.quiescence",
                         "durable provider admission fence could not be restored; admissions are closed",
                         serde_json::json!({
                             "kernel_id": kernel_id,
@@ -940,7 +977,7 @@ impl KernelRuntimeState {
                 Ok(client) => client,
                 Err(error) => {
                     crate::logging::error_with_fields(
-                        "managed_kernel.auto_stop_quiescence",
+                        "managed_kernel.quiescence",
                         "managed kernel quiescence transport is unavailable",
                         serde_json::json!({
                             "kernel_id": config.daemon_id,
@@ -1009,6 +1046,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let environment_operation_changes = crate::project_environment::OperationChanges::new();
         let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -1017,8 +1055,11 @@ impl KernelRuntimeState {
             interaction_answerer: None,
             relay_peer_authority: None,
             forwarded_peer_binding: None,
+            gateway_requester: None,
             #[cfg(test)]
             app_lock_wait_probe: None,
+            #[cfg(test)]
+            disk_volume_probe: None,
             #[cfg(test)]
             queue_promotion_exit_probe: None,
             app,
@@ -1027,11 +1068,18 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            lifecycle_sweeps: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
+            terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
             interaction_wake_driver: None,
-            managed_terminal_activity: None,
+            managed_work_activity: None,
             owned: KernelRuntimeOwnedState {
+                provider_usage_refresher:
+                    crate::runtime::provider_usage_refresh::ProviderUsageRefresher::for_kernel(
+                        provider_account_profiles.clone(),
+                        provider_run_projection.clone(),
+                    ),
                 app_control,
                 dev_app_bindings: Default::default(),
                 critical_approval_passkeys:
@@ -1039,10 +1087,16 @@ impl KernelRuntimeState {
                         &config_projection.snapshot().user_config.credential_vault,
                     ),
                 passkey_prompts: Arc::default(),
-                kernel_access: Default::default(),
+                kernel_access: Arc::new(std::sync::Mutex::new(
+                    crate::runtime::kernel_access::AccessState {
+                        // A handed-over run keeps its id: so does the owner's revoke of it.
+                        #[cfg(unix)]
+                        revoked_reach_runs: crate::hot_reload::take_revoked_reach_runs(),
+                        ..Default::default()
+                    },
+                )),
                 sudo_turns: sudo_windows.store(),
                 agent_auth_registrations: Default::default(),
-                vault_capture_claims: Default::default(),
                 sudo_timers: Default::default(),
                 sudo_timer_changes: Default::default(),
                 sudo_verified_at: Default::default(),
@@ -1091,6 +1145,9 @@ impl KernelRuntimeState {
                 ).with_identity(&config.relay_private_key),
                 room_terminals,
                 room_execs: Default::default(),
+                disk_usage: Default::default(),
+                active_file_operations: Default::default(),
+                managed_context_transfers,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
@@ -1153,6 +1210,7 @@ impl KernelRuntimeState {
                 ),
                 pending_provider_reloads: PendingProviderReloadStore::default(),
                 pending_interactions: PendingInteractionStore::shared(),
+                browser_region_cards: Arc::default(),
                 handoff_claims: Arc::default(),
                 git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
                 completed_git_turn_snapshots,
@@ -1172,6 +1230,7 @@ impl KernelRuntimeState {
                 next_agent_lifecycle_sweep_ms: Arc::new(AtomicU64::new(0)),
                 task_settlement_revisions: Arc::default(),
                 agent_wakes: Arc::new(agent_wake_scheduler::AgentWakeMonitor::new()),
+                vault_capture_claims: Default::default(),
                 relay_state,
                 notification_inventory_projection,
                 remote_prompt_projection_drains: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
@@ -1184,11 +1243,18 @@ impl KernelRuntimeState {
                 agent_trigger_gateways: Default::default(),
                 workflow_publication_runtimes:
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
-                project_environment_placements: Default::default(),
-                project_environment_setups,
+                project_environment_setups: crate::project_environment::SetupRuns::new(
+                    &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
+                ),
+                environment_operations: crate::project_environment::EnvironmentOperations::new(
+                    &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
+                ),
+                environment_operation_changes,
             },
         };
-        runtime.link_room_terminals_to_managed_kernel();
+        runtime.link_work_to_managed_kernel();
         runtime.register_terminal_wake_driver();
         runtime.register_interaction_wake_driver();
         runtime.owned.record_managed_activity_transition();
@@ -1260,6 +1326,12 @@ impl KernelRuntimeState {
         })?;
         self.spawn_deferred_workflow_remote_prompt_dispatches(dispatches);
         result
+    }
+
+    pub(crate) fn provider_usage_refresher(
+        &self,
+    ) -> &Arc<crate::runtime::provider_usage_refresh::ProviderUsageRefresher> {
+        &self.owned.provider_usage_refresher
     }
 
     pub(crate) fn provider_account_profile_registry(
@@ -1497,6 +1569,10 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
+#[cfg(test)]
+mod agent_membership_read_tests;
+
+mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;
 mod agent_process_watch;
@@ -1516,9 +1592,13 @@ mod agent_wake_cancellation;
 mod agent_wake_scheduler;
 mod agent_workflow_tasks;
 mod agent_workspace_loss;
+mod card_action_state;
 mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
+mod lifecycle_sweep_flight;
+#[cfg(test)]
+mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod terminal_wake;
 mod terminal_wake_worker;
@@ -1526,3 +1606,9 @@ mod terminal_wake_worker;
 mod workflow_blocked_claim_retry_tests;
 // MD-3: typed internal seam for display integration; public protocol remains coordinator-owned.
 pub(crate) use kernel_browser_runtime::{KernelBrowserDisplayRequest, KernelBrowserPushCredit};
+
+#[cfg(test)]
+type DiskVolumeProbe = fn(&std::path::Path) -> Option<(u64, u64, u64)>;
+
+#[cfg(test)]
+pub(crate) use managed_activity_persistence::ManagedActivityCounts;

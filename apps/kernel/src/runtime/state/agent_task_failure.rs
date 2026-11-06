@@ -5,6 +5,59 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{ExecutionState, Operation};
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn block_vault_refused_inbox_start(
+        &self,
+        room: &str,
+        agent: &str,
+        sequence: u64,
+        error: &DaemonError,
+    ) -> Result<(), DaemonError> {
+        let event = self
+            .durable_state_store
+            .agent_work_inbox(room, agent, sequence.saturating_sub(1), None)?
+            .into_iter()
+            .find(|event| event.sequence == sequence)
+            .ok_or_else(|| {
+                crate::durable_state::agent_lifecycle::error("startup refusal has no inbox event")
+            })?;
+        if event.submit_epoch.is_some() {
+            return Ok(());
+        }
+        let cause = match error {
+            DaemonError::VaultUnlock {
+                code: "vault_unlock_declined",
+                ..
+            } => "The Vault unlock was declined",
+            DaemonError::VaultUnlock {
+                code: "vault_unlock_timed_out",
+                ..
+            } => "The Vault unlock timed out",
+            _ => return Ok(()),
+        };
+        for task in self
+            .durable_state_store
+            .agent_tasks(Some(room), Some(agent))?
+        {
+            if matches!(
+                task.state,
+                ExecutionState::Working | ExecutionState::Blocked
+            ) && task.wait.is_some()
+                && (event.payload["task_id"].as_str() == Some(task.task_id.as_str())
+                    || event.payload["task_ids"].as_array().is_some_and(|ids| {
+                        ids.iter()
+                            .any(|id| id.as_str() == Some(task.task_id.as_str()))
+                    }))
+            {
+                self.durable_state_store.agent_lifecycle(Operation::Block {
+                    task: task.task_id,
+                    prompt: task.prompt_id,
+                    reason: format!("{cause}; unlock the Vault and Resume, or Cancel"),
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn settle_failed_delegate_start(
         &self,
         room: &str,

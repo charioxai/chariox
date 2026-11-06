@@ -3,7 +3,7 @@
 import { createHash, createPublicKey, verify } from "node:crypto"
 import { createReadStream } from "node:fs"
 import { lstat, readFile, readdir, realpath } from "node:fs/promises"
-import { basename, join, relative, resolve, sep } from "node:path"
+import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import { parseUnitSections, verifyPath1ServicePolicy } from "./path1-service-policy.mjs"
 
@@ -24,10 +24,6 @@ const EXPECTED_ARTIFACTS = new Map([
   [
     "chariox-path1-managed-bootstrap.service",
     { path: "/etc/systemd/system/chariox-path1-managed-bootstrap.service", type: "file" },
-  ],
-  [
-    "chariox-disposable-worker-bootstrap.service",
-    { path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", type: "file" },
   ],
   [
     "chariox-rootless-docker.service",
@@ -53,10 +49,16 @@ const EXPECTED_ARTIFACTS = new Map([
     "chariox-slice-build-context",
     { path: "/usr/lib/chariox/slice-build-context", type: "tree" },
   ],
+  ["chariox-slice-image", { path: "/usr/lib/chariox/slice-image", type: "tree" }],
   ["chariox-build-attestation", { path: "/usr/lib/chariox/build-attestation.json", type: "file" }],
   ["chariox-build-attestation-signature", { path: "/usr/lib/chariox/build-attestation.sig", type: "file" }],
   ["chariox-builder-public-key", { path: "/usr/lib/chariox/builder-public-key", type: "file" }],
 ])
+// The disposable-worker supervisor was removed; a release that still carries it is unsupported.
+const REMOVED_WORKER_SERVICE = {
+  name: "chariox-disposable-worker-bootstrap.service",
+  path: "/etc/systemd/system/chariox-disposable-worker-bootstrap.service",
+}
 // Releases built before Apps carry none of these; any later release carries all of them.
 const APP_ARTIFACT_NAMES = [
   "chariox-app-package",
@@ -88,6 +90,36 @@ async function rejectLinkedOrSpecialEntries(current, label) {
       fail(`${label} contains an unsupported file type`)
     }
   }
+}
+
+// Tree artifacts already authenticate all their descendants.
+// Outside them the release contains only declared artifacts, signature metadata,
+// and the directories needed to reach those entries.
+async function verifyReleaseRootInventory(rootfs, artifacts, treePaths) {
+  const files = new Set([
+    "usr/lib/chariox/release-manifest.json",
+    "usr/lib/chariox/release-manifest.sig",
+    "usr/lib/chariox/release-public-key",
+    ...artifacts.map((artifact) => artifact.path.slice(1)),
+  ])
+  const trees = new Set(treePaths.map((path) => path.slice(1)))
+  const directories = new Set(trees)
+  for (const path of files) {
+    for (let parent = dirname(path); parent !== "."; parent = dirname(parent)) {
+      directories.add(parent)
+    }
+  }
+  async function inspect(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (entry.isDirectory() && directories.has(path)) {
+        if (!trees.has(path)) await inspect(join(directory, entry.name), path)
+      } else if (!entry.isFile() || !files.has(path) || trees.has(path)) {
+        fail(`release root contains an undeclared entry: ${path}`)
+      }
+    }
+  }
+  await inspect(rootfs)
 }
 
 async function sha256File(path) {
@@ -334,11 +366,15 @@ async function verifyImageRelease(
   ) {
     fail("release manifest schema is unsupported")
   }
-  // Older schema 2 releases predate the worker and Path-1 home units. Keep them
+  const workerServiceExists = await lstat(artifactPath(rootfs, REMOVED_WORKER_SERVICE.path)).then(() => true, (error) => {
+    if (error.code !== "ENOENT") throw error
+    return false
+  })
+  if (workerServiceExists || manifest.artifacts.some((artifact) => artifact?.name === REMOVED_WORKER_SERVICE.name)) {
+    fail("release carries the removed disposable-worker service; build a release without it")
+  }
+  // Older schema 2 releases predate the Path-1 home unit. Keep them
   // verifiable for shared-host rollback, but never select an undeclared unit.
-  const hasWorkerService = manifest.artifacts.some(
-    (artifact) => artifact?.name === "chariox-disposable-worker-bootstrap.service",
-  )
   const hasPath1Service = manifest.artifacts.some(
     (artifact) => artifact?.name === "chariox-path1-managed-bootstrap.service",
   )
@@ -365,19 +401,15 @@ async function verifyImageRelease(
   if (selectedTopology === "path1" && !hasDataVolumeAdmission) {
     fail("Path-1 releases must include data-volume admission and both ordering drop-ins")
   }
+  const hasSliceImage = manifest.artifacts.some((artifact) => artifact?.name === "chariox-slice-image")
+  if (selectedTopology === "path1" && !hasSliceImage) {
+    fail("Path-1 release is missing its signed prebuilt slice image; install a complete release")
+  }
   const expectedArtifactCount = EXPECTED_ARTIFACTS.size
-    - (hasWorkerService ? 0 : 1)
+    - (hasSliceImage ? 0 : 1)
     - (hasPath1Service ? 0 : 1)
     - (hasDataVolumeAdmission ? 0 : dataVolumeArtifactNames.length)
     - (hasAppArtifacts ? 0 : APP_ARTIFACT_NAMES.length)
-  if (!hasWorkerService) {
-    const workerPath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-disposable-worker-bootstrap.service").path)
-    const workerExists = await lstat(workerPath).then(() => true, (error) => {
-      if (error.code !== "ENOENT") throw error
-      return false
-    })
-    if (workerExists) fail("release contains an undeclared worker service")
-  }
   if (!hasPath1Service) {
     const path1Path = artifactPath(rootfs, EXPECTED_ARTIFACTS.get("chariox-path1-managed-bootstrap.service").path)
     const path1Exists = await lstat(path1Path).then(() => true, (error) => {
@@ -428,6 +460,13 @@ async function verifyImageRelease(
     verifiedArtifactDigests.set(artifact.name, actualDigest)
   }
 
+  await verifyReleaseRootInventory(
+    rootfs,
+    manifest.artifacts,
+    manifest.artifacts.filter((artifact) => EXPECTED_ARTIFACTS.get(artifact.name).type === "tree")
+      .map((artifact) => artifact.path),
+  )
+
   if (selectedTopology === "path1") {
     await verifyPath1BuilderAttestation(
       rootfs,
@@ -472,31 +511,16 @@ async function verifyImageRelease(
       }
     }
     if (selectedTopology === "path1") {
-      const workerServiceName = "chariox-disposable-worker-bootstrap.service"
-      if (!seen.has(workerServiceName)) {
-        fail("release does not declare the selected Path-1 disposable-worker service")
-      }
-      const workerServicePath = artifactPath(rootfs, EXPECTED_ARTIFACTS.get(workerServiceName).path)
-      const workerService = (await readRegularFile(workerServicePath, "Path-1 disposable-worker service", 64 * 1024))
-        .toString("utf8")
-      verifyPath1ServicePolicy(service, "home")
-      const workerSections = verifyPath1ServicePolicy(workerService, "worker")
-      const workerLines = [...workerSections.values()].flat()
+      verifyPath1ServicePolicy(service)
       if (hasDataVolumeAdmission) {
         const requiredRootless = lines.filter((line) => line.startsWith("Requires="))
-        const workerRequiresRootless = workerLines.filter((line) => line.startsWith("Requires="))
         const rootlessRequirements = requiredRootless[0]?.slice("Requires=".length).trim().split(/\s+/) ?? []
-        const workerRootlessRequirements = workerRequiresRootless[0]?.slice("Requires=".length).trim().split(/\s+/) ?? []
-        if (requiredRootless.length !== 1 || !rootlessRequirements.includes("chariox-rootless-docker.service")
-          || workerRequiresRootless.length !== 1 || !workerRootlessRequirements.includes("chariox-rootless-docker.service")) {
-          fail("storage-capable Path-1 supervisors must require rootless Docker")
+        if (requiredRootless.length !== 1 || !rootlessRequirements.includes("chariox-rootless-docker.service")) {
+          fail("storage-capable Path-1 supervisor must require rootless Docker")
         }
       }
       if (hasDataVolumeAdmission && lines.some((line) => line.startsWith("Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH="))) {
         fail("selected Path-1 managed bootstrap service must use the protected bootstrap path")
-      }
-      if (hasDataVolumeAdmission && workerLines.some((line) => line.startsWith("Environment=CHARIOX_DISPOSABLE_WORKER_BOOTSTRAP_PATH="))) {
-        fail("selected Path-1 disposable-worker service must use the protected bootstrap path")
       }
       if (hasDataVolumeAdmission) {
         const dataAdmissionPath = artifactPath(
@@ -542,9 +566,8 @@ async function verifyImageRelease(
           "chariox-slice-disk-quota-allocator.service",
           "chariox-rootless-docker.service",
           "chariox-path1-managed-bootstrap.service",
-          "chariox-disposable-worker-bootstrap.service",
         ].some((unit) => !admissionBeforeUnits.includes(unit))) {
-          fail("Path-1 data-volume admission must precede quota allocation, Docker, and both supervisors")
+          fail("Path-1 data-volume admission must precede quota allocation, Docker, and the supervisor")
         }
         for (const [artifactName, label] of [
           ["chariox-rootless-docker.path1-data-volume.conf", "rootless Docker"],
@@ -581,8 +604,7 @@ async function verifyImageRelease(
         }
       }
 
-    } else if (service.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1")
-      || service.includes("--disposable-worker")) {
+    } else if (service.includes("Environment=CHARIOX_MANAGED_PROVIDER_TOPOLOGY=path1")) {
       fail("selected shared-host managed bootstrap service has a mismatched topology")
     }
   }

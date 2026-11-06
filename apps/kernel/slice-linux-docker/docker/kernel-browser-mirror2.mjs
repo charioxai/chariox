@@ -948,7 +948,8 @@ export class Mirror2 {
       if (own) send(b.id, own);
       // A distorted region's screenshot already holds its compositing: as the element's background the mirrored DOM
       // would apply the transform/opacity again, so such a region carries no still (its video lease shows it).
-      else if (!b.distorted) shots.push(b);
+      // The canvas marker only selects video placement; its untransformed PNG fallback remains valid.
+      else if (!b.distorted || b.distorted === 'canvas') shots.push(b);
     }
     if (!shots.length) return out;
     boxes = shots;

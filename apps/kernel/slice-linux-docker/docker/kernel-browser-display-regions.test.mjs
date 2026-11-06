@@ -330,3 +330,56 @@ test('MP-08/MP-10/MP-11 region capture and encoder drain concurrently before rel
  } finally {clearTimeout(timer);release.resolve();await closing;}
  assert.equal(leaseClosed,true);
 });
+
+// A resize can retire the admitted region while native startup awaits a mask or codec.
+test('MP-08/MP-10 retired region startup reports the existing stale refusal and releases resources',async()=>{
+ const f=fixture();
+ class Capture extends f.Capture {async start(){await Promise.resolve();f.retire();throw Error('MP-11: native readback source not owned');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.host.displays.size,0);assert.equal(f.lease.isAlive(),false);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});
+
+test('MP-11 active-region startup failures retain the original ownership error',async()=>{
+ const f=fixture(),failure=Error('MP-11: native readback source not owned');
+ class Capture extends f.Capture {async start(){throw failure;}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),error=>error===failure);
+ assert.equal(f.host.displays.size,0);assert.equal(f.lease.isAlive(),false);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});
+
+test('MP-08/MP-10 a retired native window invalidates startup even while mirror geometry is unchanged',async()=>{
+ const f=fixture();
+ class Capture extends f.Capture {async start(){f.binding.isCurrent=()=>false;throw Error('MP-11: native readback source not owned');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.host.displays.size,0);assert.equal(f.calls.filter(c=>c==='close').length,1);
+});
+
+for(const reason of ['region_epoch','region_target','region_identity','region_retired'])test(`MP-08/MP-10 private ${reason} during subscription is a stale public reference`,async()=>{
+ for(const stage of ['resolve','start']){
+  const f=fixture(),failure=Object.assign(Error(`MP-11: ${reason}`),{mirrorReason:reason});
+  class Capture extends f.Capture {async start(){throw failure;}}
+  if(stage==='resolve')f.host.mirror.v2.regions.resolve=async()=>{throw failure;};
+  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:stage==='start'?Capture:f.Capture}),{code:'user_domain_stale_reference'});
+  assert.equal(f.host.displays.size,0);
+  assert.equal(f.calls.filter(c=>c==='close').length,stage==='start'?1:0);
+ }
+});
+
+test('MP-11 subscription keeps malformed, capacity, geometry and foreign-owner failures loud',async()=>{
+ for(const reason of ['region_request','region_limit','region_geometry','region_input','region_display',undefined]){
+  const f=fixture(),failure=Object.assign(Error('MP-11: rejected'),reason?{mirrorReason:reason}:{});
+  f.host.mirror.v2.regions.resolve=async()=>{throw failure;};
+  await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture:f.Capture}),error=>error===failure);
+ }
+});
+
+for(const kind of ['browser_chrome','browser_auxiliary'])test(`MP-08/MP-10 retired ${kind} startup is a stale reference`,async()=>{
+ const f=fixture('browser_chrome');
+ if(kind==='browser_auxiliary'){
+  f.command.target={kind,window_generation:7,auxiliary_id:'popup'};
+  f.host.chromeWindows.auxiliary=()=>({isCurrent:()=>f.lease.isAlive()});
+  f.host.chromeWindows.auxiliaryRegion=()=>f.host.chromeWindows.band();
+ }
+ class Capture extends f.Capture {async start(){f.retire();throw Error('MP-08: native region readback unavailable');}}
+ await assert.rejects(subscribeRegion(f.host,f.command,'terminal:a',undefined,{Capture}),{code:'user_domain_stale_reference'});
+ assert.equal(f.calls.filter(c=>c==='close').length,1);assert.equal(f.host.displays.size,0);
+});

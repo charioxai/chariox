@@ -336,7 +336,7 @@ pub(super) fn headroom(path: &Path) -> Option<u64> {
 }
 
 /// Charged memory minus the page cache the cgroup can drop (tmpfs stays).
-fn unreclaimable(path: &Path) -> Option<u64> {
+pub(super) fn unreclaimable(path: &Path) -> Option<u64> {
     let current = std::fs::read_to_string(path.join("memory.current"))
         .ok()?
         .trim()

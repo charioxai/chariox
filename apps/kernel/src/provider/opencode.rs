@@ -30,6 +30,7 @@ static OPENCODE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
 const OPENCODE_BIND_HOST_OVERRIDE: &str = "CHARIOX_OPENCODE_BIND_HOST";
 
 pub fn resolve_opencode_executable() -> Result<PathBuf, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     resolve_opencode_executable_unlocked()
 }
@@ -69,6 +70,7 @@ fn resolve_standard_install_candidate() -> Option<PathBuf> {
 pub fn plan_opencode_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     plan_opencode_launch_unlocked(request)
 }

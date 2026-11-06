@@ -36,7 +36,9 @@ impl KernelRuntimeState {
             &request.agent_id,
             caller,
             port,
-            request.busy_policy,
+            request
+                .busy_policy
+                .unwrap_or(crate::session::AgentTriggerBusyPolicy::Queue),
             request.prompt,
         )?;
         self.owned
@@ -187,9 +189,10 @@ impl KernelRuntimeState {
         {
             return Ok(response(AgentTriggerInvocation::Busy));
         }
-        let Some(dispatch) = self.owned.session_store.write().claim_http_agent_trigger(
+        let Some(dispatch) = self.owned.session_store.write().claim_input_agent_trigger(
             &request.session_id,
             &request.trigger_id,
+            crate::session::TriggerInputKind::Http,
             request.payload,
         )?
         else {

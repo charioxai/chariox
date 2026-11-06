@@ -18,6 +18,9 @@ use crate::error::DaemonError;
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_crypto;
 
+mod key_seed;
+pub use key_seed::{create_vault_from_key_seed, export_vault_key_seed, VaultKeySeed};
+
 const VAULT_FILE_VERSION: u32 = 1;
 const VAULT_CIPHER: &str = "aes-256-gcm";
 const VAULT_KDF: &str = "argon2id";
@@ -95,6 +98,21 @@ pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
         self.get_secret(service, key).map(Some)
     }
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
+    /// Stores `value` unless an entry exists; returns whether it was stored. The check and the write are one
+    /// step against other writers of the same store, so a value saved meanwhile is never replaced. Stores that
+    /// other writers can reach concurrently override this; the default is for single-writer stores.
+    fn set_secret_if_absent(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        if self.find_secret(service, key)?.is_some() {
+            return Ok(false);
+        }
+        self.set_secret(service, key, value)?;
+        Ok(true)
+    }
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError>;
 }
 
@@ -140,6 +158,37 @@ impl CharioxEncryptedCredentialVaultStore {
     }
 }
 
+impl CharioxEncryptedCredentialVaultStore {
+    /// One read-modify-write under the vault write lock; returns whether the value was stored.
+    fn write_secret(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+        replace: bool,
+    ) -> Result<bool, DaemonError> {
+        let _write = vault_write_lock()?;
+        let vault_key = unlocked_vault_key(&self.path)?;
+        let mut plaintext = if self.path.exists() {
+            read_vault_plaintext(&self.path, vault_key.as_ref())?
+        } else {
+            VaultPlaintext::default()
+        };
+        let service_secrets = plaintext.secrets.entry(service.to_string()).or_default();
+        if !replace && service_secrets.contains_key(key) {
+            return Ok(false);
+        }
+        service_secrets.insert(key.to_string(), value.to_string());
+        write_vault_plaintext(
+            &self.path,
+            vault_key.as_ref(),
+            &plaintext,
+            &self.kdf_profile,
+        )?;
+        Ok(true)
+    }
+}
+
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         self.find_secret(service, key)?
@@ -157,24 +206,16 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
-        let _write = vault_write_lock()?;
-        let vault_key = unlocked_vault_key(&self.path)?;
-        let mut plaintext = if self.path.exists() {
-            read_vault_plaintext(&self.path, vault_key.as_ref())?
-        } else {
-            VaultPlaintext::default()
-        };
-        plaintext
-            .secrets
-            .entry(service.to_string())
-            .or_default()
-            .insert(key.to_string(), value.to_string());
-        write_vault_plaintext(
-            &self.path,
-            vault_key.as_ref(),
-            &plaintext,
-            &self.kdf_profile,
-        )
+        self.write_secret(service, key, value, true).map(|_| ())
+    }
+
+    fn set_secret_if_absent(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        self.write_secret(service, key, value, false)
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
@@ -225,6 +266,24 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
                 Zeroizing::new(value.to_string()),
             );
         Ok(())
+    }
+
+    fn set_secret_if_absent(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+    ) -> Result<bool, DaemonError> {
+        let mut vault = process_memory_vault().lock().map_err(|error| {
+            secret_error(format!("process memory vault lock poisoned: {error}"))
+        })?;
+        match vault.entry((service.to_string(), key.to_string())) {
+            std::collections::btree_map::Entry::Occupied(_) => Ok(false),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(Zeroizing::new(value.to_string()));
+                Ok(true)
+            }
+        }
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
@@ -587,6 +646,21 @@ pub fn chariox_vault_single_use_unlocked(path: impl AsRef<Path>) -> Result<bool,
         .is_some_and(|vault| vault.single_use && !vault.is_expired(now_ms)))
 }
 
+/// Transfer relocking to the operation guard once. Nested Vault use within
+/// that operation must not close the Vault before the outer operation ends.
+pub(crate) fn take_chariox_vault_single_use_unlock(
+    path: impl AsRef<Path>,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let mut unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    Ok(unlocked
+        .get_mut(&path)
+        .is_some_and(|vault| !vault.is_expired(now_ms) && std::mem::take(&mut vault.single_use)))
+}
+
 pub fn chariox_encrypted_vault_status(
     path: impl AsRef<Path>,
 ) -> Result<CharioxVaultUnlockStatus, DaemonError> {
@@ -608,6 +682,85 @@ pub fn chariox_encrypted_vault_status(
         unlocked: is_unlocked,
         expires_at_ms,
     })
+}
+
+/// The live unlocks as bytes for a hot reload to carry into the next program
+/// through memory only: per Vault its path, key, expiry and single-use flag.
+/// Expiry is an absolute time, so the lease keeps running instead of starting
+/// over. Expired unlocks are left out.
+#[cfg(unix)]
+pub(crate) fn hand_over_vault_unlocks() -> Result<Zeroizing<Vec<u8>>, DaemonError> {
+    use std::os::unix::ffi::OsStrExt;
+    let now_ms = crate::session::unix_epoch_ms();
+    let unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let mut body = Zeroizing::new(Vec::new());
+    for (path, vault) in unlocked
+        .iter()
+        .filter(|(_, vault)| !vault.is_expired(now_ms))
+    {
+        let path = path.as_os_str().as_bytes();
+        body.extend_from_slice(&(path.len() as u32).to_be_bytes());
+        body.extend_from_slice(path);
+        body.extend_from_slice(vault.key.as_ref());
+        body.extend_from_slice(&vault.expires_at_ms.unwrap_or(u64::MAX).to_be_bytes());
+        body.push(u8::from(vault.single_use));
+    }
+    Ok(body)
+}
+
+/// Restores the unlocks `hand_over_vault_unlocks` wrote; returns how many.
+/// A body that does not parse restores none.
+#[cfg(unix)]
+pub(crate) fn adopt_vault_unlocks(body: &[u8]) -> Result<usize, DaemonError> {
+    use std::os::unix::ffi::OsStrExt;
+    fn take<'a>(rest: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
+        let (head, tail) = rest.split_at_checked(len)?;
+        *rest = tail;
+        Some(head)
+    }
+    let malformed = || secret_error("the handed-over Vault unlocks are malformed".to_string());
+    let mut rest = body;
+    let mut adopted = Vec::new();
+    while !rest.is_empty() {
+        let path_len = u32::from_be_bytes(
+            take(&mut rest, 4)
+                .ok_or_else(malformed)?
+                .try_into()
+                .map_err(|_| malformed())?,
+        ) as usize;
+        let path = PathBuf::from(std::ffi::OsStr::from_bytes(
+            take(&mut rest, path_len).ok_or_else(malformed)?,
+        ));
+        let mut key = Zeroizing::new([0u8; KEY_LEN]);
+        key.copy_from_slice(take(&mut rest, KEY_LEN).ok_or_else(malformed)?);
+        let expires_at_ms = u64::from_be_bytes(
+            take(&mut rest, 8)
+                .ok_or_else(malformed)?
+                .try_into()
+                .map_err(|_| malformed())?,
+        );
+        let single_use = match take(&mut rest, 1).ok_or_else(malformed)? {
+            [0] => false,
+            [1] => true,
+            _ => return Err(malformed()),
+        };
+        adopted.push((
+            path,
+            UnlockedVault {
+                key,
+                expires_at_ms: (expires_at_ms != u64::MAX).then_some(expires_at_ms),
+                single_use,
+            },
+        ));
+    }
+    let count = adopted.len();
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+        .extend(adopted);
+    Ok(count)
 }
 
 pub fn clear_all_chariox_encrypted_vault_unlocks() -> Result<(), DaemonError> {
@@ -1963,6 +2116,79 @@ mod tests {
         }
     }
 
+    fn unlocked_test_vault(name: &str, lease: VaultUnlockLease) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-{name}-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        create_chariox_encrypted_vault_for_test(&path, "correct horse battery").unwrap();
+        unlock_existing_chariox_encrypted_vault(&path, "correct horse battery", lease)
+            .unwrap()
+            .expect("the passphrase opens the test Vault");
+        path
+    }
+
+    // A hot reload keeps the Vault unlocked with the same lease: what the new
+    // program restores opens the Vault and expires when the old one would have.
+    #[cfg(unix)]
+    #[test]
+    fn handed_over_unlock_opens_the_vault_with_its_lease() {
+        let path = unlocked_test_vault("handover-ttl", VaultUnlockLease::TtlMinutes(30));
+        let store = CharioxEncryptedCredentialVaultStore::new(&path);
+        store.set_secret("svc", "key", "value").unwrap();
+        let before = chariox_encrypted_vault_status(&path).unwrap();
+        let body = hand_over_vault_unlocks().unwrap();
+
+        lock_chariox_encrypted_vault(&path).unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+        assert!(is_chariox_vault_locked_error(
+            &store.get_secret("svc", "key").unwrap_err()
+        ));
+
+        adopt_vault_unlocks(&body).unwrap();
+        assert_eq!(chariox_encrypted_vault_status(&path).unwrap(), before);
+        assert_eq!(store.get_secret("svc", "key").unwrap(), "value");
+        lock_chariox_encrypted_vault(&path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn handed_over_unlock_keeps_single_use_and_no_expiry() {
+        let single = unlocked_test_vault("handover-single", VaultUnlockLease::SingleUse);
+        let shutdown = unlocked_test_vault("handover-shutdown", VaultUnlockLease::KernelShutdown);
+        let body = hand_over_vault_unlocks().unwrap();
+        clear_all_chariox_encrypted_vault_unlocks().unwrap();
+        adopt_vault_unlocks(&body).unwrap();
+        assert!(chariox_vault_single_use_unlocked(&single).unwrap());
+        let status = chariox_encrypted_vault_status(&shutdown).unwrap();
+        assert!(status.unlocked && status.expires_at_ms.is_none());
+        lock_chariox_encrypted_vault(&single).unwrap();
+        lock_chariox_encrypted_vault(&shutdown).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expired_unlock_is_not_handed_over() {
+        let path = unlocked_test_vault("handover-expired", VaultUnlockLease::TtlMinutes(30));
+        expire_chariox_encrypted_vault_for_test(&path);
+        let body = hand_over_vault_unlocks().unwrap();
+        lock_chariox_encrypted_vault(&path).unwrap();
+        adopt_vault_unlocks(&body).unwrap();
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn malformed_handed_over_unlocks_restore_nothing() {
+        let path = unlocked_test_vault("handover-malformed", VaultUnlockLease::TtlMinutes(30));
+        let body = hand_over_vault_unlocks().unwrap();
+        lock_chariox_encrypted_vault(&path).unwrap();
+        let cut = &body[..body.len() - 1];
+        assert!(adopt_vault_unlocks(cut).is_err());
+        assert!(!chariox_encrypted_vault_status(&path).unwrap().unlocked);
+    }
+
     #[test]
     fn live_cached_vault_lease_can_be_extended() {
         let path = std::env::temp_dir().join(format!(
@@ -2043,6 +2269,31 @@ mod tests {
                 .get_secret("chariox-test", "github-token")
                 .expect("secret should read after unlock"),
             "secret-value"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn set_secret_if_absent_keeps_a_value_that_is_already_there() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-if-absent-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let store = test_store(path.clone());
+        create_chariox_encrypted_vault_for_test(&path, "pass").expect("vault should create");
+        unlock_chariox_encrypted_vault(&path, "pass", VaultUnlockLease::KernelShutdown)
+            .expect("vault should unlock");
+        assert!(store
+            .set_secret_if_absent("chariox-test", "token", "first")
+            .expect("absent value stores"));
+        assert!(!store
+            .set_secret_if_absent("chariox-test", "token", "second")
+            .expect("present value is kept"));
+        assert_eq!(
+            store.get_secret("chariox-test", "token").expect("reads"),
+            "first"
         );
         let _ = fs::remove_dir_all(root);
     }

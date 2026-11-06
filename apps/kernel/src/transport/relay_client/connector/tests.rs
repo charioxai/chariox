@@ -890,6 +890,9 @@ fn relay_wording_for_a_refused_token_is_recognised() {
         "relay payload handling failed: relay token is expired",
         "relay token expired",
         "relay token has been revoked",
+        "invalid relay token",
+        "relay token does not allow requested action",
+        "relay token does not allow requested target",
     ] {
         assert!(relay_refused_token(message), "{message}");
     }
@@ -907,4 +910,90 @@ fn only_a_link_that_stayed_up_resets_the_drop_backoff() {
     }
     backoff.after_connection(STABLE_RELAY_CONNECTION);
     assert_eq!(backoff.delay("daemon-a"), Duration::ZERO);
+}
+
+#[tokio::test]
+async fn silent_relay_socket_is_dropped_and_reconnected_after_read_deadline() {
+    crate::test_support::isolated_env_test!();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, mut connections) = mpsc::channel(4);
+    let (server_stop, mut stopped) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut readers = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                _ = &mut stopped => break,
+                incoming = listener.accept() => {
+                    let (stream, _) = incoming.unwrap();
+                    let accepted = accepted.clone();
+                    readers.spawn(async move {
+                        let Ok(socket) = tokio_tungstenite::accept_async(stream).await else { return; };
+                        let (_, mut read) = socket.split();
+                        let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
+                        let mut announced = false;
+                        while let Some(Ok(message)) = read.next().await {
+                            let Message::Text(payload) = message else { continue; };
+                            let Ok((Some(payload), _)) = frames.receive(&payload) else { continue; };
+                            if !announced && matches!(serde_json::from_str::<RelayEnvelope>(&payload), Ok(RelayEnvelope::DaemonHeartbeat { .. })) {
+                                // Registration becomes visible before the read loop
+                                // is armed. Its first heartbeat proves that the idle
+                                // deadline exists before virtual time advances.
+                                if accepted.send(()).await.is_err() { return; }
+                                announced = true;
+                            }
+                        }
+                    });
+                }
+            }
+        }
+        readers.abort_all();
+        while readers.join_next().await.is_some() {}
+    });
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(format!("ws://{address}"));
+    config.relay_token = Some("idle-fixture".into());
+    // Keep production cadence: flooding heartbeats into a silent peer can
+    // otherwise fill the writer before the read-idle deadline is reached.
+    config.relay_heartbeat_ms = 30_000;
+    let app = Arc::new(Mutex::new(DaemonApp::bootstrap(config).unwrap()));
+    let state = Arc::new(RwLock::new(RelayClientState::default()));
+    let (stop, stopping) = watch::channel(false);
+    let connector = tokio::spawn(run_daemon_relay_connector(
+        app,
+        Arc::clone(&state),
+        stopping,
+    ));
+    timeout(Duration::from_secs(3), connections.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    timeout(Duration::from_secs(3), async {
+        while !state.read().await.connected() {
+            sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // This connector also awaits a router on an independent runtime. Use its
+    // real socket and real deadline instead of advancing only one runtime's
+    // clock; fixed yields never establish a cross-runtime timer barrier.
+    // Two read-idle deadlines watch this socket (the reader stall and the silent-relay
+    // frame deadline); the earlier one replaces it.
+    let deadline = RELAY_READ_IDLE_LIMIT.min(RELAY_READ_IDLE_TIMEOUT);
+    let waiting_started = std::time::Instant::now();
+    let reconnected = timeout(deadline + Duration::from_secs(10), connections.recv()).await;
+    let waited = waiting_started.elapsed();
+    let _ = stop.send(true);
+    connector.await.unwrap();
+    let _ = server_stop.send(());
+    server.await.unwrap();
+    assert!(
+        waited >= deadline - Duration::from_secs(5),
+        "socket replacement happened before the idle deadline"
+    );
+    assert!(
+        matches!(reconnected, Ok(Some(()))),
+        "a writable but silent relay socket was never replaced"
+    );
 }

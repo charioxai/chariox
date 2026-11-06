@@ -28,12 +28,12 @@ impl KernelRuntimeOwnedState {
         let prompt = prepared.prompt.id();
         let existed = self
             .durable_state_store
-            .agent_tasks(
-                Some(&prepared.session_id),
-                Some(prepared.prompt.target_agent_id()),
+            .agent_turn_or_continuation_task(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+                prompt,
             )?
-            .iter()
-            .any(|t| t.prompt_id == prompt || t.pending_prompt_id.as_deref() == Some(prompt));
+            .is_some();
         let continuation_task = prepared
             .prompt
             .durable_operation_fingerprint()
@@ -156,6 +156,17 @@ impl KernelRuntimeOwnedState {
             "<chariox-task-context>For chariox.events tools use task_id `{}` and origin_prompt_id `{prompt}`. Final answers are done candidates; finish tracked obligations or yield on live sources with a future deadline. If owner action is required call chariox.events.blocked. Message events request no courtesy reply unless explicitly opted in.</chariox-task-context>",
             task.task_id
         );
+        // Unrelated inbox receipts remain deferred during task-bound sudo work.
+        if self.sudo_work_task(room, agent).is_none() {
+            let cancellations = self
+                .durable_state_store
+                .agent_task_cancellation_notices(room, agent)?;
+            if !cancellations.is_empty() {
+                let notices = serde_json::to_string(&cancellations)
+                    .map_err(|_| ledger::error("task cancellation context encoding failed"))?;
+                context.push_str(&format!("\n<chariox-owner-cancellations>The owner cancelled the tasks below. Keep their work cancelled. After handling each notice, use chariox.events.ack with its sequence and handled:true; do not restart that work or send a courtesy reply.\n{notices}\n</chariox-owner-cancellations>"));
+            }
+        }
         if let Some(goal_context) = self.goal_continuation_context(&task)? {
             context = format!("{context}\n{goal_context}");
         }
@@ -721,7 +732,7 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        self.retract_stale_task_owner_interactions(&task.room_id, std::slice::from_ref(&task))
+        self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
         let changed = self.owned.task_settlement_changed(&task);
         if changed {
@@ -759,9 +770,7 @@ impl KernelRuntimeState {
                 let prompt = self
                     .owned
                     .durable_state_store
-                    .agent_tasks(Some(&task.room_id), Some(&task.agent_id))?
-                    .into_iter()
-                    .find(|t| t.task_id == task.task_id)
+                    .agent_task(&task.task_id)?
                     .map_or_else(|| task.prompt_id.clone(), |t| t.prompt_id);
                 self.owned.durable_state_store.agent_lifecycle(Operation::Block{task:task.task_id.clone(),prompt,reason:format!("Correction delivery failed or uncertain: {e}; reconcile before owner resume")})?;
             }
@@ -821,11 +830,19 @@ impl KernelRuntimeState {
         // Output settlement may hold one or every provider lane. Dispatch
         // completion wakes after it returns so a recipient cannot reacquire
         // a lane held by this same call stack.
+        let Some(mut run) = self.lifecycle_sweeps.ask() else {
+            return;
+        };
         let state = self.clone();
         tokio::spawn(async move {
-            if let Err(error) = state.sweep_agent_lifecycle().await {
-                tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
-                    "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+            loop {
+                if let Err(error) = state.sweep_agent_lifecycle().await {
+                    tracing::warn!(error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                        "MP-08/MP-09/MP-10/MP-11 A02: completion sweep retained for periodic reconciliation");
+                }
+                if !run.asked_again() {
+                    break;
+                }
             }
         });
     }
@@ -956,6 +973,8 @@ impl KernelRuntimeState {
         Ok(())
     }
     pub(super) async fn sweep_agent_lifecycle(&self) -> Result<(), DaemonError> {
+        #[cfg(test)]
+        self.lifecycle_sweeps.record_run();
         self.sweep_agent_lifecycle_at(crate::session::unix_epoch_ms())
             .await
     }
@@ -1000,12 +1019,12 @@ impl KernelRuntimeState {
                 _ => {}
             }
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         Box::pin(self.check_leased_task_connections(&tasks, now)).await?;
         self.discharge_worker_stop_obligations(now).await?;
         let now = crate::session::unix_epoch_ms();
         let mut blocked = Vec::new();
-        for task in self.owned.durable_state_store.agent_tasks(None, None)? {
+        for task in self.owned.durable_state_store.agent_tasks_to_sweep()? {
             let Ok(session) = self.owned.session_store.get_session(&task.room_id) else {
                 continue;
             };
@@ -1252,6 +1271,7 @@ impl KernelRuntimeState {
         // Include taskless recipients: their active user/provider turn must
         // not consume the idle-refusal budget or suppress later urgent steering.
         let mut busy_recipients = Vec::new();
+        let mut vault_wait_recipients = Vec::new();
         let mut held_work = Vec::new();
         for (room, agent) in self
             .owned
@@ -1268,7 +1288,10 @@ impl KernelRuntimeState {
                     .active_prompt_for_agent(&session, &agent)
                     .is_some()
                 {
-                    busy_recipients.push((room, agent));
+                    busy_recipients.push((room.clone(), agent.clone()));
+                }
+                if self.agent_inbox_waits_for_vault(&room, &agent) {
+                    vault_wait_recipients.push((room, agent));
                 }
             }
         }
@@ -1283,6 +1306,7 @@ impl KernelRuntimeState {
                 .agent_lifecycle(Operation::Sweep {
                     now: crate::session::unix_epoch_ms(),
                     busy_recipients,
+                    vault_wait_recipients,
                     held_work,
                 })?
         };
@@ -1317,7 +1341,7 @@ impl KernelRuntimeState {
                 },
             );
         }
-        let tasks = self.owned.durable_state_store.agent_tasks(None, None)?;
+        let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         self.owned
             .human_control_task_waits
             .lock()
@@ -1330,8 +1354,7 @@ impl KernelRuntimeState {
                         && !task.goal.as_ref().is_some_and(|goal| goal.paused)
                 })
             });
-        let mut rooms = BTreeSet::new();
-        for task in tasks.clone() {
+        for task in tasks {
             // Recovery retains unavailable Rooms; their tasks must not halt live supervision.
             if self.owned.session_store.get_session(&task.room_id).is_err() {
                 continue;
@@ -1344,10 +1367,10 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(room_id=%task.room_id, agent_id=%task.agent_id, "MP-08/MP-09/MP-10/MP-11 A02: owner projection unavailable; other recipients continue");
             }
-            if rooms.insert(task.room_id.clone()) {
-                self.retract_stale_task_owner_interactions(&task.room_id, &tasks)
-                    .await;
-            }
+        }
+        // A decision whose task finished is withdrawn here; finished tasks are not in the sweep's set.
+        if let Err(error) = self.owned.sweep_stale_task_owner_interactions() {
+            tracing::warn!(%error, "task owner decision withdrawal failed; interaction admission will retry");
         }
         // A rejected cold submission withdraws its fresh task. The inbox still
         // owns the work and must retry even when this recipient has no tasks.

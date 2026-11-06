@@ -10,7 +10,12 @@ export { connectSessionScopedCloudClient, createCloudDrillClient, loadCloudRelay
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..", "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
+// The hosted service under test is always named by the caller; there is no default host.
+function hostedApiUrl() {
+  const value = process.env.CHARIOX_CLOUD_HOSTED_API_URL
+  if (!value) throw new Error("set CHARIOX_CLOUD_HOSTED_API_URL to the hosted service under test")
+  return value.replace(/\/$/, "")
+}
 const remoteCliHost = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_HOST ?? ""
 const remoteCliKey = process.env.CHARIOX_CLOUD_HOSTED_REMOTE_CLI_KEY ?? ""
 const devAuthSecret = process.env.CHARIOX_CLOUD_DEV_AUTH_SECRET ?? ""
@@ -200,7 +205,7 @@ export async function cleanupHostedCloudIdentity({
   kernelPresences = [],
   reason = "hosted Cloud drill cleanup",
   logout = true,
-  baseUrl = apiUrl,
+  baseUrl = hostedApiUrl(),
   post = postJson,
   logger = log,
 }) {
@@ -274,7 +279,7 @@ export async function createPairingToken({ accountId, userId, subjectKind, cloud
     typeof cloudSessionToken === "string" && cloudSessionToken.trim(),
     "hosted Cloud pairing requires an authenticated Cloud session",
   )
-  const response = await postJson(`${apiUrl}/pairing-tokens`, {
+  const response = await postJson(`${hostedApiUrl()}/pairing-tokens`, {
     accountId,
     createdByUserId: userId,
     subjectKind,
@@ -290,7 +295,7 @@ export async function pairCloudMachineDirect({ profile, machineId, alias }) {
     subjectKind: "machine",
     cloudSessionToken: profile.cloudSessionToken,
   })
-  const response = await postJson(`${apiUrl}/machines/pair`, {
+  const response = await postJson(`${hostedApiUrl()}/machines/pair`, {
     accountId: profile.accountId,
     token,
     machineId,
@@ -306,7 +311,7 @@ export async function approveDevDeviceLogin({ role, userCode, accountSlug }) {
   const slug = accountSlug ?? `hosted-${role}-${process.pid}-${Date.now()}`
   const email = `${slug}@chariox.local`
   log(`${role}-dev-approve-cloud-login`, { accountSlug: slug, email })
-  await postJson(`${apiUrl}/auth/dev/device/approve`, {
+  await postJson(`${hostedApiUrl()}/auth/dev/device/approve`, {
     userCode,
     email,
     accountSlug: slug,
@@ -359,7 +364,7 @@ export async function allowDevStubProvider(client, requests, label) {
 
 /** MP-08 / MP-10 / MP-11: each human authenticates through the ordinary CLIENT
  * flow with an isolated product identity and private credential store. */
-export async function manualCloudDeviceLogin({ role, stateRoot, modules, terminal, accountSlug, expectedAccountId, baseUrl = apiUrl, approve = approveDevDeviceLogin }) {
+export async function manualCloudDeviceLogin({ role, stateRoot, modules, terminal, accountSlug, expectedAccountId, baseUrl = hostedApiUrl(), approve = approveDevDeviceLogin }) {
   modules ??= await loadCloudRelayDrillModules()
   terminal ??= createCloudDrillClient(modules, stateRoot, `${role}-terminal`)
   try {
@@ -517,7 +522,7 @@ export async function waitForSession(client, requests, sessionId, timeoutMs = 20
 
 /** MP-08 / MP-10 / MP-11: kernel enrollment and terminal sign-in have separate
  * authorities. Use product adapters; never extract human tokens from IPC. */
-export function createHostedCommandDeps({ workspace, localClient, profileRef, notices, ownerAccountSlug, terminal, modules, baseUrl = apiUrl, approve = approveDevDeviceLogin }) {
+export function createHostedCommandDeps({ workspace, localClient, profileRef, notices, ownerAccountSlug, terminal, modules, baseUrl = hostedApiUrl(), approve = approveDevDeviceLogin }) {
   const appendNotice = message => {
     notices.push(message)
     log("command-notice", { firstLine: message.split("\n")[0] })

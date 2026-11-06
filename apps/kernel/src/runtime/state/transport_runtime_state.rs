@@ -59,6 +59,11 @@ impl KernelRuntimeState {
         if !self.owned.publication_activation.is_active() {
             return;
         }
+        // A person's Tab takeover returns to the agent once they stop sending input; an agent waiting for
+        // it continues now instead of at the next periodic sweep.
+        if self.owned.kernel_browser_host.reclaim_idle_takeovers() {
+            self.schedule_agent_lifecycle_sweep();
+        }
         let now = crate::session::unix_epoch_ms();
         let next = self
             .owned
@@ -424,7 +429,12 @@ impl KernelRuntimeState {
     pub(crate) async fn shutdown_cleanup(&self) -> Result<(), DaemonError> {
         // Before the browser host stops, which clears it.
         #[cfg(unix)]
-        crate::hot_reload::hand_over_user_domain(self.owned.kernel_browser_host.hand_over_access());
+        {
+            crate::hot_reload::hand_over_user_domain(
+                self.owned.kernel_browser_host.hand_over_access(),
+            );
+            self.hand_over_reach_revocations();
+        }
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();
         // A hot reload keeps what workloads left running: the next program owns it.
@@ -556,6 +566,7 @@ impl KernelRuntimeState {
         let agent_activity =
             self.agent_activity_for_session_with_unread(&session, unread_for_user_id);
         Ok(crate::runtime::projection::SessionSnapshotProjection {
+            disk_usage: self.session_disk_usage(session_id),
             processes: self.session_processes(session_id),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,

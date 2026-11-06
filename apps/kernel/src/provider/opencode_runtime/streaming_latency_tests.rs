@@ -43,7 +43,7 @@ fn check_ready_text(busy_before_text: bool) {
                     let body = if line.starts_with("GET /session/status ") {
                         r#"{"session-1":{"type":"busy"}}"#
                     } else {
-                        assert!(line.starts_with("GET /session/session-1/message "));
+                        assert!(line.starts_with("GET /session/session-1/message?limit=100 "));
                         "[]"
                     };
                     seen.lock().unwrap().push(line);
@@ -223,7 +223,7 @@ fn reused_session_error_after_idle_overrides_completion_in_the_same_drain() {
                     let mut request = [0; 4096];
                     let size = stream.read(&mut request).unwrap();
                     assert!(String::from_utf8_lossy(&request[..size])
-                        .starts_with("GET /session/session-1/message "));
+                        .starts_with("GET /session/session-1/message?limit=100 "));
                     requests += 1;
                     // Only the final reconciliation exposes the correlated
                     // sibling error. Earlier completion/idle snapshots are empty.

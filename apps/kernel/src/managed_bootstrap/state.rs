@@ -11,7 +11,6 @@ use url::Url;
 use crate::config::write_private_file;
 use crate::error::DaemonError;
 
-use super::cloud::{DisposableWorkerEnrollmentReceipt, ManagedCloudRelayProfile};
 use super::context_plan::ManagedKernelContextPlan;
 use super::freshness::{
     valid_provider_rebuild_action_id, validate_freshness_evidence, ManagedKernelFreshnessEvidence,
@@ -24,8 +23,6 @@ pub(super) const MANAGED_BOOTSTRAP_PATH: &str = "/var/lib/chariox/managed-bootst
 pub(super) const PROTECTED_BOOTSTRAP_DIRECTORY: &str = "/etc/chariox/bootstrap";
 pub(super) const PROTECTED_MANAGED_BOOTSTRAP_PATH: &str =
     "/etc/chariox/bootstrap/managed-bootstrap.json";
-pub(super) const PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH: &str =
-    "/etc/chariox/bootstrap/disposable-worker-bootstrap.json";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,20 +39,17 @@ pub(super) struct BootstrapConfig {
     pub(super) kernel_port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub(super) enum BootstrapEnvelope {
-    ManagedEnvironment(ManagedBootstrapEnvelope),
-    DisposableWorker(DisposableWorkerBootstrapEnvelope),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct ManagedBootstrapEnvelope {
     pub(super) schema_version: u32,
-    pub(super) cloud_api_url: String,
+    pub(super) control_plane_url: String,
     pub(super) environment_id: String,
+    /// Empty once the grant is redeemed: root blanks it once the control plane confirmed the enrollment.
     pub(super) token: String,
+    /// The grant binding digest the blanked token had, so the binding survives the blanking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) redeemed_grant_binding_digest: Option<String>,
     pub(super) expires_at: String,
     pub(super) runtime_release_digest: String,
     #[serde(default)]
@@ -66,34 +60,6 @@ pub(super) struct ManagedBootstrapEnvelope {
     pub(super) expected_data_volume_serial: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) expected_data_volume_size_gb: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerBinding {
-    pub(super) allocation_id: String,
-    pub(super) expected_home_kernel_id: String,
-    pub(super) user_id: String,
-    pub(super) realm_id: String,
-    pub(super) worker_machine_id: String,
-    pub(super) worker_kernel_id: String,
-    pub(super) image_digest: String,
-    pub(super) runtime_release_digest: String,
-    pub(super) manager_operation_id: String,
-    pub(super) manager_operation_fence: u64,
-    pub(super) manager_request_digest: String,
-    pub(super) sender_key_thumbprint: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerBootstrapEnvelope {
-    pub(super) schema_version: u32,
-    pub(super) cloud_api_url: String,
-    pub(super) token: String,
-    pub(super) expires_at: String,
-    pub(super) binding_digest: String,
-    pub(super) binding: DisposableWorkerBinding,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,44 +107,6 @@ pub(super) struct ManagedBootstrapGrantBinding {
 
 fn initial_managed_environment_generation() -> u64 {
     1
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum DisposableWorkerBootstrapReceiptStatus {
-    ExchangePending,
-    ExchangeAccepted,
-    Exchanged,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerBootstrapReceipt {
-    pub(super) schema_version: u32,
-    pub(super) kind: String,
-    pub(super) status: DisposableWorkerBootstrapReceiptStatus,
-    pub(super) cloud_api_url: String,
-    pub(super) relay_public_key: String,
-    pub(super) binding_digest: String,
-    pub(super) binding: DisposableWorkerBinding,
-    pub(super) enrollment_receipt: Option<DisposableWorkerEnrollmentReceipt>,
-    pub(super) cloud_relay: Option<ManagedCloudRelayProfile>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(super) struct DisposableWorkerReleaseOverride {
-    pub(super) schema_version: u32,
-    pub(super) kind: String,
-    pub(super) binding_digest: String,
-    pub(super) runtime_release_digest: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
-pub(super) enum BootstrapReceiptDocument {
-    ManagedEnvironment(BootstrapReceipt),
-    DisposableWorker(DisposableWorkerBootstrapReceipt),
 }
 
 impl BootstrapConfig {
@@ -279,10 +207,6 @@ pub(super) fn default_managed_bootstrap_receipt_path() -> PathBuf {
     PathBuf::from("/var/lib/chariox/managed/bootstrap-receipt.json")
 }
 
-pub(super) fn default_disposable_worker_receipt_path() -> PathBuf {
-    PathBuf::from("/var/lib/chariox/disposable-worker/bootstrap-receipt.json")
-}
-
 pub(super) fn validate_managed_state_path(
     path: &Path,
     variable_name: &str,
@@ -300,29 +224,17 @@ pub(super) fn validate_managed_state_path(
     Ok(())
 }
 
-impl BootstrapEnvelope {
+impl ManagedBootstrapEnvelope {
     pub(super) fn read(path: &Path) -> Result<Self, DaemonError> {
         let protected_path = path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH);
         if protected_path {
             validate_protected_bootstrap_file(path, PROTECTED_MANAGED_BOOTSTRAP_PATH)?;
         }
         let envelope: Self = read_bounded_json(path, "managed bootstrap envelope")?;
-        match &envelope {
-            Self::ManagedEnvironment(value) => value.validate(protected_path)?,
-            Self::DisposableWorker(value) => {
-                if protected_path {
-                    return Err(state_error(
-                        "protected managed bootstrap file has the wrong envelope kind",
-                    ));
-                }
-                value.validate()?;
-            }
-        }
+        envelope.validate(protected_path)?;
         Ok(envelope)
     }
-}
 
-impl ManagedBootstrapEnvelope {
     pub(super) fn expires_at(&self) -> Result<DateTime<Utc>, DaemonError> {
         DateTime::parse_from_rfc3339(&self.expires_at)
             .map(|value| value.with_timezone(&Utc))
@@ -333,7 +245,7 @@ impl ManagedBootstrapEnvelope {
         if !(matches!(self.schema_version, 1 | 2) && !protected_storage_input
             || matches!(self.schema_version, 3 | 4) && protected_storage_input)
             || !valid_identifier(&self.environment_id)
-            || !valid_secret(&self.token, "mkboot_")
+            || !self.grant_state_is_valid(protected_storage_input)
             || !valid_digest(&self.runtime_release_digest)
             || managed_repository_root_for_schema(
                 self.schema_version,
@@ -354,7 +266,7 @@ impl ManagedBootstrapEnvelope {
             self.expected_data_volume_size_gb,
         )?;
         self.expires_at()?;
-        validate_cloud_url(&self.cloud_api_url)
+        validate_cloud_url(&self.control_plane_url)
     }
 
     pub(super) fn managed_repository_root(&self) -> Result<String, DaemonError> {
@@ -364,13 +276,39 @@ impl ManagedBootstrapEnvelope {
         )
     }
 
+    fn grant_state_is_valid(&self, protected_storage_input: bool) -> bool {
+        match self.redeemed_grant_binding_digest.as_deref() {
+            None => valid_secret(&self.token, "mkboot_"),
+            Some(digest) => {
+                protected_storage_input && self.token.is_empty() && valid_digest(digest)
+            }
+        }
+    }
+
+    pub(super) fn is_redeemed(&self) -> bool {
+        self.redeemed_grant_binding_digest.is_some()
+    }
+
+    /// The same envelope without its bearer token, for a grant Cloud has confirmed.
+    pub(super) fn redeemed(&self) -> Self {
+        Self {
+            token: String::new(),
+            redeemed_grant_binding_digest: Some(self.grant_binding_digest()),
+            ..self.clone()
+        }
+    }
+
     /// Bind every envelope field, including the bearer token, without
-    /// persisting or formatting the token itself.
+    /// persisting or formatting the token itself. A redeemed envelope keeps
+    /// the digest its token produced.
     pub(super) fn grant_binding_digest(&self) -> String {
+        if let Some(digest) = self.redeemed_grant_binding_digest.as_deref() {
+            return digest.to_string();
+        }
         let mut digest = Sha256::new();
         digest.update(b"chariox/managed-bootstrap-grant-binding/v1\0");
         update_binding_component(&mut digest, &self.schema_version.to_be_bytes());
-        update_binding_component(&mut digest, self.cloud_api_url.as_bytes());
+        update_binding_component(&mut digest, self.control_plane_url.as_bytes());
         update_binding_component(&mut digest, self.environment_id.as_bytes());
         update_binding_component(&mut digest, self.token.as_bytes());
         update_binding_component(&mut digest, self.expires_at.as_bytes());
@@ -387,59 +325,6 @@ impl ManagedBootstrapEnvelope {
         }
         format!("sha256:{:x}", digest.finalize())
     }
-}
-
-impl DisposableWorkerBootstrapEnvelope {
-    pub(super) fn expires_at(&self) -> Result<DateTime<Utc>, DaemonError> {
-        DateTime::parse_from_rfc3339(&self.expires_at)
-            .map(|value| value.with_timezone(&Utc))
-            .map_err(|_| state_error("disposable worker bootstrap expiry is invalid"))
-    }
-
-    fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
-            || !valid_secret(&self.token, "dwboot_")
-            || self.token.len() > "dwboot_".len() + 128
-            || !valid_digest(&self.binding_digest)
-            || self.binding.validate().is_err()
-            || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
-        {
-            return Err(state_error(
-                "disposable worker bootstrap envelope is invalid",
-            ));
-        }
-        self.expires_at()?;
-        validate_cloud_url(&self.cloud_api_url)
-    }
-}
-
-impl DisposableWorkerBinding {
-    fn validate(&self) -> Result<(), DaemonError> {
-        if !valid_disposable_identifier(&self.allocation_id)
-            || !valid_disposable_identifier(&self.expected_home_kernel_id)
-            || !valid_disposable_identifier(&self.user_id)
-            || !valid_disposable_identifier(&self.realm_id)
-            || !valid_disposable_identifier(&self.worker_machine_id)
-            || !valid_disposable_identifier(&self.worker_kernel_id)
-            || !valid_digest(&self.image_digest)
-            || !valid_digest(&self.runtime_release_digest)
-            || !valid_disposable_identifier(&self.manager_operation_id)
-            || self.manager_operation_fence == 0
-            || self.manager_operation_fence > 9_007_199_254_740_991
-            || !valid_digest(&self.manager_request_digest)
-            || !valid_digest(&self.sender_key_thumbprint)
-        {
-            return Err(state_error("disposable worker binding is invalid"));
-        }
-        Ok(())
-    }
-}
-
-pub(super) fn disposable_worker_binding_digest(
-    binding: &DisposableWorkerBinding,
-) -> Result<String, DaemonError> {
-    let bytes = serde_json::to_vec(binding).map_err(|error| state_error(&error.to_string()))?;
-    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
 impl ManagedBootstrapGrantBinding {
@@ -484,32 +369,6 @@ impl ManagedBootstrapGrantBinding {
             ),
             generation: Some(receipt.generation),
             receipt_binding_digest: Some(receipt_binding_digest(receipt)),
-        }
-    }
-
-    /// A schema 1 binding, as written before in-place updates: it hashed the
-    /// installed release into both digests. That release was the envelope's
-    /// provisioned one, which the upgrader's staged receipt no longer carries.
-    pub(super) fn legacy_for_receipt(
-        envelope: &ManagedBootstrapEnvelope,
-        receipt: &BootstrapReceipt,
-    ) -> Self {
-        Self {
-            schema_version: 1,
-            envelope_schema_version: envelope.schema_version,
-            grant_binding_digest: envelope.grant_binding_digest(),
-            exchange_identity_digest: exchange_identity_digest(
-                &receipt.environment_id,
-                &receipt.machine_id,
-                &receipt.kernel_id,
-                &receipt.relay_public_key,
-                &envelope.runtime_release_digest,
-            ),
-            generation: Some(receipt.generation),
-            receipt_binding_digest: Some(legacy_receipt_binding_digest(
-                receipt,
-                &envelope.runtime_release_digest,
-            )),
         }
     }
 
@@ -596,23 +455,6 @@ fn receipt_binding_digest(receipt: &BootstrapReceipt) -> String {
     update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
     update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
     update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
-    update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
-    format!("sha256:{:x}", digest.finalize())
-}
-
-fn legacy_receipt_binding_digest(
-    receipt: &BootstrapReceipt,
-    runtime_release_digest: &str,
-) -> String {
-    let mut digest = Sha256::new();
-    digest.update(b"chariox/managed-bootstrap-receipt-binding/v1\0");
-    update_binding_component(&mut digest, &receipt.schema_version.to_be_bytes());
-    update_binding_component(&mut digest, receipt.environment_id.as_bytes());
-    update_binding_component(&mut digest, receipt.machine_id.as_bytes());
-    update_binding_component(&mut digest, receipt.kernel_id.as_bytes());
-    update_binding_component(&mut digest, &receipt.generation.to_be_bytes());
-    update_binding_component(&mut digest, receipt.relay_public_key.as_bytes());
-    update_binding_component(&mut digest, runtime_release_digest.as_bytes());
     update_optional_binding_component(&mut digest, receipt.managed_repository_root.as_deref());
     format!("sha256:{:x}", digest.finalize())
 }
@@ -831,86 +673,8 @@ pub(super) fn overlaps_protected_managed_root(candidate: &str) -> bool {
         || candidate.starts_with("/home/chariox/.chariox/")
 }
 
-impl BootstrapReceiptDocument {
-    pub(super) fn read(path: &Path) -> Result<Option<Self>, DaemonError> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let document: Self = read_bounded_json(path, "managed bootstrap receipt")?;
-        match &document {
-            Self::ManagedEnvironment(receipt) => receipt.validate()?,
-            Self::DisposableWorker(receipt) => receipt.validate()?,
-        }
-        Ok(Some(document))
-    }
-}
-
-impl DisposableWorkerBootstrapReceipt {
-    fn validate(&self) -> Result<(), DaemonError> {
-        if self.schema_version != 1
-            || self.kind != "disposable_worker"
-            || validate_cloud_url(&self.cloud_api_url).is_err()
-            || self.relay_public_key.trim().is_empty()
-            || !valid_digest(&self.binding_digest)
-            || self.binding.validate().is_err()
-            || disposable_worker_binding_digest(&self.binding)? != self.binding_digest
-            || match (
-                &self.status,
-                self.enrollment_receipt.as_ref(),
-                self.cloud_relay.as_ref(),
-            ) {
-                (DisposableWorkerBootstrapReceiptStatus::ExchangePending, None, None) => false,
-                (DisposableWorkerBootstrapReceiptStatus::ExchangeAccepted, Some(receipt), None) => {
-                    DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err()
-                }
-                (DisposableWorkerBootstrapReceiptStatus::Exchanged, Some(receipt), Some(_)) => {
-                    DateTime::parse_from_rfc3339(&receipt.exchanged_at).is_err()
-                }
-                _ => true,
-            }
-        {
-            return Err(state_error(
-                "disposable worker bootstrap receipt is invalid",
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl DisposableWorkerReleaseOverride {
-    pub(super) fn read_for_receipt(
-        receipt_path: &Path,
-        binding_digest: &str,
-    ) -> Result<Option<Self>, DaemonError> {
-        let path = disposable_worker_release_override_path(receipt_path)?;
-        if !path.exists() {
-            return Ok(None);
-        }
-        let value: Self = read_bounded_json(&path, "disposable worker release override")?;
-        if value.schema_version != 1
-            || value.kind != "disposable_worker_release"
-            || value.binding_digest != binding_digest
-            || !valid_digest(&value.runtime_release_digest)
-        {
-            return Err(state_error("disposable worker release override is invalid"));
-        }
-        Ok(Some(value))
-    }
-}
-
-pub(super) fn disposable_worker_release_override_path(
-    receipt_path: &Path,
-) -> Result<PathBuf, DaemonError> {
-    receipt_path
-        .parent()
-        .map(|parent| parent.join("release-override.json"))
-        .ok_or_else(|| state_error("managed bootstrap receipt has no state directory"))
-}
-
 pub(super) fn remove_envelope(path: &Path) -> Result<(), DaemonError> {
-    if path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH)
-        || path == Path::new(PROTECTED_DISPOSABLE_WORKER_BOOTSTRAP_PATH)
-    {
+    if path == Path::new(PROTECTED_MANAGED_BOOTSTRAP_PATH) {
         // Cloud writes this root-owned input before systemd. Keep it available
         // for root disk admission on every boot; the chariox supervisor cannot
         // remove or replace files beneath the protected directory.
@@ -1006,16 +770,6 @@ fn update_optional_binding_component(digest: &mut Sha256, value: Option<&str>) {
         }
         None => digest.update([0]),
     }
-}
-
-pub(super) fn valid_disposable_identifier(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    value.len() <= 128
-        && first.is_ascii_alphanumeric()
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
 fn required_absolute_env_path(name: &'static str) -> Result<PathBuf, DaemonError> {

@@ -72,7 +72,7 @@ fn native_usage_aliases_only_the_home_cloud_owner() {
         let updated = registry
             .get(account_owner, "claude", &profile.profile_id)
             .unwrap();
-        assert_eq!(updated.usage.source, "claude.status_line");
+        assert_eq!(updated.usage.source, "event");
         assert_eq!(updated.usage.meters.len(), 1);
         assert!(!path.exists(), "native status-line sample is consumed once");
     }

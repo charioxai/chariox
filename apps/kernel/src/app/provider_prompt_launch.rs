@@ -113,6 +113,7 @@ impl DaemonApp {
         request = request.with_working_directory(PathBuf::from(directory));
         request = crate::project_environment::attach_project_provider_environment(
             &self.config,
+            &self.sessions,
             &session,
             Some(&agent),
             request,
@@ -174,7 +175,7 @@ mod tests {
     use crate::session::CreateSessionRequest;
 
     #[test]
-    fn mp08_mp10_mp11_ordinary_turn_reuses_unchanged_environment_and_relaunches_changed_values() {
+    fn ordinary_turn_reuses_unchanged_environment_and_relaunches_changed_variables() {
         use crate::project_environment::*;
         let workspace = crate::test_support::TestWorktree::new("project-prompt-refresh");
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
@@ -184,42 +185,15 @@ mod tests {
         let agent = KernelSessionService::new(&mut app)
             .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub"))
             .unwrap();
-        let manifest = ProjectEnvironmentManifest {
-            schema_version: 1,
-            project_id: session.project_id().into(),
-            evidence_digest: ProjectEnvironmentEvidence::default().digest(),
-            entries: vec![ProjectEnvironmentEntry {
-                name: "APP_LABEL".into(),
-                workspace_id: session.workspace_id().into(),
-                kind: ProjectEnvironmentEntryKind::Variable,
-                classification: ProjectEnvironmentClassification::NonSecret,
-                excluded: false,
-                uses: vec![ProjectEnvironmentUse {
-                    path: "app.ts".into(),
-                    line: 1,
-                }],
-                locator: ProjectEnvironmentLocator::EnvFile {
-                    path: ".env".into(),
-                    key: "APP_LABEL".into(),
-                },
-                status: ProjectEnvironmentEntryStatus::Found,
-            }],
-            private_files: vec![],
-            toolchain_hints: vec![],
-            package_hints: vec![],
-            service_hints: vec![],
+        let store = ProjectEnvironmentStore::new(&app.config.private_runtime_state_root());
+        let record = |variables: &str| ProjectEnvironmentRecord {
+            schema: PROJECT_ENVIRONMENT_SCHEMA,
+            variables: variables.into(),
+            ..Default::default()
         };
-        ProjectEnvironmentStore::new(&app.config.private_runtime_state_root())
-            .save(&StoredProjectEnvironment {
-                source: None,
-                manifest,
-                evidence: ProjectEnvironmentEvidence::default(),
-                reported_missing: Default::default(),
-                reviewed_manifest: None,
-                last_review: None,
-            })
+        store
+            .save(session.project_id(), 0, record("APP_LABEL=first"))
             .unwrap();
-        std::fs::write(workspace.path().join(".env"), "APP_LABEL=first\n").unwrap();
         let first = app
             .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
             .unwrap();
@@ -227,7 +201,9 @@ mod tests {
             .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
             .unwrap();
         assert_eq!(first, unchanged);
-        std::fs::write(workspace.path().join(".env"), "APP_LABEL=second\n").unwrap();
+        store
+            .save(session.project_id(), 1, record("APP_LABEL=second"))
+            .unwrap();
         let changed = app
             .ensure_prompt_provider_run_for_agent(session.id(), agent.id())
             .unwrap();

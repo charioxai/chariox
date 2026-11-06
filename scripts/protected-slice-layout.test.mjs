@@ -727,12 +727,14 @@ log() { :; }
 emit_progress() { :; }
 cargo_build_jobs() { echo 1; }
 load_released_image() { return 1; }
+released_image_directory() { return 1; }
+SCRIPT_DIR="$REPO_ROOT/apps/kernel/slice-linux-docker"
 docker_target_arch() { echo amd64; }
 docker_build() { touch "$BUILT_MARKER"; }
 ${build}
 build_standard_runtime_image synthetic-standard-image
 `], {encoding: "utf8", env: {...process.env, PATH: `${bin}:${process.env.PATH}`, REPO_ROOT: buildRoot,
-        BUILT_MARKER: built, SLICE_RUNTIME_BUILD_PROFILE: "release", SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "3",
+        BUILT_MARKER: built, SLICE_EXPLICIT_SOURCE_BUILD: "1", SLICE_RUNTIME_BUILD_PROFILE: "release", SLICE_CARGO_PROFILE_RELEASE_OPT_LEVEL: "3",
         SLICE_RELAY_PEER_PROTOCOL_VERSION: "69", SLICE_RUNTIME_SOURCE_REVISION: source,
         CHARIOX_SLICE_PRIVATE_HOST_ROOT: "", CHARIOX_SLICE_BUILD_CONTEXT_DIGEST: source,
         CHARIOX_SLICE_PROTECTED_IMAGE_PROOF_ROOT: controller.imageRoot}})

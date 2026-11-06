@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { createProjectEnvironmentReadController } from "./project-environment-read-controller.js"
+import { createProjectEnvironmentController } from "./project-environment-controller.js"
 
 import {
   createCliStdinKeyController,
@@ -21,7 +21,7 @@ test("MP-08 / MP-10 key presses clear selection; key releases preserve it", () =
     [keyEvent("x", { eventType: "release" }), false],
   ] as const) {
     let clears = 0
-    const harness = createHarness({ parsedEvent: event, clearTextSelection: () => { clears++ } })
+    const harness = createHarness({ parsedEvent: event, flushTextSelectionRebuild: () => { clears++ } })
     harness.controller.handleData("x")
     assert.equal(clears, shouldClear ? 1 : 0)
   }
@@ -305,7 +305,7 @@ test("MP-08 / MP-10 F6 copies without kitty keyboard support and never stops or 
   for (const copyHandled of [true, false]) {
     for (const activeTurnWork of [true, false]) {
       let clears = 0
-      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, clearTextSelection: () => { clears++ } })
+      const harness = createHarness({ parsedEvent: keyEvent("f6"), copyHandled, activeTurnWork, flushTextSelectionRebuild: () => { clears++ } })
       assert.equal(harness.controller.handleData("\x1b[17~"), true)
       assert.ok(harness.calls().includes("copy"))
       assert.ok(!harness.calls().includes("stop"))
@@ -351,7 +351,7 @@ function createHarness(options: {
   roomWorkflowInput?: boolean
   parsedEvent?: CliStdinKeyEvent | null
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
-  clearTextSelection?: () => void
+  flushTextSelectionRebuild?: () => void
   dialogOpen?: boolean
   sessionBrowserHandled?: boolean
   focusedInteractionActive?: boolean
@@ -379,7 +379,7 @@ function createHarness(options: {
     : options.parsedEvent
   const deps: CliStdinKeyControllerDeps = {
     roomWorkflowsOwnsInput: () => options.roomWorkflowInput ?? false,
-    ...(options.clearTextSelection ? { clearTextSelection: options.clearTextSelection } : {}),
+    ...(options.flushTextSelectionRebuild ? { flushTextSelectionRebuild: options.flushTextSelectionRebuild } : {}),
     createStdinParser: () => ({
       push: (data) => {
         calls.push(`parse:${Buffer.from(data).toString()}`)
@@ -507,10 +507,10 @@ function keyEvent(name: string, options: {
   return event
 }
 
-// MP-08/MP-10: exercise the real stdin ordering with the mounted read controller.
+// Exercise the real stdin ordering with the mounted Environment controller.
 test("Environment panel preserves Ctrl+E and Ctrl+C exit/stop through stdin", async () => {
   for (const name of ["e", "c"]) for (const activeTurnWork of [false, true]) {
-    const panel = createProjectEnvironmentReadController({ send: async () => { throw new Error("read only") }, render() {}, pageSize: () => 10, textWidth: () => 72 })
+    const panel = createProjectEnvironmentController({ otherKernels: async () => [], client: () => ({ send: async () => { throw new Error("not available") } }), kernelId: async () => "kernel", render() {}, schedule: () => undefined, newOperationId: () => "op", now: () => 0, pageSize: () => 10, textWidth: () => 72 })
     await panel.open("project")
     const harness = createHarness({ parsedEvent: keyEvent(name, { ctrl: true }), activeTurnWork, handleProjectEnvironmentKey: panel.handleKey })
     assert.equal(harness.controller.handleData("x"), true)

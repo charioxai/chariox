@@ -256,3 +256,58 @@ fn check_inherited_oom_policy(inherited: i32) {
         "kernel must launch killable trees without lowering its policy"
     );
 }
+
+#[test]
+fn only_an_oom_protected_kernel_lifts_the_adjustment_in_its_children() {
+    assert!(lifts_adjustment("-1000\n"));
+    assert!(lifts_adjustment("-1\n"));
+    assert!(!lifts_adjustment("0\n"));
+    assert!(!lifts_adjustment("350\n"));
+    assert!(!lifts_adjustment(""));
+}
+
+/// A large kernel must not pay a page-table copy for every `ps` and `git` it starts.
+#[test]
+fn spawning_a_child_does_not_fork_a_large_kernel() {
+    use std::os::unix::process::CommandExt;
+    const ENV: &str = "CHARIOX_LARGE_KERNEL_SPAWN_CHILD";
+    const SPAWNS: u32 = 20;
+    if std::env::var_os(ENV).is_some() {
+        // Lanes run tests under an OOM-protected kernel; this measures the unprotected case.
+        if lifts_adjustment(&std::fs::read_to_string("/proc/self/oom_score_adj").unwrap()) {
+            std::fs::write("/proc/self/oom_score_adj", "0\n")
+                .expect("lift the test's OOM protection");
+        }
+        let mut resident = vec![1_u8; 512 * 1024 * 1024];
+        std::hint::black_box(resident.as_mut_slice());
+        let time = |mut command: Command| {
+            let started = std::time::Instant::now();
+            for _ in 0..SPAWNS {
+                assert!(command.status().unwrap().success());
+            }
+            started.elapsed()
+        };
+        let mut forked = Command::new("/bin/true");
+        // Any pre_exec hook makes the standard library fork instead of posix_spawn.
+        unsafe { forked.pre_exec(|| Ok(())) };
+        let forked = time(forked);
+        let spawned = time(super::command("/bin/true"));
+        std::hint::black_box(&resident);
+        assert!(
+            spawned * 2 < forked,
+            "{SPAWNS} spawns took {spawned:?}, against {forked:?} when forked"
+        );
+        return;
+    }
+    // The large allocation must not starve the other tests of this process.
+    let status = Command::new("/proc/self/exe")
+        .args([
+            "spawning_a_child_does_not_fork_a_large_kernel",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ENV, "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "spawns forked a large kernel");
+}

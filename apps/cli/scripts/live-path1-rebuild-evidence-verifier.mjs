@@ -366,8 +366,7 @@ function validateAfter(after, reviewed, before, rebuild) {
   uniqueStrings(newServices.map(({ unit }) => unit), "after service units")
   uniqueStrings(newServices.map(({ invocationId }) => invocationId), "after service invocation ids")
   if (!newServices.some(({ unit }) => unit === "chariox-path1-managed-bootstrap.service")
-    || newServices.some(({ unit }) => unit === "chariox-managed-bootstrap.service"
-      || unit === "chariox-disposable-worker-bootstrap.service")) {
+    || newServices.some(({ unit }) => unit === "chariox-managed-bootstrap.service")) {
     fail("path1_service_topology", "rebuilt Path-1 managed home must run its dedicated bootstrap service")
   }
   const oldServiceIds = new Set(before.services.map(({ invocationId }) => invocationId))

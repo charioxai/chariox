@@ -106,6 +106,53 @@ impl CharioxSkillRegistry {
         Ok((installed, destination))
     }
 
+    /// Registers the skill at `source` unless its name is already registered, whatever another writer does
+    /// meanwhile: the prepared copy is renamed into place, which fails on a skill directory instead of
+    /// replacing it, and nothing that existed is touched. `None` means the name was held.
+    pub fn install_if_absent_from_path(
+        &self,
+        source: &Path,
+    ) -> Result<Option<(CharioxSkillMetadata, PathBuf)>, DaemonError> {
+        let operation = "skill.install";
+        let source_skill_md = source.join("SKILL.md");
+        if !source_skill_md.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: format!("skill source `{}` must contain SKILL.md", source.display()),
+            });
+        }
+        let metadata = parse_skill_metadata(&source_skill_md)?;
+        if self.find_skill_dir(&metadata.name)?.is_some() {
+            return Ok(None);
+        }
+        let root = self.primary_root()?;
+        fs::create_dir_all(root).map_err(|error| DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "failed to create skill registry `{}`: {error}",
+                root.display()
+            ),
+        })?;
+        let destination = root.join(&metadata.name);
+        let temp_dir = prepare_skill_directory_from_source(root, source, operation)?;
+        if let Err(error) = fs::rename(&temp_dir, &destination) {
+            let _ = fs::remove_dir_all(&temp_dir);
+            if self.find_skill_dir(&metadata.name)?.is_some() {
+                return Ok(None);
+            }
+            return Err(DaemonError::LocalTransport {
+                operation,
+                message: format!(
+                    "failed to publish skill `{}` at `{}`: {error}",
+                    metadata.name,
+                    destination.display()
+                ),
+            });
+        }
+        let installed = parse_skill_metadata(&destination.join("SKILL.md"))?;
+        Ok(Some((installed, destination)))
+    }
+
     pub fn update_from_path(
         &self,
         source: &Path,
@@ -341,7 +388,7 @@ impl CharioxSkillRegistry {
         Ok(None)
     }
 
-    fn primary_root(&self) -> Result<&PathBuf, DaemonError> {
+    pub(crate) fn primary_root(&self) -> Result<&PathBuf, DaemonError> {
         self.roots.first().ok_or(DaemonError::InvalidConfig {
             field: "skill registry roots",
             message: "must include at least one root",

@@ -172,27 +172,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
-        LocalDaemonRequest::AdjustProjectEnvironment(request) => {
-            LocalRequestMetadata::new("project.environment.adjust", Interactive)
-                .session(&request.session_id)
-                .agent(&request.agent_id)
-        }
-        LocalDaemonRequest::StartProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.start", Normal)
-                .session(&request.session_id)
-                .agent(&request.agent_id)
-        }
-        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
-            LocalRequestMetadata::new("project.environment_setup.status", Normal)
-        }
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.cancel", Normal)
-                .session(&request.session_id)
-        }
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(request) => {
-            LocalRequestMetadata::new("project.environment_setup.retry", Normal)
-                .session(&request.session_id)
-        }
         LocalDaemonRequest::AttachToSession(request) => {
             LocalRequestMetadata::new("session.attach", Interactive).session(&request.session_id)
         }
@@ -228,6 +207,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
         }
         LocalDaemonRequest::OwnerVault(_) => LocalRequestMetadata::new("vault.owner", Normal),
+        LocalDaemonRequest::SetProjectEnvironmentSecret(_) => {
+            LocalRequestMetadata::new("project.environment.secret.set", Normal)
+        }
         LocalDaemonRequest::SetCredentialSecret(request) => {
             LocalRequestMetadata::new("credential.secret.set", Normal)
                 .optional_session(request.session_id.as_deref())
@@ -261,6 +243,12 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::UnlockCredentialVault(_) => {
             LocalRequestMetadata::new("credential_vault.unlock", Interactive)
         }
+        LocalDaemonRequest::CreateCredentialVault(_) => {
+            LocalRequestMetadata::new("credential_vault.create", Interactive)
+        }
+        LocalDaemonRequest::SealCredentialVaultKey(_) => {
+            LocalRequestMetadata::new("credential_vault.seal_key", Interactive)
+        }
         LocalDaemonRequest::ManageCredentialVault(request) => {
             LocalRequestMetadata::new("credential_vault.manage", Interactive)
                 .session(&request.session_id)
@@ -271,57 +259,6 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::ControlPlane(_) => {
             LocalRequestMetadata::new("control_plane", Interactive)
-        }
-        LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
-            LocalRequestMetadata::new("managed_environment.catalog", Normal)
-        }
-        LocalDaemonRequest::GetDisposableWorker(_) => {
-            LocalRequestMetadata::new("disposable_worker.get", Normal)
-        }
-        LocalDaemonRequest::CreateDisposableWorker(_) => {
-            LocalRequestMetadata::new("disposable_worker.create", Interactive)
-        }
-        LocalDaemonRequest::ReleaseDisposableWorker(_) => {
-            LocalRequestMetadata::new("disposable_worker.release", Interactive)
-        }
-        LocalDaemonRequest::KeepDisposableWorkerRunning(_) => {
-            LocalRequestMetadata::new("disposable_worker.keep_running", Interactive)
-        }
-        LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_) => {
-            LocalRequestMetadata::new("disposable_worker.context_transfer.prepare", Interactive)
-        }
-        LocalDaemonRequest::KeepManagedEnvironmentRunning(_) => {
-            LocalRequestMetadata::new("managed_environment.keep_running", Interactive)
-        }
-        LocalDaemonRequest::GetManagedEnvironment(_) => {
-            LocalRequestMetadata::new("managed_environment.get", Normal)
-        }
-        LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_) => {
-            LocalRequestMetadata::new("managed_environment.reimage.preflight", Normal)
-        }
-        LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_) => {
-            LocalRequestMetadata::new("managed_environment.reimage.receipt", Normal)
-        }
-        LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
-            LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
-        }
-        LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_) => {
-            LocalRequestMetadata::new("managed_environment.git_credentials.enroll", Interactive)
-        }
-        LocalDaemonRequest::CreateManagedEnvironment(_) => {
-            LocalRequestMetadata::new("managed_environment.create", Interactive)
-        }
-        LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_) => {
-            LocalRequestMetadata::new("managed_environment.lifecycle", Interactive)
-        }
-        LocalDaemonRequest::RequestManagedEnvironmentReimage(_) => {
-            LocalRequestMetadata::new("managed_environment.reimage", Interactive)
-        }
-        LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_) => {
-            LocalRequestMetadata::new("managed_environment.release_update", Interactive)
-        }
-        LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_) => {
-            LocalRequestMetadata::new("managed_environment.release_update.get", Interactive)
         }
         LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_) => {
             LocalRequestMetadata::new("managed_environment.reimage.observe", Interactive)
@@ -387,6 +324,16 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 metadata = metadata.agent(agent_id);
             }
             metadata
+        }
+        LocalDaemonRequest::CancelAgentTask(request) => {
+            LocalRequestMetadata::new("agent_task.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
+        }
+        LocalDaemonRequest::CancelAgentWake(request) => {
+            LocalRequestMetadata::new("agent_wake.cancel", Interactive)
+                .session(&request.session_id)
+                .attachment(&request.attachment_id)
         }
         LocalDaemonRequest::SteerActivePrompt(request) => {
             LocalRequestMetadata::new("prompt.active.steer", Interactive)
@@ -677,8 +624,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
     match request {
         LocalDaemonRequest::ControlPlane(_) => "control_plane",
         LocalDaemonRequest::SetRoomPinned(_) => "room.pin",
-        LocalDaemonRequest::AddSshMachine(_) => "machine.ssh.add",
-        LocalDaemonRequest::RemoveSshMachine(_) => "machine.ssh.remove",
+        LocalDaemonRequest::IssueOwnMachineEnrollment(_) => "machine.enroll",
         LocalDaemonRequest::RequestKernelAccess(_) => "kernel_access.request",
         LocalDaemonRequest::GetKernelAccessStatus(_) => "kernel_access.status",
         LocalDaemonRequest::CoverKernelAccessProcess(_) => "kernel_access.cover",
@@ -733,6 +679,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::OpenUserAppView(_) => "app.user_view.open",
         LocalDaemonRequest::ListUserAppViews(_) => "app.user_view.list",
         LocalDaemonRequest::CloseUserAppView(_) => "app.user_view.close",
+        LocalDaemonRequest::ClientAppView(_) => "app.client_view",
         LocalDaemonRequest::GetUserAppViewFrontend(_) => "app.user_view.frontend",
         LocalDaemonRequest::CallUserAppView(_) => "app.user_view.call",
         LocalDaemonRequest::SubscribeUserAppViews(_) => "app.user_view.subscribe",
@@ -757,58 +704,27 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::RevokeAppFileGrants(_) => "app.file.revoke",
         LocalDaemonRequest::AcceptAppHostAction(_) => "app.host.accept",
         LocalDaemonRequest::CreateSession(_) => "session.create",
-        LocalDaemonRequest::DetectProjectEnvironment(_) => {
-            "project.environment.DetectProjectEnvironment"
-        }
-        LocalDaemonRequest::PreviewEnvironmentDiff(_) => {
-            "project.environment.PreviewEnvironmentDiff"
-        }
-        LocalDaemonRequest::SaveProjectEnvironmentRevision(_) => {
-            "project.environment.SaveProjectEnvironmentRevision"
-        }
-        LocalDaemonRequest::PlanProjectEnvironment(_) => {
-            "project.environment.PlanProjectEnvironment"
-        }
-        LocalDaemonRequest::ApplyProjectEnvironment(_) => {
-            "project.environment.ApplyProjectEnvironment"
-        }
-        LocalDaemonRequest::CheckProjectEnvironment(_) => {
-            "project.environment.CheckProjectEnvironment"
-        }
-        LocalDaemonRequest::GetEnvironmentOperation(_) => {
-            "project.environment.GetEnvironmentOperation"
-        }
-        LocalDaemonRequest::CancelEnvironmentOperation(_) => {
-            "project.environment.CancelEnvironmentOperation"
-        }
-        LocalDaemonRequest::RetryEnvironmentOperation(_) => {
-            "project.environment.RetryEnvironmentOperation"
-        }
-        LocalDaemonRequest::ExportProjectEnvironment(_) => {
-            "project.environment.ExportProjectEnvironment"
-        }
-        LocalDaemonRequest::PreviewEnvironmentImport(_) => {
-            "project.environment.PreviewEnvironmentImport"
-        }
-        LocalDaemonRequest::CommitEnvironmentImport(_) => {
-            "project.environment.CommitEnvironmentImport"
-        }
         LocalDaemonRequest::GetProjectEnvironment(_) => "project.environment.get",
+        LocalDaemonRequest::SaveProjectEnvironment(_) => "project.environment.save",
+        LocalDaemonRequest::SetProjectEnvironmentSecret(_) => "project.environment.secret.set",
+        LocalDaemonRequest::RunProjectEnvironmentSetup(_) => "project.environment.setup.run",
+        LocalDaemonRequest::ImportProjectEnvironmentEntries(_) => "project.environment.import",
+        LocalDaemonRequest::DraftProjectEnvironment(_) => "project.environment.draft",
+        LocalDaemonRequest::CheckProjectEnvironment(_) => "project.environment.check",
+        LocalDaemonRequest::ResolveEnvironmentProposal(_) => "project.environment.proposal.resolve",
+        LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(_) => {
+            "project.environment.setup.run_remote"
+        }
+        LocalDaemonRequest::RemoteEnvironmentOperation(_) => "project.environment.operation.remote",
+        LocalDaemonRequest::GetEnvironmentOperation(_) => "project.environment.operation.get",
+        LocalDaemonRequest::CancelEnvironmentOperation(_) => "project.environment.operation.cancel",
         LocalDaemonRequest::ListProjects(_) => "project.list",
-        LocalDaemonRequest::GetProjectEnvironmentManifest(_) => "project.environment_manifest.get",
-        LocalDaemonRequest::AdjustProjectEnvironment(_) => "project.environment.adjust",
         LocalDaemonRequest::SetProjectPinned(_) => "project.pin",
         LocalDaemonRequest::RenameProject(_) => "project.rename",
         LocalDaemonRequest::UpdateProjectWorkspaces(_) => "project.workspaces.update",
         LocalDaemonRequest::ArchiveProject(_) => "project.archive",
         LocalDaemonRequest::DeleteProject(_) => "project.delete",
         LocalDaemonRequest::RestoreProject(_) => "project.restore",
-        LocalDaemonRequest::StartProjectEnvironmentSetup(_) => "project.environment_setup.start",
-        LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_) => {
-            "project.environment_setup.status"
-        }
-        LocalDaemonRequest::CancelProjectEnvironmentSetup(_) => "project.environment_setup.cancel",
-        LocalDaemonRequest::RetryProjectEnvironmentSetup(_) => "project.environment_setup.retry",
         LocalDaemonRequest::LaunchProviderRun(_) => "provider_run.launch",
         LocalDaemonRequest::LaunchProviderRuns(_) => "provider_runs.launch",
         LocalDaemonRequest::UpdateProviderRunSelection(_) => "provider_run.selection.update",
@@ -918,17 +834,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartCloudRelayLogin(_) => "cloud_relay.login.start",
         LocalDaemonRequest::PollCloudRelayLogin(_) => "cloud_relay.login.poll",
         LocalDaemonRequest::LogoutCloudRelay(_) => "cloud_relay.logout",
-        LocalDaemonRequest::PairCloudRelayClient(_) => "cloud_relay.client.pair",
-        LocalDaemonRequest::PairCloudRelayMachine(_) => "cloud_relay.machine.pair",
         LocalDaemonRequest::ConnectCloudRelay(_) => "cloud_relay.connect",
         LocalDaemonRequest::IssueCloudRelayClientToken(_) => "cloud_relay.client_token.issue",
         LocalDaemonRequest::ResolveKernelClientConnection(_) => "kernel.client_connection.resolve",
-        LocalDaemonRequest::CreateCloudSessionInvite(_) => "cloud_session.invite.create",
-        LocalDaemonRequest::ShowCloudSessionInvite(_) => "cloud_session.invite.show",
-        LocalDaemonRequest::AcceptCloudSessionInvite(_) => "cloud_session.invite.accept",
-        LocalDaemonRequest::RevokeCloudSessionInvite(_) => "cloud_session.invite.revoke",
-        LocalDaemonRequest::ListCloudSessionMembers(_) => "cloud_session.members.list",
-        LocalDaemonRequest::ListCloudCollaborators(_) => "cloud_session.collaborators.list",
         LocalDaemonRequest::GetUserConfig(_) => "config.get",
         LocalDaemonRequest::GetUserConfigSchema(_) => "config.schema",
         LocalDaemonRequest::ListPromptSettings(_) => "prompt_settings.list",
@@ -949,6 +857,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetCredentialVaultStatus(_) => "credential_vault.status",
         LocalDaemonRequest::LockCredentialVault(_) => "credential_vault.lock",
         LocalDaemonRequest::UnlockCredentialVault(_) => "credential_vault.unlock",
+        LocalDaemonRequest::CreateCredentialVault(_) => "credential_vault.create",
+        LocalDaemonRequest::SealCredentialVaultKey(_) => "credential_vault.seal_key",
         LocalDaemonRequest::ManageCredentialVault(_) => "credential_vault.manage",
         LocalDaemonRequest::RegisterCredential(_) => "credential.register",
         LocalDaemonRequest::UpsertCredential(_) => "credential.upsert",
@@ -1238,6 +1148,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::SubmitPrompt(_)
         | LocalDaemonRequest::SubmitPrompts(_)
         | LocalDaemonRequest::CancelActivePrompt(_)
+        | LocalDaemonRequest::CancelAgentTask(_)
+        | LocalDaemonRequest::CancelAgentWake(_)
         | LocalDaemonRequest::SteerQueuedPrompt(_)
         | LocalDaemonRequest::SteerActivePrompt(_)
         | LocalDaemonRequest::CancelQueuedPrompt(_)
@@ -1254,23 +1166,6 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::GetKernelResourceTelemetry(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::PreflightProviderAccountPortability(_)
-        | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
-        | LocalDaemonRequest::CreateDisposableWorker(_)
-        | LocalDaemonRequest::GetDisposableWorker(_)
-        | LocalDaemonRequest::ReleaseDisposableWorker(_)
-        | LocalDaemonRequest::KeepDisposableWorkerRunning(_)
-        | LocalDaemonRequest::PrepareDisposableWorkerContextTransfer(_)
-        | LocalDaemonRequest::KeepManagedEnvironmentRunning(_)
-        | LocalDaemonRequest::GetManagedEnvironment(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
-        | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
-        | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
-        | LocalDaemonRequest::CreateManagedEnvironment(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
-        | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
-        | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)
         | LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)

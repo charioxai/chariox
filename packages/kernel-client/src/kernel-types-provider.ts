@@ -1,10 +1,6 @@
 import type { ExternalProviderImportMetadata, RuntimeSession } from "./kernel-types-session.js"
 import type { AgentRuntimeActivity, PromptQueueItem } from "./kernel-types-runtime.js"
 import type { SessionHistoryExternalObservation } from "./kernel-types-history.js"
-import type {
-  ProjectEnvironmentDefinition,
-  ProjectEnvironmentSetupUtilityInput,
-} from "./kernel-types-project-environment.js"
 
 // MP-11 F7: public DTO; launch environment, MCP credentials and private resume data stay in the kernel.
 export type RuntimeProviderRun = {
@@ -87,7 +83,7 @@ export type DebugBundleExportedResponse = {
   }
 }
 
-export type AgentUtilityKind = "WorkspaceCommitMessage" | "ProjectEnvironmentSetup"
+export type AgentUtilityKind = "WorkspaceCommitMessage"
 
 export type WorkspaceCommitMessageUtilityInput = {
   workspace_id: string
@@ -95,9 +91,7 @@ export type WorkspaceCommitMessageUtilityInput = {
   compare_ref?: string | null
 }
 
-export type AgentUtilityInput =
-  | { WorkspaceCommitMessage: WorkspaceCommitMessageUtilityInput }
-  | { ProjectEnvironmentSetup: ProjectEnvironmentSetupUtilityInput }
+export type AgentUtilityInput = { WorkspaceCommitMessage: WorkspaceCommitMessageUtilityInput }
 
 export type RunAgentUtilityRequest = {
   session_id: string
@@ -106,17 +100,11 @@ export type RunAgentUtilityRequest = {
   input: AgentUtilityInput
 }
 
-export type AgentUtilityOutput =
-  | {
-      WorkspaceCommitMessage: {
-        message: string
-      }
-    }
-  | {
-      ProjectEnvironmentSetup: {
-        definition: ProjectEnvironmentDefinition
-      }
-    }
+export type AgentUtilityOutput = {
+  WorkspaceCommitMessage: {
+    message: string
+  }
+}
 
 export type AgentUtilityResult = {
   utility_run_id: string

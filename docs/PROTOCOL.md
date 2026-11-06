@@ -7,6 +7,19 @@ current release and the previous release (636 and 629), plus the new target
 discontinued and re-provisioned when that simplifies the code, regardless of
 whether an older protocol shipped.
 
+### MP-08 / MP-09 / MP-10 / MP-11 artifact read pages (local993 / peer432)
+
+`chariox.read_artifact` accepts optional `offset_bytes` (default 0) and
+`max_bytes` (default 8192, range 4–8192). Local and forwarded workspace reads
+return `offset_bytes`, `total_bytes`, and `next_offset_bytes` (null at EOF), plus
+the existing artifact, version and snapshot metadata. Continue with the returned
+offset and the same path/domain; restart if the artifact version changes.
+`content_text` pages preserve UTF-8 boundaries. `content_base64` pages encode
+only the returned source bytes and decode independently; `byte_count` remains
+the total opaque artifact size. An offset past EOF or inside a UTF-8 character
+fails with an actionable error. The page cap leaves room for JSON escaping and
+metadata under the shared 64 KiB MCP text bound.
+
 ### MP-08 / MP-10 / MP-11 handoff brief configuration (local protocol 527)
 
 `UserConfig.config.history.handoff` and `UserConfigUpdated.config.history.handoff`
@@ -135,7 +148,11 @@ Command and file capture require `use_binding`, using the existing typed
 canonical workspace file path. Only its matching use and injection are granted.
 Retries preserve the binding; unbound workspace entries are refused rather
 than inferred. Browser capture permits at most one `use_on` origin and stores
-a Site binding; auth.md registration stores the issued resource Site binding.
+a Site binding, or a TOTP binding when the call sets `totp` (the value is a
+manual setup key or `otpauth://` URI, also read from a QR image with
+`read: "qr"`, and the kernel computes the codes). A browser capture may instead
+carry the same `use_binding` as command capture (environment, stdin or workspace
+file), checked before anything is revealed; auth.md registration stores the issued resource Site binding.
 Ordinary operations need no sudo or task approval; payment cards always ask.
 See [capture and use](KERNEL_SUDO.md#vault-capture-and-use-by-command-and-file-vaudit-s2-s4).
 
@@ -960,6 +977,7 @@ alone cannot resume. Cancellation retains obligations until actual owned
 resource settlement. MP-08/MP-10/MP-11: cancellation applies to the addressed
 task; an older independent wait still receives its source completion or deadline
 wake. Historical task ordering is not an agent stop disposition.
+The blocked-task decision is the one kernel-operation decision that is not terminal-only: an external access holder, or an owner's agent driving the Room through reach, answers it with `RespondToInteraction` (`resume` or `cancel`, never implied), and its outside event carries the question instead of a pointer. Every other kernel-operation decision stays terminal-only.
 Legacy `/agent task` commands still address Meta tasks;
 they are not selectors for regular `agent_tasks`. Process/timer watcher sources
 belong to PR3 and leased delivery reconciliation to PR10; unsupported leased
@@ -2686,7 +2704,7 @@ Workflow trigger and deployment direction:
   delivery, retries, reporter restart, and kernel restart. A later transition,
   including a rapid busy-to-idle cycle, receives its own later timestamp.
   Managed-environment signatures cover `accountId`, `activityChangedAt`,
-  `environmentId`, `kernelId`, `machineId`, `runningAgentCount`, and `sequence`;
+  `environmentId`, `kernelId`, `machineId`, `workingAgentCount`, and `sequence`;
   disposable-worker signatures replace `environmentId` with `allocationId`.
   Cloud receivers for both routes MUST accept, validate, and persist this signed
   field before protocol-340 kernels are rolled out; producer and receiver must
@@ -4315,33 +4333,30 @@ WebSocket frames through the ordinary router and provider-native export paths
 with disposable synthetic Codex, Claude and OpenCode profiles. It establishes
 local protocol/portability behavior, not live provider login, provisioning or
 fresh-machine MP-10 acceptance.
-### MP-07 / MP-08 / MP-11 owner-managed SSH machines (local 479)
+### Own machine enrollment (local 971 / relay peer 420)
 
-`AddSshMachine { host, install_id?, port?, release? }` and
-`RemoveSshMachine { install_id }` use the owning kernel's normal admitted
-request transport. Only that kernel's owner may execute them; session guests,
-peers and external agents do not receive enrollment/install authority. The
-kernel selects an approved signed release from its local operator catalogue
-and invokes the user's SSH config/agent. Client requests contain no release
-paths, trust pins, SSH credentials, enrollment tickets or provider credentials.
+`IssueOwnMachineEnrollment { machine_label? }` replaces `AddSshMachine` and
+`RemoveSshMachine`; Chariox no longer installs a kernel over SSH. Only the
+kernel's owner (and an agent or external client acting under the owner's sudo
+window or access grant) may send it. A request that names another user, such as a
+guest's agent, is refused before Cloud is contacted.
 
-The source requests a user-bound single-use `owner_managed_machine` ticket
-from Cloud using its per-kernel credential. The separate owner-managed target
-bootstrap receives it solely on SSH stdin and shares device enrollment's
-kernel/machine/public-key admission and private credential storage. Managed VM
-bootstrap admission remains unchanged. The target installs a marked per-user
-root, starts only its own `systemd --user` unit, and must report authenticated
-local status with a relay connection before returning ready. The selected
-kernel port and its companion MCP port (`port+1`) must both be available.
+The kernel asks Cloud for a user-bound, single-use `owner_managed_machine`
+ticket with its per-kernel credential and a ten-minute life. Cloud returns the
+public address of the Setup script with the ticket. The response is
+`OwnMachineEnrollment { enrollment: { command, expires_at } }`, where `command`
+is one line for the new machine's own shell: it downloads the Setup script and
+pipes the ticket to `--enroll` on stdin, so no process argument carries it. The
+command is the only place the ticket appears; the kernel logs nothing and
+keeps this response out of its command-result files. A Cloud without a
+configured installer address makes the kernel revoke the ticket it just issued
+and refuse with that reason.
 
-`SshMachine { machine: { install_id, status, kernel_id, machine_id,
-release_digest, state_retained } }` exposes only a deployment receipt. A repeat
-with the same ID/release/port reuses the enrolled identity; another release
-requires an explicit later upgrade. Remove stops/uninstalls the owned service
-and release tree while retaining private kernel state and directory identity.
-No VM provisioning/deletion or runtime proxy is involved. Relay peer protocol
-inherits 73 from the ownership base; native/web minimums are unchanged for existing behavior. The SSH
-commands themselves require a local-479-capable kernel/client pair.
+Setup installs the kernel, redeems the ticket once through the ordinary
+`/auth/kernel/enroll` exchange and the machine enrolls under the owner's
+account; a second use or an expired ticket is refused. The new variants need a
+local-971 kernel and client; relay peer 420 carries the changed embedded unions.
+The managed-upgrade list is [629, 636, 971].
 
 MP-07 / MP-08 / MP-11 self-setup reuses the owner-managed install core and
 existing device enrollment; local 479/relay 73 are retained. Generic Setup
@@ -5307,7 +5322,7 @@ observation authority. This composes unreleased mirror539 with union 540/148.
 ### BYOM C5 — local 520 / relay peer 128 (MP-05 / MP-08 / MP-10 / MP-11)
 
 Coordinator allocation for the main-merged owner-managed contract. Local 520
-binds SSH machine add/remove, interactive owner-managed context admission, and
+binds the former SSH machine add/remove, interactive owner-managed context admission, and
 credential-free destination receipts together with main's local 491 contract.
 Peer 128 binds owner-managed context arming and the merged embedded local
 request/response unions. C4's experimental local 480 / peer 88 and the interim
@@ -5862,7 +5877,7 @@ Older history without `size_bytes` remains readable. The protocol fixtures and
 shape/hash tests cover both changes under this shared pair.
 
 
-### Binary Room exec (local 632 / peer 235)
+### Binary Room exec (local 995 / peer 434)
 
 MP-08 / MP-09 / MP-10 / MP-11: `RoomTerminal` also carries non-PTY commands.
 The existing Room owner, external-grant and worker-lease checks apply unchanged;
@@ -5870,10 +5885,32 @@ a caller unable to open that Room's terminal cannot exec there. `room_exec_v1`
 advertises this additive contract. The relay still carries opaque encrypted
 requests and responses, using its existing bounded framing and flow control.
 
-- `exec_open { command: [program, ...args] }` starts argv directly in the Room's
-  project directory; `exec_opened { exec_id }` identifies the running command.
+- `exec_open { command: [program, ...args] }` validates the original argv and
+  canonical Room directory, then allocates `exec_opened { exec_id }` before
+  spawning a user program. Its immutable intent contains only the launch ID,
+  Room/owner/acting-agent identity, argv and cwd. It contains no resolved Vault
+  values, inherited environment, provider account configuration or descriptors.
+- MP-08 / MP-09 / MP-10 / MP-11: resource admission holds a binary launch before
+  spawn when its predicted memory or disk need does not fit. Concurrent binary
+  decisions reserve capacity in the existing resource pool. `exec_list` returns
+  tagged `queued { wait }`, `starting`, `running` or `finished` state, the original
+  command and its owner. `exec_start_now { exec_id }` admits only queued work;
+  cancellation before dispatch never starts the user program. The original
+  authority is checked again immediately before spawn. A gateway submission
+  retains the existing remote-requester lease and the authenticated gateway's
+  admission generation. Grant-end delivery, lease expiry or target revocation
+  ends queued authority; re-pairing the same key cannot revive an old intent.
+  Queueing preserves the
+  same bounded stdin offsets, stdout/stderr cursors, cancellation and reader
+  lease. Queued work counts as busy for the managed shutdown fence.
+- Observed process `held` and `paused` states still describe programs that have
+  already executed. Their existing Run anyway control continues the same
+  process. They cannot be converted into new launch intents or placed elsewhere.
+  Selected-kernel placement, VM acquisition, verified context transfer and
+  durable remote claim/results remain separate unfinished work; this protocol
+  change does not advertise them.
 - `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
-  has `exec_id`, `state` (`running` or `finished`), `age_ms` and `buffered_bytes`.
+  has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.
 - `exec_write { exec_id, offset, data_base64 }` accepts at most 256 KiB at the
   next stdin byte offset; `exec_input { next_offset }` acknowledges admission to
@@ -6215,8 +6252,7 @@ owner's user id. A session member, an agent and a Metaagent get `vault_unlock_ow
 kernel-access grant holders and sudo agents are refused too, and no agent tool carries it. The passphrase
 is a redacted, zeroed value: command records show `[redacted]`, and it is never logged. The
 request unlocks an existing Vault only; a missing Vault file is refused and never created.
-The Vault stays open per its policy (`ttl` the default TTL, `kernel_init` until shutdown); under
-`always` the unlock is single use: it lasts 60 seconds and ends after the next account copy.
+How long the Vault stays open is the owner's choice on every unlock (local 984, below).
 
 Refusals carry a code and a plain sentence: `vault_passphrase_wrong`,
 `vault_unlock_rate_limited` (the sentence names the wait in seconds), `vault_missing`,
@@ -6228,6 +6264,177 @@ time), shared by this request, the passkey check and the unlock prompt an agent'
 Clients need kernel protocol >=923 (`credentialVaultUnlockMinimumProtocolVersion` in the
 web). The managed-upgrade list is [629, 636, 923]. Focused checks:
 `cargo test -p chariox-kernel --lib vault_unlock` and `node --test scripts/protocol-versions.test.mjs`.
+
+### OSS boundary: retired Cloud controls removed — local 967 / relay peer 416
+
+The 25 local requests that only forwarded to the connected service's account or rental API are gone, with
+their responses: `PairCloudRelayClient`, `PairCloudRelayMachine`, `CreateCloudSessionInvite`,
+`ShowCloudSessionInvite`, `AcceptCloudSessionInvite`, `RevokeCloudSessionInvite`,
+`ListCloudSessionMembers`, `ListCloudCollaborators`, `ListManagedEnvironmentCatalog`,
+`GetManagedEnvironment`, `GetManagedEnvironmentReimagePreflight`, `GetManagedEnvironmentReimageReceipt`,
+`CreateManagedEnvironment`, `RequestManagedEnvironmentLifecycle`, `RequestManagedEnvironmentReimage`,
+`RequestManagedEnvironmentReleaseUpdate`, `GetManagedEnvironmentReleaseUpdate`,
+`PrepareManagedEnvironmentContextTransfer`, `PrepareManagedEnvironmentGitCredentialEnrollment`,
+`KeepManagedEnvironmentRunning` and the five `*DisposableWorker*` requests. Since protocol 491 the kernel
+refused them with `client_cloud_authority_required`; it now answers an unknown variant like any other. Cloud
+account and rental actions belong to the connected service's own client API, and machine acquisition goes
+through the generic `ControlPlane` request. Relay peer 416 pairs the embedded local union with local 967.
+Clients carry no minimum: a kernel older than 967 still knows the names and refuses them. The
+managed-upgrade list is [629, 636, 967]. Focused checks: `cargo test -p chariox-kernel --lib protocol_shapes`
+and `node scripts/oss-boundary-guard.mjs`.
+
+No serialized shape changes with the disposable-worker removal that followed: `chariox-managed-bootstrap
+--disposable-worker`, its exchange and confirm calls, the `DisposableWorker` envelope and receipt variants of the
+managed bootstrap, and the managed-activity reporter's `/v1/disposable-workers/activity` mode are gone. The
+managed-activity HTTP contract (protocol 340) now has the single `/v1/managed-kernels/activity` endpoint. What
+remains of the worker is the receipt reader that gates managed-context import and project setup on a
+`RemoteLeaseWorker`; nothing in this repository writes that receipt.
+
+Two Kernel-to-Cloud wire names became neutral together with the matching Cloud change (no local or relay shape
+changes, so no protocol bump): the managed bootstrap envelope key `cloudApiUrl` is now `controlPlaneUrl`, and the
+quiescence routes lost `auto-stop`: `/v1/managed-kernels/quiescence/poll`, `/ack` and `/release-ack`, whose signed
+`action` values are `quiescence_poll`, `quiescence_ack` and `quiescence_release_ack`. A kernel and a Cloud API from
+before this change do not talk to each other on those routes.
+
+
+### A new machine's own Vault — local 973
+
+`CreateCredentialVault { origin }` gives this kernel a Vault from the owner's own client, with no session or
+agent (the same callers and refusals as `UnlockCredentialVault`). `origin` is
+`{ kind: "passphrase", passphrase }` (typed for this kernel) or `{ kind: "seed", seed }`, a `VaultKeySeed` that
+another kernel sealed for this one with `SealCredentialVaultKey { targetKernelId, targetPublicKey }`
+(`CredentialVaultKeySealed { seed }`, refused with `vault_locked` while that Vault is locked). The seed holds the
+unlocked Vault key sealed to the target's relay key (the transferred-Vault sealing, bound to both kernel ids and
+to the KDF parameters and salt of the Vault file) and those parameters; the target writes its own, empty Vault
+under that key. The same passphrase therefore opens both Vaults, each kernel keeps its own file, and neither the
+passphrase nor the key is sent in the clear. Both answer `CredentialVaultUnlocked { status, action: "created" }`
+with the Vault open for the owner's lease and the critical-approval verifier pinned like an unlock. An existing
+Vault is never replaced (`vault_exists`); a kernel that keeps its secrets outside a Chariox Vault refuses with
+`vault_not_chariox_encrypted`. A seed sealed for another kernel creates nothing. A managed-machine launch sends
+the seal to the kernel the Project is on and the create to the new kernel before the Project is sent, so the
+Environment's Secrets and secret-looking Files are written into the new Vault. Focused checks:
+`cargo test -p chariox-kernel --lib vault_creation` and `credential_vault_creation_973_shapes_are_pinned`.
+### Vault unlock duration — local 984 / relay peer 425
+
+Every Vault unlock names how long the Vault stays open. `UnlockCredentialVault { passphrase, duration }`
+takes a required `duration`: `{"kind":"once"}` (the next operation, then the Vault closes; for the
+owner's own client that is the 60 second single-use unlock), `{"kind":"minutes","minutes":N}`
+(capped by `credential_vault.max_ttl_minutes`) or `{"kind":"until_kernel_stops"}`
+(`VaultUnlockLease::KernelShutdown`). `GetCredentialVaultStatus` answers
+`CredentialVaultStatus { status, unlock }` with `unlock = { durations, default }`: the durations a
+client offers and the one it preselects. `credential_vault.unlock_policy` no longer decides a lease
+or forces a prompt; it only picks `default` (`always` once, `ttl` its default minutes, `kernel_init`
+until the kernel stops).
+
+`UnlockCredentialVault` also names the `surface` the owner typed the passphrase in: `vault_window`,
+`settings`, `sidebar` or `terminal` (`card` is the card's own answer and is refused on this request with
+`vault_unlock_card_surface`). Whatever surface unlocks the Vault, with any duration, every open unlock card
+of every Room is answered by the kernel as `answered` with `choice_id: "unlocked"` and the surface as
+`reply`, which closes it at once on every client; the agent's blocked operation continues. The card offers
+only the passphrase, the duration and Unlock, and Cancel.
+
+The Unlock card an agent's Vault use raises (`Unlock Chariox Vault`) carries the same list as
+choices: each duration is a choice with `vault_unlock` set to that duration, next to `cancel`. The
+person answers with one duration choice and the passphrase as `custom_reply`; a duration choice
+without a passphrase is refused, and the passphrase is never part of the recorded answer. Clients need
+kernel protocol >=984 (`credentialVaultUnlockMinimumProtocolVersion` in the web). The managed-upgrade
+list is [629, 636, 984]. Focused checks: `cargo test -p chariox-kernel --lib vault_unlock`.
+
+A wrong passphrase typed in the card does not fail the agent's Vault operation: the kernel counts it against the
+owner's wrong-answer budget (unchanged) and raises the same card again, its message led by `That is not the Vault
+passphrase. Try again.` (or `Too many wrong passphrases. Try again in N seconds.`). Cancel or the deadline still ends
+the operation.
+
+`chariox.request_popup` cards always carry a `cancel` choice next to the agent's own (an agent's own
+choice with id `cancel` is kept as it is). Answering it resolves the question with `status:
+"cancelled"` and `choice_id: "cancel"` in the tool result and in the wake payload, so the agent never
+reads a cancel as a timeout. No serialized shape changes: the card is an ordinary choice list.
+
+### Person cards — local 984 / relay peer 425
+
+`chariox.request_popup` takes two more optional arguments, and a `RuntimeInteraction` one more optional
+field (additive; old clients ignore it):
+
+- `until: { wake_id }` (with `wait:false`): the card follows a wake source the same agent armed. When the
+  source occurs or ends, the kernel answers the card as `answered`, `choice_id: "condition_met"`, `reply`
+  = a kernel-written sentence; every client drops the card and the agent reads it as its answer.
+  `RuntimeInteraction.closes_with_wake` carries the wake id (stored with the question, so a kernel
+  restart keeps it). Unknown, foreign or ended wakes refuse the call.
+- `action: { request }`: one kernel request (the `chariox_kernel_request` shape) the person authorizes
+  with the passkey. The card is a kernel decision (`PasskeyPromptKind::CriticalApproval`) titled
+  "Approve one action" whose message the kernel writes from the request; the agent's `title` and `message`
+  are ignored. Approve runs the request once as the owner and the call returns `{status, choice_id,
+  ran, response | error}`; Cancel returns `status: "cancelled", ran: false`. The `/sudo` refused list
+  applies (`sudo_request_forbidden`).
+
+Focused checks: `cargo test -p chariox-kernel --lib async_popup card_action person_card`.
+
+### Live browser person cards — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `request_popup` accepts
+`view: { browser_region: { tab_id, ref } }`, where `ref` is a `node_ref` from a browser
+snapshot observed by this agent for this Tab. This requires the agent's existing browser
+grant; a card never grants browser access. Unknown, foreign and stale references refuse
+registration. `action` and `view` are mutually exclusive.
+
+The kernel projects `RuntimeInteraction.view.browser_region` with `tab_id`, `ref`,
+`generation`, `document_id`, `origin`, `rect: { x, y, width, height }`, `viewport_width`,
+and `viewport_height`. Coordinates are integer CSS pixels in the existing Tab display.
+The element's viewport box has a 16 CSS pixel margin, clipped to the viewport; offscreen
+content can produce an empty rectangle. `origin` is the browser-owned site origin and
+never includes URL userinfo, path, query or fragment. The card attaches another viewer
+to the existing protected Tab display, without a second image or video capture path.
+
+A renderer geometry wait follows root element scroll, resize and movement, returning
+only when geometry changes or its one-second idle timeout expires. Child-frame boxes
+use the shared frame ownership walk and frame-owner affine transforms; their geometry
+refresh is bounded to 100 ms. Only changed metadata publishes a new card projection.
+The existing wake scheduler reattaches card watchers after recovery. A removed element,
+replaced document or retired browser reference resolves the ordinary question once with
+`choice_id: "condition_met"` and a kernel-written reason. The same condition reaches the
+durable inbox for `wait:false` and the blocked tool for `wait:true`.
+Revoked browser access instead resolves `status: "unavailable"`, no choice id, and
+a kernel-written reason. Continuous observation failures retry with the last-known crop
+for up to 15 seconds, then resolve the same definitive unavailable outcome. A successful
+observation resets that failure budget; an offscreen box remains a live, empty crop.
+Each live card pins its one element binding independently of the bounded snapshot-reference
+cache. Watchers renew that controller lease and release it when the card closes. An abandoned
+lease expires after 15 seconds; the controller refuses new anchors at its 1,024-card limit
+instead of evicting a live anchor. Losing only registry state resolves unavailable, rather
+than claiming an element disappeared. Geometry updates replace the view in place, preserving
+card order even when questions share a request timestamp.
+
+Focused regression checks: `cargo test -p chariox-kernel --lib async_popup_browser_region`
+and `node --test apps/kernel/slice-linux-docker/docker/kernel-browser-card-region.test.mjs`.
+
+### Agent reach — local 974
+
+A Room agent of the kernel owner reaches other rooms and kernels through a second runtime MCP server,
+`chariox-reach` at `/mcp/reach` (tools `kernels`, `sessions`, `request`, `events_subscribe`, `events_wait`,
+`events_ack`, `guide`; see `docs/KERNEL_ACCESS.md`). The identity is the agent's own live provider run
+(`reach:<run>`), authorised as the owner by the rule of its own room: what a Room agent without `/sudo` may do at
+home (read and list, history, create a room, message and steer agents, room terminals and files, the six event
+requests, answering a routine decision of another room, `ControlPlane` machine requests) is allowed elsewhere, what
+needs `/sudo` at home needs it elsewhere (`reach_requires_sudo`), and the human-only set is refused everywhere.
+The wire changes are small:
+
+- User config gains `agents.ask_before_acquiring_machines` (`GetUserConfigSchema` lists it; `SetUserConfigValue`
+  takes `"true"`/`"false"`; owner-only, so a gateway or sudo caller is refused). It is on unless the owner turns it
+  off: each `ControlPlane` acquire, start or start-from-saved-state by an agent raises one decision ("Let
+  `<room>/<agent> (Chariox agent)` acquire a machine?", choices `accept`/`cancel`) in the agent's room, shown on
+  every client; declining answers `acquisition_declined`.
+- `on_behalf_of.harness` names `<room>/<agent> (Chariox agent)` in the target's audit and paired-clients list.
+- The kernel sends the same name to the connected service with an agent's `acquire` (`requested_by`; the kernel
+  fills it from its own record of the caller, a request cannot carry it), so the service lists the machine under it.
+- The event requests and `RespondToInteraction` are room-level for a reach caller; an event request with a `kernel`
+  is refused (`events_local_only`). The "Agent needs your action" decision (`task-blocked-…`) is answerable by a
+  holder or reach driver, and its outside event carries `question`.
+- `CreateSession` is room-level for the owner's agents on every kernel. A guest's agent never reaches.
+
+Relay peer 415 is unchanged. A client that shows the setting needs kernel protocol >=974; development stage kernels
+are re-provisioned. The managed-upgrade list is [629, 636, 974]. Focused checks:
+`cargo test -p chariox-kernel --lib mcp_server::tests::reach`, `node scripts/drills/agent-reach.mjs` (two kernels)
+and `node scripts/drills/agent-reach-machines.mjs` (a hosted validation stack and one real machine).
 
 ### Apps v2 — local 966 / relay peer 415
 
@@ -6241,6 +6448,27 @@ unprojected projection, and pairs the embedded local union with local 966. Clien
 minimum for these requests: a kernel older than 966 refuses an unknown variant, and development
 stage kernels are re-provisioned. The managed-upgrade list is [629, 636, 966]. Focused checks:
 `cargo test -p chariox-kernel --lib protocol_shapes` and `pnpm protocol:conformance`.
+
+### Notification subscriptions — local 994 / relay peer 433
+
+Each exit of a workflow is its own notification source. `RegisterWorkflowNotificationSource` takes an
+`exit_node_id` (a node id or `exit-N`) and no `output_fields`; source summaries carry
+`exit_node_id`, `exit_ordinal`, `name` and `display_name` (`<name>`, or `<name>-<ordinal>` when more
+than one exit of the workflow notifies). `AttachWorkflowNotification` is `{session_id, source_id,
+publication_ref}`: `events`, `filters`, `ttl_days`, `queue_ref` and `delivery_mode` are refused as unknown
+fields, as is `delivery_mode` on `ConfigureAppAutomation`. `ListWorkflowNotifications` answers a room member and
+a member's agent with this room's sources only. `AppInstallationSummary.events` lists the active
+release's outgoing events (`name`, `label`). The envelope is `{source_id, display_name, occurrence_id,
+output, ancestry, deadline_ms}`; there is no status, subject or fields. An agent subscribes itself with
+`CreateAgentTrigger` and source `{kind:"notification", source:{workflow:{source_id}}}`: `busy_policy` is
+now optional on the request, a notification trigger refuses a value, and the trigger summary is
+`{kind:"notification", source, subscription_id, display_name}`. Prompts of this kind carry
+origin `notification`. Peer 433 renames `SubscribeWorkflowNotifications.source_workflow_ref` to `source_id`,
+carries the exit fields in `ListWorkflowNotificationSources` and admits an agent `target_ref`. The
+`UpdateQueuedWorkflowPrompt.retry_delivery` field and the inject delivery path are gone. Clients carry no
+separate minimum: a kernel older than 994 refuses the unknown shapes, and development stage kernels are
+re-provisioned. See `docs/EVENT_TRIGGER_PROTOCOL.md`. Focused checks:
+`cargo test -p chariox-kernel --lib notification` and `node --test scripts/protocol-versions.test.mjs`.
 
 ### Opaque reimage provider id: local 924 / relay peer 375
 
@@ -6361,3 +6589,233 @@ only. The native worker ships beside the kernel, enters containment before its
 identity handshake, and exposes only the versioned App WIT world through the
 kernel capability broker. The replaced engine's launch, runtime enrollment and
 privileged storage-helper paths are removed. Reinstall unsupported stored Apps.
+
+### Disk held by a process and the disk-full stop — local 985 / relay peer 424
+
+`SessionProcess` (the `ProcessSample` it carries) gains `disk_written_bytes` (bytes the process
+wrote to storage, `null` when the OS cannot say), `deleted_open_bytes` (the size of deleted files it
+still holds open; they take space until it lets go, and only a process that wrote 64 MiB or more is
+looked at) and `outlived` (it kept running after the command that started it ended). The relay peer
+is unchanged.
+
+A writer is never paused for a full disk, because a paused writer keeps its space. Below half the
+disk floor the kernel ends the agent's command that wrote the most among those still writing there
+(a person's own command is never chosen) and writes the reason to that command's error stream:
+how much was free, the floor, its write rate, what it wrote and what it held in deleted files. The
+`process` outside event carries the same reason as `ended`. A command that is held before it starts
+still waits for room in the one queue shared with memory.
+
+Below the floor the kernel first trims idle scratch, then puts one turn to each of the three
+agents holding the most (`PromptOrigin::Notification`): what is free, their writing processes with
+the bytes they wrote and the deleted files they keep open, their `$TMPDIR` and its biggest entries,
+and the biggest folders of their workspace. The agents decide what to free; the kernel deletes
+nothing but its own scratch.
+
+Every agent's processes get `TMPDIR`, `TMP` and `TEMP` set to `<home>/t/<room>/<agent>` (eight
+characters of each id, private, created at launch). An entry in it that nothing wrote for
+`CHARIOX_TEMP_IDLE_SECONDS` (one hour) is removed once a minute, unless a process has it open, works
+in it or maps it; a Room that ends clears its folder at once. Focused checks:
+`cargo test -p chariox-kernel --lib -- agent_temp disk_scan disk_pressure disk_use process_resources`
+and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|ask|runaway`.
+
+### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
+
+`SessionState` and `session_processes_changed` carry `disk_usage` beside the
+existing CPU, memory and cumulative I/O process samples. Each allocation has
+`id`, nullable `path`, nullable `used_bytes`, `sampled_at_ms`, nullable `owner`
+and nullable `process_id`. Directory entries describe the Room worktree and
+each agent's worktree, scratch and configured provider state directories.
+Process entries describe allocated regular files currently held open; an
+unlinked file retains its allocation identity with a null path. Shared file
+identities and roots covered by another directory count once in parent totals.
+
+The kernel measures metadata on one blocking worker, at a thirty-second
+cadence. Each directory walk has an entry and time budget, follows no links
+below its root, and counts hard links once. Unreadable or incomplete totals
+remain null. Requests and subscriptions copy the last sample without walking
+the filesystem; inactive Room samples expire. The Machines table presents one
+Disk used column and labels the existing cumulative counter Disk I/O.
+
+### DOM mirror v2 frame compat mode (local protocol 981)
+
+A mirror v2 `document` record carries `compat: "quirks"` when its source document lays out in quirks mode
+(`document.compatMode === "BackCompat"`); standards documents carry nothing. The viewer builds every nested frame
+document in standards mode unless the record says quirks, because a frame's initial viewer document is in quirks mode and
+percentage heights and table cells (an image grid's rows) lay out differently there. The relay peer protocol does not
+change, and clients carry no new minimum: an older kernel names no quirks frames, so the viewer shows them in standards
+mode. A quirks-mode top-level page is still shown in the viewer's standards-mode sandbox. Focused checks: the
+`protocol 981` controller test in `kernel-browser-mirror2.browser-test.mjs`, the compat renderer test in
+`browser-mirror2-renderer.browser-test.mjs` and the real-Chromium drill `browser-mirror2-lab.mjs` with
+`browser-mirror2-captcha-scenarios.mjs`.
+
+MP-08 / MP-09 / MP-10 / MP-11: parallel agents in one kernel browser (local 986 / relay peer 415). Agents never
+change the Tab Chrome shows: an agent's new Tab opens behind the shown one, selecting a Tab with `slice_browser_tab`
+`activate` is a no-op for the view, and a page an agent's click opened is put behind the shown Tab again. Only a
+person does: `KernelBrowser.command={op:"show_tab",tab_id,generation}` makes Chrome itself show that Tab and answers
+with the browser state; the host refuses it for an agent. A person's typing, click or scroll in a Tab holds an agent's
+input to that same Tab until the person has been idle for two seconds. Each agent's native tab group is titled with
+its status dot, and with a spinner while the agent acts in one of its Tabs.
+
+
+### Owner cancellation of retained work — local 987
+
+`CancelAgentTask { session_id, attachment_id, task_id, revision }` lets the room
+owner cancel one exact task at the displayed revision, including when the agent
+has no active provider turn or another task is running. The kernel cancels only
+that task's retained resources and returns `AgentTaskUpdated`. Stale revisions
+and foreign room or attachment ownership are refused. A completed task cannot
+be cancelled.
+
+`CancelAgentWake { session_id, attachment_id, wake_id }` independently cancels a
+retained timer and returns `AgentTaskUpdated` for its owning task. It preserves
+the task and uses the normal source cancellation receipt to inform the agent.
+Other wake sources stop with their owning task. The shared shell exposes these
+controls as `stop task <task-id> <revision>` and `stop timer <wake-id>`; bare
+`stop` keeps its active-turn or focused-task behavior.
+
+An unconditional, targetless `CancelActivePrompt` still stops an active turn;
+when no turn is active it resolves the focused agent's parked task. A request
+with `expected_prompt_id` remains an exact active-prompt cancellation and never
+falls through to parked work. Owner task cancellation records a durable inbox
+notice, included in the agent's next ordinary task context until it is handled.
+It does not create a provider turn that revives stopped work. Relay frame shapes
+are unchanged.
+
+### MP-08 / MP-09 / MP-10 / MP-11: peer Browser snapshot encoding
+
+Local 996 / peer 435 changes only the private `RoomBrowserControllerResult::Snapshot.snapshot`
+wire field. A present snapshot is `{decoded_bytes, zlib_base64}`; an absent
+snapshot remains null. The decoded JSON is the same complete structured Browser
+observation. The sender compresses after observation scrubbing and before peer
+encryption. The receiver authenticates/decrypts normally, checks the encoded and
+decoded byte limits, expands at most the declared size plus one byte, requires
+the exact declared size and complete zlib stream, and then applies the existing
+Browser snapshot validation. Decoded data is capped at 32 MiB; compressed data
+is capped at that size plus 64 KiB for framing overhead. There is no legacy
+plain-snapshot decoding path and no change to the 15-second peer response bound.
+
+
+
+### Environments — local 982 / relay peer 423
+
+A Project has one Environment: a saved record (schema 2) with a Setup script, Variables (`.env` text),
+Secret names and Files outside Git. Values never enter the record. Each kernel keeps a Secret's value in
+its own Vault under the Project scope, so presence differs per machine and is computed on every read.
+
+- `GetProjectEnvironment { projectId, checkoutPath? }` answers `ProjectEnvironment { environment }`:
+  the record, each Secret as `present`, `missing` or `locked` (Vault locked), each file as `present` with
+  its size or `missing`, the kernel's label and the Setup state of that checkout (`notRun`, `ok`, `failed`,
+  `cancelled`, `running`; a changed script makes any earlier run `notRun`).
+- `SaveProjectEnvironment` carries the revision the client read. A stale revision answers
+  `ProjectEnvironmentConflict` with the current record and writes nothing.
+- `SetProjectEnvironmentSecret` is owner-only like `OwnerVault`, is never cached or logged with its value
+  and writes the value to this kernel's Vault.
+- `RunProjectEnvironmentSetup { projectId, operationId, checkoutPath? }` runs the script in the checkout with
+  Variables and the present Secrets in its environment. `GetEnvironmentOperation` returns the state and the
+  last 64 KiB of output with Secret values replaced by their names; `CancelEnvironmentOperation` ends the
+  process tree by its exact PID. A run cut off by a kernel restart reads as failed with that reason.
+  Setup never starts by itself.
+- Variables and the present Secrets are environment variables of every provider run, shell capability and
+  Room terminal the kernel starts for the Project. Files outside Git are copied into new worktrees of the
+  Project and travel with moves and slices through the ignore rules.
+- `ImportProjectEnvironmentEntries { projectId, operationId, sourceKernelId, entries?, checkoutPath? }`
+  (Import here and Update) asks another kernel of the same authenticated owner for the record (adopted when
+  its revision is newer), then for each Secret value and File this kernel lacks, one peer request each
+  (`ReadProjectEnvironment`, `PullProjectEnvironmentSecret`, `PullProjectEnvironmentFile`; refusals answer
+  `ProjectEnvironmentRefused`). Without `entries` it brings every missing one. The operation reads like a
+  Setup run with `kind: "import"`, `entries` (pending, importing, imported, failed with a reason such as
+  "Source offline" or "Not on <machine>") and `sourceLabel`; Stop keeps what landed. Values travel only inside
+  the peer channel's end-to-end encryption, are never logged and never appear in a view. A File is at most
+  64 MiB (128 MiB per operation), travels in 4 MiB slices (`PullProjectEnvironmentFile` carries the offset;
+  a message is encoded twice on the way and must stay under the relay's bound) into a private temporary file
+  that appears under its name only when complete, and lands with mode 0600. Every response
+  includes the SHA-256 of its complete source byte stream; Import requires identical sizes and digests
+  across chunks and checks the assembled digest before publication. A source change fails that row
+  without publishing partial contents. Secret imports use an atomic insert-if-absent in the target
+  Vault, preserving a value entered while a fetch was pending.
+- `DraftProjectEnvironment { projectId, operationId }` runs an idle agent of the Project on this kernel
+  on its own provider with no tools: the kernel sends the Project's manifest files and the names of the
+  files Git ignores (never their contents), and the answer becomes revision 1 of a Project that has no
+  Environment. The operation reads with `kind: "draft"`.
+- `CheckProjectEnvironment { projectId, operationId, withAgent }` (kind `check`) always compares what the
+  Project's files declare with the saved record in the kernel, with no model (MCP servers and skills the files
+  declare that the record lacks, variable names that `.env.example` or `.mcp.json` refer to, entries whose
+  declaring file no longer declares them: evidence `file missing` or `not in <file>`). With `withAgent` an idle
+  agent of the Project on this kernel adds its own proposals on its provider with no tools. The kernel stores up
+  to 20 proposals (`ProjectEnvironmentView.proposals`: field setup, variables, secret, file, mcp or skill; add or
+  remove one line, name or path; evidence path and one line). A proposal the record cannot take is dropped.
+  `ResolveEnvironmentProposal { projectId, proposalId, accept }` accepts one as an ordinary Save of the next
+  revision (answering `ProjectEnvironmentSaved` or `ProjectEnvironmentConflict`) or dismisses it for good; a
+  dismissed proposal is not stored by a later check. Nothing changes until a proposal is accepted.
+- MCP servers and skills are rows of the record (`mcps`, `skills`: `{ name, source }`). `source` is
+  `{ "kind": "file", "path": ... }`, the declaring project file (`.mcp.json`, `.codex/config.toml`, `opencode.json`,
+  `.claude|.agents|.opencode/skills/<name>/SKILL.md`), or `{ "kind": "registration" }`, a Chariox registration
+  (`~/.chariox/mcps`, `~/.chariox/skills`). Git carries files, so a file row is `present` while that file still declares
+  it in the checkout; a registration row is `present` while this kernel holds the registration, else `missing`.
+  `SaveProjectEnvironment` carries both lists. Draft fills them from the files and from the MCPs and skills granted to
+  agents of the Project (registered here), not from the agent; the environment variables an MCP reads its keys from
+  (`env_vars`, `credential_env`, bearer token and header variables) are added to the Secrets.
+  Import and Update bring a missing registration: entries of kind `mcp` or `skill`, one peer request each
+  (`PullProjectEnvironmentRegistration { projectId, entryKind, name }`, answered by
+  `ProjectEnvironmentRegistrationPulled`; `ReadProjectEnvironment` also lists the registrations the source holds as
+  `mcps` and `skills`). The MCP is written with its keys as environment variable names (a credential handle exists on
+  one kernel only); a skill travels as its package (at most about 3 MiB). A room created in the Project is granted
+  the registrations the saved record lists that this kernel holds.
+- `EnvironmentOperationView.updates` counts every change of an operation. `GetEnvironmentOperation { operationId,
+  waitAfterUpdates? }` with `waitAfterUpdates` holds the answer (at most 20 s) until the operation has more updates
+  than that or has ended, so a state change reaches the reader within a round trip and nothing is polled.
+- Room tools `chariox.environment.read` (names and states), `chariox.environment.setup` (runs the saved Setup
+  in the room's checkout; returns the operation id) and `chariox.environment.check` (the kernel's own comparison).
+  None returns a value.
+- `RunRemoteProjectEnvironmentSetup { projectId, operationId, targetKernelId, checkoutPath? }` runs Setup on
+  another kernel of the same authenticated owner (a leased worker included), in the checkout that kernel
+  holds for the Project; `RemoteEnvironmentOperation { operationId, targetKernelId, stop? }` reads or stops
+  it there. The run, its output and its Stop belong to the target (peer requests
+  `RunProjectEnvironmentSetup`, `GetProjectEnvironmentOperation`, `CancelProjectEnvironmentOperation` answer
+  `ProjectEnvironmentOperation`); the sender keeps nothing.
+- Removed: Detect, PreviewEnvironmentDiff, SaveProjectEnvironmentRevision, Plan, Apply, Check, Retry,
+  Export, PreviewEnvironmentImport, CommitEnvironmentImport, GetProjectEnvironmentManifest,
+  AdjustProjectEnvironment and the four Start/Get/Cancel/Retry `ProjectEnvironmentSetup` requests, the
+  `ProjectEnvironmentSetup` agent utility, the Project's stored setup definition, the Move setup step and the
+  relay peer `*LeasedProjectEnvironment*` requests. Schema 1 Project environments are deleted at start.
+  The development layer of managed contexts and moves no longer carries a Project environment.
+
+
+### Working agents in the managed activity report — carried by local 973 / relay peer 422
+
+The signed managed activity report carries `workingAgentCount` (0–255) in place of the binary
+`runningAgentCount`. An agent counts as working when it runs a turn, has a prompt, decision or owned
+process in flight, or is idle but something it registered can wake it: an enabled agent trigger, an
+armed wake (timer, watched process, terminal), a live completion subscription, a waiting task or a
+task blocked on an owner decision. Zero means the machine has nothing to wait for, so Cloud's
+auto-stop counts down only at zero. Work no agent owns (a terminal command, a workflow run) counts as
+one. Kernels older than 970 are re-provisioned. The managed-upgrade list is [629, 636, 970]. Focused
+checks: `cargo test -p chariox-kernel --lib managed_working_agents` and
+`node --test scripts/protocol-versions.test.mjs`.
+
+### Acquisition offer descriptor — local 988 / relay peer 427
+
+MP-08 / MP-09 / MP-10 / MP-11: `ControlPlane` capabilities include the current
+`machine_allocation.offer`: `machine_type`, `vcpu`, `ram_gb`, `disk_gb`, `location`,
+and `terms: { amount, currency, period }` (`hour` or `month`). Cloud supplies these
+provider-neutral values from its placement provider's catalogue at offer time.
+The capability revision covers the descriptor. Before asking an agent to confirm
+Acquire, the kernel verifies that revision and writes every offer fact in the
+existing Accept/Cancel interaction. Cancel acquires nothing; Accept remains
+subject to the same Cloud admission and revision checks.
+
+Protocol 993 (peer 432) adds optional task `owner_action: "browser_access"` and a kernel decision `related_agent_id`. Browser approval stays attached to the blocked task revision and grants access only after an owner answer. Task owner decisions have no automatic expiry; ordinary interaction deadlines are unchanged. Clients place these decisions with the referenced agent and remove them when the authoritative task leaves Blocked.
+
+Local 994 / peer 433 also identifies kernel notification sources with
+`kind: workflow_exit | owner_action`. The Room's **Agent needs your action**
+source uses the same notification subscriptions, reduced envelope, receipt
+admission and queued agent delivery as an exit source. One blocked revision emits
+one locator-only occurrence; the existing owner interaction retains approval
+authority. This does not add a Cloud push/email/webhook service.
+
+Room agents use `chariox.notification_sources {}` to discover this Room's sources,
+`chariox.notification_subscribe {source,prompt?}` to subscribe themselves and
+`chariox.notification_unsubscribe {trigger_id}` to remove their own notification
+trigger. No target agent or busy policy is accepted. App automation summaries
+carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
+current catalog, signer, automation revision and agent target before queueing.

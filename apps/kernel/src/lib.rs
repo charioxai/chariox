@@ -3,18 +3,22 @@
 pub mod account_profile;
 pub mod agent;
 pub mod agent_move;
+pub(crate) mod agent_temp;
 pub mod app;
 pub mod artifacts;
 pub mod attachment;
+pub(crate) mod blocking_io;
 pub mod capability;
 pub mod config;
 pub mod connector;
 pub mod credential;
 pub(crate) mod debug_trace;
 pub(crate) mod dictation;
+pub(crate) mod disk_scan;
 pub(crate) mod durable_prompt_state;
 pub(crate) mod durable_snapshot;
 pub mod durable_state;
+#[cfg(test)]
 pub(crate) mod env_lock;
 pub mod error;
 pub(crate) mod event_connection;

@@ -11,7 +11,7 @@ use types::{AgentWake, WakeEnd};
 pub(crate) const MAX_ACTIVE_WAKES: i64 = 32;
 /// Per-agent bound on retained finished wakes (the projection shows 64).
 const FINISHED_WAKES_RETAINED: i64 = 64;
-const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
+pub(super) const ARMED: &[&str] = &["scheduled", "starting", "running", "cancelling"];
 const FINISHED: &str = "('fired','exited','lost','cancelled')";
 /// Kinds the ledger itself produces; a driver cannot report them.
 const LEDGER_KINDS: &[&str] = &[
@@ -342,6 +342,20 @@ fn fire_one(
     Ok(Some(wake))
 }
 
+/// Owner questions remain available to the current blocked worker; other sources
+/// still require working authority, and an accepted end of turn stays final.
+fn current_source(task: &AgentTaskExecution, prompt: &str, kind: &str) -> Result<(), DaemonError> {
+    if task.state == ExecutionState::Blocked
+        && kind == "interaction"
+        && task.pending_prompt_id.is_none()
+        && task.wait.is_none()
+    {
+        current_prompt(task, prompt)
+    } else {
+        current(task, prompt)
+    }
+}
+
 /// Commits the obligation, live registration and wake record of a new source
 /// in one transaction. `wake.state` is its first state: `scheduled`
 /// (time-driven) or `starting` (confirmed by a supervisor or driver receipt).
@@ -352,7 +366,7 @@ fn arm(
     mut wake: AgentWake,
 ) -> Result<Outcome, DaemonError> {
     let mut t = load(tx, task)?;
-    current(&t, prompt)?;
+    current_source(&t, prompt, &wake.kind)?;
     let timer = wake.kind == "timer";
     if wake.task_id != t.task_id
         || wake.room_id != t.room_id
@@ -457,7 +471,9 @@ fn confirm_start(
                     |row| row.get::<_, bool>(0),
                 )
                 .map_err(sql)?);
-    if t.state != ExecutionState::Working && !retained_wait {
+    let blocked_question =
+        !leased_only && t.state == ExecutionState::Blocked && wake.kind == "interaction";
+    if t.state != ExecutionState::Working && !retained_wait && !blocked_question {
         return Err(error(
             "wake start authority ended; physical cancellation must settle",
         ));
@@ -701,6 +717,39 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             )?;
             Ok(Outcome::Wakes(vec![wake]))
         }
+        Operation::CancelOwnerTimer { id, room, owner } => {
+            let mut wake = load_wake(tx, &id)?;
+            let mut task = load(tx, &wake.task_id)?;
+            if wake.room_id != room
+                || task.room_id != room
+                || task.owner_user_id != owner
+                || owner.is_empty()
+            {
+                return Err(error("stale or foreign owner timer cancellation"));
+            }
+            if wake.kind != "timer" {
+                return Err(error("this owner control cancels timers; cancel the owning task to stop another wake source"));
+            }
+            if terminal(&wake) && wake.state != "cancelled" {
+                return Err(error(format!(
+                    "timer already ended as {}; reload its current state",
+                    wake.state
+                )));
+            }
+            if !terminal(&wake) {
+                // Settle while the obligation is open: its source receipt must
+                // survive even when the agent unsubscribed from the timer.
+                cancel_settle(tx, &mut wake, crate::session::unix_epoch_ms())?;
+                task = load(tx, &wake.task_id)?;
+                if let Some(obligation) = task.obligations.iter_mut().find(|o| o.id == id) {
+                    obligation.status = "cancelled".into();
+                    obligation.dispatch_state = "cancelled".into();
+                }
+                task.revision += 1;
+                save(tx, &task)?;
+            }
+            Ok(Outcome::Wakes(vec![wake]))
+        }
         Operation::CancelWake {
             id,
             task,
@@ -711,7 +760,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let caller = load(tx, &task)?;
             let mut t = load(tx, &wake.task_id)?;
             if let Some(prompt) = &prompt {
-                current(&caller, prompt)?;
+                current_source(&caller, prompt, &wake.kind)?;
                 // A fresh user turn is its own task. It may cancel a retained
                 // source of this same agent, without taking over that task.
                 if caller.room_id != t.room_id

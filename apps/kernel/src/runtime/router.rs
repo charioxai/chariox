@@ -26,6 +26,7 @@ use crate::transport::relay_client::RelayClientState;
 
 pub(crate) mod agent_turn_bridge;
 mod caller_identity_bridge;
+mod card_action;
 mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
@@ -42,9 +43,9 @@ mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod pre_lane_request;
 mod priority_dispatch;
+mod reach_tools;
 mod refresh_dispatch;
 mod relay_peer_bridge;
-mod retired_cloud_controls;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
@@ -102,6 +103,7 @@ pub(crate) struct CommandRouter {
 
 #[cfg(test)]
 mod tests {
+    mod app_notification_access;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 

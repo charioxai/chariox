@@ -2,7 +2,7 @@
 //! use as env/stdin through the real MCP router and real child processes.
 //! Live provider acceptance is the separate drill.
 use super::tests::{fixture, Fixture};
-use super::vault_tests::{call, elevated, names, unlock};
+use super::vault_tests::{call, elevated, names, owner_unlocks, unlock};
 use super::*;
 use serde_json::{json, Value};
 
@@ -374,6 +374,79 @@ async fn s2_use_env_refuses_credentials_not_made_for_commands() {
     assert!(!marker.exists());
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: downloaded JSON keys must be replaced as JSON values.
+#[tokio::test]
+async fn capture_file_replaces_only_the_selected_json_value() {
+    crate::test_support::isolated_env_test!();
+    for value in [
+        json!("line1\nline2"),
+        json!(123456),
+        json!("quoted \"key\" and \\ path"),
+    ] {
+        let f = fixture();
+        elevated(&f);
+        unlock(&f);
+        let source = workspace(&f).join("downloaded-key.json");
+        let original = json!({"keys":[{"private_key":value,"unselected":value}],"version":1});
+        std::fs::write(&source, serde_json::to_vec(&original).unwrap()).unwrap();
+        let captured = call(&f, CAPTURE_FILE, json!({
+            "request_id":"downloaded-json", "path":"downloaded-key.json", "host":"api.example.com",
+            "use_binding":{"target":{"kind":"file","path":workspace(&f).join("key.pem")}},
+            "extract":{"kind":"json","pointer":"/keys/0/private_key"}, "replace_with_handle":true
+        })).await.unwrap();
+        let handle = captured["credential_id"].as_str().unwrap();
+        let rewritten: Value = serde_json::from_slice(&std::fs::read(&source).unwrap()).unwrap();
+        assert_eq!(captured["replaced_with_handle"], true);
+        assert_eq!(
+            rewritten["keys"][0]["private_key"],
+            format!("${{chariox:{handle}}}")
+        );
+        assert_eq!(
+            rewritten["keys"][0]["unselected"], value,
+            "only the selected pointer is rewritten"
+        );
+        assert_eq!(rewritten["version"], 1);
+        let expected = match &value {
+            Value::String(value) => value.clone(),
+            _ => value.to_string(),
+        };
+        assert_eq!(stored(&f, handle).as_str(), expected);
+        assert!(!captured.to_string().contains(&expected));
+    }
+}
+
+#[tokio::test]
+async fn capture_file_reports_replacement_only_after_a_real_change() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    let source = workspace(&f).join("pulled.env");
+    std::fs::write(&source, SECRET).unwrap();
+    let captured = call(
+        &f,
+        CAPTURE_FILE,
+        json!({
+            "request_id":"changed-source", "path":"pulled.env", "host":"api.example.com",
+            "use_binding":{"target":{"kind":"file","path":workspace(&f).join("output.env")}},
+            "replace_with_handle":true
+        }),
+    );
+    let owner = owner_unlocks(&f, &f.request.session_id, || {
+        std::fs::write(&source, "owner changed this file while unlocking").unwrap();
+    });
+    let (result, ()) = tokio::join!(captured, owner);
+    let result = result.unwrap();
+    assert_eq!(result["replaced_with_handle"], false);
+    assert_eq!(
+        std::fs::read_to_string(&source).unwrap(),
+        "owner changed this file while unlocking"
+    );
+    assert_eq!(
+        stored(&f, result["credential_id"].as_str().unwrap()).as_str(),
+        SECRET
+    );
+}
+
 #[tokio::test]
 async fn s4_capture_file_and_write_file_move_values_through_the_kernel() {
     crate::test_support::isolated_env_test!();
@@ -531,191 +604,118 @@ async fn ordinary_vault_capture_retains_the_provider_command_mode() {
     f.state.shutdown_cleanup().await.unwrap();
 }
 
-async fn wait_for_command_marker(path: &std::path::Path) {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        while !path.exists() {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("command did not launch");
-}
-
+// MP-08 / MP-09 / MP-10 / MP-11: the user Stop path must settle Vault children.
 #[tokio::test]
-async fn capture_claims_request_before_overlapping_commands_launch() {
-    crate::test_support::isolated_env_test!();
-    let f = fixture();
-    unlock(&f);
-    let runs = workspace(&f).join("overlapping-runs");
-    let argv = json!([
-        "/bin/sh",
-        "-c",
-        format!(
-            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
-            runs.display()
-        )
-    ]);
-    let first = capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"}));
-    let retry = async {
-        wait_for_command_marker(&runs).await;
-        capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"})).await
-    };
-    let (first, retry) = tokio::join!(first, retry);
-    let first = first.unwrap();
-    if let Ok(retry) = retry {
-        assert_eq!(retry["credential_id"], first["credential_id"]);
-    } else {
-        assert!(retry.unwrap_err().to_string().contains("already running"));
-    }
-    let committed = capture(&f, "overlap", argv, json!({"kind":"stdout"}))
-        .await
-        .unwrap();
-    assert_eq!(committed["credential_id"], first["credential_id"]);
-    assert_eq!(committed["created"], false);
-    assert_eq!(std::fs::read_to_string(&runs).unwrap(), "run\n");
-    f.state.shutdown_cleanup().await.unwrap();
-}
-
-#[tokio::test]
-async fn use_env_stops_its_process_group_when_submitting_prompt_is_cancelled() {
+async fn r10_cancel_prompt_settles_vault_command_before_side_effect() {
     crate::test_support::isolated_env_test!();
     let f = fixture();
     let turn = elevated(&f);
     unlock(&f);
-    let captured = capture(&f, "cancel", printing(SECRET), json!({"kind":"stdout"}))
-        .await
-        .unwrap();
     let started = workspace(&f).join("cancel-started");
-    let marker = workspace(&f).join("cancel-must-not-write");
-    let pending = call(
-        &f,
-        USE_ENV,
-        json!({"origin":"https://api.example.com",
-        "argv":["/bin/sh", "-c", format!("touch '{}'; (sleep 2; touch '{}') & wait", started.display(), marker.display())],
-        "env":{"KEY":captured["credential_id"]}}),
-    );
-    let cancel = async {
-        wait_for_command_marker(&started).await;
-        let session = f
-            .state
-            .owned
-            .session_store
-            .get_session(&turn.session_id)
-            .unwrap();
-        let prompts = &f.state.owned.prompt_state_owner;
-        let active = prompts
-            .active_prompt_for_agent_snapshot(&session, &turn.agent_id)
-            .unwrap();
-        let mut cancelled = active.clone();
-        cancelled.set_status(crate::session::PromptStatus::Cancelling);
-        assert!(prompts.replace_active_prompt_if_matches(
-            &session,
-            &turn.agent_id,
-            &active,
-            cancelled
-        ));
-    };
-    let (result, ()) = tokio::join!(pending, cancel);
-    tokio::time::sleep(Duration::from_millis(2200)).await;
-    assert!(
-        !marker.exists(),
-        "cancelled Vault command must not write after cancellation"
-    );
-    assert!(
-        result.is_err(),
-        "ended authority must return an explicit failure"
-    );
-    f.state.shutdown_cleanup().await.unwrap();
-}
-
-#[tokio::test]
-async fn use_env_stops_when_its_external_grant_expires_or_is_revoked() {
-    crate::test_support::isolated_env_test!();
-    for expire in [false, true] {
-        let f = fixture();
-        let turn = elevated(&f);
-        unlock(&f);
-        let captured = capture(&f, "grant", printing(SECRET), json!({"kind":"stdout"}))
-            .await
-            .unwrap();
-        let request =
-            LocalDaemonRequest::ControlPlane(crate::local::ControlPlaneRequest::Capabilities {});
-        let state = f
-            .state
-            .with_external_command_authority(Some((&turn.entry_id, &request)));
-        state.authorize_current_external_command().unwrap();
-        let started = workspace(&f).join("grant-started");
-        let marker = workspace(&f).join("grant-must-not-write");
-        let pending = state.vault_use_env("sudo-fixture-bearer", json!({"origin":"https://api.example.com",
-            "argv":["/bin/sh", "-c", format!("touch '{}'; sleep 2; touch '{}'", started.display(), marker.display())],
-            "env":{"KEY":captured["credential_id"]}}));
-        let end = async {
-            wait_for_command_marker(&started).await;
-            if expire {
-                f.state
-                    .owned
-                    .sudo_turns
-                    .lock()
-                    .unwrap()
-                    .get_mut(&turn.entry_id)
-                    .unwrap()
-                    .deadline = Some(Instant::now());
-            } else {
-                f.state
-                    .revoke_sudo(Some("local"), Some(&turn.entry_id), "explicit_revoke")
-                    .unwrap();
-            }
-        };
-        let (result, ()) = tokio::join!(pending, end);
-        tokio::time::sleep(Duration::from_millis(2200)).await;
-        assert!(
-            !marker.exists(),
-            "Vault command outlived its external grant (expire={expire})"
-        );
-        assert!(result.is_err());
-        f.state.shutdown_cleanup().await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn failed_capture_releases_its_request_claim_for_retry() {
-    crate::test_support::isolated_env_test!();
-    let f = fixture();
-    unlock(&f);
-    assert!(capture(
-        &f,
-        "failure-retry",
-        json!(["/bin/sh", "-c", "exit 3"]),
-        json!({"kind":"stdout"})
-    )
-    .await
-    .is_err());
-    let created = capture(
-        &f,
-        "failure-retry",
-        printing(SECRET),
-        json!({"kind":"stdout"}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(created["created"], true);
-    f.state.shutdown_cleanup().await.unwrap();
-}
-
-#[tokio::test]
-async fn dropped_capture_future_keeps_claim_until_command_settles() {
-    crate::test_support::isolated_env_test!();
-    let f = fixture();
-    unlock(&f);
-    let runs = workspace(&f).join("dropped-capture-runs");
+    let effect = workspace(&f).join("cancel-effect");
     let argv = json!([
         "/bin/sh",
         "-c",
         format!(
-            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
-            runs.display()
+            "touch '{}'; sleep 2; touch '{}'; printf '%s' '{SECRET}'",
+            started.display(),
+            effect.display()
         )
     ]);
+    let operation = capture(&f, "cancel-owned", argv, json!({"kind":"stdout"}));
+    let cancel = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let request = LocalDaemonRequest::CancelActivePrompt(CancelActivePromptRequest {
+            session_id: f.request.session_id.clone(),
+            attachment_id: f.request.attachment_id.clone(),
+            target_agent_id: Some(turn.agent_id.clone()),
+            expected_prompt_id: turn.prompt_id.clone(),
+        });
+        let command = crate::runtime::command::KernelCommand::from_local_request(
+            "stop-vault",
+            None,
+            None,
+            &request,
+        );
+        f.router.dispatch(command, request).await.unwrap();
+    };
+    let (result, ()) = tokio::join!(operation, cancel);
+    let no_effect = !effect.exists();
+    let settled = f.state.owned.agent_wakes.processes.count() == 0;
+    f.state.shutdown_cleanup().await.unwrap();
+    assert!(
+        result.is_err(),
+        "cancelled prompt cannot complete a Vault command"
+    );
+    assert!(
+        no_effect,
+        "Stop must terminate the command before its delayed side effect"
+    );
+    assert!(
+        settled,
+        "Stop must physically settle the owned process group"
+    );
+}
+
+#[tokio::test]
+async fn r10_overlapping_capture_retries_run_command_once() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let started = workspace(&f).join("retry-started");
+    let runs = workspace(&f).join("overlapping-runs");
+    let release = workspace(&f).join("retry-release");
+    let argv = json!(["/bin/sh", "-c", format!(
+        "echo run >> '{}'; touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+        runs.display(), started.display(), release.display()
+    )]);
+    let first = capture(&f, "overlapping", argv.clone(), json!({"kind":"stdout"}));
+    let retry = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        capture(&f, "overlapping", argv, json!({"kind":"stdout"})).await
+    };
+    let finish = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&release, "go").unwrap();
+    };
+    let (first, retry, ()) = tokio::join!(first, retry, finish);
+    let runs = std::fs::read_to_string(runs).unwrap();
+    f.state.shutdown_cleanup().await.unwrap();
+    let first = first.unwrap();
+    let retry = retry.unwrap();
+    assert_eq!(first["credential_id"], retry["credential_id"]);
+    assert_eq!(retry["created"], false);
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "overlapping retry must wait for the original command settlement"
+    );
+}
+
+#[tokio::test]
+async fn r10_dropped_capture_waiter_keeps_claim_until_commit() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let started = workspace(&f).join("dropped-started");
+    let runs = workspace(&f).join("dropped-runs");
+    let release = workspace(&f).join("dropped-release");
+    let argv = json!(["/bin/sh", "-c", format!(
+        "echo run >> '{}'; touch '{}'; while [ ! -f '{}' ]; do sleep 0.02; done; printf '%s' '{SECRET}'",
+        runs.display(), started.display(), release.display()
+    )]);
     let mut first = Box::pin(capture(
         &f,
         "dropped",
@@ -723,12 +723,123 @@ async fn dropped_capture_future_keeps_claim_until_command_settles() {
         json!({"kind":"stdout"}),
     ));
     tokio::select! {
-        _ = &mut first => panic!("capture finished before its marker was observed"),
-        () = wait_for_command_marker(&runs) => {}
+        result = &mut first => panic!("capture finished before release: {result:?}"),
+        () = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !started.exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+            }).await.unwrap();
+        } => {}
     }
     drop(first);
-    let result = capture(&f, "dropped", argv, json!({"kind":"stdout"})).await;
-    assert!(result.unwrap_err().to_string().contains("already running"));
-    assert_eq!(std::fs::read_to_string(&runs).unwrap(), "run\n");
+    let retry = capture(&f, "dropped", argv, json!({"kind":"stdout"}));
+    let finish = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        std::fs::write(&release, "go").unwrap();
+    };
+    let (retry, ()) = tokio::join!(retry, finish);
+    let runs = std::fs::read_to_string(runs).unwrap();
     f.state.shutdown_cleanup().await.unwrap();
+    assert_eq!(
+        retry.unwrap()["created"],
+        false,
+        "the detached original must commit its result"
+    );
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "dropping an MCP waiter must not release the running capture claim"
+    );
+}
+
+/// Stop uses the same cancellation entry point as a user's CancelActivePrompt.
+#[tokio::test]
+async fn vault_command_stops_when_its_prompt_is_cancelled_after_tool_drop() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let turn = elevated(&f);
+    unlock(&f);
+    let captured = capture(&f, "cancel-key", printing(SECRET), json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let started = workspace(&f).join("cancel-started");
+    let marker = workspace(&f).join("cancel-must-not-run");
+    {
+        let arguments = json!({"origin":"https://api.example.com", "env":{"KEY":captured["credential_id"]},
+            "argv":["/bin/sh", "-c", format!("touch '{}'; sleep 2; touch '{}'", started.display(), marker.display())]});
+        let pending = call(&f, USE_ENV, arguments);
+        tokio::pin!(pending);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut pending => panic!("command ended before cancellation: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                if started.exists() { break; }
+            }
+        }).await.unwrap();
+        // Simulate an MCP transport dropping its request before the person presses Stop.
+    }
+    f.state
+        .cancel_agent_prompt_with_external_authority(
+            &turn.session_id,
+            &turn.agent_id,
+            &f.request.attachment_id,
+            None,
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    let wrote = marker.exists();
+    let live = f.state.owned.agent_wakes.processes.count();
+    f.state.shutdown_cleanup().await.unwrap();
+    assert!(
+        !wrote,
+        "a cancelled prompt's detached Vault command still wrote its marker"
+    );
+    assert_eq!(live, 0, "the cancelled command's owned tree must settle");
+}
+
+#[tokio::test]
+async fn overlapping_capture_retry_retains_ownership_after_tool_drop() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let runs = workspace(&f).join("overlap-runs");
+    let argv = json!([
+        "/bin/sh",
+        "-c",
+        format!(
+            "echo run >> '{}'; sleep 1; printf '%s' '{SECRET}'",
+            runs.display()
+        )
+    ]);
+    {
+        let pending = capture(&f, "overlap", argv.clone(), json!({"kind":"stdout"}));
+        tokio::pin!(pending);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::select! {
+                    result = &mut pending => panic!("capture ended before retry: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+                if runs.exists() {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let retried = capture(&f, "overlap", argv, json!({"kind":"stdout"}))
+        .await
+        .unwrap();
+    let count = std::fs::read_to_string(&runs).unwrap();
+    let stored_value = stored(&f, retried["credential_id"].as_str().unwrap());
+    f.state.shutdown_cleanup().await.unwrap();
+    assert_eq!(
+        count, "run\n",
+        "overlapping retries must run argv only once"
+    );
+    assert_eq!(stored_value.as_str(), SECRET);
+    assert_eq!(retried["created"], false);
 }

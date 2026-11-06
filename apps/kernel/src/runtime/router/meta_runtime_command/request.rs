@@ -2,8 +2,10 @@ use super::result::meta_command_error;
 use super::spawn_args::parse_meta_agent_spawn_args;
 use super::*;
 use crate::local::{
-    CreateSliceBackupRequest, KernelConnectionClass, ListSlicesRequest, RestoreSliceBackupRequest,
-    SliceStateSaveMode, SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
+    CheckProjectEnvironmentRequest, CreateSliceBackupRequest, GetProjectEnvironmentRequest,
+    ImportProjectEnvironmentEntriesRequest, KernelConnectionClass, ListSlicesRequest,
+    RestoreSliceBackupRequest, RunProjectEnvironmentSetupRequest, SliceStateSaveMode,
+    SliceStateSaveRequest, SliceStateSaveScope, SliceStateStatusRequest,
 };
 
 pub(super) fn meta_agent_request(
@@ -99,6 +101,57 @@ pub(super) fn meta_agent_request(
         _ => Err(meta_command_error(
             "usage: agent <list|spawn|focus|alias|delete|destroy> ...",
         )),
+    }
+}
+
+/// `environment status|update [from <machine>]|setup|check`: the Project of the room, the room's checkout.
+pub(super) fn meta_environment_request(
+    session: &crate::session::RuntimeSession,
+    args: &[String],
+    source_kernel: impl FnOnce(Option<&str>) -> Result<String, DaemonError>,
+) -> Result<LocalDaemonRequest, DaemonError> {
+    let project_id = session.project_id().to_string();
+    let operation_id = format!("agent-{:032x}", rand::random::<u128>());
+    let usage =
+        || meta_command_error("usage: environment <status|update [from <machine>]|setup|check>");
+    match args {
+        [word] if word == "status" => Ok(LocalDaemonRequest::GetProjectEnvironment(
+            GetProjectEnvironmentRequest {
+                project_id,
+                checkout_path: Some(session.worktree_id().to_string()),
+            },
+        )),
+        [word] if word == "setup" => Ok(LocalDaemonRequest::RunProjectEnvironmentSetup(
+            RunProjectEnvironmentSetupRequest {
+                project_id,
+                operation_id,
+                checkout_path: Some(session.worktree_id().to_string()),
+            },
+        )),
+        [word] if word == "check" => Ok(LocalDaemonRequest::CheckProjectEnvironment(
+            CheckProjectEnvironmentRequest {
+                project_id,
+                operation_id,
+                with_agent: false,
+            },
+        )),
+        [word, rest @ ..] if word == "update" => {
+            let from = match rest {
+                [] => None,
+                [from, machine] if from == "from" => Some(machine.as_str()),
+                _ => return Err(usage()),
+            };
+            Ok(LocalDaemonRequest::ImportProjectEnvironmentEntries(
+                ImportProjectEnvironmentEntriesRequest {
+                    project_id,
+                    operation_id,
+                    source_kernel_id: source_kernel(from)?,
+                    entries: None,
+                    checkout_path: Some(session.worktree_id().to_string()),
+                },
+            ))
+        }
+        _ => Err(usage()),
     }
 }
 

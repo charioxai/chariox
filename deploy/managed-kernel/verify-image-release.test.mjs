@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { createHash, generateKeyPairSync, sign } from "node:crypto"
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, sep } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -15,19 +15,17 @@ const SOURCE_COMMIT = "a".repeat(40)
 const SOURCE_TREE = "b".repeat(40)
 const TARGET = "x86_64-unknown-linux-gnu"
 const PATH1_HOME_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap"
-const PATH1_WORKER_EXEC_START = "ExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker"
 const PATH1_BOOTSTRAP_PATH = "Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 const PATH1_SERVICE = await readFile(new URL("./chariox-path1-managed-bootstrap.service", import.meta.url), "utf8")
-const WORKER_SERVICE = await readFile(new URL("./chariox-disposable-worker-bootstrap.service", import.meta.url), "utf8")
 const ARTIFACTS = [
   ["chariox-kernel", "/usr/local/bin/chariox-kernel", "file"],
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file"],
   ["chariox-managed-bootstrap.service", "/etc/systemd/system/chariox-managed-bootstrap.service", "file"],
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file"],
-  ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file"],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file"],
   ...PATH1_DATA_VOLUME_ARTIFACTS.map(({ name, path }) => [name, path, "file"]),
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file"],
+  ["chariox-slice-image", "/usr/lib/chariox/slice-image", "tree"],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree"],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file"],
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file"],
@@ -44,10 +42,9 @@ const APP_WASM_WORKER = Buffer.from("app wasm worker artifact")
 // Releases built before Apps carry none of these.
 const APP_ARTIFACT_NAMES = new Set(["chariox-app-package", "chariox-app-wasm-worker"])
 const DATA_VOLUME_ARTIFACT_NAMES = new Set(PATH1_DATA_VOLUME_ARTIFACTS.map(({ name }) => name))
-const PATH1_SERVICE_ARTIFACT_NAMES = new Set([
-  "chariox-path1-managed-bootstrap.service",
-  "chariox-disposable-worker-bootstrap.service",
-])
+const PATH1_SERVICE_ARTIFACT_NAMES = new Set(["chariox-path1-managed-bootstrap.service"])
+const WORKER_SERVICE_NAME = "chariox-disposable-worker-bootstrap.service"
+const WORKER_SERVICE_PATH = "/etc/systemd/system/chariox-disposable-worker-bootstrap.service"
 function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`
 }
@@ -100,7 +97,6 @@ async function createReleaseFixture(context, {
   dataVolumeArtifactNames = [...DATA_VOLUME_ARTIFACT_NAMES],
   appArtifactNames = [...APP_ARTIFACT_NAMES],
   path1Service = PATH1_SERVICE,
-  workerService = WORKER_SERVICE,
 } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-release-provenance-test-"))
   context.after(() => rm(scratch, { recursive: true, force: true }))
@@ -123,11 +119,8 @@ async function createReleaseFixture(context, {
     "chariox-path1-managed-bootstrap.service",
     Buffer.from(path1Service),
   )
-  contentByName.set(
-    "chariox-disposable-worker-bootstrap.service",
-    Buffer.from(workerService),
-  )
 
+  await put(rootfs, "/usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz", "image fixture")
   const treeRoot = join(rootfs, "usr/lib/chariox/slice-build-context")
   const relayPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-relay")
   const kernelPath = join(treeRoot, "apps/kernel/slice-linux-docker/prebuilt/chariox-kernel")
@@ -248,6 +241,42 @@ test("signed release manifests retain legacy schema 2 and require schema 3 capab
 })
 
 
+for (const path of [
+  "/extra",
+  "/usr/local/bin/extra",
+  "/usr/lib/chariox/extra",
+  "/etc/systemd/system/chariox-path1-managed-bootstrap.service.d/99-extra.conf",
+  "/etc/systemd/system/chariox-rootless-docker.service.d/99-extra.conf",
+]) {
+  test(`Path-1 closed inventory rejects an undeclared file at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await put(fixture.rootfs, path, "undeclared\n")
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release root contains an undeclared entry/)
+  })
+}
+
+for (const path of ["empty", "usr/local/bin/empty", "usr/lib/chariox/empty"]) {
+  test(`Path-1 closed inventory rejects an undeclared empty directory at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await mkdir(join(fixture.rootfs, path))
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /release root contains an undeclared entry/)
+  })
+}
+
+for (const path of ["extra", "usr/local/bin/extra", "usr/lib/chariox/extra"]) {
+  test(`Path-1 closed inventory rejects a symbolic link at ${path}`, async (context) => {
+    const fixture = await createReleaseFixture(context)
+    await symlink("/usr/local/bin/chariox-kernel", join(fixture.rootfs, path))
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, /contains a symbolic link/)
+  })
+}
+
 test("Path-1 verification requires an independently supplied builder trust root", async (context) => {
   const fixture = await createReleaseFixture(context)
   const result = runVerifier(fixture, "path1")
@@ -298,12 +327,6 @@ for (const [description, fixtureOptions] of [
       "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap'",
     ),
   }],
-  ["a worker login shell that could read a provider-writable profile", {
-    workerService: WORKER_SERVICE.replace(
-      PATH1_WORKER_EXEC_START,
-      "ExecStart=/bin/bash --login -c 'exec /usr/local/bin/chariox-managed-bootstrap --disposable-worker'",
-    ),
-  }],
   ["an extra Path-1 command", {
     path1Service: PATH1_SERVICE.replace(
       PATH1_HOME_EXEC_START,
@@ -319,23 +342,11 @@ for (const [description, fixtureOptions] of [
   ["multiple Path-1 ExecStart directives", {
     path1Service: `${PATH1_SERVICE}ExecStart=/tmp/untrusted\n`,
   }],
-  ["a worker command without its disposable-worker flag", {
-    workerService: WORKER_SERVICE.replace(PATH1_WORKER_EXEC_START, PATH1_HOME_EXEC_START),
-  }],
-  ["a worker command with an unexpected flag", {
-    workerService: WORKER_SERVICE.replace(
-      PATH1_WORKER_EXEC_START,
-      `${PATH1_WORKER_EXEC_START} --unexpected`,
-    ),
+  ["a home command with the removed disposable-worker flag", {
+    path1Service: PATH1_SERVICE.replace(PATH1_HOME_EXEC_START, `${PATH1_HOME_EXEC_START} --disposable-worker`),
   }],
   ["a user-writable home bootstrap PATH", {
     path1Service: PATH1_SERVICE.replace(
-      PATH1_BOOTSTRAP_PATH,
-      "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
-    ),
-  }],
-  ["a user-writable worker bootstrap PATH", {
-    workerService: WORKER_SERVICE.replace(
       PATH1_BOOTSTRAP_PATH,
       "Environment=PATH=/home/chariox/.local/bin:/usr/local/bin:/usr/bin:/bin",
     ),
@@ -406,7 +417,7 @@ for (const [field, mutateAttestation] of [
 }
 
 test("shared-host rollback retains direct ExecStart and release-signature verification without a builder pin", async (context) => {
-  // Model a legacy schema-2 rollback before Path-1 worker, storage and App assets existed.
+  // Model a legacy schema-2 rollback before Path-1 home, storage and App assets existed.
   const fixture = await createReleaseFixture(context, {
     malformedAttestation: true,
     includePath1Services: false,
@@ -445,24 +456,20 @@ test("release verification rejects a partial or undeclared App artifact set", as
 })
 
 // MP-01/MP-07/MP-11: valid signatures must not admit unreviewed service restrictions.
-for (const role of ["home", "worker"]) {
-  for (const directive of ["NoExecPaths=/home /tmp", "ProtectProc=invisible", "MemoryDenyWriteExecute=yes"]) {
-    test(`MP-01/MP-07/MP-11 signed ${role} rejects ${directive}`, async (context) => {
-      const mutation = role === "home"
-        ? { path1Service: PATH1_SERVICE.replace("[Service]", `[Service]\n${directive}`) }
-        : { workerService: WORKER_SERVICE.replace("[Service]", `[Service]\n${directive}`) }
-      const fixture = await createReleaseFixture(context, mutation)
-      const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
-      assert.notEqual(result.status, 0, "signed provider restriction must fail before installation")
-      assert.match(result.stderr, /unsupported Service directive/)
+for (const directive of ["NoExecPaths=/home /tmp", "ProtectProc=invisible", "MemoryDenyWriteExecute=yes"]) {
+  test(`MP-01/MP-07/MP-11 signed home rejects ${directive}`, async (context) => {
+    const fixture = await createReleaseFixture(context, {
+      path1Service: PATH1_SERVICE.replace("[Service]", `[Service]\n${directive}`),
     })
-  }
+    const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
+    assert.notEqual(result.status, 0, "signed provider restriction must fail before installation")
+    assert.match(result.stderr, /unsupported Service directive/)
+  })
 }
 
-// MP-01/MP-04/MP-07/MP-11: independently signed worker policy mutations.
+// MP-01/MP-04/MP-07/MP-11: independently signed home policy mutations.
 for (const directive of [
   "PrivateTmp=true", "ProtectHome=true", "NoNewPrivileges=true", "UMask=0077",
-  "TemporaryFileSystem=/home:ro", "IPAddressDeny=any", "PrivateMounts=yes",
   "Environment=CHARIOX_MANAGED_PROVIDER_ISOLATION=1",
   "Environment=HOME=/tmp/wrong-home",
   "Environment=CHARIOX_HOME=/tmp/wrong-state",
@@ -470,24 +477,42 @@ for (const directive of [
   "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/tmp/wrong.sock",
   "ExecStartPre=/bin/true", "StateDirectory=extra-state",
 ]) {
-  test(`MP-11 signed worker rejects ${directive}`, async (context) => {
+  test(`MP-11 signed home rejects ${directive}`, async (context) => {
     const fixture = await createReleaseFixture(context, {
-      workerService: WORKER_SERVICE.replace("[Service]", `[Service]\n${directive}`),
+      path1Service: PATH1_SERVICE.replace("[Service]", `[Service]\n${directive}`),
     })
     const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
     assert.notEqual(result.status, 0, result.stderr)
-    assert.match(result.stderr, /Path-1 disposable-worker service/)
+    assert.match(result.stderr, /Path-1 managed bootstrap service/)
   })
 }
 
-test("MP-11 worker HOME in another unit section cannot satisfy service policy", async (context) => {
+test("MP-11 home HOME in another unit section cannot satisfy service policy", async (context) => {
   const fixture = await createReleaseFixture(context, {
-    workerService: WORKER_SERVICE.replace("Environment=HOME=/home/chariox\n", "")
+    path1Service: PATH1_SERVICE.replace("Environment=HOME=/home/chariox\n", "")
       .replace("[Install]", "[Install]\nEnvironment=HOME=/home/chariox"),
   })
   const result = runVerifier(fixture, "path1", fixture.trustedBuilderKey)
   assert.notEqual(result.status, 0, result.stderr)
-  assert.match(result.stderr, /Path-1 disposable-worker service/)
+  assert.match(result.stderr, /Path-1 managed bootstrap service/)
+})
+
+// The disposable-worker supervisor is gone: a release that still carries its unit is unsupported.
+test("release verification refuses a release that carries the removed disposable-worker service", async (context) => {
+  for (const topology of [undefined, "path1"]) {
+    const undeclared = await createReleaseFixture(context)
+    await put(undeclared.rootfs, WORKER_SERVICE_PATH, "[Service]\nExecStart=/usr/local/bin/chariox-managed-bootstrap --disposable-worker\n")
+    const undeclaredResult = runVerifier(undeclared, topology, topology && undeclared.trustedBuilderKey)
+    assert.equal(undeclaredResult.status, 1, undeclaredResult.stderr)
+    assert.match(undeclaredResult.stderr, /release carries the removed disposable-worker service/)
+
+    const declared = await createReleaseFixture(context, { mutateManifest(manifest) {
+      manifest.artifacts.push({ name: WORKER_SERVICE_NAME, path: WORKER_SERVICE_PATH, sha256: sha256(Buffer.from("unit")) })
+    } })
+    const declaredResult = runVerifier(declared, topology, topology && declared.trustedBuilderKey)
+    assert.equal(declaredResult.status, 1, declaredResult.stderr)
+    assert.match(declaredResult.stderr, /release carries the removed disposable-worker service/)
+  }
 })
 
 // MP-01/MP-07/MP-11: equivalent filesystem/network restrictions in the home role.

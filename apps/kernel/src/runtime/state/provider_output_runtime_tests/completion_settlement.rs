@@ -574,7 +574,7 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     runtime.owned.note_prompt_started(run.id());
-    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(runtime.managed_working_agent_count(), 1);
     let response = "managed response persisted before idle";
     runtime.owned.fan_out_terminal_output(
         session.id(),
@@ -591,7 +591,7 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
         "managed-activity-completion",
         crate::session::unix_epoch_ms(),
     );
-    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(runtime.managed_working_agent_count(), 1);
     let before_settlement = runtime.managed_activity_change_sequence();
 
     runtime
@@ -613,7 +613,7 @@ async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable()
         .expect("durable response history should load")
         .iter()
         .any(|entry| entry.text.contains(response)));
-    assert_eq!(runtime.managed_running_agent_count(), 0);
+    assert_eq!(runtime.managed_working_agent_count(), 0);
     assert!(runtime.managed_activity_change_sequence() > before_settlement);
 }
 
@@ -965,7 +965,7 @@ async fn assert_workflow_completion_failure_is_retryable(
             .status(),
         crate::session::WorkflowNodeRunStatus::Running
     );
-    assert_eq!(runtime.managed_running_agent_count(), 1);
+    assert_eq!(runtime.managed_working_agent_count(), 1);
     assert_eq!(
         runtime.managed_activity_change_sequence(),
         activity_sequence
@@ -1011,7 +1011,7 @@ async fn assert_workflow_completion_failure_is_retryable(
                 .managed_activity_report_snapshot()
                 .unwrap()
                 .1
-                .running_agent_count,
+                .working_agent_count,
             1
         );
         Some((from, through))
@@ -1036,12 +1036,12 @@ async fn assert_workflow_completion_failure_is_retryable(
             agent.id(),
         )
         .is_none());
-    assert_eq!(runtime.managed_running_agent_count(), 0);
+    assert_eq!(runtime.managed_working_agent_count(), 0);
     if verify_original_finish {
         let (_, idle) = runtime
             .managed_activity_report_snapshot()
             .expect("idle must have a durable activity observation");
-        assert_eq!(idle.running_agent_count, 0);
+        assert_eq!(idle.working_agent_count, 0);
         let (finish_from, finish_through) =
             intervening_finish.unwrap_or((finish_observed_from_ms, finish_observed_by_ms));
         assert!(

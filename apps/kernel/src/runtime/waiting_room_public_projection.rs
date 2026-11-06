@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
@@ -30,7 +31,9 @@ use crate::session::{unix_epoch_ms, RuntimeProject, RuntimeSession};
 use crate::slice::SliceRecord;
 
 const WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS: u64 = 30_000;
-static LAUNCH_TARGET_CACHE: OnceLock<StdMutex<Option<CachedLaunchTarget>>> = OnceLock::new();
+static LAUNCH_TARGET_CACHE: OnceLock<
+    crate::runtime::checked_lock::CheckedMutex<Option<CachedLaunchTarget>>,
+> = OnceLock::new();
 static WORKSPACE_LABEL_CACHE: OnceLock<StdMutex<HashMap<String, CachedWorktreeLabel>>> =
     OnceLock::new();
 static WORKTREE_LABEL_CACHE: OnceLock<StdMutex<HashMap<(String, String), CachedWorktreeLabel>>> =
@@ -622,10 +625,10 @@ fn last_used_workspace_target(
 fn cached_launch_target(cwd: &std::path::Path) -> Option<WaitingRoomLaunchTarget> {
     let cwd_string = cwd.display().to_string();
     let now_ms = unix_epoch_ms();
-    let cache = LAUNCH_TARGET_CACHE.get_or_init(|| StdMutex::new(None));
-    let Ok(mut guard) = cache.lock() else {
-        return compute_waiting_room_launch_target(cwd, &cwd_string, now_ms);
-    };
+    let cache = LAUNCH_TARGET_CACHE.get_or_init(|| {
+        crate::runtime::checked_lock::CheckedMutex::new("waiting_room_launch_target", None)
+    });
+    let guard = cache.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(target) = guard
         .as_ref()
         .filter(|cached| cached.cwd == cwd_string && cached.expires_at_ms > now_ms)
@@ -633,8 +636,9 @@ fn cached_launch_target(cwd: &std::path::Path) -> Option<WaitingRoomLaunchTarget
     {
         return target;
     }
+    drop(guard);
     let target = compute_waiting_room_launch_target(cwd, &cwd_string, now_ms);
-    *guard = Some(CachedLaunchTarget {
+    *cache.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedLaunchTarget {
         cwd: cwd_string,
         expires_at_ms: now_ms.saturating_add(WAITING_ROOM_GIT_LABEL_CACHE_TTL_MS),
         target: target.clone(),
@@ -650,7 +654,7 @@ fn compute_waiting_room_launch_target(
     let worktree = crate::process_spawn::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(cwd)
-        .output()
+        .bounded_output()
         .ok()
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -659,7 +663,7 @@ fn compute_waiting_room_launch_target(
     let workspace = crate::process_spawn::command("git")
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
         .current_dir(cwd)
-        .output()
+        .bounded_output()
         .ok()
         .filter(|output| output.status.success())
         .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -1640,7 +1644,7 @@ mod tests {
         );
         assert!(session.assign_project_id("project-1"));
         session.touch();
-        let initial_activity_at_ms = session.last_used_at_ms();
+        let initial_activity_at_ms = Some(session.last_activity_at_ms());
         let mut project = RuntimeProject::new(
             "project-1",
             crate::session::DEFAULT_LOCAL_USER_ID,

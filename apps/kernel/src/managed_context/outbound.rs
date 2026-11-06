@@ -32,6 +32,14 @@ use crate::transport::relay_peer::{
 const IMPORT_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_IMPORT_STATUS_POLLS: usize = 7_200;
 const MAX_OUTBOUND_CHUNK_BYTES: usize = 512 * 1024;
+/// A managed machine confirms its enrollment a moment before its relay socket registers, so the
+/// first contact waits for the target kernel's presence instead of failing the whole launch.
+const TARGET_PRESENCE_POLL: Duration = if cfg!(test) {
+    Duration::from_millis(1)
+} else {
+    Duration::from_secs(2)
+};
+const MAX_TARGET_PRESENCE_POLLS: usize = 45;
 
 pub(crate) trait ManagedContextPeerTransport: Send + Sync {
     fn send(
@@ -156,8 +164,9 @@ pub(crate) async fn transfer_managed_context_package_with_resume(
                 Some(status),
             )
         } else {
-            let armed = transport
-                .send(RelayPeerRequest::ArmManagedContextImport {
+            let armed = send_when_target_connected(
+                transport,
+                RelayPeerRequest::ArmManagedContextImport {
                     destination: request.plan.destination.clone(),
                     plan: request.plan.clone(),
                     target_environment_id: request.target_environment_id,
@@ -166,8 +175,9 @@ pub(crate) async fn transfer_managed_context_package_with_resume(
                     capability: capability.clone(),
                     archive_sha256: request.package.package_sha256.clone(),
                     archive_size_bytes: request.package.package_size_bytes,
-                })
-                .await?;
+                },
+            )
+            .await?;
             let (transfer_id, armed_capability, max_chunk_bytes) = match armed {
                 RelayPeerResponse::ManagedContextImportArmed {
                     transfer_id,
@@ -329,6 +339,28 @@ pub(crate) async fn transfer_managed_context_package_with_resume(
         "timed out waiting for the target kernel to import managed context",
         true,
     ))
+}
+
+/// Arming has no effect on a target that is not connected, so it is safe to repeat until the
+/// target registers; any other failure is returned unchanged.
+async fn send_when_target_connected(
+    transport: &impl ManagedContextPeerTransport,
+    request: RelayPeerRequest,
+) -> Result<RelayPeerResponse, DaemonError> {
+    let mut polls = 0;
+    loop {
+        match transport.send(request.clone()).await {
+            Err(DaemonError::RelayTransport {
+                code,
+                retryable: true,
+                ..
+            }) if code == "target_not_connected" && polls < MAX_TARGET_PRESENCE_POLLS => {
+                polls += 1;
+                tokio::time::sleep(TARGET_PRESENCE_POLL).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 async fn get_status(
@@ -559,6 +591,75 @@ mod tests {
                 .expect("fake response");
             Box::pin(async move { response })
         }
+    }
+
+    fn target_not_connected() -> DaemonError {
+        DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_not_connected".into(),
+            message: "target daemon is not connected".into(),
+            retryable: true,
+        }
+    }
+
+    async fn arm_with_responses(
+        responses: Vec<Result<RelayPeerResponse, DaemonError>>,
+    ) -> (
+        Result<ManagedContextOutboundTransferResult, DaemonError>,
+        usize,
+    ) {
+        let fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        let transport = FakeTransport::new(responses);
+        let result = transfer_managed_context_package_with_resume(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".into(),
+                target_kernel_id: "target-kernel".into(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability: RelayManagedContextCapability::new("capability".into()),
+            },
+            None,
+            |_| Ok(()),
+            |_| {},
+        )
+        .await;
+        let sent = transport.requests().len();
+        std::fs::remove_dir_all(fixture_root).unwrap();
+        (result, sent)
+    }
+
+    #[tokio::test]
+    async fn mp08_arm_waits_for_the_target_kernel_to_connect() {
+        let (result, sent) = arm_with_responses(vec![
+            Err(target_not_connected()),
+            Err(target_not_connected()),
+            Ok(RelayPeerResponse::ManagedContextImportFailed {
+                code: "invalid_managed_context".into(),
+                retryable: false,
+            }),
+        ])
+        .await;
+        assert_eq!(sent, 3, "arming must repeat until the target registers");
+        assert!(
+            !matches!(&result, Err(DaemonError::RelayTransport { .. })),
+            "the target's own answer must surface, not the earlier absence: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mp08_arm_does_not_repeat_other_transport_failures() {
+        let (result, sent) = arm_with_responses(vec![Err(DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "peer_rejected".into(),
+            message: "rejected".into(),
+            retryable: true,
+        })])
+        .await;
+        assert_eq!(sent, 1);
+        assert!(result.is_err());
     }
 
     #[tokio::test]

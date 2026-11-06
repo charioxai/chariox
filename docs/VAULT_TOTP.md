@@ -63,7 +63,15 @@ An ambiguous or failed delivery can therefore cost one code. Once exhausted,
 the handle fails with a request to enroll a new set. Policy checks do not
 consume codes. Explicit overwrite replaces the set.
 
-QR decoding and atomic browser capture of service-created keys belong to S3.
+An agent enrols an authenticator on a service by itself with
+`chariox.vault.capture_browser` and `totp: true`. Point `node_ref` at the
+manual setup key text, or at the QR code image with `read: "qr"`. The kernel
+reads it under the observation barrier (the browser controller returns a
+picture of the QR element, the kernel decodes it), stores the seed with the
+same normalization, and binds the entry to the one site (`use_on`, default the
+page origin) as a TOTP use. The agent receives only the credential handle and
+fills the code field as above. A value that is not an authenticator key stores
+nothing.
 The new-UI Vault window is developed separately; this change adds no client
 controls. `scripts/e2e-stack/totp` supplies the supplementary local enrollment
 site and real-provider drill. A local fixture result alone does not close the

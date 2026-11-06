@@ -39,7 +39,6 @@ test("relay cloud client-token lets kernel issuance pair the client and preserve
     sessionState: () => session(),
     getCloudRelayProfile: () => unpaired,
     saveCloudRelayProfile: async (nextProfile) => { savedClientId = nextProfile?.clientId },
-    pairCloudRelayClient: async () => { throw new Error("client-token must not pre-pair an account client") },
     issueCloudClientRelayToken: async (_profile, _targetDaemonAlias, options) => {
       issuedSessionId = options?.sessionId
       return {
@@ -95,7 +94,6 @@ test("machine-only client-token uses shared kernel issuance and launches its can
     formatError: (error) => String(error), clientId: "cli-1", sessionState: () => session(),
     getCloudRelayProfile: () => machineOnly,
     saveCloudRelayProfile: async (next) => { if (next) saved.push(next) },
-    pairCloudRelayClient: async () => { throw new Error("machine-only profile cannot account-pair a client") },
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, "cli-1",
       () => ({ publicKeyThumbprint: "fixture-thumbprint" })),
   }, ["client-token", requestedAlias])
@@ -134,7 +132,6 @@ test("restarted TUI client-token command issues for its saved paired login ident
     appendNotice: (notice) => { notices.push(notice) }, flashFooter: () => {},
     formatError: String, clientId: restarted.clientId, sessionState: () => session(),
     getCloudRelayProfile: () => linked, saveCloudRelayProfile: async () => {},
-    pairCloudRelayClient: async () => { throw new Error("must not re-pair the saved login") },
     issueCloudClientRelayToken: createInitialCloudClientTokenIssuer(client, restarted.clientId!,
       () => ({ publicKeyThumbprint: "restart-key" })),
   }, ["client-token", "builder-kernel"])

@@ -4,7 +4,7 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
     workflow_notifications::{
-        self as store, NotificationOperation, NotificationOutcome, PreparedNotification,
+        self as store, naming, NotificationOperation, NotificationOutcome, PreparedNotification,
         SourceAdmission,
     },
 };
@@ -27,24 +27,62 @@ pub(super) fn source_available(
     source: &WorkflowNotificationSource,
 ) -> bool {
     sessions.get_session(&source.session_id).is_ok_and(|s| {
-        s.owner_user_id() == source.owner_user_id && s.host_daemon_id() == source.kernel_id
-    }) && sessions
-        .resolve_workflow_ref(&source.session_id, &source.workflow_id)
-        .is_ok()
+        s.owner_user_id() == source.owner_user_id
+            && s.host_daemon_id() == source.kernel_id
+            && s.status() != crate::session::SessionStatus::Ended
+    }) && (source.kind == crate::local::NotificationSourceKind::OwnerAction
+        || sessions
+            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+            .is_ok_and(|workflow| {
+                workflow
+                    .node(&source.exit_node_id)
+                    .is_some_and(|node| node.can_complete_workflow_run())
+            }))
 }
-pub(super) fn summary(source: &WorkflowNotificationSource) -> WorkflowNotificationSourceSummary {
-    let mut fields = ["subject", "status"].map(str::to_owned).to_vec();
-    fields.extend(source.output_fields.clone());
-    WorkflowNotificationSourceSummary {
-        source_id: source.source_id.clone(),
-        kernel_id: source.kernel_id.clone(),
-        session_id: source.session_id.clone(),
-        workflow_id: source.workflow_id.clone(),
-        name: source.name.clone(),
-        events: WorkflowNotificationEvents::Both,
-        fields,
-        available: source.available,
-    }
+/// Summaries name each source from its workflow's current definition: the
+/// alias, followed by the exit's ordinal when more than one exit of the
+/// workflow notifies.
+pub(super) fn summaries(
+    sessions: &SessionService,
+    sources: &[WorkflowNotificationSource],
+) -> Vec<WorkflowNotificationSourceSummary> {
+    sources
+        .iter()
+        .filter(|source| source.enabled)
+        .map(|source| {
+            let notifying = sources
+                .iter()
+                .filter(|other| {
+                    other.enabled
+                        && other.kernel_id == source.kernel_id
+                        && other.session_id == source.session_id
+                        && other.workflow_id == source.workflow_id
+                })
+                .count();
+            let workflow = sessions
+                .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+                .ok();
+            let (name, ordinal) = match &workflow {
+                Some(workflow) => (
+                    naming::workflow_name(workflow),
+                    naming::exit_ordinal(workflow, &source.exit_node_id).unwrap_or(0),
+                ),
+                None => (source.name.clone(), 0),
+            };
+            WorkflowNotificationSourceSummary {
+                kind: source.kind,
+                source_id: source.source_id.clone(),
+                kernel_id: source.kernel_id.clone(),
+                session_id: source.session_id.clone(),
+                workflow_id: source.workflow_id.clone(),
+                exit_node_id: source.exit_node_id.clone(),
+                exit_ordinal: ordinal,
+                display_name: naming::display_name(&name, ordinal, notifying),
+                name,
+                available: source.available,
+            }
+        })
+        .collect()
 }
 impl KernelRuntimeState {
     pub(crate) fn execute_workflow_notification_request(
@@ -52,7 +90,17 @@ impl KernelRuntimeState {
         request: LocalDaemonRequest,
         owner: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.ensure_notification_profile_owner(owner)?;
+        if let LocalDaemonRequest::ListWorkflowNotifications(list) = &request {
+            let session = self.owned.session_store.get_session(&list.session_id)?;
+            if !session.has_member(owner) {
+                return Err(store::error("notification room access denied"));
+            }
+            self.owned
+                .ensure_owner_action_notification_source(&session)?;
+        }
+        if !self.is_room_member_listing(&request, owner) {
+            self.ensure_notification_profile_owner(owner)?;
+        }
         let shared_access = self.notification_grant().is_some();
         let home = self.owned.config_projection.snapshot().daemon_id;
         self.owned
@@ -67,31 +115,22 @@ impl KernelRuntimeState {
                         }
                         let workflow =
                             sessions.resolve_workflow_ref(session.id(), &request.workflow_ref)?;
+                        let exit_node_id =
+                            naming::resolve_exit(&workflow, &request.exit_node_id)
+                                .ok_or_else(|| store::error("workflow has no such exit"))?;
                         let source = WorkflowNotificationSource {
+                            kind: crate::local::NotificationSourceKind::WorkflowExit,
                             source_id: format!("wf_source_{:032x}", rand::random::<u128>()),
                             owner_user_id: owner.into(),
                             kernel_id: session.host_daemon_id().into(),
                             session_id: session.id().into(),
                             workflow_id: workflow.id().into(),
+                            exit_node_id,
                             enabled: request.enabled,
                             available: true,
-                            name: workflow.alias().unwrap_or(workflow.id()).into(),
-                            output_fields: request.output_fields.unwrap_or_else(|| {
-                                self.owned
-                                    .durable_state_store
-                                    .notification_inventory(owner)
-                                    .ok()
-                                    .and_then(|(sources, _, _)| {
-                                        sources
-                                            .into_iter()
-                                            .find(|s| {
-                                                s.workflow_id == workflow.id()
-                                                    && s.session_id == session.id()
-                                            })
-                                            .map(|s| s.output_fields)
-                                    })
-                                    .unwrap_or_default()
-                            }),
+                            name: naming::workflow_name(&workflow),
+                            exit_ordinal: 0,
+                            display_name: String::new(),
                         };
                         match self.owned.durable_state_store.notify(
                             NotificationOperation::Register(SourceAdmission {
@@ -101,6 +140,20 @@ impl KernelRuntimeState {
                             }),
                         )? {
                             NotificationOutcome::Source(source) => {
+                                // Registering one exit renames its siblings, so name it from the
+                                // enabled set as listings do.
+                                let (all, _, _) = self
+                                    .owned
+                                    .durable_state_store
+                                    .notification_inventory(owner)?;
+                                let source = summaries(&sessions, &all)
+                                    .into_iter()
+                                    .find(|summary| summary.source_id == source.source_id)
+                                    .map_or(source.clone(), |summary| WorkflowNotificationSource {
+                                        exit_ordinal: summary.exit_ordinal,
+                                        display_name: summary.display_name,
+                                        ..source
+                                    });
                                 Ok(LocalDaemonResponse::WorkflowNotificationSourceRegistered {
                                     source,
                                 })
@@ -109,40 +162,12 @@ impl KernelRuntimeState {
                         }
                     }
                     LocalDaemonRequest::AttachWorkflowNotification(request) => {
-                        let (sources, _, _) = self
-                            .owned
-                            .durable_state_store
-                            .notification_inventory(owner)?;
-                        let source = sources
-                            .into_iter()
-                            .find(|s| {
-                                s.source_id == request.source_id
-                                    && s.enabled
-                                    && source_available(&sessions, s)
-                            })
-                            .or_else(|| {
-                                if shared_access {
-                                    return None;
-                                }
-                                self.owned
-                                    .durable_state_store
-                                    .notification_cached_sources(owner)
-                                    .ok()?
-                                    .into_iter()
-                                    .find(|s| s.source_id == request.source_id && s.available)
-                                    .map(|s| WorkflowNotificationSource {
-                                        source_id: s.source_id,
-                                        owner_user_id: owner.into(),
-                                        kernel_id: s.kernel_id,
-                                        session_id: s.session_id,
-                                        workflow_id: s.workflow_id,
-                                        name: s.name,
-                                        enabled: true,
-                                        available: true,
-                                        output_fields: vec![],
-                                    })
-                            })
-                            .ok_or_else(|| store::error("source not available"))?;
+                        let source = self.attachable_source(
+                            &sessions,
+                            owner,
+                            &request.source_id,
+                            shared_access,
+                        )?;
                         if shared_access && source.kernel_id != home {
                             return Err(store::error(
                                 "shared access cannot attach remote workflow notifications",
@@ -157,22 +182,30 @@ impl KernelRuntimeState {
                             owner,
                             session.id(),
                             &request.publication_ref,
-                            request.queue_ref.as_deref(),
+                            None,
                         )
                         .map_err(|e| store::error(e.to_string()))?;
                         let publication = sessions.resolve_workflow_publication_ref(
                             session.id(),
                             &request.publication_ref,
                         )?;
+                        // An exit never notifies an entry point of its own workflow. Longer
+                        // cycles are stopped by the occurrence's ancestry at delivery.
+                        if source.kernel_id == session.host_daemon_id()
+                            && source.session_id == session.id()
+                            && source.workflow_id == publication.workflow_id()
+                        {
+                            return Err(store::error("workflow notification cycle"));
+                        }
                         let t = target.target();
                         let subscription = WorkflowNotificationSubscription {
-                            delivery_mode: request.delivery_mode,
                             subscription_id: format!(
                                 "wf_subscription_{:032x}",
                                 rand::random::<u128>()
                             ),
                             source_id: source.source_id.clone(),
                             owner_user_id: owner.into(),
+                            created_by_user_id: owner.into(),
                             target_kernel_id: session.host_daemon_id().into(),
                             target_kind: WorkflowNotificationTargetKind::WorkflowEndpoint,
                             session_id: session.id().into(),
@@ -180,11 +213,10 @@ impl KernelRuntimeState {
                             publication_id: t.publication_id.clone(),
                             endpoint_id: t.endpoint_id.clone(),
                             queue_id: t.queue_id.clone(),
-                            ttl_days: request.ttl_days,
                             source_available: true,
                             source_kernel_id: source.kernel_id.clone(),
-                            events: request.events,
-                            filters: request.filters,
+                            agent_id: None,
+                            trigger_id: None,
                         };
                         let mut operation = if source.kernel_id == session.host_daemon_id() {
                             NotificationOperation::Attach {
@@ -210,17 +242,21 @@ impl KernelRuntimeState {
                         }
                     }
                     LocalDaemonRequest::ListWorkflowNotifications(request) => {
-                        if sessions.get_session(&request.session_id)?.owner_user_id() != owner {
-                            return Err(store::error(
-                                "notification inventory requires the session owner",
-                            ));
-                        }
+                        let session = sessions.get_session(&request.session_id)?;
+                        // Members and room agents list this room's notifications, nothing of the
+                        // owner's other rooms or kernels.
+                        let room_member =
+                            session.owner_user_id() != owner || self.room_provider_origin.is_some();
+                        let inventory_owner = session.owner_user_id().to_owned();
                         let (mut sources, mut subscriptions, mut diagnostics) = self
                             .owned
                             .durable_state_store
-                            .notification_inventory(owner)?;
-                        if shared_access {
-                            sources.retain(|s| s.kernel_id == home);
+                            .notification_inventory(&inventory_owner)?;
+                        if shared_access || room_member {
+                            sources.retain(|s| {
+                                s.kernel_id == home
+                                    && (!room_member || s.session_id == request.session_id)
+                            });
                             subscriptions.retain(|s| s.source_kernel_id == home);
                             diagnostics
                                 .retain(|d| sources.iter().any(|s| s.source_id == d.source_id));
@@ -228,7 +264,7 @@ impl KernelRuntimeState {
                         for source in &mut sources {
                             source.available = source_available(&sessions, source);
                         }
-                        let cached = if shared_access {
+                        let cached = if shared_access || room_member {
                             vec![]
                         } else {
                             self.owned
@@ -243,20 +279,30 @@ impl KernelRuntimeState {
                                     .iter()
                                     .any(|s| s.source_id == sub.source_id && s.available);
                         }
-                        subscriptions.retain(|s| {
-                            s.session_id == request.session_id
-                                && s.target_kernel_id
-                                    == self.owned.config_projection.snapshot().daemon_id
-                        });
-                        let mut sources = sources
+                        let listeners = subscriptions
                             .iter()
-                            .filter(|s| s.enabled)
-                            .map(summary)
-                            .collect::<Vec<_>>();
+                            .filter(|subscription| {
+                                (!(shared_access || room_member)
+                                    || (subscription.target_kernel_id == home
+                                        && subscription.session_id == request.session_id))
+                                    && sources.iter().any(|source| {
+                                        source.enabled
+                                            && source.kernel_id == home
+                                            && source.session_id == request.session_id
+                                            && source.source_id == subscription.source_id
+                                    })
+                            })
+                            .cloned()
+                            .collect();
+                        subscriptions.retain(|s| {
+                            s.session_id == request.session_id && s.target_kernel_id == home
+                        });
+                        let mut sources = summaries(&sessions, &sources);
                         sources.extend(cached);
                         Ok(LocalDaemonResponse::WorkflowNotifications {
                             sources,
                             subscriptions,
+                            listeners,
                             diagnostics,
                         })
                     }
@@ -264,8 +310,96 @@ impl KernelRuntimeState {
                 }
             })
     }
+
+    /// A room member or room agent listing the room's notifications; the owner's profile does not apply.
+    pub(super) fn is_room_member_listing(
+        &self,
+        request: &LocalDaemonRequest,
+        caller: &str,
+    ) -> bool {
+        matches!(request, LocalDaemonRequest::ListWorkflowNotifications(list)
+            if self.owned.session_store.get_session(&list.session_id)
+                .is_ok_and(|session| session.owner_user_id() != caller))
+    }
+
+    /// An enabled source of this kernel, or an available one of another kernel's cached picker.
+    fn attachable_source(
+        &self,
+        sessions: &SessionService,
+        owner: &str,
+        source_id: &str,
+        shared_access: bool,
+    ) -> Result<WorkflowNotificationSource, DaemonError> {
+        let (sources, _, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
+        sources
+            .into_iter()
+            .find(|s| s.source_id == source_id && s.enabled && source_available(sessions, s))
+            .or_else(|| {
+                if shared_access {
+                    return None;
+                }
+                self.owned
+                    .durable_state_store
+                    .notification_cached_sources(owner)
+                    .ok()?
+                    .into_iter()
+                    .find(|s| s.source_id == source_id && s.available)
+                    .map(|s| WorkflowNotificationSource {
+                        kind: s.kind,
+                        source_id: s.source_id,
+                        owner_user_id: owner.into(),
+                        kernel_id: s.kernel_id,
+                        session_id: s.session_id,
+                        workflow_id: s.workflow_id,
+                        exit_node_id: s.exit_node_id,
+                        enabled: true,
+                        available: true,
+                        name: s.name,
+                        exit_ordinal: s.exit_ordinal,
+                        display_name: s.display_name,
+                    })
+            })
+            .ok_or_else(|| store::error("source not available"))
+    }
 }
 impl KernelRuntimeOwnedState {
+    /// A local source's occurrence for a local agent is accepted as a remote one is on delivery.
+    fn accept_local_agent_notification(
+        &self,
+        sub: &WorkflowNotificationSubscription,
+        env: &WorkflowNotificationEnvelope,
+    ) {
+        let _ = self
+            .durable_state_store
+            .with_workflow_runtime_transition_lock(|| {
+                let sessions = self.session_store.read();
+                let (sources, _, _) = self
+                    .durable_state_store
+                    .notification_inventory(&sub.owner_user_id)?;
+                if !self.agent_notification_target_live(sub)
+                    || !sources
+                        .iter()
+                        .any(|s| s.source_id == env.source_id && source_available(&sessions, s))
+                {
+                    return Ok(());
+                }
+                self.durable_state_store
+                    .notify(NotificationOperation::Accept {
+                        subscription: sub.clone(),
+                        envelope: env.clone(),
+                    })?;
+                self.durable_state_store
+                    .notify(NotificationOperation::Acknowledge {
+                        subscription_id: sub.subscription_id.clone(),
+                        occurrence_id: env.occurrence_id.clone(),
+                    })?;
+                Ok(())
+            });
+    }
+
     /// The existing bounded notification/App pass retains blocking ownership.
     /// No network, App worker, AEDS or registry dependency is involved.
     pub(super) fn route_workflow_notifications(&self) -> (BTreeSet<String>, bool) {
@@ -308,6 +442,10 @@ impl KernelRuntimeOwnedState {
                 continue;
             };
             for (sub, env) in candidates {
+                // An agent's accepted occurrences belong to the async agent step.
+                if accepted && sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                    continue;
+                }
                 // Rotate failed/busy targets before attempting, so they never block
                 // another subscription and retry never mutates its original deadline.
                 let _ = self
@@ -323,6 +461,10 @@ impl KernelRuntimeOwnedState {
                     route(&home, &sub.target_kernel_id),
                     NotificationRoute::Local
                 ) {
+                    continue;
+                }
+                if sub.target_kind == WorkflowNotificationTargetKind::Agent {
+                    self.accept_local_agent_notification(&sub, &env);
                     continue;
                 }
                 let operation = self
@@ -445,124 +587,144 @@ mod tests {
         }
         runtime
     }
-    // MP-08 / MP-10: binding edits terminally settle already-captured local work.
     #[test]
-    fn same_kernel_router_settles_filtered_pending_occurrences_after_binding_edits() {
-        for edit_events in [false, true] {
-            let mut f = Fixture::new();
-            let (a, _, _) = f.workflow("source");
-            let (_, _, bp) = f.workflow("target");
-            let kernel = runtime(&mut f);
-            let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = kernel
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::RegisterWorkflowNotificationSource(
-                        RegisterWorkflowNotificationSourceRequest {
-                            session_id: f.session.clone(),
-                            workflow_ref: a.clone(),
-                            enabled: true,
-                            output_fields: None,
-                        },
-                    ),
-                    "local",
-                )
-                .unwrap()
-            else {
-                panic!()
-            };
-            let mut attach = AttachWorkflowNotificationRequest {
-                delivery_mode: NotificationDeliveryMode::Queue,
-                session_id: f.session.clone(),
-                source_id: source.source_id,
-                publication_ref: bp,
-                queue_ref: None,
-                ttl_days: 7,
-                events: WorkflowNotificationEvents::Both,
-                filters: serde_json::Value::Null,
-            };
-            kernel
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::AttachWorkflowNotification(attach.clone()),
-                    "local",
-                )
-                .unwrap();
-            f.complete(
-                &a,
-                "pending-before-edit",
-                None,
-                crate::session::WorkflowRunStatus::Completed,
-                "opaque output",
-            );
-            kernel
-                .owned
-                .session_store
-                .write()
-                .restore_session(f.sessions.get_session(&f.session).unwrap());
-            assert_eq!(f.candidates(false).len(), 1);
-            if edit_events {
-                attach.events = WorkflowNotificationEvents::Failure;
-            } else {
-                attach.filters = serde_json::json!({"status":"failure"});
-            }
-            kernel
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::AttachWorkflowNotification(attach.clone()),
-                    "local",
-                )
-                .unwrap();
-            let (queued, more) = kernel.owned.route_workflow_notifications();
-            assert!(queued.is_empty());
-            assert!(!more, "terminal Filtered ACK must release source backlog");
-            assert!(kernel
-                .owned
-                .session_store
-                .get_session(&f.session)
-                .unwrap()
-                .workflow_queued_prompts()
-                .is_empty());
-            let db = rusqlite::Connection::open(f.root.join("runtime/state.db")).unwrap();
-            let state: String = db.query_row(
-                "SELECT state FROM app_outbox WHERE source_kind='workflow_completion' AND occurrence_id='pending-before-edit'", [], |r| r.get(0)).unwrap();
-            assert_eq!(state, "delivered");
-            drop(db);
-            drop(kernel);
-            // Release the fixture's last cloned owner before reopening runtime state.
-            f.store = crate::durable_state::DurableKernelStateStore::open_owned(
-                f.root.join("kernel.sqlite"),
+    fn r6_source_listeners_include_a_consumer_in_another_room() {
+        let mut f = Fixture::new();
+        let (producer, _, _) = f.workflow("producer");
+        let producer_room = f.session.clone();
+        let mut consumer = f
+            .sessions
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .unwrap();
+        consumer.set_agents(vec![crate::agent::AgentInstance::new(
+            "agent",
+            "consumer-agent",
+            consumer.id(),
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            crate::agent::GridPosition::new(0, 0, 1, 1),
+        )]);
+        let consumer_room = consumer.id().to_owned();
+        f.sessions.restore_session(consumer);
+        f.session = consumer_room.clone();
+        let (_, _, publication) = f.workflow("consumer");
+        f.session = producer_room.clone();
+        let runtime = runtime(&mut f);
+        let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = runtime
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::RegisterWorkflowNotificationSource(
+                    RegisterWorkflowNotificationSourceRequest {
+                        session_id: producer_room.clone(),
+                        workflow_ref: producer,
+                        exit_node_id: "exit-1".into(),
+                        enabled: true,
+                    },
+                ),
+                "local",
+            )
+            .unwrap()
+        else {
+            panic!()
+        };
+        runtime
+            .execute_workflow_notification_request(
+                LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
+                    session_id: consumer_room.clone(),
+                    source_id: source.source_id.clone(),
+                    publication_ref: publication,
+                }),
+                "local",
             )
             .unwrap();
-            let kernel = runtime(&mut f);
-            assert!(!f.store.notification_has_pending().unwrap());
-            assert!(kernel.owned.route_workflow_notifications().0.is_empty());
-            // A subsequent matching completion still flows through the same router.
-            f.complete(
-                &a,
-                "matching-after-edit",
-                None,
-                crate::session::WorkflowRunStatus::Failed,
-                "private failure detail",
-            );
-            kernel
-                .owned
-                .session_store
-                .write()
-                .restore_session(f.sessions.get_session(&f.session).unwrap());
-            assert!(kernel
-                .owned
-                .route_workflow_notifications()
-                .0
-                .contains(&f.session));
-            let snapshot = kernel.owned.session_store.get_session(&f.session).unwrap();
-            assert_eq!(snapshot.workflow_queued_prompts().len(), 1);
-            let prompt = snapshot
-                .workflow_queued_prompts()
-                .front()
+        let list = |room: &str| {
+            serde_json::to_value(
+                runtime
+                    .execute_workflow_notification_request(
+                        LocalDaemonRequest::ListWorkflowNotifications(
+                            ListWorkflowNotificationsRequest {
+                                session_id: room.into(),
+                            },
+                        ),
+                        "local",
+                    )
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let producer_inventory = list(&producer_room);
+        assert_eq!(
+            producer_inventory["WorkflowNotifications"]["subscriptions"]
+                .as_array()
                 .unwrap()
-                .prompt()
-                .unwrap();
-            assert!(prompt.contains("failure") && !prompt.contains("private failure detail"));
-            drop(kernel);
-            cleanup(f);
-        }
+                .len(),
+            0,
+            "target bindings stay target scoped"
+        );
+        let listeners = producer_inventory["WorkflowNotifications"]["listeners"]
+            .as_array()
+            .expect("source-side inventory is distinct from target-room subscriptions");
+        assert_eq!(listeners.len(), 1);
+        assert_eq!(listeners[0]["source_id"], source.source_id);
+        assert_eq!(listeners[0]["session_id"], consumer_room);
+        let target = list(&consumer_room);
+        assert_eq!(
+            target["WorkflowNotifications"]["subscriptions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            target["WorkflowNotifications"]["listeners"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "the consumer cannot claim another Room's listeners"
+        );
+        let mut source_room = runtime
+            .owned
+            .session_store
+            .get_session(&producer_room)
+            .unwrap();
+        source_room.add_member(
+            "guest",
+            Some("local".into()),
+            crate::session::CollaborationLevel::Full,
+        );
+        runtime
+            .owned
+            .session_store
+            .write()
+            .restore_session(source_room);
+        let guest = serde_json::to_value(
+            runtime
+                .execute_workflow_notification_request(
+                    LocalDaemonRequest::ListWorkflowNotifications(
+                        ListWorkflowNotificationsRequest {
+                            session_id: producer_room.clone(),
+                        },
+                    ),
+                    "guest",
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            guest["WorkflowNotifications"]["listeners"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0,
+            "a source-Room guest must not learn about the owner's other Rooms or kernels"
+        );
+        cleanup(f);
     }
 
     #[test]
@@ -576,7 +738,7 @@ mod tests {
                 session_id: f.session.clone(),
                 workflow_ref: a.clone(),
                 enabled: true,
-                output_fields: None,
+                exit_node_id: "exit-1".into(),
             },
         );
         assert!(runtime
@@ -590,14 +752,9 @@ mod tests {
         };
         let attach =
             LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-                delivery_mode: crate::local::NotificationDeliveryMode::Queue,
                 session_id: f.session.clone(),
                 source_id: source.source_id,
                 publication_ref: bp,
-                queue_ref: None,
-                ttl_days: 7,
-                events: WorkflowNotificationEvents::Both,
-                filters: serde_json::Value::Null,
             });
         assert!(runtime
             .execute_workflow_notification_request(attach.clone(), "another-user")
@@ -682,19 +839,6 @@ mod tests {
             .session_store
             .write()
             .restore_session(transferred);
-        assert!(
-            runtime
-                .execute_workflow_notification_request(
-                    LocalDaemonRequest::ListWorkflowNotifications(
-                        ListWorkflowNotificationsRequest {
-                            session_id: f.session.clone(),
-                        }
-                    ),
-                    "local",
-                )
-                .is_err(),
-            "MP-11 / MP-08 / MP-10: transferred session inventory rejects the former owner"
-        );
         let stored_source = runtime
             .owned
             .durable_state_store
@@ -737,7 +881,13 @@ mod tests {
         else {
             panic!()
         };
-        assert!(!sources[0].available);
+        assert!(
+            !sources
+                .iter()
+                .find(|source| source.kind == crate::local::NotificationSourceKind::WorkflowExit)
+                .unwrap()
+                .available
+        );
         assert!(!subscriptions[0].source_available);
         drop(runtime);
         cleanup(f);
@@ -759,7 +909,7 @@ mod tests {
                             session_id: f.session.clone(),
                             workflow_ref: a.clone(),
                             enabled: true,
-                            output_fields: None,
+                            exit_node_id: "exit-1".into(),
                         },
                     ),
                     "local",
@@ -770,14 +920,9 @@ mod tests {
             };
             let attach = |publication_ref: &str| {
                 LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-                    delivery_mode: NotificationDeliveryMode::Queue,
                     session_id: f.session.clone(),
                     source_id: source.source_id.clone(),
                     publication_ref: publication_ref.into(),
-                    queue_ref: None,
-                    ttl_days: 7,
-                    events: WorkflowNotificationEvents::Both,
-                    filters: serde_json::Value::Null,
                 })
             };
             let grant = kernel.insert_access_grant_for_test(&f.session);
@@ -874,7 +1019,7 @@ mod tests {
                         session_id: f.session.clone(),
                         workflow_ref: a.clone(),
                         enabled: true,
-                        output_fields: None,
+                        exit_node_id: "exit-1".into(),
                     },
                 ),
                 "local",
@@ -885,14 +1030,9 @@ mod tests {
         };
         let external =
             LocalDaemonRequest::AttachWorkflowNotification(AttachWorkflowNotificationRequest {
-                delivery_mode: NotificationDeliveryMode::Queue,
                 session_id: f.session.clone(),
                 source_id: source.source_id.clone(),
                 publication_ref: granted,
-                queue_ref: None,
-                ttl_days: 7,
-                events: WorkflowNotificationEvents::Both,
-                filters: serde_json::Value::Null,
             });
         let grant = kernel.insert_access_grant_for_test(&f.session);
         kernel

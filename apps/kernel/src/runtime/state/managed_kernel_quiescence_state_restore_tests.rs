@@ -216,7 +216,13 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
     let replayed_challenge = state.tombstones[TOMBSTONE_COUNT - 1].challenge.clone();
     let (path, store, transitions, mutation_lock) = persist_legacy_snapshot("large-unique", &state);
     transitions
-        .record_current_transition(|| (0, 0, 1_000))
+        .record_current_transition(|| {
+            (
+                0,
+                crate::runtime::state::ManagedActivityCounts::in_flight(0),
+                1_000,
+            )
+        })
         .expect("persist current idle observation");
     let first_gate = restore(&store, &mutation_lock)
         .expect("upgrade legacy tombstones into a bounded replay floor");
@@ -265,7 +271,7 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
         replayed_old_challenge.idle_sequence,
         1,
         ManagedActivityObservation {
-            running_agent_count: 0,
+            working_agent_count: 0,
             changed_at_ms: 1_000,
         },
     );
@@ -333,7 +339,7 @@ fn legacy_restore_prunes_large_tombstones_and_preserves_replay_floor_after_resta
         fresh_challenge.idle_sequence,
         1,
         ManagedActivityObservation {
-            running_agent_count: 0,
+            working_agent_count: 0,
             changed_at_ms: 1_000,
         },
     );
@@ -497,11 +503,17 @@ fn live_cancellations_keep_a_stable_bound_and_reject_pruned_replay_after_restart
     let (path, store, transitions, mutation_lock) =
         persist_snapshot("bounded-live", &empty_bounded_state());
     transitions
-        .record_current_transition(|| (0, 0, 1_000))
+        .record_current_transition(|| {
+            (
+                0,
+                crate::runtime::state::ManagedActivityCounts::in_flight(0),
+                1_000,
+            )
+        })
         .expect("persist current idle observation");
     let gate = restore(&store, &mutation_lock).expect("restore empty bounded state");
     let observation = ManagedActivityObservation {
-        running_agent_count: 0,
+        working_agent_count: 0,
         changed_at_ms: 1_000,
     };
     let cancellation_count = MAX_QUIESCENCE_TOMBSTONES + 12;

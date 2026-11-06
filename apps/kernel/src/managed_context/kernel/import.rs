@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -1637,7 +1638,7 @@ fn wait_for_child(
                     return Err(import_io_error(operation, error));
                 }
                 let status = child
-                    .wait()
+                    .bounded_wait()
                     .map_err(|error| import_io_error(operation, error))?;
                 ensure_tree_within_limits(
                     budget_root,
@@ -1719,7 +1720,7 @@ fn terminate_child_tree(
         let _ = signals.kill_owned_processes();
     }
     if signals.kill_child().is_ok() {
-        let _ = child.wait();
+        let _ = child.bounded_wait();
     }
 }
 

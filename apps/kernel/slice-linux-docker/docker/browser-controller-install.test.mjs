@@ -14,7 +14,8 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
   const root = await mkdtemp(path.join(tmpdir(), 'protxform-installed-'));
   let chrome;
   try {
-    const dockerfile = (await readFile(new URL('./Dockerfile', import.meta.url), 'utf8')).replace(/\\\r?\n\s*/g, ' ');
+    const source = await readFile(new URL('./Dockerfile', import.meta.url), 'utf8');
+    const dockerfile = source.slice(source.lastIndexOf('\nFROM ')).replace(/\\\r?\n\s*/g, ' ');
     // Source COPY declarations only: --from build-stage binaries have no
     // checkout path and are outside this module-closure regression.
     for (const match of dockerfile.matchAll(/^COPY(?: --(?:chown|chmod)=\S+)* (?!-)(.+?) (\/opt\/chariox-slice\/(\S*))$/gm)) {
@@ -27,6 +28,10 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
         await copyFile(path.join(repo, source), destination);
       }
     }
+    const imports = spawnSync(process.execPath, ['--input-type=module', '-e',
+      `await import(${JSON.stringify(pathToFileURL(path.join(root, 'browser-controller.mjs')).href)}); await import(${JSON.stringify(pathToFileURL(path.join(root, 'kernel-browser-host.mjs')).href)})`],
+      { encoding: 'utf8', timeout: 10000 });
+    assert.equal(imports.status, 0, imports.stderr);
     const health = spawnSync(process.execPath, [path.join(root, 'browser-controller.mjs'), 'stdio'], {
       input: '{"id":1,"method":"health"}\n', encoding: 'utf8', timeout: 10000,
     });
@@ -41,7 +46,8 @@ test('MP-08/MP-11: Docker-installed controller starts and captures a canonical i
     const documentId = (await connection.send('Page.getFrameTree', {}, sessionId)).frameTree.frame.loaderId;
     const { captureProtectedBrowserImage } = await import(pathToFileURL(path.join(root, 'browser-controller-image.mjs')));
     const image = await captureProtectedBrowserImage({ connection, sessionId, targetId, documentId,
-      viewport: { css_width: 1280, css_height: 800, device_scale_factor: 1 }, protectedValues: [] });
+      viewport: { css_width: 1280, css_height: 800, device_scale_factor: 1 },
+      geometry: (await connection.send('Page.getLayoutMetrics', {}, sessionId)).cssVisualViewport, protectedValues: [] });
     assert.equal(image.redaction, 'none');
     assert.equal(image.bytes.readUInt32BE(16), 1280);
     assert.equal(image.bytes.readUInt32BE(20), 800);

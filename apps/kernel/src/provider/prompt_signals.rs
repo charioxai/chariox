@@ -354,7 +354,7 @@ mod tests {
     fn failure_reasons_do_not_repeat_provider_words_or_codes() {
         for (adapter, text, reason) in [
             ("codex", "Codex error [server_overloaded]: Selected model is at capacity. Please try a different model.", "The provider is at capacity"),
-            ("claude", "Claude StopFailure [rate_limit]: You've hit your session limit", "The provider's usage limit was reached"),
+            ("claude", "Claude StopFailure [rate_limit]: You've hit your session limit", "You've hit your session limit"),
             ("opencode", "Insufficient balance. Manage your billing here.", "The provider's usage limit was reached"),
             ("codex", "stream disconnected", "The connection to the provider was interrupted"),
             ("codex", "upstream failed Authorization: Bearer sk-live-0123456789abcdef", "The provider could not complete this request"),

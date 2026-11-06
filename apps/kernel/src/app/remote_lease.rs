@@ -16,7 +16,6 @@ mod leased_process;
 mod mcp_availability;
 mod native_provider;
 mod profile_update;
-mod project_environment;
 mod projection;
 mod projection_delivery;
 mod prompt_attachments;
@@ -585,13 +584,34 @@ impl<'a> RemoteLeaseRuntime<'a> {
             });
         }
         self.ensure_leased_provider_capacity(provider, None)?;
+        // Resolve the source before Git adds the new checkout to every sibling's worktree list.
+        let source_checkout = if worktree_placement.is_some() {
+            base_directory.to_string_lossy().into_owned()
+        } else {
+            worktree_id
+                .clone()
+                .unwrap_or_else(|| base_directory.display().to_string())
+        };
+        let source_project = self
+            .app
+            .sessions
+            .environment_project_for_checkout(&lease.owner_user_id, &source_checkout)?;
         let worktree = if let Some(placement) = worktree_placement {
-            crate::git_worktree_placement::prepare_git_worktree(
+            let worktree = crate::git_worktree_placement::prepare_git_worktree(
                 &placement,
                 base_directory,
                 worktree_id.as_deref(),
                 "create remote git worktree",
-            )?
+            )?;
+            crate::project_environment::ProjectEnvironmentStore::new(
+                &self.app.config().private_runtime_state_root(),
+            )
+            .copy_files_into_worktree(
+                &self.app.sessions,
+                base_directory,
+                Path::new(&worktree),
+            )?;
+            worktree
         } else {
             match worktree_id {
                 Some(worktree) => worktree,
@@ -634,6 +654,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session.workspace_id() == workspace_id
                     && session.worktree_id() == worktree
                     && session.owner_user_id() == lease.owner_user_id
+                    && session.project_id()
+                        == source_project
+                            .as_ref()
+                            .map(|project| project.id())
+                            .unwrap_or_default()
             });
         let session = match existing_session {
             Some(session) => {
@@ -654,6 +679,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 let mut request = CreateSessionRequest::new(workspace_id.clone(), worktree.clone())
                     .with_hidden(true)
                     .with_owner_user_id(lease.owner_user_id.clone());
+                if let Some(project) = &source_project {
+                    request = request.with_project_selection(
+                        crate::session::SessionProjectSelection::Existing {
+                            project_id: project.id().to_string(),
+                        },
+                    );
+                }
                 if let Some(mode) = workspace_live_sync_mode {
                     request = request.with_workspace_live_sync_mode(mode);
                 }
@@ -965,29 +997,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Result<(), DaemonError> {
         self.authorize_leased_agent_caller(leased_agent_id, caller)?;
         self.destroy_leased_agent(leased_agent_id)
-    }
-
-    pub(crate) fn project_environment_setup_target(
-        &self,
-        leased_agent_id: &str,
-        home_session_id: &str,
-        home_agent_id: &str,
-        workspace_id: Option<&str>,
-    ) -> Result<LeasedProjectEnvironmentSetupTarget, DaemonError> {
-        // MP-08 / MP-10 / MP-11: placement does not decide setup admission.
-        // Ordinary kernels and slices execute their own authenticated leases,
-        // with the same explicit remote-lease opt-in as lease creation.
-        if !self.app.config.accept_remote_leases {
-            return Err(DaemonError::RemoteLeasesDisabled {
-                machine_id: self.app.config.host_machine_id.clone(),
-            });
-        }
-        self.leased_project_target(
-            leased_agent_id,
-            home_session_id,
-            home_agent_id,
-            workspace_id,
-        )
     }
 
     pub(crate) fn leased_project_target(
@@ -1435,7 +1444,6 @@ mod tests {
     use super::*;
     mod catalog_admission;
     mod profile_admission;
-    mod project_environment_setup;
 
     #[test]
     fn codex_leased_agent_creation_refuses_endpoint_capacity_before_mutation() {

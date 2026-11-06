@@ -73,6 +73,8 @@ pub struct OpenRoomTerminal {
     pub opened_by: TerminalActor,
     /// Run this program (argv, no shell) instead of a login shell.
     pub command: Option<Vec<String>>,
+    /// The Project's Variables and Secret values, as environment variables of this terminal.
+    pub project_environment: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -264,7 +266,8 @@ impl RoomTerminalService {
         let terminal_id = random_terminal_id();
         let run_id = format!("room-terminal:{terminal_id}");
         let mut pty = PtyManager::new();
-        let mut env = BTreeMap::from([("TERM".to_string(), "xterm-256color".to_string())]);
+        let mut env = spec.project_environment.clone();
+        env.insert("TERM".to_string(), "xterm-256color".to_string());
         let mut reports_first_prompt = false;
         if spec.command.is_none() {
             let marks = self.inner.shell_integration.environment(&program);

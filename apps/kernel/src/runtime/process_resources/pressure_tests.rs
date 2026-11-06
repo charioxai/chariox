@@ -2,7 +2,22 @@
 //! room; under pressure exactly one command yields, never its owner's root.
 use super::*;
 
-const ALLOC: &str = "import sys,time
+/// On Linux a fixture dies with its parent, stopped or not: a test that is
+/// killed must not leave commands behind, and a stopped orphan never exits.
+/// Other platforms rely on the workload's tree cleanup.
+pub(super) const DIE_WITH_PARENT: &str =
+    r#"import ctypes,sys;sys.platform == "linux" and ctypes.CDLL(None).prctl(1,9);"#;
+
+/// A disk writer (4 MiB every half second): it writes at most 256 MiB in its
+/// life and ends with its parent or its scratch directory.
+pub(super) fn writer_command() -> String {
+    format!(
+        "python3 -c '{DIE_WITH_PARENT}import os,sys,time\nf=open(sys.argv[1],\"wb\")\nfor _ in range(64):\n if not os.path.isdir(os.path.dirname(sys.argv[1])): break\n f.write(os.urandom(4194304)); f.flush(); os.fsync(f.fileno()); time.sleep(0.5)' \"$0/out\""
+    )
+}
+
+const ALLOC: &str = "import ctypes,sys,time
+if sys.platform == \"linux\": ctypes.CDLL(None).prctl(1,9)
 start,rate,top=map(int,sys.argv[1:4])
 b=[bytearray(start*1048576)] if start else []
 total=start
@@ -10,6 +25,39 @@ while rate and total<top:
     b.append(bytearray(8*1048576)); total+=8; time.sleep(8/rate)
 time.sleep(60)
 ";
+
+/// Exercise both workloads with the platform and libc surface macOS provides.
+#[test]
+fn allocation_and_parent_death_fixtures_run_without_linux_prctl() {
+    let check = r#"import ctypes,sys,time
+source,prefix,platform=sys.argv[1:]
+sys.platform=platform
+calls=[]
+class Libc:
+    def prctl(self,*args): calls.append(args)
+ctypes.CDLL=lambda _: Libc() if platform == "linux" else object()
+time.sleep=lambda _: None
+sys.argv=["alloc.py","1","8","9"]
+scope={}
+exec(source,scope)
+assert scope["total"] == 9
+assert sum(map(len,scope["b"])) == 9*1048576
+exec(prefix+"hook_finished=True",scope)
+assert scope["hook_finished"]
+assert calls == ([(1,9),(1,9)] if platform == "linux" else [])
+"#;
+    for platform in ["darwin", "linux"] {
+        let output = std::process::Command::new("python3")
+            .args(["-c", check, ALLOC, DIE_WITH_PARENT, platform])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{platform}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
 
 pub(super) struct Workload {
     child: std::process::Child,
@@ -98,10 +146,19 @@ impl Workload {
         }
         let (program, args) =
             prepared.command(if launcher { "python3" } else { "/bin/sh" }.into(), argv);
-        let child = std::process::Command::new(program)
-            .args(args)
-            .spawn()
-            .unwrap();
+        let mut command = std::process::Command::new(program);
+        command.args(args);
+        // SAFETY: only `prctl` runs between fork and exec. The root dies with
+        // the test that started it; its commands die with it.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
         let domain = prepared.start(child.id()).unwrap();
         if gated {
             return Self { child, domain, dir };
@@ -149,7 +206,7 @@ impl Workload {
     }
     /// The stopped command was told why on its own error stream. Only Linux
     /// can reopen another process's stream; elsewhere the stop is silent.
-    fn assert_told(&self, name: &str, reason: &str) {
+    pub(super) fn assert_told(&self, name: &str, reason: &str) {
         #[cfg(target_os = "linux")]
         {
             let notice =
@@ -161,6 +218,17 @@ impl Workload {
         }
         #[cfg(not(target_os = "linux"))]
         let _ = (name, reason);
+    }
+}
+impl Workload {
+    /// The command was not stopped by the pool: its error stream is empty.
+    pub(super) fn assert_not_told(&self, name: &str) {
+        let notice =
+            std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default();
+        assert!(
+            !notice.contains("stopped this"),
+            "{name} was stopped: {notice:?}"
+        );
     }
 }
 impl Drop for Workload {
@@ -177,8 +245,23 @@ impl Drop for Workload {
             // SAFETY: a positive PID read from the process table a moment ago.
             unsafe { libc::kill(*pid, libc::SIGKILL) };
         }
+        // Nothing may outlive the scratch directory its command line names.
+        for pid in processes_naming(&self.dir) {
+            // SAFETY: a positive PID of a process whose command line names this workload's directory.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut stray = processes_naming(&self.dir);
+        while !stray.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            stray = processes_naming(&self.dir);
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
         if !std::thread::panicking() {
+            assert!(
+                stray.is_empty(),
+                "commands outlived the workload: {stray:?}"
+            );
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             while tree
                 .iter()
@@ -192,6 +275,28 @@ impl Drop for Workload {
             }
         }
     }
+}
+
+/// The processes whose command line names `dir` (the workload's scratch directory).
+#[cfg(target_os = "linux")]
+fn processes_naming(dir: &std::path::Path) -> Vec<i32> {
+    let name = dir.to_string_lossy().into_owned();
+    let me = std::process::id() as i32;
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<i32>().ok())
+        .filter(|pid| *pid != me)
+        .filter(|pid| {
+            std::fs::read(format!("/proc/{pid}/cmdline"))
+                .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(&name))
+        })
+        .collect()
+}
+#[cfg(not(target_os = "linux"))]
+fn processes_naming(_dir: &std::path::Path) -> Vec<i32> {
+    Vec::new()
 }
 
 /// Commands admission stopped, under a root that waits on them: what a
@@ -358,6 +463,46 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any() {
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
     slow_growth_is_paused_before_anything_is_stopped(true);
+}
+
+/// Three owners each grow one command at 48 MiB/s in a 1500 MiB pool. The
+/// two newest are paused and keep what they hold; the oldest, which is
+/// exempt from pausing, then fills the pool. The newest paused command ends
+/// for it, with its reason; the oldest finishes growing and the other one
+/// continues.
+fn the_newest_paused_command_yields_to_the_oldest_running_one(cgroup: bool) {
+    let pool = pool(1500);
+    let command = |top| [("idle", 0, 0, 0), ("grow", 0, 48, top)];
+    let mut oldest = Workload::start(domain(&pool, "a", cgroup), &command(800));
+    settle(1);
+    let mut middle = Workload::start(domain(&pool, "b", cgroup), &command(800));
+    settle(1);
+    let mut newest = Workload::start(domain(&pool, "c", cgroup), &command(800));
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    while newest.alive("grow") && oldest.alive("grow") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nothing was stopped in a full pool"
+        );
+        settle(1);
+    }
+    settle(4);
+    assert!(
+        oldest.alive("grow") && oldest.root_alive(),
+        "the oldest running command was stopped while paused ones held memory"
+    );
+    assert!(!newest.alive("grow"), "the newest paused command went on");
+    #[cfg(target_os = "linux")]
+    assert!(!oldest.waiting("grow"), "the oldest command was paused");
+    assert!(middle.alive("grow"), "more than the newest was stopped");
+    newest.assert_told("grow", "stopped this waiting command");
+    oldest.assert_not_told("grow");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_newest_paused_command_yields_before_the_oldest_running_one() {
+    the_newest_paused_command_yields_to_the_oldest_running_one(false);
 }
 
 fn runaway_is_paused_before_the_line(cgroup: bool) {

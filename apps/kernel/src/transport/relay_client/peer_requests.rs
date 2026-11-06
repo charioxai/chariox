@@ -347,14 +347,14 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
-    let notification_request = matches!(
+    let same_owner_request = matches!(
         &request,
         RelayPeerRequest::ListWorkflowNotificationSources { .. }
             | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
-    );
-    if notification_request {
+    ) || project_environment_request(&request);
+    if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
         let identity = match require_bound_managed_context_sender(
@@ -376,7 +376,7 @@ pub(super) async fn handle_daemon_peer_request(
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notification sender kernel invalid",
+                    "peer sender kernel invalid",
                     false,
                 )),
             };
@@ -391,18 +391,23 @@ pub(super) async fn handle_daemon_peer_request(
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notification sender kernel mismatch",
+                    "peer sender kernel mismatch",
                     false,
                 )),
             };
         }
-        let Some(owner) = router.notification_peer_owner(identity) else {
+        let owner = if project_environment_request(&request) {
+            router.environment_peer_user_id(identity)
+        } else {
+            router.same_owner_peer_user_id(identity)
+        };
+        let Some(owner) = owner else {
             return RelayRequestOutcome {
                 display_event: None,
                 encrypted_response: None,
                 error: Some(relay_error(
                     "unauthorized",
-                    "workflow notifications require the same authenticated owner and realm",
+                    "this request requires the same authenticated owner and realm",
                     false,
                 )),
             };
@@ -411,11 +416,16 @@ pub(super) async fn handle_daemon_peer_request(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
         );
-        let response = match router.relay_workflow_notification(
-            stable_peer_daemon_id(from_daemon_id),
-            &owner,
-            request,
-        ) {
+        let outcome = if project_environment_request(&request) {
+            router.relay_project_environment(&owner, request)
+        } else {
+            router.relay_workflow_notification(
+                stable_peer_daemon_id(from_daemon_id),
+                &owner,
+                request,
+            )
+        };
+        let response = match outcome {
             Ok(response) => response,
             Err(error) => {
                 return RelayRequestOutcome {
@@ -529,8 +539,15 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::ListWorkflowNotificationSources { .. }
         | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
         | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
-        | RelayPeerRequest::DeliverWorkflowNotification { .. } => {
-            unreachable!("notification requests handled above")
+        | RelayPeerRequest::DeliverWorkflowNotification { .. }
+        | RelayPeerRequest::ReadProjectEnvironment { .. }
+        | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+        | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+        | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
+        | RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+        | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+        | RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => {
+            unreachable!("same-owner requests handled above")
         }
         RelayPeerRequest::RoomBrowserController {
             session_id,
@@ -1533,186 +1550,6 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
-        RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
-            leased_agent_id,
-            home_session_id,
-            home_agent_id,
-        } => {
-            let resolved = router
-                .relay_resolve_leased_project_environment_setup_target(
-                    &leased_agent_id,
-                    home_session_id,
-                    home_agent_id,
-                )
-                .await;
-            match resolved {
-                Ok((worker_id, platform)) => {
-                    RelayPeerResponse::LeasedProjectEnvironmentSetupTargetResolved {
-                        worker_id,
-                        platform,
-                    }
-                }
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
-            leased_agent_id,
-            operation_id,
-            attempt,
-            project_id,
-            home_session_id,
-            home_agent_id,
-            workspace_id,
-            target_worker_id,
-            target_platform,
-            definition,
-            validation_commands,
-        } => {
-            let setup = router
-                .relay_start_leased_project_environment_setup(
-                    &leased_agent_id,
-                    operation_id,
-                    attempt,
-                    project_id,
-                    home_session_id,
-                    home_agent_id,
-                    workspace_id,
-                    target_worker_id,
-                    target_platform,
-                    definition,
-                    validation_commands,
-                )
-                .await;
-            match setup {
-                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStarted { setup },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
-            leased_agent_id,
-            operation_id,
-            attempt,
-            project_id,
-            home_session_id,
-            home_agent_id,
-            definition_digest,
-        } => {
-            let acknowledgment = router
-                .relay_acknowledge_leased_project_environment_setup_definition(
-                    &leased_agent_id,
-                    operation_id,
-                    attempt,
-                    project_id,
-                    home_session_id,
-                    home_agent_id,
-                    definition_digest,
-                )
-                .await;
-            match acknowledgment {
-                Ok(acknowledgment) => {
-                    RelayPeerResponse::LeasedProjectEnvironmentSetupDefinitionAcknowledged {
-                        operation_id: acknowledgment.operation_id,
-                        attempt: acknowledgment.attempt,
-                        project_id: acknowledgment.project_id,
-                        definition_digest: acknowledgment.definition_digest,
-                    }
-                }
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
-        } => {
-            let setup = router
-                .relay_get_leased_project_environment_setup_status(
-                    &leased_agent_id,
-                    operation_id,
-                    home_session_id,
-                    home_agent_id,
-                )
-                .await;
-            match setup {
-                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupStatus { setup },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
-        } => {
-            let setup = router
-                .relay_cancel_leased_project_environment_setup(
-                    &leased_agent_id,
-                    operation_id,
-                    home_session_id,
-                    home_agent_id,
-                )
-                .await;
-            match setup {
-                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupCancelled { setup },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
-        } => {
-            let setup = router
-                .relay_retry_leased_project_environment_setup(
-                    &leased_agent_id,
-                    operation_id,
-                    home_session_id,
-                    home_agent_id,
-                )
-                .await;
-            match setup {
-                Ok(setup) => RelayPeerResponse::LeasedProjectEnvironmentSetupRetried { setup },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
         RelayPeerRequest::ForwardWorkflowRuntimeTool {
             context,
             tool_name,
@@ -2061,191 +1898,6 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match handled {
                 Ok(resolution) => RelayPeerResponse::NativeInteractionResolved { resolution },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::ExportLeasedProjectEnvironment {
-            context,
-            interactive,
-            target_name,
-            target,
-        } => {
-            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "unauthorized",
-                        "Project export sender mismatch",
-                        false,
-                    )),
-                };
-            }
-            match router
-                .relay_export_project_environment(context, interactive, target_name, target)
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::FetchProjectPrivateFile {
-            context,
-            workspace_id,
-            path,
-        } => {
-            match router
-                .relay_fetch_project_private_file(
-                    stable_peer_daemon_id(from_daemon_id),
-                    context,
-                    workspace_id,
-                    path,
-                )
-                .await
-            {
-                Ok(bytes) => RelayPeerResponse::ProjectPrivateFile { bytes },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::UseLeasedProjectEnvironment {
-            context,
-            project_id,
-        } => {
-            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "unauthorized",
-                        "Project reuse sender mismatch",
-                        false,
-                    )),
-                };
-            }
-            match router
-                .relay_use_project_environment(context, project_id)
-                .await
-            {
-                Ok(exists) => RelayPeerResponse::LeasedProjectEnvironmentUsed { exists },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::ReadLeasedProjectPrivateFile {
-            context,
-            workspace_id,
-            path,
-        } => {
-            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "unauthorized",
-                        "Project file sender mismatch",
-                        false,
-                    )),
-                };
-            }
-            match router
-                .relay_read_leased_project_file(context, workspace_id, path)
-                .await
-            {
-                Ok(bytes) => RelayPeerResponse::ProjectPrivateFile { bytes },
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::ReadLeasedProjectEnvironment { context, adjust } => {
-            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id) {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "unauthorized",
-                        "Project environment sender mismatch",
-                        false,
-                    )),
-                };
-            }
-            match router.relay_read_project_environment(context, adjust).await {
-                Ok(response) => response,
-                Err(error) => {
-                    return RelayRequestOutcome {
-                        display_event: None,
-                        encrypted_response: None,
-                        error: Some(map_relay_error(&error)),
-                    };
-                }
-            }
-        }
-        RelayPeerRequest::InstallLeasedProjectEnvironment {
-            context,
-            source_kernel_id,
-            layer,
-            workspace_directories,
-        } => {
-            if context.home_kernel_id != stable_peer_daemon_id(from_daemon_id)
-                || layer.sealed.binding.source_kernel_id
-                    != source_kernel_id
-                        .as_deref()
-                        .unwrap_or(&context.home_kernel_id)
-                || (source_kernel_id
-                    .as_deref()
-                    .unwrap_or(&context.home_kernel_id)
-                    == context.home_kernel_id
-                    && layer.sealed.values.sender_public_key != requester_public_key)
-            {
-                return RelayRequestOutcome {
-                    display_event: None,
-                    encrypted_response: None,
-                    error: Some(relay_error(
-                        "unauthorized",
-                        "Project environment sender mismatch",
-                        false,
-                    )),
-                };
-            }
-            match router
-                .relay_install_project_environment(
-                    context,
-                    source_kernel_id,
-                    layer,
-                    workspace_directories,
-                )
-                .await
-            {
-                Ok(project_id) => {
-                    RelayPeerResponse::LeasedProjectEnvironmentInstalled { project_id }
-                }
                 Err(error) => {
                     return RelayRequestOutcome {
                         display_event: None,
@@ -2833,32 +2485,8 @@ fn lease_resource(request: &RelayPeerRequest) -> Option<LeaseResource<'_>> {
         }
         | RelayPeerRequest::CancelLeasedPrompt {
             leased_agent_id, ..
-        }
-        | RelayPeerRequest::ResolveLeasedProjectEnvironmentSetupTarget {
-            leased_agent_id, ..
-        }
-        | RelayPeerRequest::StartLeasedProjectEnvironmentSetup {
-            leased_agent_id, ..
-        }
-        | RelayPeerRequest::AcknowledgeLeasedProjectEnvironmentSetupDefinition {
-            leased_agent_id,
-            ..
-        }
-        | RelayPeerRequest::GetLeasedProjectEnvironmentSetupStatus {
-            leased_agent_id, ..
-        }
-        | RelayPeerRequest::CancelLeasedProjectEnvironmentSetup {
-            leased_agent_id, ..
-        }
-        | RelayPeerRequest::RetryLeasedProjectEnvironmentSetup {
-            leased_agent_id, ..
         } => Some(LeaseResource::LeasedAgent(leased_agent_id)),
-        RelayPeerRequest::UseLeasedProjectEnvironment { context, .. }
-        | RelayPeerRequest::ReadLeasedProjectPrivateFile { context, .. }
-        | RelayPeerRequest::ReadLeasedProjectEnvironment { context, .. }
-        | RelayPeerRequest::ExportLeasedProjectEnvironment { context, .. }
-        | RelayPeerRequest::InstallLeasedProjectEnvironment { context, .. }
-        | RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
+        RelayPeerRequest::EnsureRemoteSkillPackages { context, .. } => {
             Some(LeaseResource::LeasedAgent(&context.leased_agent_id))
         }
         RelayPeerRequest::CheckRemoteMcpAvailability { context, .. } => {
@@ -2878,6 +2506,28 @@ fn lease_worker_peer_request_allowed(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::CreateExecutionLease { .. }
             | RelayPeerRequest::AgentMove { .. }
     ) || lease_resource(request).is_some()
+        || project_environment_setup_request(request)
+}
+
+/// Starting, watching and stopping a Setup run is how the selected home prepares its worker.
+fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
+    )
+}
+
+fn project_environment_request(request: &RelayPeerRequest) -> bool {
+    project_environment_setup_request(request)
+        || matches!(
+            request,
+            RelayPeerRequest::ReadProjectEnvironment { .. }
+                | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
+                | RelayPeerRequest::PullProjectEnvironmentFile { .. }
+                | RelayPeerRequest::PullProjectEnvironmentRegistration { .. }
+        )
 }
 
 fn scoped_unbound_kernel_subject(identity: Option<&RelayCallerIdentity>) -> Option<String> {
@@ -2905,6 +2555,7 @@ fn managed_context_request(request: &RelayPeerRequest) -> bool {
 #[cfg(test)]
 mod tests {
     mod agent_move;
+    mod environment_setup_worker;
     mod signed_slice;
 
     use super::*;
@@ -4710,139 +4361,6 @@ mod tests {
         fs::remove_dir_all(root).expect("remove disposable peer arm fixture");
     }
 
-    #[tokio::test]
-    async fn opted_out_managed_kernel_arms_only_a_cloud_authorized_git_enrollment() {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-managed-git-enrollment-arm-{}-{}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        let source_private_key = relay_crypto::generate_private_key_base64();
-        let source_public_key =
-            relay_crypto::public_key_from_private_key_base64(&source_private_key)
-                .expect("source public key");
-        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
-        let source_kernel_id = "source-kernel-1";
-        let enrollment_plan = ManagedKernelContextPlan::git_credential_enrollment_for_tests(
-            "context-git-enrollment",
-            "realm-1",
-            source_kernel_id,
-            &source_key_thumbprint,
-        );
-        let enrollment_binding = enrollment_plan.package_binding();
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind enrollment fixture");
-        let address = listener.local_addr().expect("enrollment fixture address");
-        let fixture = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept enrollment authorization");
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                .expect("authorization read timeout");
-            let mut request = Vec::new();
-            let mut chunk = [0_u8; 4096];
-            let (header_end, content_length) = loop {
-                let read = stream.read(&mut chunk).expect("read authorization request");
-                assert!(read > 0, "authorization request ended before its body");
-                request.extend_from_slice(&chunk[..read]);
-                let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
-                else {
-                    continue;
-                };
-                let headers = String::from_utf8_lossy(&request[..header_end]);
-                assert!(headers
-                    .starts_with("POST /v1/managed-kernels/git-credential-enrollment/authorize "));
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .and_then(|value| value.trim().parse::<usize>().ok())
-                    })
-                    .expect("authorization content length");
-                if request.len() >= header_end + 4 + content_length {
-                    break (header_end, content_length);
-                }
-            };
-            let body = serde_json::from_slice::<serde_json::Value>(
-                &request[header_end + 4..header_end + 4 + content_length],
-            )
-            .expect("decode authorization body");
-            let response = serde_json::to_vec(&serde_json::json!({
-                "authorized": true,
-                "contextPlan": enrollment_plan,
-            }))
-            .expect("encode authorization response");
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                response.len()
-            )
-            .expect("write authorization headers");
-            stream
-                .write_all(&response)
-                .expect("write authorization response");
-            body
-        });
-
-        let mut config = DaemonConfig::for_tests();
-        config = config.with_session_history_root(root.join("sessions"));
-        config.user_config.history.operational.path =
-            Some(root.join("operational.db").display().to_string());
-        config.user_config.artifacts.operational.root =
-            Some(root.join("artifacts").display().to_string());
-        config.user_config.artifacts.operational.index_path =
-            Some(root.join("artifacts.db").display().to_string());
-        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
-        let target_kernel_id = config.daemon_id.clone();
-        let target_machine_id = config.host_machine_id.clone();
-        config.cloud_relay = Some(test_cloud_profile(
-            format!("http://{address}"),
-            target_machine_id.clone(),
-        ));
-        let target_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
-        ));
-        let router = CommandRouter::with_interactive_capacity(app, 1)
-            .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
-                environment_id: "environment-git-enrollment".to_string(),
-                machine_id: target_machine_id,
-                kernel_id: target_kernel_id.clone(),
-                context_plan: Some(ManagedKernelContextPlan::empty_for_tests(
-                    "initial-empty-context",
-                )),
-            });
-        let response = router
-            .relay_arm_managed_context_import(
-                crate::runtime::router::RelayManagedContextArmRequest {
-                    destination: None,
-                    identity: scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX),
-                    source_kernel_id: source_kernel_id.to_string(),
-                    plan: enrollment_binding.clone(),
-                    target_environment_id: "environment-git-enrollment".to_string(),
-                    target_kernel_id,
-                    target_key_thumbprint,
-                    capability: "c".repeat(43),
-                    archive_sha256: "b".repeat(64),
-                    archive_size_bytes: 42,
-                },
-            )
-            .await
-            .expect("arm authorized Git enrollment");
-        assert!(matches!(
-            response,
-            RelayPeerResponse::ManagedContextImportArmed { .. }
-        ));
-        let authorization_body = fixture.join().expect("join authorization fixture");
-        assert_eq!(authorization_body["contextId"], "context-git-enrollment");
-        assert_eq!(authorization_body["sourceKernelId"], source_kernel_id);
-        assert_eq!(
-            authorization_body["sourceKeyThumbprint"],
-            source_key_thumbprint
-        );
-        drop(router);
-        fs::remove_dir_all(root).expect("remove enrollment fixture");
-    }
-
     #[test]
     fn managed_context_failure_projection_does_not_expose_internal_details() {
         let error = crate::error::DaemonError::ManagedContext {
@@ -5779,7 +5297,7 @@ mod tests {
             },
             development_destination_root: recovery_ready.destination_root,
             target_private_key,
-            project_environment_target: None,
+            context_import_target: None,
             provider_account_target: None,
             git_credential_target: None,
         })

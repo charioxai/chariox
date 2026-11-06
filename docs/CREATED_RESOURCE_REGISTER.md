@@ -30,9 +30,7 @@ Generated passwords are recorded through the shared Vault write path. Successful
 captured/agent-auth credentials using that path are recorded when their provenance
 names a Room and agent. The hook reads metadata only. Generation retries also
 repair a missing register row after a storage failure without generating another
-password. Successful agent `AddSshMachine` requests record the installation; a
-successful `RemoveSshMachine` marks its row revoked. Owner-created machines are
-not attributed to an agent.
+password.
 
 Automatic rows initially carry an explicit unavailable reason: a generated
 password alone does not tell the kernel how to close the account. Set a revoke

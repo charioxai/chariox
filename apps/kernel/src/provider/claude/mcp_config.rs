@@ -273,6 +273,17 @@ fn claude_mcp_config(
                 "timeout": CLAUDE_RUNTIME_MCP_TIMEOUT_MS,
             }),
         );
+        mcp_servers.insert(
+            "chariox-reach".to_string(),
+            serde_json::json!({
+                "type": "http",
+                "url": crate::provider::reach_mcp_url(url),
+                "headers": {
+                    "Authorization": format!("Bearer {token}"),
+                },
+                "timeout": CLAUDE_RUNTIME_MCP_TIMEOUT_MS,
+            }),
+        );
     }
     if mcp_servers.is_empty() {
         return Ok(None);

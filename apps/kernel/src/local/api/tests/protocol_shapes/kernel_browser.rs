@@ -586,7 +586,7 @@ fn mp08_mp10_mp11_mirror_completion_550_158_snapshot_hash() {
     let bytes = include_bytes!("browser-mirror2-completion-550.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "e812240fb43f2a2d378aef6f45446cb9d4bcb5fa06ec8dbcc387b68a68fdb0b7"
+        "78140361121439f957172db12fcba262bb8c2d04c71e4ac0e6bfe670f010d668"
     );
     let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     assert_eq!(value["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
@@ -689,7 +689,7 @@ fn browser_resize_protocol629_snapshot() {
     let bytes = include_bytes!("browser-resize-629.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "719109b8eaf5749a1da4ea678ecdd2c03593bda741a300a7a12c3c0262802c85"
+        "4d6035c5a269bb7800655ebc776b2f2087bc4457ecb34019c6288ad76697eb41"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(snapshot["request"].clone()).unwrap();
@@ -730,7 +730,7 @@ fn mp08_mp10_browser_header_937_shape_and_hash() {
     let bytes = include_bytes!("browser-header-937.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "834c3caf07329b772493590dd4267d32ad0ddd96dfaeb7b2dd9fd4e06ea8d744"
+        "28bbcf9283805260a97849663f8531cc1ae3b42700519f65f6d33203f572f2a5"
     );
     let snapshot: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let response: LocalDaemonResponse =
@@ -753,7 +753,7 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     let bytes = include_bytes!("kernel-browser-vault-fill-941.json");
     assert_eq!(
         format!("{:x}", Sha256::digest(bytes)),
-        "c4776578ed0af3b7a9f54bb39949a30e1a37e3ddecdba6914a4f87edce201b36"
+        "13c8d094405d3ce0d3dbb16786a025ea1a70a3cb1d9dd2db858eef6d529a0d47"
     );
     let fixture: serde_json::Value = serde_json::from_slice(bytes).unwrap();
     let request: LocalDaemonRequest = serde_json::from_value(fixture["request"].clone()).unwrap();
@@ -765,5 +765,23 @@ fn mp08_mp11_vault_fill_941_shape_and_hash() {
     assert_eq!(
         fixture["peer_protocol"],
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+}
+
+#[test]
+fn show_tab_is_a_person_command_with_its_tab_and_generation() {
+    let command = Command::ShowTab {
+        tab_id: "host-tab-1".into(),
+        generation: 3,
+    };
+    let wire = serde_json::json!({"op":"show_tab","tab_id":"host-tab-1","generation":3});
+    assert_eq!(serde_json::to_value(&command).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), command);
+    assert!(
+        serde_json::from_value::<Command>(
+            serde_json::json!({"op":"show_tab","tab_id":"t","generation":3,"agent":"a"})
+        )
+        .is_err(),
+        "no field names who asks"
     );
 }

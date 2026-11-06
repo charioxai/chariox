@@ -157,7 +157,11 @@ impl KernelRuntimeState {
             }
         };
         if claimed {
-            Box::pin(self.resolve_agent_task_owner_action(task, true)).await;
+            Box::pin(self.resolve_agent_task_owner_action(
+                task,
+                super::agent_task_owner_resolution::OwnerTaskAction::Resume,
+            ))
+            .await;
         }
         true
     }

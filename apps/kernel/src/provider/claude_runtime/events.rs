@@ -389,6 +389,13 @@ fn apply_result_message(
                 .to_string(),
         );
     }
+    complete_claude_turn(state, batch);
+}
+
+pub(super) fn complete_claude_turn(
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+) {
     let message_id = state
         .session_id
         .as_ref()

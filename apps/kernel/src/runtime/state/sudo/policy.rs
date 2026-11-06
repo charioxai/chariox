@@ -65,7 +65,10 @@ impl KernelRuntimeState {
 
     /// The live window bound to `run`'s current turn. The provider bearer never
     /// changes: each use resolves the exact agent, running turn and window.
-    pub(super) fn sudo_for_run(&self, run_id: &str) -> Result<KernelSudoTurn, DaemonError> {
+    pub(in crate::runtime::state) fn sudo_for_run(
+        &self,
+        run_id: &str,
+    ) -> Result<KernelSudoTurn, DaemonError> {
         let denied = || error("this provider turn has no sudo authority");
         let (session_id, agent) = match self.leased_agent_for_projected_run(run_id) {
             // A10: a leased turn is the home agent's current worker run.
@@ -212,7 +215,7 @@ impl KernelRuntimeState {
     }
 }
 
-pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
+pub(crate) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
     matches!(
         request,
         LocalDaemonRequest::RequestKernelSudo(_)
@@ -233,7 +236,10 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::AckEvents(_)
             | LocalDaemonRequest::ManageCredentialVault(_)
             | LocalDaemonRequest::OwnerVault(_)
+            | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
             | LocalDaemonRequest::UnlockCredentialVault(_)
+            | LocalDaemonRequest::CreateCredentialVault(_)
+            | LocalDaemonRequest::SealCredentialVaultKey(_)
             | LocalDaemonRequest::GetCredential(_)
             | LocalDaemonRequest::SetCredentialSecret(_)
             | LocalDaemonRequest::GetUserConfig(_)
@@ -258,15 +264,11 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ApproveRemoteMachine(_)
             | LocalDaemonRequest::CreateSessionInvite(_)
             | LocalDaemonRequest::JoinSessionInvite(_)
-            | LocalDaemonRequest::CreateCloudSessionInvite(_)
-            | LocalDaemonRequest::AcceptCloudSessionInvite(_)
             | LocalDaemonRequest::ConfigureRelay(_)
             | LocalDaemonRequest::CloudRelayStatus(_)
             | LocalDaemonRequest::StartCloudRelayLogin(_)
             | LocalDaemonRequest::PollCloudRelayLogin(_)
             | LocalDaemonRequest::LogoutCloudRelay(_)
-            | LocalDaemonRequest::PairCloudRelayClient(_)
-            | LocalDaemonRequest::PairCloudRelayMachine(_)
             | LocalDaemonRequest::ConnectCloudRelay(_)
             | LocalDaemonRequest::IssueCloudRelayClientToken(_)
             | LocalDaemonRequest::ResolveKernelClientConnection(_)
@@ -278,7 +280,6 @@ pub(super) fn sudo_request_forbidden(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::RequestCredentialEnrollmentInteraction(_)
             | LocalDaemonRequest::ArmDeploymentCredentialEnrollment(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
             | LocalDaemonRequest::SetProviderAccountCredential(_)
             | LocalDaemonRequest::GetProviderAccountProfile(_)
             | LocalDaemonRequest::ImportNativeProviderAccountProfile(_)
@@ -328,9 +329,15 @@ pub(super) fn parse_sudo_prompt(prompt: &str) -> Option<&str> {
 
 fn sudo_config_forbidden(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault", "relay", "secret_link"]
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
+    [
+        "kernel_access",
+        "credential_vault",
+        "relay",
+        "secret_link",
+        "agents",
+    ]
+    .iter()
+    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }
 
 pub(super) fn requester_grant_live(
@@ -381,6 +388,8 @@ mod registry_tests {
             &LocalDaemonRequest::UnlockCredentialVault(
                 crate::local::UnlockCredentialVaultRequest {
                     passphrase: crate::local::VaultPassphrase::new("passphrase"),
+                    duration: crate::local::VaultUnlockDuration::Once,
+                    surface: crate::local::VaultUnlockSurface::VaultWindow,
                 }
             )
         ));

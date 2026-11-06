@@ -1,7 +1,9 @@
+import { captureBackgroundRenderer } from './kernel-browser-background.mjs';
 import { AppTabs } from './browser-controller-apps.mjs';
 import { HostDownloads } from "./kernel-browser-downloads.mjs";
 import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
+import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
@@ -18,6 +20,8 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { displayTiming, slowMark, timestamp, timedHostRequests } from './kernel-browser-timing.mjs';
 import { hostErrorLabel, hostFailureMessage } from './kernel-browser-error-label.mjs';
+// The kernel's daemon log carries the lines of the controller's stderr that start with this prefix (fixed labels only).
+const lifecycleLog = text => process.stderr.write(`CHARIOX-LOG ${text}\n`);
 import { BrowserCdpClient, isTrustedStaleReferenceError } from "./browser-controller-cdp.mjs";
 import { BrowserControllerStdioServer, handleBrowserControllerRequest } from "./browser-controller.mjs";
 import { NativeAccessibility } from './native-accessibility.mjs';
@@ -30,7 +34,7 @@ import { ChromeTabGroups, writeTabGroupsExtension } from "./kernel-browser-tab-g
 import {nativeWindowInventory} from './kernel-browser-native-windows.mjs';
 import { ChromeWindows, InputArbiter } from "./kernel-browser-chrome-window.mjs";
 import { StateSignal, stateChangingEvent } from "./kernel-browser-state-signal.mjs";
-import { redactObservation } from "./browser-controller-snapshot.mjs";
+import { redactObservation, redactSnapshot, redactBrowserState } from "./browser-controller-snapshot.mjs";
 import {resizeBrowserPage} from './kernel-browser-resize.mjs';
 import { TextInsertionRefused, inputHostTab } from "./kernel-browser-input.mjs";
 import { publicUploadFailure } from "./kernel-browser-upload.mjs";
@@ -67,14 +71,25 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
     request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
-    ['chrome_window_follow', 'note_selection', 'pointer_cursor'].includes(request.params?.op) ||
+    ['chrome_window_follow', 'note_selection', 'pointer_cursor', 'popup_region'].includes(request.params?.op) ||
     // Releasing a display's compositor takes seconds; the person's input and resize must not queue behind it.
     request.method === 'host.browser' && request.params?.op === 'unsubscribe')
     ? {kind:'bridge'} : {kind:'barrier'};
 }
 const TAB_LIMIT = 128;
+// A Tab the person types or clicks in is theirs until they have been idle this long (an agent's input to it waits).
+export const PERSON_IDLE_MS = 2000;
+const SHOW_TAB_WAIT_MS = 1000;
+// The answer to a Show tab carries the state read if it finishes in time; a busy renderer of another Tab never holds it.
+const SHOW_TAB_OBSERVE_MS = 500;
+// How often the focus emulation of the Tabs agents work in behind the shown one is asserted again.
+const BACKGROUND_KEEP_MS = 1500;
+// A group's mark: a dot at rest, a spinner while the agent acts, and "needs you" while a card asks the person to act in one of its Tabs.
+const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '▲';
+// How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
+const SPINNER_LINGER_MS = 1500;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -98,8 +113,9 @@ export function navigationUrl(raw) {
 }
 
 export class KernelBrowserHost {
-  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }) } = {}) {
+  constructor(root, { appStorageRoot, chromium = new HostChromium(root, { appStorageRoot }), browserFactory = connection => new BrowserCdpClient({ connectionFactory: () => connection, permissionRequests: true, focusWorldSource: mirror2ObserverExpression() }), personIdleMs = PERSON_IDLE_MS } = {}) {
     this.root = root;
+    this.personIdleMs = personIdleMs;
     this.timing = displayTiming(root);
     this.visitedLinks = new VisitedLinks();
     // r55: a Node event loop that stalls delays every request behind it without any step to name: mark the stall itself.
@@ -137,10 +153,15 @@ export class KernelBrowserHost {
     this.sampleLanes = new Map();
     this.compositors = new Map();
     this.foreground = new WindowForeground();
+    // The person's last deliberate input per Tab, and the background-run leases of Tabs agents work in.
+    this.personInputAt = new Map(); this.backgroundHolds = new Map();
+    this.agentBusy = new Map(); this.spin = 0; this.spinner = null; this.groupLabels = null; this.keepTimer = null;
     this.restoring = false;
     this.adoptedByInput = new WeakSet();
     this.keepaliveTarget = null;
     this.observedDocuments = new Map();
+    this.cardReferences = new Map();
+    this.cardAnchors = new Map();
     this.displayDocuments = new DisplayDocuments((stage, started, ended) => this.timing?.(stage, started, ended));
     this.stateSignal = new StateSignal();
     this.downloads = new HostDownloads({ ownerRoot: root, notify: () => this.stateSignal.notify() });
@@ -244,6 +265,8 @@ export class KernelBrowserHost {
     this.foreground.reset();
     this.sampleLanes.clear();this.inputChangedAt.clear();this.scrolling.clear();
 
+    clearInterval(this.keepTimer); this.keepTimer = null;
+    await Promise.all([...this.backgroundHolds.keys()].map(target => this.releaseBackground(target)));
     // MP-11: retire helpers on the old display before Chromium recovery can
     // replace it. A failed key release still requires owned desktop teardown.
     let preserveDesktop = this.chromium.desktop?.isLive?.() === true;
@@ -257,10 +280,14 @@ export class KernelBrowserHost {
     await this.downloads.close();
     this.browser = null;
     if(this.displayTeardownErrors.length)throw new AggregateError(this.displayTeardownErrors.splice(0),'MD-DISPLAY: owned display teardown failed');
+    this.backgroundHolds.clear();this.personInputAt.clear();
+    clearInterval(this.spinner);this.spinner=null;this.agentBusy.clear();clearInterval(this.keepTimer);this.keepTimer=null;
     this.tabs.clear();this.header.clear();this.layouts.clear();this.layoutRevisions.clear();this.windowLayout=null;this.resizeSettled=null;
     this.popupEvidence.clear();
     this.observed = ++this.observations;
     this.observedDocuments.clear();
+    this.cardReferences.clear();
+    for (const id of this.cardAnchors.keys()) forgetCardAnchor(this, id);
     this.displayDocuments.clear();
     await mkdir(this.root, { recursive: true, mode: 0o700 });
     let saved = { generation: 0, tabs: [] };
@@ -351,8 +378,29 @@ export class KernelBrowserHost {
       const target = this.tabs.get(tab_id)?.target_id;
       if (target && typeof label === "string" && label) labels.set(label, [...(labels.get(label) ?? []), target]);
     }
-    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids })));
+    // A card asking the person to act in one of an agent's Tabs marks that agent's group (not saved: it follows the cards).
+    this.groupNeeding = new Set(groups.filter(group => group?.needs_person === true && typeof group.label === 'string').map(group => group.label.slice(0, 64)));
+    this.groupLabels = labels;
+    await this.applyTabGroups();
     if (!this.restoring) await this.save();
+  }
+  // Each agent's group carries its status dot, and a spinner while the agent acts in one of its Tabs.
+  async applyTabGroups() {
+    const labels = this.groupLabels ?? new Map();
+    const busy = [...labels].filter(([, targets]) => [...this.agentBusy.keys()].some(id => targets.includes(this.tabs.get(id)?.target_id)));
+    await this.tabGroups?.sync([...labels].map(([label, target_ids]) => ({ label: label.slice(0, 64), target_ids, mark: this.groupNeeding?.has(label) ? NEEDS_MARK : busy.some(([name]) => name === label) ? SPINNER[this.spin % SPINNER.length] : IDLE_MARK })));
+  }
+  noteAgentBusy(tabId, delta) {
+    const count = (this.agentBusy.get(tabId) ?? 0) + delta;
+    if (count > 0) this.agentBusy.set(tabId, count); else this.agentBusy.delete(tabId);
+    if (this.agentBusy.size && !this.spinner) {
+      this.spinner = setInterval(() => {
+        this.spin++;
+        if (!this.agentBusy.size) { clearInterval(this.spinner); this.spinner = null; }
+        void this.applyTabGroups().catch(() => {});
+      }, 400);
+      this.spinner.unref?.();
+    }
   }
   // MP-11: fail-closed second layer behind the kernel's managed policies: a Tab that
   // still reaches a blocked scheme is closed unless it shows the policy's own refusal
@@ -512,6 +560,7 @@ export class KernelBrowserHost {
     return await entry.ready;
   }
   async stop({ recovering = false, preserveDesktop = false } = {}) {
+    lifecycleLog(recovering ? 'browser_stop recovering' : 'browser_stop');
     if (!recovering) {
       this.recovery?.stop();
       await this.starting?.catch(() => {});
@@ -552,7 +601,7 @@ export class KernelBrowserHost {
     // MP-08: private creation evidence for the kernel, stripped before client projection.
     const _tab_creation_actions = this.popupEvidence.inventory([...this.tabs.values()]);
     const dialogs = this.pendingDialogs();
-    return redactObservation({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
+    return redactBrowserState({ state: "ready", generation: this.generation, _observation: this.observed, _tab_creation_actions,
       active_tab_id: active, downloads: this.downloads.state(), tabs: [...this.tabs.values()].map(({ target_id, opener_target_id, ...tab }) => ({
         ...tab,
         ...this.header.read(tab),
@@ -665,6 +714,8 @@ export class KernelBrowserHost {
       if (!this.downloads.bindings.has(tab.target_id)) this.downloads.bind(tab,
         this.downloads.bindings.get(tab.opener_target_id)?.session ?? "browser-viewer");
     }
+    for (const target of [...this.backgroundHolds.keys()]) if (![...this.tabs.values()].some(tab => tab.target_id === target)) void this.releaseBackground(target);
+    for (const id of [...this.personInputAt.keys()]) if (!this.tabs.has(id)) this.personInputAt.delete(id);
     // A surviving Tab keeps its committed page size; only retired Tabs drop theirs.
     for (const map of [this.layouts, this.layoutRevisions]) for (const id of [...map.keys()]) if (!this.tabs.has(id)) map.delete(id);
     // A Tab that opened in the resized window is laid out at the window's size, not the canonical one.
@@ -675,6 +726,8 @@ export class KernelBrowserHost {
     const boundOrigins = new Set([...(this.browser.appTabs?.apps?.values() ?? [])].filter(app => app.ready === true).map(app => app.origin));
     const restoreReady = intent && (intent.apps.every(origin => boundOrigins.has(origin)) || Date.now() >= intent.until);
     const nativeActive = await this.tabGroups?.active?.().catch(() => null) ?? null;
+    // A newer observation (Show tab, a navigation commit, a later reconcile) owns the active identity from here on.
+    if (observation < this.observed) return this.tabState();
     // MP-08/MP-10: a Tab the page opened after the human input (window.open, target=_blank) is what Chromium now shows;
     // the opener's input selection must not pull the foreground back over it.
     const openedByInput = intent?.known && nativeActive && !intent.known.has(nativeActive) && [...this.tabs.values()].some(tab => tab.target_id === nativeActive);
@@ -696,6 +749,7 @@ export class KernelBrowserHost {
       // The saved selection cannot return (App uninstalled, Tab closed): the live native selection wins.
       this.pendingActive = null;
     }
+    if (observation < this.observed) return this.tabState();
     this.activeTarget = restored?.target_id ?? nativeActive;
     if (this.activeTarget !== previous) await this.retireNativeForeground(this.activeTarget);
     const activeId = [...this.tabs.values()].find(tab => tab.target_id === this.activeTarget)?.tab_id ?? null;
@@ -722,9 +776,10 @@ export class KernelBrowserHost {
       for (const [id, entry] of [...this.compositors]) if (entry.source instanceof LinuxCapture && !kept(id)) await this.closeCompositors(id);
     });
   }
-  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession } = {}) {
-    await this.closeCompositors();this.foreground.reset();
-    await this.createTab(url, tabId, { signal, downloadSession });
+  async open(url, tabId = `host-tab-${randomUUID()}`, { signal, downloadSession, background = false } = {}) {
+    // A background Tab leaves the shown Tab, and the native claim on it, as they are.
+    if (!background) { await this.closeCompositors();this.foreground.reset(); }
+    await this.createTab(url, tabId, { signal, downloadSession, background });
     const state = await this.reconcile();
     return { ...state, tab_id: tabId };
   }
@@ -778,6 +833,13 @@ export class KernelBrowserHost {
     if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     await this.reconcile();
     this.timing('target_reconcile', started);
+    const tab = this.tabs.get(command.tab_id);
+    if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
+    return tab;
+  }
+  /** The Tab this host already owns under that generation: activating it needs no read of the other Tabs' renderers. */
+  ownedTab(command) {
+    if (command.generation !== this.generation) throw new UserDomainRefusal("stale_epoch");
     const tab = this.tabs.get(command.tab_id);
     if (!tab) throw new UserDomainRefusal("stale_reference", "display_retired");
     return tab;
@@ -876,9 +938,81 @@ export class KernelBrowserHost {
     return command.input?.kind === 'scroll' ? 'wheel' : 'page';
   }
   // A person's input queues in order while a busy renderer cannot answer the fences; agents keep awaiting their ack.
-  request(command, options) {
-    return command.op === "input" && !command._agent_input && !command.focused_agent
-      ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options);
+  async request(command, options) {
+    const person = !command._agent_input && !command.focused_agent;
+    if (person) this.notePersonInput(command);
+    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'resize'].includes(command.op) ? command.tab_id : null;
+    if (acting) this.noteAgentBusy(acting, 1);
+    try {
+      return await (command.op === "input" && person
+        ? this.busyInputs.submit(command.observed_by ?? "adapter", command, options) : this.requestNow(command, options));
+    } finally {
+      if (acting) {
+        setTimeout(() => this.noteAgentBusy(acting, -1), SPINNER_LINGER_MS).unref?.();
+        // Reconcile the background lease after navigation or capture changes its session.
+        const target = this.tabs.get(acting)?.target_id;
+        if (target !== undefined) void this.assertBackground(target).catch(() => {});
+      }
+    }
+  }
+  // The person's typing, click or scroll in a Tab keeps that Tab theirs until they have been idle for PERSON_IDLE_MS.
+  notePersonInput(command) {
+    if (!['input', 'mirror_input', 'display_input'].includes(command.op) || typeof command.tab_id !== 'string') return;
+    if (command.action?.kind === 'selection') return;
+    this.personInputAt.set(command.tab_id, Date.now());
+  }
+  async personQuiet(tabId, signal) {
+    for (;;) {
+      assertNotCancelled(signal);
+      const wait = (this.personInputAt.get(tabId) ?? 0) + this.personIdleMs - Date.now();
+      if (wait <= 0) { this.personInputAt.delete(tabId); return; }
+      await delay(Math.min(wait, 250));
+    }
+  }
+  // MP-08/MP-10/MP-11: background agent Tabs share the capture owner's wake-up lease.
+  // An independent CDP enable is undone when a display releases its last capture.
+  async holdBackground(tab) {
+    if (!this.backgroundHolds.has(tab.target_id)) {
+      this.backgroundHolds.set(tab.target_id, { pending: null, lease: null });
+      if (!this.keepTimer) { this.keepTimer = setInterval(() => void this.assertBackground(), BACKGROUND_KEEP_MS); this.keepTimer.unref?.(); }
+    }
+    await this.assertBackground(tab.target_id);
+  }
+  async assertBackground(only) {
+    for (const [target, hold] of this.backgroundHolds) {
+      if (only !== undefined && target !== only) continue;
+      if (!hold.pending) hold.pending = (async () => {
+        if (target === this.activeTarget) {
+          const lease = hold.lease; hold.lease = null;
+          await lease?.release();
+          return;
+        }
+        const { connection, sessionId } = await this.browser.resolvePageTarget(target);
+        if (this.backgroundHolds.get(target) !== hold) return;
+        if (hold.lease?.connection !== connection || hold.lease?.sessionId !== sessionId) {
+          const previous = hold.lease; hold.lease = null;
+          await previous?.release().catch(() => {});
+          const releaseFocus = await this.browser.inputCapture.hold(connection, sessionId);
+          let releaseFrames;
+          try { releaseFrames = await captureBackgroundRenderer(connection, target); }
+          catch (error) { await releaseFocus().catch(() => {}); throw error; }
+          const release = async () => { try { await releaseFrames(); } finally { await releaseFocus(); } };
+          hold.lease = { connection, sessionId, release };
+        }
+        // A physical-focus observation may have suspended a shared display lease.
+        await this.browser.inputCapture.run(connection, sessionId, async () => {});
+      })().catch(() => {
+        // A busy or detached renderer retries while its Tab remains registered.
+      }).finally(() => { hold.pending = null; });
+      await hold.pending;
+    }
+  }
+  async releaseBackground(targetId) {
+    const hold = this.backgroundHolds.get(targetId);
+    if (!hold) return;
+    this.backgroundHolds.delete(targetId);
+    await hold.pending;
+    await hold.lease?.release().catch(() => {});
   }
   async requestNow(command, { signal, inputGuard, nativeDisplay } = {}) {
     const scope = command.observed_by ?? (command.focused_agent ? "focused-agent" : "adapter");
@@ -898,7 +1032,7 @@ export class KernelBrowserHost {
       return result;
     }
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow"].includes(command.op) });
+    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -932,6 +1066,7 @@ export class KernelBrowserHost {
     if (command.op === "state" && this.busyInputs.parked(scope)) return this.parkedState(scope);
     // PERF_AUDIT 4.2.2/4.2.6: the window a person's Chrome UI input left, read outside the input lane.
     if (command.op === "chrome_window_follow") return this.arbiter?.follow ? this.arbiter.follow(command) : {};
+    if (command.op === "popup_region") return resolveCardRegion(this, command, scope, signal);
     // Protocol 556: the signal count is taken before the read, so a change during it wakes the next wait.
     const stateSignal = command.state_wait === true ? this.stateSignal.count : null;
     // Protocol 540: a viewer's state read right after an address-bar key sees the list Chrome opened.
@@ -941,7 +1076,14 @@ export class KernelBrowserHost {
     }
     const agentRequest = command.focused_agent || command._agent_input;
     if (agentRequest && ["open", "navigate"].includes(command.op) && extensionManagementUrl(command.url)) throw new Error(EXTENSIONS_REFUSED);
-    if (command.op === "open") { const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session }); await this.rebindWindows(); return this.observe(opened, null, scope); }
+    // Only the person changes the visible Tab: an agent's new Tab opens behind it.
+    if (command.op === "open") {
+      const opened = await this.open(command.url, command.tab_id, { signal, downloadSession: command._download_session, background: Boolean(agentRequest) });
+      await this.rebindWindows();
+      const tab = agentRequest ? this.tabs.get(opened.tab_id) : null;
+      if (tab) await this.holdBackground(tab).catch(() => {});
+      return this.observe(opened, null, scope);
+    }
     for (const stream of this.displays.values()) if (Date.now() > stream.expires) await this.removeDisplay(stream);
     if(['display_suspend','display_resume'].includes(command.op)){
       if(command.focused_agent||command._agent_input)throw new UserDomainRefusal('not_granted');
@@ -1000,9 +1142,13 @@ export class KernelBrowserHost {
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
     let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor'].includes(command.op)
-      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS)) : await this.target(command);
+      ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS))
+      : command.op === 'show_tab' ? this.ownedTab(command) : await this.target(command);
     assertNotCancelled(signal);
     if (agentRequest && ["input", "navigate"].includes(command.op) && extensionManagementUrl(tab.url)) throw new Error(EXTENSIONS_REFUSED);
+    // An agent's Tab runs at full speed behind the shown one; the person's own input to it goes first.
+    if (agentRequest) await this.holdBackground(tab).catch(() => {});
+    if (agentRequest && command.op === "input" && !command._person_idle_checked) await this.personQuiet(tab.tab_id, signal);
     const app = this.appForInput(tab, command, ["input", "navigate", "close", "resize"].includes(command.op));
     // The page stays on its origin.
     if (app && command.op === "navigate" && new URL(navigationUrl(command.url)).origin !== app.origin) {
@@ -1039,14 +1185,36 @@ export class KernelBrowserHost {
       this.scales.delete(tab.tab_id);
       this.inputEpochs.delete(tab.tab_id);
       this.scrolling.delete(tab.tab_id);
+      this.personInputAt.delete(tab.tab_id);
+      this.releaseBackground(tab.target_id);
       await this.browser.manageTab({ ...binding, action: "close" }, { signal });
       await this.browser.clearWebBotAuth?.(tab.tab_id);
       this.webBotAuthProjects.delete(tab.tab_id);
       this.webBotAuthRestoreUrls.delete(tab.tab_id);
       for (const observed of this.observedDocuments.values()) observed.delete(tab.tab_id);
+      for (const references of this.cardReferences.values()) references.delete(tab.tab_id);
+      for (const [id, anchor] of this.cardAnchors) if (anchor.tab_id === tab.tab_id) forgetCardAnchor(this, id);
       const state = await this.reconcile();
       await this.rebindWindows();
       return state;
+    }
+    // Protocol 986: a person's "Show tab" (a card's button, Follow agent) makes Chrome itself show the Tab. An agent never may.
+    if (command.op === "show_tab") {
+      if (agentRequest) throw new UserDomainRefusal("not_granted");
+      await this.retireNativeForeground(tab.target_id);
+      await this.tabGroups?.personSelection?.();
+      try { await (await this.browser.ensureConnection()).send("Target.activateTarget", { targetId: tab.target_id }); }
+      catch (error) { throw /no target/i.test(error?.message) ? new UserDomainRefusal("stale_reference", "display_retired") : error; }
+      this.pendingActive = null;
+      // The answer names the Tab Chrome now shows: wait (bounded) until its own report agrees.
+      let confirmed = false;
+      for (const end = performance.now() + (this.tabGroups ? SHOW_TAB_WAIT_MS : 0); performance.now() < end;) {
+        if (confirmed = await this.nativeFront(tab).catch(() => true)) break;
+        await delay(20);
+      }
+      // Chrome's own report is the active identity, whether or not the page read below finishes; a reconcile begun earlier cannot undo it.
+      if (confirmed) { this.activeTarget = tab.target_id; this.observed = ++this.observations; }
+      return this.observe(await withinMs(this.reconcile(), SHOW_TAB_OBSERVE_MS) ?? this.tabState(), null, scope);
     }
     if (command.op === "navigate") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);
@@ -1075,7 +1243,11 @@ export class KernelBrowserHost {
       if (!Number.isSafeInteger(command.x) || !Number.isSafeInteger(command.y) || command.x < 0 || command.y < 0 || command.x >= page.width || command.y >= page.height) throw new Error("MP-08: pointer cursor point outside the page");
       return { generation: this.generation, cursor: await this.browser.pointerCursor({ ...binding, x: command.x, y: command.y }) };
     }
-    if (command.op === "snapshot") return this.observe({ generation: this.generation, snapshot: await this.browser.snapshot(binding) }, tab, scope);
+    if (command.op === "snapshot") {
+      const snapshot = await this.browser.snapshot(binding);
+      rememberCardReferences(this, scope, tab, snapshot);
+      return this.observe({ generation: this.generation, snapshot }, tab, scope);
+    }
     if (command.op === "input") {
       if (app) this.browser.appTabs.noteActivity(tab.target_id);
       const observed = command.document_id ?? (command.focused_agent ? null : this.observedDocuments.get(scope)?.get(tab.tab_id));
@@ -1130,7 +1302,10 @@ export class KernelBrowserHost {
         const laneAt=timestamp();
         const deferred=await this.sampleLane(tab).run("input", async () => {
           if(timestamp()-laneAt>250)this.timing('input_wait sample_lane',laneAt);
-          const dispatch = (inputTimestamp, inputToken) => this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          const dispatch = async (inputTimestamp, inputToken) => {
+            if (command.input.kind !== "scroll") await this.tabGroups?.openingInput?.(tab.target_id, Boolean(agentRequest));
+            return this.popupEvidence.capture(this.browser, tab, popupActionId(command), beginDispatch => inputHostTab(this.browser, tab, command.input, { uploadRoots: command._upload_roots, signal, inputTimestamp, inputToken, inputGuard, documentCurrent, chromeFocused: () => Boolean(this.arbiter?.chromeFocus), slow: (name, operation) => slowMark(this.timing, `input_wait ${name}`, operation), onDispatch: () => { onDispatch(); return beginDispatch(); }, viewport:{css_width:this.pageSize(tab.tab_id).width,css_height:this.pageSize(tab.tab_id).height}, asyncScroll: ()=>viewerActive()&&(handoverOrdered||owned?.attested&&typeof owned.valid==='function'&&owned.valid()), nativeWheel, nativeClick, nativeKey, resolveMirror: input => this.mirror.resolveInput(tab,input,scope,signal) }));
+          };
           const result = app && agentRequest
             ? await this.browser.appTabs.input(app, scope.startsWith('agent:') ? scope.slice(6) : null, dispatch)
             : await dispatch();
@@ -1150,8 +1325,10 @@ export class KernelBrowserHost {
         // Late CDP acknowledgements and definitive text refusals leave nothing held; neither needs a browser reset.
         if ((dispatched && !lateInputAck(error) && !(error instanceof TextInsertionRefused) || ["browser_action_cancelled", "stale_document_reference"].includes(error?.code)) && this.isBrowserLive(browserAtStart)) {
           // Clear any dispatched key/button state before another actor can use
-          // the browser. Recovery rotates generation; cancelled input never replays.
-          await this.stop();
+          // the browser. Recovery rotates generation; cancelled input never replays. A reset is a loss the
+          // browser recovers from with its Tabs: only the owner's stop keeps it down.
+          lifecycleLog(`browser_reset after ${hostErrorLabel(error)}`);
+          await this.stop({ recovering: true });
         }
         throw error;
       }
@@ -1262,10 +1439,10 @@ export class KernelBrowserHost {
         const app = this.appForInput(tab, params, true);
         if (app) this.browser.appTabs.noteActivity(tab.target_id);
         const action = { ...params.action, mask_code_input: codeInput, vault_factor_input: factorInput, plain_target: params.plain_target === true };
-        await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
+        const performed = await this.sampleLane(tab).run("input", () => this.browser.performAction({ target_id: tab.target_id, document_id: tab.document_id,
           node_ref: params.node_ref, action, timeout_ms: 10_000 }, { signal }));
         await this.save();
-        return { id: request.id, ok: true, result: { inserted: true } };
+        return { id: request.id, ok: true, result: { inserted: true, ...(performed?.submitted ? { submitted: performed.submitted } : {}) } };
       }
       if (request.method === "host.computer") {
         const observer=(request.params._subscription_owner ? request.params._subscription_owner+':' : '')+(request.params.observed_by??'terminal');
@@ -1313,6 +1490,8 @@ export class KernelBrowserHost {
       }
       if (request.method === 'host.browser.retire_observer') {
         this.busyInputs.retire(key => key === request.params.observer);
+        this.cardReferences.delete(request.params.observer);
+        for (const [id, anchor] of this.cardAnchors) if (anchor.scope === request.params.observer) forgetCardAnchor(this, id);
         return {id:request.id,ok:true,result:{retired:true}};
       }
       if (request.method === 'host.computer.retire') {
@@ -1360,6 +1539,16 @@ export class KernelBrowserHost {
         else if (timestamp() - at > SLOW_OP_MS && /^[a-z_]{1,32}$/.test(request.params.op)) this.timing(`host_op_slow ${request.params.op}`, at);
         // Structured controller observations scrub before compaction; metadata
         // and other host replies receive the same protection at this boundary.
+        if (request.params?.op === "snapshot") {
+          return { id: request.id, ok: true, result: { ...result, snapshot: redactSnapshot(result.snapshot, this.protection.values) } };
+        }
+        if (Array.isArray(result?.tabs) && Number.isSafeInteger(result.generation)
+            || ["pointer_cursor", "resize"].includes(request.params?.op)) {
+          return { id: request.id, ok: true, result: redactBrowserState(result, this.protection.values) };
+        }
+        // Card regions contain only the fixed protocol, observed origin and
+        // verification receipt. None of these fields are page text.
+        if (request.params?.op === 'popup_region') return { id: request.id, ok: true, result };
         if (!["screenshot", "mirror_next", "display_subscribe", "display_input_target"].includes(request.params?.op)) {
           return { id: request.id, ok: true, result: redactObservation(result, this.protection.values) };
         }
@@ -1399,7 +1588,7 @@ export class KernelBrowserHost {
       // A cancelled request that may have dispatched input stops the browser (no held keys/buttons). A
       // cancelled read-only observation (a viewer's credit on a huge page) must not stop every Tab (MP-08/MP-10).
       if (error?.code === "browser_action_cancelled" && request.method !== "host.computer" && !request.params?.display_subscription_id
-        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) await this.stop();
+        && this.browser === browserAtEntry && !(request.method === "host.browser" && OBSERVATION_OPS.has(request.params?.op))) { lifecycleLog('browser_reset after cancelled request'); await this.stop({ recovering: true }); }
       if (["browser_unavailable"].includes(error?.code)) {
         return { id: request.id, ok: false, error: { code: error.code, message: error.message } };
       }

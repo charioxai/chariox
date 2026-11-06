@@ -35,11 +35,36 @@ impl CommandRouter {
         self.runtime_state
             .receive_workflow_notification_peer(kernel, owner, request)
     }
-    pub(crate) fn notification_peer_owner(
+    pub(crate) fn relay_project_environment(
+        &self,
+        owner: &str,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        use crate::transport::relay_peer::RelayPeerRequest;
+        match request {
+            RelayPeerRequest::RunProjectEnvironmentSetup { .. }
+            | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
+            | RelayPeerRequest::CancelProjectEnvironmentOperation { .. } => self
+                .runtime_state
+                .receive_project_environment_setup_peer(owner, request),
+            request => self
+                .runtime_state
+                .receive_project_environment_peer(owner, request),
+        }
+    }
+
+    pub(crate) fn same_owner_peer_user_id(
         &self,
         identity: &chariox_relay::protocol::RelayCallerIdentity,
     ) -> Option<String> {
-        self.runtime_state.notification_peer_owner(identity)
+        self.runtime_state.same_owner_peer_user_id(identity)
+    }
+
+    pub(crate) fn environment_peer_user_id(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
+        self.runtime_state.environment_peer_user_id(identity)
     }
 
     pub(crate) fn lease_worker_selected_home(
@@ -600,76 +625,6 @@ impl CommandRouter {
         .await
     }
 
-    pub(crate) async fn relay_export_project_environment(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        interactive: bool,
-        target_name: String,
-        target: Option<crate::transport::relay_peer::ProjectEnvironmentExportTarget>,
-    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
-        self.runtime_state
-            .export_leased_project_environment(context, interactive, target_name, target)
-            .await
-    }
-
-    pub(crate) async fn relay_fetch_project_private_file(
-        &self,
-        worker_id: &str,
-        context: crate::transport::relay_peer::RemoteNativeInteractionContext,
-        workspace_id: String,
-        path: String,
-    ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
-        self.runtime_state
-            .fetch_project_private_file(worker_id, context, workspace_id, path)
-            .await
-    }
-
-    pub(crate) async fn relay_read_project_environment(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        adjust: bool,
-    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
-        self.runtime_state
-            .read_leased_project_environment(context, adjust)
-            .await
-    }
-
-    pub(crate) async fn relay_use_project_environment(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        project_id: String,
-    ) -> Result<bool, DaemonError> {
-        self.runtime_state
-            .use_leased_project_environment(context, project_id)
-            .await
-    }
-    pub(crate) async fn relay_read_leased_project_file(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        workspace_id: String,
-        path: String,
-    ) -> Result<crate::transport::relay_peer::RelayManagedContextChunk, DaemonError> {
-        self.runtime_state
-            .read_leased_project_private_file(context, workspace_id, path)
-            .await
-    }
-    pub(crate) async fn relay_install_project_environment(
-        &self,
-        context: crate::transport::relay_peer::RemoteSkillSyncContext,
-        source_kernel_id: Option<String>,
-        layer: crate::managed_context::development::DevelopmentProjectEnvironment,
-        workspace_directories: std::collections::BTreeMap<String, String>,
-    ) -> Result<String, DaemonError> {
-        self.runtime_state
-            .install_leased_project_environment(
-                context,
-                source_kernel_id,
-                layer,
-                workspace_directories,
-            )
-            .await
-    }
-
     pub(crate) async fn relay_ensure_remote_skill_packages(
         &self,
         context: crate::transport::relay_peer::RemoteSkillSyncContext,
@@ -730,132 +685,6 @@ impl CommandRouter {
             leased_agent_id,
             home_prompt_id,
             worker_provider_run_id,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_resolve_leased_project_environment_setup_target(
-        &self,
-        leased_agent_id: &str,
-        home_session_id: String,
-        home_agent_id: String,
-    ) -> Result<(String, String), DaemonError> {
-        relay_peer_runtime::resolve_relay_leased_project_environment_setup_target(
-            &self.runtime_state,
-            leased_agent_id,
-            home_session_id,
-            home_agent_id,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn relay_start_leased_project_environment_setup(
-        &self,
-        leased_agent_id: &str,
-        operation_id: String,
-        attempt: u32,
-        project_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-        workspace_id: String,
-        target_worker_id: String,
-        target_platform: String,
-        definition: Option<crate::session::ProjectEnvironmentDefinition>,
-        validation_commands: Vec<String>,
-    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
-        relay_peer_runtime::start_relay_leased_project_environment_setup(
-            &self.runtime_state,
-            leased_agent_id,
-            operation_id,
-            attempt,
-            project_id,
-            home_session_id,
-            home_agent_id,
-            workspace_id,
-            target_worker_id,
-            target_platform,
-            definition,
-            validation_commands,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_get_leased_project_environment_setup_status(
-        &self,
-        leased_agent_id: &str,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
-        relay_peer_runtime::get_relay_leased_project_environment_setup_status(
-            &self.runtime_state,
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
-        )
-        .await
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Keeps the existing session, worker and lease binding fields explicit without a second protocol representation."
-    )]
-    pub(crate) async fn relay_acknowledge_leased_project_environment_setup_definition(
-        &self,
-        leased_agent_id: &str,
-        operation_id: String,
-        attempt: u32,
-        project_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-        definition_digest: String,
-    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupDefinitionAck, DaemonError>
-    {
-        relay_peer_runtime::acknowledge_relay_leased_project_environment_setup_definition(
-            &self.runtime_state,
-            leased_agent_id,
-            operation_id,
-            attempt,
-            project_id,
-            home_session_id,
-            home_agent_id,
-            definition_digest,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_cancel_leased_project_environment_setup(
-        &self,
-        leased_agent_id: &str,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
-        relay_peer_runtime::cancel_relay_leased_project_environment_setup(
-            &self.runtime_state,
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
-        )
-        .await
-    }
-
-    pub(crate) async fn relay_retry_leased_project_environment_setup(
-        &self,
-        leased_agent_id: &str,
-        operation_id: String,
-        home_session_id: String,
-        home_agent_id: String,
-    ) -> Result<crate::transport::relay_peer::RelayProjectEnvironmentSetupStatus, DaemonError> {
-        relay_peer_runtime::retry_relay_leased_project_environment_setup(
-            &self.runtime_state,
-            leased_agent_id,
-            operation_id,
-            home_session_id,
-            home_agent_id,
         )
         .await
     }

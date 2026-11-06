@@ -156,7 +156,7 @@ impl Service {
                         } else if mode == "direct" {
                             json!({"registration_id":"reg-local","credential_type":"api_key","credential":key})
                         } else {
-                            json!({"registration_id":"reg-local","identity_assertion":assertion_value,"claim_token":claim_value,"pre_claim_scopes":["api.read"]})
+                            json!({"registration_id":"reg-local","identity_assertion":assertion_value,"claim_token":claim_value,"pre_claim_scopes":["api.read"],"project":{"id":"proj-1","expires_at":"2099-01-01T00:00:00Z","branch":{"id":"br-1"}}})
                         }
                     }
                     "/agent/identity/claim" => {
@@ -356,7 +356,7 @@ async fn au15_anonymous_vault_credential_works_and_retry_does_not_register_twice
         Some("agent_auth")
     );
     assert_eq!(
-        credentials[0].allowed_hosts,
+        credentials[0].allowed_hosts.as_slice(),
         std::slice::from_ref(&service.origin)
     );
     assert_eq!(
@@ -522,4 +522,57 @@ async fn au15_anonymous_can_claim_and_direct_api_keys_go_to_vault() {
     let claimed=call(&f,json!({"request_id":"anonymous-claim","resource_url":service.origin,"flow":"anonymous","claim":true,"email":"owner@example.test"})).await.unwrap();
     service.absent(&claimed.to_string());
     assert_eq!(crate::credential::load_user_credentials().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn au15_return_fields_gives_only_named_non_secret_registration_fields() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    elevated(&f);
+    let service = Service::start().await;
+    let created = call(
+        &f,
+        json!({"request_id":"fields","resource_url":service.origin,"scopes":["api.read"],
+            "return_fields":["/project/id","/project/branch/id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        created["fields"],
+        json!({"/project/id":"proj-1","/project/branch/id":"br-1"})
+    );
+    service.absent(&created.to_string());
+    // A pointer that names a secret is refused before any network call, so no account is left behind.
+    let before = service.registrations.load(Ordering::SeqCst);
+    for refused in [
+        json!(["/identity_assertion"]),
+        json!(["/claim_token"]),
+        json!(["project/id"]),
+    ] {
+        assert!(
+            call(
+                &f,
+                json!({"request_id":format!("refused-{refused}"),"resource_url":service.origin,
+                    "return_fields":refused})
+            )
+            .await
+            .is_err(),
+            "{refused} must be refused"
+        );
+    }
+    assert_eq!(service.registrations.load(Ordering::SeqCst), before);
+    // Absent or non-scalar fields are reported; the credential is still stored.
+    let partial = call(
+        &f,
+        json!({"request_id":"partial","resource_url":service.origin,"scopes":["api.read"],
+            "return_fields":["/project/id","/project","/missing"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(partial["fields"], json!({"/project/id":"proj-1"}));
+    assert_eq!(
+        partial["unavailable_fields"],
+        json!(["/project", "/missing"])
+    );
+    assert!(partial["credential_id"].as_str().is_some());
 }

@@ -13,7 +13,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
-import { laneChecks, verdictOf } from './multi-agent-verdict.mjs'
+import { laneChecks, rssSlopeAfterWarmup, verdictOf } from './multi-agent-verdict.mjs'
 
 const CLOCK_TICKS_PER_SECOND = 100
 
@@ -60,6 +60,10 @@ function seedSubscriptions(root, kernel, sizes, targets, runStates, padding) {
     return db.prepare('SELECT count(*) AS n, sum(length(payload)) AS bytes FROM agent_outside_subscriptions').get()
   } finally { db.close() }
 }
+function countTaskStates(root) {
+  const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
+  try { return Object.fromEntries(db.prepare('SELECT state, count(*) AS n FROM agent_tasks GROUP BY state').all().map(row => [row.state ?? 'unreadable', row.n])) } finally { db.close() }
+}
 function countEvents(root) {
   const db = new DatabaseSync(join(root, 'chariox/state.db'), { readOnly: true })
   try { return db.prepare('SELECT count(*) AS n FROM durable_state_events').get().n } finally { db.close() }
@@ -67,24 +71,33 @@ function countEvents(root) {
 
 export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, stop, start, report, save, distribution, logPath, options }) {
   const o = { lanes: 10, leftover: 500, subscriptions: [30, 24, 20, 2], padding: 1024, churnPerMin: 60, readers: 3, readerHz: 8,
-    toggleHz: 3, promptIntervalMs: 3000, idleSeconds: 30, seconds: 120, ...options }
+    toggleHz: 3, promptIntervalMs: 3000, idleSeconds: 30, seconds: 120, endTurn: 'complete', ...options }
   const out = report.multi_agent_load = { options: o, lanes: [], phases: {} }
   save()
   const work = join(root, 'work')
   const mainClient = connect()
   const send = async request => { const result = await mainClient.send(request); if (result.Error) throw new Error(`${Object.keys(request)[0]}: ${result.Error.code}: ${result.Error.message}`); return result }
   // Only completed requests enter a latency distribution; failures are counted separately.
-  const timed = (timings, kind) => async run => { const at = performance.now(); const result = await run(); (timings[kind] ??= []).push(performance.now() - at); return result }
+  // `series` keeps when each sample finished, so a latency that drifts while Rooms accumulate is visible per minute.
+  const series = Symbol('series')
+  const timed = (timings, kind) => async run => { const at = performance.now(); const result = await run(); const done = performance.now()
+    ;(timings[kind] ??= []).push(done - at); ;((timings[series] ??= {})[kind] ??= []).push([done, done - at]); return result }
+  const perMinute = (samples, from) => {
+    const buckets = []
+    for (const [done, ms] of samples ?? []) (buckets[Math.floor((done - from) / 60000)] ??= []).push(ms)
+    return buckets.map(values => values ? (({ n, p50_ms, p99_ms }) => ({ n, p50_ms, p99_ms }))(distribution([...values])) : null)
+  }
 
+  // Keep the native CLI alive across Ctrl-C; the MCP fixture exits on SIGINT and measures relaunch churn.
   // Lanes: a session, an attachment and a dev-stub provider run per lane.
   for (let i = 0; i < o.lanes; i++) {
     const made = (await rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: `lane-${i}`,
-      agent_defaults: { provider: 'dev-stub', model: 'runtime-mcp-fixture', account_profile: 'default' } } })).SessionCreated
+      agent_defaults: { provider: 'dev-stub', model: 'native-tui-idle', account_profile: 'default' } } })).SessionCreated
     const lane = { session_id: made.session.id, agent_id: made.agent?.id }
     lane.attachment_id = (await rpc({ AttachToSession: { session_id: lane.session_id, client_id: `lane-${i}`, capability_level: 'FullTerminal' } })).SessionAttached.attachment.id
     try {
       const launched = await rpc({ LaunchProviderRun: { session_id: lane.session_id, agent_id: lane.agent_id, adapter_key: 'dev-stub', provider: 'dev-stub',
-        account_profile: 'default', model: 'runtime-mcp-fixture', variant: null, native_tui: false } })
+        account_profile: 'default', model: 'native-tui-idle', variant: null, native_tui: false } })
       lane.launch = Object.keys(launched)[0]
     } catch (error) { lane.launch_error = String(error.message) }
     out.lanes.push(lane)
@@ -134,7 +147,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       tasks.push(paced(o.churnPerMin / 60, () => { if (churning >= 16) return; churning++
         guarded('churn', () => c(async () => {
           const made = (await churn.send({ CreateSession: { workspace_id: work, worktree_id: work } })).SessionCreated
-          const attached = (await churn.send({ AttachToSession: { session_id: made.session.id, client_id: 'churn', capability_level: 'FullTerminal' } })).SessionAttached
+          const attached = (await churn.send({ AttachToSession: { session_id: made.session.id, client_id: `churn-${made.session.id}`, capability_level: 'FullTerminal' } })).SessionAttached
           await churn.send({ RunShellCommand: { session_id: made.session.id, attachment_id: attached.attachment.id, command: '/bin/true', args: [], timeout_ms: 1000 } })
           await churn.send({ DetachFromSession: { session_id: made.session.id, attachment_id: attached.attachment.id } })
           await churn.send({ EndSession: { session_id: made.session.id } })
@@ -181,7 +194,9 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
           await guarded('prompt', () => s(() => laneSend(attachment_id => ({ SubmitPrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id, prompt: 'kr06 load turn', attachments: [] } }))).then(() => { submitted = true }))
           await delay(o.promptIntervalMs / 2)
           // A prompt still being dispatched is ended by the next tick; that is not a load error.
-          await guarded('complete', () => f(() => laneSend(() => ({ CompletePrompt: { session_id: lane.session_id } }))).then(() => {
+          await guarded('complete', () => f(() => laneSend(attachment_id => o.endTurn === 'cancel'
+            ? { CancelActivePrompt: { session_id: lane.session_id, attachment_id, target_agent_id: lane.agent_id } }
+            : { CompletePrompt: { session_id: lane.session_id } })).then(() => {
             if (submitted) lane.prompt_cycles = (lane.prompt_cycles ?? 0) + 1
           }, error => {
             if (!String(error.message).includes('has no active prompt')) throw error
@@ -191,11 +206,14 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       }
     }
     let n = 0
+    const rssSamples = []
+    // How big the probed Room's state reads, once per five seconds: a Room that keeps its finished turns grows it.
+    const stateBytes = []
     const end = performance.now() + seconds * 1000
     while (performance.now() < end) {
       const next = performance.now() + 250
       await guarded('probe', () => timed(timings, 'RelayStatus')(() => probe.send({ RelayStatus: null })))
-      await guarded('probe', () => timed(timings, 'GetSessionState')(() => probe.send({ GetSessionState: { session_id: probeSession } })))
+      await guarded('probe', () => timed(timings, 'GetSessionState')(async () => { const state = await probe.send({ GetSessionState: { session_id: probeSession } }); if (n % 20 === 0) stateBytes.push([performance.now(), JSON.stringify(state).length]); return state }))
       await guarded('probe', () => timed(timings, 'ListSessions')(() => probe.send({ ListSessions: {} })))
       if (n % 4 === 0) {
         await guarded('probe', () => timed(timings, 'GetDaemonHealth')(() => probe.send({ GetDaemonHealth: null })))
@@ -205,6 +223,7 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
           if ((await response.json()).result?.serverInfo?.name !== 'chariox-runtime') throw new Error('MCP initialize failed')
         }))
       }
+      if (load && n % 20 === 0) rssSamples.push({ t_s: +((performance.now() - before.at) / 1000).toFixed(1), rss_kb: rssKb(p) })
       n++
       await delay(Math.max(0, next - performance.now()))
     }
@@ -218,16 +237,25 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
       writer_cpu_percent: +(100 * (after.writer - before.writer) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       process_cpu_percent: +(100 * (after.process - before.process) / CLOCK_TICKS_PER_SECOND / elapsed).toFixed(1),
       rss_kb_start: before.rss_kb, rss_kb_end: after.rss_kb, rss_slope_mb_per_min: +((after.rss_kb - before.rss_kb) / 1024 / (elapsed / 60)).toFixed(2),
+      state_bytes_per_minute: load ? perMinute(stateBytes.map(([at, bytes]) => [at, bytes]), before.at).map(v => v && v.p99_ms) : undefined,
+      rss_slope_after_warmup_mb_per_min: load ? rssSlopeAfterWarmup(rssSamples, o.rssWarmupSeconds) : null, rss_samples: load ? rssSamples : undefined,
       log_bytes_per_s: Math.round((after.log_bytes - before.log_bytes) / elapsed), db_bytes_per_s: Math.round((after.db_bytes - before.db_bytes) / elapsed),
       durable_events_per_s: +((after.events - before.events) / elapsed).toFixed(2),
       durable_writer: projection.durable_writer,
       latency: Object.fromEntries(Object.entries(timings).filter(([, v]) => v.length).map(([kind, values]) => [kind, distribution(values)])),
+      per_minute: Object.fromEntries(['GetSessionState', 'ListSessions', 'RelayStatus'].map(kind => [kind, perMinute(timings[series]?.[kind], before.at)])),
       request_timings: timingsOf(projection, ['relay.status', 'session.state.get', 'session.list', 'session.create', 'session.end', 'session.attach', 'prompt.submit', 'prompt.cancel', 'room.pinned.set', 'machine_file.read']) }
     save()
   }
 
   await phase('idle', o.idleSeconds, false)
   await phase('load', o.seconds, true)
+  out.task_states = countTaskStates(root)
+  // Every finished turn settles its task through the kernel; only a turn cut off by the end of the load may remain.
+  for (const lane of out.lanes) {
+    const tasks = (await probe.send({ GetSessionState: { session_id: lane.session_id } })).SessionState.session.agent_tasks ?? []
+    lane.unsettled_tasks = tasks.filter(task => task.state !== 'done' && task.state !== 'cancelled').length
+  }
   const { idle, load } = out.phases
   const p99 = (ph, kind) => ph.latency[kind]?.p99_ms ?? 0
   const checks = {
@@ -239,7 +267,10 @@ export async function measureMultiAgentLoad({ rpc, connect, root, mcpUrl, pid, s
     prompt_submit_p99_ms: { value: p99(load, 'SubmitPrompt'), limit: 500 },
     create_session_cycle_p99_ms: { value: p99(load, 'churn_cycle'), limit: 2000 },
     writer_cpu_percent_under_load: { value: load.writer_cpu_percent, limit: 40 },
-    rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 },
+    // A run longer than the warm-up plus five minutes is judged on the slope after the warm-up (2 MB/min, coordinator 11-04); a shorter run keeps the whole-load 5 MB/min.
+    ...(load.rss_slope_after_warmup_mb_per_min !== null && load.seconds >= o.rssWarmupSeconds + 300
+      ? { rss_slope_after_warmup_mb_per_min: { value: load.rss_slope_after_warmup_mb_per_min, limit: 2 } }
+      : { rss_slope_mb_per_min_under_load: { value: load.rss_slope_mb_per_min, limit: 5 } }),
     // The kernel reports its durable writer queue and commits in GetDaemonHealth.
     durable_writer_unreported: { value: load.durable_writer?.committed_batches > 0 ? 0 : 1, limit: 0 },
     load_errors: { value: Object.entries(load.errors).filter(([k]) => !k.endsWith('_last')).reduce((n, [, v]) => n + v, 0), limit: 0 },

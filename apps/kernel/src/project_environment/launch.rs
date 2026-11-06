@@ -1,91 +1,88 @@
-//! MP-08: Project values enter only ephemeral launch bindings, shared by every placement.
-use super::*;
-use crate::{config::DaemonConfig, error::DaemonError};
-use std::{collections::BTreeMap, path::Path};
+//! Variables and Secret values enter only the ephemeral launch bindings of processes the kernel
+//! starts for the Project, the same way for every placement.
+use super::{
+    project_environment_vault_service, record::parse_variables, ProjectEnvironmentRecord,
+    ProjectEnvironmentStore,
+};
+use crate::{config::DaemonConfig, error::DaemonError, provider::ProviderCredentialEnvironment};
+
+pub(crate) struct ProjectLaunchEnvironment {
+    pub environment: ProviderCredentialEnvironment,
+    /// Secret names the Vault has no value for on this kernel.
+    pub missing_secrets: Vec<String>,
+}
 
 pub(crate) fn project_launch_environment(
     config: &DaemonConfig,
     project_id: &str,
-    workspace_id: &str,
-    directory: &Path,
-) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
-    let mut environment = crate::provider::ProviderCredentialEnvironment::default();
-    let store = ProjectEnvironmentStore::new(&config.private_runtime_state_root());
-    let Some(state) = store.load(project_id)? else {
-        return Ok(environment);
-    };
-    let mut manifest = state.manifest;
-    manifest
-        .entries
-        .retain(|entry| entry.workspace_id == workspace_id);
-    let roots = BTreeMap::from([(workspace_id.to_string(), directory.to_path_buf())]);
-    let names = manifest
-        .entries
-        .iter()
-        .filter_map(|entry| match &entry.locator {
-            ProjectEnvironmentLocator::WorkspaceEnvironment { name } => Some(name),
-            _ => None,
-        });
-    // Select only names already authorized by this Project's manifest, never dump ambient env.
-    let inherited = names
-        .filter_map(|name| {
-            std::env::var(name)
-                .ok()
-                .map(|value| (name.clone(), zeroize::Zeroizing::new(value)))
-        })
-        .collect();
-    let vault = crate::secret::project_environment_vault(config)?;
-    let resolved = resolve_project_environment(
-        &manifest,
-        &roots,
-        &BTreeMap::from([(workspace_id.into(), inherited)]),
-        vault.as_ref(),
-    )?;
-    for (name, value) in project_environment_launch_bindings(&manifest, &resolved, workspace_id)? {
-        environment.insert(name, value);
+    record: &ProjectEnvironmentRecord,
+) -> Result<ProjectLaunchEnvironment, DaemonError> {
+    let mut environment = ProviderCredentialEnvironment::default();
+    for (name, value) in parse_variables(&record.variables).map_err(super::environment_error)? {
+        environment.insert(name, zeroize::Zeroizing::new(value));
     }
-    Ok(environment)
+    let mut missing_secrets = Vec::new();
+    if !record.secrets.is_empty() {
+        let vault = crate::secret::project_environment_vault(config)?;
+        let service = project_environment_vault_service(project_id);
+        for name in &record.secrets {
+            // A locked Vault is an error here so the launch asks the owner to unlock it.
+            match vault.find_secret(&service, name)? {
+                Some(value) => environment.insert(name.clone(), zeroize::Zeroizing::new(value)),
+                None => missing_secrets.push(name.clone()),
+            }
+        }
+    }
+    Ok(ProjectLaunchEnvironment {
+        environment,
+        missing_secrets,
+    })
 }
 
-// MP-08 / MP-10: Provider-neutral rules are bounded and never sourced from provider homes.
-pub(crate) fn read_user_rules_file(root: &Path) -> Result<String, DaemonError> {
-    let rules = super::resolver::read_environment_file(root, "user-rules.md")?;
-    if rules.len() > 64 * 1024 || rules.contains('\0') {
-        return Err(super::resolver::environment_error("invalid user rules"));
-    }
-    Ok(rules.to_string())
-}
-pub(crate) fn project_missing_inputs(
+/// Requested Variables and Secret values for an MCP server. A locked Vault leaves Secrets
+/// out while the Project's ordinary Variables remain available.
+pub(crate) fn project_mcp_environment(
     config: &DaemonConfig,
-    project: &str,
-    workspace: &str,
-) -> Result<Vec<String>, DaemonError> {
-    Ok(
-        ProjectEnvironmentStore::new(&config.private_runtime_state_root())
-            .load(project)?
-            .map(|state| {
-                state
-                    .manifest
-                    .entries
-                    .into_iter()
-                    .filter(|entry| {
-                        entry.workspace_id == workspace
-                            && (entry.excluded
-                                || entry.status != ProjectEnvironmentEntryStatus::Found)
-                    })
-                    .map(|entry| entry.name)
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
+    project_id: &str,
+    names: &[String],
+) -> std::collections::BTreeMap<String, String> {
+    let mut values = std::collections::BTreeMap::new();
+    let Ok(Some(record)) =
+        ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(project_id)
+    else {
+        return values;
+    };
+    for (name, value) in
+        parse_variables(&record.variables).expect("loaded record has valid Variables")
+    {
+        if names.contains(&name) {
+            values.insert(name, value);
+        }
+    }
+    let wanted: Vec<&String> = names
+        .iter()
+        .filter(|name| record.secrets.contains(name))
+        .collect();
+    if wanted.is_empty() {
+        return values;
+    }
+    let Ok(vault) = crate::secret::project_environment_vault(config) else {
+        return values;
+    };
+    let service = project_environment_vault_service(project_id);
+    for name in wanted {
+        if let Ok(Some(value)) = vault.find_secret(&service, name) {
+            values.insert(name.clone(), value);
+        }
+    }
+    values
 }
 
-/// MP-08 / MP-10 / MP-11: Provider reuse observes both selected metadata and
-/// freshly resolved values. The process-keyed marker stays runtime-only, so
-/// low-entropy secrets cannot be guessed from an exported hash or persistence.
+/// Provider reuse observes both the saved record and the freshly resolved values. The
+/// process-keyed marker stays runtime-only, so a low-entropy value cannot be guessed from it.
 pub(crate) fn project_environment_launch_revision(
-    manifest: &ProjectEnvironmentManifest,
-    environment: &crate::provider::ProviderCredentialEnvironment,
+    record: &ProjectEnvironmentRecord,
+    environment: &ProviderCredentialEnvironment,
 ) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -97,7 +94,7 @@ pub(crate) fn project_environment_launch_revision(
         mac.update(&(bytes.len() as u64).to_le_bytes());
         mac.update(bytes);
     };
-    update(&serde_json::to_vec(manifest).expect("manifest encodes"));
+    update(&serde_json::to_vec(record).expect("record encodes"));
     for (name, value) in environment.iter() {
         update(name.as_bytes());
         update(value.as_bytes());
@@ -109,133 +106,192 @@ pub(crate) fn project_environment_launch_revision(
         .collect()
 }
 
-// MP-08 / MP-10 / MP-11: One resolver for ordinary prompt activation and runtime launches.
+/// One resolver for ordinary prompt activation and runtime launches.
 pub(crate) fn attach_project_provider_environment(
     config: &DaemonConfig,
+    sessions: &crate::session::SessionStateStore,
     session: &crate::session::RuntimeSession,
     agent: Option<&crate::agent::AgentInstance>,
     mut request: crate::provider::LaunchProviderRequest,
 ) -> Result<crate::provider::LaunchProviderRequest, DaemonError> {
-    if let Some(directory) = request.working_directory.as_deref() {
-        // A metadata utility executes in a neutral directory outside the Project.
-        let is_agent_worktree = agent
-            .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
-            .is_some_and(|worktree| worktree == directory);
-        if directory == std::path::Path::new(session.worktree_id()) || is_agent_worktree {
-            let project_environment_state =
-                crate::project_environment::ProjectEnvironmentStore::new(
-                    &config.private_runtime_state_root(),
-                )
-                .load(session.project_id())?;
-            // MP-08 / MP-10 / MP-11: imported workspaces use mounted paths;
-            // a leased session keeps its synthetic workspace identity.
-            let directory_workspace = directory.to_string_lossy();
-            let workspace_id = project_environment_state
-                .as_ref()
-                .filter(|state| {
-                    let selected = |workspace: &str| {
-                        state
-                            .manifest
-                            .entries
-                            .iter()
-                            .any(|entry| entry.workspace_id == workspace)
-                            || state
-                                .manifest
-                                .private_files
-                                .iter()
-                                .any(|file| file.workspace_id == workspace)
-                    };
-                    !selected(session.workspace_id()) && selected(directory_workspace.as_ref())
-                })
-                .map_or(session.workspace_id(), |_| directory_workspace.as_ref());
-            let environment = crate::project_environment::project_launch_environment(
-                config,
-                session.project_id(),
-                workspace_id,
-                directory,
-            )?;
-            let previously_bound = request.project_environment_revision.is_some();
-            request.project_environment_revision =
-                project_environment_state.as_ref().map(|state| {
-                    crate::project_environment::project_environment_launch_revision(
-                        &state.manifest,
-                        &environment,
-                    )
-                });
-            let missing = crate::project_environment::project_missing_inputs(
-                config,
-                session.project_id(),
-                workspace_id,
-            )?;
-            if !missing.is_empty() {
-                request.provider_account_env.insert(
-                    "CHARIOX_PROJECT_MISSING_INPUTS".into(),
-                    serde_json::to_string(&missing).expect("missing names encode"),
-                );
-            }
-            for (name, value) in environment.iter() {
-                if crate::account_profile::provider_auth_env_vars(&request.provider).contains(&name)
-                    || (!previously_bound
-                        && request
-                            .provider_credential_env
-                            .iter()
-                            .any(|(existing, _)| existing == name))
-                {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "Project environment",
-                        message: "Project input conflicts with provider credential binding".into(),
-                    });
-                }
-                request
+    let Some(directory) = request.working_directory.as_deref() else {
+        return Ok(request);
+    };
+    // A metadata utility executes in a neutral directory outside the Project.
+    let is_agent_worktree = agent
+        .and_then(|agent| agent.worktree_id().map(std::path::PathBuf::from))
+        .is_some_and(|worktree| worktree == directory);
+    if directory != std::path::Path::new(session.worktree_id()) && !is_agent_worktree {
+        return Ok(request);
+    }
+    let Some(project) = sessions.environment_project(session) else {
+        return Ok(request);
+    };
+    let Some(record) =
+        ProjectEnvironmentStore::new(&config.private_runtime_state_root()).load(project.id())?
+    else {
+        return Ok(request);
+    };
+    let launch = project_launch_environment(config, project.id(), &record)?;
+    let previously_bound = request.project_environment_revision.is_some();
+    request.project_environment_revision = Some(project_environment_launch_revision(
+        &record,
+        &launch.environment,
+    ));
+    if !launch.missing_secrets.is_empty() {
+        request.provider_account_env.insert(
+            "CHARIOX_PROJECT_MISSING_INPUTS".into(),
+            serde_json::to_string(&launch.missing_secrets).expect("missing names encode"),
+        );
+    }
+    for (name, value) in launch.environment.iter() {
+        if crate::account_profile::provider_auth_env_vars(&request.provider).contains(&name)
+            || (!previously_bound
+                && request
                     .provider_credential_env
-                    .insert(name, zeroize::Zeroizing::new(value.to_string()));
-            }
+                    .iter()
+                    .any(|(existing, _)| existing == name))
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "Project environment",
+                message: "Project input conflicts with provider credential binding".into(),
+            });
         }
+        request
+            .provider_credential_env
+            .insert(name, zeroize::Zeroizing::new(value.to_string()));
     }
     Ok(request)
 }
 
 #[cfg(test)]
-mod revision_tests {
+mod tests {
     use super::*;
+
     #[test]
-    fn mp08_mp10_mp11_provider_reuse_changes_with_decisions_and_live_values() {
-        let mut manifest = ProjectEnvironmentManifest {
-            schema_version: 1,
-            project_id: "project".into(),
-            evidence_digest: "evidence".into(),
-            entries: vec![],
-            private_files: vec![],
-            toolchain_hints: vec![],
-            package_hints: vec![],
-            service_hints: vec![],
+    fn mcp_environment_keeps_variables_when_the_project_vault_is_locked() {
+        let mut config = DaemonConfig::for_tests();
+        let root = config.private_runtime_state_root();
+        let vault_path = root.join("vault.json");
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        let store = ProjectEnvironmentStore::new(&root);
+        store
+            .save(
+                "project",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables: "API_BASE_URL=https://project.example.test\nUNREQUESTED=other"
+                        .into(),
+                    secrets: vec!["API_KEY".into()],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            &vault_path,
+            "synthetic-test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let vault = crate::secret::project_environment_vault(&config).unwrap();
+        vault
+            .set_secret(
+                &project_environment_vault_service("project"),
+                "API_KEY",
+                "synthetic-key",
+            )
+            .unwrap();
+        let names = ["API_BASE_URL".into(), "API_KEY".into(), "ABSENT".into()];
+        let unlocked = project_mcp_environment(&config, "project", &names);
+        crate::secret::lock_chariox_encrypted_vault(&vault_path).unwrap();
+        let locked = project_mcp_environment(&config, "project", &names);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            unlocked,
+            std::collections::BTreeMap::from([
+                ("API_BASE_URL".into(), "https://project.example.test".into()),
+                ("API_KEY".into(), "synthetic-key".into()),
+            ])
+        );
+        assert_eq!(
+            locked,
+            std::collections::BTreeMap::from([(
+                "API_BASE_URL".into(),
+                "https://project.example.test".into()
+            ),])
+        );
+    }
+
+    #[test]
+    fn mcp_environment_resolves_only_requested_project_variables_without_a_vault() {
+        let config = DaemonConfig::for_tests();
+        let root = config.private_runtime_state_root();
+        let store = ProjectEnvironmentStore::new(&root);
+        store
+            .save(
+                "project-a",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables:
+                        "ACCOUNT=project-a\nURL=https://example.test/mcp\nUNREQUESTED=private"
+                            .into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        store
+            .save(
+                "project-b",
+                0,
+                ProjectEnvironmentRecord {
+                    schema: super::super::PROJECT_ENVIRONMENT_SCHEMA,
+                    variables: "ACCOUNT=project-b".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let names = ["ACCOUNT".into(), "URL".into(), "ABSENT".into()];
+        let a = project_mcp_environment(&config, "project-a", &names);
+        let b = project_mcp_environment(&config, "project-b", &names);
+        let absent = project_mcp_environment(&config, "other-project", &names);
+        // Clean the fixture before asserting so fail-first runs leave no state behind.
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            a,
+            std::collections::BTreeMap::from([
+                ("ACCOUNT".into(), "project-a".into()),
+                ("URL".into(), "https://example.test/mcp".into()),
+            ])
+        );
+        assert_eq!(
+            b,
+            std::collections::BTreeMap::from([("ACCOUNT".into(), "project-b".into())])
+        );
+        assert!(absent.is_empty());
+    }
+
+    #[test]
+    fn provider_reuse_changes_with_the_record_and_with_live_values() {
+        let mut record = ProjectEnvironmentRecord {
+            schema: 2,
+            ..Default::default()
         };
-        let mut environment = crate::provider::ProviderCredentialEnvironment::default();
+        let mut environment = ProviderCredentialEnvironment::default();
         environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-one".into()));
-        let first = project_environment_launch_revision(&manifest, &environment);
+        let first = project_environment_launch_revision(&record, &environment);
         assert_eq!(
             first,
-            project_environment_launch_revision(&manifest, &environment)
+            project_environment_launch_revision(&record, &environment)
         );
         environment.insert("INPUT", zeroize::Zeroizing::new("synthetic-two".into()));
+        let second = project_environment_launch_revision(&record, &environment);
+        assert_ne!(first, second);
+        record.variables = "A=1".into();
         assert_ne!(
-            first,
-            project_environment_launch_revision(&manifest, &environment)
-        );
-        let second = project_environment_launch_revision(&manifest, &environment);
-        manifest.private_files.push(ProjectPrivateFileDecision {
-            workspace_id: "workspace".into(),
-            path: "notes.md".into(),
-            bring: false,
-            secret_looking: false,
-            reason: "Personal notes".into(),
-        });
-        let third = project_environment_launch_revision(&manifest, &environment);
-        assert_ne!(second, third);
-        manifest.private_files[0].bring = true;
-        assert_ne!(
-            third,
-            project_environment_launch_revision(&manifest, &environment)
+            second,
+            project_environment_launch_revision(&record, &environment)
         );
         assert!(!format!("{environment:?}").contains("synthetic-two"));
     }

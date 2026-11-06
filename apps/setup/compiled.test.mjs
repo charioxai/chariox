@@ -26,6 +26,6 @@ test("MP-07 generic unsigned Setup verifies and installs with a system Python pr
   assert.equal((await execute(binary, ["--version"], { env })).stdout, `Chariox Setup ${f.version}\n`)
   const result = await execute(binary, ["--install-only", "--release-base", `http://127.0.0.1:${server.address().port}`, "--api-url", "http://127.0.0.1:1"], { env, timeout: 30_000 })
   assert.match(result.stdout, /Chariox installed/)
-  assert.equal(await readFile(join(home, ".local/share/chariox/ssh-machines/local/current/bin/chariox-kernel"), "utf8"), await readFile(join(f.bundle, "bin/chariox-kernel"), "utf8"))
+  assert.equal(await readFile(join(home, ".local/share/chariox/machines/local/current/bin/chariox-kernel"), "utf8"), await readFile(join(f.bundle, "bin/chariox-kernel"), "utf8"))
   assert.equal((await execute(binary, ["--uninstall"], { env, timeout: 30_000 })).stdout.includes("Chariox removed"), true)
 })

@@ -206,7 +206,6 @@ fn standing_holders_are_read_from_the_file_each_time_and_a_malformed_entry_is_ig
     ))
     .unwrap();
     config.validate().unwrap();
-    assert_eq!(config.kernel_access.standing_holders.len(), 2);
     // No command sets the list.
     let mut config = CharioxUserConfig::default();
     assert!(config
@@ -216,4 +215,60 @@ fn standing_holders_are_read_from_the_file_each_time_and_a_malformed_entry_is_ig
         .unset_value("kernel_access.standing_holders")
         .is_err());
     fs::remove_dir_all(&dir).unwrap();
+}
+
+const STANDING_ENTRY: &str =
+    "[[kernel_access.standing_holders]]\nharness = \"claude\"\nexecutable = \"/bin/h\"\n";
+
+fn standing_config_in(dir: &std::path::Path) -> DaemonConfig {
+    fs::create_dir_all(dir).unwrap();
+    let mut config = DaemonConfig::new("daemon", "machine", "tester");
+    config.user_config_path = dir.join("config.toml");
+    config
+}
+
+#[test]
+fn a_config_write_keeps_a_standing_holder_added_while_running() {
+    let dir = std::env::temp_dir().join(format!("standing-add-{:x}", rand::random::<u64>()));
+    let mut config = standing_config_in(&dir);
+    config.set_user_config_value("ui.theme", "dark").unwrap();
+    assert!(read_standing_holders(&config.user_config_path).is_empty());
+    let payload = fs::read_to_string(&config.user_config_path).unwrap();
+    fs::write(
+        &config.user_config_path,
+        format!("{payload}\n{STANDING_ENTRY}"),
+    )
+    .unwrap();
+    config.set_user_config_value("ui.theme", "light").unwrap();
+    assert_eq!(read_standing_holders(&config.user_config_path).len(), 1);
+    config.unset_user_config_value("ui.theme").unwrap();
+    assert_eq!(read_standing_holders(&config.user_config_path).len(), 1);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_config_write_does_not_bring_back_a_removed_standing_holder() {
+    let dir = std::env::temp_dir().join(format!("standing-rm-{:x}", rand::random::<u64>()));
+    let path = dir.join("config.toml");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(&path, STANDING_ENTRY).unwrap();
+    let mut config = standing_config_in(&dir);
+    config.user_config = load_user_config_from_path(&path);
+    assert_eq!(read_standing_holders(&path).len(), 1);
+    fs::write(&path, "").unwrap();
+    config.set_user_config_value("ui.theme", "dark").unwrap();
+    assert!(read_standing_holders(&path).is_empty());
+    assert!(!fs::read_to_string(&path)
+        .unwrap()
+        .contains("standing_holders"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn standing_holders_stay_out_of_the_client_visible_config() {
+    let listed = toml::from_str::<CharioxUserConfig>(STANDING_ENTRY).unwrap();
+    assert_eq!(
+        serde_json::to_value(&listed).unwrap(),
+        serde_json::to_value(CharioxUserConfig::default()).unwrap()
+    );
 }

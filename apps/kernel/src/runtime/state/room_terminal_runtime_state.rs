@@ -127,7 +127,7 @@ impl KernelRuntimeState {
         let service = &self.owned.room_terminals;
         Ok(match operation {
             operation if operation.is_exec() => {
-                self.run_room_exec_operation(session_id, &working_directory, operation)
+                self.run_room_exec_operation(session_id, &working_directory, actor, operation)
                     .await?
             }
             RoomTerminalOperation::Open {
@@ -137,6 +137,7 @@ impl KernelRuntimeState {
                 command,
             } => {
                 self.ensure_room_running(session_id)?;
+                let project_environment = self.project_environment_for_terminal(session_id)?;
                 let terminal = service.open(OpenRoomTerminal {
                     session_id: session_id.to_string(),
                     working_directory,
@@ -145,6 +146,7 @@ impl KernelRuntimeState {
                     title,
                     opened_by: actor,
                     command,
+                    project_environment,
                 })?;
                 // A Room that ended while this opened has already swept its
                 // terminals: ending is recorded before the sweep, so an open
@@ -305,6 +307,7 @@ impl KernelRuntimeState {
         self.owned.room_execs.end_session(session_id);
         self.owned.room_terminals.end_session(session_id);
         crate::runtime::process_resources::end_owner(Some(session_id), None);
+        crate::agent_temp::clear_room(session_id);
     }
 
     fn authorize_room_terminal(

@@ -70,6 +70,21 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
+        if grant_id.starts_with(super::reach::REACH_PREFIX) {
+            let caller = self
+                .reach_for_id(grant_id)
+                .ok_or_else(|| error("reach ended: the agent's run is no longer live"))?;
+            return match super::reach::reach_need(request) {
+                super::reach::ReachNeed::Room => Ok(()),
+                super::reach::ReachNeed::HumanOnly => {
+                    self.audit_human_only_denial(grant_id, &caller.owner_user_id);
+                    Err(Refusal::HumanOnly.error())
+                }
+                super::reach::ReachNeed::Sudo | super::reach::ReachNeed::Excluded => {
+                    Err(error("this request needs the owner's /sudo for this agent"))
+                }
+            };
+        }
         let owner = if grant_id.starts_with("sudo:") {
             self.sudo_window_bound(grant_id)?.owner_user_id
         } else {
@@ -89,9 +104,12 @@ impl KernelRuntimeState {
         id: &str,
     ) -> Option<crate::runtime::kernel_gateway::Origin> {
         self.sweep_kernel_access();
-        let harness = if id.starts_with("sudo:") {
-            self.sudo_window_bound(id).ok()?;
-            "Chariox agent".to_string()
+        let harness = if id.starts_with(super::reach::REACH_PREFIX) {
+            self.reach_for_id(id)?.harness
+        } else if id.starts_with("sudo:") {
+            let turn = self.sudo_window_bound(id).ok()?;
+            self.agent_harness_name(&turn.session_id, &turn.agent_id)
+                .unwrap_or_else(|| "Chariox agent".to_string())
         } else {
             crate::runtime::kernel_gateway::harness_name(&self.access_grant_summary(id)?)
         };
@@ -244,9 +262,15 @@ impl KernelRuntimeState {
 
 fn protected_config(path: &str) -> bool {
     let path = path.trim().to_ascii_lowercase();
-    ["kernel_access", "credential_vault", "relay", "secret_link"]
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
+    [
+        "kernel_access",
+        "credential_vault",
+        "relay",
+        "secret_link",
+        "agents",
+    ]
+    .iter()
+    .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}.")))
 }
 
 fn carries_passkey(request: &LocalDaemonRequest) -> bool {
@@ -265,7 +289,10 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::CoverKernelAccessProcess(_)
                 | LocalDaemonRequest::ManageCredentialVault(_)
                 | LocalDaemonRequest::OwnerVault(_)
+                | LocalDaemonRequest::SetProjectEnvironmentSecret(_)
                 | LocalDaemonRequest::UnlockCredentialVault(_)
+                | LocalDaemonRequest::CreateCredentialVault(_)
+                | LocalDaemonRequest::SealCredentialVaultKey(_)
                 // Raw credential configs can contain literal injection headers.
                 | LocalDaemonRequest::GetCredential(_)
                 | LocalDaemonRequest::ListCredentials(_)
@@ -283,16 +310,11 @@ pub(crate) fn restricted_request(request: &LocalDaemonRequest) -> bool {
                 | LocalDaemonRequest::RecordPairedClient(_)
                 | LocalDaemonRequest::ApproveRemoteMachine(_)
                 | LocalDaemonRequest::JoinSessionInvite(_)
-                | LocalDaemonRequest::CreateCloudSessionInvite(_)
-                | LocalDaemonRequest::ShowCloudSessionInvite(_)
-                | LocalDaemonRequest::AcceptCloudSessionInvite(_)
                 | LocalDaemonRequest::ConfigureRelay(_)
                 | LocalDaemonRequest::CloudRelayStatus(_)
                 | LocalDaemonRequest::StartCloudRelayLogin(_)
                 | LocalDaemonRequest::PollCloudRelayLogin(_)
                 | LocalDaemonRequest::LogoutCloudRelay(_)
-                | LocalDaemonRequest::PairCloudRelayClient(_)
-                | LocalDaemonRequest::PairCloudRelayMachine(_)
                 | LocalDaemonRequest::ConnectCloudRelay(_)
                 | LocalDaemonRequest::IssueCloudRelayClientToken(_)
                 | LocalDaemonRequest::ResolveKernelClientConnection(_)

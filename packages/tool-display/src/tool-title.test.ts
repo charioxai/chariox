@@ -29,6 +29,7 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "c8", tool: "WebSearch", status: "completed", input: { query: "chariox" } }, "Searched the web for chariox"],
     [{ id: "c9", tool: "TodoWrite", status: "completed", input: { todos: [] } }, "Updated plan"],
     [{ id: "c10", tool: "mcp__github__create_pull_request", status: "completed", input: {} }, "Called github.create pull request"],
+    [{ id: "c11", tool: "mcp__chariox__chariox_request_popup", status: "completed", input: {} }, "Called chariox.request popup"],
     [{ id: "c11", tool: "Task", status: "running", input: { description: "Audit the pane", prompt: "..." } }, "Delegating Audit the pane"],
     // OpenCode
     [{ id: "o1", tool: "read", status: "completed", input: { filePath: "/w/README.md" } }, "Read /w/README.md"],
@@ -39,7 +40,7 @@ test("tool titles use a verb and an object for each provider's tool shapes", () 
     [{ id: "o6", tool: "some_custom_tool", status: "completed" }, "Called some custom tool"],
   ]
   const formattedTitles: Record<string, string> = {
-    c3: "Edited src/app.ts (+1 −1)", c4: "Edited notes.md (+1 −0)",
+    c3: "Edited src/app.ts (+1 −1)", c4: "Wrote notes.md (+1 −0)",
   }
   for (const [update, expected] of cases) {
     const title = toolDisplayTitle(update)
@@ -102,7 +103,7 @@ test("file tool summaries skip the provider's relative copy of the path", () => 
     input: { filePath: "/tmp/a.txt", content: "x" },
     output: "Wrote file successfully.",
   })
-  assert.equal(display.title, "Edited /tmp/a.txt (+1 −0)")
+  assert.equal(display.title, "Wrote /tmp/a.txt (+1 −0)")
   assert.doesNotMatch(display.summary, /\.\.\//)
   assert.equal(formatToolDisplay({ id: "m1", tool: "search_docs", title: "context7", input: { q: "x" } }).summary, "context7")
 })

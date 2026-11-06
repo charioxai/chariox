@@ -38,9 +38,7 @@ pub(crate) use native_tui::{
     CLAUDE_NATIVE_PERMISSION_TIMEOUT_SECS,
 };
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
-pub(crate) use usage_probe::{
-    probe_claude_account_usage, verify_claude_account_credential, ClaudeCredentialCheckError,
-};
+pub(crate) use usage_probe::{verify_claude_account_credential, ClaudeCredentialCheckError};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 
@@ -51,6 +49,7 @@ const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     resolve_claude_executable_unlocked()
 }
@@ -76,6 +75,7 @@ fn resolve_claude_executable_unlocked() -> Result<PathBuf, DaemonError> {
 pub fn plan_claude_launch(
     request: Option<&LaunchProviderRequest>,
 ) -> Result<ProviderLaunchResult, DaemonError> {
+    #[cfg(test)]
     let _guard = crate::env_lock::lock();
     plan_claude_launch_unlocked(request)
 }

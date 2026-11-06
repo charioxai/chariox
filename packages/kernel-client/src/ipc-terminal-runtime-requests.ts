@@ -1,7 +1,7 @@
 import type { NativeInteractionOrigin } from "./kernel-types-runtime.js"
 
 import type { PromptAttachmentPart } from "./kernel-types.js"
-import type { AgentTriggerBusyPolicy } from "./kernel-types-session.js"
+import type { AgentTriggerBusyPolicy, AgentTriggerNotificationSource } from "./kernel-types-session.js"
 
 export const DEPLOYMENT_CREDENTIAL_ENROLLMENT_SERVICE_SUBJECT_PREFIX = "deployment-credential-enrollment:"
 
@@ -166,6 +166,23 @@ export function createAgentScheduleTriggerRequest(options: {
   }
 }
 
+/** An agent subscribes itself to a notification source; every occurrence is queued, so there is no busy policy. */
+export function createAgentNotificationTriggerRequest(options: {
+  sessionId: string
+  agentId: string
+  source: AgentTriggerNotificationSource
+  prompt?: string | null
+}) {
+  return {
+    CreateAgentTrigger: {
+      session_id: options.sessionId,
+      agent_id: options.agentId,
+      source: { kind: "notification", source: options.source },
+      ...(options.prompt?.trim() ? { prompt: options.prompt.trim() } : {}),
+    },
+  }
+}
+
 export function updateAgentTriggerRequest(
   sessionId: string,
   triggerId: string,
@@ -253,6 +270,16 @@ export function cancelActivePromptRequest(sessionId: string, attachmentId: strin
       ...(expectedPromptId !== undefined ? { expected_prompt_id: expectedPromptId } : {}),
     },
   }
+}
+
+export const agentCancellationMinimumProtocolVersion = 987
+
+export function cancelAgentTaskRequest(sessionId: string, attachmentId: string, taskId: string, revision: number) {
+  return { CancelAgentTask: { session_id: sessionId, attachment_id: attachmentId, task_id: taskId, revision } }
+}
+
+export function cancelAgentWakeRequest(sessionId: string, attachmentId: string, wakeId: string) {
+  return { CancelAgentWake: { session_id: sessionId, attachment_id: attachmentId, wake_id: wakeId } }
 }
 
 export function steerQueuedPromptRequest(

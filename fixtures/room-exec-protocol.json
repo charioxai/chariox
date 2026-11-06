@@ -1,6 +1,6 @@
 {
-  "local": 632,
-  "relayPeer": 235,
+  "local": 999,
+  "relayPeer": 438,
   "shapes": [
     {
       "kind": "request",
@@ -184,15 +184,72 @@
             "execs": [
               {
                 "exec_id": "exec-1",
-                "state": "running",
+                "state": {
+                  "kind": "running"
+                },
                 "age_ms": 1250,
-                "buffered_bytes": 1048576
+                "buffered_bytes": 1048576,
+                "command": [
+                  "/bin/cat"
+                ],
+                "owner": {
+                  "kind": "terminal",
+                  "id": "exec-1"
+                },
+                "command_line": "/bin/cat"
               }
             ]
           }
         }
       },
-      "sha256": "8deebb5cf4706509afb5bda8e41034885ab52bd0e13fb3184105928be5594f75"
+      "sha256": "7ddb0d2426c4d93f0468f19082a382cab17700134e02b5b4772832bb0360c757"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_start_now",
+            "exec_id": "exec-1"
+          }
+        }
+      },
+      "sha256": "c934979d64529ce92cebba69f3f0daf4f11080ae813ba2851a3a232bb7aabcf3"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_listed",
+            "execs": [
+              {
+                "exec_id": "exec-held",
+                "state": {
+                  "kind": "queued",
+                  "wait": {
+                    "reason": "memory",
+                    "need_bytes": 1024,
+                    "free_bytes": 0
+                  }
+                },
+                "age_ms": 1250,
+                "buffered_bytes": 0,
+                "command": [
+                  "/bin/cat"
+                ],
+                "owner": {
+                  "kind": "terminal",
+                  "id": "exec-held"
+                },
+                "command_line": "/bin/cat"
+              }
+            ]
+          }
+        }
+      },
+      "sha256": "ff603e110abc73fc50f14fb30004f68c8b5dfe6a0f60bf0cd7ed1d45abb69586"
     }
   ]
 }

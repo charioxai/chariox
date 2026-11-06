@@ -10,7 +10,9 @@ export function toolDisplayTitle(update: ToolTranscriptUpdate, patchFiles: reado
   const name = toolTitleCanonicalName(update.tool)
 
   if (patchFiles.length > 0) {
-    return `${verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
+    // A write shown as its diff still says it wrote the file: "Edited" read wrong for a file just created.
+    const wrote = TOOL_TITLE_WRITE.has(name)
+    return `${wrote ? verb("Wrote", "Writing") : verb("Edited", "Editing")} ${toolTitlePatchObject(patchFiles)}`
   }
   const command = toolTitleCommand(input)
   if (command !== null || TOOL_TITLE_SHELL.has(name)) {
@@ -156,6 +158,8 @@ function toolTitleSimpleProgram(script: string) {
   return /^[^|;&<>`$()\n]+$/.test(line) ? line.split(/\s+/)[0]!.split("/").pop() ?? null : null
 }
 
+const TOOL_TITLE_WRITE = new Set(["write", "writefile", "create", "charioxwriteartifact", "writeartifact"])
+
 const TOOL_TITLE_SHELL = new Set([
   "bash", "shell", "sh", "shellcommand", "execcommand", "runcommand", "runshellcommand",
   "localshell", "terminal", "commandexecution", "exec", "unifiedexec",
@@ -286,7 +290,9 @@ function toolTitleCalledName(update: ToolTranscriptUpdate) {
   const raw = typeof update.tool === "string" ? update.tool.trim() : ""
   const mcp = raw.match(/^mcp__(.+?)__(.+)$/)
   if (mcp) {
-    return `${toolTitleWords(mcp[1]!)}.${toolTitleWords(mcp[2]!)}`
+    // A server's tools often repeat its name ("mcp__chariox__chariox_request_popup"): the label names it once.
+    const tool = mcp[2]!.startsWith(`${mcp[1]!}_`) ? mcp[2]!.slice(mcp[1]!.length + 1) : mcp[2]!
+    return `${toolTitleWords(mcp[1]!)}.${toolTitleWords(tool)}`
   }
   // Codex MCP calls carry the server in `title`.
   const server = typeof update.title === "string" && /^[\w.-]+$/.test(update.title.trim()) ? update.title.trim() : null

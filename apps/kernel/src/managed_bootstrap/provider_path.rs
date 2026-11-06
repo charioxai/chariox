@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::ffi::OsString;
 use std::path::Path;
 
@@ -34,12 +35,6 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Resolve the user's login PATH in a short-lived, isolated Bash process.
 /// Only its bounded, framed PATH value crosses back into the bootstrap process.
 pub(super) fn resolve_login_path(home: &Path) -> OsString {
-    resolve_login_path_with_fallback(home)
-}
-
-/// Keep a disposable worker's local provider tools available if its login
-/// profile cannot be probed.
-pub(super) fn resolve_worker_login_path(home: &Path) -> OsString {
     resolve_login_path_with_fallback(home)
 }
 
@@ -217,7 +212,7 @@ fn parse_login_path(output: &[u8]) -> Result<OsString, &'static str> {
 fn stop_probe(child: &mut Child, pid: u32) {
     stop_process_group(pid);
     let _ = child.kill();
-    let _ = child.wait();
+    let _ = child.bounded_wait();
 }
 
 #[cfg(unix)]
@@ -439,7 +434,7 @@ mod tests {
 
         let expected_path = format!("{}:{BOOTSTRAP_PATH}", home.0.join(".local/bin").display());
         let started = Instant::now();
-        let path = resolve_worker_login_path(&home.0);
+        let path = resolve_login_path(&home.0);
         assert_eq!(path, OsString::from(&expected_path));
         let elapsed = started.elapsed();
         assert!(elapsed >= PROBE_TIMEOUT);

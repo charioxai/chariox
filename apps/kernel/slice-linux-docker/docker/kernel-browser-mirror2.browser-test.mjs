@@ -21,7 +21,7 @@ async function regionLease({ host, subscription_id, generation }, sequence) {
 const settle = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function stayDom(next, ms, label) { const until = Date.now() + ms; let packet, tiles = 0; while (Date.now() < until) { packet = await next(300); tiles += packet.tiles.length; assert.equal(packet.fallback, undefined, label); } return { ...packet, tiles: packet.tiles, seenTiles: tiles }; }
 
-async function mirrored(html, run, routes = {}) {
+async function mirrored(html, run, routes = {}, initialOptions = {}) {
   const root = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "mirror2-"));
   const server = createServer((request, response) => {
     const port = String(server.address().port), route = routes[request.url];
@@ -29,7 +29,8 @@ async function mirrored(html, run, routes = {}) {
     response.setHeader("Content-Type", "text/html"); response.end(`<!doctype html>${html.replaceAll("PORT", port)}`);
   });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  const host = new KernelBrowserHost(root);
+  const apps = await mkdtemp(path.join(process.env.CHARIOX_MDACCESS_DRILL_ROOT, "apps-")); // a managed-policy browser requires a WASM App storage root outside its temporary directory
+  const host = new KernelBrowserHost(root, { appStorageRoot: apps });
   try {
     const opened = await host.request({ op: "open", url: `http://127.0.0.1:${server.address().port}/` });
     const evaluate = async expression => {
@@ -54,12 +55,14 @@ async function mirrored(html, run, routes = {}) {
       const input = async (sequence, action) => host.request({ op: "input", tab_id: opened.tab_id, generation: opened.generation, document_id: host.tabs.get(opened.tab_id).document_id, input: { kind: "mirror", subscription_id, sequence, action } });
       return { next, input, subscription_id, generation: opened.generation };
     };
-    const { next, input, subscription_id, generation } = await subscribe();
+    const { next, input, subscription_id, generation } = await subscribe(initialOptions);
     await run({ next, evaluate, host, input, subscribe, subscription_id, generation, tab_id: opened.tab_id });
   } finally {
     await host.stop();
+    if (host.chromium.browserUser) await rm(host.chromium.browserUser.root, { recursive: true, force: true });
     await new Promise(resolve => server.close(resolve));
     await rm(root, { recursive: true, force: true });
+    await rm(apps, { recursive: true, force: true });
   }
 }
 
@@ -194,6 +197,23 @@ test("MP-10: a child frame's unreadable cross-origin stylesheet reaches the view
   }, {
     "/frame": { type: "text/html", body: '<!doctype html><link rel="stylesheet" href="http://127.0.0.1:PORT/frame.css"><p class="mark">framed</p>' },
     "/frame.css": { type: "text/css", body: ".mark { color: rgb(1, 2, 3); }" },
+  }));
+
+// Protocol 981: the viewer lays a frame document out in the document mode of its source (an image grid in a
+// quirks-mode frame would otherwise stretch its rows). No-quirks is the default; only the other two are named.
+test("MP-08/MP-10: protocol 981 a quirks or limited-quirks frame document (same- or cross-origin) names its mode, a standards one does not", () => mirrored(
+  '<iframe src="http://localhost:PORT/quirks" style="width:300px;height:100px"></iframe><iframe src="http://localhost:PORT/standards" style="width:300px;height:100px"></iframe><iframe src="/quirks-same" style="width:300px;height:100px"></iframe><iframe src="http://localhost:PORT/limited" style="width:300px;height:100px"></iframe>', async ({ next }) => {
+    await new Promise(resolve => setTimeout(resolve, 800));
+    let wire = "";
+    for (let i = 0; i < 6; i++) { const packet = await next(i ? 500 : 0); wire += JSON.stringify([packet.nodes, packet.ops]); if (packet.snapshot_complete && (wire.match(/"document_mode":/g) ?? []).length >= 3) break; }
+    assert.equal((wire.match(/"document_mode":"quirks"/g) ?? []).length, 2, "MP-08: exactly the two quirks frame documents are named");
+    assert.equal((wire.match(/"document_mode":"limited-quirks"/g) ?? []).length, 1, "MP-08: the limited-quirks frame document is named");
+    assert.doesNotMatch(wire, /"document_mode":"no-quirks"/, "MP-08: the default is never sent");
+  }, {
+    "/quirks": { type: "text/html", body: "<p>quirks cross-origin</p>" },
+    "/standards": { type: "text/html", body: "<!doctype html><p>standards</p>" },
+    "/quirks-same": { type: "text/html", body: "<p>quirks same-origin</p>" },
+    "/limited": { type: "text/html", body: '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd"><p>limited</p>' },
   }));
 
 test("MP-10: adopted stylesheet edits with an unchanged rule count reach the viewer (document and shadow root)", () => mirrored(
@@ -1619,6 +1639,9 @@ test("MP-10 mirrorregion: an oversized opaque region (>60 % of the view) stays a
   const packet = await stayDom(next, 3000, "MP-10: stays DOM");
   const lease = await regionLease(ctx, packet.sequence);
   assert.deepEqual(lease.rect, { x: 0, y: 0, width: 1280, height: 600 });
+  const stream = ctx.host.mirror.streams.get(ctx.subscription_id);
+  const boxes = await ctx.host.mirror.v2.regionBoxes(stream, ctx.host.tabs.get(stream.tab_id));
+  assert.equal(boxes.find(box => box.id === lease.region_id).distorted, 'canvas', 'canvas video uses the composited region path even without CSS transforms');
 }, { "/tile.svg": { type: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="600"><rect width="1280" height="600" fill="rgb(255,0,0)"/></svg>' } }));
 
 // vimeo.com: an attached foreign frame whose owner has no box (a 0x0 iframe in a closed dialog) made regionBoxes
@@ -2516,3 +2539,63 @@ test("bbcframes: a web font used inside a nested cross-origin frame is delivered
     assert(delivered.some(([key, mime]) => mime === "font/woff2" && Number(key.slice(1)) >= 2e6), `the nested frame's font arrived in its own slot (${JSON.stringify(delivered)})`);
   }, { "/outer": nestedOuter2("/inner"), "/inner": { type: "text/html", body: '<!doctype html><style>@font-face{font-family:T;src:url(http://a.localhost:PORT/t.woff2) format("woff2")}b{font-family:T}</style><b id="creative">Truth matters</b>' }, "/t.woff2": { type: "font/woff2", headers: { "Access-Control-Allow-Origin": "*" }, body: "wOF2" + "\u0001".repeat(60) } }));
 function nestedOuter2(path) { return { type: "text/html", body: `<!doctype html><body><iframe src="http://a.localhost:PORT${path}" style="width:300px;height:90px"></iframe>` }; }
+
+// A src change replaces the mirror owner ID while Chrome keeps the same frame ID.
+// Its old mapping must not drain the new owner's observer and rebase updates to retired IDs.
+test("MP-08/MP-10: frame navigation retires the old owner before forwarding child mutations", () => mirrored(
+  '<iframe id="f" src="http://localhost:PORT/quirks" style="width:600px;height:300px"></iframe>', async ({ next, evaluate, input, host, subscription_id }) => {
+    await next();
+    for (const mode of ['standards', 'quirks', 'standards']) {
+      await evaluate(`document.querySelector('#f').src='http://localhost:'+location.port+'/${mode}';true`);
+      let mounted, button;
+      const rememberButton = packet => { for (const op of packet.ops) if (op.op === 'children') for (const [id, tag, attrs] of elements({ nodes: op.nodes })) if (tag === 'button' && attrs.id === 'counter') button = id; };
+      for (let i = 0; i < 12 && !mounted; i++) {
+        const packet = await next(500); rememberButton(packet);
+        if (packet.ops.some(op => op.op === 'children' && elements({ nodes: op.nodes }).some(([, tag, attrs]) => tag === 'button' && attrs.id === 'counter'))) mounted = packet;
+      }
+      assert(mounted, 'the navigated child is published');
+      // The parent's src mutation can follow the child's navigation snapshot by one credit.
+      rememberButton(await next(500)); rememberButton(await next(500));
+      const stream = host.mirror.streams.get(subscription_id);
+      assert.equal(stream.frames.size, 1, 'one live owner drains this Chrome frame');
+      assert(button, 'the live child button reached the viewer');
+      await input(stream.issued, { kind: 'click', node_id: button, x: 20, y: 10 });
+      let echoed = false;
+      for (let i = 0; i < 6 && !echoed; i++) {
+        const packet = await next(500);
+        echoed = packet.ops.some(op => op.op === 'text' && op.text === '1');
+      }
+      assert(echoed, `${mode}: the counter mutation uses the live owner's IDs`);
+    }
+  }, Object.fromEntries(['quirks', 'standards'].map(mode => ['/' + mode, { type: 'text/html', body: (mode === 'standards' ? '<!doctype html>' : '') + '<body style="margin:0;font:16px sans-serif"><h3>' + mode + '</h3><button id="counter" onclick="count.textContent=Number(count.textContent)+1">Count click</button><span id="count">0</span></body>' }]))));
+
+// MP-08 / MP-09 / MP-10 / MP-11: a verification rejection can replace the
+// ancestor while keeping the actual field/form alive. Their mirror IDs stay live.
+for (const viewportFirst of [false, true]) test(`MP-08/MP-10 verification ancestor replacement keeps live form records, viewportFirst=${viewportFirst}`, () => mirrored(
+  '<svg style="display:none">' + '<path d="M0 0"/>'.repeat(6000) + '</svg><main id="challenge"><h1>Verify account</h1><form id="verify"><label for="code">Code</label><input id="code"><button>Verify</button><p role="alert"></p></form></main>', async ({ next, evaluate }) => {
+    const first = await next(), seen = new Set();
+    const introduce = rows => {
+      let id = 0;
+      for (const row of rows) {
+        id += row[0];
+        assert(!seen.has(id), 'an existing live form descendant must not be serialized under its own ID again');
+        seen.add(id);
+      }
+    };
+    introduce(first.nodes);
+    assert(elements(first).some(([, tag, attrs]) => tag === 'input' && attrs.id === 'code'), 'visible code field is in the initial viewport');
+    await evaluate(`const old=document.querySelector('#challenge'),replacement=document.createElement('main');replacement.id=old.id;old.before(replacement);while(old.firstChild)replacement.append(old.firstChild);old.remove();document.querySelector('[role=alert]').textContent='That code was not accepted';true`);
+    let rejection = false;
+    for (let i = 0; i < 30; i++) {
+      const packet = await next(100);
+      assert(!packet.reset, 'a live ancestor replacement is incremental');
+      for (const op of packet.ops) {
+        if (op.op === 'children') {
+          introduce(op.nodes);
+          rejection ||= op.nodes.some(row => row[2] === 0 && row[3] === 'That code was not accepted');
+        } else if (op.op === 'text') rejection ||= op.text === 'That code was not accepted';
+      }
+      if (rejection && packet.snapshot_complete !== false) break;
+    }
+    assert(rejection, 'the visible site rejection travels without losing the live form');
+  }, {}, viewportFirst ? { viewport_first: true } : {}));

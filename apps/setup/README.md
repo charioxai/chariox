@@ -1,12 +1,17 @@
 # Chariox Setup (MP-07 / MP-08 / MP-11)
 
+An owner's agent (or the owner, with `/machine add`) gets a one-line command from
+the kernel's `IssueOwnMachineEnrollment` request; running it in the new machine's
+own shell downloads this Setup and redeems its single-use code with `--enroll`.
+Chariox does not log in to the machine or install over SSH.
+
 One generic executable contains public release selection and verification inputs,
 never a user enrollment code or credential. Linux x86_64 and macOS arm64 share
 PR1's marked per-user installer, signed immutable release trees, isolated service
 and state roots. Linux uses systemd --user; macOS uses launchd in the user's GUI
 domain. Setup requires Python 3 for the existing bounded archive extractor.
 For MP-07 / MP-08, Linux Setup checks logind lingering before enrollment/start,
-repair or upgrade so the user service survives SSH logout. It enables lingering
+repair or upgrade so the user service survives logout. It enables lingering
 for the current user when host policy permits. Otherwise it stops with the exact
 administrator command before consuming an enrollment code; it never invokes sudo.
 The Linux executable carries its JavaScript runtime (no Node/Bun install); its
@@ -43,8 +48,8 @@ service and removes its marked release root and CLI links; private kernel state
 and Cloud directory ownership are retained. Unlink/identity retirement remains
 an explicit ordinary kernel action, not implicit filesystem deletion.
 
-Default install ID `local` uses `~/.local/share/chariox/ssh-machines/local`,
-`~/.chariox/dev/ssh-machines/local`, Linux `chariox-ssh-local.service` or macOS
+Default install ID `local` uses `~/.local/share/chariox/machines/local`,
+`~/.chariox/dev/machines/local`, Linux `chariox-machine-local.service` or macOS
 `com.chariox.kernel.local.plist`, loopback ports 55139/55140, and `~/.local/bin`
 CLI links. Other `--id ID --port PORT` installs get independent roots/services
 and `chariox-ID` / `chariox-setup-ID` links. Existing installations and
@@ -61,6 +66,10 @@ as well as the default registry; stopped/stale kernels remain eligible for repai
 node scripts/build-chariox-setup.mjs --version VERSION --public-key PUBLIC_HEX \
   --target linux-x64 --output /absolute/task-owned/output
 ```
+
+The connected service Setup enrolls with comes from the build: `--control-plane-url URL`, or by
+default `DEFAULT_CONTROL_PLANE_URL` in `packages/kernel-client/src/default-control-plane.ts`, the one
+place the repository names a default host. `--api-url` at run time overrides it.
 
 MP-07 / MP-11: the shell bootstrap requires curl, Python 3 and an OpenSSL build
 with Ed25519 `pkeyutl -rawin` verification on `PATH`. It verifies a public RFC 8032
@@ -117,8 +126,7 @@ The kernel uses the existing ticket variant of `/auth/device/poll` to obtain onl
 its own credential. Buffers are cleared and ticket references dropped after
 redemption. A browser code without an expected-owner hint is refused for an
 already-enrolled root rather than silently claiming another user's enrollment;
-use ordinary device-flow repair for that root. SSH push retains its strict
-expected-owner check and stdin contract. Copy-kernel/context UX is PR4, using the
+use ordinary device-flow repair for that root. Copy-kernel/context UX is PR4, using the
 existing encrypted context transfer; provider logins remain per machine.
 
 ## MP-07 / MP-08 / MP-10 / MP-11 evidence limits

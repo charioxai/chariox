@@ -10,8 +10,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 use crate::runtime::router::CommandRouter;
+
+// The final offline intent can be behind one request already in flight.
+const CLOUD_PRESENCE_SHUTDOWN_TIMEOUT: Duration =
+    crate::runtime::cloud_api_client::CLOUD_PRESENCE_REQUEST_TIMEOUT
+        .saturating_add(Duration::from_secs(1))
+        .saturating_mul(2);
 
 const CLOUD_PRESENCE_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
 const CLOUD_PRESENCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
@@ -24,6 +31,7 @@ struct PresenceIntent {
 
 pub(super) struct CloudPresencePublisher {
     intent: watch::Sender<Option<PresenceIntent>>,
+    worker: JoinHandle<()>,
 }
 
 impl CloudPresencePublisher {
@@ -47,8 +55,8 @@ impl CloudPresencePublisher {
         F: Future<Output = Result<(), String>> + Send + 'static,
     {
         let (intent, intents) = watch::channel(None);
-        tokio::spawn(run_presence_worker(intents, publish));
-        Self { intent }
+        let worker = tokio::spawn(run_presence_worker(intents, publish));
+        Self { intent, worker }
     }
 
     /// Replace whatever is pending with this state; it is sent next.
@@ -57,6 +65,31 @@ impl CloudPresencePublisher {
             online,
             reason: reason.into(),
         }));
+    }
+
+    /// Drain the final intent before the runtime drops its tasks on shutdown.
+    pub(super) async fn finish(self) {
+        let Self { intent, mut worker } = self;
+        drop(intent);
+        match tokio::time::timeout(CLOUD_PRESENCE_SHUTDOWN_TIMEOUT, &mut worker).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "cloud presence worker failed during shutdown",
+                serde_json::json!({ "error": error.to_string() }),
+            ),
+            Err(_) => {
+                worker.abort();
+                let _ = worker.await;
+                crate::logging::warn_with_fields(
+                    "daemon.relay_client",
+                    "cloud presence shutdown timed out",
+                    serde_json::json!({
+                        "timeout_ms": CLOUD_PRESENCE_SHUTDOWN_TIMEOUT.as_millis(),
+                    }),
+                );
+            }
+        }
     }
 }
 

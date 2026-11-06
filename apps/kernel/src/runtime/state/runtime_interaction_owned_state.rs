@@ -407,6 +407,14 @@ impl KernelRuntimeOwnedState {
                 "approving this critical action needs your Chariox passkey",
             ));
         }
+        if !terminal_answer
+            && choice_id == "allow_browser"
+            && super::agent_task_owner_interactions::is_blocked_task_decision(interaction.id())
+        {
+            return Err(interaction_error(
+                "Allow browser access from your Chariox terminal",
+            ));
+        }
         if super::owner_context_review::is_owner_context_review(&interaction) && !terminal_answer {
             return Err(interaction_error(
                 "Only the owner's Chariox terminal can answer this review",
@@ -432,6 +440,13 @@ impl KernelRuntimeOwnedState {
                 }))
         {
             return Err(interaction_error("Not an owner-bound App host offer"));
+        }
+        if interaction
+            .choice(choice_id)
+            .is_some_and(|choice| choice.vault_unlock().is_some())
+            && custom_reply.is_none()
+        {
+            return Err(interaction_error("Enter the Vault passphrase to unlock."));
         }
         let resolved_reply = if take_host {
             "accept_host_action".to_owned()
@@ -640,11 +655,72 @@ impl KernelRuntimeOwnedState {
         self.timeout_runtime_interaction_if_current(session_id, interaction_id, None)
     }
 
+    /// The Vault was unlocked somewhere else: this unlock card is answered "unlocked"
+    /// (naming where), which closes it for every client and lets the operation go on.
+    pub(super) fn settle_vault_unlocked(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        surface: crate::local::VaultUnlockSurface,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            None,
+            Settlement::VaultUnlocked(surface),
+        )
+    }
+
+    /// A wake source a card follows occurred: the card closes for every client and the
+    /// asking agent is told what happened, in the kernel's words.
+    pub(super) fn settle_card_condition_met(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        how: String,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            None,
+            Settlement::ConditionMet(how),
+        )
+    }
+
+    pub(super) fn settle_card_unavailable(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        reason: String,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            None,
+            Settlement::Unavailable(reason),
+        )
+    }
+
     fn timeout_runtime_interaction_if_current(
         &self,
         session_id: &str,
         interaction_id: &str,
         expected: Option<&super::PendingInteraction>,
+    ) -> Result<(), DaemonError> {
+        self.settle_runtime_interaction_if_current(
+            session_id,
+            interaction_id,
+            expected,
+            Settlement::TimedOut,
+        )
+    }
+
+    fn settle_runtime_interaction_if_current(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        expected: Option<&super::PendingInteraction>,
+        settlement: Settlement,
     ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
@@ -710,7 +786,7 @@ impl KernelRuntimeOwnedState {
                 .ok_or_else(|| interaction_error("question is not active"))?;
             self.record_async_question_resolution(
                 interaction,
-                &timeout_runtime_interaction_resolution(interaction),
+                &settlement.resolution(interaction),
                 None,
                 None,
             )?;
@@ -735,7 +811,7 @@ impl KernelRuntimeOwnedState {
             self.finish_user_domain_interaction(
                 &pending,
                 interaction_id,
-                timeout_runtime_interaction_resolution(interaction),
+                settlement.resolution(interaction),
             );
             return Ok(());
         }
@@ -747,7 +823,7 @@ impl KernelRuntimeOwnedState {
                 .expect("interaction responder")
                 .take()
             {
-                let _ = sender.send(timeout_runtime_interaction_resolution(interaction));
+                let _ = sender.send(settlement.resolution(interaction));
             }
             return Ok(());
         }
@@ -764,12 +840,12 @@ impl KernelRuntimeOwnedState {
             drop(activity_mutation);
             return self.withdraw_agent_interaction_locked(interaction_id, &pending);
         };
-        let resolution = timeout_runtime_interaction_resolution(&interaction);
+        let resolution = settlement.resolution(&interaction);
         self.publish_outside_interaction(
             session_id,
             &interaction,
             InteractionPhase::Resolved(crate::local::EventResolution {
-                via: crate::local::EventResolutionVia::Timeout,
+                via: settlement.via(),
                 choice_id: resolution.choice_id.clone(),
             }),
         )?;
@@ -800,6 +876,51 @@ impl KernelRuntimeOwnedState {
         self.terminal_stream
             .notify_terminal_projection_change(session_id);
         Ok(())
+    }
+}
+
+/// How a pending interaction ends when no one picks one of its choices.
+#[derive(Clone)]
+enum Settlement {
+    TimedOut,
+    VaultUnlocked(crate::local::VaultUnlockSurface),
+    /// The wake source the card follows occurred; the text is kernel-written.
+    ConditionMet(String),
+    Unavailable(String),
+}
+
+impl Settlement {
+    fn resolution(
+        &self,
+        interaction: &crate::session::RuntimeInteraction,
+    ) -> super::PendingInteractionResolution {
+        match self {
+            Self::TimedOut => timeout_runtime_interaction_resolution(interaction),
+            Self::VaultUnlocked(surface) => super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some("unlocked".into()),
+                reply: Some(surface.as_str().into()),
+            },
+            Self::ConditionMet(how) => super::PendingInteractionResolution {
+                status: "answered",
+                choice_id: Some("condition_met".into()),
+                reply: Some(how.clone()),
+            },
+            Self::Unavailable(reason) => super::PendingInteractionResolution {
+                status: "unavailable",
+                choice_id: None,
+                reply: Some(reason.clone()),
+            },
+        }
+    }
+
+    fn via(&self) -> crate::local::EventResolutionVia {
+        match self {
+            Self::TimedOut => crate::local::EventResolutionVia::Timeout,
+            Self::VaultUnlocked(_) | Self::ConditionMet(_) | Self::Unavailable(_) => {
+                crate::local::EventResolutionVia::Terminal
+            }
+        }
     }
 }
 

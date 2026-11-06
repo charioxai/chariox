@@ -1,0 +1,325 @@
+#!/usr/bin/env node
+// OF-18+: compute-provider and Cloud-only business logic belongs to Cloud. OSS product code,
+// deploy files and drill scripts stay neutral. Three checks:
+//   1. vocabulary: provider names, server types, API hosts and pinned addresses (OF-18), plus
+//      rental, pricing, billing, auto-stop, reimage, compute-class and vendor-host words;
+//   2. control-plane API paths called from the kernel, CLI, kernel client and relay are listed
+//      in scripts/control-plane-paths.allow.json;
+//   3. Cloud-shaped local-API requests and kernel-client builders are listed in
+//      scripts/control-plane-requests.allow.json.
+// Test files and docs may use these words as sample data. The leak list
+// (scripts/oss-boundary-leaks.allow.json) may only shrink: an entry whose file no longer
+// matches fails, so deleting a leak means deleting its entry in the same change.
+import { execFileSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const PROVIDER_PATTERNS = [
+  ['provider name', /hetzner|hcloud\b|\bovh|boat\.dev|\bboat_|digitalocean|linode|vultr|scaleway|\b(?:aws|ec2|gcp|azure)\b/i],
+  ['server type', /\b(?:cpx|ccx|cax)\d{2}\b|\bcx[2-5]2\b/i],
+  ['provider API host', /amazonaws\.com|compute\.googleapis\.com|management\.azure\.com/i],
+  ['pinned provider address', /195\.201\.123\.115/],
+]
+
+// Cloud business vocabulary: rental, pricing, billing and shutdown policy are decided by the
+// connected service, never compiled into OSS. A word counts inside snake_case and SCREAMING_CASE
+// identifiers (`hourly_price`) because `_` is not a word break here. `credits` and `region` stay allowed (relay flow
+// control, screen regions).
+const VOCABULARY_PATTERNS = [
+  ['rental word', /(?<![A-Za-z0-9])rent(?:s|al|als|ed|ing)?(?![A-Za-z0-9])/i],
+  ['pricing word', /(?<![A-Za-z0-9])pric(?:e|es|ing)(?![A-Za-z0-9])/i],
+  ['billing word', /(?<![A-Za-z0-9])(?:billing|billable|invoices?)(?![A-Za-z0-9])/i],
+  ['auto-stop word', /auto[-_ ]?stop/i],
+  ['reimage word', /reimage|Reimage|REIMAGE/],
+  ['compute class word', /compute[-_ ]?class/i],
+  ['hourly word', /(?<![A-Za-z0-9])hourly(?![A-Za-z0-9])/i],
+  ['vendor host', /(?:^|[^\w.-])(?:[a-z][a-z0-9-]*\.)*chariox\.com\b/i],
+]
+
+// Files that may name a provider or use the Cloud vocabulary: documentation, history, test files
+// (sample data), spikes and vendored patches (upstream text).
+const EXEMPT_PATH = /^(?:docs(?:-site)?|spikes|patches)\/|(?:^|\/)[Tt]ests?\/|(?:^|\/)tests\.rs$|_tests?\.rs$|\.test(?:-support)?(?:\.[^/]*)?$|\.bun-test\.|(?:^|\/)pnpm-lock\.yaml$|(?:^|\/)Cargo\.lock$|\.md$/
+// The guard and its allowlists name the words they forbid.
+const SELF_FILES = new Set(['scripts/oss-boundary-guard.mjs', 'scripts/oss-boundary-leaks.allow.json', 'scripts/control-plane-paths.allow.json', 'scripts/control-plane-requests.allow.json'])
+
+// The one file that names the connected service a client signs in to by default.
+export const DEFAULT_HOST_FILE = 'packages/kernel-client/src/default-control-plane.ts'
+
+// Whole-file exceptions, each justified: the name is not a compute provider's business logic.
+export const ALLOWED_FILES = new Map([
+  ['apps/kernel/src/secret_redaction.rs', 'detects leaked cloud-account secret formats (AWS access keys); not compute-provider logic'],
+  ['apps/kernel/src/runtime/state/claude_permission_rules.rs', 'denies reads of the well-known ~/.aws/credentials file; not compute-provider logic'],
+  ['apps/cli/scripts/lib/managed-parity-semantic-reviews.mjs', 'historical MP-11 review record, pinned byte-for-byte to commit 9334141d4 by its own test; it names a blob that existed then'],
+  ['apps/cli/scripts/lib/managed-parity-source-rules.mjs', 'historical MP-11 source rules paired with the pinned review record above; the ledger test requires matching paths'],
+  ['apps/cli/scripts/benchmarks/qualification/guest-preflight.py', 'copies the OSWorld benchmark release table, whose "aws" key is upstream benchmark data'],
+  ['apps/cli/scripts/fixtures/misbehaving-app/bundle/runtime/main.mjs', 'fixture app that prints a fake leaked secret to exercise redaction'],
+  ['.playwright-mcp/page-2026-07-12T07-22-36-711Z.yml', 'captured third-party page text (a "pricing" link), not product code'],
+  ['apps/browser-display/drill-fixtures.mjs', 'fixture page whose sample text says "invoice"'],
+  ['apps/cli/scripts/lib/drill-child-process.mjs', 'matches the AI provider\'s own "manage your billing" error text to classify a blocked drill'],
+  ['apps/cli/scripts/lib/drill-failure-taxonomy.mjs', 'drill advice about an AI provider account\'s quota or billing'],
+  ['apps/kernel/src/slice_provider_auth.rs', 'reads `billingType`, the AI provider (Claude) OAuth account field that names its plan, from the provider profile'],
+  ['apps/cli/scripts/live-slice-lifecycle-drill.mjs', 'writes a fake Claude OAuth account with the `billingType` field the provider tool stores'],
+  ['apps/kernel/src/local/provider_requests/catalog.rs', 'AI provider account catalog: the `billing_kind` of an AI service credential (subscription or prepaid), not compute rental'],
+  ['apps/cli/scripts/lib/room-provider-business-result.mjs', 'reads a "price" field from a sample vendor-research page'],
+  ['apps/cli/scripts/lib/wp07p-extra-provider-drills.mjs', 'fixture page with a "price" column for a research drill'],
+  ['apps/cli/scripts/live-external-provider-live-parity-drill.mjs', 'matches AI provider usage-limit and billing messages'],
+  ['apps/cli/scripts/live-semantic-url-renderer-drill.mjs', 'fixture website with a /pricing page for a rendering drill'],
+  ['apps/cli/src/provider-command-handlers.ts', 'shows the AI provider account\'s own billing kind (subscription or API key)'],
+  ['apps/kernel/schema/workflow-publication-deployment-contract-v1.schema.json', 'JSON schema $id, an identifier and not a service endpoint'],
+  ['apps/kernel/src/account_profile.rs', 'AI provider account billing class, observed from the provider tool'],
+  ['apps/kernel/src/dictation/remote.rs', 'user message for a speech-service billing refusal'],
+  ['apps/kernel/src/provider/claude_runtime/events.rs', 'keeps the AI provider\'s billing fields when merging a result'],
+  ['apps/kernel/src/provider/prompt_signals.rs', 'recognizes AI provider billing and usage-limit failures'],
+  ['apps/kernel/src/provider/turn_outcome.rs', 'recognizes AI provider billing failures'],
+  ['apps/kernel/src/runtime/event_catalog_control.rs', 'publisher metadata of the dummy event generator, an identifier and not a service endpoint'],
+  ['examples/apps/univer/scripts/drill-view.mjs', 'sample spreadsheet data with a "Price" column'],
+  ['packages/kernel-client/src/kernel-types-provider.ts', 'AI provider account billing class type, observed from the provider tool'],
+  ['packages/tool-display/schema/tool-display.schema.json', 'JSON schema $id, an identifier and not a service endpoint'],
+  ['scripts/package-chariox-setup-linux.mjs', 'package maintainer e-mail in the Debian control file'],
+])
+
+// Offset just past the Rust item that starts at `from`: its first `;` or closing `}` outside
+// brackets, strings, chars and comments.
+function itemEnd(text, from) {
+  let depth = 0
+  for (let i = from; i < text.length; i++) {
+    const c = text[i]
+    if (c === '/' && text[i + 1] === '/') { i = text.indexOf('\n', i); if (i === -1) return text.length; continue }
+    if (c === '/' && text[i + 1] === '*') {
+      let nesting = 1
+      for (i += 2; i < text.length && nesting > 0; i++) {
+        if (text[i] === '/' && text[i + 1] === '*') { nesting++; i++ } else if (text[i] === '*' && text[i + 1] === '/') { nesting--; i++ }
+      }
+      i--
+      continue
+    }
+    const raw = /^b?r(#*)"/.exec(text.slice(i, i + 40))
+    if (raw && !/[\w]/.test(text[i - 1] ?? '')) {
+      const close = text.indexOf(`"${raw[1]}`, i + raw[0].length)
+      if (close === -1) return text.length
+      i = close + raw[1].length
+      continue
+    }
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++
+      continue
+    }
+    if (c === "'") {
+      if (text[i + 1] === '\\') i = text.indexOf("'", i + 3)
+      else if (text[i + 2] === "'") i += 2
+      if (i === -1) return text.length
+      continue
+    }
+    if (c === '{' || c === '(' || c === '[') depth++
+    else if (c === '}' || c === ')' || c === ']') {
+      depth--
+      if (depth === 0 && c === '}') return i + 1
+    } else if (c === ';' && depth === 0) return i + 1
+  }
+  return text.length
+}
+
+// Rust unit tests live in the same file as the code and `#[cfg(test)]` covers only the item
+// after it; blank each such item (keeping line numbers) and scan the production code around it.
+function productText(path, text) {
+  if (!path.endsWith('.rs')) return text
+  let out = ''
+  let cursor = 0
+  const attribute = /^#\[cfg\(test\)\]/gm
+  for (let hit = attribute.exec(text); hit; hit = attribute.exec(text)) {
+    if (hit.index < cursor) continue
+    const end = itemEnd(text, hit.index + hit[0].length)
+    out += text.slice(cursor, hit.index) + text.slice(hit.index, end).replace(/[^\n]/g, '')
+    cursor = end
+  }
+  return out + text.slice(cursor)
+}
+
+// `RentalQuote` -> `Rental Quote`, `parseHTTPServer` -> `parse HTTP Server`. The patterns are
+// case-insensitive and cannot see a case change, so CamelCase text is also matched with a space at
+// each lower->Upper and Acronym->Word boundary. Whole words only: a lower-case run is never split,
+// so `current` or `parent` never yield `rent`. Embedded base64 data (a long mixed-case run) holds
+// no identifiers and random case changes in it would spell banned words, so it is left alone.
+const DATA_RUN = /[A-Za-z0-9+/=]{64,}/g
+const isDataRun = run => /\d/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run)
+const splitWords = text => text
+  .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+  .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+
+export function splitIdentifierWords(text) {
+  let out = ''
+  let cursor = 0
+  for (const run of text.matchAll(DATA_RUN)) {
+    if (!isDataRun(run[0])) continue
+    out += splitWords(text.slice(cursor, run.index)) + run[0]
+    cursor = run.index + run[0].length
+  }
+  return out + splitWords(text.slice(cursor))
+}
+
+function matchedKinds(patterns, text) {
+  const split = splitIdentifierWords(text)
+  return patterns.filter(([, pattern]) => pattern.test(text) || pattern.test(split)).map(([kind]) => kind)
+}
+
+function patternFindings(path, text, patterns) {
+  const findings = matchedKinds(patterns, path).map(kind => ({ file: path, line: 0, kind: `${kind} in path`, text: path }))
+  productText(path, text).split('\n').forEach((line, index) => {
+    for (const kind of matchedKinds(patterns, line)) findings.push({ file: path, line: index + 1, kind, text: line.trim().slice(0, 140) })
+  })
+  return findings
+}
+
+export const providerNameFindings = (path, text) => patternFindings(path, text, PROVIDER_PATTERNS)
+export const vocabularyFindings = (path, text) => patternFindings(path, text, VOCABULARY_PATTERNS)
+
+// Product code for the path and request checks; ALLOWED_FILES only excuses vocabulary.
+const isProductPath = path => !SELF_FILES.has(path) && !EXEMPT_PATH.test(path)
+export const isCheckedPath = path => isProductPath(path) && !ALLOWED_FILES.has(path)
+
+const PATH_SCAN_ROOTS = ['apps/kernel/src/', 'apps/cli/src/', 'packages/kernel-client/src/', 'apps/relay/src/']
+const PATH_SCAN_EXTENSION = /\.(?:rs|tsx?)$/
+// A string literal that starts with a control-plane path, optionally after a `{}` or `${..}` base.
+const PATH_LITERAL = /["'`](?:\{\}|\$\{[^}]*\})?(\/(?:v1\/|managed-|control-plane|relay\/|kernels\/)[^"'`\s]*)/g
+
+// Control-plane API paths in a source file, normalized: no query, placeholders as `{}`.
+export function controlPlanePaths(path, text) {
+  const found = []
+  productText(path, text).split('\n').forEach((line, index) => {
+    const code = line.trimStart()
+    if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*')) return
+    for (const hit of line.matchAll(PATH_LITERAL)) {
+      const normalized = hit[1].split('?')[0].replace(/\$\{[^}]*(?:\}|$)/g, '{}').replace(/\{[^}]*\}/g, '{}').replace(/\\+$/, '')
+      if (/\.[a-z]+$/.test(normalized)) continue // a file name such as /managed-vault.json, not an API path
+      found.push({ path: normalized, line: index + 1 })
+    }
+  })
+  return found
+}
+
+// Variant names of the Rust enum `name`, written one per line at four-space indent.
+export function enumVariants(text, name) {
+  const start = text.indexOf(`pub enum ${name} {`)
+  if (start === -1) return []
+  const body = text.slice(start).split('\n').slice(1)
+  const end = body.findIndex(line => line.startsWith('}'))
+  return body.slice(0, end === -1 ? undefined : end).flatMap(line => /^ {4}([A-Z]\w*)/.exec(line)?.[1] ?? [])
+}
+
+const CLOUD_SHAPED_REQUEST = /Cloud|Managed|Disposable|Reimage|AutoStop|Rent|Billing|Hosted|Price|Image/
+const REQUEST_ENUMS = [
+  ['apps/kernel/src/local/api/types/request.rs', 'LocalDaemonRequest'],
+  ['apps/kernel/src/local/api/types/control_plane.rs', 'ControlPlaneRequest'],
+]
+const CLIENT_BUILDER_FILE = /^packages\/kernel-client\/src\/ipc-(?:managed|disposable|cloud)-[^/]*\.ts$/
+const REQUEST_REASON = /^(?:generic seam: |Cloud-only, deleted by ).{8,}/
+
+function readText(root, path) {
+  try {
+    const text = readFileSync(resolve(root, path), 'utf8')
+    return text.includes('\u0000') ? null : text
+  } catch { return null }
+}
+
+function readAllowlist(root, name) {
+  const path = resolve(root, 'scripts', name)
+  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : []
+}
+
+const problem = (file, kind, text, line = 0) => ({ file, line, kind, text })
+
+function vocabularyProblems(root, files) {
+  const leaks = new Map()
+  for (const entry of readAllowlist(root, 'oss-boundary-leaks.allow.json')) {
+    if (!entry.path || !entry.removedBy) { leaks.set(entry.path ?? '?', null); continue }
+    leaks.set(entry.path, entry)
+  }
+  const matched = new Set()
+  const problems = []
+  for (const path of files.filter(isCheckedPath)) {
+    const text = readText(root, path)
+    if (text === null) continue
+    problems.push(...providerNameFindings(path, text))
+    const vocabulary = vocabularyFindings(path, text).filter(f => !(path === DEFAULT_HOST_FILE && f.kind === 'vendor host'))
+    if (vocabulary.length === 0) continue
+    if (leaks.has(path)) matched.add(path)
+    else problems.push(...vocabulary.map(f => ({ ...f, kind: `${f.kind}: Cloud-only vocabulary in OSS (no entry in scripts/oss-boundary-leaks.allow.json)` })))
+  }
+  for (const [path, entry] of leaks) {
+    if (entry === null) problems.push(problem(path, 'leak entry', 'needs a path and the PR or item that removes it (removedBy)'))
+    else if (!matched.has(path)) problems.push(problem(path, 'stale leak entry', `no longer matches: delete the entry (${entry.removedBy})`))
+  }
+  return problems
+}
+
+function controlPlanePathProblems(root, files) {
+  const entries = readAllowlist(root, 'control-plane-paths.allow.json')
+  const known = new Map()
+  const problems = []
+  for (const entry of entries) {
+    const label = entry.path ?? '?'
+    if (!entry.path || !entry.why || !entry.seam || !Array.isArray(entry.callers) || entry.callers.length === 0) {
+      problems.push(problem('scripts/control-plane-paths.allow.json', 'path entry', `${label} needs path, callers, why and seam`))
+      continue
+    }
+    known.set(entry.path, entry)
+  }
+  const seen = new Map()
+  for (const path of files.filter(f => PATH_SCAN_ROOTS.some(r => f.startsWith(r)) && PATH_SCAN_EXTENSION.test(f) && isProductPath(f))) {
+    const text = readText(root, path)
+    if (text === null) continue
+    for (const found of controlPlanePaths(path, text)) {
+      const entry = known.get(found.path)
+      if (!entry) problems.push(problem(path, 'unlisted control-plane path', `${found.path} is not in scripts/control-plane-paths.allow.json`, found.line))
+      else if (!entry.callers.includes(path)) problems.push(problem(path, 'unlisted control-plane caller', `${found.path} is called here but its entry names ${entry.callers.join(', ')}`, found.line))
+      else seen.set(`${found.path} ${path}`, true)
+    }
+  }
+  for (const entry of known.values()) {
+    for (const caller of entry.callers) {
+      if (!seen.has(`${entry.path} ${caller}`)) problems.push(problem('scripts/control-plane-paths.allow.json', 'stale control-plane path', `${entry.path} is no longer called from ${caller}: delete it from the entry`))
+    }
+  }
+  return problems
+}
+
+function requestProblems(root, files) {
+  const entries = readAllowlist(root, 'control-plane-requests.allow.json')
+  const present = new Set()
+  for (const [path, name] of REQUEST_ENUMS) {
+    const text = readText(root, path)
+    if (text !== null) enumVariants(text, name).filter(v => CLOUD_SHAPED_REQUEST.test(v)).forEach(v => present.add(`${name}::${v}`))
+  }
+  files.filter(f => CLIENT_BUILDER_FILE.test(f) && isProductPath(f)).forEach(f => present.add(f))
+  const problems = []
+  const listed = new Map(entries.map(entry => [entry.name, entry]))
+  for (const name of present) {
+    const entry = listed.get(name)
+    if (!entry) problems.push(problem(name.includes('::') ? 'scripts/control-plane-requests.allow.json' : name, 'unlisted Cloud-shaped request', `${name} is not in scripts/control-plane-requests.allow.json`))
+    else if (!REQUEST_REASON.test(entry.why ?? '')) problems.push(problem('scripts/control-plane-requests.allow.json', 'request entry', `${name} needs a why that starts with "generic seam: " or "Cloud-only, deleted by "`))
+  }
+  for (const name of listed.keys()) {
+    if (!present.has(name)) problems.push(problem('scripts/control-plane-requests.allow.json', 'stale request entry', `${name} no longer exists: delete the entry`))
+  }
+  return problems
+}
+
+export function boundaryProblems(root, files = trackedFiles(root)) {
+  return [...vocabularyProblems(root, files), ...controlPlanePathProblems(root, files), ...requestProblems(root, files)]
+}
+
+function trackedFiles(root) {
+  return execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 })
+    .split('\u0000').filter(Boolean)
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const problems = boundaryProblems(resolve(fileURLToPath(import.meta.url), '../..'))
+  for (const f of problems) console.error(`${f.file}:${f.line}: ${f.kind}: ${f.text}`)
+  if (problems.length) {
+    console.error(`\n${problems.length} OSS boundary problem(s): provider and Cloud-only logic belongs to Cloud (AGENTS.md "Runtime rules"); allowlists may only shrink.`)
+    process.exit(1)
+  }
+  console.log('oss-boundary-guard: ok')
+}

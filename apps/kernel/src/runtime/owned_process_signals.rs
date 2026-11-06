@@ -1,4 +1,6 @@
 //! Signals require a retained PID/start witness, including every group member.
+#[cfg(target_os = "macos")]
+use crate::runtime::bounded_process::BoundedCommandExt as _;
 use std::{collections::BTreeMap, io, process::Child};
 
 #[derive(Clone, Debug)]
@@ -8,6 +10,8 @@ struct ProcessIdentity {
     group: u32,
     session: u32,
     start: String,
+    #[cfg(target_os = "linux")]
+    exited: bool,
 }
 
 pub(crate) struct OwnedProcessSignals {
@@ -113,7 +117,7 @@ impl OwnedProcessSignals {
     fn group_with(
         &mut self,
         rows: &[ProcessIdentity],
-        send: impl FnOnce(i32) -> io::Result<()>,
+        send: impl FnOnce(i32, Signal) -> io::Result<()>,
     ) -> io::Result<bool> {
         self.refresh_from(rows);
         let members: Vec<_> = rows.iter().filter(|row| row.group == self.root).collect();
@@ -126,7 +130,7 @@ impl OwnedProcessSignals {
         {
             return Err(io::Error::other("unowned or reused process group member"));
         }
-        send(-(self.root as i32))?;
+        send(-(self.root as i32), Signal::Kill)?;
         Ok(true)
     }
 
@@ -138,21 +142,227 @@ impl OwnedProcessSignals {
         self.kill_owned_with(snapshot, send_signal)
     }
 
-    fn kill_owned_with(
-        &mut self,
-        mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
-        mut send: impl FnMut(i32) -> io::Result<()>,
-    ) -> io::Result<()> {
-        self.refresh_from(&inspect()?);
-        let pids: Vec<_> = self.owned.keys().copied().collect();
-        for pid in pids.into_iter().rev() {
-            // Recheck each birth immediately before its individual signal.
-            let rows = inspect()?;
-            if rows.iter().any(|row| row.pid == pid && self.matches(row)) {
-                send(pid as i32)?;
+    #[cfg(unix)]
+    pub(crate) fn signal_owned_processes(&mut self, signal: i32) -> io::Result<()> {
+        let rows = snapshot()?;
+        self.refresh_from(&rows);
+        for pid in self.parents_first(&rows) {
+            if snapshot()?
+                .iter()
+                .any(|row| row.pid == pid && self.matches(row))
+            {
+                send_signal_with(pid as i32, signal)?;
             }
         }
         Ok(())
+    }
+
+    /// Freezes the whole tree before ending any member: a waiting parent whose child is killed
+    /// first would otherwise resume and run its next command before its own signal arrives.
+    /// Frozen parents cannot resume, so descendants end first and the root, whose exit a caller
+    /// waits for, ends last.
+    fn kill_owned_with(
+        &mut self,
+        mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
+        mut send: impl FnMut(i32, Signal) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut stopped = std::collections::BTreeSet::new();
+        loop {
+            let rows = inspect()?;
+            self.refresh_from(&rows);
+            // A member forked before its parent froze appears in the next snapshot.
+            let pending: Vec<_> = self
+                .parents_first(&rows)
+                .into_iter()
+                .filter(|pid| !stopped.contains(pid))
+                .collect();
+            if pending.is_empty() {
+                break;
+            }
+            for pid in pending {
+                self.signal_current(pid, Signal::Stop, &mut inspect, &mut send)?;
+                stopped.insert(pid);
+            }
+        }
+        let rows = inspect()?;
+        for pid in self.parents_first(&rows).into_iter().rev() {
+            self.signal_current(pid, Signal::Kill, &mut inspect, &mut send)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn all_exited(&self) -> io::Result<bool> {
+        for (pid, start) in &self.owned {
+            let row = witnessed_row(*pid)?;
+            if !witnessed_exit(start, row)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn pin_owned_processes_into(
+        &mut self,
+        handles: &mut OwnedProcessHandles,
+    ) -> io::Result<()> {
+        let rows = snapshot()?;
+        self.refresh_from(&rows);
+        for row in &rows {
+            if row.start.is_empty()
+                && self.owned.contains_key(&row.pid)
+                && !handles.0.contains_key(&row.pid)
+            {
+                return Err(io::Error::other(
+                    "owned process identity is unreadable before pinning",
+                ));
+            }
+            if !self.matches(row) || handles.0.contains_key(&row.pid) {
+                continue;
+            }
+            if row.pid <= 1 || row.pid > i32::MAX as u32 {
+                return Err(io::Error::other("invalid child PID"));
+            }
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, row.pid, 0) };
+            if fd < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    continue;
+                }
+                return Err(error);
+            }
+            use std::os::fd::FromRawFd;
+            let handle = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) };
+            if snapshot()?
+                .iter()
+                .any(|current| current.pid == row.pid && self.matches(current))
+            {
+                // Publish each verified handle immediately. A subsequent pin
+                // failure must retain both old and newly acquired ownership.
+                handles.0.insert(row.pid, handle);
+            }
+        }
+        for (pid, start) in &self.owned {
+            if !handles.0.contains_key(pid) && !witnessed_exit(start, witnessed_row(*pid)?)? {
+                return Err(io::Error::other("live owned process could not be pinned"));
+            }
+        }
+        Ok(())
+    }
+
+    /// Owned members still alive, every parent before its descendants.
+    fn parents_first(&self, rows: &[ProcessIdentity]) -> Vec<u32> {
+        let alive: BTreeMap<u32, u32> = rows
+            .iter()
+            .filter(|row| self.matches(row))
+            .map(|row| (row.pid, row.parent))
+            .collect();
+        let depth = |mut pid: u32| {
+            let mut depth = 0;
+            while let Some(parent) = alive.get(&pid).copied().filter(|p| alive.contains_key(p)) {
+                if depth > alive.len() {
+                    break;
+                }
+                depth += 1;
+                pid = parent;
+            }
+            depth
+        };
+        let mut order: Vec<_> = alive.keys().map(|pid| (depth(*pid), *pid)).collect();
+        order.sort_unstable();
+        order.into_iter().map(|(_, pid)| pid).collect()
+    }
+
+    /// Rechecks the birth immediately before its individual signal.
+    fn signal_current(
+        &self,
+        pid: u32,
+        signal: Signal,
+        inspect: &mut impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
+        send: &mut impl FnMut(i32, Signal) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if inspect()?
+            .iter()
+            .any(|row| row.pid == pid && self.matches(row))
+        {
+            send(pid as i32, signal)?;
+        }
+        Ok(())
+    }
+
+    /// The launched leader's PID and birth, for a record that outlives this kernel.
+    pub(crate) fn root_birth(&self) -> (u32, String) {
+        (
+            self.root,
+            self.owned.get(&self.root).cloned().unwrap_or_default(),
+        )
+    }
+
+    /// Ends what remains of a tree an earlier kernel launched in its own session with `claim`
+    /// in its environment. Ok(true): nothing of it is left. Ok(false): its members were just
+    /// signalled; ask again. An error means some member could not be inspected, so it may live.
+    pub(crate) fn end_claimed_tree(claim: &str, leader: Option<(u32, &str)>) -> io::Result<bool> {
+        Self::end_claimed_tree_with(claim, leader, snapshot, read_environment, send_signal)
+    }
+
+    fn end_claimed_tree_with(
+        claim: &str,
+        leader: Option<(u32, &str)>,
+        mut inspect: impl FnMut() -> io::Result<Vec<ProcessIdentity>>,
+        environment: impl Fn(u32) -> io::Result<Option<Vec<u8>>>,
+        send: impl FnMut(i32, Signal) -> io::Result<()>,
+    ) -> io::Result<bool> {
+        if claim.is_empty() {
+            return Err(io::Error::other("the launch claim is missing"));
+        }
+        let marker = format!("{CLAIM_VARIABLE}={claim}").into_bytes();
+        let rows = inspect()?;
+        // The saved leader is a witness of its own: the same PID with the same birth is the
+        // script's session leader, so its tree is known without reading any environment.
+        let live_leader = leader
+            .filter(|(pid, birth)| *pid > 1 && !birth.is_empty())
+            .and_then(|(pid, birth)| rows.iter().find(|row| row.pid == pid && row.start == birth));
+        let mut owned = BTreeMap::new();
+        for row in rows.iter().filter(|row| row.pid > 1) {
+            if live_leader.is_some_and(|leader| leader.pid == row.pid) {
+                owned.insert(row.pid, row.start.clone());
+                continue;
+            }
+            let named_by_launch = leader.is_some_and(|(pid, birth)| {
+                (row.pid == pid && row.start == birth) || (row.session == pid && pid > 1)
+            });
+            let marked = match environment(row.pid)? {
+                Some(bytes) => bytes.split(|byte| *byte == 0).any(|entry| entry == marker),
+                // The leader's session is ended through the leader below.
+                None if named_by_launch && live_leader.is_none() => {
+                    return Err(io::Error::other("an earlier Setup process is unreadable"))
+                }
+                None => false,
+            };
+            if !marked {
+                continue;
+            }
+            if row.start.is_empty() {
+                return Err(io::Error::other("an earlier Setup process has no birth"));
+            }
+            owned.insert(row.pid, row.start.clone());
+        }
+        let Some(root) = live_leader
+            .map(|leader| leader.pid)
+            .or_else(|| owned.keys().next().copied())
+        else {
+            return Ok(true);
+        };
+        let mut guard = Self {
+            root,
+            exclusive_session: live_leader
+                .filter(|leader| leader.session == leader.pid)
+                .map(|leader| leader.pid),
+            owned,
+        };
+        guard.kill_owned_with(inspect, send)?;
+        Ok(false)
     }
 
     pub(crate) fn kill_child(&mut self) -> io::Result<bool> {
@@ -163,13 +373,166 @@ impl OwnedProcessSignals {
         if !self.matches(row) {
             return Err(io::Error::other("child PID was reused"));
         }
-        send_signal(self.root as i32)?;
+        send_signal(self.root as i32, Signal::Kill)?;
         Ok(true)
     }
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+pub(crate) struct OwnedProcessHandles(BTreeMap<u32, std::os::fd::OwnedFd>);
+
+#[cfg(target_os = "linux")]
+impl OwnedProcessHandles {
+    pub(crate) fn signal(&self, signal: i32) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        for (pid, handle) in &self.0 {
+            if *pid <= 1 {
+                return Err(io::Error::other("reserved child signal target"));
+            }
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    handle.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0,
+                )
+            };
+            if result < 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn all_exited(&self) -> bool {
+        use std::os::fd::AsRawFd;
+        self.0.values().all(|handle| {
+            let mut fd = libc::pollfd {
+                fd: handle.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            unsafe { libc::poll(&mut fd, 1, 0) == 1 }
+        })
+    }
+}
+
+/// Names the run a process belongs to; every descendant inherits it.
+pub(crate) const CLAIM_VARIABLE: &str = "CHARIOX_SETUP_CLAIM";
+
+/// Ok(None): the process cannot be read (another user's or hidden), so it proves nothing.
+#[cfg(target_os = "linux")]
+fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
+    match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => {
+            Ok(Some(Vec::new()))
+        }
+        Err(error) if matches!(error.raw_os_error(), Some(libc::EACCES | libc::EPERM)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+/// The environment comes from the process arguments the kernel keeps; another user's process
+/// and a process that is gone read as unreadable and as empty, like the Linux file.
+#[cfg(target_os = "macos")]
+fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let mut size: libc::size_t = 0;
+    let mut buffer = Vec::new();
+    // The first call reports the size, the second fills the buffer.
+    for fill in [false, true] {
+        let target = if fill {
+            buffer.resize(size, 0u8);
+            buffer.as_mut_ptr().cast()
+        } else {
+            std::ptr::null_mut()
+        };
+        let result = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                mib.len() as libc::c_uint,
+                target,
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if result != 0 {
+            let error = io::Error::last_os_error();
+            return match error.raw_os_error() {
+                Some(libc::ESRCH) => Ok(Some(Vec::new())),
+                Some(libc::EPERM | libc::EACCES | libc::EINVAL) => Ok(None),
+                _ => Err(error),
+            };
+        }
+    }
+    buffer.truncate(size);
+    procargs2_environment(&buffer).map(Some)
+}
+/// No environment is readable here: only the launch witnesses can show the tree is gone.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_environment(_: u32) -> io::Result<Option<Vec<u8>>> {
+    Ok(None)
+}
+
+/// The environment of a `KERN_PROCARGS2` buffer, as NUL-ended entries like `/proc/<pid>/environ`.
+/// The buffer is the argument count (a native `i32`), the executable path, NUL padding, that
+/// many arguments, then the environment strings. A last entry cut short by the kernel's size
+/// limit is dropped; a buffer that ends before the environment starts is an error.
+#[cfg(any(target_os = "macos", test))]
+fn procargs2_environment(buffer: &[u8]) -> io::Result<Vec<u8>> {
+    let malformed = || io::Error::other("the process arguments are not readable");
+    let (count, rest) = buffer.split_first_chunk::<4>().ok_or_else(malformed)?;
+    let count = usize::try_from(i32::from_ne_bytes(*count)).map_err(|_| malformed())?;
+    // The executable path, then the padding that follows it.
+    let path_end = rest
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(malformed)?;
+    let mut rest = &rest[path_end..];
+    while let [0, tail @ ..] = rest {
+        rest = tail;
+    }
+    for _ in 0..count {
+        let end = rest
+            .iter()
+            .position(|byte| *byte == 0)
+            .ok_or_else(malformed)?;
+        rest = &rest[end + 1..];
+    }
+    let mut environment = Vec::new();
+    for entry in rest.split_inclusive(|byte| *byte == 0) {
+        match entry {
+            [0] => break,
+            [.., 0] => environment.extend_from_slice(entry),
+            _ => break,
+        }
+    }
+    Ok(environment)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Signal {
+    Stop,
+    Kill,
+}
+
 #[cfg(unix)]
-fn send_signal(pid: i32) -> io::Result<()> {
+fn send_signal(pid: i32, signal: Signal) -> io::Result<()> {
+    let signal = match signal {
+        Signal::Stop => libc::SIGSTOP,
+        Signal::Kill => libc::SIGKILL,
+    };
+    send_signal_with(pid, signal)
+}
+
+#[cfg(unix)]
+fn send_signal_with(pid: i32, signal: i32) -> io::Result<()> {
     // MP-11: reject system-wide targets even if a future caller loses its witness.
     if pid == i32::MIN || (-1..=1).contains(&pid) {
         return Err(io::Error::other("invalid process signal target"));
@@ -178,7 +541,7 @@ fn send_signal(pid: i32) -> io::Result<()> {
     if matches!(pid, -1..=1) {
         return Err(io::Error::other("reserved signal target"));
     }
-    if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+    if unsafe { libc::kill(pid, signal) } == 0 {
         return Ok(());
     }
     let error = io::Error::last_os_error();
@@ -189,7 +552,7 @@ fn send_signal(pid: i32) -> io::Result<()> {
     }
 }
 #[cfg(not(unix))]
-fn send_signal(_: i32) -> io::Result<()> {
+fn send_signal(_: i32, _: Signal) -> io::Result<()> {
     Err(io::Error::other("owned signals unsupported"))
 }
 
@@ -245,7 +608,28 @@ fn linux_row(pid: u32, stat: io::Result<Vec<u8>>) -> io::Result<Option<ProcessId
         group,
         session,
         start: fields[19].into(),
+        exited: matches!(fields[0], "Z" | "X"),
     }))
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_row(pid: u32) -> io::Result<Option<ProcessIdentity>> {
+    match std::fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => linux_row(pid, Ok(bytes)),
+        Err(error) if matches!(error.raw_os_error(), Some(libc::ENOENT | libc::ESRCH)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn witnessed_exit(start: &str, row: Option<ProcessIdentity>) -> io::Result<bool> {
+    match row {
+        None => Ok(true),
+        Some(row) if row.start.is_empty() => {
+            Err(io::Error::other("owned process identity is unreadable"))
+        }
+        Some(row) => Ok(row.start != start || row.exited),
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -258,6 +642,7 @@ fn unreadable_row(pid: u32) -> Option<ProcessIdentity> {
         group: group as u32,
         session: session as u32,
         start: String::new(),
+        exited: false,
     })
 }
 #[cfg(target_os = "macos")]
@@ -265,7 +650,7 @@ fn snapshot() -> io::Result<Vec<ProcessIdentity>> {
     let result = crate::process_spawn::command("/bin/ps")
         .args(["-axo", "pid=,ppid=,pgid="])
         .env("LC_ALL", "C")
-        .output()?;
+        .bounded_output()?;
     if !result.status.success() {
         return Err(io::Error::other("process metadata unavailable"));
     }
@@ -373,8 +758,50 @@ mod tests {
             group,
             session: 0,
             start: start.into(),
+            #[cfg(target_os = "linux")]
+            exited: false,
         }
     }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn witnessed_exit_distinguishes_zombies_reuse_and_unknown_identity() {
+        assert!(!witnessed_exit("birth", Some(row(42, 1, 42, "birth"))).unwrap());
+        let mut zombie = row(42, 1, 42, "birth");
+        zombie.exited = true;
+        assert!(witnessed_exit("birth", Some(zombie)).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, "new-birth"))).unwrap());
+        assert!(witnessed_exit("birth", None).unwrap());
+        assert!(witnessed_exit("birth", Some(row(42, 1, 42, ""))).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn repeated_pins_retain_the_same_process_handles() {
+        use std::os::fd::AsRawFd;
+        let mut child = crate::process_spawn::command("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut owner = OwnedProcessSignals::for_child(&child).unwrap();
+        let mut handles = OwnedProcessHandles::default();
+        owner.pin_owned_processes_into(&mut handles).unwrap();
+        let before: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        let repinned = owner.pin_owned_processes_into(&mut handles);
+        let after: Vec<_> = handles
+            .0
+            .iter()
+            .map(|(pid, handle)| (*pid, handle.as_raw_fd()))
+            .collect();
+        crate::runtime::child_shutdown::stop(&mut child, "repin_fixture").unwrap();
+        assert!(repinned.is_ok());
+        assert!(!before.is_empty());
+        assert_eq!(before, after);
+    }
+
     /// A process can only rename itself, so a shell does it and then waits.
     #[cfg(target_os = "linux")]
     fn spawn_shell_named_invalidly() -> std::process::Child {
@@ -443,7 +870,9 @@ mod tests {
         };
         let leader = row(hidden.group, 1, hidden.group, "root");
         assert!(guard
-            .group_with(&[leader, hidden], |_| panic!("unreadable member signalled"))
+            .group_with(&[leader, hidden], |_, _| panic!(
+                "unreadable member signalled"
+            ))
             .is_err());
     }
 
@@ -464,7 +893,7 @@ mod tests {
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
         };
         assert!(guard
-            .group_with(&rows, |pid| {
+            .group_with(&rows, |pid, _| {
                 assert_eq!(pid, -41);
                 Ok(())
             })
@@ -472,7 +901,7 @@ mod tests {
         let mut foreign = row(43, 1, 41, "foreign-birth");
         foreign.session = 99;
         assert!(guard
-            .group_with(&[rows[0].clone(), foreign], |_| panic!(
+            .group_with(&[rows[0].clone(), foreign], |_, _| panic!(
                 "foreign session signalled"
             ))
             .is_err());
@@ -482,12 +911,14 @@ mod tests {
             owned: BTreeMap::from([(41, rows[0].start.clone())]),
         };
         assert!(lost
-            .group_with(&rows[1..], |_| panic!("missing leader witness signalled"))
+            .group_with(&rows[1..], |_, _| panic!(
+                "missing leader witness signalled"
+            ))
             .is_err());
         let mut replacement = rows[0].clone();
         replacement.start = "replacement-leader".into();
         assert!(lost
-            .group_with(&[replacement, rows[1].clone()], |_| panic!(
+            .group_with(&[replacement, rows[1].clone()], |_, _| panic!(
                 "reused leader admitted children"
             ))
             .is_err());
@@ -511,19 +942,168 @@ mod tests {
             row(44, 1, 41, "reused"),
         ];
         assert!(guard
-            .group_with(&rows, |_| panic!("mixed group signalled"))
+            .group_with(&rows, |_, _| panic!("mixed group signalled"))
             .is_err());
         let mut signalled = Vec::new();
         guard
             .kill_owned_with(
                 || Ok(rows.clone()),
-                |pid| {
-                    signalled.push(pid);
+                |pid, signal| {
+                    signalled.push((pid, signal));
                     Ok(())
                 },
             )
             .unwrap();
-        assert_eq!(signalled, [43, 41]);
+        use Signal::{Kill, Stop};
+        assert_eq!(signalled, [(41, Stop), (43, Stop), (43, Kill), (41, Kill)]);
+    }
+
+    #[test]
+    fn an_earlier_kernels_claimed_tree_is_frozen_then_ended_and_unreadable_members_keep_it_alive() {
+        let mut leader = row(41, 1, 41, "leader");
+        leader.session = 41;
+        let mut child = row(42, 41, 41, "child");
+        child.session = 41;
+        let mut reused = row(43, 1, 43, "reused");
+        reused.session = 43;
+        let rows = vec![leader, child, reused];
+        let environment = |pid: u32| {
+            Ok(Some(match pid {
+                41 | 42 => b"PATH=/bin\0CHARIOX_SETUP_CLAIM=abc\0".to_vec(),
+                _ => b"CHARIOX_SETUP_CLAIM=abcd\0".to_vec(),
+            }))
+        };
+        let mut sent = Vec::new();
+        let ended = OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((41, "leader")),
+            || Ok(rows.clone()),
+            environment,
+            |pid, signal| {
+                sent.push((pid, signal));
+                Ok(())
+            },
+        )
+        .unwrap();
+        use Signal::{Kill, Stop};
+        assert!(!ended);
+        assert_eq!(sent, [(41, Stop), (42, Stop), (42, Kill), (41, Kill)]);
+        // Nothing carries the claim and the saved leader birth names another process.
+        assert!(OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((43, "earlier")),
+            || Ok(vec![rows[2].clone()]),
+            environment,
+            |_, _| panic!("a reused PID was signalled"),
+        )
+        .unwrap());
+        // With the leader gone, a member of its session that cannot be read may still be the script.
+        assert!(OwnedProcessSignals::end_claimed_tree_with(
+            "abc",
+            Some((41, "leader")),
+            || Ok(vec![rows[1].clone(), rows[2].clone()]),
+            |pid| Ok((pid != 42).then(Vec::new)),
+            |_, _| panic!("an unproven tree was signalled"),
+        )
+        .is_err());
+    }
+
+    /// The platform shows no environment (an unreadable process), so only the saved leader
+    /// names the tree; the orphan stays alive until the signals reach it.
+    #[test]
+    fn a_leader_with_its_saved_birth_ends_its_session_without_any_environment() {
+        use std::{cell::RefCell, collections::BTreeSet};
+        let mut leader = row(41, 1, 41, "leader");
+        leader.session = 41;
+        let mut child = row(42, 41, 41, "child");
+        child.session = 41;
+        // Detached from the leader's parent chain, still in its session.
+        let mut stray = row(44, 1, 44, "stray");
+        stray.session = 41;
+        let mut other = row(45, 1, 45, "other");
+        other.session = 45;
+        let alive = RefCell::new(vec![leader, child, stray, other]);
+        let sent = RefCell::new(Vec::new());
+        let unreadable = |_: u32| Ok(None);
+        let end = |leader_birth: &str| {
+            OwnedProcessSignals::end_claimed_tree_with(
+                "abc",
+                Some((41, leader_birth)),
+                || Ok(alive.borrow().clone()),
+                unreadable,
+                |pid, signal| {
+                    sent.borrow_mut().push((pid, signal));
+                    if signal == Signal::Kill {
+                        alive.borrow_mut().retain(|row| row.pid as i32 != pid);
+                    }
+                    Ok(())
+                },
+            )
+        };
+        // A reused PID: another birth is never signalled.
+        assert!(end("earlier")
+            .unwrap_err()
+            .to_string()
+            .contains("unreadable"));
+        assert!(sent.borrow().is_empty());
+        assert_eq!(alive.borrow().len(), 4);
+        // The saved birth: the whole session is frozen, then ended, parents first.
+        assert!(!end("leader").unwrap());
+        use Signal::{Kill, Stop};
+        let sent = sent.borrow().clone();
+        assert_eq!(sent.iter().filter(|(_, signal)| *signal == Stop).count(), 3);
+        assert_eq!(
+            sent.iter()
+                .filter(|(_, signal)| *signal == Kill)
+                .map(|(pid, _)| *pid)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([41, 42, 44])
+        );
+        assert!(sent[..3].iter().all(|(_, signal)| *signal == Stop));
+        assert!(sent.iter().all(|(pid, _)| *pid != 45));
+        // Asked again, nothing of it is left.
+        assert!(end("leader").unwrap());
+    }
+
+    #[test]
+    fn procargs2_environment_reads_the_entries_after_the_arguments() {
+        let buffer = |count: i32, body: &[u8]| {
+            let mut bytes = count.to_ne_bytes().to_vec();
+            bytes.extend_from_slice(body);
+            bytes
+        };
+        let body = b"/bin/sh\0\0\0\0sh\0-c\0A=1\0CHARIOX_SETUP_CLAIM=abc\0\0\0";
+        assert_eq!(
+            procargs2_environment(&buffer(2, body)).unwrap(),
+            b"A=1\0CHARIOX_SETUP_CLAIM=abc\0"
+        );
+        // No environment at all.
+        assert!(procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0"))
+            .unwrap()
+            .is_empty());
+        // The kernel's size limit cut the last entry: it is dropped, never half-read.
+        assert_eq!(
+            procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0A=1\0CHARIOX_SETUP_CL")).unwrap(),
+            b"A=1\0"
+        );
+        // Bytes that are not UTF-8 stay as they are.
+        assert_eq!(
+            procargs2_environment(&buffer(1, b"/bin/sh\0\0sh\0K=\xff\xfe\0")).unwrap(),
+            b"K=\xff\xfe\0"
+        );
+        // More arguments announced than present, a buffer cut inside the path or the count, a negative count.
+        assert!(procargs2_environment(&buffer(5, b"/bin/sh\0\0sh\0A=1\0")).is_err());
+        assert!(procargs2_environment(&buffer(1, b"/bin/sh")).is_err());
+        assert!(procargs2_environment(&[1, 0]).is_err());
+        assert!(procargs2_environment(&buffer(-1, b"/bin/sh\0\0sh\0")).is_err());
+        assert!(procargs2_environment(&buffer(i32::MAX, b"/bin/sh\0\0sh\0")).is_err());
+        // A very large environment is read whole.
+        let mut large = b"/bin/sh\0\0sh\0".to_vec();
+        for index in 0..20_000 {
+            large.extend_from_slice(format!("V{index}=x\0").as_bytes());
+        }
+        let read = procargs2_environment(&buffer(1, &large)).unwrap();
+        assert_eq!(read.iter().filter(|byte| **byte == 0).count(), 20_000);
     }
 
     #[test]
@@ -536,7 +1116,7 @@ mod tests {
                 owned: BTreeMap::from([(root, "birth".into())]),
             };
             assert!(guard
-                .group_with(&rows, |_| panic!("invalid group signalled"))
+                .group_with(&rows, |_, _| panic!("invalid group signalled"))
                 .is_err());
         }
     }
@@ -555,21 +1135,25 @@ mod tests {
         };
         let mut sent = Vec::new();
         guard
-            .group_with(&rows, |pid| {
-                sent.push(pid);
+            .group_with(&rows, |pid, signal| {
+                sent.push((pid, signal));
                 Ok(())
             })
             .unwrap();
         guard
             .kill_owned_with(
                 || Ok(rows.clone()),
-                |pid| {
-                    sent.push(pid);
+                |pid, signal| {
+                    sent.push((pid, signal));
                     Ok(())
                 },
             )
             .unwrap();
-        assert_eq!(sent, [-41, 45, 41]);
+        use Signal::{Kill, Stop};
+        assert_eq!(
+            sent,
+            [(-41, Kill), (41, Stop), (45, Stop), (45, Kill), (41, Kill)]
+        );
     }
 
     #[test]
@@ -581,7 +1165,7 @@ mod tests {
         };
         let mut sends = 0;
         assert!(guard
-            .group_with(&[row(41, 1, 41, "reused")], |_| {
+            .group_with(&[row(41, 1, 41, "reused")], |_, _| {
                 sends += 1;
                 Ok(())
             })
@@ -589,7 +1173,7 @@ mod tests {
         assert!(guard
             .group_with(
                 &[row(41, 1, 41, "original"), row(42, 1, 41, "foreign")],
-                |_| {
+                |_, _| {
                     sends += 1;
                     Ok(())
                 }
@@ -599,7 +1183,7 @@ mod tests {
         assert!(guard
             .group_with(
                 &[row(41, 1, 41, "original"), row(43, 41, 41, "child")],
-                |pid| {
+                |pid, _| {
                     assert_eq!(pid, -41);
                     sends += 1;
                     Ok(())
@@ -609,10 +1193,10 @@ mod tests {
         assert_eq!(sends, 1);
         // Once reparented, only the recorded child birth is authorized.
         assert!(guard
-            .group_with(&[row(43, 1, 41, "child")], |_| Ok(()))
+            .group_with(&[row(43, 1, 41, "child")], |_, _| Ok(()))
             .unwrap());
         assert!(guard
-            .group_with(&[row(43, 1, 41, "replacement")], |_| panic!(
+            .group_with(&[row(43, 1, 41, "replacement")], |_, _| panic!(
                 "reused child signalled"
             ))
             .is_err());
@@ -624,7 +1208,7 @@ mod tests {
 fn mp11_signal_seam_rejects_system_wide_targets_without_signalling() {
     for pid in [i32::MIN, -1, 0, 1] {
         assert_eq!(
-            send_signal(pid).unwrap_err().to_string(),
+            send_signal(pid, Signal::Kill).unwrap_err().to_string(),
             "invalid process signal target"
         );
     }

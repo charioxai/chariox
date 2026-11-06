@@ -15,6 +15,21 @@ export type Conversation = { alias: string; online: boolean; busy: boolean; enab
 const roles: Record<string, TerminalOutputRole> = { user_prompt: "user", provider_output: "assistant", provider_reasoning: "reasoning",
   provider_tool: "tool", provider_error: "error", provider_status: "status", notice: "status" }
 
+const maxWorkspaceImageBytes = 8 * 1024 * 1024
+/** A workspace-relative path; an absolute one only inside the worktree. Never `..`, empty or control characters. */
+export function workspaceImagePath(reference: string, worktree: string): string | null {
+  const root = worktree.replace(/\/+$/, "")
+  const relative = reference.startsWith("/") ? reference.startsWith(`${root}/`) ? reference.slice(root.length + 1) : null : reference.replace(/^(?:\.\/)+/, "")
+  if (!relative || /[\x00-\x1f\x7f\\]/.test(relative) || relative.split("/").some(part => !part || part === "." || part === "..")) return null
+  return relative
+}
+const imageMime = (bytes: Buffer): string | null =>
+  bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? "image/png"
+    : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? "image/jpeg"
+    : bytes.subarray(0, 6).toString("latin1").match(/^GIF8[79]a$/) ? "image/gif"
+    : bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP" ? "image/webp"
+    : null
+
 /** Each viewer owns its kernel attachment, never a provider connection. */
 export class AgentTriggerClient {
   readonly kernel: KernelClient
@@ -64,6 +79,27 @@ export class AgentTriggerClient {
         ...(turn.lifecycle !== "open" ? { kernelSettled: true, kernelSettlementStatus: historySettlement(turn.lifecycle) } : {}), expanded: false })),
       nextCursor: outline?.next_cursor ?? null,
       unconfirmed: meta.deliveries.map(({ prompt_id, origin, prompt }) => ({ prompt_id, origin, prompt })) }
+  }
+  /**
+   * A picture a reply references by a path in the agent's workspace, read through the kernel like every other reader of the Room.
+   * Null when the path leaves the workspace, the file is missing or too large, or it is not a PNG, JPEG, GIF or WebP image.
+   */
+  async workspaceImage(reference: string): Promise<{ mime: string; bytes: Buffer } | null> {
+    if (!this.agentId) await this.metadata()
+    type Agent = { id: string; workspace_id?: string | null; worktree_id?: string | null }
+    const state = await this.kernel.send<{ SessionState?: { session?: { workspace_id: string; worktree_id: string; agents: Agent[] } } }>({ GetSessionState: { session_id: this.sessionId } })
+    const session = state.SessionState?.session, agent = session?.agents?.find(item => item.id === this.agentId)
+    const workspace = agent?.workspace_id?.trim() || session?.workspace_id.trim()
+    const worktree = agent?.worktree_id?.trim() || session?.worktree_id.trim()
+    const path = workspace && worktree ? workspaceImagePath(reference, worktree) : null
+    if (!workspace || !worktree || !path) return null
+    const response = await this.kernel.send<{ WorkspaceFileContent?: { content?: { content_base64?: string | null; truncated?: boolean; size_bytes?: number } } }>({
+      GetWorkspaceFileContent: { workspace_id: workspace, worktree_id: worktree, path, compare_ref: null, known_fingerprint: null, max_bytes: maxWorkspaceImageBytes },
+    })
+    const content = response.WorkspaceFileContent?.content
+    if (!content?.content_base64 || content.truncated || (content.size_bytes ?? 0) > maxWorkspaceImageBytes) return null
+    const bytes = Buffer.from(content.content_base64, "base64"), mime = imageMime(bytes)
+    return mime ? { mime, bytes } : null
   }
   onChange(callback: (records?: Array<Record<string, unknown>>) => void): () => void {
     return this.kernel.onKernelEvent(event => {

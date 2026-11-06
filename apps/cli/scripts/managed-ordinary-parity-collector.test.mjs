@@ -19,10 +19,6 @@ import {
   createSignedManifest,
   validateManifest,
 } from "./managed-ordinary-parity-matrix.mjs"
-import {
-  PROJECT_SETUP_PROOF_SCHEMA,
-  projectSetupTargetIdentityDigest,
-} from "./lib/managed-ordinary-project-setup-observer.mjs"
 
 const SIGNING_KEY = Buffer.from("managed-ordinary-parity-collector-fixture-key-20260920")
 const REVIEWED_COMMIT = "d1e925f2b3e318b66160d65cac05973409c99b68"
@@ -127,58 +123,6 @@ function procStat(pid, startTime = 123456) {
   return `${pid} (chariox-kernel fixture) ${fields.join(" ")}\n`
 }
 
-// A production-shaped result fixture exercises the live observer schema. It
-// models the probe response shape and does not claim that this test contacted a kernel.
-function projectSetupFingerprint(value) {
-  return `sha256:${createHash("sha256").update(String(value), "utf8").digest("hex")}`
-}
-
-function projectSetupProofFixture(overrides = {}, topology = "ordinary") {
-  const suffix = topology === "ordinary" ? "ordinary" : "path1"
-  const workerIdentity = projectSetupFingerprint(`${suffix}-worker`)
-  const workerKernelIdentity = projectSetupFingerprint(`${suffix}-worker-kernel`)
-  const platform = "linux-x86_64"
-  const timestamp = 1_790_000_000_000 + (topology === "ordinary" ? 0 : 10_000)
-  const snapshotDigest = projectSetupFingerprint(`${suffix}-snapshot`)
-  return {
-    schema: PROJECT_SETUP_PROOF_SCHEMA,
-    product_api_observation: "kernel-public-api",
-    ready_validation_verified: true,
-    status_fresh: true,
-    before_after_identity_stable: true,
-    home_kernel_identity_fingerprint: projectSetupFingerprint(`${LIVE_KERNEL_IDENTITY.kernel_id}\0${LIVE_KERNEL_IDENTITY.machine_id}`),
-    session_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.session_id),
-    agent_identity_fingerprint: projectSetupFingerprint(CAPTURE_PROVENANCE.agent_id),
-    project_identity_fingerprint: projectSetupFingerprint(`${suffix}-project`),
-    operation_identity_fingerprint: projectSetupFingerprint(`${suffix}-operation`),
-    operation_attempt: topology === "ordinary" ? 1 : 2,
-    operation_created_at_ms: timestamp,
-    status_updated_at_ms: timestamp + 500,
-    observation_started_at_ms: timestamp + 600,
-    observation_finished_at_ms: timestamp + 700,
-    worker_identity_fingerprint: workerIdentity,
-    worker_kernel_identity_fingerprint: workerKernelIdentity,
-    target_identity_digest: projectSetupTargetIdentityDigest(workerIdentity, workerKernelIdentity, platform),
-    platform,
-    definition_digest: `sha256:${"8".repeat(64)}`,
-    definition_origin: "utility_generated",
-    definition_source: "commands",
-    definition_identity_verified: true,
-    validation_command_count: 1,
-    validation_receipts: [{
-      command_digest: `sha256:${"9".repeat(64)}`,
-      exit_code: 0,
-      stdout_bytes: topology === "ordinary" ? 1 : 19,
-      stderr_bytes: topology === "ordinary" ? 0 : 3,
-    }],
-    before_snapshot_digest: snapshotDigest,
-    after_snapshot_digest: snapshotDigest,
-    transport_kind: topology === "ordinary" ? "relay" : "kernel-public-api",
-    endpoint_fingerprint: projectSetupFingerprint(`${suffix}-endpoint`),
-    ...overrides,
-  }
-}
-
 function memoryFilesystem() {
   const files = new Map()
   const directories = new Set(["/repo"])
@@ -237,13 +181,6 @@ function genericResult(rowId, checkId, topology) {
       inside_provider_turn: true,
       independent: true,
       capture_provenance: CAPTURE_PROVENANCE,
-    }
-  }
-  if (rowId === "MP-08" && checkId === "project_setup") {
-    return {
-      observed: true,
-      project_setup_ok: true,
-      project_setup_proof: projectSetupProofFixture({}, topology),
     }
   }
   if (rowId === "MP-01" && checkId === "provider_ancestry") {
@@ -470,88 +407,6 @@ test("collects a real-command ordinary snapshot and validates all required rows"
   assert.equal(binding.kernel_process.executable_sha256, KERNEL_DIGEST)
   assert.equal(binding.stable_across_capture, true)
   assert.ok(filesystem.files.size > 30)
-})
-
-test("MP-08 production-shaped Project setup proof fixture roundtrips through collection and matrix validation", async () => {
-  const manifests = {}
-  for (const topology of ["ordinary", "path1"]) {
-    const { manifest } = await collect(topology)
-    manifests[topology] = manifest
-    const check = manifest.rows["MP-08"].checks.project_setup
-    assert.equal(manifest.schema, MATRIX_SCHEMA)
-    assert.equal(check.status, "pass")
-    assert.equal(check.result.project_setup_ok, true)
-    assert.equal(check.result.project_setup_proof.schema, PROJECT_SETUP_PROOF_SCHEMA)
-    assert.equal(check.result.project_setup_proof.product_api_observation, "kernel-public-api")
-    assert.equal(validateManifest(manifest, {
-      expectedTopology: topology,
-      expectedReviewedCommit: REVIEWED_COMMIT,
-      expectedBuildId: BUILD_ID,
-      signingKey: SIGNING_KEY,
-    }).ok, true)
-  }
-  const ordinaryProof = manifests.ordinary.rows["MP-08"].checks.project_setup.result.project_setup_proof
-  const path1Proof = manifests.path1.rows["MP-08"].checks.project_setup.result.project_setup_proof
-  assert.notEqual(ordinaryProof.operation_identity_fingerprint, path1Proof.operation_identity_fingerprint)
-  assert.notEqual(ordinaryProof.endpoint_fingerprint, path1Proof.endpoint_fingerprint)
-  assert.notEqual(ordinaryProof.before_snapshot_digest, path1Proof.before_snapshot_digest)
-  assert.notEqual(ordinaryProof.validation_receipts[0].stdout_bytes, path1Proof.validation_receipts[0].stdout_bytes)
-  const report = compareManifests(manifests.ordinary, manifests.path1, {
-    expectedReviewedCommit: REVIEWED_COMMIT,
-    expectedBuildId: BUILD_ID,
-    signingKey: SIGNING_KEY,
-  })
-  assert.equal(report.status, "pass", JSON.stringify(report, null, 2))
-})
-
-test("collector rejects injected or legacy Project setup assertions", async (context) => {
-  const variants = [
-    {
-      name: "injected observer transport",
-      result: {
-        observed: true,
-        project_setup_ok: true,
-        project_setup_proof: projectSetupProofFixture({ product_api_observation: "injected-test-transport" }),
-      },
-    },
-    {
-      name: "legacy boolean only",
-      result: { observed: true, project_setup_ok: true },
-    },
-    {
-      name: "mismatched target digest",
-      result: {
-        observed: true,
-        project_setup_ok: true,
-        project_setup_proof: projectSetupProofFixture({ target_identity_digest: `sha256:${"c".repeat(64)}` }),
-      },
-      errorCode: "project_setup_proof_invalid",
-    },
-    {
-      name: "proof identity belongs to a different provider-turn capture",
-      result: {
-        observed: true,
-        project_setup_ok: true,
-        project_setup_proof: projectSetupProofFixture({
-          session_identity_fingerprint: projectSetupFingerprint("different-session"),
-        }),
-      },
-      errorCode: "project_setup_capture_identity_mismatch",
-    },
-  ]
-  for (const variant of variants) {
-    await context.test(variant.name, async () => {
-      const harness = makeHarness("ordinary", {
-        results: { "MP-08/project_setup": variant.result },
-      })
-      await assert.rejects(() => harness.collector.collect(harness.options), (error) => {
-        assert.equal(error.code, variant.errorCode ?? "project_setup_proof_invalid")
-        assert.equal(error.rowId, "MP-08")
-        assert.equal(error.checkId, "project_setup")
-        return true
-      })
-    })
-  }
 })
 
 test("collects schema-3 native release identities for ordinary and Path-1 parity", async () => {
@@ -928,20 +783,18 @@ test("partial cleanup is rejected instead of becoming an MP-08 pass", async () =
 test("evidence output is deterministic and redacts credentials", async () => {
   const first = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": {
+      "MP-08/protocol_behavior": {
         observed: true,
-        project_setup_ok: true,
-        project_setup_proof: projectSetupProofFixture(),
+        protocol_behavior_ok: true,
         token: "supersecret-token",
       },
     },
   })
   const second = makeHarness("ordinary", {
     results: {
-      "MP-08/project_setup": {
+      "MP-08/protocol_behavior": {
         observed: true,
-        project_setup_ok: true,
-        project_setup_proof: projectSetupProofFixture(),
+        protocol_behavior_ok: true,
         token: "supersecret-token",
       },
     },

@@ -9,7 +9,6 @@ use crate::runtime::event_catalog_control::execute_event_catalog_request_with_cl
 use crate::runtime::managed_bootstrap_observation_control::execute_managed_bootstrap_observation_request;
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
 use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
-use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::relay_config_control::execute_relay_config_request;
@@ -36,29 +35,6 @@ impl CommandRouter {
                     execute_managed_bootstrap_observation_request(
                         self.config_projection.snapshot(),
                         self.managed_kernel_registration.clone(),
-                        caller_user_id,
-                        request.clone(),
-                    )
-                    .await
-                    .map(Some)
-                }))
-            }
-            request @ (LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
-            | LocalDaemonRequest::GetManagedEnvironment(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimagePreflight(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReimageReceipt(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
-            | LocalDaemonRequest::PrepareManagedEnvironmentGitCredentialEnrollment(_)
-            | LocalDaemonRequest::CreateManagedEnvironment(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReimage(_)
-            | LocalDaemonRequest::RequestManagedEnvironmentReleaseUpdate(_)
-            | LocalDaemonRequest::GetManagedEnvironmentReleaseUpdate(_)) => {
-                Some(Box::pin(async move {
-                    execute_managed_environment_control_request(
-                        self.config_projection.snapshot(),
-                        self.provider_account_profiles.clone(),
-                        self.managed_context_outbound.clone(),
                         caller_user_id,
                         request.clone(),
                     )
@@ -173,42 +149,66 @@ impl CommandRouter {
                     .map(Some)
                 }))
             }
-            LocalDaemonRequest::AdjustProjectEnvironment(request) => Some(Box::pin(async move {
-                self.runtime_state
-                    .start_project_environment_adjustment(request.clone(), caller_user_id)
-                    .await
-                    .map(Some)
-            })),
-            request if request.unsupported_environment_capability().is_some() => {
-                Some(Box::pin(async move {
-                    Ok(Some(LocalDaemonResponse::EnvironmentUnsupportedFeature {
-                        feature: request
-                            .unsupported_environment_capability()
-                            .expect("matched feature"),
-                        supported_schema: 1,
-                    }))
-                }))
-            }
             LocalDaemonRequest::GetProjectEnvironment(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_project_environment(request.clone(), caller_user_id)
                     .map(Some)
             })),
-            LocalDaemonRequest::GetProjectEnvironmentManifest(request) => {
+            LocalDaemonRequest::SaveProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .save_project_environment(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::RunProjectEnvironmentSetup(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .run_project_environment_setup(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::ImportProjectEnvironmentEntries(request) => {
                 Some(Box::pin(async move {
                     self.runtime_state
-                        .get_project_environment_manifest(request.clone(), caller_user_id)
+                        .import_project_environment_entries(request.clone(), caller_user_id)
+                        .map(Some)
+                }))
+            }
+            LocalDaemonRequest::DraftProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .draft_project_environment(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::RunRemoteProjectEnvironmentSetup(request) => {
+                Some(Box::pin(async move {
+                    self.runtime_state
+                        .run_remote_project_environment_setup(request.clone(), caller_user_id)
                         .await
                         .map(Some)
                 }))
             }
-            request @ (LocalDaemonRequest::StartProjectEnvironmentSetup(_)
-            | LocalDaemonRequest::GetProjectEnvironmentSetupStatus(_)
-            | LocalDaemonRequest::CancelProjectEnvironmentSetup(_)
-            | LocalDaemonRequest::RetryProjectEnvironmentSetup(_)) => Some(Box::pin(async move {
+            LocalDaemonRequest::RemoteEnvironmentOperation(request) => Some(Box::pin(async move {
                 self.runtime_state
-                    .execute_project_environment_setup_request(request.clone(), caller_user_id)
+                    .remote_environment_operation(request.clone(), caller_user_id)
                     .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::CheckProjectEnvironment(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .check_project_environment(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::ResolveEnvironmentProposal(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .resolve_environment_proposal(request.clone(), caller_user_id)
+                    .map(Some)
+            })),
+            LocalDaemonRequest::GetEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .get_environment_operation(request.clone(), caller_user_id)
+                    .await
+                    .map(Some)
+            })),
+            LocalDaemonRequest::CancelEnvironmentOperation(request) => Some(Box::pin(async move {
+                self.runtime_state
+                    .cancel_environment_operation(request.clone(), caller_user_id)
                     .map(Some)
             })),
             request @ (LocalDaemonRequest::GetProviderCatalog(_)

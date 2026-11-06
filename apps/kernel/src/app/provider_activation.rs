@@ -16,13 +16,10 @@ pub(crate) struct StartedProviderLaunch {
 pub(super) struct ProviderRunActivationState;
 
 impl ProviderRunActivationState {
-    pub(super) fn reusable_native_tui_run_for_launch(
+    pub(super) fn reusable_provider_run_for_launch(
         app: &mut DaemonApp,
         request: &LaunchProviderRequest,
     ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
-        if request.client_interface != ProviderClientInterface::NativeTui {
-            return Ok(None);
-        }
         let Some(agent_id) = request.agent_id.as_deref() else {
             return Ok(None);
         };
@@ -33,11 +30,10 @@ impl ProviderRunActivationState {
             .filter(|run| {
                 run.session_id() == request.session_id
                     && run.agent_instance_id() == Some(agent_id)
-                    && run.client_interface() == ProviderClientInterface::NativeTui
-                    && matches!(
-                        run.state(),
-                        ProviderRunState::Starting | ProviderRunState::Running
-                    )
+                    && run.client_interface() == request.client_interface
+                    && (run.state() == ProviderRunState::Starting
+                        || (request.client_interface == ProviderClientInterface::NativeTui
+                            && run.state() == ProviderRunState::Running))
             })
             .max_by(|left, right| left.active_selection_cmp(right))
         else {
@@ -48,7 +44,11 @@ impl ProviderRunActivationState {
             return Err(DaemonError::InvalidProviderRunState {
                 provider_run_id: run.id().to_string(),
                 state: run.state(),
-                operation: "launch native TUI provider run with different parameters",
+                operation: if request.client_interface == ProviderClientInterface::NativeTui {
+                    "launch native TUI provider run with different parameters"
+                } else {
+                    "replace starting provider run with different parameters"
+                },
             });
         }
 
@@ -171,6 +171,27 @@ impl ProviderRunActivationState {
                     && run.state() != ProviderRunState::Ended
             })
             .collect()
+    }
+
+    pub(super) fn restore_provider_launch_predecessor(
+        app: &mut DaemonApp,
+        failed: &RuntimeProviderRun,
+        previous_id: &str,
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
+        let (previous, _) =
+            Self::provider_run_for_activation(app, failed.session_id(), previous_id)?;
+        if previous.state() == ProviderRunState::Ended {
+            return Ok(None);
+        }
+        if previous.state() != ProviderRunState::Parked
+            || previous.agent_instance_id() != failed.agent_instance_id()
+        {
+            app.sessions
+                .set_active_provider_run(failed.session_id(), Some(previous.id().into()))?;
+            app.update_provider_run_projection(previous);
+            return Ok(None);
+        }
+        Self::resume_provider_run_for_session(app, failed.session_id(), previous_id).map(Some)
     }
 
     pub(super) fn resume_provider_run_for_session(

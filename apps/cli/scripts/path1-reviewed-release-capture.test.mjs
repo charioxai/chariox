@@ -17,9 +17,9 @@ const RELEASE_ARTIFACTS = [
   ["chariox-managed-bootstrap", "/usr/local/bin/chariox-managed-bootstrap", "file", 0o755],
   ["chariox-managed-bootstrap.service", "/etc/systemd/system/chariox-managed-bootstrap.service", "file", 0o644],
   ["chariox-path1-managed-bootstrap.service", "/etc/systemd/system/chariox-path1-managed-bootstrap.service", "file", 0o644],
-  ["chariox-disposable-worker-bootstrap.service", "/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "file", 0o644],
   ["chariox-rootless-docker.service", "/etc/systemd/system/chariox-rootless-docker.service", "file", 0o644],
   ["chariox-slice-broker.service", "/etc/systemd/system/chariox-slice-broker.service", "file", 0o644],
+  ["chariox-slice-image", "/usr/lib/chariox/slice-image", "tree", 0o755],
   ["chariox-slice-build-context", "/usr/lib/chariox/slice-build-context", "tree", 0o755],
   ["chariox-build-attestation", "/usr/lib/chariox/build-attestation.json", "file", 0o644],
   ["chariox-build-attestation-signature", "/usr/lib/chariox/build-attestation.sig", "file", 0o644],
@@ -117,6 +117,7 @@ async function createFixture(options = {}) {
   const releases = join(temporaryRoot, "releases")
   await makeDirectory(releases)
   const contextRoot = join(draftRoot, "usr/lib/chariox/slice-build-context")
+  await writeInstalledFile(draftRoot, "/usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz", Buffer.from("synthetic signed image"), 0o644)
 
   const releasePair = keyPair()
   const builderPair = keyPair()
@@ -134,7 +135,6 @@ async function createFixture(options = {}) {
   const services = [
     ["/etc/systemd/system/chariox-managed-bootstrap.service", "service managed"],
     ["/etc/systemd/system/chariox-path1-managed-bootstrap.service", "service path1"],
-    ["/etc/systemd/system/chariox-disposable-worker-bootstrap.service", "service worker"],
     ["/etc/systemd/system/chariox-rootless-docker.service", "service rootless"],
     ["/etc/systemd/system/chariox-slice-broker.service", "service slice"],
   ]
@@ -203,11 +203,11 @@ async function createFixture(options = {}) {
     const [name, path, , mode] = DATA_VOLUME_ARTIFACTS[0]
     await writeInstalledFile(draftRoot, path, Buffer.from(name + "\n"), mode)
   }
-  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 2), ...appArtifacts, ...RELEASE_ARTIFACTS.slice(2, 6), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(6)]
+  const releaseArtifacts = [...RELEASE_ARTIFACTS.slice(0, 2), ...appArtifacts, ...RELEASE_ARTIFACTS.slice(2, 5), ...dataVolumeArtifacts, ...RELEASE_ARTIFACTS.slice(5)]
   const artifactDigests = new Map()
   for (const [name, path, kind] of releaseArtifacts) {
     if (kind === "tree") {
-      artifactDigests.set(name, await contextDigest(contextRoot))
+      artifactDigests.set(name, await contextDigest(join(draftRoot, path.slice(1))))
     } else {
       artifactDigests.set(name, sha256(await readFile(join(draftRoot, path.slice(1)))))
     }
@@ -454,7 +454,7 @@ test("captures schema-3 releases with the current 16-artifact Path-1 inventory (
     const manifest = JSON.parse(Buffer.from(evidence.releaseManifestBase64, "base64"))
     assert.equal(manifest.schemaVersion, 3)
     assert.equal(manifest.managedUpdateEvidenceVersion, 1)
-    assert.deepEqual(evidence.artifactBindings.slice(8, 11).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
+    assert.deepEqual(evidence.artifactBindings.slice(7, 10).map(({ name }) => name), DATA_VOLUME_ARTIFACTS.map(([name]) => name))
     for (const artifact of evidence.artifactBindings) assert.equal(artifact.sha256, artifact.actualSha256)
   })
 })
@@ -543,5 +543,13 @@ test("MP-11-RD-F5 schema-3 inventory agrees with the current packager artifact o
     const evidence = await verifyPath1ReviewedRelease(fixture.options)
     assert.deepEqual(evidence.artifactBindings.map(({ name, path }) => [name, path]), packaged)
     assert.equal(JSON.parse(Buffer.from(evidence.builderAttestationBase64, "base64")).artifacts.length, 5)
+  })
+})
+
+// MP-08 / MP-09 / MP-10 / MP-11: the prebuilt image is part of the same signed release.
+test("reviewed release capture refuses changed prebuilt slice bytes", async () => {
+  await withFixture({dataVolumeArtifacts: true, manifestPatch: {schemaVersion: 3, managedUpdateEvidenceVersion: 1}}, async fixture => {
+    await writeFile(join(fixture.releaseRoot, "usr/lib/chariox/slice-image/chariox-slice-linux.tar.gz"), "changed image")
+    await assert.rejects(verifyPath1ReviewedRelease(fixture.options), /slice image digest/)
   })
 })

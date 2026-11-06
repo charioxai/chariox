@@ -1048,6 +1048,72 @@ async fn computer_task_decision_leaves_release_accessible_until_human_releases()
     );
 }
 
+// MP-10: an agent that declared the wait for a person's Tab takeover continues when the person goes idle.
+#[tokio::test]
+async fn idle_tab_takeover_return_continues_the_waiting_agent() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    use crate::runtime::kernel_browser_actors::TAKEOVER_IDLE_TIMEOUT;
+    let f = Fixture::with_room_tools();
+    let user = f
+        .state
+        .provider_account_authority_owner_user_id(DEFAULT_LOCAL_USER_ID);
+    let host = &f.state.owned.kernel_browser_host;
+    host.seed_person_takeover_for_test(&user, "terminal:viewer");
+    let store = &f.state.owned.durable_state_store;
+    let id = f.id("tab-wait");
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: id.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: id.clone(),
+            prompt: id.clone(),
+            reason: "human_takeover: waiting for the person to return control".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    assert!(f.active_ids().is_empty(), "the wait never opens a modal");
+    assert!(!host.reclaim_idle_takeovers_after_for_test(TAKEOVER_IDLE_TIMEOUT / 2));
+    f.state
+        .ensure_task_owner_interaction(blocked.clone())
+        .await
+        .unwrap();
+    let reason = |store: &crate::durable_state::DurableKernelStateStore| {
+        store.agent_tasks(Some(&f.session), Some("root")).unwrap()[0]
+            .reason
+            .clone()
+    };
+    assert!(
+        reason(store).starts_with("human_takeover"),
+        "the person is still active"
+    );
+    assert!(host.reclaim_idle_takeovers_after_for_test(TAKEOVER_IDLE_TIMEOUT));
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    // The fixture has no provider agent to run the continuation, so the owner response itself
+    // fails and re-blocks with that reason: proof the kernel resumed the wait on its own.
+    assert!(
+        reason(store).starts_with("Owner action failed"),
+        "control came back: the kernel resumes the waiting agent: {}",
+        reason(store)
+    );
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11 R1080-2: a failed event commit cannot consume a decision.
 #[tokio::test]
 async fn rejected_outside_event_write_keeps_an_answer_retriable() {
@@ -1471,4 +1537,43 @@ async fn rewording_a_task_decision_on_a_managed_kernel_does_not_wait_for_itself(
         std::mem::forget(f);
     }
     assert_eq!(updated, Ok(true), "updating the decision never finished");
+}
+
+#[tokio::test]
+async fn owner_task_decision_has_no_person_deadline() {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let f = Fixture::new();
+    let task = f.id("owner-action");
+    let store = &f.state.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: DEFAULT_LOCAL_USER_ID.into(),
+            room: f.session.clone(),
+            agent: "root".into(),
+            prompt: task.clone(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Task(blocked) = store
+        .agent_lifecycle(Operation::Block {
+            task: task.clone(),
+            prompt: task,
+            reason: "Please finish verification".into(),
+        })
+        .unwrap()
+    else {
+        panic!()
+    };
+    f.state
+        .ensure_task_owner_interaction(blocked)
+        .await
+        .unwrap();
+    let session = f.state.owned.session_store.get_session(&f.session).unwrap();
+    assert_eq!(session.active_interactions().len(), 1);
+    assert_eq!(
+        session.active_interactions()[0].timeout_sec(),
+        None,
+        "an owner action stays answerable until its task resolves or the person cancels"
+    );
 }

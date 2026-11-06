@@ -12,6 +12,12 @@ pub enum ExecutionState {
     Cancelled,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOwnerAction {
+    BrowserAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentTaskExecution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal: Option<super::goals::AgentGoal>,
@@ -27,6 +33,8 @@ pub struct AgentTaskExecution {
     pub blocked_revision: u64,
     pub state: ExecutionState,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_action: Option<TaskOwnerAction>,
     pub obligations: Vec<AgentObligation>,
     pub wait: Option<AgentWait>,
     pub last_progress_at_ms: u64,
@@ -324,6 +332,11 @@ pub(crate) enum Operation {
         prompt: String,
         reason: String,
     },
+    BlockForBrowserAccess {
+        task: String,
+        prompt: String,
+        reason: String,
+    },
     /// A provider turn failed or vanished: a plain task is cancelled, a task with
     /// ledger work is blocked for the owner.
     EndFailedTurn {
@@ -420,6 +433,8 @@ pub(crate) enum Operation {
     Sweep {
         now: u64,
         busy_recipients: Vec<(String, String)>,
+        /// A local cold start paused at a typed Vault unlock, before any provider I/O.
+        vault_wait_recipients: Vec<(String, String)>,
         /// A04: (room, agent, task) of sudo-held recipients; their unrelated
         /// events wait for the window to end like busy refusals.
         held_work: Vec<(String, String, String)>,
@@ -517,6 +532,12 @@ pub(crate) enum Operation {
         exit_code: Option<i32>,
         tail: String,
         now: u64,
+    },
+    /// The owner can cancel a retained timer without a running provider turn.
+    CancelOwnerTimer {
+        id: String,
+        room: String,
+        owner: String,
     },
     /// `prompt: Some` is the owning agent's turn; `None` settles a cancelled
     /// task. `pending` means the driver must still stop the source physically

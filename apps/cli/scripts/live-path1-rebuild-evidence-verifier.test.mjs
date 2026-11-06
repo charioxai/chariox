@@ -282,15 +282,6 @@ test("a rebuilt shared-host service cannot pass the Path-1 evidence gate", () =>
   )
 })
 
-test("a rebuilt home running only the disposable-worker service cannot pass the Path-1 evidence gate", () => {
-  const evidence = validEvidence()
-  evidence.after.identity.serviceInstances[0].unit = "chariox-disposable-worker-bootstrap.service"
-  assert.throws(
-    () => verifyPath1RebuildEvidence(evidence),
-    (error) => error instanceof RebuildEvidenceError && error.code === "path1_service_topology",
-  )
-})
-
 test("retained command and API capture files must match their recorded digests", async () => {
   const evidence = validEvidence()
   const directory = await mkdtemp(join(tmpdir(), "path1-rebuild-evidence-"))

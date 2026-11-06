@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use crate::runtime::checked_lock::{CheckedMutex, CheckedMutexGuard};
+use std::sync::Arc;
 
 use crate::error::DaemonError;
 use crate::prompt_assembly::PromptAssemblyMode;
@@ -17,10 +18,24 @@ use super::{
 
 #[derive(Clone)]
 pub struct ProviderProcessServiceStore {
-    inner: Arc<Mutex<ProviderProcessService>>,
-    agent_move_admission: Arc<Mutex<Option<crate::agent_move::AgentMoveStore>>>,
+    inner: Arc<CheckedMutex<ProviderProcessService>>,
+    spawn_lanes: ProviderRunOperationLanes,
+    agent_move_admission: Arc<CheckedMutex<Option<crate::agent_move::AgentMoveStore>>>,
     managed_admission_gate:
-        Arc<Mutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
+        Arc<CheckedMutex<Option<Arc<crate::runtime::state::ManagedKernelQuiescenceGate>>>>,
+}
+
+struct LaunchTicket {
+    store: ProviderProcessServiceStore,
+    key: Option<(String, String)>,
+}
+
+impl Drop for LaunchTicket {
+    fn drop(&mut self) {
+        if let Some(key) = &self.key {
+            self.store.write().launching.remove(key);
+        }
+    }
 }
 
 impl std::fmt::Debug for ProviderProcessServiceStore {
@@ -33,9 +48,10 @@ impl std::fmt::Debug for ProviderProcessServiceStore {
 impl ProviderProcessServiceStore {
     pub fn new(service: ProviderProcessService) -> Self {
         Self {
-            inner: Arc::new(Mutex::new(service)),
-            agent_move_admission: Default::default(),
-            managed_admission_gate: Arc::new(Mutex::new(None)),
+            inner: Arc::new(CheckedMutex::new("provider_service", service)),
+            spawn_lanes: Default::default(),
+            agent_move_admission: Arc::new(CheckedMutex::new("provider_move_admission", None)),
+            managed_admission_gate: Arc::new(CheckedMutex::new("provider_managed_admission", None)),
         }
     }
 
@@ -112,11 +128,13 @@ impl ProviderProcessServiceStore {
         }
     }
 
-    pub fn read(&self) -> MutexGuard<'_, ProviderProcessService> {
+    #[track_caller]
+    pub fn read(&self) -> CheckedMutexGuard<'_, ProviderProcessService> {
         self.inner.lock().expect("provider service mutex poisoned")
     }
 
-    pub fn write(&self) -> MutexGuard<'_, ProviderProcessService> {
+    #[track_caller]
+    pub fn write(&self) -> CheckedMutexGuard<'_, ProviderProcessService> {
         self.inner.lock().expect("provider service mutex poisoned")
     }
 
@@ -153,15 +171,38 @@ impl ProviderProcessServiceStore {
         self.read().run_actor_completion_signal()
     }
 
-    /// The same authority mutex linearizes credential-bearing spawn against run retirement/replacement.
-    /// Callbacks must not call back into this store.
-    pub(crate) fn with_current_live_launch<T>(
+    /// A per-run execution permit orders credential-bearing spawn against retirement.
+    /// The lane map and STORE are released before any process or filesystem work.
+    fn acquire_spawn_permit(
+        &self,
+        run_id: &str,
+    ) -> Result<crate::provider::ProviderRunOperationPermit, DaemonError> {
+        let _watch =
+            crate::runtime::stall_watchdog::watch("provider.spawn", "wait_execution_permit");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            if let Some(permit) = self.spawn_lanes.try_acquire(run_id) {
+                return Ok(permit);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DaemonError::LocalTransport {
+                    operation: "provider_spawn_admission",
+                    message: "provider spawn is still in progress; retry the operation".into(),
+                });
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn current_live_launch_snapshot(
         &self,
         expected: &RuntimeProviderRun,
-        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
-    ) -> Result<Option<T>, DaemonError> {
+    ) -> Result<Option<RuntimeProviderRun>, DaemonError> {
         let service = self.read();
         let current = service.get_run(expected.id())?;
+        // Native and leased workflow launches can coexist with an older run
+        // during handoff. Agent selection ranks Running above Starting, so it
+        // cannot decide whether this specific run is still allowed to spawn.
         if !matches!(
             expected.state(),
             crate::provider::ProviderRunState::Starting
@@ -169,15 +210,30 @@ impl ProviderProcessServiceStore {
         ) || current.state() != expected.state()
             || current.started_at_ms() != expected.started_at_ms()
             || current.agent_instance_id() != expected.agent_instance_id()
-            || expected.agent_instance_id().is_some_and(|agent| {
-                service
-                    .get_run_for_agent(expected.session_id(), agent)
-                    .is_none_or(|run| run.id() != expected.id())
-            })
         {
             return Ok(None);
         }
-        action(&current).map(Some)
+        Ok(Some(current))
+    }
+
+    pub(crate) fn with_current_live_launch<T>(
+        &self,
+        expected: &RuntimeProviderRun,
+        action: impl FnOnce(&RuntimeProviderRun) -> Result<T, DaemonError>,
+    ) -> Result<Option<T>, DaemonError> {
+        let _session = self.acquire_spawn_permit(&format!("session:{}", expected.session_id()))?;
+        let _spawn = self.acquire_spawn_permit(expected.id())?;
+        let Some(current) = self.current_live_launch_snapshot(expected)? else {
+            return Ok(None);
+        };
+        let result = action(&current)?;
+        if self.current_live_launch_snapshot(expected)?.is_none() {
+            // A caller-provided process guard rolls back before the execution
+            // permits are released, so retirement cannot miss a late attachment.
+            drop(result);
+            return Ok(None);
+        }
+        Ok(Some(result))
     }
 
     pub(crate) fn finish_current_launch(
@@ -267,12 +323,78 @@ impl ProviderProcessServiceStore {
         let session = request.session_id.clone();
         let agent = request.agent_id.clone();
         let preparation = request.agent_move_preparation.clone();
+        let (registry, run_id, previous, session_epoch) = self.with_managed_admission(|| {
+            self.with_agent_move_admission(
+                &session,
+                agent.as_deref(),
+                preparation.as_deref(),
+                || {
+                    let mut service = self.write();
+                    if let Some(agent) = &agent {
+                        if !service.launching.insert((session.clone(), agent.clone())) {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "start_provider_run",
+                                message:
+                                    "provider launch for this agent is already in progress; retry"
+                                        .into(),
+                            });
+                        }
+                    }
+                    let previous = agent
+                        .as_deref()
+                        .and_then(|agent| service.get_run_for_agent(&session, agent))
+                        .map(|run| run.id().to_string());
+                    Ok((
+                        service.registry,
+                        service.next_run_id(),
+                        previous,
+                        service
+                            .session_retirement_epochs
+                            .get(&session)
+                            .copied()
+                            .unwrap_or(0),
+                    ))
+                },
+            )
+        })?;
+        let _ticket = LaunchTicket {
+            store: self.clone(),
+            key: agent.as_ref().map(|agent| (session.clone(), agent.clone())),
+        };
+        // Neither STORE nor an admission registry spans planning or connect.
+        let outcome = ProviderProcessService::prepare_run_provider_only(registry, run_id, request)?;
+        let _session_spawn = self.acquire_spawn_permit(&format!("session:{session}"))?;
+        let _previous_spawn = previous
+            .as_deref()
+            .map(|run_id| self.acquire_spawn_permit(run_id))
+            .transpose()?;
         self.with_managed_admission(|| {
             self.with_agent_move_admission(
                 &session,
                 agent.as_deref(),
                 preparation.as_deref(),
-                || self.write().start_run_provider_only(request),
+                || {
+                    let mut service = self.write();
+                    let current = agent
+                        .as_deref()
+                        .and_then(|agent| service.get_run_for_agent(&session, agent))
+                        .map(|run| run.id().to_string());
+                    if current != previous
+                        || service
+                            .session_retirement_epochs
+                            .get(&session)
+                            .copied()
+                            .unwrap_or(0)
+                            != session_epoch
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "commit_provider_launch",
+                            message: "agent provider run changed during launch planning; retry"
+                                .into(),
+                        });
+                    }
+                    service.commit_prepared_run(outcome)
+                },
             )
         })
     }
@@ -282,17 +404,8 @@ impl ProviderProcessServiceStore {
         &self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
-        let session = request.session_id.clone();
-        let agent = request.agent_id.clone();
-        let preparation = request.agent_move_preparation.clone();
-        self.with_managed_admission(|| {
-            self.with_agent_move_admission(
-                &session,
-                agent.as_deref(),
-                preparation.as_deref(),
-                || self.write().launch_run_detached(request),
-            )
-        })
+        let outcome = self.start_run_provider_only(request)?;
+        self.write().mark_run_running(outcome.run().id())
     }
 
     pub(crate) fn park_run_provider_only(
@@ -300,6 +413,7 @@ impl ProviderProcessServiceStore {
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunParkedOutcome, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.write().park_run_provider_only(session_id, run_id)
     }
 
@@ -308,6 +422,7 @@ impl ProviderProcessServiceStore {
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunResumedOutcome, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.with_managed_admission(|| {
             let run = self.read().get_run(run_id)?;
             self.with_agent_move_admission(session_id, run.agent_instance_id(), None, || {
@@ -317,6 +432,7 @@ impl ProviderProcessServiceStore {
     }
 
     pub fn resume_run_detached(&self, run_id: &str) -> Result<RuntimeProviderRun, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.with_managed_admission(|| {
             let run = self.read().get_run(run_id)?;
             self.with_agent_move_admission(run.session_id(), run.agent_instance_id(), None, || {
@@ -330,7 +446,39 @@ impl ProviderProcessServiceStore {
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.write().terminate_run_provider_only(session_id, run_id)
+    }
+
+    pub(crate) fn run_owners_for_session(&self, session_id: &str) -> Vec<(String, String)> {
+        self.read()
+            .runs
+            .values()
+            .filter_map(|run| {
+                if run.session_id() != session_id {
+                    return None;
+                }
+                Some((run.agent_instance_id()?.to_owned(), run.id().to_owned()))
+            })
+            .collect()
+    }
+
+    pub(crate) fn observed_run_owners_for_session(
+        &self,
+        session_id: &str,
+        observed_keys: &[String],
+    ) -> Vec<(String, String)> {
+        let service = self.read();
+        observed_keys
+            .iter()
+            .filter_map(|key| {
+                let run = service.runs.get(key)?;
+                if run.session_id() != session_id {
+                    return None;
+                }
+                Some((run.agent_instance_id()?.to_owned(), key.clone()))
+            })
+            .collect()
     }
 
     pub fn list_runs(&self) -> Vec<RuntimeProviderRun> {
@@ -381,10 +529,6 @@ impl ProviderProcessServiceStore {
         self.read().structured_prompt_io_in_flight(provider_run_id)
     }
 
-    pub(crate) fn structured_runtime_state_bound(&self, provider_run_id: &str) -> bool {
-        self.read().structured_runtime_state_bound(provider_run_id)
-    }
-
     pub fn record_run_activity(&self, run_id: &str) -> Result<(), DaemonError> {
         self.write().record_run_activity(run_id)
     }
@@ -408,37 +552,13 @@ impl ProviderProcessServiceStore {
             .update_run_execution_config(run_id, execution_mode, permission_level)
     }
 
-    pub(crate) fn update_run_preparation_environment(
-        &self,
-        run_id: &str,
-        home: impl Into<String>,
-        path: impl Into<String>,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write()
-            .update_run_preparation_environment(run_id, home, path)
-    }
-
-    pub(crate) fn update_run_read_only_discovery(
-        &self,
-        run_id: &str,
-        enabled: bool,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write().update_run_read_only_discovery(run_id, enabled)
-    }
-
-    pub(crate) fn restore_run_snapshot_after_restart_failure(
-        &self,
-        snapshot: RuntimeProviderRun,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write()
-            .restore_run_snapshot_after_restart_failure(snapshot)
-    }
-
+    #[cfg(test)]
     pub(crate) fn mark_run_ended_provider_only(
         &self,
         session_id: &str,
         run_id: &str,
     ) -> Result<ProviderRunEndedOutcome, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.write()
             .mark_run_ended_provider_only(session_id, run_id)
     }
@@ -496,6 +616,7 @@ impl ProviderProcessServiceStore {
         run_id: &str,
         process_running: Option<bool>,
     ) -> Result<ProviderRunLivenessReconciliation, DaemonError> {
+        let _spawn = self.acquire_spawn_permit(run_id)?;
         self.write()
             .reconcile_run_liveness_provider_only(session_id, run_id, process_running)
     }
@@ -504,6 +625,19 @@ impl ProviderProcessServiceStore {
         &self,
         session_id: &str,
     ) -> Result<ProviderSessionRunsTerminatedOutcome, DaemonError> {
+        let _session = self.acquire_spawn_permit(&format!("session:{session_id}"))?;
+        let mut ids = self
+            .read()
+            .list_runs()
+            .into_iter()
+            .filter(|run| run.session_id() == session_id)
+            .map(|run| run.id().to_string())
+            .collect::<Vec<_>>();
+        ids.sort();
+        let _spawns = ids
+            .iter()
+            .map(|id| self.acquire_spawn_permit(id))
+            .collect::<Result<Vec<_>, _>>()?;
         self.write()
             .terminate_session_runs_provider_only(session_id)
     }
@@ -615,6 +749,7 @@ impl ProviderProcessServiceStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run_structured_utility_prompt(
         &self,
         run: &RuntimeProviderRun,
@@ -630,9 +765,12 @@ impl ProviderProcessServiceStore {
             timeout,
             policy,
             None,
+            None,
         )
     }
 
+    /// `stop` ends a fresh metadata child only; a utility on the run's own conversation runs to its end.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_structured_utility_prompt_with_admission(
         &self,
         run: &RuntimeProviderRun,
@@ -641,6 +779,7 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
         admission: Option<crate::provider::ProviderUtilityAdmission>,
+        stop: Option<crate::provider::UtilityStop>,
     ) -> Result<String, DaemonError> {
         let response_rx = self.write().enqueue_structured_utility_prompt(
             run,
@@ -649,6 +788,7 @@ impl ProviderProcessServiceStore {
             timeout,
             policy,
             admission,
+            stop,
         )?;
         response_rx
             .recv()
@@ -666,6 +806,17 @@ impl ProviderProcessServiceStore {
     ) -> Result<(), DaemonError> {
         self.write()
             .enqueue_structured_prompt_abort(session_id, provider_run_id, prompt_id)
+    }
+
+    pub(crate) fn publish_claude_plan(
+        &self,
+        run: RuntimeProviderRun,
+        prompt_id: String,
+        tool_use_id: Option<String>,
+        plan: String,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<(), String>>, DaemonError> {
+        self.read()
+            .publish_claude_plan(run, prompt_id, tool_use_id, plan)
     }
 
     pub(crate) fn structured_submit_epoch(&self) -> u64 {
@@ -927,28 +1078,157 @@ mod manifest_revision_tests {
             Err(DaemonError::ProviderRunNotFound { .. })
         ));
     }
+}
+
+#[cfg(test)]
+mod launch_lock_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
-    fn snapshot_restore_cannot_roll_manifest_revision_back() {
-        let store = fixture();
-        let mut snapshot = store.get_run("run").unwrap();
-        snapshot.mark_running();
-        store.write().insert_run_for_test(snapshot.clone());
-        let pushed = store
-            .update_run_remote_extension_manifest("run", manifest(true))
-            .unwrap();
-        let restored = store
-            .restore_run_snapshot_after_restart_failure(snapshot)
-            .unwrap();
-        assert_eq!(restored.remote_extension_manifest_revision(), 2);
-        assert!(store
-            .compare_update_run_remote_extension_manifest(
-                "run",
-                pushed.remote_extension_manifest_revision(),
-                manifest(true),
+    fn blocked_connect_releases_store_for_mcp_lookup_and_duplicate_refusal() {
+        crate::test_support::isolated_env_test!();
+        let store = ProviderProcessServiceStore::new(ProviderProcessService::new());
+        let (entered, waiting) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        *super::super::run_lifecycle::LAUNCH_TEST_HOOK
+            .lock()
+            .unwrap() = Some(Box::new(move || {
+            entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let request = LaunchProviderRequest::new("s", "dev-stub", "stub", "default", "test")
+            .with_agent_id("a");
+        let launching = store.clone();
+        let first = request.clone();
+        let launch = std::thread::spawn(move || launching.start_run_provider_only(first));
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (reply, replies) = mpsc::channel();
+        let querying = store.clone();
+        let query = std::thread::spawn(move || {
+            let lookup = querying.get_runs_by_runtime_mcp_auth_token("unrelated-fixture");
+            let duplicate = querying.start_run_provider_only(request);
+            reply.send((lookup, duplicate.is_err())).unwrap();
+        });
+        let progress = replies.recv_timeout(Duration::from_millis(200));
+        release.send(()).unwrap();
+        let outcome = launch.join().unwrap().unwrap();
+        query.join().unwrap();
+        let (lookup, duplicate_refused) =
+            progress.expect("MCP lookup and duplicate refusal must progress during connect");
+        assert!(lookup.is_empty());
+        assert!(duplicate_refused);
+        assert_eq!(store.read().list_runs().len(), 1);
+        assert_eq!(
+            store.get_run(outcome.run().id()).unwrap().id(),
+            outcome.run().id()
+        );
+    }
+
+    #[test]
+    fn failed_plan_releases_the_agent_launch_reservation() {
+        let store = ProviderProcessServiceStore::new(ProviderProcessService::new());
+        let bad = LaunchProviderRequest::new("s", "missing-adapter", "stub", "default", "test")
+            .with_agent_id("a");
+        assert!(store.start_run_provider_only(bad).is_err());
+        let good = LaunchProviderRequest::new("s", "dev-stub", "stub", "default", "test")
+            .with_agent_id("a");
+        assert!(store.start_run_provider_only(good).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod spawn_lock_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn spawn_and_retirement_are_ordered_without_holding_store() {
+        crate::test_support::isolated_env_test!();
+        let store = ProviderProcessServiceStore::new(ProviderProcessService::new());
+        let run = store
+            .start_run_provider_only(
+                LaunchProviderRequest::new("s", "dev-stub", "stub", "default", "test")
+                    .with_agent_id("a"),
             )
             .unwrap()
+            .into_run();
+        let (entered, waiting) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let spawning = store.clone();
+        let expected = run.clone();
+        let spawn = std::thread::spawn(move || {
+            spawning.with_current_live_launch(&expected, |_| {
+                entered.send(()).unwrap();
+                released.recv_timeout(Duration::from_secs(5)).unwrap();
+                Ok(())
+            })
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        let retiring = store.clone();
+        let id = run.id().to_string();
+        let (ended, ending) = mpsc::channel();
+        let retirement = std::thread::spawn(move || {
+            let outcome = retiring.terminate_run_provider_only("s", &id);
+            ended.send(outcome).unwrap();
+        });
+        let (read, reading) = mpsc::channel();
+        let querying = store.clone();
+        let query = std::thread::spawn(move || {
+            read.send(querying.get_runs_by_runtime_mcp_auth_token("unrelated-fixture"))
+                .unwrap();
+        });
+        let progress = reading.recv_timeout(Duration::from_millis(200));
+        let still_waiting = ending.try_recv().is_err();
+        release.send(()).unwrap();
+        assert!(spawn.join().unwrap().unwrap().is_some());
+        retirement.join().unwrap();
+        query.join().unwrap();
+        assert!(
+            progress.is_ok(),
+            "MCP lookups must progress during spawn and retirement waiting"
+        );
+        assert!(
+            still_waiting,
+            "retirement overtook a credential-bearing spawn"
+        );
+        assert_eq!(
+            ending.recv().unwrap().unwrap().run().state(),
+            crate::provider::ProviderRunState::Ended
+        );
+        assert!(store
+            .with_current_live_launch(&run, |_| -> Result<(), DaemonError> {
+                panic!("a retired run reached credential dispatch")
+            })
+            .unwrap()
             .is_none());
-        assert_eq!(store.get_run("run").unwrap(), restored);
+    }
+
+    #[test]
+    fn ending_a_session_invalidates_an_unpublished_launch_plan() {
+        crate::test_support::isolated_env_test!();
+        let store = ProviderProcessServiceStore::new(ProviderProcessService::new());
+        let (entered, waiting) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        *super::super::run_lifecycle::LAUNCH_TEST_HOOK
+            .lock()
+            .unwrap() = Some(Box::new(move || {
+            entered.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).unwrap();
+        }));
+        let launching = store.clone();
+        let launch = std::thread::spawn(move || {
+            launching.start_run_provider_only(
+                LaunchProviderRequest::new("s", "dev-stub", "stub", "default", "test")
+                    .with_agent_id("a"),
+            )
+        });
+        waiting.recv_timeout(Duration::from_secs(2)).unwrap();
+        store.terminate_session_runs_provider_only("s").unwrap();
+        release.send(()).unwrap();
+        assert!(launch.join().unwrap().is_err());
+        assert!(store.list_runs().is_empty());
     }
 }

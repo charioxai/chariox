@@ -1,5 +1,6 @@
 //! Private Selkies process to encrypted display transport. No viewer admission.
 
+use crate::runtime::bounded_process::AsyncChildOwner as _;
 use std::process::Stdio;
 
 use chariox_relay::protocol::EncryptedRelayPayload;
@@ -107,14 +108,14 @@ pub(crate) async fn forward_selkies_stream(
     drop(input);
     let cleanup = timeout(Duration::from_secs(5), async {
         records.drain().await;
-        child.wait().await
+        child.supervised_wait().await
     })
     .await;
     match cleanup {
         Ok(Ok(status)) if status.success() => result,
         _ => {
             let _ = child.start_kill();
-            let _ = timeout(Duration::from_secs(2), child.wait()).await;
+            let _ = timeout(Duration::from_secs(2), child.supervised_wait()).await;
             result.and(Err(stream_error("private stream did not stop cleanly")))
         }
     }

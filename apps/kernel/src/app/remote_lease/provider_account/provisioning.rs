@@ -38,6 +38,18 @@ impl RemoteProviderAccountProvisioning {
             });
         }
 
+        // MP-10: a login the transfer already installed here, from this very account of this home kernel, is the worker's copy: no second one is made.
+        if let Some(transferred) = self.registry.transferred_profile(
+            &lease.owner_user_id,
+            &materialization.profile.provider,
+            &context.home_kernel_id,
+            &materialization.profile.profile_id,
+        )? {
+            if let Ok(profile) = self.validate_remote_provider_account(transferred) {
+                return Ok(profile);
+            }
+        }
+
         self.registry.reconcile_materialized_replica_rollback(
             &lease.owner_user_id,
             &materialization.profile.provider,

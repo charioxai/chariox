@@ -1,3 +1,4 @@
+import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-api.js"
 import { LocalIpcError } from "./ipc.js"
 import type {
   ManagedContextLaunchTarget,
@@ -8,14 +9,7 @@ import type {
   ManagedEnvironmentResult,
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
-import type {
-  ProjectEnvironmentSetupStatus,
-  RuntimeSession,
-} from "@chariox/kernel-client/kernel-types"
-import {
-  managedLaunchProjectEnvironmentSetupOperationId,
-  type ProjectEnvironmentSetupStartInput,
-} from "@chariox/kernel-client/project-environment-setup-orchestration"
+import type { RuntimeSession } from "@chariox/kernel-client/kernel-types"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
 import type { SessionProjectSelection } from "./waiting-room-projects.js"
 
@@ -30,7 +24,7 @@ export type PreparedManagedEnvironmentLaunch = ManagedEnvironmentKernelConnectio
   readonly workspacePath: string
   readonly worktreePath: string
   readonly projectSelection: SessionProjectSelection
-  prepareProject(session: RuntimeSession): Promise<void>
+  verifyProjectBinding(session: RuntimeSession): void
 } | { readonly kind: "enrolled" })
 
 export type ManagedEnvironmentKernelConnection = {
@@ -52,7 +46,7 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
     region: string
     computeClass: string
     managedRepositoryRoot: string
-    autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
+    shutdownPolicy: ManagedEnvironmentShutdownPolicy
     contextPlan: Extract<ManagedEnvironmentLaunchSelection, { kind: "new" }>["contextPlan"]
   }): Promise<ManagedEnvironmentResult>
   getEnvironment(environmentId: string): Promise<ManagedEnvironmentSummary>
@@ -70,10 +64,6 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
     isActive: () => boolean,
   ): Promise<ManagedEnvironmentKernelConnection | null>
   getLaunchTarget(contextId: string, planDigest: string): Promise<ManagedContextLaunchTarget>
-  ensureProjectSetup(
-    input: ProjectEnvironmentSetupStartInput,
-    attempt: Pick<ManagedEnvironmentLaunchAttempt, "assertActive">,
-  ): Promise<ProjectEnvironmentSetupStatus>
   createIdempotencyKey(): string
   environmentName(): string
   delay(ms: number): Promise<void>
@@ -109,7 +99,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       region: selection.region,
       computeClass: selection.computeClass,
       managedRepositoryRoot: selection.managedRepositoryRoot,
-      autoStopPolicy: selection.autoStopPolicy,
+      shutdownPolicy: selection.shutdownPolicy,
       contextPlan: selection.contextPlan,
     }
     const signature = JSON.stringify(requestWithoutId)
@@ -265,12 +255,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
           )
           attempt.assertActive()
           const workspacePath = primaryWorkspacePath(launchTarget)
-          const prepareProject = managedProjectPreparation(
-            launchTarget,
-            environment,
-            attempt,
-            this.deps.ensureProjectSetup,
-          )
+          const verifyProjectBinding = managedProjectBindingCheck(launchTarget, attempt)
           return {
             kind: "deployment",
             environment,
@@ -281,7 +266,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
             projectSelection: launchTarget.development.kind === "from_source"
               ? { kind: "existing", project_id: launchTarget.development.projectId }
               : { kind: "default" },
-            prepareProject,
+            verifyProjectBinding,
             commit: connection.commit,
             rollback: connection.rollback,
           }
@@ -313,19 +298,16 @@ export class WaitingRoomManagedEnvironmentLaunchController {
   }
 }
 
-function managedProjectPreparation(
+function managedProjectBindingCheck(
   launchTarget: ManagedContextLaunchTarget,
-  environment: ManagedEnvironmentSummary,
   attempt: ManagedEnvironmentLaunchAttempt,
-  ensureProjectSetup: WaitingRoomManagedEnvironmentLaunchControllerDeps["ensureProjectSetup"],
-): (session: RuntimeSession) => Promise<void> {
+): (session: RuntimeSession) => void {
   if (launchTarget.development.kind === "empty") {
-    return async () => {}
+    return () => {}
   }
   const projectId = launchTarget.development.projectId
   const workspacePath = primaryWorkspacePath(launchTarget)
-  const workerId = environment.runtimeMachineId as string
-  return async (session) => {
+  return (session) => {
     attempt.assertActive()
     if (session.project_id !== projectId) {
       throw new Error("The managed session was created with a different Project binding.")
@@ -333,20 +315,6 @@ function managedProjectPreparation(
     if (session.workspace_id !== workspacePath || session.worktree_id !== workspacePath) {
       throw new Error("The managed session was created with a different workspace binding.")
     }
-    const agentId = session.focused_agent_id
-    if (!agentId || !session.agents.some((agent) => agent.id === agentId)) {
-      throw new Error("The managed session has no focused agent for Project environment setup.")
-    }
-    attempt.progress("Preparing the Project environment on the managed machine.")
-    await ensureProjectSetup({
-      operationId: managedLaunchProjectEnvironmentSetupOperationId(session.id),
-      projectId,
-      sessionId: session.id,
-      agentId,
-      targetWorkerId: workerId,
-      targetPlatform: "linux-x86_64",
-    }, attempt)
-    attempt.assertActive()
   }
 }
 

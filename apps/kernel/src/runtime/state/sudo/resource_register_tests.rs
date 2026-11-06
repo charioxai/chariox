@@ -258,7 +258,7 @@ fn resource_register_protocol_snapshot_and_hash() {
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "a8fa10c62c34b5b3b3b2746f3dd89c081e6a8705fff68c96eb9e9cb1dd05d5eb"
+        "3a50d79633af22e9f1db4882603e7408fac1ca73da985bffc083cb71e1872c10"
     );
 }
 
@@ -374,27 +374,4 @@ async fn resource_register_http_revoke_uses_vault_and_never_echoes_response() {
     )
     .await
     .is_err());
-}
-
-#[tokio::test]
-async fn resource_register_ssh_result_preserves_provenance_and_records_removal() {
-    crate::test_support::isolated_env_test!();
-    let f = fixture();
-    let turn = elevate(&f);
-    f.state
-        .record_ssh_resource(&turn, "build.example.com", "build-machine")
-        .unwrap();
-    f.state
-        .record_ssh_resource(&turn, "build.example.com", "build-machine")
-        .unwrap();
-    let rows = call(&f, LIST, json!({})).await.unwrap();
-    assert_eq!(rows["resources"].as_array().unwrap().len(), 1);
-    assert_eq!(rows["resources"][0]["kind"], "ssh_machine");
-    assert_eq!(rows["resources"][0]["created_by"], turn.agent_id);
-    assert_eq!(rows["resources"][0]["credential_id"], Value::Null);
-    f.state.record_ssh_removal(&turn, "build-machine").unwrap();
-    assert_eq!(
-        call(&f, LIST, json!({})).await.unwrap()["resources"][0]["state"],
-        "revoked"
-    );
 }

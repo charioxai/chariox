@@ -1,6 +1,5 @@
-//! Protocol 345 owner-scoped App worker control and automation configuration.
-//! The owner comes from the authenticated caller; requests name only an
-//! installation. Automation targets are resolved under workflow ownership.
+//! Caller-scoped App worker control and automation configuration.
+//! Room collaborators configure only targets they control, under the Room's App owner.
 use super::{app_automation_owned_state::ConfigureAppAutomation, KernelRuntimeState};
 use crate::{
     durable_state::app_worker_lifecycle::{StartGate, WorkerPhase, WorkerStatus},
@@ -21,7 +20,8 @@ impl KernelRuntimeState {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<LocalDaemonResponse>> + Send + 'a>>
     {
         match request {
-            LocalDaemonRequest::AcceptAppHostAction(_)
+            LocalDaemonRequest::ListAppInstallations(_)
+            | LocalDaemonRequest::AcceptAppHostAction(_)
             | LocalDaemonRequest::RestoreAppDataSnapshot(_)
             | LocalDaemonRequest::GrantAppFile(_)
             | LocalDaemonRequest::PreviewDeploymentApps(_)
@@ -54,6 +54,32 @@ impl KernelRuntimeState {
         command: &KernelCommand,
         request: &LocalDaemonRequest,
     ) -> Option<LocalDaemonResponse> {
+        if let LocalDaemonRequest::ListAppInstallations(list) = request {
+            let room_id = list.session_id.as_deref()?;
+            let caller = match crate::runtime::app_control::owner(command) {
+                Ok(owner) => owner,
+                Err(code) => return Some(failed(code)),
+            };
+            let room = match self.owned.session_store.get_session(room_id) {
+                Ok(room)
+                    if room.has_member(&caller)
+                        && room.status() != crate::session::SessionStatus::Ended =>
+                {
+                    room
+                }
+                _ => return Some(failed(AppRequestErrorCode::Unauthorized)),
+            };
+            if room.owner_user_id() == caller && self.room_provider_origin.is_none() {
+                // The owner can list every installation on this kernel.
+                return None;
+            }
+            return Some(
+                match self.list_room_notification_apps(list, &caller).await {
+                    Ok(response) => response,
+                    Err(code) => failed(code),
+                },
+            );
+        }
         if let LocalDaemonRequest::AcceptAppHostAction(request) = request {
             use crate::runtime::command::{KernelCallerKind, KernelCommandSource};
             if !matches!(
@@ -136,9 +162,55 @@ impl KernelRuntimeState {
             LocalDaemonRequest::RevokeAppFileGrants(request) => &request.installation_id,
             _ => return None,
         };
-        let owner = match crate::runtime::app_control::owner(command) {
+        let caller = match crate::runtime::app_control::owner(command) {
             Ok(owner) => owner,
             Err(code) => return Some(failed(code)),
+        };
+        let scoped_room = match request {
+            LocalDaemonRequest::ListAppAutomations(request) => request.session_id.as_deref(),
+            LocalDaemonRequest::DisableAppAutomation(request) => request.session_id.as_deref(),
+            _ => None,
+        };
+        if let Some(room_id) = scoped_room {
+            let Ok(room) = self.owned.session_store.get_session(room_id) else {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            };
+            if !room.has_member(&caller)
+                || room.status() == crate::session::SessionStatus::Ended
+                || ((caller != room.owner_user_id() || self.room_provider_origin.is_some())
+                    && !self.room_notification_apps(room_id).contains(installation))
+            {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            return Some(
+                self.scoped_app_automation_response(
+                    &caller,
+                    room.owner_user_id(),
+                    room_id,
+                    installation,
+                    request,
+                )
+                .await
+                .unwrap_or_else(failed),
+            );
+        }
+        let owner = if let LocalDaemonRequest::ConfigureAppAutomation(configure) = request {
+            let Ok(room) = self.owned.session_store.get_session(&configure.session_id) else {
+                return Some(failed(AppRequestErrorCode::NotFound));
+            };
+            if !room.has_member(&caller) || room.status() == crate::session::SessionStatus::Ended {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            if (room.owner_user_id() != caller || self.room_provider_origin.is_some())
+                && !self
+                    .room_notification_apps(room.id())
+                    .contains(installation)
+            {
+                return Some(failed(AppRequestErrorCode::Unauthorized));
+            }
+            room.owner_user_id().to_owned()
+        } else {
+            caller.clone()
         };
         if installation.is_empty()
             || installation.len() > 128
@@ -164,15 +236,20 @@ impl KernelRuntimeState {
             return Some(
                 self.app_control()
                     .execute_once(&owner, command, request, move || async move {
-                        Box::pin(state.app_control_response(execute_owner, installation, input))
-                            .await
-                            .unwrap_or_else(failed)
+                        Box::pin(state.app_control_response(
+                            execute_owner,
+                            caller,
+                            installation,
+                            input,
+                        ))
+                        .await
+                        .unwrap_or_else(failed)
                     })
                     .await,
             );
         }
         Some(
-            Box::pin(self.app_control_response(owner, installation, request.clone()))
+            Box::pin(self.app_control_response(owner, caller, installation, request.clone()))
                 .await
                 .unwrap_or_else(failed),
         )
@@ -181,6 +258,7 @@ impl KernelRuntimeState {
     pub(super) async fn app_control_response(
         &self,
         owner: String,
+        caller: String,
         installation: String,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, AppRequestErrorCode> {
@@ -240,7 +318,7 @@ impl KernelRuntimeState {
                         &owner,
                         catalog,
                         ConfigureAppAutomation {
-                            delivery_mode: request.delivery_mode,
+                            caller_user_id: caller,
                             automation_id: request.automation_id,
                             expected_revision: request.expected_revision,
                             event_name: request.event_name,
@@ -540,7 +618,7 @@ impl KernelRuntimeState {
 
     /// The active release's verified catalog. Automations are durable
     /// configuration, so a stopped, failed or never-started App needs no worker.
-    async fn app_catalog(
+    pub(super) async fn app_catalog(
         &self,
         owner: &str,
         installation: &str,
@@ -618,9 +696,16 @@ fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
 
-fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
+pub(super) fn summary(value: &AutomationConfiguration) -> AppAutomationSummary {
     AppAutomationSummary {
-        delivery_mode: value.delivery_mode,
+        target_kind: match value.target.kind {
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Workflow => {
+                crate::local::WorkflowNotificationTargetKind::WorkflowEndpoint
+            }
+            chariox_app_runtime::app_outbox::AutomationTargetKind::Agent => {
+                crate::local::WorkflowNotificationTargetKind::Agent
+            }
+        },
         automation_id: value.automation_id.clone(),
         revision: value.revision,
         event_name: value.event_name.clone(),
@@ -648,6 +733,7 @@ fn automation_error(
         E::Stopped(_) => AppRequestErrorCode::Busy,
         E::Outbox(O::Conflict) | E::TargetChanged => AppRequestErrorCode::Conflict,
         E::Outbox(O::NotFound) | E::NotOwner => AppRequestErrorCode::NotFound,
+        E::Unauthorized => AppRequestErrorCode::Unauthorized,
         E::Outbox(O::Limit | O::Full) => AppRequestErrorCode::LimitExceeded,
         E::Outbox(O::Invalid | O::Schema | O::Catalog(_) | O::Inactive | O::TooOld)
         | E::InvalidTarget => AppRequestErrorCode::InvalidRequest,

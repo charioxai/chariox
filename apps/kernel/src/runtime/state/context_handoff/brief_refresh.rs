@@ -14,7 +14,7 @@ use crate::runtime::agent_utility_executor::{
     run_provider_utility_prompt_with_admission, AgentUtilityPromptParts,
 };
 
-use super::super::project_environment_export::MetadataUtilityScratch;
+use super::super::metadata_utility_scratch::MetadataUtilityScratch;
 use super::super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use super::brief::{
     brief_prompt, current_brief, parse_brief, restore_exact_hex_values, transcript_chunks,

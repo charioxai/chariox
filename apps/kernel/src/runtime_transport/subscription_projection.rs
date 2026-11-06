@@ -38,7 +38,7 @@ pub(crate) fn session_projection_events(
         || workflow_run_only;
     events.extend(workflow_events);
     if !can_skip_session_snapshot(snapshot, previous, replaces_snapshot) {
-        events.push(KernelEvent::SessionSnapshot {
+        let full_snapshot = KernelEvent::SessionSnapshot {
             room_workflows: snapshot.room_workflows.clone(),
             session: Box::new(snapshot.session.clone()),
             provider_run: Box::new(
@@ -49,7 +49,13 @@ pub(crate) fn session_projection_events(
             ),
             agent_activity: Box::new(snapshot.agent_activity.clone()),
             agent_activity_revision: snapshot.metadata.last_event_id,
-        });
+        };
+        if previous.is_none() {
+            // Establish the view before its initial resource samples arrive.
+            events.insert(0, full_snapshot);
+        } else {
+            events.push(full_snapshot);
+        }
     }
     events
 }
@@ -69,6 +75,7 @@ mod tests {
         );
         SessionSnapshotProjection {
             processes: Vec::new(),
+            disk_usage: Vec::new(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &session,
                 crate::session::DEFAULT_LOCAL_USER_ID,
@@ -171,12 +178,37 @@ mod tests {
                 command: "provider".into(),
                 resident_set_bytes: 1024,
                 disk_io_bytes: Some(4096),
+                disk_written_bytes: Some(4096),
+                deleted_open_bytes: 0,
+                outlived: false,
                 cpu_millis: 0,
                 sampled_at_ms: 10,
                 age_ms: 10,
             },
             state: SessionProcessState::Running,
         });
+    }
+
+    #[test]
+    fn initial_snapshot_precedes_its_resource_samples() {
+        let mut current = snapshot();
+        add_process(&mut current);
+        current
+            .disk_usage
+            .push(crate::runtime::disk_usage::DiskUsageEntry {
+                id: "workspace".into(),
+                path: Some("/work".into()),
+                used_bytes: Some(8192),
+                sampled_at_ms: 10,
+                owner: None,
+                process_id: None,
+            });
+        let events = session_projection_events(&current, None, false);
+        assert!(matches!(
+            events.first(),
+            Some(KernelEvent::SessionSnapshot { .. })
+        ));
+        assert!(events.iter().skip(1).any(|event| matches!(event, KernelEvent::SessionProcessesChanged { disk_usage, .. } if !disk_usage.is_empty())));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::runtime::bounded_process::BoundedChildExt as _;
 #[cfg(unix)]
 use std::io::{self, BufReader, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -196,7 +197,7 @@ pub(super) fn run_kernel_once(
         child = spawn_kernel(config, release, topology)?;
     }
     KERNEL_PID.store(child.id() as i32, Ordering::SeqCst);
-    let status = child.wait();
+    let status = crate::runtime::bounded_process::supervise(&mut child);
     KERNEL_PID.store(0, Ordering::SeqCst);
     let status =
         status.map_err(|error| supervisor_error(&format!("wait for managed kernel: {error}")))?;
@@ -560,19 +561,6 @@ pub(super) fn spawn_with_broker_lease(
         .env_remove(BROKER_FD_ENV)
         .env(BROKER_REQUIRED_ENV, "1");
     command.spawn().map(|child| (child, None))
-}
-
-#[cfg(all(test, unix))]
-pub(super) fn install_test_broker_lease(stream: UnixStream) -> io::Result<()> {
-    let reader = stream.try_clone()?;
-    let lease = BROKER_LEASE.get_or_init(|| Mutex::new(None));
-    *lease
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(BrokerLease {
-        reader: BufReader::new(reader),
-        writer: stream,
-    });
-    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -1264,9 +1252,10 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     ) -> super::super::state::ManagedBootstrapEnvelope {
         super::super::state::ManagedBootstrapEnvelope {
             schema_version: 1,
-            cloud_api_url: "https://cloud.example.test".to_string(),
+            control_plane_url: "https://cloud.example.test".to_string(),
             environment_id: "environment-1".to_string(),
             token: format!("mkboot_{}", "b".repeat(40)),
+            redeemed_grant_binding_digest: None,
             expires_at: "2026-09-23T00:00:00Z".to_string(),
             runtime_release_digest: runtime_release_digest.to_string(),
             managed_repository_root: None,
@@ -1283,7 +1272,7 @@ rm -f -- "$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE"
     ) {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "schemaVersion": envelope.schema_version,
-            "cloudApiUrl": &envelope.cloud_api_url,
+            "controlPlaneUrl": &envelope.control_plane_url,
             "environmentId": &envelope.environment_id,
             "token": &envelope.token,
             "expiresAt": &envelope.expires_at,
@@ -1911,7 +1900,7 @@ fn terminate_child(child: &mut Child) -> Result<(), DaemonError> {
         )));
     }
     child
-        .wait()
+        .bounded_wait()
         .map_err(|error| supervisor_error(&format!("reap stopped managed kernel: {error}")))?;
     Ok(())
 }

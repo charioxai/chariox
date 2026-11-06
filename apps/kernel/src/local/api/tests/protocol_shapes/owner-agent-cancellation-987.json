@@ -1,0 +1,18 @@
+{
+  "local_protocol": 999,
+  "task": {
+    "CancelAgentTask": {
+      "session_id": "room",
+      "attachment_id": "terminal",
+      "task_id": "task",
+      "revision": 8
+    }
+  },
+  "timer": {
+    "CancelAgentWake": {
+      "session_id": "room",
+      "attachment_id": "terminal",
+      "wake_id": "timer"
+    }
+  }
+}

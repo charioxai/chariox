@@ -102,7 +102,6 @@ fn validate_import_manifest(
     if ![
         DEVELOPMENT_CONTEXT_SCHEMA_VERSION,
         DIRECTORY_CONTEXT_SCHEMA_VERSION,
-        ENVIRONMENT_CONTEXT_SCHEMA_VERSION,
         VAULT_CONTEXT_SCHEMA_VERSION,
     ]
     .contains(&manifest.schema_version)
@@ -111,16 +110,6 @@ fn validate_import_manifest(
             "unsupported development context schema version {}",
             manifest.schema_version
         )));
-    }
-    if manifest.project_environment.is_some()
-        && !matches!(
-            manifest.schema_version,
-            ENVIRONMENT_CONTEXT_SCHEMA_VERSION | VAULT_CONTEXT_SCHEMA_VERSION
-        )
-    {
-        return Err(context_error(
-            "Project environment requires development schema 4",
-        ));
     }
     if manifest.project_id != expected_project_id {
         return Err(context_error(
@@ -202,7 +191,6 @@ fn validate_import_manifest(
         } else {
             if ![
                 DIRECTORY_CONTEXT_SCHEMA_VERSION,
-                ENVIRONMENT_CONTEXT_SCHEMA_VERSION,
                 VAULT_CONTEXT_SCHEMA_VERSION,
             ]
             .contains(&manifest.schema_version)

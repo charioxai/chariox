@@ -79,13 +79,9 @@ pub fn submit_codex_prompt(
             };
             return Err(error.steer_not_submitted(envelope.steering));
         }
-        if envelope.steering {
-            return Err(error.steer_not_submitted(true));
-        }
-        state.buffered_notifications.push(CodexNotification::Error {
-            message: error.to_string(),
-        });
-        return Ok(());
+        // A failed resume can close the socket. Settle dispatch here instead
+        // of requiring another read to deliver a buffered failure.
+        return Err(error.steer_not_submitted(envelope.steering));
     }
     // Every existing thread keeps its conversation and provider identity.
     // Fresh thread/start already carries this context; later refreshes use the
@@ -100,13 +96,7 @@ pub fn submit_codex_prompt(
                 context,
                 &mut state.buffered_notifications,
             ) {
-                if envelope.steering {
-                    return Err(error.steer_not_submitted(true));
-                }
-                state.buffered_notifications.push(CodexNotification::Error {
-                    message: error.to_string(),
-                });
-                return Ok(());
+                return Err(error.steer_not_submitted(envelope.steering));
             }
         }
     }
@@ -490,7 +480,7 @@ mod prompt_tests {
             .expect("submit prompt");
         }
         state.active_turn_id = None;
-        super::submit_codex_prompt(
+        let error = super::submit_codex_prompt(
             &run,
             &mut state,
             &PromptEnvelope::new(
@@ -500,11 +490,9 @@ mod prompt_tests {
                 PromptManifest::current(),
             ),
         )
-        .expect("provider rejection is projected through notifications");
+        .expect_err("context rejection must settle prompt dispatch directly");
         assert!(state.active_turn_id.is_none());
-        assert!(state.buffered_notifications.iter().any(|notification| matches!(
-            notification, CodexNotification::Error { message } if message.contains("context injection unavailable")
-        )));
+        assert!(error.to_string().contains("context injection unavailable"));
         drop(state);
         let requests = server.join().expect("join fixture");
         for ((context, request), marker) in requests.iter().zip(["FIRST", "SECOND"]) {
