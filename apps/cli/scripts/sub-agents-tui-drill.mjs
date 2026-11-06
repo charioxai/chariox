@@ -43,11 +43,13 @@ async function run(cols, port) {
   const waitFor = async (test, label) => {
     for (let attempt = 0; attempt < 60; attempt += 1) {
       const lines = screen()
-      if (test(lines.join("\n"))) return lines.join("\n")
+      if (test(lines.join("\n"), area(lines.join("\n")))) return lines.join("\n")
       await sleep(250)
     }
     throw new Error(`timed out: ${label}\n${screen().join("\n")}`)
   }
+  // The agents' side of the screen on one line: at narrow widths the stripe copy wraps, and the view sits on the right.
+  const area = text => text.split("\n").map(line => line.slice(0, cols - (cols >= 110 ? 36 : 32))).join(" ").replace(/\s+/g, " ")
   let step = 0
   const shot = async (name, test) => {
     const text = await waitFor(test, name)
@@ -67,12 +69,12 @@ async function run(cols, port) {
     check("no stripe without sub-agents", !/Agents \d/.test(screen().join("\n")))
 
     setTree("one")
-    const one = await shot("one-agent", text => /1 agent running/.test(text))
-    check("one agent reads singular", /Agents 1 agent running/.test(one))
+    const one = await shot("one-agent", (text, flat) => /1 agent running/.test(flat))
+    check("one agent reads singular", /Agents 1 agent running/.test(area(one)))
 
     setTree("six")
-    const six = await shot("six-agents-three-depths", text => /6 agents running/.test(text))
-    check("six agents plain count", /Agents 6 agents running/.test(six))
+    const six = await shot("six-agents-three-depths", (text, flat) => /6 agents running/.test(flat))
+    check("six agents plain count", /Agents 6 agents running/.test(area(six)))
 
     keys("F7")
     const card = await shot("card-six", text => /researcher/.test(text) && /parser/.test(text))
@@ -103,8 +105,8 @@ async function run(cols, port) {
     keys("C-u")
 
     setTree("mixed")
-    const mixed = await shot("mixed-needs-you-waiting-done", text => /1 agent needs you · 2 running · 1 waiting · 2 done/.test(text))
-    check("needs you leads", /Agents 1 agent needs you · 2 running · 1 waiting · 2 done/.test(mixed))
+    const mixed = await shot("mixed-needs-you-waiting-done", (text, flat) => /1 agent needs you · 2 running · 1 waiting · 2 done/.test(flat))
+    check("needs you leads", /Agents 1 agent needs you · 2 running · 1 waiting · 2 done/.test(area(mixed)))
     check("panels say waiting while a decision is held", /reader\s+waiting/.test(mixed) && !/reader\s+needs you/.test(mixed))
     check("no decision card in the view", !/\[|Approve|Deny|Allow/.test(mixed.split("\n").filter(line => /reader|parser|writer/.test(line)).join("\n")))
 
@@ -119,18 +121,18 @@ async function run(cols, port) {
     check("a finished node keeps its panel and the view stays", /Sub-agents 6/.test(done) && /reader\s+done/.test(done))
 
     setTree("lastLive")
-    await shot("last-live-writer", text => /1 agent running · 5 done/.test(text))
+    await shot("last-live-writer", (text, flat) => /1 agent running · 5 done/.test(flat))
     setTree("allDone")
-    const ended = await shot("last-sub-agent-ended-view-closed", text => /6 agents done/.test(text) && !/Sub-agents 6/.test(text))
+    const ended = await shot("last-sub-agent-ended-view-closed", (text, flat) => /6 agents done/.test(flat) && !/Sub-agents 6/.test(text))
     check("the view closes with the last live sub-agent; the room stays on its agents, no blank view", /Write your next prompt here/.test(ended) && !/Sub-agents \d/.test(ended))
     keys("F7")
     await shot("card-all-done", text => /researcher/.test(text))
     keys("Enter")
-    const afterRow = await shot("row-with-none-live-only-closes-card", text => !/researcher\s+done/.test(text) && /6 agents done/.test(text))
+    const afterRow = await shot("row-with-none-live-only-closes-card", (text, flat) => !/researcher\s+done/.test(text) && /6 agents done/.test(flat))
     check("a row with none live opens no view", !/Sub-agents \d/.test(afterRow))
 
     setTree("dropped")
-    const gone = await shot("parent-task-ended-stripe-gone", text => !/Agents \d/.test(text))
+    const gone = await shot("parent-task-ended-stripe-gone", (text, flat) => !/Agents \d/.test(flat))
     check("no sub-agents, no stripe", !/Agents \d/.test(gone))
     writeFileSync(path.join(out, "results.json"), JSON.stringify({ cols, checks: results }, null, 2))
     return results
