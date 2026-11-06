@@ -378,19 +378,20 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             // without replaying delivery or buying progress from the same receipt.
             // A recurring check-in ACK is bookkeeping, not useful progress.
             // The existing three-no-progress-wake guard requires owner action.
-            if handled && matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+            if handled && e.is_source_outcome() {
                 for mut t in live_tasks(tx, &room, &agent)? {
                     if t.room_id != room
                         || t.agent_id != agent
                         // MP-08/MP-10/MP-11: a loss ACK cannot override the owner's Blocked decision.
-                        || (t.state == ExecutionState::Blocked && e.kind == "source_lost")
+                        || (t.state == ExecutionState::Blocked && e.is_loss())
                         || matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                     {
                         continue;
                     }
                     let mut changed = false;
                     for o in &mut t.obligations {
-                        if o.completion_source() == Some(&e.source_id)
+                        if o.completion_source()
+                            .is_some_and(|source| e.reports_source(source))
                             && matches!(o.status.as_str(), "failed" | "settling")
                         {
                             o.status = "satisfied".into();

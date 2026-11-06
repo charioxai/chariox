@@ -152,6 +152,7 @@ mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;
 mod child_finished;
+mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;

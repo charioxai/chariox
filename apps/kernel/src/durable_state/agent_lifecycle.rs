@@ -1031,10 +1031,27 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     if e.kind == "message" && count >= 1024 {
         return Err(error("inbox full; unacknowledged events retained"));
     }
+    // A child's end is told once, by its `child_finished`: a receipt of the same end arrives already handled.
+    if receipt_folded(tx, &e)? {
+        e.state = "handled".into();
+    }
     tx.execute("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,?2,?3,?4,'{}')",params![e.room_id,e.agent_id,e.source_id,e.occurrence_id]).map_err(sql)?;
     e.sequence = tx.last_insert_rowid() as u64;
     save_event(tx, &e)?;
+    if let Some(task) = e.occurrence_id.strip_prefix("child-finished-") {
+        tx.execute("UPDATE agent_inbox SET payload=json_set(payload,'$.state','handled') WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND json_extract(payload,'$.state')='pending'", params![room, agent, format!("task-terminal-{task}")]).map_err(sql)?;
+    }
     Ok(e)
+}
+/// The receipt `e` of a task's end, for a recipient that already has that task's `child_finished`.
+fn receipt_folded(tx: &Transaction<'_>, e: &InboxEvent) -> Result<bool, DaemonError> {
+    let Some(task) = e.occurrence_id.strip_prefix("task-terminal-") else {
+        return Ok(false);
+    };
+    if !matches!(e.kind.as_str(), "source_completed" | "source_lost") {
+        return Ok(false);
+    }
+    tx.query_row("SELECT EXISTS(SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 AND json_extract(payload,'$.kind')='child_finished')", params![e.room_id, e.agent_id, format!("child-finished-{task}")], |r| r.get(0)).map_err(sql)
 }
 // Retain occurrence identity for replay dedup; age the delivered message window.
 // Source outcomes and unresolved reply links keep their handling authority.

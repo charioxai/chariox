@@ -3,6 +3,22 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 
+pub(super) struct Kid {
+    pub(super) child: String,
+    pub(super) child_prompt: crate::session::PromptQueueItem,
+    pub(super) child_run: String,
+    pub(super) task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    pub(super) correction: bool,
+}
+
+pub(super) struct Family {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) room: String,
+    pub(super) parent: String,
+    pub(super) parent_run: String,
+    pub(super) kids: Vec<Kid>,
+}
+
 struct Team {
     runtime: KernelRuntimeState,
     room: String,
@@ -21,6 +37,39 @@ async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team
 
 /// `settle_cancelled: None` leaves the child working.
 async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
+    let Family {
+        runtime,
+        room,
+        parent,
+        mut kids,
+        ..
+    } = family(label, 1, settle_cancelled, parent_running).await;
+    let Kid {
+        child,
+        child_prompt,
+        child_run,
+        task,
+        correction,
+    } = kids.remove(0);
+    Team {
+        runtime,
+        room,
+        parent,
+        child,
+        child_prompt,
+        child_run,
+        task,
+        correction,
+    }
+}
+
+/// A parent and `children` sub-agents, each with an active turn and a task.
+pub(super) async fn family(
+    label: &str,
+    children: usize,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+) -> Family {
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
@@ -30,13 +79,6 @@ async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: 
         .unwrap();
     // Spawning a child needs the parent's live turn.
     crate::test_support::admit_room_test_turn(&mut app, session.id(), parent.id());
-    let child = crate::app::KernelSessionService::new(&mut app)
-        .spawn_agent(
-            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_alias("child")
-                .with_parent_agent_id(parent.id()),
-        )
-        .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
@@ -44,80 +86,103 @@ async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: 
             crate::attachment::ClientCapabilityLevel::FullTerminal,
         ))
         .unwrap();
-    let launch = |app: &mut DaemonApp, agent: &str| {
-        app.launch_provider(
-            crate::provider::LaunchProviderRequest::new(
-                session.id(),
-                "dev-stub",
-                "claude-code",
-                "default",
-                "sonnet",
+    let mut spawned = Vec::new();
+    for index in 0..children {
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias(if index == 0 {
+                        "child".to_owned()
+                    } else {
+                        format!("child{}", index + 1)
+                    })
+                    .with_parent_agent_id(parent.id()),
             )
-            .with_agent_id(agent),
-        )
-        .unwrap()
-    };
-    let child_run = launch(&mut app, child.id());
+            .unwrap();
+        let run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(child.id()),
+            )
+            .unwrap();
+        let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+            .submit_prompt(
+                session.id(),
+                attachment.id(),
+                Some(child.id()),
+                "do the work",
+                Vec::new(),
+            )
+            .unwrap()
+        else {
+            panic!("the child starts its prompt")
+        };
+        spawned.push((child.id().to_owned(), run.id().to_owned(), prompt));
+    }
     let parent_run = app
         .providers()
         .get_run_for_agent(session.id(), parent.id())
         .expect("the admitted turn has a run");
-    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
-        .submit_prompt(
-            session.id(),
-            attachment.id(),
-            Some(child.id()),
-            "do the work",
-            Vec::new(),
-        )
-        .unwrap()
-    else {
-        panic!("the child starts its prompt")
-    };
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
     let store = &runtime.owned.durable_state_store;
-    let Outcome::Task(begun) = store
-        .agent_lifecycle(Operation::Begin {
-            owner: "local".into(),
-            room: session.id().into(),
-            agent: child.id().into(),
-            prompt: prompt.id().into(),
-            run: Some(child_run.id().into()),
-            now: 1,
-        })
-        .unwrap()
-    else {
-        panic!("begun")
-    };
-    let (task, correction) = match settle_cancelled {
-        None => (begun, false),
-        Some(cancelled) => {
-            let Outcome::Settled { task, correction } = store
-                .agent_lifecycle(Operation::Settle {
-                    room: session.id().into(),
-                    agent: child.id().into(),
-                    prompt: prompt.id().into(),
-                    run: child_run.id().into(),
-                    has_answer: !cancelled,
-                    cancelled,
-                    now: 2,
-                })
-                .unwrap()
-            else {
-                panic!("settled")
-            };
-            runtime
-                .owned
-                .complete_local_prompt_without_advance(
-                    session.id(),
-                    child.id(),
-                    Some(child_run.id()),
-                )
-                .unwrap();
-            (task, correction)
-        }
-    };
+    let mut kids = Vec::new();
+    for (child, child_run, prompt) in spawned {
+        let Outcome::Task(begun) = store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: session.id().into(),
+                agent: child.clone(),
+                prompt: prompt.id().into(),
+                run: Some(child_run.clone()),
+                now: 1,
+            })
+            .unwrap()
+        else {
+            panic!("begun")
+        };
+        let (task, correction) = match settle_cancelled {
+            None => (begun, false),
+            Some(cancelled) => {
+                let Outcome::Settled { task, correction } = store
+                    .agent_lifecycle(Operation::Settle {
+                        room: session.id().into(),
+                        agent: child.clone(),
+                        prompt: prompt.id().into(),
+                        run: child_run.clone(),
+                        has_answer: !cancelled,
+                        cancelled,
+                        now: 2,
+                    })
+                    .unwrap()
+                else {
+                    panic!("settled")
+                };
+                runtime
+                    .owned
+                    .complete_local_prompt_without_advance(
+                        session.id(),
+                        &child,
+                        Some(&child_run),
+                    )
+                    .unwrap();
+                (task, correction)
+            }
+        };
+        kids.push(Kid {
+            child,
+            child_prompt: prompt,
+            child_run,
+            task,
+            correction,
+        });
+    }
     if !parent_running {
         // The parent ended its turn and parked on its children.
         runtime
@@ -125,14 +190,11 @@ async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: 
             .complete_local_prompt_without_advance(session.id(), parent.id(), Some(parent_run.id()))
             .unwrap();
     }
-    Team {
+    Family {
         room: session.id().into(),
         parent: parent.id().into(),
-        child: child.id().into(),
-        child_run: child_run.id().into(),
-        child_prompt: prompt,
-        task,
-        correction,
+        parent_run: parent_run.id().into(),
+        kids,
         runtime,
     }
 }
