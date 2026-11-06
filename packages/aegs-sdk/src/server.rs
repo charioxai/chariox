@@ -1220,10 +1220,11 @@ impl AegsServer {
                 };
                 // A direct emission reaches the kernels subscribed to its interest, never a
                 // route the caller names.
-                event.audience = match self
-                    .store
-                    .audience_for_interest(&self.producer_id, &event.event_interest_key)
-                {
+                event.audience = match self.store.audience_for_interest(
+                    &self.producer_id,
+                    &event.event_interest_key,
+                    None,
+                ) {
                     Ok(audience) => audience,
                     Err(message) => {
                         return error(StatusCode::INTERNAL_SERVER_ERROR, "store_error", message)

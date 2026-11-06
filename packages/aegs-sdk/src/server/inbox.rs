@@ -129,9 +129,13 @@ impl AegsServer {
         };
         let accepted_connection_id = subscription.connection_id.clone();
         // Read under the delivery guard: a subscription revoked since the selection is not in it.
-        let audience = self
-            .store
-            .audience_for_interest(&self.producer_id, &subscription.event_interest_key)?;
+        // One connection's publication names only that connection's kernels, so another
+        // connection watching the same scope is published to on its own.
+        let audience = self.store.audience_for_interest(
+            &self.producer_id,
+            &subscription.event_interest_key,
+            Some(&subscription.connection_id),
+        )?;
         let response = self
             .publisher
             .publish(PublishEventRequest {

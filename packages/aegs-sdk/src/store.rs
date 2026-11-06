@@ -92,7 +92,8 @@ pub struct AegsStore {
 
 /// A subscription may receive events only while its connection is ready and its authority
 /// (connection owner, provider and generation) is the one recorded when it was reconciled.
-const SUBSCRIPTION_AUTHORIZED: &str = "(NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
+const SUBSCRIPTION_AUTHORIZED: &str =
+    "(NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
     OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
       AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
       AND EXISTS (SELECT 1 FROM subscription_authorities a
@@ -450,8 +451,7 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let mut statement = connection
-            .prepare(
-                &format!(
+            .prepare(&format!(
                 "
                 SELECT binding_id, generator_id, connection_id, connection_scope,
                        event_interest_key, event_type, event_type_version, filter_json,
@@ -462,8 +462,7 @@ impl AegsStore {
                   AND {SUBSCRIPTION_AUTHORIZED}
                 ORDER BY binding_id
                 "
-                ),
-            )
+            ))
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(params![generator_id, event_type, connection_scope], |row| {
@@ -486,29 +485,35 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
-    /// Every kernel that holds an authorized, active subscription for `event_interest_key`: the
-    /// routes AEDS may deliver an occurrence of that interest to.
+    /// Every kernel that holds an authorized, active subscription for `event_interest_key`
+    /// (through `connection_id`, when given): the routes AEDS may deliver an occurrence of that
+    /// interest to.
     pub fn audience_for_interest(
         &self,
         generator_id: &str,
         event_interest_key: &str,
+        connection_id: Option<&str>,
     ) -> Result<Vec<EventRouteAudience>, String> {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(&format!(
                 "SELECT owner_id, binding_id FROM subscriptions
                  WHERE generator_id = ?1 AND event_interest_key = ?2 AND active = 1
+                   AND (?3 IS NULL OR connection_id = ?3)
                    AND {SUBSCRIPTION_AUTHORIZED}
                  ORDER BY binding_id"
             ))
             .map_err(|error| error.to_string())?;
         let rows = statement
-            .query_map(params![generator_id, event_interest_key], |row| {
-                Ok(EventRouteAudience {
-                    kernel_id: row.get(0)?,
-                    binding_id: row.get(1)?,
-                })
-            })
+            .query_map(
+                params![generator_id, event_interest_key, connection_id],
+                |row| {
+                    Ok(EventRouteAudience {
+                        kernel_id: row.get(0)?,
+                        binding_id: row.get(1)?,
+                    })
+                },
+            )
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
