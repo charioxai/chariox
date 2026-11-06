@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,7 +10,7 @@ use chariox_event_protocol::{
     AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
     AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
     AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
-    AegsConnectionTestEventResponse, AegsProviderActionRequest, AegsProviderResourceQuery,
+    AegsConnectionTestEventResponse, AegsProviderResourceQuery,
     PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
@@ -22,7 +22,6 @@ use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 
 use crate::kernel_auth::{Admission, AuthenticatedKernel, ManagementAuth, Refusal};
-use crate::store::ActionReceiptLookupError;
 use crate::store::OwnerMembership;
 use crate::{
     baseline_provider_connection_inspection, now_ms, AedsPublisher, AegsProvider, AegsStore,
@@ -33,12 +32,6 @@ mod inbox;
 mod scopes;
 use inbox::InboxAttempt;
 
-fn action_receipt_is_durable(action_id: &str) -> bool {
-    // Context lookups are bounded, read-only queries. Persisting their full provider response
-    // would retain conversation history and user profiles indefinitely in the AEGS database.
-    !matches!(action_id, "event.context" | "notification.context")
-}
-
 #[derive(Clone)]
 struct AegsServer {
     producer_id: String,
@@ -46,36 +39,7 @@ struct AegsServer {
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
-    action_locks: ActionLockMap,
     scope_cache: scopes::ScopeCache,
-}
-
-type ActionLock = Arc<tokio::sync::Mutex<()>>;
-type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
-
-struct ActionLockLease {
-    key: String,
-    action_lock: Weak<tokio::sync::Mutex<()>>,
-    locks: ActionLockMap,
-    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-
-impl Drop for ActionLockLease {
-    fn drop(&mut self) {
-        // Release the owned guard before checking the reference count. If a
-        // retry arrived while this action was running, its Arc keeps the map
-        // entry alive and the waiter will remove it when it finishes.
-        let _ = self.guard.take();
-        let Ok(mut locks) = self.locks.lock() else {
-            return;
-        };
-        let remove = locks.get(&self.key).is_some_and(|entry| {
-            Weak::ptr_eq(&Arc::downgrade(entry), &self.action_lock) && Arc::strong_count(entry) == 2
-        });
-        if remove {
-            locks.remove(&self.key);
-        }
-    }
 }
 
 pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn std::error::Error>>
@@ -112,7 +76,6 @@ where
         ),
         store,
         provider,
-        action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
         scope_cache: Default::default(),
     };
     if server.provider.authorization_configured() {
@@ -381,152 +344,6 @@ impl AegsServer {
                         error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
                     }
                 }
-            }
-            (Method::POST, "/v1/actions") => {
-                let (authorization, body) = match self.authenticate_management(request).await {
-                    Ok(authenticated) => authenticated,
-                    Err(response) => return *response,
-                };
-                let action: AegsProviderActionRequest = match serde_json::from_slice(&body) {
-                    Ok(value) => value,
-                    Err(error_value) => {
-                        return error(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_json",
-                            error_value.to_string(),
-                        )
-                    }
-                };
-                if let Err(response) = enforce_management_owner(&authorization, &action.owner_id) {
-                    return *response;
-                }
-                if let Err(message) = action.validate() {
-                    return error(StatusCode::BAD_REQUEST, "invalid_action", message);
-                }
-                if action.generator_id != self.producer_id {
-                    return error(
-                        StatusCode::CONFLICT,
-                        "generator_mismatch",
-                        format!(
-                            "this AEGS owns {}, not {}",
-                            self.producer_id, action.generator_id
-                        ),
-                    );
-                }
-                let connection = match self
-                    .store
-                    .claim_connection_owner(&action.connection_id, &action.owner_id)
-                {
-                    Ok(connection) => connection,
-                    Err(message) => {
-                        return error(StatusCode::NOT_FOUND, "connection_not_found", message)
-                    }
-                };
-                if connection.status != "ready" {
-                    return error(
-                        StatusCode::CONFLICT,
-                        "connection_not_ready",
-                        "the provider connection is not ready for outbound actions",
-                    );
-                }
-                // Serialize each idempotency key across concurrent HTTP retries. The durable
-                // receipt makes retries safe after completion; this lock also prevents two
-                // simultaneous retries from both reaching the provider before that receipt is
-                // written.
-                let action_lock_key = format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    action.owner_id, action.connection_id, action.idempotency_key
-                );
-                let action_lock = match self.action_locks.lock() {
-                    Ok(mut locks) => locks
-                        .entry(action_lock_key.clone())
-                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                        .clone(),
-                    Err(_) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_lock_failed",
-                            "AEGS action lock was poisoned",
-                        )
-                    }
-                };
-                let _action_lock_lease = ActionLockLease {
-                    key: action_lock_key,
-                    action_lock: Arc::downgrade(&action_lock),
-                    locks: Arc::clone(&self.action_locks),
-                    guard: Some(Arc::clone(&action_lock).lock_owned().await),
-                };
-                let request_fingerprint = crate::action_request_fingerprint(
-                    &action.action_id,
-                    &action.input,
-                    &action.context,
-                );
-                let durable_receipt = action_receipt_is_durable(&action.action_id);
-                if durable_receipt {
-                    match self.store.action_receipt(
-                        &action.owner_id,
-                        &action.connection_id,
-                        &action.idempotency_key,
-                        &request_fingerprint,
-                    ) {
-                        Ok(Some(response)) => return json(StatusCode::OK, response),
-                        Ok(None) => {}
-                        Err(ActionReceiptLookupError::Conflict(message)) => {
-                            return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
-                        }
-                        Err(ActionReceiptLookupError::Storage(message)) => {
-                            return error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "action_receipt_lookup_failed",
-                                message,
-                            )
-                        }
-                    }
-                }
-                let provider = Arc::clone(&self.provider);
-                let action_for_provider = action.clone();
-                let response = match tokio::task::spawn_blocking(move || {
-                    provider.perform_action(&action_for_provider)
-                })
-                .await
-                {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(message)) => {
-                        return error(StatusCode::BAD_GATEWAY, "provider_action_failed", message)
-                    }
-                    Err(message) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "provider_action_failed",
-                            message.to_string(),
-                        )
-                    }
-                };
-                if response.action_id != action.action_id
-                    || response.idempotency_key != action.idempotency_key
-                {
-                    return error(
-                        StatusCode::BAD_GATEWAY,
-                        "invalid_provider_action_response",
-                        "provider action response identity did not match the request",
-                    );
-                }
-                if durable_receipt {
-                    if let Err(message) = self.store.record_action_receipt(
-                        &action.owner_id,
-                        &action.connection_id,
-                        &response,
-                        &request_fingerprint,
-                        now_ms(),
-                    ) {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_receipt_failed",
-                            message,
-                        );
-                    }
-                }
-                json(StatusCode::ACCEPTED, response)
             }
             (Method::POST, "/v1/authorizations") => {
                 let (authorization_guard, body) = match self.authenticate_management(request).await
@@ -1830,14 +1647,6 @@ mod tests {
         assert_eq!(inspection.last_successful_health_check_at_ms, None);
         assert!(!inspection.test_event_supported);
     }
-
-    #[test]
-    fn context_actions_do_not_persist_provider_responses() {
-        assert!(!action_receipt_is_durable("event.context"));
-        assert!(!action_receipt_is_durable("notification.context"));
-        assert!(action_receipt_is_durable("notification.reply"));
-        assert!(action_receipt_is_durable("custom.action"));
-    }
 }
 
 #[cfg(test)]
@@ -2200,8 +2009,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            scope_cache: Default::default(),
+                scope_cache: Default::default(),
         });
         (server, store)
     }
@@ -2627,6 +2435,33 @@ mod mp11_delivery_http_tests {
         .unwrap();
         serving.await.unwrap();
         response
+    }
+
+    #[tokio::test]
+    async fn the_gateway_only_generates_events_and_has_no_actions_route() {
+        let publisher = PublisherFixture::new();
+        let (server, _) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_auth: ManagementAuth::open_for_tests(),
+            ..(*server).clone()
+        });
+        let (status, body) = management_post(
+            &server,
+            "/v1/actions",
+            "owner-a",
+            serde_json::json!({
+                "generator_id": "dev.chariox.github",
+                "owner_id": "owner-a",
+                "connection_id": "connection-a",
+                "action_id": "notification.reply",
+                "input": {},
+                "context": {},
+                "idempotency_key": "reply-1"
+            }),
+        )
+        .await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"]["code"], "not_found", "{body}");
     }
 
     #[tokio::test]
@@ -3117,8 +2952,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            scope_cache: Default::default(),
+                scope_cache: Default::default(),
         });
 
         let publishing = tokio::spawn(signed_webhook(server));
@@ -3195,8 +3029,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&earlier.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            scope_cache: Default::default(),
+                scope_cache: Default::default(),
         });
         let publishing = tokio::spawn(signed_webhook(server));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -3261,8 +3094,7 @@ mod mp11_delivery_http_tests {
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            scope_cache: Default::default(),
+                scope_cache: Default::default(),
         });
         assert_eq!(
             signed_webhook(server.clone()).await["matched_interest_count"],

@@ -10,7 +10,6 @@ mod publisher;
 mod server;
 mod store;
 
-pub use chariox_event_protocol::{AegsProviderActionRequest, AegsProviderActionResponse};
 pub use conformance::{
     verify_provider_contract, verify_webhook_conformance, WebhookConformanceCase,
 };
@@ -54,4 +53,3 @@ pub use auth::{
     PROVIDER_HTTP_TIMEOUT,
 };
 pub use hooks::{event_configuration_digest, reconcile_provider_hooks};
-pub(crate) use store::action_request_fingerprint;
