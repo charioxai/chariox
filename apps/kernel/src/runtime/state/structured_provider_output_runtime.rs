@@ -966,7 +966,7 @@ mod tests {
         let notice = provider_prompt_dispatch_failure_notice(&failure);
         assert_eq!(
             crate::provider::provider_turn_failure_reason("claude", &notice, None),
-            "The provider's usage limit was reached"
+            "You've hit your session limit · resets 10:40pm (Europe/Madrid)"
         );
         let codex = provider_prompt_dispatch_failure_notice(
             "Codex error [server_overloaded]: Selected model is at capacity.",
