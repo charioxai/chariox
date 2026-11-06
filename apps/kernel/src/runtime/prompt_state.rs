@@ -854,6 +854,29 @@ impl PromptStateOwner {
         Some(active.clone())
     }
 
+    /// Marks the agent's active turn as one whose question the kernel stopped under.
+    pub(crate) fn mark_active_prompt_question_wait_stopped(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+    ) -> bool {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(active) = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .filter(|active| active.id() == prompt_id)
+        else {
+            return false;
+        };
+        active.set_question_wait_stopped();
+        true
+    }
+
     pub(crate) fn mark_active_prompt_running(
         &self,
         session: &RuntimeSession,

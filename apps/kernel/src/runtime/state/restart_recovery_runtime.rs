@@ -665,13 +665,15 @@ impl KernelRuntimeState {
                 }
                 // A question the turn blocked on died with the old process. Resuming the
                 // provider would hand the model a refusal nobody gave; end the turn as
-                // interrupted by the restart instead.
-                if session
-                    .active_interaction_for_agent(agent_id)
-                    .is_some_and(|interaction| {
-                        interaction.kind() == crate::session::RuntimeInteractionKind::Choice
-                            && interaction.native_origin().is_some()
-                    })
+                // interrupted by the restart instead. A graceful stop withdrew the card
+                // and left the mark on the prompt; a crash left the card.
+                if prompt.question_wait_stopped()
+                    || session
+                        .active_interaction_for_agent(agent_id)
+                        .is_some_and(|interaction| {
+                            interaction.kind() == crate::session::RuntimeInteractionKind::Choice
+                                && interaction.native_origin().is_some()
+                        })
                 {
                     summary.unanswerable_local_prompts.push((
                         session.id().to_string(),
@@ -2704,10 +2706,8 @@ mod tests {
         }
     }
 
-    /// ORCH-15: a turn blocked on a question when the kernel stopped is ended as
-    /// interrupted by the restart; the model is not resumed into a refusal nobody gave.
-    #[tokio::test]
-    async fn a_restart_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
+    /// A runtime whose active turn waits on a pending popup (ORCH-15).
+    async fn runtime_blocked_on_a_popup() -> (KernelRuntimeState, String, String, String) {
         let mut config = DaemonConfig::for_tests();
         config.room_agent_tools = true;
         let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
@@ -2759,8 +2759,16 @@ mod tests {
                 now: crate::session::unix_epoch_ms(),
             })
             .expect("the real admission creates its task before dispatch");
-        let targets = runtime.durable_restart_recovery_targets();
+        (runtime, session_id, agent_id, prompt_id)
+    }
 
+    async fn assert_recovery_ends_the_turn_as_interrupted(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) {
+        let targets = runtime.durable_restart_recovery_targets();
         runtime
             .drive_durable_restart_recovery(
                 &targets,
@@ -2769,11 +2777,10 @@ mod tests {
                 std::time::Duration::from_millis(1),
             )
             .await;
-
         let settlement = runtime
             .owned
             .operational_history_store
-            .load_prompt_settlement_event(&session_id, &agent_id, &prompt_id)
+            .load_prompt_settlement_event(session_id, agent_id, prompt_id)
             .expect("history loads")
             .expect("the turn has settlement history");
         assert_eq!(
@@ -2788,6 +2795,38 @@ mod tests {
             "{:?}",
             settlement.metadata
         );
+    }
+
+    /// ORCH-15: a turn blocked on a question when the kernel crashed is ended as
+    /// interrupted by the restart; the model is not resumed into a refusal nobody gave.
+    #[tokio::test]
+    async fn a_restart_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    /// ORCH-15 live: the graceful stop withdraws the popup before recovery runs, so the
+    /// withdrawal itself leaves the mark that ends the turn as interrupted by the restart.
+    #[tokio::test]
+    async fn a_graceful_stop_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        runtime
+            .owned
+            .withdraw_agent_interactions_for_shutdown(&session_id)
+            .expect("the stop withdraws the turn's popup");
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session")
+                .active_interaction_for_agent(&agent_id)
+                .is_none(),
+            "the withdrawn popup is no card after the stop"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
     }
 
     #[tokio::test]
