@@ -66,6 +66,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct SetupRuns {
     root: PathBuf,
     changes: super::OperationChanges,
+    /// Held while a start checks, saves and registers its run, while a run publishes its end, and
+    /// while a reader decides a saved run is an orphan: no start is admitted twice, and no reader
+    /// sees a saved run before it is live or after it was removed from `live` but not yet ended.
+    publication: Mutex<()>,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
     managed: crate::room_terminal::managed_work::ManagedWork,
 }
@@ -85,6 +89,7 @@ impl SetupRuns {
         let runs = Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
             changes,
+            publication: Mutex::new(()),
             live: Mutex::new(HashMap::new()),
             managed: Default::default(),
         });
@@ -177,6 +182,14 @@ impl SetupRuns {
         &self,
         operation_id: &str,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
+        let _publication = lock(&self.publication);
+        self.published(operation_id)
+    }
+
+    fn published(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
         if let Some(live) = lock(&self.live).get(operation_id) {
             return Ok(Some(lock(&live.run).view.clone()));
         }
@@ -191,10 +204,20 @@ impl SetupRuns {
         checkout: &Path,
         script_digest: &str,
     ) -> Result<ProjectEnvironmentSetupState, DaemonError> {
+        let _publication = lock(&self.publication);
+        self.published_state(project_id, checkout, script_digest)
+    }
+
+    fn published_state(
+        &self,
+        project_id: &str,
+        checkout: &Path,
+        script_digest: &str,
+    ) -> Result<ProjectEnvironmentSetupState, DaemonError> {
         let Ok(last) = fs::read_to_string(self.last_path(project_id, checkout)) else {
             return Ok(ProjectEnvironmentSetupState::NotRun);
         };
-        let Some(view) = self.get(last.trim())? else {
+        let Some(view) = self.published(last.trim())? else {
             return Ok(ProjectEnvironmentSetupState::NotRun);
         };
         let digest_matches = match lock(&self.live).get(&view.operation_id) {
@@ -251,7 +274,9 @@ impl SetupRuns {
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
         let _admission = self.managed.admission()?;
-        if let Some(existing) = self.get(&spec.operation_id)? {
+        // An ordinary kernel has no managed admission; a retry of a lost reply races the start.
+        let _publication = lock(&self.publication);
+        if let Some(existing) = self.published(&spec.operation_id)? {
             if existing.project_id != spec.project_id {
                 return Err(environment_error(
                     "this operation id belongs to another Project",
@@ -260,7 +285,7 @@ impl SetupRuns {
             return Ok(existing);
         }
         if let ProjectEnvironmentSetupState::Running { .. } =
-            self.state_for(&spec.project_id, &spec.checkout, &spec.script_digest)?
+            self.published_state(&spec.project_id, &spec.checkout, &spec.script_digest)?
         {
             return Err(environment_error("Setup is already running here"));
         }
@@ -441,6 +466,7 @@ impl SetupRuns {
     }
 
     fn finish(&self, live: &Arc<LiveRun>, outcome: Result<std::process::ExitStatus, String>) {
+        let publication = lock(&self.publication);
         let mut run = lock(&live.run);
         run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
         run.view.updates += 1;
@@ -468,6 +494,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
+        drop(publication);
         self.report_work();
         self.changes.notify();
     }
@@ -640,6 +667,85 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("the Setup process kept running after Stop");
+    }
+
+    /// An ordinary kernel has no managed admission: a lost-reply retry with the same id and a
+    /// start for another id race the first start, and a reader polls the run meanwhile.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concurrent_starts_admit_one_run_that_stop_ends_and_readers_never_see_as_an_orphan() {
+        for _ in 0..20 {
+            let dir = scratch();
+            let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+            let script = "echo $$ >> ../executions; sleep 30";
+            let ids = ["op-same", "op-same", "op-same", "op-other"];
+            let barrier = Arc::new(std::sync::Barrier::new(ids.len() + 1));
+            let starts: Vec<_> = ids
+                .iter()
+                .map(|id| {
+                    let (runs, barrier) = (Arc::clone(&runs), Arc::clone(&barrier));
+                    let (spec, runtime) =
+                        (spec(&dir, id, script), tokio::runtime::Handle::current());
+                    std::thread::spawn(move || {
+                        let _runtime = runtime.enter();
+                        barrier.wait();
+                        runs.start(spec).ok()
+                    })
+                })
+                .collect();
+            let reader = {
+                let (runs, barrier) = (Arc::clone(&runs), Arc::clone(&barrier));
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    (0..2_000)
+                        .filter_map(|_| runs.get("op-same").unwrap())
+                        .all(|view| view.state == EnvironmentOperationState::Running)
+                })
+            };
+            let started: Vec<_> = starts
+                .into_iter()
+                .map(|start| start.join().unwrap())
+                .collect();
+            assert!(
+                reader.join().unwrap(),
+                "a reader settled an admitted run as an orphan"
+            );
+            let admitted: std::collections::HashSet<_> = started
+                .iter()
+                .flatten()
+                .map(|view| (view.operation_id.clone(), view.started_at_ms))
+                .collect();
+            assert_eq!(admitted.len(), 1, "one run per checkout: {admitted:?}");
+            let (operation_id, _) = admitted.into_iter().next().unwrap();
+            while !dir.0.join("executions").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let pids: Vec<u32> = fs::read_to_string(dir.0.join("executions"))
+                .unwrap()
+                .lines()
+                .map(|pid| pid.parse().unwrap())
+                .collect();
+            runs.cancel(&operation_id).unwrap();
+            let view = finished(&runs, &operation_id).await;
+            assert_eq!(view.state, EnvironmentOperationState::Cancelled);
+            for _ in 0..100 {
+                if !pids
+                    .iter()
+                    .any(|pid| crate::runtime::process_health::process_running(*pid))
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            assert!(
+                !pids
+                    .iter()
+                    .any(|pid| crate::runtime::process_health::process_running(*pid)),
+                "Stop missed a Setup process: {pids:?}"
+            );
+            assert_eq!(pids.len(), 1, "the script ran more than once: {pids:?}");
+            assert!(!runs.has_running_work());
+        }
     }
 
     #[tokio::test]
