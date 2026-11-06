@@ -2321,10 +2321,10 @@ mod mp11_delivery_http_tests {
             event_interest_key: "foreign-interest".into(),
             ..subscription_claim()
         };
-        let (status, body) =
-            reconcile_as(&server, "kernel-x", &[subscription_claim(), foreign]).await;
+        let own = claim_for("own", true);
+        let (status, body) = reconcile_as(&server, "kernel-x", &[own, foreign]).await;
         assert_eq!(status, 200, "{body}");
-        assert_eq!(body["accepted_binding_ids"], serde_json::json!(["binding"]));
+        assert_eq!(body["accepted_binding_ids"], serde_json::json!(["own"]));
         assert_eq!(
             body["refused"],
             serde_json::json!([{"binding_id": "foreign", "reason": "scope_not_in_connection"}])
