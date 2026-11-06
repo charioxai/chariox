@@ -244,7 +244,7 @@ async fn a_finish_steers_a_running_parent() {
 #[tokio::test]
 async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     let team = team_with("child-finished-deadline-stop", None, false).await;
-    let deadline_ms = crate::session::unix_epoch_ms() + 1_000;
+    let deadline_ms = crate::session::unix_epoch_ms() + 30;
     team.runtime
         .owned
         .durable_state_store
@@ -254,8 +254,9 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
             deadline: deadline_ms,
         })
         .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
     team.runtime
-        .tick_agent_deadlines(deadline_ms + 1)
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
         .await
         .unwrap();
     let events = child_finished(&team);
