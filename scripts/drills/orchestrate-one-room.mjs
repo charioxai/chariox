@@ -245,7 +245,18 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
 6. When the kernel wakes you, its prompt only names counts and kinds. Call chariox events_inbox ONCE and read every event, then call chariox events_ack ONCE with through = the last sequence you read and handled true.
 7. Write ${join(work, "orchestrator-report.json")} with: what woke you, how many events your inbox read returned, the ack answer. Delete the workers (\`agent delete wN\`) and reply ORCHDONE.
 `
-  const brief = scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  // The same three workers, but the orchestrator parks (yield) and a barrier file releases the workers together: the
+  // first completion wakes the parked orchestrator; every completion pending when that wake is built rides with it.
+  const goPath = join(root, "go")
+  const batchYieldBrief = `# Orchestrator brief (drill, inbox-batch-yield scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once.
+1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider claude --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3.
+2. Prompt each (room \`prompt\` command): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA (w1) / BETA (w2) / GAMMA (w3) into result.txt in your current working directory. End your reply with W1DONE / W2DONE / W3DONE."
+3. Subscribe to each worker (chariox events_subscribe with the worker agent id), then yield on ALL your registrations (events_subscriptions lists them) with a deadline 20 minutes ahead and END YOUR TURN. Do not poll and do not read the inbox before you are woken.
+4. When the kernel wakes you, its prompt only names counts and kinds. Call chariox events_inbox ONCE, read every event, then ${flags.get("--ack-mode") === "single" ? "call chariox events_ack once for each event with handled true" : "call chariox events_ack ONCE with through = the last sequence you read and handled true"}. If your inbox read shows fewer than three worker completions, yield again on your remaining registrations and repeat this step on the next wake.
+5. When all three completions are acknowledged write ${join(work, "orchestrator-report.json")} with: each wake (what woke you, how many events your inbox read returned) and the ack answers. Delete the workers (\`agent delete wN\`) and reply ORCHDONE.
+`
+  const brief = scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only your own Chariox tools:
 the room tools (chariox room run_command / commands docs / list_session_agents / send_agent_message / history), the chariox events tools
 (subscribe, timer, yield, inbox, ack) and the chariox-reach tools (kernels, sessions, request, events_subscribe, events_wait, events_ack, guide).
@@ -282,7 +293,7 @@ Steps:
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
   const seen = { agents: new Map(), interactions: new Map(), prompts: new Map() }
   const orchTurns = []
-  let reportAt = null, fallbackAnswers = 0
+  let reportAt = null, fallbackAnswers = 0, goAt = null
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
   while (Date.now() - since < budgetMs) {
@@ -310,6 +321,9 @@ Steps:
     }
     const hold = [...seen.interactions.entries()].find(([id, at]) => at && s?.active_interactions?.find(x => x.id === id && /w3 hold/.test(x.title ?? "")))
     const orchIdle = s && !s.prompt_states?.[orch]?.active_prompt
+    if (scenario === "batchyield" && !goAt && orchIdle && (s.agents ?? []).filter(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt).length >= 3) {
+      writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
+    }
     if (scenario === "restart" && !restarted && hold && orchIdle && Date.now() - hold[1] > 45000) {
       restarted = true
       note("restart-begin", { orchestrator_idle: true, open_hold: hold[0] })
