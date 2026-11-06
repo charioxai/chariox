@@ -79,22 +79,19 @@ impl Drop for Fixture {
 fn enrolled_owner_preflight_needs_no_human_token_and_returns_no_material() {
     let fixture = Fixture::new();
     let mut command = fixture.command();
-    let response = execute_preflight(
+    let carries_vault_login = check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
         &fixture.request,
     )
     .unwrap();
-    assert_eq!(
-        serde_json::to_value(response).unwrap(),
-        serde_json::json!({"ProviderAccountPortabilityPreflightPassed": {}})
-    );
+    assert!(!carries_vault_login, "a file login needs no Vault");
     command.source = KernelCommandSource::RelayClient;
     command.caller.caller_kind = KernelCallerKind::RemoteClient;
     command.caller.user_id = Some("owner".into());
     command.caller.realm_id = Some("realm-a".into());
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -102,7 +99,7 @@ fn enrolled_owner_preflight_needs_no_human_token_and_returns_no_material() {
     )
     .is_ok());
     command.caller.realm_id = Some("foreign-realm".into());
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -112,7 +109,7 @@ fn enrolled_owner_preflight_needs_no_human_token_and_returns_no_material() {
     command.caller.realm_id = Some("realm-a".into());
     command.caller.user_id = Some("shared-session-collaborator".into());
     command.session_id = Some("shared-session".into());
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -121,7 +118,7 @@ fn enrolled_owner_preflight_needs_no_human_token_and_returns_no_material() {
     .is_err());
     command.caller.user_id = Some("owner".into());
     command.caller.caller_kind = KernelCallerKind::RemoteKernel;
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -134,7 +131,7 @@ fn enrolled_owner_preflight_needs_no_human_token_and_returns_no_material() {
 fn preflight_rechecks_portability_and_keeps_export_errors_private() {
     let mut fixture = Fixture::new();
     let command = fixture.command();
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -150,7 +147,7 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
         provider: "claude".into(),
         account_profile: "missing".into(),
     });
-    let failure = execute_preflight(
+    let failure = check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -162,7 +159,7 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
     assert!(!failure.contains("synthetic-portability-only"));
     assert!(!failure.contains(&fixture.root.to_string_lossy().to_string()));
     fixture.request.provider_accounts = ManagedEnvironmentProviderAccounts::None;
-    assert!(execute_preflight(
+    assert!(check_preflight(
         &fixture.config,
         &fixture.profiles,
         &command,
@@ -172,7 +169,7 @@ fn preflight_rechecks_portability_and_keeps_export_errors_private() {
 }
 
 #[test]
-fn vault_backed_login_is_not_offered_to_context_transfer() {
+fn vault_backed_login_is_accepted_by_preflight_and_offered_to_context_transfer() {
     crate::test_support::isolated_env_test!();
     let _guard = crate::env_lock::lock();
     let fixture = Fixture::new();
@@ -201,34 +198,30 @@ fn vault_backed_login_is_not_offered_to_context_transfer() {
         false,
     )
     .unwrap();
+    let selection = ManagedEnvironmentProviderAccounts::Selected {
+        accounts: vec![ManagedEnvironmentProviderAccountSelection {
+            provider: "claude".into(),
+            account_profile: token_profile.profile_id,
+        }],
+    };
 
-    let mut profiles = fixture.profiles.list(owner, None).unwrap();
-    mark_context_transfer(owner, &mut profiles).unwrap();
-
-    let state = |provider: &str| {
+    let state = |config: &DaemonConfig| {
+        let mut profiles = fixture.profiles.list(owner, None).unwrap();
+        mark_context_transfer(owner, &config.user_config.credential_vault, &mut profiles).unwrap();
         profiles
             .iter()
-            .find(|profile| profile.provider == provider)
+            .find(|profile| profile.provider == "claude")
             .unwrap()
             .context_transfer
     };
-    assert_eq!(
-        state("claude"),
-        ProviderAccountContextTransfer::VaultCredential
-    );
-    assert_eq!(state("codex"), ProviderAccountContextTransfer::Available);
-    // The state is the preflight's own verdict, not a second opinion.
-    assert!(preflight_selection(
-        &config,
-        &fixture.profiles,
-        owner,
-        &ManagedEnvironmentProviderAccounts::Selected {
-            accounts: vec![ManagedEnvironmentProviderAccountSelection {
-                provider: "claude".into(),
-                account_profile: token_profile.profile_id,
-            }],
-        },
-    )
-    .is_err());
+    // A Chariox Vault can be sealed for the new machine: the login is offered and preflight
+    // passes, asking the caller to find the Vault open.
+    assert_eq!(state(&config), ProviderAccountContextTransfer::Available);
+    assert!(preflight_selection(&config, &fixture.profiles, owner, &selection).unwrap());
+    // A secret kept outside a Chariox Vault cannot be sealed: the state is the preflight's own verdict.
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::ProcessMemory;
+    assert_eq!(state(&config), ProviderAccountContextTransfer::Unavailable);
+    assert!(preflight_selection(&config, &fixture.profiles, owner, &selection).is_err());
     crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
 }

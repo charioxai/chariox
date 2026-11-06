@@ -22,9 +22,12 @@ use super::scm::{
 };
 use crate::account_profile::{
     provider_account_materialization_sha256, ManagedContextProviderAccountReceipt,
-    ProviderAccountMaterialization, ProviderAccountProfileRegistry,
+    ProviderAccountMaterialization, ProviderAccountProfileRegistry, VaultLoginOpen,
 };
 use crate::error::DaemonError;
+use crate::provider_vault_login::{
+    materialization_sha256 as vault_login_materialization_sha256, VaultLoginMaterialization,
+};
 use crate::secret::TransferredVaultSourceBinding;
 
 const PACKAGE_SCHEMA_VERSION: u32 = 4;
@@ -59,7 +62,17 @@ pub enum ManagedContextPackageProviderAccounts {
     None,
     Selected {
         materializations: Vec<ProviderAccountMaterialization>,
+        /// Profiles whose login is a Vault credential, sealed for the target.
+        vault_logins: Vec<VaultLoginMaterialization>,
     },
+}
+
+/// The provider-account component as it is written into the package.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProviderAccountComponent {
+    materializations: Vec<ProviderAccountMaterialization>,
+    vault_logins: Vec<VaultLoginMaterialization>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +215,8 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
 pub(crate) struct ManagedContextProviderAccountImportTarget {
     pub registry: ProviderAccountProfileRegistry,
     pub owner_user_id: String,
+    /// The target's own configuration, whose Vault receives a transferred Vault login.
+    pub config: crate::config::DaemonConfig,
 }
 
 #[derive(Debug, Clone)]
@@ -492,15 +507,25 @@ pub fn export_managed_context_package(
                 }
                 (None, ProviderAccountComponentManifest::None, None)
             }
-            ManagedContextPackageProviderAccounts::Selected { materializations } => {
-                validate_provider_account_materializations(&binding.plan, &materializations)?;
-                let bytes = serialize_bounded_json(
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            } => {
+                validate_provider_account_materializations(
+                    &binding.plan,
                     &materializations,
+                    &vault_logins,
+                )?;
+                let account_count = materializations.len() + vault_logins.len();
+                let bytes = serialize_bounded_json(
+                    &ProviderAccountComponent {
+                        materializations,
+                        vault_logins,
+                    },
                     MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES as usize,
                 )?;
                 let size_bytes = bytes.len() as u64;
                 let sha256 = sha256_bytes(&bytes);
-                let account_count = materializations.len();
                 (
                     Some(bytes),
                     ProviderAccountComponentManifest::Selected {
@@ -883,13 +908,16 @@ fn import_provider_accounts(
             ManagedContextProviderAccountSelection::None,
         ) => Ok(ManagedContextImportedProviderAccounts::None),
         (
-            ManagedContextPackageProviderAccounts::Selected { materializations },
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            },
             ManagedContextProviderAccountSelection::Selected { .. },
         ) => {
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
-            let mut accounts = Vec::with_capacity(materializations.len());
+            let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
                     .registry
@@ -929,6 +957,47 @@ fn import_provider_accounts(
                     }
                 }
             }
+            for login in vault_logins {
+                let binding = &request.expected_binding;
+                match target
+                    .registry
+                    .install_vault_login_replica(
+                        &target.config,
+                        &target.owner_user_id,
+                        &binding.plan.context_id,
+                        &request.expected_package_sha256,
+                        &VaultLoginOpen {
+                            target_private_key: &request.target_private_key,
+                            source_key_thumbprint: &binding.source_key_thumbprint,
+                            source_kernel_id: &binding.source_kernel_id,
+                            target_kernel_id: &binding.target_kernel_id,
+                        },
+                        login,
+                    )
+                    .and_then(|receipt| {
+                        accounts.push(receipt.clone());
+                        target.registry.record_transfer_origin(
+                            &target.owner_user_id,
+                            &receipt,
+                            &binding.source_kernel_id,
+                            &login.profile.profile_id,
+                        )
+                    }) {
+                    Ok(()) => {}
+                    Err(error) => {
+                        let imported =
+                            ManagedContextImportedProviderAccounts::Selected { accounts };
+                        if let Err(rollback_error) =
+                            rollback_imported_provider_accounts(Some(target), &imported)
+                        {
+                            return Err(package_unavailable(format!(
+                                "{error}; roll back partial provider-account import: {rollback_error}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                }
+            }
             Ok(ManagedContextImportedProviderAccounts::Selected { accounts })
         }
         _ => Err(package_error(
@@ -949,10 +1018,11 @@ fn rollback_imported_provider_accounts(
     })?;
     let mut failures = Vec::new();
     for receipt in accounts.iter().rev() {
-        if let Err(error) = target
-            .registry
-            .rollback_managed_context_replica(&target.owner_user_id, receipt)
-        {
+        if let Err(error) = target.registry.rollback_managed_context_account(
+            &target.config,
+            &target.owner_user_id,
+            receipt,
+        ) {
             failures.push(error);
         }
     }
@@ -1084,22 +1154,10 @@ pub(crate) fn rollback_persisted_managed_context_publication(
     let extracted = extract_managed_context_package(request)?;
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        ManagedContextPackageProviderAccounts::Selected { materializations } => {
-            let accounts = materializations
-                .iter()
-                .map(|materialization| {
-                    Ok(ManagedContextProviderAccountReceipt {
-                        context_id: context_id.clone(),
-                        package_sha256: package_sha256.clone(),
-                        materialization_sha256: provider_account_materialization_sha256(
-                            materialization,
-                        )?,
-                        provider: materialization.profile.provider.clone(),
-                        profile_id: materialization.profile.profile_id.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>, DaemonError>>()?;
-            ManagedContextImportedProviderAccounts::Selected { accounts }
+        selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
+            ManagedContextImportedProviderAccounts::Selected {
+                accounts: provider_account_receipts(&context_id, &package_sha256, selected)?,
+            }
         }
     };
     let git_credentials = match &extracted.git_credentials {
@@ -1228,22 +1286,13 @@ fn preflight_import_receipt_capacity(
     };
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        ManagedContextPackageProviderAccounts::Selected { materializations } => {
+        selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
             ManagedContextImportedProviderAccounts::Selected {
-                accounts: materializations
-                    .iter()
-                    .map(|materialization| {
-                        Ok(ManagedContextProviderAccountReceipt {
-                            context_id: request.expected_binding.plan.context_id.clone(),
-                            package_sha256: request.expected_package_sha256.clone(),
-                            materialization_sha256: provider_account_materialization_sha256(
-                                materialization,
-                            )?,
-                            provider: materialization.profile.provider.clone(),
-                            profile_id: materialization.profile.profile_id.clone(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, DaemonError>>()?,
+                accounts: provider_account_receipts(
+                    &request.expected_binding.plan.context_id,
+                    &request.expected_package_sha256,
+                    selected,
+                )?,
             }
         }
     };
@@ -1428,11 +1477,13 @@ pub(crate) fn extract_managed_context_package(
                 ));
             }
             let file = open_regular_file_no_follow(&path)?;
-            let materializations =
-                serde_json::from_reader::<_, Vec<ProviderAccountMaterialization>>(file).map_err(
-                    |_| package_error("managed context provider-account component is invalid"),
-                )?;
-            if materializations.len() != *account_count {
+            let ProviderAccountComponent {
+                materializations,
+                vault_logins,
+            } = serde_json::from_reader::<_, ProviderAccountComponent>(file).map_err(|_| {
+                package_error("managed context provider-account component is invalid")
+            })?;
+            if materializations.len() + vault_logins.len() != *account_count {
                 return Err(package_error(
                     "managed context provider-account count does not match its manifest",
                 ));
@@ -1440,8 +1491,12 @@ pub(crate) fn extract_managed_context_package(
             validate_provider_account_materializations(
                 &request.expected_binding.plan,
                 &materializations,
+                &vault_logins,
             )?;
-            ManagedContextPackageProviderAccounts::Selected { materializations }
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            }
         }
     };
     let git_credentials = match &manifest.git_credentials {
@@ -1812,9 +1867,49 @@ fn validate_supported_package_plan(plan: &ManagedContextPlanBinding) -> Result<(
     validate_git_credential_selection(&plan.git_credentials)
 }
 
+/// The receipts of the accounts a package installs, in the order the import installs them.
+fn provider_account_receipts(
+    context_id: &str,
+    package_sha256: &str,
+    provider_accounts: &ManagedContextPackageProviderAccounts,
+) -> Result<Vec<ManagedContextProviderAccountReceipt>, DaemonError> {
+    let ManagedContextPackageProviderAccounts::Selected {
+        materializations,
+        vault_logins,
+    } = provider_accounts
+    else {
+        return Ok(Vec::new());
+    };
+    let receipt = |profile: &crate::account_profile::ProviderAccountReplicaMetadata,
+                   materialization_sha256: String| {
+        ManagedContextProviderAccountReceipt {
+            context_id: context_id.to_string(),
+            package_sha256: package_sha256.to_string(),
+            materialization_sha256,
+            provider: profile.provider.clone(),
+            profile_id: profile.profile_id.clone(),
+        }
+    };
+    let mut receipts = Vec::with_capacity(materializations.len() + vault_logins.len());
+    for materialization in materializations {
+        receipts.push(receipt(
+            &materialization.profile,
+            provider_account_materialization_sha256(materialization)?,
+        ));
+    }
+    for login in vault_logins {
+        receipts.push(receipt(
+            &login.profile,
+            vault_login_materialization_sha256(login)?,
+        ));
+    }
+    Ok(receipts)
+}
+
 fn validate_provider_account_materializations(
     plan: &ManagedContextPlanBinding,
     materializations: &[ProviderAccountMaterialization],
+    vault_logins: &[VaultLoginMaterialization],
 ) -> Result<(), DaemonError> {
     let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
     else {
@@ -1822,23 +1917,40 @@ fn validate_provider_account_materializations(
             "managed context package includes unselected provider accounts",
         ));
     };
-    if materializations.len() != accounts.len() {
+    if materializations.len() + vault_logins.len() != accounts.len() {
         return Err(package_error(
             "managed context provider-account payload does not match the selection count",
         ));
     }
-    let mut owner_user_id: Option<&str> = None;
-    for (selection, materialization) in accounts.iter().zip(materializations) {
-        let profile = &materialization.profile;
-        let profile_matches_selection = if selection.account_profile == "default" {
-            profile.is_default
-        } else {
-            profile.profile_id == selection.account_profile
+    let payloads: Vec<_> = materializations
+        .iter()
+        .map(|materialization| (&materialization.profile, !materialization.files.is_empty()))
+        .chain(vault_logins.iter().map(|login| (&login.profile, true)))
+        .collect();
+    let mut claimed = vec![false; payloads.len()];
+    for selection in accounts {
+        let claim = payloads
+            .iter()
+            .enumerate()
+            .position(|(index, (profile, _))| {
+                !claimed[index]
+                    && profile.provider == selection.provider
+                    && if selection.account_profile == "default" {
+                        profile.is_default
+                    } else {
+                        profile.profile_id == selection.account_profile
+                    }
+            });
+        let Some(claim) = claim else {
+            return Err(package_error(
+                "managed context provider-account payload does not match the launch plan",
+            ));
         };
-        if profile.provider != selection.provider
-            || !profile_matches_selection
-            || materialization.files.is_empty()
-        {
+        claimed[claim] = true;
+    }
+    let mut owner_user_id: Option<&str> = None;
+    for (profile, has_credentials) in &payloads {
+        if !has_credentials {
             return Err(package_error(
                 "managed context provider-account payload does not match the launch plan",
             ));
@@ -1858,7 +1970,12 @@ fn validate_provider_account_materializations(
             ));
         }
         owner_user_id = Some(&profile.owner_user_id);
+    }
+    for materialization in materializations {
         provider_account_materialization_sha256(materialization)?;
+    }
+    for login in vault_logins {
+        vault_login_materialization_sha256(login)?;
     }
     Ok(())
 }

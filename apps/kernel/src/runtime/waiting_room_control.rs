@@ -223,6 +223,7 @@ async fn projected_waiting_room_full_snapshot(
         .list(&account_owner_user_id, None)?;
     crate::runtime::provider_account_portability::mark_context_transfer(
         &account_owner_user_id,
+        &config_projection.snapshot().user_config.credential_vault,
         &mut accounts,
     )?;
     let github_credential_available =

@@ -842,8 +842,45 @@ fn prepare_managed_context_package_for_ticket(
                 cloud_user_id,
             );
             let mut materializations = Vec::with_capacity(accounts.len());
+            let mut vault_logins = Vec::new();
             let mut serialized_component_bytes = 2u64;
             for account in accounts {
+                let unavailable = |_| {
+                    outbound_service_error(
+                        format!(
+                            "selected {} provider account `{}` has no transferable credentials",
+                            account.provider, account.account_profile
+                        ),
+                        false,
+                    )
+                };
+                if provider_account_profiles
+                    .login_is_vault_credential(
+                        &owner_user_id,
+                        &account.provider,
+                        &account.account_profile,
+                    )
+                    .map_err(unavailable)?
+                {
+                    vault_logins.push(
+                        provider_account_profiles
+                            .export_vault_login(
+                                config,
+                                &owner_user_id,
+                                &account.provider,
+                                &account.account_profile,
+                                &crate::account_profile::VaultLoginSeal {
+                                    source_private_key: &config.relay_private_key,
+                                    target_public_key: &ticket.target.relay_public_key,
+                                    context_id: &plan.context_id,
+                                    source_kernel_id: &config.daemon_id,
+                                    target_kernel_id: &ticket.target.kernel_id,
+                                },
+                            )
+                            .map_err(vault_login_export_error)?,
+                    );
+                    continue;
+                }
                 let materialization = provider_account_profiles
                     .export_managed_context_materialization(
                         &owner_user_id,
@@ -865,7 +902,10 @@ fn prepare_managed_context_package_for_ticket(
                     materialization,
                 )?;
             }
-            ManagedContextPackageProviderAccounts::Selected { materializations }
+            ManagedContextPackageProviderAccounts::Selected {
+                materializations,
+                vault_logins,
+            }
         }
     };
     let git_credentials = match &plan.git_credentials {
@@ -1706,6 +1746,22 @@ impl Drop for ArtifactRootCleanup {
             let _ = remove_artifact_root(&self.path);
         }
     }
+}
+
+/// A locked Vault is the owner's to open and the same export is repeated afterwards.
+fn vault_login_export_error(error: DaemonError) -> DaemonError {
+    let locked = matches!(
+        &error,
+        DaemonError::LocalTransport { message, .. } if message.contains("vault is locked")
+    );
+    outbound_service_error(
+        if locked {
+            "the Vault holding the selected provider login is locked"
+        } else {
+            "a selected provider login could not be read from the Vault"
+        },
+        locked,
+    )
 }
 
 fn outbound_service_error(message: impl Into<String>, retryable: bool) -> DaemonError {

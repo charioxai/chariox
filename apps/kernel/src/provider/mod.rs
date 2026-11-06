@@ -64,9 +64,10 @@ mod workspace_write_fence;
 
 pub(crate) use account_credential::{
     launch_uses_vault_credential, provider_account_credential_id,
-    provider_account_credential_registered, resolve_provider_account_credentials,
-    resolve_provider_account_credentials_for_launch, store_provider_account_credential,
-    validate_provider_account_credential_input, CLAUDE_OAUTH_TOKEN_ENV,
+    provider_account_credential_registered, remove_provider_account_credential,
+    resolve_provider_account_credentials, resolve_provider_account_credentials_for_launch,
+    store_provider_account_credential, validate_provider_account_credential_input,
+    verify_account_login, CLAUDE_OAUTH_TOKEN_ENV,
 };
 pub(crate) use claude::claude_provider_catalog_with_environment;
 pub(crate) use claude::prepare_claude_onboarding_state;
