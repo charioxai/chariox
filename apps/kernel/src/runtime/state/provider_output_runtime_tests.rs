@@ -153,6 +153,7 @@ mod approval_lifetime;
 mod browser_import_execution_gate;
 mod claude_plan;
 mod cleanup_liveness;
+mod child_finished;
 mod completion_settlement;
 mod detached_jobs_teardown;
 mod detached_provider_run;

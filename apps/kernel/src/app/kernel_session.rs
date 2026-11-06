@@ -293,8 +293,9 @@ impl<'a> KernelSessionService<'a> {
         }
         let obligation = if self.app.config().room_agent_tools {
             request
-                .spawned_by_agent_id
-                .as_deref()
+                .parent_agent_id
+                .as_ref()
+                .map(crate::agent::AgentRef::agent_id)
                 .map(|id| {
                     let actor = self.app.agents.get_agent(id)?;
                     if actor.session_id() != request.session_id {
@@ -321,17 +322,20 @@ impl<'a> KernelSessionService<'a> {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
             } else {
-                let agent = self
+                let agent = match self
                     .app
                     .spawn_worker_agent(request, &kernel_ref, authorize)
-                    .map_err(|error| {
-                        crate::runtime::room_dispatch_registration::dispatch_error(
+                {
+                    Ok(agent) => agent,
+                    Err(error) => {
+                        return Err(settle_remote_spawn_failure(
+                            &self.app.durable_state_store(),
                             obligation.as_deref(),
-                            None,
-                            Some(&kernel_ref),
+                            &kernel_ref,
                             error,
-                        )
-                    })?;
+                        ))
+                    }
+                };
                 self.app
                     .durable_state_store()
                     .append_event(
@@ -550,5 +554,28 @@ fn workflow_code_validation_error_message(
         prefix.to_string()
     } else {
         format!("{prefix}: {details}")
+    }
+}
+
+/// A remote spawn failed. When the relay turned the request away nothing was created
+/// over there, so the delegate obligation ends rejected and its owner can go on.
+/// Any other failure may have created the agent: the obligation stays open for inspection.
+pub(crate) fn settle_remote_spawn_failure(
+    store: &crate::durable_state::DurableKernelStateStore,
+    obligation: Option<&str>,
+    kernel_ref: &str,
+    error: DaemonError,
+) -> DaemonError {
+    if !crate::transport::relay_client::relay_refusal(&error) {
+        return crate::runtime::room_dispatch_registration::dispatch_error(
+            obligation,
+            None,
+            Some(kernel_ref),
+            error,
+        );
+    }
+    match crate::runtime::room_dispatch_registration::receipt(store, obligation, false, None) {
+        Ok(()) => error,
+        Err(receipt_error) => receipt_error,
     }
 }

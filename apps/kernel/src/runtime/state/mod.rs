@@ -1573,6 +1573,7 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
+mod child_finished_event;
 #[cfg(test)]
 mod agent_membership_read_tests;
 

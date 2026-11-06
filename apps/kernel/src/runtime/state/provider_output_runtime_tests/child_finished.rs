@@ -1,0 +1,212 @@
+//! The parent always follows its children: the end of a child's work is one urgent
+//! `child_finished` event that steers a running parent and wakes a parked one.
+use super::*;
+use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+
+struct Team {
+    runtime: KernelRuntimeState,
+    room: String,
+    parent: String,
+    child: String,
+    child_prompt: crate::session::PromptQueueItem,
+    child_run: String,
+    task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    correction: bool,
+}
+
+/// A parent and its child in one room; the child has an active turn and a task, not yet settled.
+async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
+    let worktree = crate::test_support::TestWorktree::new(label);
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, parent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    // Spawning a child needs the parent's live turn.
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), parent.id());
+    let child = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("child")
+                .with_parent_agent_id(parent.id()),
+        )
+        .unwrap();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "team-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap();
+    let launch = |app: &mut DaemonApp, agent: &str| {
+        app.launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent),
+        )
+        .unwrap()
+    };
+    let child_run = launch(&mut app, child.id());
+    let parent_run = app
+        .providers()
+        .get_run_for_agent(session.id(), parent.id())
+        .expect("the admitted turn has a run");
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(child.id()),
+            "do the work",
+            Vec::new(),
+        )
+        .unwrap()
+    else {
+        panic!("the child starts its prompt")
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: session.id().into(),
+            agent: child.id().into(),
+            prompt: prompt.id().into(),
+            run: Some(child_run.id().into()),
+            now: 1,
+        })
+        .unwrap();
+    let Outcome::Settled { task, correction } = store
+        .agent_lifecycle(Operation::Settle {
+            room: session.id().into(),
+            agent: child.id().into(),
+            prompt: prompt.id().into(),
+            run: child_run.id().into(),
+            has_answer: !settle_cancelled,
+            cancelled: settle_cancelled,
+            now: 2,
+        })
+        .unwrap()
+    else {
+        panic!("settled")
+    };
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), child.id(), Some(child_run.id()))
+        .unwrap();
+    if !parent_running {
+        // The parent ended its turn and parked on its children.
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(session.id(), parent.id(), Some(parent_run.id()))
+            .unwrap();
+    }
+    Team {
+        room: session.id().into(),
+        parent: parent.id().into(),
+        child: child.id().into(),
+        child_run: child_run.id().into(),
+        child_prompt: prompt,
+        task,
+        correction,
+        runtime,
+    }
+}
+
+fn child_finished(team: &Team) -> Vec<crate::durable_state::agent_lifecycle::InboxEvent> {
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_inbox(&team.room, &team.parent, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == "child_finished")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_finished_child_is_one_urgent_event_for_its_parent() {
+    let team = team("child-finished-urgent", false, false).await;
+    team.runtime
+        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    let event = &events[0];
+    assert!(event.urgent, "a finish steers the parent");
+    assert_eq!(event.source_id, team.child);
+    assert_eq!(event.payload["child_agent_id"], team.child.as_str());
+    assert_eq!(event.payload["success"], true);
+    assert_eq!(event.payload["outcome"]["kind"], "completed");
+    assert_eq!(event.payload["deadline_reached"], false);
+    let _ = &team.child_run;
+}
+
+#[tokio::test]
+async fn a_child_stopped_by_its_deadline_says_so() {
+    let team = team("child-finished-deadline", true, false).await;
+    let store = &team.runtime.owned.durable_state_store;
+    let deadline_ms = crate::session::unix_epoch_ms() + 60_000;
+    store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            deadline: deadline_ms,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::ReachDeadline {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            now: deadline_ms + 1,
+            stopped: true,
+        })
+        .unwrap();
+    team.runtime
+        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["deadline_reached"], true, "ORCH-06");
+    assert_eq!(events[0].payload["success"], false);
+    assert_eq!(events[0].payload["outcome"]["kind"], "cancelled", "ORCH-16");
+}
+
+#[tokio::test]
+async fn a_finish_wakes_a_parked_parent_in_the_same_second() {
+    let team = team("child-finished-wake", false, false).await;
+    let started = std::time::Instant::now();
+    team.runtime
+        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    let event = &child_finished(&team)[0];
+    assert!(
+        event.attempted_at_ms.is_some(),
+        "the parked parent was woken by the finish itself, not by a later sweep: {event:?}"
+    );
+    assert!(event.prompt_id.is_some(), "{event:?}");
+}
+
+#[tokio::test]
+async fn a_finish_steers_a_running_parent() {
+    let team = team("child-finished-steer", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .await
+        .unwrap();
+    let event = &child_finished(&team)[0];
+    assert!(
+        event.target_prompt_id.is_some() && event.attempted_at_ms.is_some(),
+        "the running parent's turn is the steer target: {event:?}"
+    );
+}

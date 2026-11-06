@@ -40,6 +40,7 @@ mod connected_relays;
 mod connection_config;
 mod connection_state;
 mod connector;
+pub(crate) use connector::relay_refusal;
 mod daemon_requests;
 mod display_admission;
 mod display_delivery;

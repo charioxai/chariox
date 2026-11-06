@@ -792,6 +792,13 @@ impl KernelRuntimeState {
                         occurrence: format!("task-terminal-{}", task.task_id),
                         success: task.state == ExecutionState::Done,
                     })?;
+                if let Err(error) = self
+                    .announce_child_finished(&task, failure, public_answer.as_ref())
+                    .await
+                {
+                    tracing::warn!(%error, agent_id=%task.agent_id,
+                        "child_finished retained for the inbox sweep");
+                }
             }
             self.owned
                 .durable_state_store
