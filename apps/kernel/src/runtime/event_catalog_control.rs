@@ -94,12 +94,17 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             | LocalDaemonRequest::GetEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
     ) {
+        let event_owner_id = event_owner_for_request(
+            runtime_state.event_connection_registry(),
+            caller_user_id,
+            &request,
+        )?;
         return execute_event_connection_request(
             runtime_state,
             &BTreeMap::new(),
             management_client,
-            &config,
             caller_user_id,
+            &event_owner_id,
             request,
         )
         .await;
@@ -118,7 +123,6 @@ pub(crate) async fn execute_event_catalog_request_with_client(
     ) {
         let event_owner_id = event_owner_for_request(
             runtime_state.event_connection_registry(),
-            &config,
             caller_user_id,
             &request,
         )?;
@@ -127,7 +131,7 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             config_projection,
             &config,
             caller_user_id,
-            &event_owner_id,
+            std::slice::from_ref(&event_owner_id),
             &request,
         )
         .await?;
@@ -135,8 +139,8 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             runtime_state,
             &management_targets,
             management_client,
-            &config,
             caller_user_id,
+            &event_owner_id,
             request,
         )
         .await;
@@ -148,7 +152,6 @@ pub(crate) async fn execute_event_catalog_request_with_client(
     ) {
         let owner_id = event_owner_for_request(
             runtime_state.event_connection_registry(),
-            &config,
             caller_user_id,
             &request,
         )?;
@@ -157,7 +160,7 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             config_projection,
             &config,
             caller_user_id,
-            &owner_id,
+            std::slice::from_ref(&owner_id),
             &request,
         )
         .await?;
@@ -191,7 +194,7 @@ pub(crate) async fn resolve_event_generator_management_targets(
     config_projection: &DaemonConfigProjectionStore,
     config: &crate::config::DaemonConfig,
     caller_user_id: &str,
-    event_owner_id: &str,
+    connection_owner_ids: &[String],
     request: &LocalDaemonRequest,
 ) -> Result<BTreeMap<String, crate::config::EventGeneratorManagementTarget>, DaemonError> {
     let generator_ids =
@@ -209,7 +212,11 @@ pub(crate) async fn resolve_event_generator_management_targets(
     let registry_url = config.event_registry_url.clone().ok_or_else(|| {
         catalog_error("event generator management bootstrap requires a registry URL".to_string())
     })?;
-    let requested_owner_ids = [config.daemon_id.clone(), event_owner_id.to_string()];
+    // The credential is requested for this kernel and used for the owners named
+    // here: the connection's owner for a request on a connection.
+    let requested_owner_ids = std::iter::once(config.daemon_id.clone())
+        .chain(connection_owner_ids.iter().cloned())
+        .collect::<Vec<_>>();
     for generator_id in generator_ids {
         let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
         if targets.get(&generator_id).is_some_and(|target| {
@@ -401,7 +408,7 @@ pub(crate) async fn validate_event_connection(
     let owner_id = runtime_state
         .event_connection_registry()
         .connection_event_owner_id(caller_user_id, connection_id)?
-        .unwrap_or_else(|| new_event_connection_owner_id(&config, caller_user_id));
+        .ok_or_else(|| connection_error("event connection was not found".to_string()))?;
     let target_request =
         LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
             generator_id: Some(generator_id.to_string()),
@@ -413,7 +420,7 @@ pub(crate) async fn validate_event_connection(
         config_projection,
         &config,
         caller_user_id,
-        &owner_id,
+        std::slice::from_ref(&owner_id),
         &target_request,
     )
     .await?;
@@ -583,12 +590,12 @@ async fn execute_event_connection_request(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     management_client: &AegsManagementHttpClient,
-    config: &crate::config::DaemonConfig,
     caller_user_id: &str,
+    owner_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let registry = runtime_state.event_connection_registry();
-    let owner_id = event_owner_for_request(registry, config, caller_user_id, &request)?;
+    let owner_id = owner_id.to_string();
     match request {
         LocalDaemonRequest::ListEventConnections(request) => {
             let connections = registry
@@ -1424,27 +1431,27 @@ fn unsent(message: String) -> AegsActionFailure {
     }
 }
 
-/// The owner a new event connection is created under at the event services.
+/// The owner a new event connection is created under at the event services:
+/// a random 128-bit id, unguessable and unrelated to any kernel or user id.
 /// The connection record keeps it from then on (see [`event_owner_for_request`]),
-/// so it does not follow this kernel's id when the record is copied elsewhere.
-pub(crate) fn new_event_connection_owner_id(
-    config: &crate::config::DaemonConfig,
-    caller_user_id: &str,
-) -> String {
-    use sha2::{Digest, Sha256};
+/// so it does not follow this kernel's id when the record is copied elsewhere,
+/// and holding it is what lets a kernel manage the connection. It is never
+/// logged or shown.
+pub(crate) fn new_event_connection_owner_id() -> String {
+    use rand::RngCore;
 
-    let daemon_id = &config.daemon_id;
-    let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());
-    format!("kernel-user-{digest:x}")
+    let mut bytes = [0_u8; 16];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The owner the event services know the request's connection or authorization
-/// under: the one its record carries. A request that starts a new connection,
-/// or names a record this kernel does not hold (which then fails as not found),
-/// gets this kernel's default.
+/// under: the one its record carries. A request that starts a new connection
+/// gets a fresh owner, and one that names a record this kernel does not hold
+/// (which then fails as not found) a throwaway. The caller resolves it once per
+/// request and passes it on.
 pub(crate) fn event_owner_for_request(
     registry: &crate::event_connection::EventConnectionRegistry,
-    config: &crate::config::DaemonConfig,
     caller_user_id: &str,
     request: &LocalDaemonRequest,
 ) -> Result<String, DaemonError> {
@@ -1478,7 +1485,7 @@ pub(crate) fn event_owner_for_request(
         }
         _ => None,
     };
-    Ok(recorded.unwrap_or_else(|| new_event_connection_owner_id(config, caller_user_id)))
+    Ok(recorded.unwrap_or_else(new_event_connection_owner_id))
 }
 
 /// Registry-issued management targets must resolve only to public addresses.
@@ -1976,12 +1983,6 @@ fn catalog_error(message: String) -> DaemonError {
 mod tests {
     use super::*;
 
-    fn config_of(daemon: &str) -> crate::config::DaemonConfig {
-        let mut config = crate::config::DaemonConfig::for_tests();
-        config.daemon_id = daemon.into();
-        config
-    }
-
     fn registry_in(root: &std::path::Path) -> crate::event_connection::EventConnectionRegistry {
         crate::event_connection::EventConnectionRegistry::new(
             crate::durable_state::DurableKernelStateStore::open(root.join("state.sqlite3"))
@@ -2007,32 +2008,59 @@ mod tests {
     }
 
     #[test]
-    fn a_new_connection_is_created_under_this_kernels_owner() {
-        assert_ne!(
-            new_event_connection_owner_id(&config_of("kernel-a"), "user"),
-            new_event_connection_owner_id(&config_of("kernel-b"), "user"),
+    fn two_new_connections_get_different_unguessable_owner_ids() {
+        let first = new_event_connection_owner_id();
+        let second = new_event_connection_owner_id();
+        assert_ne!(first, second);
+        for id in [&first, &second] {
+            assert_eq!(id.len(), 32, "128 bits as lowercase hex");
+            assert!(id
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')));
+        }
+    }
+
+    #[test]
+    fn an_owner_id_cannot_be_derived_from_the_kernel_and_user_ids() {
+        use sha2::{Digest, Sha256};
+
+        let id = new_event_connection_owner_id();
+        let derived = format!("{:x}", Sha256::digest("kernel-a\0user".as_bytes()));
+        assert!(!id.contains(&derived[..16]));
+        assert!(!id.contains("kernel-a") && !id.contains("user"));
+    }
+
+    #[test]
+    fn each_new_connection_request_gets_its_own_owner() {
+        let root = std::env::temp_dir().join(format!("ghowner-once-{}", std::process::id()));
+        let registry = registry_in(&root);
+        let install = LocalDaemonRequest::InstallEventConnection(
+            crate::local::InstallEventConnectionRequest {
+                generator_id: "dev.chariox.dummy".into(),
+                return_url: None,
+            },
         );
+        let first = event_owner_for_request(&registry, "user", &install).unwrap();
+        let second = event_owner_for_request(&registry, "user", &install).unwrap();
         assert_ne!(
-            new_event_connection_owner_id(&config_of("kernel-a"), "user"),
-            new_event_connection_owner_id(&config_of("kernel-a"), "visitor"),
+            first, second,
+            "a new connection is not tied to any earlier owner"
         );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_connection_keeps_its_owner_whatever_the_kernel_id() {
         let root = std::env::temp_dir().join(format!("ghowner-owner-{}", std::process::id()));
         let registry = registry_in(&root);
-        let kernel_a = config_of("kernel-a");
-        let owner = new_event_connection_owner_id(&kernel_a, "user");
+        let owner = new_event_connection_owner_id();
         registry
             .upsert("user", &owner, summary("connection-1"))
             .unwrap();
-        // The kernel is re-provisioned under another id: the record still names
-        // the owner the event services know the connection under.
-        let kernel_a_again = config_of("kernel-a-renamed");
+        // Whatever this kernel is called, the record names the owner the event
+        // services know the connection under.
         assert_eq!(
-            event_owner_for_request(&registry, &kernel_a_again, "user", &refresh("connection-1"))
-                .unwrap(),
+            event_owner_for_request(&registry, "user", &refresh("connection-1")).unwrap(),
             owner
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -2041,19 +2069,15 @@ mod tests {
     #[test]
     fn a_copy_of_the_record_on_another_kernel_resolves_the_same_owner_and_credential() {
         let root = std::env::temp_dir().join(format!("ghowner-copy-{}", std::process::id()));
-        let kernel_a = config_of("kernel-a");
-        let owner = new_event_connection_owner_id(&kernel_a, "user");
+        let owner = new_event_connection_owner_id();
         // Kernel B holds an independent copy of kernel A's record.
         let registry_b = registry_in(&root);
         registry_b
             .upsert("user", &owner, summary("connection-1"))
             .unwrap();
-        let kernel_b = config_of("kernel-b");
         let resolved =
-            event_owner_for_request(&registry_b, &kernel_b, "user", &refresh("connection-1"))
-                .unwrap();
+            event_owner_for_request(&registry_b, "user", &refresh("connection-1")).unwrap();
         assert_eq!(resolved, owner);
-        assert_ne!(resolved, new_event_connection_owner_id(&kernel_b, "user"));
         // The management credential the operator or Cloud issued for that owner
         // serves the copy.
         let target = crate::config::EventGeneratorManagementTarget {
@@ -2068,7 +2092,7 @@ mod tests {
             select_event_generator_management_target(&targets, "dev.chariox.dummy", &resolved)
                 .is_ok()
         );
-        let own = new_event_connection_owner_id(&kernel_b, "user");
+        let own = new_event_connection_owner_id();
         assert!(
             select_event_generator_management_target(&targets, "dev.chariox.dummy", &own).is_err()
         );
@@ -2099,7 +2123,7 @@ mod tests {
             },
         );
         assert_eq!(
-            event_owner_for_request(&registry, &config_of("kernel-b"), "user", &observe).unwrap(),
+            event_owner_for_request(&registry, "user", &observe).unwrap(),
             "event-owner-1"
         );
         let _ = std::fs::remove_dir_all(&root);

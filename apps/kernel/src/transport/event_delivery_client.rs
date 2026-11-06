@@ -465,10 +465,8 @@ async fn reconcile_aegs_subscriptions(
             &config.config_projection,
             &current_config,
             caller_user_id,
-            &crate::runtime::event_catalog_control::new_event_connection_owner_id(
-                &current_config,
-                caller_user_id,
-            ),
+            // Reconciliation is owned by this kernel's id alone.
+            &[],
             &request,
         )
         .await

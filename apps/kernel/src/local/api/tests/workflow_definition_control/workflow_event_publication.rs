@@ -444,10 +444,6 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         client,
     );
     let caller_user_id = "external-user";
-    let expected_owner_id = crate::runtime::event_catalog_control::new_event_connection_owner_id(
-        &crate::config::DaemonConfig::for_tests(),
-        caller_user_id,
-    );
 
     let response = harness
         .dispatch_as_user(
@@ -470,6 +466,15 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         authorization.connection_id.as_deref(),
         Some("connection-dynamic")
     );
+    // The owner the AEGS was asked under is the one the authorization (and so
+    // the connection) keeps: it is resolved once per request.
+    let expected_owner_id = harness
+        .runtime_state()
+        .event_connection_registry()
+        .authorization_event_owner_id(caller_user_id, &authorization.authorization_id)
+        .unwrap()
+        .expect("the authorization records its owner");
+    assert_eq!(expected_owner_id.len(), 32);
     assert!(server.capability_issued.load(Ordering::Relaxed));
     assert_eq!(
         server.management_url,

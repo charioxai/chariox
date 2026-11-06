@@ -10,8 +10,9 @@ impl KernelRuntimeState {
     ) -> Result<BTreeMap<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>, String> {
         let mut generators =
             BTreeMap::<String, Vec<chariox_event_protocol::AegsSubscriptionClaim>>::new();
-        for route in self.app_event_routes()? {
-            let binding_id = delivery_binding_id(&route, kernel_id, environment_id);
+        for (route, event_owner_id) in self.bound_app_event_routes()? {
+            let binding_id =
+                delivery_binding_id(&route, &event_owner_id, kernel_id, environment_id);
             let Some(claim) = app_route_subscription(&route, binding_id) else {
                 continue;
             };
@@ -33,6 +34,29 @@ impl KernelRuntimeState {
             .durable_state_store
             .app_generator_routes()
             .map_err(|error| format!("App event routes could not be read: {error}"))
+    }
+
+    /// The App event routes whose connection this kernel holds a record of,
+    /// each with the owner id that record carries. A route whose record is
+    /// gone has no owner to name it by, so it is not claimed: the user
+    /// connects again.
+    fn bound_app_event_routes(
+        &self,
+    ) -> Result<Vec<(chariox_app_runtime::app_inbox::InboxRoute, String)>, String> {
+        let registry = self.event_connection_registry();
+        let mut bound = Vec::new();
+        for route in self.app_event_routes()? {
+            let Some(source) = route.source.as_ref() else {
+                continue;
+            };
+            let owner = registry
+                .connection_event_owner_id(&route.owner_id, &source.connection_id)
+                .map_err(|error| format!("event connection owners could not be read: {error}"))?;
+            if let Some(owner) = owner {
+                bound.push((route, owner));
+            }
+        }
+        Ok(bound)
     }
 
     /// Active App inbox routes fed by an event generator; 0, with a warning,
@@ -99,9 +123,11 @@ impl KernelRuntimeState {
         default_environment_id: &str,
     ) -> Result<Vec<chariox_event_protocol::KernelEnvironmentResume>, String> {
         let routes = self
-            .app_event_routes()?
+            .bound_app_event_routes()?
             .iter()
-            .filter_map(|route| app_route_claim(route, kernel_id, default_environment_id))
+            .filter_map(|(route, event_owner_id)| {
+                app_route_claim(route, event_owner_id, kernel_id, default_environment_id)
+            })
             .collect();
         Ok(vec![chariox_event_protocol::KernelEnvironmentResume {
             environment_id: default_environment_id.to_owned(),
@@ -152,9 +178,14 @@ impl KernelRuntimeState {
         environment_id: &str,
     ) -> Result<(), String> {
         delivery.validate(crate::session::unix_epoch_ms())?;
-        let Some(route) = self.app_event_routes()?.into_iter().find(|route| {
-            delivery_binding_id(route, kernel_id, environment_id) == delivery.binding_id
-        }) else {
+        let Some((route, _)) =
+            self.bound_app_event_routes()?
+                .into_iter()
+                .find(|(route, event_owner_id)| {
+                    delivery_binding_id(route, event_owner_id, kernel_id, environment_id)
+                        == delivery.binding_id
+                })
+        else {
             return refused(&delivery, "the App inbox route no longer exists");
         };
         let Some(source) = route.source.as_ref() else {
@@ -239,15 +270,24 @@ fn app_route_subscription(
 /// kernel's claim of the same one, so the id includes the kernel and
 /// environment: kernels that hold copies of one route, with the same owner,
 /// installation and route ids, each get their own delivery of an occurrence.
+/// It also includes the owner id of the route's connection, which only the
+/// kernels holding that connection's record know: a kernel that learns the
+/// binding ids of another user's routes still cannot compute one.
 fn delivery_binding_id(
     route: &chariox_app_runtime::app_inbox::InboxRoute,
+    event_owner_id: &str,
     kernel_id: &str,
     environment_id: &str,
 ) -> String {
     use sha2::{Digest, Sha256};
 
-    let digest =
-        Sha256::digest(format!("{}\0{kernel_id}\0{environment_id}", route.binding_id()).as_bytes());
+    let digest = Sha256::digest(
+        format!(
+            "{}\0{event_owner_id}\0{kernel_id}\0{environment_id}",
+            route.binding_id()
+        )
+        .as_bytes(),
+    );
     format!("app-route-{}", &format!("{digest:x}")[..40])
 }
 
@@ -255,10 +295,11 @@ fn delivery_binding_id(
 /// for a workflow's publication and endpoint.
 fn app_route_claim(
     route: &chariox_app_runtime::app_inbox::InboxRoute,
+    event_owner_id: &str,
     kernel_id: &str,
     environment_id: &str,
 ) -> Option<chariox_event_protocol::EnvironmentRouteClaim> {
-    let binding_id = delivery_binding_id(route, kernel_id, environment_id);
+    let binding_id = delivery_binding_id(route, event_owner_id, kernel_id, environment_id);
     let subscription = app_route_subscription(route, binding_id.clone())?;
     Some(chariox_event_protocol::EnvironmentRouteClaim {
         environment_id: environment_id.to_owned(),
@@ -315,34 +356,30 @@ mod tests {
                 filter_json: "null".into(),
             }),
         };
-        let first = app_route_claim(&route, "kernel-a", "env-a").unwrap();
-        let second = app_route_claim(&route, "kernel-b", "env-b").unwrap();
+        let first = app_route_claim(&route, "owner-1", "kernel-a", "env-a").unwrap();
+        let second = app_route_claim(&route, "owner-1", "kernel-b", "env-b").unwrap();
         assert_eq!(
             first.binding_id,
-            "app-route-1a414d5a2d5d7c1994290f33bba7f881a219c3c9"
+            "app-route-116662a2520eea96003ee8ac8fddaa195de53a0c"
         );
         assert_eq!(first.event_interest_key, second.event_interest_key);
         assert_ne!(first.binding_id, second.binding_id);
         assert_ne!(
             first.binding_id,
-            app_route_claim(&route, "kernel-a", "env-b")
+            app_route_claim(&route, "owner-1", "kernel-a", "env-b")
                 .unwrap()
                 .binding_id
         );
         assert_ne!(
             first.binding_id,
-            app_route_claim(&route, "kernel-b", "env-a")
+            app_route_claim(&route, "owner-1", "kernel-b", "env-a")
                 .unwrap()
                 .binding_id
         );
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn app_routes_from_generators_are_claimed_and_unroutable_deliveries_are_acknowledged() {
-        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-        let runtime =
-            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
-        let route = chariox_app_runtime::app_inbox::InboxRoute {
+    fn mention_route() -> chariox_app_runtime::app_inbox::InboxRoute {
+        chariox_app_runtime::app_inbox::InboxRoute {
             route_id: "mentions".into(),
             owner_id: "local".into(),
             installation_id: "app_slack".into(),
@@ -356,23 +393,12 @@ mod tests {
                 connection_scope: "team:T1".into(),
                 filter_json: "null".into(),
             }),
-        };
-        runtime
-            .owned
-            .durable_state_store
-            .app_inbox(
-                crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
-                    route: route.clone(),
-                    now_ms: 1,
-                },
-            )
-            .unwrap();
-        let binding_id = delivery_binding_id(&route, "kernel-1", "default");
-        // Only an active installation's routes are claimed.
-        assert!(runtime
-            .event_generator_subscription_claims("kernel-1", "default")
-            .unwrap()
-            .is_empty());
+        }
+    }
+
+    const OWNER: &str = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
+
+    fn activate_mention_installation(runtime: &KernelRuntimeState) {
         rusqlite::Connection::open(runtime.owned.durable_state_store.path())
             .unwrap()
             .execute_batch(
@@ -380,6 +406,97 @@ mod tests {
                  VALUES('app_slack','dev.chariox.slack-app','local',1,1,'{}')",
             )
             .unwrap();
+    }
+
+    /// A kernel holding the mention route of an installation (not yet active) and,
+    /// when given, the record of its connection under that event owner.
+    fn runtime_with_mention_route(event_owner_id: Option<&str>) -> KernelRuntimeState {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let runtime =
+            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+        runtime
+            .owned
+            .durable_state_store
+            .app_inbox(
+                crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
+                    route: mention_route(),
+                    now_ms: 1,
+                },
+            )
+            .unwrap();
+        if let Some(event_owner_id) = event_owner_id {
+            runtime
+                .event_connection_registry()
+                .upsert(
+                    "local",
+                    event_owner_id,
+                    chariox_event_protocol::AegsConnectionSummary {
+                        generator_id: "dev.chariox.slack".into(),
+                        connection_id: "connection-1".into(),
+                        status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                        metadata: serde_json::json!({}),
+                        expires_at_ms: None,
+                        updated_at_ms: 1,
+                    },
+                )
+                .unwrap();
+        }
+        runtime
+    }
+
+    fn only_binding_id(runtime: &KernelRuntimeState, kernel_id: &str) -> String {
+        let claims = runtime
+            .event_generator_subscription_claims(kernel_id, "default")
+            .unwrap();
+        assert_eq!(claims["dev.chariox.slack"].len(), 1);
+        claims["dev.chariox.slack"][0].binding_id.clone()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_binding_id_depends_on_the_connections_secret_owner_id() {
+        let first = runtime_with_mention_route(Some(OWNER));
+        let second = runtime_with_mention_route(Some("a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"));
+        activate_mention_installation(&first);
+        activate_mention_installation(&second);
+        // Same user, installation, route, kernel and environment: only the
+        // owner the connection record carries differs. A kernel that knows
+        // every other id cannot name this binding.
+        assert_ne!(
+            only_binding_id(&first, "kernel-1"),
+            only_binding_id(&second, "kernel-1")
+        );
+        // A copy of the record on another kernel names its own binding.
+        assert_ne!(
+            only_binding_id(&first, "kernel-1"),
+            only_binding_id(&first, "kernel-2")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_route_whose_connection_record_is_gone_is_not_claimed() {
+        let runtime = runtime_with_mention_route(None);
+        activate_mention_installation(&runtime);
+        assert!(runtime
+            .event_generator_subscription_claims("kernel-1", "default")
+            .unwrap()
+            .is_empty());
+        let resumes = runtime
+            .event_delivery_resumes("kernel-1", "default")
+            .unwrap();
+        assert!(resumes[0].routes.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_routes_from_generators_are_claimed_and_unroutable_deliveries_are_acknowledged() {
+        let runtime = runtime_with_mention_route(Some(OWNER));
+        let route = mention_route();
+        let binding_id = delivery_binding_id(&route, OWNER, "kernel-1", "default");
+        // Only an active installation's routes are claimed.
+        assert!(runtime
+            .event_generator_subscription_claims("kernel-1", "default")
+            .unwrap()
+            .is_empty());
+        activate_mention_installation(&runtime);
         let claims = runtime
             .event_generator_subscription_claims("kernel-1", "default")
             .unwrap();
@@ -408,7 +525,7 @@ mod tests {
                 routes[0].endpoint_id.as_str()
             ),
             (
-                delivery_binding_id(&route, "kernel-1", "default").as_str(),
+                delivery_binding_id(&route, OWNER, "kernel-1", "default").as_str(),
                 "mentions"
             )
         );

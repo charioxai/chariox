@@ -43,6 +43,9 @@ impl Drop for Scratch {
         std::fs::remove_dir_all(&self.0).unwrap();
     }
 }
+/// The owner the fixture connection's record carries; the services check that
+/// the kernel asks about the connection under it.
+const FIXTURE_EVENT_OWNER: &str = "5eed5eed5eed5eed5eed5eed5eed5eed";
 fn budget() -> AppOperationBudget {
     AppOperationBudget::from_supervisor(|| false)
 }
@@ -388,6 +391,21 @@ async fn exercise(fanout: bool) {
     let state = router.runtime_state();
     configure(&state, &sessions[0].0, &sessions[0].1, "first");
     configure(&state, &sessions[1].0, &sessions[1].1, "second");
+    state
+        .event_connection_registry()
+        .upsert(
+            "local",
+            FIXTURE_EVENT_OWNER,
+            chariox_event_protocol::AegsConnectionSummary {
+                generator_id: GENERATOR.into(),
+                connection_id: "fixture-connection".into(),
+                status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                metadata: json!({}),
+                expires_at_ms: None,
+                updated_at_ms: 1,
+            },
+        )
+        .unwrap();
     assert!(matches!(
         route(&router, "first", json!({"event.kind":"wanted"}))
             .await
