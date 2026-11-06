@@ -30,7 +30,7 @@ class Inbox {
 
 // A stub harness: it talks JSON-RPC over the same pipes a real one uses, and answers elicitation as scripted.
 // `onElicit` returning undefined leaves the dialog open (the person has not answered). "k" is this computer's kernel.
-async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0, version = "2025-06-18") {
+async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0, version = "2025-06-18", followed: Json[] = []) {
   const inbox = events instanceof Inbox ? events : new Inbox(events)
   const sent: Json[] = []
   const routed: { kernel: string; request: Json }[] = []
@@ -65,7 +65,7 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
     if ("AckEvents" in request) inbox.acknowledged = Math.max(inbox.acknowledged, (request.AckEvents as Json).cursor as number)
     if ("RespondToInteraction" in request) fail(request)
     if ("ListNotificationSources" in request) return { NotificationSources: { sources: SOURCES } }
-    if ("SubscribeEvents" in request || "UnsubscribeEvents" in request || "GetEventSubscription" in request) return { EventSubscription: { subscription: { subscription_id: "s", targets: [], sources: [], kernels: [], acknowledged_cursor: 0, ended: null } } }
+    if ("SubscribeEvents" in request || "UnsubscribeEvents" in request || "GetEventSubscription" in request) return { EventSubscription: { subscription: { subscription_id: "s", targets: [], sources: "GetEventSubscription" in request ? followed : [], kernels: [], acknowledged_cursor: 0, ended: null } } }
     return { ack: true }
   }
   const routes = {
@@ -478,8 +478,10 @@ async function until(done: () => boolean): Promise<void> {
 const nextNotice = (h: Awaited<ReturnType<typeof harness>>, timeout_s = 5) => h.call("tools/call", { name: "chariox_next_notification", arguments: { timeout_s } })
 const body = (reply: Json): Json => JSON.parse(reply.result.content[0].text)
 
+const FOLLOW = (source_id: string, display_name: string, available = true) => ({ source_id, display_name, kind: "workflow_exit", session_id: "room", subscription_id: "s", available })
+
 test("the source tools list, follow by name and unfollow, and are announced", async () => {
-  const h = await harness([], null, () => undefined)
+  const h = await harness([], null, () => undefined, [], 0, "2025-06-18", [FOLLOW("wf_source_a", "Review")])
   const tools = (await h.call("tools/list", {})).result.tools.map((tool: Json) => tool.name)
   assert.deepEqual(tools, ["chariox_next_choice", "chariox_next_notification", "chariox_notification_sources", "chariox_follow_notification_source", "chariox_unfollow_notification_source"])
   assert.deepEqual(body(await h.call("tools/call", { name: "chariox_notification_sources", arguments: {} })), { sources: SOURCES })
@@ -493,6 +495,18 @@ test("the source tools list, follow by name and unfollow, and are announced", as
   assert.equal(refused.result.isError, true)
   assert.equal(body(refused).error, "events_refused")
   assert.equal((await h.call("tools/call", { name: "chariox_follow_notification_source", arguments: {} })).result.isError, true)
+  await h.close()
+})
+test("the unfollow tool detaches a followed source that is disabled and no longer listed, by id and by name", async () => {
+  const h = await harness([], null, () => undefined, [], 0, "2025-06-18", [FOLLOW("wf_disabled", "Old review", false)])
+  assert.deepEqual(body(await h.call("tools/call", { name: "chariox_notification_sources", arguments: {} })), { sources: SOURCES })
+  await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "wf_disabled" } })
+  await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "old review" } })
+  assert.deepEqual(h.sent.filter(request => "UnsubscribeEvents" in request), [{ UnsubscribeEvents: { sources: ["wf_disabled"] } }, { UnsubscribeEvents: { sources: ["wf_disabled"] } }])
+  const refused = await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "never followed" } })
+  assert.equal(refused.result.isError, true)
+  assert.equal(body(refused).error, "events_refused")
+  assert.equal(h.sent.filter(request => "UnsubscribeEvents" in request).length, 2)
   await h.close()
 })
 test("a notification is served once and then acknowledged; a gap is served like it", async () => {

@@ -81,7 +81,7 @@ test("a source the grant cannot follow is refused before anything is subscribed,
 })
 test("unsubscribe --source ends one source; --source all ends the followed sources and keeps targets", async () => {
   const sent: unknown[] = []
-  const followed = { EventSubscription: { subscription: { ...SUBSCRIPTION.EventSubscription.subscription, sources: [{ source_id: "wf_source_a" }, { source_id: "owner_action_b" }] } } }
+  const followed = { EventSubscription: { subscription: { ...SUBSCRIPTION.EventSubscription.subscription, sources: [{ source_id: "wf_source_a", display_name: "Review" }, { source_id: "owner_action_b", display_name: "Agent needs your action" }] } } }
   const send = async (request: unknown) => {
     sent.push(request)
     const name = Object.keys(request as object)[0]
@@ -106,4 +106,20 @@ test("events sources and --source parse as flags of their commands", () => {
   assert.deepEqual([...parseArguments("events sources", []).flags], [])
   assert.equal(parseArguments("events subscribe", ["--source", "wf_source_a"]).flags.get("--source"), "wf_source_a")
   assert.equal(parseArguments("events unsubscribe", ["--source", "all"]).flags.get("--source"), "all")
+})
+
+test("unsubscribe --source detaches a followed source the kernel no longer lists because it is disabled", async () => {
+  const sent: unknown[] = []
+  const disabled = { source_id: "wf_disabled", display_name: "Old review", kind: "workflow_exit", session_id: "room", subscription_id: "s", available: false }
+  const followed = { EventSubscription: { subscription: { ...SUBSCRIPTION.EventSubscription.subscription, sources: [disabled] } } }
+  const send = async (request: unknown) => {
+    sent.push(request)
+    const name = Object.keys(request as object)[0]
+    return name === "ListNotificationSources" ? { NotificationSources: { sources: SOURCES } } : name === "GetEventSubscription" ? followed : SUBSCRIPTION
+  }
+  await runEventsVerb("unsubscribe", new Map<string, string | true>([["--source", "wf_disabled"]]), [], send, () => {})
+  await runEventsVerb("unsubscribe", new Map<string, string | true>([["--source", "old review"]]), [], send, () => {})
+  assert.deepEqual(sent.filter(request => "UnsubscribeEvents" in (request as object)), [{ UnsubscribeEvents: { sources: ["wf_disabled"] } }, { UnsubscribeEvents: { sources: ["wf_disabled"] } }])
+  await assert.rejects(runEventsVerb("unsubscribe", new Map<string, string | true>([["--source", "never followed"]]), [], send, () => {}), error => error instanceof CommandFailure && error.code === "events_refused" && /chariox events subscription/.test(error.message))
+  assert.equal(sent.filter(request => "UnsubscribeEvents" in (request as object)).length, 2)
 })

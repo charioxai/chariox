@@ -41,12 +41,12 @@ export async function listSources(send: SendRequest): Promise<WorkflowNotificati
   if (!wire?.NotificationSources) throw new CommandFailure("events_response_invalid", "kernel returned no source list; update Chariox")
   return wire.NotificationSources.sources
 }
-async function resolveSource(send: SendRequest, reference: string): Promise<string> {
-  const sources = await listSources(send)
+// A source is named by id or, when no id matches, by display name.
+function resolveSource(sources: readonly { source_id: string; display_name: string }[], reference: string, refused: string): string {
   const named = sources.some(source => source.source_id === reference) ? [] : sources.filter(source => source.display_name.toLowerCase() === reference.toLowerCase())
-  if (named.length > 1) throw new CommandFailure("usage", `several sources are named "${reference}"; follow one by its source_id: ${named.map(source => source.source_id).join(", ")}`)
+  if (named.length > 1) throw new CommandFailure("usage", `several sources are named "${reference}"; name one by its source_id: ${named.map(source => source.source_id).join(", ")}`)
   const found = named[0] ?? sources.find(source => source.source_id === reference)
-  if (!found) throw new CommandFailure("events_refused", `source not available: "${reference}" is not a source you can follow; run chariox events sources`)
+  if (!found) throw new CommandFailure("events_refused", `source not available: "${reference}" ${refused}`)
   return found.source_id
 }
 // What the kernel answers to a subscription request: `{ subscription }`, printed as it is.
@@ -56,14 +56,17 @@ function subscriptionBody(response: unknown): { subscription: EventSubscription 
   return wire.EventSubscription
 }
 export async function followSource(send: SendRequest, reference: string): Promise<{ subscription: EventSubscription }> {
-  return subscriptionBody(await send({ SubscribeEvents: { targets: [], sources: [await resolveSource(send, reference)] } }))
+  const source = resolveSource(await listSources(send), reference, "is not a source you can follow; run chariox events sources")
+  return subscriptionBody(await send({ SubscribeEvents: { targets: [], sources: [source] } }))
 }
-// `all` ends every followed source and leaves followed targets alone.
+// Removal reads what the grant follows, not what the kernel offers: a disabled or unavailable source is gone from the
+// offer but stays followed until it is detached. `all` ends every followed source and leaves followed targets alone.
 export async function unfollowSource(send: SendRequest, reference: string): Promise<{ subscription: EventSubscription }> {
-  if (reference !== "all") return subscriptionBody(await send({ UnsubscribeEvents: { sources: [await resolveSource(send, reference)] } }))
   const current = subscriptionBody(await send({ GetEventSubscription: {} }))
-  const sources = (current.subscription.sources ?? []).map(source => source.source_id)
-  return sources.length ? subscriptionBody(await send({ UnsubscribeEvents: { sources } })) : current
+  const followed = current.subscription.sources ?? []
+  if (reference === "all") return followed.length ? subscriptionBody(await send({ UnsubscribeEvents: { sources: followed.map(source => source.source_id) } })) : current
+  const source = resolveSource(followed, reference, "is not followed; run chariox events subscription")
+  return subscriptionBody(await send({ UnsubscribeEvents: { sources: [source] } }))
 }
 
 export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: readonly string[], send: SendRequest, write: (value: unknown) => void): Promise<number> {
