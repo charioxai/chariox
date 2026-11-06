@@ -1182,4 +1182,47 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn a_record_from_before_connections_carried_their_owner_is_dropped_at_restore() {
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-connection-owner-test"));
+        let path = root.join("state.sqlite3");
+        drop(DurableKernelStateStore::open(path.clone()).expect("store should initialize"));
+        let connection = rusqlite::Connection::open(&path).expect("database should open");
+        let old_record = json!({
+            "owner_user_id": "user-a",
+            "connection": {
+                "generator_id": "dev.chariox.github",
+                "connection_id": "old-connection",
+                "status": "ready",
+                "lifecycle_state": "connected",
+                "scopes": [],
+                "resources": [],
+                "attached_trigger_count": 0,
+                "metadata": {},
+                "created_at_ms": 1,
+                "updated_at_ms": 1
+            }
+        });
+        connection
+            .execute(
+                "INSERT INTO durable_state_events (
+                    event_id, kind, subject_id, timestamp_ms, payload_json
+                 ) VALUES ('old-record', ?1, 'old-connection', 1, ?2)",
+                rusqlite::params![CONNECTION_UPSERTED, old_record.to_string()],
+            )
+            .expect("old record should insert");
+        drop(connection);
+
+        let registry = EventConnectionRegistry::new(
+            DurableKernelStateStore::open(path.clone()).expect("store should reopen"),
+        );
+        assert!(registry.list("user-a", None).unwrap().is_empty());
+        assert!(registry
+            .connection_event_owner_id("user-a", "old-connection")
+            .unwrap()
+            .is_none());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

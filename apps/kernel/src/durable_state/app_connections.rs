@@ -293,4 +293,39 @@ mod tests {
             .is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn grants_from_before_connections_carried_their_owner_are_dropped() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE app_connection_grants (
+                    owner_id TEXT NOT NULL, installation_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+                    generator_id TEXT NOT NULL, granted_at_ms INTEGER NOT NULL,
+                    PRIMARY KEY(owner_id, installation_id, connection_id));
+                 INSERT INTO app_connection_grants VALUES('alice','slack','connection-1','dev.chariox.slack',1);",
+            )
+            .unwrap();
+        initialize(&connection).unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT count(*) FROM app_connection_grants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 0);
+        // Opening again keeps what was granted since.
+        connection
+            .execute(
+                "INSERT INTO app_connection_grants VALUES('alice','slack','c2','dev.chariox.slack','event-owner-1',2)",
+                [],
+            )
+            .unwrap();
+        initialize(&connection).unwrap();
+        let kept: i64 = connection
+            .query_row("SELECT count(*) FROM app_connection_grants", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, 1);
+    }
 }
