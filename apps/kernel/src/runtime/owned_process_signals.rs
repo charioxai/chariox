@@ -21,7 +21,6 @@ pub(crate) struct OwnedProcessSignals {
 }
 
 impl OwnedProcessSignals {
-    #[cfg(test)]
     pub(crate) fn for_child(child: &Child) -> io::Result<Self> {
         Self::capture(child, false)
     }

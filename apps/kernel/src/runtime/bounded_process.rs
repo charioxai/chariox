@@ -255,54 +255,10 @@ impl AsyncBoundedCommandExt for tokio::process::Command {
 }
 
 pub(crate) trait AsyncChildOwner {
-    async fn output_with_deadline(self, timeout: Duration) -> io::Result<Output>;
     async fn supervised_wait(&mut self) -> io::Result<ExitStatus>;
 }
 
 impl AsyncChildOwner for tokio::process::Child {
-    async fn output_with_deadline(self, timeout: Duration) -> io::Result<Output> {
-        let mut owned = AsyncChildGuard(self);
-        drop(owned.0.stdin.take());
-        let stdout = owned.0.stdout.take();
-        let stderr = owned.0.stderr.take();
-        let budget = std::sync::atomic::AtomicUsize::new(0);
-        let result = tokio::time::timeout(timeout, async {
-            tokio::try_join!(
-                owned.0.supervised_wait(),
-                read_async_pipe(stdout, &budget),
-                read_async_pipe(stderr, &budget)
-            )
-        })
-        .await;
-        match result {
-            Ok(Ok((status, stdout, stderr))) => Ok(Output {
-                status,
-                stdout,
-                stderr,
-            }),
-            failed => {
-                let error = match failed {
-                    Ok(Err(error)) => error,
-                    _ => io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "async child output deadline exceeded",
-                    ),
-                };
-                if owned.0.try_wait()?.is_none() {
-                    owned.0.start_kill()?;
-                }
-                tokio::time::timeout(REAP_LIMIT, owned.0.supervised_wait())
-                    .await
-                    .map_err(|_| {
-                        io::Error::new(
-                            io::ErrorKind::TimedOut,
-                            "async child reap deadline exceeded",
-                        )
-                    })??;
-                Err(error)
-            }
-        }
-    }
     async fn supervised_wait(&mut self) -> io::Result<ExitStatus> {
         drop(self.stdin.take());
         loop {
@@ -311,47 +267,6 @@ impl AsyncChildOwner for tokio::process::Child {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-    }
-}
-
-struct AsyncChildGuard(tokio::process::Child);
-impl Drop for AsyncChildGuard {
-    fn drop(&mut self) {
-        if self.0.id().is_some_and(|pid| pid > 1) {
-            if let Err(error) = self.0.start_kill() {
-                crate::logging::error_with_fields(
-                    "subprocess",
-                    "async child cancellation failed",
-                    serde_json::json!({"operation": "async_child_drop", "error": error.to_string()}),
-                );
-            }
-        }
-    }
-}
-
-async fn read_async_pipe<R: tokio::io::AsyncRead + Unpin>(
-    pipe: Option<R>,
-    budget: &std::sync::atomic::AtomicUsize,
-) -> io::Result<Vec<u8>> {
-    use std::sync::atomic::Ordering;
-    use tokio::io::AsyncReadExt;
-    let Some(mut pipe) = pipe else {
-        return Ok(Vec::new());
-    };
-    let mut bytes = Vec::new();
-    let mut buffer = [0; 8192];
-    loop {
-        let read = pipe.read(&mut buffer).await?;
-        if read == 0 {
-            return Ok(bytes);
-        }
-        if budget.fetch_add(read, Ordering::Relaxed) > (64 * 1024 * 1024usize).saturating_sub(read)
-        {
-            return Err(io::Error::other(
-                "async child output exceeded the capture budget",
-            ));
-        }
-        bytes.extend_from_slice(&buffer[..read]);
     }
 }
 

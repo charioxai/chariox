@@ -275,7 +275,7 @@ impl ProcessTree {
                 ProcessSample {
                     process_id: self.ids[&row.pid].clone(),
                     pid: row.pid,
-                    command: row.command,
+                    command: row.command.clone(),
                     resident_set_bytes: row.rss,
                     cpu_millis: row.cpu,
                     disk_io_bytes: io.and_then(|(read, written)| read.checked_add(written)),

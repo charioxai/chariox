@@ -1,7 +1,6 @@
 //! Reads the confirmed receipt of a disposable worker. It gates managed-context import and
 //! project setup on a remote lease worker; nothing in this repository writes it.
 
-use crate::runtime::bounded_process::BoundedChildExt as _;
 use std::env;
 use std::path::{Path, PathBuf};
 

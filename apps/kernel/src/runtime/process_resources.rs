@@ -35,8 +35,8 @@ mod projection;
 mod sampling;
 mod session_sweep;
 mod submissions;
-mod waits;
 mod terminal_groups;
+mod waits;
 #[cfg(test)]
 pub(crate) use admission::WaitReason;
 pub(crate) use admission::{adopt_admission, volume_floor, HeldCommand};

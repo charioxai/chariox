@@ -162,7 +162,7 @@
   {
     "path": "apps/kernel/src/runtime/kernel_browser_host.rs",
     "method": "wait",
-    "context": "== ; let mirror_credit = method == && params[ ] == ; let display_subscribe = method == && params[ ] == ; let note = method == && matches!( params[ ].as_str(), Some( | ) ); let display_release = method == && params[ ] == ; let mut result = if method == { let pending = backend.begin_app_view_request(method, params)?; drop(backend); pending"
+    "context": "; let mirror_credit = method == && params[ ] == ; let display_subscribe = method == && params[ ] == ; let note = method == && matches!( params[ ].as_str(), Some( | | ) ); let display_release = method == && params[ ] == ; let mut result = if method == { let pending = backend.begin_app_view_request(method, params)?; drop(backend); pending"
   },
   {
     "path": "apps/kernel/src/runtime/state/metaagent_task_runtime_state.rs",

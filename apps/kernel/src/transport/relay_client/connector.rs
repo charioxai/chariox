@@ -1035,7 +1035,7 @@ async fn run_daemon_relay_connector_inner(
                             writer_task.abort();
                             abort_subscription_tasks(&router, &subscription_tasks).await;
                             clear_remote_inventory_projection(&router);
-                            disconnect_relay(&state, "relay read deadline exceeded", presence.as_ref()).await;
+                            disconnect_relay(&state, "relay read deadline exceeded", presence).await;
                             break "relay read deadline exceeded";
                         }
                         incoming = reader.next() => {
