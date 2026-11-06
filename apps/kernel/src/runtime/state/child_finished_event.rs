@@ -15,6 +15,9 @@ impl KernelRuntimeState {
         failure: Option<&TurnOutcome>,
         public_answer: Option<&serde_json::Value>,
     ) -> Result<(), DaemonError> {
+        // The agent no longer holds decisions: they move up before anyone is told it finished.
+        self.move_decisions_up(&task.room_id, &task.agent_id)
+            .await?;
         let child = self.owned.agent_store.get_agent(&task.agent_id)?;
         let Some(parent_id) = child.parent_agent_id() else {
             return Ok(());

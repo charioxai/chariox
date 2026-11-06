@@ -157,6 +157,7 @@ mod inbox_sender;
 mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;
+mod decisions;
 mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;

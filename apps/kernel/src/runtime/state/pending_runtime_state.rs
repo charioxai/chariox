@@ -85,6 +85,8 @@ pub(super) struct PendingInteraction {
     /// Protocol 403: the popup projected to the owner's terminals, for a
     /// decision that needs the passkey.
     pub(super) passkey_prompt: Option<Arc<crate::local::PasskeyPrompt>>,
+    /// Who may answer now: kernel state for routing and audit, never projected.
+    pub(super) holder: super::DecisionHolder,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
 }
 
@@ -108,6 +110,26 @@ pub(super) struct PendingWorkerInteractionLifetime {
 }
 
 impl PendingInteraction {
+    /// A user-held decision with no owner, for tests that classify it.
+    #[cfg(test)]
+    pub(super) fn for_test() -> Self {
+        Self {
+            goal_approval: None,
+            async_task_id: None,
+            kernel_wide_interaction: None,
+            session_id: String::new(),
+            user_domain_interaction: None,
+            session_store_identity: Weak::new(),
+            agent_lifetime: None,
+            kernel_operation_owner: None,
+            terminal_credential_owner: None,
+            kernel_operation_deadline: None,
+            passkey_prompt: None,
+            holder: super::DecisionHolder::User,
+            responder: Arc::new(StdMutex::new(None)),
+        }
+    }
+
     /// Whether only the owner's terminal may answer `interaction`, for every choice
     /// including refusal. The grant policy and the outside event both read this one
     /// rule, so an event never offers a question the kernel then refuses.

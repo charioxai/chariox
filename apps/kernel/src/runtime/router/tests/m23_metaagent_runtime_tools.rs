@@ -300,6 +300,7 @@ mod workflow_code_crud;
 mod workflow_code_patterns;
 
 mod authority_limit;
+mod decisions;
 mod room_admission;
 mod room_prompt_dispatch;
 mod subtree;

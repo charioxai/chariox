@@ -1023,6 +1023,31 @@ impl RuntimeSession {
             .find(|interaction| interaction.agent_id() == Some(agent_id))
     }
 
+    /// The pending interactions a client lists for `agent_id`: its own, except those it
+    /// does not show (a sub-agent's decision the user holds), plus the ones shown here.
+    pub fn interactions_listed_for(&self, agent_id: &str) -> Vec<&RuntimeInteraction> {
+        self.active_interactions
+            .iter()
+            .filter(|interaction| match interaction.shown_in_agent_id() {
+                Some(shown) => shown == agent_id,
+                None => interaction.agent_id() == Some(agent_id),
+            })
+            .collect()
+    }
+
+    /// Moves where the user sees an active interaction; the interaction itself stays one object.
+    pub(crate) fn show_interaction_in(&mut self, id: &str, agent: Option<String>) {
+        if let Some(position) = self
+            .active_interactions
+            .iter()
+            .position(|interaction| interaction.id() == id)
+        {
+            let interaction = self.active_interactions.remove(position);
+            self.active_interactions
+                .insert(position, interaction.shown_in(agent));
+        }
+    }
+
     pub fn add_active_interaction(&mut self, interaction: RuntimeInteraction) {
         self.active_interactions.retain(|existing| {
             existing.id() != interaction.id()

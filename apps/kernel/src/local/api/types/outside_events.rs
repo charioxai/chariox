@@ -278,6 +278,8 @@ pub struct EventResolution {
 pub enum EventResolutionVia {
     Terminal,
     ExternalAgent,
+    /// A parent agent answered its sub-agent's decision.
+    ParentAgent,
     Timeout,
     /// Withdrawn without an answer: the asker went away or a newer decision replaced it.
     Cancelled,
