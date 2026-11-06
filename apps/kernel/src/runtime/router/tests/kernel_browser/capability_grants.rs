@@ -393,10 +393,11 @@ fn capability_unrequested_turns_cannot_acquire_browser_access() {
                 &format!("agent:{}:messages", agents[0].0.id()),
             )
             .await;
-            let error = tool(router, token, "chariox.load_kernel_browser", json!({}))
+            // The turn cannot acquire access itself: its task waits for the owner's decision.
+            let asked = tool(router, token, "chariox.load_kernel_browser", json!({}))
                 .await
-                .unwrap_err();
-            assert!(refusal(error).is_some(), "MP-08: unrequested acquisition");
+                .expect("MP-08: unrequested acquisition asks the owner");
+            assert_eq!(asked.payload["status"], "approval_required");
             assert!(tool(
                 router,
                 token,

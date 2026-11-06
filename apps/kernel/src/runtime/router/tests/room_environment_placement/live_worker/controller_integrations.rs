@@ -119,9 +119,10 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
             json!({"tab_id":popup_tab_id.as_str(),"action":"activate"}),
         )
         .await
-        .expect("public tab tool activates the popup through the bound worker");
+        .expect("public tab tool selects the popup through the bound worker");
     assert!(activated.ok, "{:?}", activated.payload);
-    assert_eq!(activated.payload["focused_tab_id"], popup_tab_id);
+    // An agent's selection works from behind: only a person changes the tab Chrome shows.
+    assert_eq!(activated.payload["focused_tab_id"], tab_id);
     let closed = runtime
         .dispatch_authenticated_runtime_tool_call(
             token,

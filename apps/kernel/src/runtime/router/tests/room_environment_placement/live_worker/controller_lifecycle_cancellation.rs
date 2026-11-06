@@ -1,7 +1,6 @@
 use super::*;
 use crate::runtime::browser_controller_action::BrowserDialogAction;
 use crate::runtime::browser_controller_history::BrowserHistoryAction;
-use crate::runtime::browser_controller_tab::BrowserTabAction;
 use crate::session::EnvironmentActionState;
 use futures_util::FutureExt;
 
@@ -15,13 +14,22 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str) {
     let tab = status.payload["tab_id"].as_str().unwrap();
     let agent = status.payload["agent_id"].as_str().unwrap();
     let takeover_target = json!({"kind":"browser_tab","id":tab});
+    // An agent's tab selection works from behind and never reaches Chrome: only a person brings
+    // a tab to front, so there is no physical dispatch to cancel.
+    let activations = physical_count(fixture, "activateCount");
+    assert!(
+        runtime
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                "slice_browser_tab",
+                json!({"tab_id":tab,"action":"activate"}),
+            )
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(physical_count(fixture, "activateCount"), activations);
     for (tool, args, kind, counter) in [
-        (
-            "slice_browser_tab",
-            json!({"tab_id":tab,"action":"activate"}),
-            "browser_tab_activate",
-            "activateCount",
-        ),
         (
             "slice_browser_history",
             json!({"tab_id":tab,"action":"reload"}),
@@ -260,69 +268,49 @@ async fn execute_admitted(
     let execution = format!("{:032x}", rand::random::<u128>());
     // Fault injection begins after read-only preflight, at the existing shared
     // admission interface; the worker still runs the production stdio controller.
-    if kind == "browser_tab_activate" {
-        runtime
-            .execute_browser_tab_mutation_as_agent(
-                room,
-                agent,
-                tab,
-                revision,
-                kind,
-                Some(&execution),
-                runtime.manage_browser_environment_tab(
-                    room,
-                    &execution,
-                    tab,
-                    BrowserTabAction::Activate,
-                ),
-            )
-            .await
-            .map(|_| ())
-    } else {
-        runtime
-            .execute_browser_mutation_as_agent(
-                room,
-                agent,
-                tab,
-                revision,
-                kind,
-                Some(&execution),
-                async {
-                    match kind {
-                        "browser_history_reload" => runtime
-                            .navigate_browser_environment_history(
-                                room,
-                                &execution,
-                                tab,
-                                BrowserHistoryAction::Reload,
-                            )
-                            .await
-                            .map(|_| ()),
-                        "navigate" => runtime
-                            .navigate_browser_environment_compatibility(
-                                room,
-                                &execution,
-                                tab,
-                                "https://worker.test/lifecycle-receipt",
-                            )
-                            .await
-                            .map(|_| ()),
-                        "dialog" => runtime
-                            .handle_browser_environment_dialog(
-                                room,
-                                &execution,
-                                tab,
-                                BrowserDialogAction::Dismiss,
-                            )
-                            .await
-                            .map(|_| ()),
-                        _ => unreachable!(),
-                    }
-                },
-            )
-            .await
-            .map(|_| ())
-    }
+    runtime
+        .execute_browser_mutation_as_agent(
+            room,
+            agent,
+            tab,
+            revision,
+            kind,
+            Some(&execution),
+            async {
+                match kind {
+                    "browser_history_reload" => runtime
+                        .navigate_browser_environment_history(
+                            room,
+                            &execution,
+                            tab,
+                            BrowserHistoryAction::Reload,
+                        )
+                        .await
+                        .map(|_| ()),
+                    "navigate" => runtime
+                        .navigate_browser_environment_compatibility(
+                            room,
+                            &execution,
+                            tab,
+                            "https://worker.test/lifecycle-receipt",
+                        )
+                        .await
+                        .map(|_| ()),
+                    "dialog" => runtime
+                        .handle_browser_environment_dialog(
+                            room,
+                            &execution,
+                            tab,
+                            BrowserDialogAction::Dismiss,
+                        )
+                        .await
+                        .map(|_| ()),
+                    _ => unreachable!(),
+                }
+            },
+        )
+        .await
+        .map(|_| ())
 }
 
 fn assert_terminal(
