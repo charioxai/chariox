@@ -25,6 +25,7 @@ export type CliStdinKeyControllerDeps = {
   closeActiveDialogOverlay: () => void
   handleSessionProcessesKey?: (event: CliStdinKeyEvent) => boolean
   handleProjectEnvironmentKey?: (event: CliStdinKeyEvent) => boolean
+  handleSubAgentsKey?: (event: CliStdinKeyEvent) => boolean
   handleManagedMachineDialogKey?: (event: CliStdinKeyEvent) => boolean
   handleSessionBrowserKey: (event: CliStdinKeyEvent) => boolean
   requestExit: () => void
@@ -94,6 +95,7 @@ export function createCliStdinKeyController(
     }
     if (deps.handleSessionProcessesKey?.(event)) return true
     if (deps.handleProjectEnvironmentKey?.(event)) return true
+    if (deps.handleSubAgentsKey?.(event)) return true
     if (deps.handleManagedMachineDialogKey?.(event)) {
       return true
     }

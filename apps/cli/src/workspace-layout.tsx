@@ -9,6 +9,8 @@ type IndexedRefHandler = (index: number, value: any) => void
 
 export type WorkspaceLayoutProps = {
   roomWorkflowsPane?: (() => JSX.Element) | undefined
+  subAgentsPane?: (() => JSX.Element) | undefined
+  subAgentsVisible?: (() => boolean) | undefined
   roomWorkflowsVisible?: (() => boolean) | undefined
   roomWorkflowsAvailable?: (() => boolean) | undefined
   roomWorkflowsOpen?: (() => void) | undefined
@@ -313,6 +315,7 @@ export function WorkspaceLayout(props: WorkspaceLayoutProps) {
       </box>
 
       <Show when={props.roomWorkflowsVisible?.()}>{props.roomWorkflowsPane?.()}</Show>
+      <Show when={props.subAgentsVisible?.()}>{props.subAgentsPane?.()}</Show>
       </box>
 
       <box ref={props.onKernelApprovalBannerRef} flexShrink={0} flexDirection="column" visible={false} />

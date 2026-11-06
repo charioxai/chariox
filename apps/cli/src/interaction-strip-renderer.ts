@@ -26,6 +26,8 @@ import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt
 import type { QueuedJob } from "@chariox/kernel-client/queued-jobs"
 import { theme } from "./theme.js"
 
+export type SubAgentStripeItem = { text: string; needsYou: boolean; open: () => void }
+
 type InteractionStripRenderOptions = {
   renderer: ConstructorParameters<typeof BoxRenderable>[0]
   primaryBox: BoxRenderable | undefined
@@ -39,6 +41,8 @@ type InteractionStripRenderOptions = {
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  /** The room agent's sub-agents stripe: first in its stack; a click opens the list card. */
+  subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   /** Commands of the agent waiting for room, in line order. */
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
@@ -76,10 +80,11 @@ function renderInteractionStrip(
   }
   const interaction = options.activeInteractionForAgent(agent?.id ?? null)
   const queuedPrompts = options.queuedPromptStripItemsForAgent(agent?.id ?? null)
+  const subAgents = options.subAgentStripeForAgent?.(agent?.id ?? null) ?? null
   const queuedJobs = options.queuedJobsForAgent?.(agent?.id ?? null) ?? []
   const triggers = options.agentTriggerStripItemsForAgent(agent?.id ?? null)
   const deliveries = options.unconfirmedTriggerDeliveriesForAgent?.(agent?.id ?? null) ?? []
-  const visible = Boolean(interaction) || queuedPrompts.length > 0 || queuedJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
+  const visible = Boolean(interaction) || subAgents !== null || queuedPrompts.length > 0 || queuedJobs.length > 0 || triggers.length > 0 || deliveries.length > 0
   box.visible = visible
   box.flexDirection = "column"
   box.gap = 0
@@ -140,6 +145,7 @@ function renderInteractionStrip(
     box.add(messageLine)
     renderInteractionChoices(options, box, interaction, focused)
   }
+  if (subAgents) renderSubAgentStripe(options, box, subAgents)
   renderQueuedJobStrip(options, box, queuedJobs)
   renderQueuedPromptStrip(options, box, queuedPrompts, focused, selectedQueuedPromptIndex)
   renderAgentTriggerStrip(options, box, triggers)
@@ -151,6 +157,44 @@ function renderInteractionStrip(
     }))
   }
   box.requestRender?.()
+}
+
+/** One row for all of the room agent's sub-agents, in the design of the other work rows: the plain counts, needs you
+ * first. Status only: a click opens the list card, never a decision. */
+function renderSubAgentStripe(
+  options: InteractionStripRenderOptions,
+  container: BoxRenderable,
+  stripe: SubAgentStripeItem,
+): void {
+  const row = new BoxRenderable(options.renderer, {
+    width: "100%",
+    flexDirection: "row",
+    gap: 1,
+    flexShrink: 0,
+  })
+  const kind = new TextRenderable(options.renderer, {
+    content: "Agents",
+    fg: stripe.needsYou ? theme.warning : theme.info,
+    attributes: TextAttributes.BOLD,
+    wrapMode: "none",
+  })
+  kind.flexShrink = 0
+  row.add(kind)
+  const copy = new TextRenderable(options.renderer, {
+    content: stripe.text,
+    fg: theme.text,
+    wrapMode: "word",
+  })
+  copy.flexBasis = 0
+  copy.flexGrow = 1
+  copy.flexShrink = 1
+  row.add(copy)
+  row.onMouseUp = (event) => {
+    if (event.button !== MouseButton.LEFT) return
+    event.stopPropagation()
+    startTimeout(stripe.open, 0)
+  }
+  container.add(row)
 }
 
 /** One row per command waiting for room, first in the stack: the kernel's
