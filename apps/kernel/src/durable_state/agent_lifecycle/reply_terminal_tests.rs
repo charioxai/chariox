@@ -159,6 +159,7 @@ fn failed_reply_start_retires_rejected_and_waiting_requests_across_restart() {
         run: None,
         now: 2,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -214,6 +215,7 @@ fn failed_reply_start_retires_rejected_and_waiting_requests_across_restart() {
                     run: None,
                     now: 11,
                     work: None,
+                    through: 0,
                 })
                 .is_err(),
             "recovered launch must reject terminally failed requests"
@@ -229,6 +231,7 @@ fn failed_reply_start_retires_rejected_and_waiting_requests_across_restart() {
         run: None,
         now: 12,
         work: None,
+        through: 0,
     });
     assert_eq!(f.store.agent_inbox("room", "parent", 0).unwrap(), replies);
 }

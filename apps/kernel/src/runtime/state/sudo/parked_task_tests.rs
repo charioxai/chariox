@@ -183,6 +183,7 @@ async fn stop_cancels_parked_task_through_prompt_route() {
             run: Some(f.run.id().into()),
             now: crate::session::unix_epoch_ms(),
             work: None,
+            through: 0,
         })
         .unwrap()
     else {
@@ -754,11 +755,11 @@ async fn owner_timer_cancellation_after_unsubscribe_reaches_next_turn_once() {
             .await
             .unwrap()
             .payload;
-        let receipts = inbox
+        let receipts = inbox["events"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|event| event["source_id"] == wake_id && event["kind"] == "source_lost")
+            .filter(|event| event["source"]["id"] == wake_id && event["kind"] == "source_lost")
             .collect::<Vec<_>>();
         assert_eq!(
             receipts.len(),

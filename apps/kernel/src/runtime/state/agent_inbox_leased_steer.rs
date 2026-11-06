@@ -8,11 +8,13 @@ impl KernelRuntimeState {
     /// A steer that provably never reached that turn returns the event to the
     /// inbox for the agent's next turn; an unknown outcome stays uncertain until
     /// the worker's exact receipt settles it, so the event is never run twice.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn steer_leased_inbox_event(
         &self,
         room: &str,
         agent: &str,
         sequence: u64,
+        through: u64,
         active: &crate::session::PromptQueueItem,
         prompt: crate::session::PromptQueueItem,
         work: Option<String>,
@@ -57,6 +59,7 @@ impl KernelRuntimeState {
                     run: Some(run.clone()),
                     now: crate::session::unix_epoch_ms(),
                     work,
+                    through,
                 })?
         else {
             unreachable!()

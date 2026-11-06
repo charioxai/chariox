@@ -468,6 +468,7 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
             )),
             now: at,
             work: None,
+            through: 0,
         })
         .unwrap();
     // Drive the real worker entry and retain its ACK before recording it at home.
@@ -934,6 +935,7 @@ async fn refused_wake_after_dispatch_admission_is_retried_by_the_sweep() {
             run: None,
             work: None,
             now: crate::session::unix_epoch_ms(),
+            through: 0,
         })
         .unwrap();
     let agent = f.runtime.owned.agent_store.get_agent(&f.agent).unwrap();
@@ -1956,7 +1958,7 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         loop {
             let input = std::fs::read_to_string(&received).unwrap();
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if input.contains("RETRY-MARK") && events[0].state == "accepted" {
+            if input.contains("Inbox: 1 new event") && events[0].state == "accepted" {
                 assert_eq!(events.len(), 1, "exactly one delivered occurrence");
                 let woken = f.task(&task.task_id);
                 assert_eq!(woken.state, ExecutionState::Working);

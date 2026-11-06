@@ -6,6 +6,7 @@
 use super::*;
 
 mod agent_events;
+pub(super) mod agent_inbox_read;
 mod agent_messaging;
 mod agent_process_permission;
 pub(super) mod agent_wakes;

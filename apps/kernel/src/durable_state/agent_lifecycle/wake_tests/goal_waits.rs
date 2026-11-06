@@ -96,6 +96,7 @@ fn a12_long_timer_survives_two_checkins_without_spending_progress_guard() {
             work: Some("p".into()),
             run: Some("run".into()),
             now: now + 1,
+            through: 0,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -177,6 +178,7 @@ fn a12_refused_checkin_does_not_erase_an_earlier_progress_guard_strike() {
             work: Some("p".into()),
             run: Some("run".into()),
             now: now + 1,
+            through: 0,
         });
         if fired_before_refusal {
             f.apply(Operation::FireWakes { now: due });

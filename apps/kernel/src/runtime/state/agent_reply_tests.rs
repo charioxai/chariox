@@ -357,6 +357,7 @@ async fn delegate_reply_pre_upgrade_accepted_orphan_is_recovered_by_sweep() {
             run: None,
             now: crate::session::unix_epoch_ms(),
             work: None,
+            through: 0,
         })
         .unwrap();
     store
