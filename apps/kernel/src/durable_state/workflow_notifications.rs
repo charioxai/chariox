@@ -107,6 +107,18 @@ pub(crate) fn workflow_identity(kernel: &str, session: &str, workflow: &str) -> 
     serde_json::json!([kernel, session, workflow]).to_string()
 }
 
+/// The `exit_node_id` column of a source. A real exit keeps its node id (an id starting with
+/// the reserved character is escaped); a source that follows the run has no node and gets a key
+/// no node id maps to, so a node may carry any id without sharing a row with it.
+pub(super) fn exit_key(kind: crate::local::NotificationSourceKind, exit_node_id: &str) -> String {
+    const RESERVED: char = '\u{1}';
+    match kind {
+        crate::local::NotificationSourceKind::WorkflowRun => format!("{RESERVED}run"),
+        _ if exit_node_id.starts_with(RESERVED) => format!("{RESERVED}exit{exit_node_id}"),
+        _ => exit_node_id.to_owned(),
+    }
+}
+
 pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     // Registration and diagnostics are workflow metadata. Delivery state uses
     // the existing App automation/receipt store, not a second inbox/outbox.
@@ -471,7 +483,8 @@ fn apply(
             let mut source = admission.source;
             require_source_workflow(tx, &source, Some(&admission.workflow_json))?;
             // The durable workflow identity owns its original source ID and owner.
-            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id=?5",params![source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
+            let key = exit_key(source.kind, &source.exit_node_id);
+            let existing: Option<(String,String)> = tx.query_row("SELECT source_id,owner_id FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id=?5",params![source.kernel_id,source.session_id,source.workflow_id,key,source.owner_user_id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(sql)?;
             if let Some((id, owner)) = existing {
                 if owner != source.owner_user_id {
                     return Err(error("source not available"));
@@ -491,9 +504,9 @@ fn apply(
             }
             if source.kind == crate::local::NotificationSourceKind::OwnerAction {
                 // Blocked-task alerts go to the Room's current owner only.
-                tx.execute("UPDATE workflow_notification_exit_sources SET enabled=0,payload_json=json_set(payload_json,'$.enabled',json('false')) WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id<>?5",params![source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.owner_user_id]).map_err(sql)?;
+                tx.execute("UPDATE workflow_notification_exit_sources SET enabled=0,payload_json=json_set(payload_json,'$.enabled',json('false')) WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id<>?5",params![source.kernel_id,source.session_id,source.workflow_id,key,source.owner_user_id]).map_err(sql)?;
             }
-            tx.execute("INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,payload_json=excluded.payload_json",params![source.source_id,source.owner_user_id,source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.enabled,encode(&source)?]).map_err(sql)?;
+            tx.execute("INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,payload_json=excluded.payload_json",params![source.source_id,source.owner_user_id,source.kernel_id,source.session_id,source.workflow_id,key,source.enabled,encode(&source)?]).map_err(sql)?;
             Ok(NotificationOutcome::Source(source))
         }
         NotificationOperation::Attach {

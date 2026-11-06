@@ -166,3 +166,55 @@ fn a_run_ending_through_a_notifying_exit_also_reaches_the_exit_source_unchanged(
     assert!(occurrences.contains(&exit.source_id) && occurrences.contains(&run.source_id));
     cleanup(f);
 }
+
+#[test]
+fn an_exit_node_named_like_the_run_source_keeps_its_own_source_and_output() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let (b, _, bp) = f.workflow("subscriber");
+    let exit = f.source_of_exit(&a, RUN_FINISHED_NODE);
+    let run = run_source(&f, &a);
+    assert_ne!(
+        exit.source_id, run.source_id,
+        "the run source took over the exit's source"
+    );
+    assert_eq!(exit.kind, NotificationSourceKind::WorkflowExit);
+    assert_eq!(run.kind, NotificationSourceKind::WorkflowRun);
+    let listed = f.store.notification_inventory("local").unwrap().0;
+    for (source, kind) in [
+        (&exit, NotificationSourceKind::WorkflowExit),
+        (&run, NotificationSourceKind::WorkflowRun),
+    ] {
+        assert!(
+            listed
+                .iter()
+                .any(|s| s.source_id == source.source_id && s.kind == kind),
+            "{:?} is not listed as {kind:?}: {listed:?}",
+            source.source_id
+        );
+    }
+    f.attach(&exit, &b, &bp);
+    f.attach(&run, &b, &bp);
+    f.complete_through(
+        &a,
+        RUN_FINISHED_NODE,
+        "run-named",
+        None,
+        WorkflowRunStatus::Completed,
+        "approved",
+    );
+    let outputs: std::collections::BTreeMap<String, String> = f
+        .candidates(false)
+        .into_iter()
+        .map(|(_, env)| (env.source_id, env.output.message().to_owned()))
+        .collect();
+    assert_eq!(
+        outputs.get(&exit.source_id).map(String::as_str),
+        Some("approved"),
+        "{outputs:?}"
+    );
+    let run_body: serde_json::Value =
+        serde_json::from_str(&outputs[&run.source_id]).expect("the run source reports the run");
+    assert_eq!(run_body["status"], "Completed");
+    cleanup(f);
+}

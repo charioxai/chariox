@@ -35,7 +35,7 @@ pub(super) fn emit(
     encoded: &DurableWorkflowRunWrite,
     run: &WorkflowRun,
 ) -> rusqlite::Result<()> {
-    let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id=?5 AND enabled=1",params![kernel,encoded.session_id,encoded.workflow_id,RUN_FINISHED_NODE,current_owner],|r|r.get(0)).optional()?;
+    let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_exit_sources WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id=?5 AND enabled=1",params![kernel,encoded.session_id,encoded.workflow_id,exit_key(crate::local::NotificationSourceKind::WorkflowRun,RUN_FINISHED_NODE),current_owner],|r|r.get(0)).optional()?;
     let Some(source_json) = source_json else {
         return Ok(());
     };
