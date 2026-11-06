@@ -36,6 +36,25 @@ pub(crate) fn environment_file_rules(checkout: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
+impl super::ProjectEnvironmentStore {
+    /// Local and leased placements copy the same listed files before starting any process.
+    pub(crate) fn copy_files_into_worktree(
+        &self,
+        sessions: &crate::session::SessionStateStore,
+        base: &Path,
+        worktree: &Path,
+    ) -> Result<(), DaemonError> {
+        for project in sessions
+            .projects_owning_checkout(sessions.durable_projects(), &base.to_string_lossy())?
+        {
+            if let Some(record) = self.load(project.id())? {
+                copy_environment_files(base, worktree, &record.files)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Copies the listed files that `source` has and `target` lacks, with owner-only permissions.
 pub(crate) fn copy_environment_files(
     source: &Path,

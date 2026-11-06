@@ -103,12 +103,14 @@ fn reset_after_utility_output(
             structured_endpoint: Some(endpoint),
         },
     );
-    let result = run_codex_utility_prompt(
+    let result = run_codex_utility_prompt_with_admission(
         &run,
         "Assess public evidence",
         "",
         Duration::from_secs(3),
         ProviderUtilityExecutionPolicy::MetadataOnlyDiscovery,
+        None,
+        None,
     );
     server.join().unwrap();
     result

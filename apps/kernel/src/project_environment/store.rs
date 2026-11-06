@@ -100,23 +100,23 @@ impl ProjectEnvironmentStore {
         Ok(SaveOutcome::Saved(record))
     }
 
-    /// Returns the effective record, adopting the source only when its revision is newer.
+    /// Stores a record that another kernel saved, unless this kernel already holds that revision or a newer one.
     pub(crate) fn adopt(
         &self,
         project: &str,
         record: ProjectEnvironmentRecord,
-    ) -> Result<ProjectEnvironmentRecord, DaemonError> {
+    ) -> Result<(), DaemonError> {
         let _guard = WRITES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         record.validate().map_err(environment_error)?;
-        if let Some(current) = self.load(project)? {
-            if current.revision >= record.revision {
-                return Ok(current);
-            }
+        if self
+            .load(project)?
+            .is_some_and(|current| current.revision >= record.revision)
+        {
+            return Ok(());
         }
-        self.write(project, &record)?;
-        Ok(record)
+        self.write(project, &record)
     }
 
     fn write(&self, project: &str, record: &ProjectEnvironmentRecord) -> Result<(), DaemonError> {
@@ -212,40 +212,6 @@ mod tests {
         };
         assert_eq!(second.revision, 2);
         assert_eq!(store.load("p").unwrap().unwrap().setup_script, "two");
-    }
-
-    #[test]
-    fn adoption_returns_the_record_retained_after_a_save_between_read_and_adoption() {
-        for newer in [false, true] {
-            let dir = scratch();
-            let store = ProjectEnvironmentStore::new(&dir.0);
-            store.save("p", 0, fields("initial")).unwrap();
-            let initial = store.load("p").unwrap().unwrap();
-            let source = ProjectEnvironmentRecord {
-                revision: initial.revision + 1,
-                files: vec!["source.json".into()],
-                ..fields("source")
-            };
-            // Import read revision 1; Save wins the write lock with an equal or newer revision.
-            let saved = ProjectEnvironmentRecord {
-                files: vec!["saved.json".into()],
-                ..fields("saved")
-            };
-            assert!(matches!(
-                store.save("p", initial.revision, saved.clone()).unwrap(),
-                SaveOutcome::Saved(_)
-            ));
-            if newer {
-                assert!(matches!(
-                    store.save("p", initial.revision + 1, saved).unwrap(),
-                    SaveOutcome::Saved(_)
-                ));
-            }
-            let effective = store.adopt("p", source).unwrap();
-            let retained = store.load("p").unwrap().unwrap();
-            assert_eq!(retained.setup_script, "saved");
-            assert_eq!(effective, retained);
-        }
     }
 
     #[test]

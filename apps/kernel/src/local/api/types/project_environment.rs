@@ -1,7 +1,7 @@
 //! The Project Environment contract: one saved record per Project, its presence on this kernel and
 //! the Setup runs. No request or response ever carries a Secret value out of the kernel.
 use super::*;
-use crate::project_environment::{FilePresence, SecretPresence};
+use crate::project_environment::{ExtensionSource, FilePresence, SecretPresence};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -39,6 +39,32 @@ pub struct SaveProjectEnvironmentRequest {
     pub variables: String,
     pub secrets: Vec<ProjectEnvironmentSecretName>,
     pub files: Vec<ProjectEnvironmentFilePath>,
+    pub mcps: Vec<ProjectEnvironmentExtension>,
+    pub skills: Vec<ProjectEnvironmentExtension>,
+}
+
+/// An MCP server or skill of the Project: declared by one of its files, or registered with Chariox.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectEnvironmentExtension {
+    pub name: String,
+    pub source: ExtensionSource,
+}
+
+/// Whether the declaring file still declares the entry on this kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtensionPresence {
+    Present,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectEnvironmentExtensionView {
+    pub name: String,
+    pub source: ExtensionSource,
+    pub presence: ExtensionPresence,
 }
 
 /// The owner puts a Secret's value into this kernel's Vault under the Project scope.
@@ -65,6 +91,8 @@ pub struct RunProjectEnvironmentSetupRequest {
 pub enum EnvironmentEntryKind {
     Secret,
     File,
+    Mcp,
+    Skill,
 }
 
 /// One Secret (by name) or File (by relative path) of the Environment.
@@ -120,12 +148,14 @@ pub struct RemoteEnvironmentOperationRequest {
     pub stop: bool,
 }
 
-/// An idle agent of the Project on this kernel reads the Project and the saved Environment and proposes changes; nothing is applied.
+/// Reads the Project's files and the saved Environment and proposes changes; nothing is applied.
+/// The kernel always compares what the files declare (no model); with `with_agent` an idle agent of the Project adds its own proposals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CheckProjectEnvironmentRequest {
     pub project_id: String,
     pub operation_id: String,
+    pub with_agent: bool,
 }
 
 /// Accept applies one proposal as a Save; dismissing it keeps the agent from proposing it again.
@@ -144,6 +174,8 @@ pub enum EnvironmentProposalField {
     Variables,
     Secret,
     File,
+    Mcp,
+    Skill,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +208,17 @@ pub struct EnvironmentProposal {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentOperationRequest {
     pub operation_id: String,
+}
+
+/// Reads an operation. With `wait_after_updates` the answer is held (at most 20 s) until the
+/// operation has more updates than the reader has seen or has ended, so a change reaches the
+/// reader as soon as it happens and an idle operation costs no polling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetEnvironmentOperationRequest {
+    pub operation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_after_updates: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,6 +300,8 @@ pub struct ProjectEnvironmentView {
     pub variables: String,
     pub secrets: Vec<ProjectEnvironmentSecretView>,
     pub files: Vec<ProjectEnvironmentFileView>,
+    pub mcps: Vec<ProjectEnvironmentExtensionView>,
+    pub skills: Vec<ProjectEnvironmentExtensionView>,
     pub changed_at_ms: u64,
     pub machine_label: String,
     pub checkout_path: String,
@@ -314,6 +359,8 @@ pub struct EnvironmentOperationView {
     pub ended_at_ms: Option<u64>,
     pub exit_code: Option<i32>,
     pub reason: Option<String>,
+    /// Counts every change of this view, so a reader can wait for the next one.
+    pub updates: u64,
     /// The last 64 KiB of output, with Secret values replaced by their names in brackets.
     pub output_tail: String,
     /// Import only: the entries and their results, in order.

@@ -17,6 +17,7 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
     variables: "PORT=3000",
     secrets: [{ name: "API_KEY", presence: "present" }, { name: "DB_URL", presence: "missing" }],
     files: [{ path: ".env.local", presence: "missing", sizeBytes: null }, { path: "certs/dev.pem", presence: "present", sizeBytes: 2048 }],
+    mcps: [], skills: [],
     changedAtMs: NOW,
     machineLabel: "Miguel's Mac",
     checkoutPath: "/work/project",
@@ -29,27 +30,45 @@ function environment(patch: Partial<ProjectEnvironmentView> = {}): ProjectEnviro
 function operation(patch: Partial<EnvironmentOperationView> = {}): EnvironmentOperationView {
   return {
     operationId: "op-1", projectId: "project-1", checkoutPath: "/work/project", kind: "setup", state: "running",
-    startedAtMs: NOW, endedAtMs: null, exitCode: null, reason: null, outputTail: "installing\n", entries: [], sourceLabel: null, ...patch,
+    startedAtMs: NOW, endedAtMs: null, exitCode: null, reason: null, updates: 0, outputTail: "installing\n", entries: [], sourceLabel: null, ...patch,
   }
 }
 
 type Reply = unknown | Error | (() => unknown)
 
-function harness(initial: ProjectEnvironmentView = environment()) {
-  const requests: Record<string, any>[] = []
-  const replies: Reply[] = []
+function harness(initial: ProjectEnvironmentView = environment(), kernels: readonly { id: string; label: string }[] | (() => Promise<readonly { id: string; label: string }[]>) = []) {
+  // Each connection has its own queue of replies and held reads; a new connection to the same kernel shares its `id`.
+  const identities = new WeakMap<object, string>()
+  let connections = 0
+  const kernel = (id = `kernel-${++connections}`) => {
+    const requests: Record<string, any>[] = []
+    const replies: Reply[] = []
+    // Reads the kernel holds until the operation changes: they answer when the test calls `release`.
+    const held: Array<(value: unknown) => void> = []
+    const client = {
+      send: async (request: unknown) => {
+        requests.push(request as Record<string, any>)
+        if ((request as any).GetEnvironmentOperation?.waitAfterUpdates !== undefined) return new Promise((resolve) => held.push(resolve))
+        const next = replies.shift()
+        if (next === undefined) throw new Error(`unexpected request ${Object.keys(request as object)[0]}`)
+        const value = typeof next === "function" ? (next as () => unknown)() : next
+        if (value instanceof Error) throw value
+        return value
+      },
+    }
+    identities.set(client, id)
+    return { client, requests, replies, held }
+  }
+  const first = kernel("A")
+  let connected = first
+  const { requests, replies, held } = first
   const scheduled: Array<{ callback: () => void; delayMs: number }> = []
   let renders = 0
   let operationIds = 0
   const controller = createProjectEnvironmentController({
-    send: async (request) => {
-      requests.push(request as Record<string, any>)
-      const next = replies.shift()
-      if (next === undefined) throw new Error(`unexpected request ${Object.keys(request as object)[0]}`)
-      const value = typeof next === "function" ? (next as () => unknown)() : next
-      if (value instanceof Error) throw value
-      return value
-    },
+    otherKernels: async () => typeof kernels === "function" ? kernels() : kernels,
+    client: () => connected.client,
+    kernelId: async client => identities.get(client)!,
     render: () => { renders++ },
     schedule: (callback, delayMs) => { scheduled.push({ callback, delayMs }) },
     newOperationId: () => `op-${++operationIds}`,
@@ -72,7 +91,9 @@ function harness(initial: ProjectEnvironmentView = environment()) {
     for (let i = 0; i < 30; i++) key("up")
     for (let i = 0; i < 20 && !controller.view().rows.some((row) => row.focused && row.text.includes(target)); i++) key("down")
   }
-  return { controller, requests, replies, scheduled, key, type, text, open, settle, focusOn, renders: () => renders }
+  const release = async (value: unknown) => { held.shift()!(value); await settle() }
+  const connect = (next: ReturnType<typeof kernel>) => { connected = next }
+  return { controller, requests, replies, scheduled, kernel, connect, a: first, key, type, text, open, settle, focusOn, release, held, renders: () => renders }
 }
 
 test("the dialog shows one machine line and the four sections from the kernel", async () => {
@@ -122,10 +143,44 @@ test("editing the script saves with the loaded revision when Esc leaves the fiel
   await h.settle()
   assert.deepEqual(h.requests.at(-1), { SaveProjectEnvironment: {
     projectId: "project-1", expectedRevision: 2, setup: { script: "make setup && make test" }, variables: "PORT=3000",
-    secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
+    secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }], mcps: [], skills: [],
   } })
   assert(!h.text().includes("Unsaved"))
   assert(h.text().includes("make setup && make test"))
+})
+
+test("the line being edited scrolls to keep its cursor visible, and the other lines keep their start", async () => {
+  const h = harness()
+  await h.open()
+  h.key("down")
+  h.key("return")
+  const url = "curl https://example.test/" + "a/".repeat(60) + "end"
+  h.type(`${url}`)
+  const cursorRow = () => h.controller.view().rows.find((row) => row.text.includes("▏"))!.text
+  // Typing at the end of a line wider than the dialog text keeps the cursor and the newest characters.
+  assert.match(cursorRow(), /^  ….*a\/end▏$/u)
+  assert(cursorRow().length <= 80)
+  // Home brings the start back with the cursor, End the end.
+  h.key("home")
+  assert.match(cursorRow(), /^  ▏make setup.*…$/u)
+  h.key("end")
+  assert.match(cursorRow(), /a\/end▏$/u)
+  // Arrows move the window only when the cursor would leave it, and the cursor never disappears.
+  for (let i = 0; i < 70; i++) {
+    h.key("left")
+    const shown = cursorRow()
+    assert(shown.includes("▏") && shown.length <= 80, shown)
+  }
+  assert.match(cursorRow(), /^  …/u)
+  for (let i = 0; i < 30; i++) h.key("right")
+  assert(cursorRow().includes("▏"))
+  // A second line stays clipped from its start while the first is being edited.
+  h.key("end")
+  h.key("return")
+  h.type("z".repeat(200))
+  const rows = h.controller.view().rows.map((row) => row.text)
+  assert(rows.some((text) => /^  …/u.test(text) && text.endsWith("z▏")))
+  assert(rows.some((text) => /^  make setup.*…$/u.test(text)), rows.join("\n"))
 })
 
 test("leaving a field without a change sends nothing", async () => {
@@ -138,71 +193,159 @@ test("leaving a field without a change sends nothing", async () => {
   assert.equal(h.requests.length, 1)
 })
 
-for (const dialog of ["open", "closed", "reopened", "another Project"]) {
-  for (const nextEdit of ["variables", "same script", "original script"]) {
-    test(`autosave keeps a pending ${nextEdit} edit with the dialog ${dialog}`, async () => {
-      const h = harness()
-      await h.open()
-      let firstReply!: (value: unknown) => void
-      let secondReply!: (value: unknown) => void
-      h.replies.push(new Promise((resolve) => { firstReply = resolve }))
-      h.key("down")
-      h.key("return")
-      h.type(" && make test")
-      h.key("escape")
-      assert.equal(h.requests.length, 2)
+test("an edit completed during a pending save is saved at the next revision", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("PORT=3000")
+  h.key("return")
+  h.type("&DEBUG=1")
+  h.controller.dismiss()
+  await h.settle()
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.equal(saves[1].setup.script, "make setup && make test")
+  assert.equal(saves[1].variables, "PORT=3000&DEBUG=1")
+  assert(h.text().includes("PORT=3000&DEBUG=1"))
+  assert(!h.text().includes("Unsaved"))
+})
 
-      if (nextEdit === "variables") h.key("down")
-      h.key("return")
-      if (nextEdit === "original script") {
-        for (let i = 0; i < " && make test".length; i++) h.key("backspace")
-      } else h.type(nextEdit === "variables" ? "&DEBUG=1" : " && make lint")
-      h.key("escape")
-      assert.equal(h.requests.length, 2, "the second save waits for the first revision")
+test("a revision conflict stops queued autosaves and keeps both drafts for an explicit retry", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("PORT=3000")
+  h.key("return")
+  h.type("&DEBUG=1")
+  h.controller.dismiss()
+  await h.settle()
+  const changedElsewhere = environment({ revision: 3, setup: { script: "remote setup" }, variables: "PORT=4000" })
+  finishSave({ ProjectEnvironmentConflict: { environment: changedElsewhere } })
+  await h.settle()
+  const saves = () => h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves().length, 1, "a queued edit must not overwrite the conflicting revision")
+  assert.equal(h.controller.view().message, "Changed elsewhere")
+  assert(h.text().includes("make setup && make test"))
+  assert(h.text().includes("PORT=3000&DEBUG=1"))
+  assert(h.text().includes("Unsaved"))
 
-      if (dialog !== "open") {
-        h.key("escape")
-        assert.equal(h.controller.isOpen(), false)
-        if (dialog === "reopened") await h.controller.open("project-1")
-        else if (dialog === "another Project") {
-          h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", setup: { script: "other setup" } }) } })
-          await h.controller.open("project-2")
-        }
-      }
+  // A later explicit edit may retry against the revision the conflict returned.
+  h.focusOn("PORT=3000&DEBUG=1")
+  h.key("return")
+  h.type("&RETRY=1")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1&RETRY=1" }) } })
+  h.controller.dismiss()
+  await h.settle()
+  assert.equal(saves().length, 2)
+  assert.equal(saves()[1].expectedRevision, 3)
+  assert.equal(saves()[1].variables, "PORT=3000&DEBUG=1&RETRY=1")
+  assert(!h.text().includes("Unsaved"))
+})
 
-      const expectedScript = nextEdit === "variables" ? "make setup && make test"
-        : nextEdit === "same script" ? "make setup && make test && make lint" : "make setup"
-      const expectedVariables = nextEdit === "variables" ? "PORT=3000&DEBUG=1" : "PORT=3000"
-      h.replies.push(new Promise((resolve) => { secondReply = resolve }))
-      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
-      await h.settle()
-      if (dialog !== "another Project") {
-        assert(h.text().includes(expectedScript), "the first reply keeps newer script text")
-        assert(h.text().includes(expectedVariables), "the first reply keeps newer variables")
-      } else assert(h.text().includes("other setup"), "the first Project cannot overwrite the second")
-      const expectedRequests = dialog === "another Project" ? 4 : 3
-      assert.equal(h.requests.length, expectedRequests, "a follow-up save sends the retained edit")
-      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment, {
-        projectId: "project-1", expectedRevision: 3, setup: { script: expectedScript }, variables: expectedVariables,
-        secrets: [{ name: "API_KEY" }, { name: "DB_URL" }], files: [{ path: ".env.local" }, { path: "certs/dev.pem" }],
-      })
-      if (dialog !== "another Project") assert(h.text().includes("Unsaved"), "the newer edit waits for its own acknowledgement")
-      secondReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables }) } })
-      await h.settle()
-      assert(!h.text().includes("Unsaved"))
-      assert.equal(h.requests.length, expectedRequests)
-      const saved = environment({ revision: 4, setup: { script: expectedScript }, variables: expectedVariables })
-      if (dialog !== "open") {
-        h.controller.close()
-        h.replies.push({ ProjectEnvironment: { environment: saved } })
-        await h.controller.open("project-1")
-        assert(h.text().includes(expectedScript))
-        assert(h.text().includes(expectedVariables))
-        assert(!h.text().includes("Unsaved"))
-      }
-    })
-  }
-}
+test("closing the dialog flushes an edit queued behind a pending save", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("PORT=3000")
+  h.key("return")
+  h.type("&DEBUG=1")
+  h.controller.dismiss()
+  await h.settle()
+  h.controller.dismiss()
+  assert.equal(h.controller.isOpen(), false)
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.equal(saves[1].setup.script, "make setup && make test")
+  assert.equal(saves[1].variables, "PORT=3000&DEBUG=1")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  await h.controller.open("project-1")
+  assert(h.text().includes("PORT=3000&DEBUG=1"))
+  assert(!h.text().includes("Unsaved"))
+})
+
+test("a queued save stays with its Project when another Project opens", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("PORT=3000")
+  h.key("return")
+  h.type("&DEBUG=1")
+  h.controller.dismiss()
+  await h.settle()
+  h.controller.dismiss()
+  assert.equal(h.controller.isOpen(), false)
+  h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", setup: { script: "other project" } }) } })
+  await h.controller.open("project-2")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].projectId, "project-1")
+  assert.equal(saves[1].expectedRevision, 3)
+  assert(h.text().includes("other project"), "the old save never replaces the new Project")
+  assert.equal(saves[1].setup.script, "make setup && make test")
+  assert.equal(saves[1].variables, "PORT=3000&DEBUG=1")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, variables: "PORT=3000&DEBUG=1" }) } })
+  await h.controller.open("project-1")
+  assert(h.text().includes("PORT=3000&DEBUG=1"))
+  assert(!h.text().includes("Unsaved"))
+})
+
+test("restoring the original text while a save is pending queues the restoration", async () => {
+  const h = harness()
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type("!")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("make setup!")
+  h.key("return")
+  h.key("backspace")
+  h.controller.dismiss()
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4 }) } })
+  finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup!" } }) } })
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1]!.SaveProjectEnvironment.setup.script, "make setup")
+  assert(!h.text().includes("Unsaved"))
+})
 
 test("a stale revision reloads the record and keeps the typed text for another save", async () => {
   const h = harness()
@@ -250,6 +393,82 @@ test("adding a secret saves the name, then sends the masked value to the Vault w
   assert.deepEqual(h.requests.at(-1), { SetProjectEnvironmentSecret: { projectId: "project-1", name: "NEW_TOKEN", value: "hunter2-secret" } })
   assert.match(h.text(), /NEW_TOKEN\s+In Vault/)
   assert(!JSON.stringify(h.controller.view()).includes("hunter2"))
+})
+
+/** Adds NEW_TOKEN in the open dialog and returns the reply of its pending Save. */
+async function addSecretNameWithPendingSave(h: ReturnType<typeof harness>) {
+  let finishSave: (value: unknown) => void = () => {}
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.key("return")
+  await h.settle()
+  return (revision: number) => finishSave({ ProjectEnvironmentSaved: { environment: environment({ revision, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] }) } })
+}
+
+test("a Secret name saved after its dialog closed does not open the value prompt in another Project", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2", secrets: [{ name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-2")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), `the prompt follows the Project the name was typed in\n${h.text()}`)
+  assert.ok(h.requests.every((request) => !request.SetProjectEnvironmentSecret))
+  // The save itself finished against its own Project.
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment({ revision: 3, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-1")
+  assert.match(h.text(), /NEW_TOKEN/)
+  assert.ok(!/Value/.test(h.text()))
+})
+
+test("a Secret name saved after the dialog moved to another kernel does not open the value prompt there", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: environment({ secrets: [{ name: "NEW_TOKEN", presence: "missing" }] }) } })
+  await h.controller.open("project-1")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), `the prompt follows the kernel the name was typed on\n${h.text()}`)
+  assert.ok(b.requests.every((request) => !request.SetProjectEnvironmentSecret && !request.SaveProjectEnvironment))
+})
+
+test("a Secret name saved after the dialog was closed and reopened for the same Project does not open the value prompt", async () => {
+  const h = harness()
+  await h.open()
+  const finish = await addSecretNameWithPendingSave(h)
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.controller.open("project-1")
+  finish(3)
+  await h.settle()
+  assert.ok(!/Value/.test(h.text()), h.text())
+})
+
+test("a failed Save does not put its reason into a dialog opened after it", async () => {
+  const h = harness()
+  await h.open()
+  let fail: (error: Error) => void = () => {}
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.replies.push(() => new Promise((_resolve, reject) => { fail = reject }))
+  h.controller.dismiss()
+  await h.settle()
+  h.key("escape")
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.controller.open("project-1")
+  fail(new Error("kernel request timed out"))
+  await h.settle()
+  assert.equal(h.controller.view().message ?? null, null)
 })
 
 test("a Vault failure shows in the dialog and drops the typed value", async () => {
@@ -306,7 +525,171 @@ test("adding a file path saves it", async () => {
   assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment.files.at(-1), { path: "config/local.json" })
 })
 
-test("Run setup starts an operation, polls once a second and shows the output tail", async () => {
+// A list entry completed while a text save is pending belongs to the next save, like the text does.
+async function pendingTextSave(h: ReturnType<typeof harness>) {
+  await h.open()
+  let finishSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  return (reply: unknown = { ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } }) => finishSave(reply)
+}
+
+test("a secret name completed during a pending save is saved after it and then asks for its value", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.key("return")
+  await h.settle()
+  const saved = environment({ revision: 4, setup: { script: "make setup && make test" }, secrets: [...environment().secrets, { name: "NEW_TOKEN", presence: "missing" }] })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: saved } })
+  finishTextSave()
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.deepEqual(saves[1].secrets, [{ name: "API_KEY" }, { name: "DB_URL" }, { name: "NEW_TOKEN" }])
+  assert.match(h.text(), /NEW_TOKEN\s+Value /)
+})
+
+test("a file path completed during a pending save is saved after it", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add file")
+  h.key("return")
+  h.type("config/local.json")
+  h.key("return")
+  await h.settle()
+  const saved = environment({ revision: 4, setup: { script: "make setup && make test" }, files: [...environment().files, { path: "config/local.json", presence: "missing", sizeBytes: null }] })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: saved } })
+  finishTextSave()
+  await h.settle()
+  const saves = h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+  assert.equal(saves.length, 2)
+  assert.equal(saves[1].expectedRevision, 3)
+  assert.deepEqual(saves[1].files.at(-1), { path: "config/local.json" })
+  assert.equal(saves[1].setup.script, "make setup && make test")
+})
+
+const savesOf = (h: ReturnType<typeof harness>) => h.requests.filter((request) => request.SaveProjectEnvironment).map((request) => request.SaveProjectEnvironment)
+const changedElsewhere = () => ({ ProjectEnvironmentConflict: { environment: environment({ revision: 5, setup: { script: "remote setup" }, variables: "PORT=4000" }) } })
+
+// An explicit later edit retries; every completed list entry that never reached the kernel goes with it.
+async function retryAfterConflict(h: ReturnType<typeof harness>) {
+  h.focusOn("PORT=4000")
+  h.key("return")
+  h.type("&RETRY=1")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 6 }) } })
+  h.controller.dismiss()
+  await h.settle()
+  return savesOf(h).at(-1)
+}
+
+test("a secret name completed during a pending save survives a conflict of that save and goes with the next explicit save", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.key("return")
+  await h.settle()
+  finishTextSave(changedElsewhere())
+  await h.settle()
+  assert.equal(savesOf(h).length, 1, "a conflict pauses automatic retries")
+  assert.equal(h.controller.view().message, "Changed elsewhere")
+  const retry = await retryAfterConflict(h)
+  assert.equal(savesOf(h).length, 2)
+  assert.equal(retry.expectedRevision, 5)
+  assert.deepEqual(retry.secrets, [{ name: "API_KEY" }, { name: "DB_URL" }, { name: "NEW_TOKEN" }])
+})
+
+test("a file path completed during a pending save survives a conflict of that save and goes with the next explicit save", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add file")
+  h.key("return")
+  h.type("config/local.json")
+  h.key("return")
+  await h.settle()
+  finishTextSave(changedElsewhere())
+  await h.settle()
+  assert.equal(savesOf(h).length, 1)
+  const retry = await retryAfterConflict(h)
+  assert.equal(retry.expectedRevision, 5)
+  assert.deepEqual(retry.files.at(-1), { path: "config/local.json" })
+})
+
+test("list entries whose own queued save conflicts are kept for the next explicit save", async () => {
+  const h = harness()
+  const finishTextSave = await pendingTextSave(h)
+  h.focusOn("+ Add secret")
+  h.key("return")
+  h.type("NEW_TOKEN")
+  h.key("return")
+  h.focusOn("+ Add file")
+  h.key("return")
+  h.type("config/local.json")
+  h.key("return")
+  await h.settle()
+  h.replies.push(changedElsewhere())
+  finishTextSave()
+  await h.settle()
+  assert.equal(savesOf(h).length, 2, "the queued entries went out once")
+  const retry = await retryAfterConflict(h)
+  assert.equal(savesOf(h).length, 3)
+  assert.deepEqual(retry.secrets.at(-1), { name: "NEW_TOKEN" })
+  assert.deepEqual(retry.files.at(-1), { path: "config/local.json" })
+})
+
+test("a file path whose own save conflicts is kept for the next explicit save", async () => {
+  const h = harness()
+  await h.open()
+  h.focusOn("+ Add file")
+  h.key("return")
+  h.type("config/local.json")
+  h.replies.push(changedElsewhere())
+  h.key("return")
+  await h.settle()
+  assert.equal(h.controller.view().message, "Changed elsewhere")
+  const retry = await retryAfterConflict(h)
+  assert.deepEqual(retry.files.at(-1), { path: "config/local.json" })
+})
+
+test("restoring text acknowledged by an earlier overlapping save keeps the final text", async () => {
+  const h = harness()
+  await h.open()
+  let firstSave!: (value: unknown) => void
+  h.replies.push(() => new Promise((resolve) => { firstSave = resolve }))
+  h.focusOn("make setup")
+  h.key("return")
+  h.type("2")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("make setup2")
+  h.key("return")
+  h.type("3")
+  h.controller.dismiss()
+  await h.settle()
+  h.focusOn("make setup23")
+  h.key("return")
+  h.key("backspace")
+  h.key("backspace")
+  h.controller.dismiss()
+  firstSave({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup2" } }) } })
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup" } }) } })
+  await h.settle()
+  assert.equal(savesOf(h).length, 2)
+  assert.equal(savesOf(h)[1].setup.script, "make setup")
+  assert(h.text().includes("make setup"))
+  assert(!h.text().includes("make setup2"))
+})
+
+test("Run setup starts an operation, follows it with held reads and shows the output tail", async () => {
   const h = harness()
   await h.open()
   h.replies.push({ EnvironmentOperation: { operation: operation() } })
@@ -316,39 +699,35 @@ test("Run setup starts an operation, polls once a second and shows the output ta
   assert.deepEqual(h.requests[1], { RunProjectEnvironmentSetup: { projectId: "project-1", operationId: "op-1" } })
   assert.match(h.text(), /Miguel's Mac · Running\s+Stop/)
   assert(h.text().includes("  installing"))
-  assert.deepEqual(h.scheduled.map((entry) => entry.delayMs), [1000])
+  assert.deepEqual(h.requests.find((request) => request.GetEnvironmentOperation), { GetEnvironmentOperation: { operationId: "op-1", waitAfterUpdates: 0 } }, "the run is followed by a held read")
+  assert.deepEqual(h.scheduled, [], "nothing is polled on a timer")
 
-  h.replies.push({ EnvironmentOperation: { operation: operation({ outputTail: "installing\ncompiling\n" }) } })
-  h.scheduled.shift()!.callback()
-  await h.settle()
-  assert.deepEqual(h.requests.at(-1), { GetEnvironmentOperation: { operationId: "op-1" } })
+  await h.release({ EnvironmentOperation: { operation: operation({ updates: 1, outputTail: "installing\ncompiling\n" }) } })
   assert(h.text().includes("  compiling"))
-  assert.deepEqual(h.scheduled.map((entry) => entry.delayMs), [1000])
+  assert.deepEqual(h.requests.at(-1), { GetEnvironmentOperation: { operationId: "op-1", waitAfterUpdates: 1 } })
 
-  h.replies.push({ EnvironmentOperation: { operation: operation({ state: "succeeded", endedAtMs: NOW + 5, exitCode: 0, outputTail: "installing\ncompiling\ndone\n" }) } })
   h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "ok", operationId: "op-1", endedAtMs: NOW + 5 } }) } })
-  h.scheduled.shift()!.callback()
-  await h.settle()
+  await h.release({ EnvironmentOperation: { operation: operation({ state: "succeeded", updates: 2, endedAtMs: NOW + 5, exitCode: 0, outputTail: "installing\ncompiling\ndone\n" }) } })
   assert.deepEqual(h.requests.at(-1), { GetProjectEnvironment: { projectId: "project-1" } })
   assert.match(h.text(), /Setup ran just now\s+Run setup/)
-  assert.equal(h.scheduled.length, 0)
+  assert.equal(h.held.length, 0)
 })
 
 test("Stop cancels the running operation and the record shows cancelled", async () => {
   const running = environment({ setupState: { state: "running", operationId: "op-9", startedAtMs: NOW } })
   const h = harness(running)
-  await h.open()
-  assert.deepEqual(h.scheduled.map((entry) => entry.delayMs), [1000])
+  await h.open({ EnvironmentOperation: { operation: operation({ operationId: "op-9" }) } })
+  await h.settle()
+  assert.deepEqual(h.requests.at(-1), { GetEnvironmentOperation: { operationId: "op-9", waitAfterUpdates: 0 } })
   h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-9", state: "cancelled", endedAtMs: NOW + 1 }) } })
   h.replies.push({ ProjectEnvironment: { environment: environment({ setupState: { state: "cancelled", operationId: "op-9", endedAtMs: NOW + 1 } }) } })
   h.key("return")
   await h.settle()
-  assert.deepEqual(h.requests[1], { CancelEnvironmentOperation: { operationId: "op-9" } })
+  assert.deepEqual(h.requests.find((request) => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: "op-9" } })
   assert.match(h.text(), /Setup cancelled just now\s+Run setup/)
-  h.replies.push(operation())
-  h.scheduled.shift()!.callback()
-  await h.settle()
-  assert.equal(h.requests.length, 3, "a stopped poll sends nothing")
+  const sent = h.requests.length
+  await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-9", state: "cancelled", updates: 1 }) } })
+  assert.equal(h.requests.length, sent, "a stopped follow sends nothing more")
 })
 
 test("a failed run shows the reason under the script", async () => {
@@ -418,40 +797,494 @@ test("a reopened dialog shows the output of the last finished run once", async (
   assert.equal(h.scheduled.length, 0, "a finished run is not polled")
 })
 
-// MP-08 / MP-09 / MP-10 / MP-11: row edits wait for the acknowledged revision.
-for (const section of ["secret", "file"] as const) {
-  for (const edit of ["add", "remove"] as const) {
-    test(`a pending text save retains a ${section} row ${edit}`, async () => {
-      const h = harness()
-      await h.open()
-      let firstReply!: (value: unknown) => void
-      h.replies.push(new Promise(resolve => { firstReply = resolve }))
-      h.key("down")
-      h.key("return")
-      h.type(" && make test")
-      h.key("escape")
-      assert.equal(h.requests.length, 2)
-      const value = section === "secret" ? "NEW_KEY" : "config/local.json"
-      if (edit === "add") {
-        h.focusOn(section === "secret" ? "+ Add secret" : "+ Add file")
-        h.key("return")
-        h.type(value)
-        h.key("return")
-        assert(h.text().includes(value), "the entered name stays visible while its save is queued")
-      } else {
-        h.focusOn(section === "secret" ? "DB_URL" : ".env.local")
-        h.key("x")
-      }
-      assert.equal(h.requests.length, 2, "row saves wait for the first revision")
-      const secrets = edit === "add" ? [...environment().secrets, { name: value, presence: "missing" as const }] : environment().secrets.slice(0, 1)
-      const files = edit === "add" ? [...environment().files, { path: value, presence: "missing" as const, sizeBytes: null }] : environment().files.slice(1)
-      h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 4, setup: { script: "make setup && make test" }, ...(section === "secret" ? { secrets } : { files }) }) } })
-      firstReply({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup && make test" } }) } })
+const MAC = [{ id: "kernel-mac", label: "Miguel's Mac" }]
+const importOperation = (patch: Partial<EnvironmentOperationView> = {}) => operation({ operationId: "op-1", kind: "import", sourceLabel: "Miguel's Mac", outputTail: "", ...patch })
+
+for (const checkFinishesFirst of [true, false]) {
+  test(`Update and Check both finish when ${checkFinishesFirst ? "Check" : "Update"} finishes first`, async () => {
+    const h = harness(environment(), [{ id: "kernel-mac", label: "Miguel's Mac" }])
+    await h.open()
+    h.replies.push({ EnvironmentOperation: { operation: importOperation() } })
+    h.focusOn("Update")
+    h.key("return")
+    await h.settle()
+    h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-2", kind: "check", outputTail: "" }) } })
+    h.key("c")
+    await h.settle()
+    assert.equal(h.held.length, 2)
+    const updateRead = h.held.shift()!
+    const checkRead = h.held.shift()!
+    const finishUpdate = async () => {
+      h.replies.push({ ProjectEnvironment: { environment: environment() } })
+      updateRead({ EnvironmentOperation: { operation: importOperation({ state: "succeeded", updates: 1, endedAtMs: NOW + 1 }) } })
       await h.settle()
-      assert.equal(h.requests.length, 3, "the queued row edit is submitted")
-      assert.equal(h.requests.at(-1)!.SaveProjectEnvironment.expectedRevision, 3)
-      assert.deepEqual(h.requests.at(-1)!.SaveProjectEnvironment[section === "secret" ? "secrets" : "files"], section === "secret" ? secrets.map(({ name }) => ({ name })) : files.map(({ path }) => ({ path })))
-      if (section === "secret" && edit === "add") assert.match(h.text(), /NEW_KEY\s+Value ▏/)
+    }
+    const finishCheck = async () => {
+      h.replies.push({ ProjectEnvironment: { environment: environment() } })
+      checkRead({ EnvironmentOperation: { operation: operation({ operationId: "op-2", kind: "check", state: "succeeded", updates: 1, endedAtMs: NOW + 1, outputTail: "" }) } })
+      await h.settle()
+    }
+    if (checkFinishesFirst) { await finishCheck(); await finishUpdate() }
+    else { await finishUpdate(); await finishCheck() }
+    h.replies.push({ EnvironmentOperation: { operation: importOperation({ operationId: "op-3", state: "succeeded" }) } })
+    h.focusOn("Update")
+    h.key("return")
+    await h.settle()
+    assert.equal(h.requests.filter((request) => request.ImportProjectEnvironmentEntries).length, 2, "a finished Update must allow the next one")
+    assert(!h.text().includes("Running"))
+  })
+}
+
+test("Update and Import here are offered only when the user has another kernel", async () => {
+  const alone = harness()
+  await alone.open()
+  assert.doesNotMatch(alone.text(), /Update/)
+  alone.focusOn(".env.local")
+  assert.doesNotMatch(alone.controller.view().hint, /import/i)
+  alone.key("i")
+  await alone.settle()
+  assert.equal(alone.requests.length, 1, "no import without a source")
+
+  const two = harness(environment(), MAC)
+  await two.open()
+  await two.settle()
+  assert.match(two.text(), /Update from Miguel's Mac\s+Update/)
+  two.focusOn(".env.local")
+  assert.match(two.controller.view().hint, /I import here/)
+  two.focusOn("API_KEY")
+  assert.doesNotMatch(two.controller.view().hint, /import here/i, "a row this machine has is not imported")
+})
+
+test("Import here sends the focused missing entry to the chosen kernel and the row follows it from importing to imported", async () => {
+  const h = harness(environment(), MAC)
+  await h.open()
+  await h.settle()
+  h.focusOn("DB_URL")
+  const importing = importOperation({ entries: [{ kind: "secret", name: "DB_URL", state: "importing", reason: null }] })
+  h.replies.push({ EnvironmentOperation: { operation: importing } })
+  h.key("i")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac", entries: [{ kind: "secret", name: "DB_URL" }] } })
+  assert.match(h.text(), /DB_URL\s+Importing from Miguel's Mac/)
+  assert.match(h.text(), /Updating from Miguel's Mac · 0 of 1\s+Stop/)
+  assert.deepEqual(h.requests.at(-1), { GetEnvironmentOperation: { operationId: "op-1", waitAfterUpdates: 0 } })
+  h.key("i")
+  await h.settle()
+  assert.equal(h.requests.filter((request) => request.ImportProjectEnvironmentEntries).length, 1, "no second import while one runs")
+
+  h.replies.push({ ProjectEnvironment: { environment: environment({ secrets: [{ name: "API_KEY", presence: "present" }, { name: "DB_URL", presence: "present" }] }) } })
+  await h.release({ EnvironmentOperation: { operation: importOperation({ state: "succeeded", updates: 3, endedAtMs: NOW + 1, entries: [{ kind: "secret", name: "DB_URL", state: "imported", reason: null }] }) } })
+  assert.match(h.text(), /DB_URL\s+Imported from Miguel's Mac/)
+  assert.match(h.text(), /Update from Miguel's Mac\s+Update/)
+  assert.equal(h.controller.view().rows.find((row) => row.text.includes("DB_URL"))?.tone, "text")
+})
+
+test("A registered MCP this machine lacks reads Missing here, I imports it from the chosen kernel and the row follows", async () => {
+  const h = harness(environment({
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "registration" }, presence: "missing" }],
+    skills: [{ name: "dataviz", source: { kind: "registration" }, presence: "present" }],
+  }), MAC)
+  await h.open()
+  await h.settle()
+  assert.match(h.text(), /notion\s+Missing here/)
+  assert.match(h.text(), /dataviz\s+Registered/)
+  h.focusOn("github")
+  h.key("i")
+  await h.settle()
+  assert.equal(h.requests.filter((request) => request.ImportProjectEnvironmentEntries).length, 0, "a project file is Git's: nothing to import")
+  h.focusOn("notion")
+  assert.match(h.controller.view().hint, /I import here/)
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ entries: [{ kind: "mcp", name: "notion", state: "importing", reason: null }] }) } })
+  h.key("i")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac", entries: [{ kind: "mcp", name: "notion" }] } })
+  assert.match(h.text(), /notion\s+Importing from Miguel's Mac/)
+})
+
+test("Update brings every missing entry, shows n of m, and a row that failed says why in the warning tone", async () => {
+  const h = harness(environment(), MAC)
+  await h.open()
+  await h.settle()
+  h.focusOn("Update from")
+  const running = importOperation({ entries: [
+    { kind: "secret", name: "DB_URL", state: "imported", reason: null },
+    { kind: "file", name: ".env.local", state: "pending", reason: null },
+  ] })
+  h.replies.push({ EnvironmentOperation: { operation: running } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac" } })
+  assert.match(h.text(), /Updating from Miguel's Mac · 1 of 2\s+Stop/)
+  assert.match(h.text(), /Run setup/)
+
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.release({ EnvironmentOperation: { operation: importOperation({ state: "succeeded", updates: 4, endedAtMs: NOW + 2, entries: [
+    { kind: "secret", name: "DB_URL", state: "imported", reason: null },
+    { kind: "file", name: ".env.local", state: "failed", reason: "Not on Miguel's Mac" },
+  ] }) } })
+  assert.match(h.text(), /\.env\.local\s+Not on Miguel's Mac/)
+  assert.equal(h.controller.view().rows.find((row) => row.text.includes(".env.local"))?.tone, "warning")
+})
+
+test("Stop ends a running Update and keeps what landed; an Update that reached nothing says why on its row", async () => {
+  const h = harness(environment(), MAC)
+  await h.open()
+  await h.settle()
+  h.focusOn("Update from")
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ entries: [{ kind: "secret", name: "DB_URL", state: "pending", reason: null }] }) } })
+  h.key("return")
+  await h.settle()
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ state: "cancelled", updates: 2, endedAtMs: NOW + 1, entries: [{ kind: "secret", name: "DB_URL", state: "pending", reason: null }] }) } })
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: "op-1" } })
+  assert.match(h.text(), /Update from Miguel's Mac\s+Update/)
+
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ operationId: "op-2", state: "failed", reason: "Source offline", endedAtMs: NOW + 3 }) } })
+  h.key("return")
+  await h.settle()
+  assert.match(h.text(), /Source offline\s+Update/)
+  assert.equal(h.controller.view().rows.find((row) => row.text.includes("Source offline"))?.tone, "warning")
+})
+
+test("with two other kernels M chooses the source", async () => {
+  const h = harness(environment(), [...MAC, { id: "kernel-b3", label: "b3 builder" }])
+  await h.open()
+  await h.settle()
+  assert.match(h.text(), /Update from Miguel's Mac/)
+  assert.match(h.controller.view().hint, /M machine/)
+  h.key("m")
+  assert.match(h.text(), /Update from b3 builder/)
+})
+
+test("a machine without an Environment record offers Update from another kernel and starts the import", async () => {
+  const h = harness(environment({ exists: false, revision: 0, setup: { script: "" }, variables: "", secrets: [], files: [] }), MAC)
+  await h.open()
+  await h.settle()
+  assert.match(h.text(), /Update from Miguel's Mac\s+Update/)
+  assert.match(h.text(), /Draft with agent/)
+  h.focusOn("Update from")
+  h.replies.push({ EnvironmentOperation: { operation: importOperation({ entries: [] }) } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ImportProjectEnvironmentEntries), { ImportProjectEnvironmentEntries: { projectId: "project-1", operationId: "op-1", sourceKernelId: "kernel-mac" } })
+})
+
+test("an Environment that does not exist yet offers Draft with agent; it runs on the kernel and the record follows", async () => {
+  const h = harness(environment({ exists: false, revision: 0, setup: { script: "" }, variables: "", secrets: [], files: [] }))
+  await h.open()
+  assert.match(h.text(), /No Environment for this Project yet\./)
+  h.focusOn("Draft with agent")
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "draft", outputTail: "" }) } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.DraftProjectEnvironment), { DraftProjectEnvironment: { projectId: "project-1", operationId: "op-1" } })
+  assert.match(h.text(), /Drafting with agent\s+Stop/)
+  h.replies.push({ ProjectEnvironment: { environment: environment() } })
+  await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "draft", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
+  assert.match(h.text(), /Check if up to date with agent/)
+  assert.doesNotMatch(h.text(), /No Environment/)
+})
+
+test("a draft that fails says why under the button, which stays", async () => {
+  const h = harness(environment({ exists: false, revision: 0, setup: { script: "" }, variables: "", secrets: [], files: [] }))
+  await h.open()
+  h.focusOn("Draft with agent")
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "draft", state: "failed", reason: "The agent did not answer with an Environment", endedAtMs: NOW, outputTail: "" }) } })
+  h.key("return")
+  await h.settle()
+  assert.match(h.text(), /The agent did not answer with an Environment/)
+  assert.match(h.text(), /Draft with agent/)
+})
+
+test("Check with agent leaves proposals; Enter accepts one as a Save and X dismisses one", async () => {
+  const proposals = [
+    { id: "a", field: "setup", change: "add", text: "pnpm prisma generate", evidence: { path: "AGENTS.md", excerpt: "run prisma generate" } },
+    { id: "b", field: "secret", change: "add", text: "STRIPE_SECRET_KEY", evidence: { path: ".env.example", excerpt: "STRIPE_SECRET_KEY=" } },
+  ] as const
+  const h = harness()
+  await h.open()
+  h.focusOn("Check if up to date")
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", outputTail: "" }) } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.CheckProjectEnvironment), { CheckProjectEnvironment: { projectId: "project-1", operationId: "op-1", withAgent: true } })
+  assert.match(h.text(), /Checking with agent\s+Stop/)
+  h.replies.push({ ProjectEnvironment: { environment: environment({ proposals }) } })
+  await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
+  assert.match(h.text(), /\+ pnpm prisma generate\s+Proposed · AGENTS\.md/)
+  assert.match(h.text(), /\+ STRIPE_SECRET_KEY\s+Proposed · \.env\.example/)
+
+  h.focusOn("pnpm prisma generate")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup\npnpm prisma generate" }, proposals: [proposals[1]] }) } })
+  h.key("return")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.ResolveEnvironmentProposal), { ResolveEnvironmentProposal: { projectId: "project-1", proposalId: "a", accept: true } })
+  assert.doesNotMatch(h.text(), /\+ pnpm prisma generate\s+Proposed/)
+
+  h.focusOn("STRIPE_SECRET_KEY")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, proposals: [] }) } })
+  h.key("x")
+  await h.settle()
+  assert.deepEqual(h.requests.filter((request) => request.ResolveEnvironmentProposal).at(-1), { ResolveEnvironmentProposal: { projectId: "project-1", proposalId: "b", accept: false } })
+  assert.doesNotMatch(h.text(), /Proposed/)
+})
+
+test("MCPs and Skills that project files declare are listed; a missing declaration is a warning and X removes the row", async () => {
+  const h = harness(environment({
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "file", path: ".mcp.json" }, presence: "missing" }],
+    skills: [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" }, presence: "present" }],
+  }))
+  await h.open()
+  assert.match(h.text(), /MCPs\n {2}github\s+In project files\n {2}notion\s+Missing here\nSkills\n {2}dataviz\s+In project files/)
+  assert.equal(h.controller.view().rows.find((row) => row.text.includes("notion"))?.tone, "warning")
+  h.focusOn("notion")
+  h.replies.push({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }] }) } })
+  h.key("x")
+  await h.settle()
+  const save = h.requests.find((request) => request.SaveProjectEnvironment)!.SaveProjectEnvironment
+  assert.deepEqual(save.mcps, [{ name: "github", source: { kind: "file", path: ".mcp.json" } }])
+  assert.deepEqual(save.skills, [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" } }], "the skills are saved as they were")
+})
+
+test("C checks the Project against its own files without an agent, and proposals for an MCP read like the others", async () => {
+  const h = harness()
+  await h.open()
+  assert.match(h.controller.view().hint, /C check/)
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", outputTail: "" }) } })
+  h.key("c")
+  await h.settle()
+  assert.deepEqual(h.requests.find((request) => request.CheckProjectEnvironment), { CheckProjectEnvironment: { projectId: "project-1", operationId: "op-1", withAgent: false } })
+  const proposals = [{ id: "m", field: "mcp", change: "remove", text: "github", evidence: { path: ".mcp.json", excerpt: "file missing" } }] as const
+  h.replies.push({ ProjectEnvironment: { environment: environment({ proposals }) } })
+  await h.release({ EnvironmentOperation: { operation: operation({ operationId: "op-1", kind: "check", state: "succeeded", updates: 2, endedAtMs: NOW + 1, outputTail: "" }) } })
+  assert.match(h.text(), /− github\s+Proposed · \.mcp\.json/)
+})
+
+for (const kind of ["import", "draft", "check"] as const) {
+  for (const stop of [false, true]) {
+    test(`${kind} survives closing and reopening, then ${stop ? "stops the original operation" : "receives its completion"}`, async () => {
+      const initial = environment({ exists: kind !== "draft" })
+      const h = harness(initial, MAC)
+      await h.open()
+      const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+      h.replies.push({ EnvironmentOperation: { operation: running } })
+      if (kind === "check") h.key("c")
+      else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+      await h.settle()
+      const oldRead = h.held.shift()!
+      h.key("escape")
+      assert.equal(h.controller.isOpen(), false)
+      await h.open({ EnvironmentOperation: { operation: running } })
+      await h.settle()
+      assert.match(h.text(), /Stop/, "the original operation retains its Stop action")
+      assert.equal(h.requests.filter(r => r.GetEnvironmentOperation?.operationId === running.operationId && r.GetEnvironmentOperation.waitAfterUpdates === undefined).length, 1, "reopen reads the original operation's current state")
+      const finished = { ...running, state: stop ? "cancelled" : "succeeded", updates: 2, endedAtMs: NOW + 1 }
+      h.replies.push({ ProjectEnvironment: { environment: initial } })
+      if (stop) {
+        h.replies.unshift({ EnvironmentOperation: { operation: finished } })
+        h.focusOn(kind === "import" ? "Stop" : kind === "draft" ? "Drafting" : "Checking")
+        h.key("return")
+        await h.settle()
+        assert.deepEqual(h.requests.find(r => r.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+      } else await h.release({ EnvironmentOperation: { operation: finished } })
+      oldRead({ EnvironmentOperation: { operation: running } })
+      await h.settle()
+      assert.doesNotMatch(h.text(), /Stop/, "a stale read cannot restore the running state")
+      assert.equal(h.requests.filter(r => r.ImportProjectEnvironmentEntries || r.DraftProjectEnvironment || r.CheckProjectEnvironment).length, 1, "no replacement operation starts")
     })
   }
+}
+
+for (const kind of ["import", "draft", "check"] as const) {
+  test(`${kind}'s first reply is retained after closing and opening another Project`, async () => {
+    const initial = environment({ exists: kind !== "draft" })
+    const h = harness(initial, MAC)
+    await h.open()
+    let reply!: (value: unknown) => void
+    const pending = new Promise(resolve => { reply = resolve })
+    h.replies.push(() => pending)
+    if (kind === "check") h.key("c")
+    else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+    await h.settle()
+    h.key("escape")
+    h.replies.push({ ProjectEnvironment: { environment: environment({ projectId: "project-2" }) } })
+    await h.controller.open("project-2")
+    const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+    reply({ EnvironmentOperation: { operation: running } })
+    await h.settle()
+    assert.doesNotMatch(h.text(), /Stop/, "the other Project never adopts the operation")
+    h.key("escape")
+    await h.open({ EnvironmentOperation: { operation: running } })
+    await h.settle()
+    assert.match(h.text(), /Stop/, "the first reply belongs to the original Project")
+    assert.equal(h.requests.filter(r => r.ImportProjectEnvironmentEntries || r.DraftProjectEnvironment || r.CheckProjectEnvironment).length, 1)
+  })
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a save continuation cannot use another dialog's Project.
+for (const sameProject of [false, true]) test(`Setup awaiting Save is abandoned after reopening ${sameProject ? "the same" : "another"} Project`, async () => {
+  const h = harness()
+  await h.open()
+  h.focusOn("make setup"); h.key("return"); h.type("!")
+  h.replies.push(new Error("Save failed"))
+  h.controller.dismiss(); await h.settle()
+  let release!: (value: unknown) => void
+  h.replies.push(() => new Promise(resolve => { release = resolve }))
+  h.focusOn("Run setup"); h.key("return"); await h.settle()
+  h.controller.close()
+  const projectId = sameProject ? "project-1" : "project-2"
+  h.replies.push({ ProjectEnvironment: { environment: environment({ projectId }) } })
+  await h.controller.open(projectId)
+  release({ ProjectEnvironmentSaved: { environment: environment({ revision: 3, setup: { script: "make setup!" } }) } })
+  await h.settle()
+  assert.equal(h.requests.filter(request => request.RunProjectEnvironmentSetup).length, 0, "closing the originating dialog abandons its pending Setup continuation")
+  assert.doesNotMatch(h.text(), /Stop/)
+})
+
+for (const inventory of ["empty", "failed"] as const) test(`a retained Import keeps its progress and keyboard Stop with ${inventory} source discovery`, async () => {
+  let calls = 0
+  const h = harness(environment(), async () => {
+    if (++calls === 1) return MAC
+    if (inventory === "failed") throw Error("Directory unavailable")
+    return []
+  })
+  await h.open()
+  const running = importOperation()
+  h.replies.push({ EnvironmentOperation: { operation: running } })
+  h.focusOn("Update from"); h.key("return"); await h.settle()
+  h.controller.close()
+  await h.open({ EnvironmentOperation: { operation: running } }); await h.settle()
+  assert.match(h.text(), /Updating from .*Stop/)
+  h.focusOn("Updating from")
+  assert.ok(h.controller.view().rows.some(row => row.focused && row.text.includes("Updating from")), "the retained Import is keyboard selectable")
+  h.replies.push({ EnvironmentOperation: { operation: { ...running, state: "cancelled", updates: 2, endedAtMs: NOW + 1 } } }, { ProjectEnvironment: { environment: environment() } })
+  h.key("return"); await h.settle()
+  assert.deepEqual(h.requests.find(request => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+  assert.equal(h.requests.filter(request => request.ImportProjectEnvironmentEntries).length, 1)
+})
+
+// The same Project on two kernels: A holds revision 5 with a machine, a script and secrets; B has revision 1 and nothing set up.
+const onKernelA = (patch: Partial<ProjectEnvironmentView> = {}) => environment({ revision: 5, machineLabel: "Mac A", setup: { script: "make a-setup" }, variables: "A_ONLY=1", ...patch })
+const onKernelB = () => environment({ exists: false, revision: 1, machineLabel: "Mac B", setup: { script: "" }, variables: "", secrets: [], files: [] })
+
+test("switching kernels shows the other kernel's Environment and nothing of the first", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  assert.match(h.text(), /Mac A/)
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  const text = h.text()
+  assert.match(text, /Mac B/)
+  for (const leaked of ["Mac A", "make a-setup", "A_ONLY", "API_KEY", "In Vault"]) assert.ok(!text.includes(leaked), `kernel A's ${leaked} is shown on kernel B\n${text}`)
+  assert.deepEqual(b.requests, [{ GetProjectEnvironment: { projectId: "project-1" } }])
+})
+
+test("retained operations are followed only on the kernel that started them", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  h.replies.push({ EnvironmentOperation: { operation: operation({ operationId: "check-a", kind: "check", outputTail: "" }) } })
+  h.key("c")
+  await h.settle()
+  h.key("escape")
+  const aRequests = h.requests.length
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  await h.settle()
+  assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation), "kernel B was asked for kernel A's operation")
+  assert.equal(h.requests.length, aRequests, "kernel A was read while the terminal is on kernel B")
+  h.key("escape")
+  // Back on A the Check is still its own and is followed again.
+  h.connect(h.a)
+  h.replies.push({ ProjectEnvironment: { environment: onKernelA() } })
+  await h.controller.open("project-1")
+  await h.settle()
+  assert.ok(h.requests.slice(aRequests).some((request) => request.GetEnvironmentOperation?.operationId === "check-a"))
+  assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation))
+})
+
+test("a save started on one kernel completes against that kernel after the switch", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  let finishSave: (value: unknown) => void = () => {}
+  h.replies.push(() => new Promise((resolve) => { finishSave = resolve }))
+  h.focusOn("make a-setup")
+  h.key("return")
+  h.type(" && make test")
+  h.controller.dismiss()
+  await h.settle()
+  h.key("escape")
+  const aRequests = () => h.requests.filter((request) => request.SaveProjectEnvironment)
+  assert.equal(aRequests().length, 1)
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  finishSave({ ProjectEnvironmentSaved: { environment: onKernelA({ revision: 6, setup: { script: "make a-setup && make test" } }) } })
+  await h.settle()
+  assert.equal(aRequests().length, 1)
+  assert.ok(b.requests.every((request) => !request.SaveProjectEnvironment), "the save reached kernel B")
+  assert.match(h.text(), /Mac B/)
+  assert.ok(!h.text().includes("make a-setup"), h.text())
+})
+
+test("returning to a kernel shows its own Environment again", async () => {
+  const h = harness(onKernelA())
+  await h.open()
+  h.key("escape")
+  const b = h.kernel()
+  h.connect(b)
+  b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+  await h.controller.open("project-1")
+  h.key("escape")
+  h.connect(h.a)
+  h.replies.push({ ProjectEnvironment: { environment: onKernelA() } })
+  await h.controller.open("project-1")
+  assert.match(h.text(), /Mac A/)
+  assert.match(h.text(), /make a-setup/)
+  assert.ok(!h.text().includes("Mac B"), h.text())
+})
+
+// The Waiting Room opens a new connection each time it returns to a kernel; the kernel is the same.
+for (const kind of ["import", "draft", "check"] as const) {
+  test(`${kind} on kernel A survives a switch to B and a return to A through a new connection, and Stop ends the original ID there`, async () => {
+    const initial = environment({ exists: kind !== "draft" })
+    const h = harness(initial, MAC)
+    await h.open()
+    const running = kind === "import" ? importOperation() : operation({ kind, outputTail: "" })
+    h.replies.push({ EnvironmentOperation: { operation: running } })
+    if (kind === "check") h.key("c")
+    else { h.focusOn(kind === "import" ? "Update from" : "Draft with agent"); h.key("return") }
+    await h.settle()
+    h.key("escape")
+    const b = h.kernel("B")
+    h.connect(b)
+    b.replies.push({ ProjectEnvironment: { environment: onKernelB() } })
+    await h.controller.open("project-1")
+    await h.settle()
+    assert.doesNotMatch(h.text(), /Stop|Updating from|Drafting|Checking/, "kernel B shows nothing of kernel A's operation")
+    assert.ok(b.requests.every((request) => !request.GetEnvironmentOperation), "kernel B was asked for kernel A's operation")
+    h.key("escape")
+    const a2 = h.kernel("A")
+    h.connect(a2)
+    a2.replies.push({ ProjectEnvironment: { environment: initial } }, { EnvironmentOperation: { operation: running } })
+    await h.controller.open("project-1")
+    await h.settle()
+    assert.match(h.text(), /Stop/, "the original operation keeps its progress and Stop")
+    assert.ok(a2.requests.some((request) => request.GetEnvironmentOperation?.operationId === running.operationId), "the new connection to A follows the original operation")
+    a2.replies.push({ EnvironmentOperation: { operation: { ...running, state: "cancelled", updates: 2, endedAtMs: NOW + 1 } } }, { ProjectEnvironment: { environment: initial } })
+    h.focusOn(kind === "import" ? "Stop" : kind === "draft" ? "Drafting" : "Checking")
+    h.key("return")
+    await h.settle()
+    assert.deepEqual(a2.requests.find((request) => request.CancelEnvironmentOperation), { CancelEnvironmentOperation: { operationId: running.operationId } })
+    assert.ok(b.requests.every((request) => !request.CancelEnvironmentOperation))
+    const starts = [...h.requests, ...a2.requests, ...b.requests].filter((request) => request.ImportProjectEnvironmentEntries || request.DraftProjectEnvironment || request.CheckProjectEnvironment)
+    assert.equal(starts.length, 1, "no replacement operation starts")
+  })
 }

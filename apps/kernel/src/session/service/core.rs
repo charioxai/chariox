@@ -62,7 +62,11 @@ impl SessionService {
         if let Some(alias) = alias.as_deref() {
             self.ensure_alias_available(&request.workspace_id, alias)?;
         }
-        let project_id = if request.hidden {
+        let project_id = if request.hidden
+            && !matches!(
+                &request.project_selection,
+                SessionProjectSelection::Existing { .. }
+            ) {
             None
         } else {
             Some(self.resolve_project_selection(&request)?)
@@ -264,9 +268,7 @@ impl SessionService {
             session.note_activity_at(held.last_activity_at_ms());
         }
         session.purge_unsupported_workflow_publications();
-        if session.is_hidden() {
-            session.clear_project_id_for_hidden_restore();
-        } else if session.project_id().is_empty() {
+        if !session.is_hidden() && session.project_id().is_empty() {
             let project_id = self.ensure_default_project(
                 session.owner_user_id(),
                 session.workspace_id(),
@@ -274,7 +276,7 @@ impl SessionService {
             );
             let assigned = session.assign_project_id(project_id);
             debug_assert!(assigned);
-        } else if !self.projects.contains_key(session.project_id()) {
+        } else if !session.is_hidden() && !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
                 &default_project_name(session.workspace_id()),
@@ -698,7 +700,8 @@ impl SessionService {
                         ),
                     ));
                 }
-                if !project.contains_workspace(&request.workspace_id) {
+                // A hidden lease uses the Project without registering its synthetic workspace.
+                if !request.hidden && !project.contains_workspace(&request.workspace_id) {
                     let mut workspaces = project.workspace_ids().to_vec();
                     workspaces.push(request.workspace_id.clone());
                     let workspaces = normalize_project_workspace_ids(workspaces)?;

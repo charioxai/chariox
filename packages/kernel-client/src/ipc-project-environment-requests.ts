@@ -1,12 +1,15 @@
 import type {
   EnvironmentEntryRef,
+  EnvironmentExtension,
   EnvironmentOperationView,
+  EnvironmentExtensionSource,
+  ProjectEnvironmentExtension,
   ProjectEnvironmentView,
   SetupState,
 } from "./kernel-types-project-environment.js"
 
-// Protocol 973 carries the Environment requests including Import and Draft; older kernels answer an unknown-variant error.
-export const projectEnvironmentMinimumProtocolVersion = 973
+// Protocol 982 carries the Environment requests including Import, Draft, held operation reads and MCPs and Skills; older kernels answer an unknown-variant error.
+export const projectEnvironmentMinimumProtocolVersion = 982
 
 export type SaveProjectEnvironmentInput = {
   readonly projectId: string
@@ -15,6 +18,9 @@ export type SaveProjectEnvironmentInput = {
   readonly variables: string
   readonly secretNames: readonly string[]
   readonly filePaths: readonly string[]
+  /** MCP servers and skills that project files declare, each with the file that does. */
+  readonly mcps: readonly EnvironmentExtension[]
+  readonly skills: readonly EnvironmentExtension[]
 }
 
 export function getProjectEnvironmentRequest(projectId: string, checkoutPath?: string) {
@@ -30,6 +36,8 @@ export function saveProjectEnvironmentRequest(input: SaveProjectEnvironmentInput
       variables: input.variables,
       secrets: input.secretNames.map((name) => ({ name })),
       files: input.filePaths.map((path) => ({ path })),
+      mcps: input.mcps.map(({ name, source }) => ({ name, source })),
+      skills: input.skills.map(({ name, source }) => ({ name, source })),
     },
   } as const
 }
@@ -66,9 +74,9 @@ export function draftProjectEnvironmentRequest(projectId: string, operationId: s
   return { DraftProjectEnvironment: { projectId, operationId } } as const
 }
 
-/** An idle agent of the Project on this kernel compares its files with the saved Environment and proposes changes. */
-export function checkProjectEnvironmentRequest(projectId: string, operationId: string) {
-  return { CheckProjectEnvironment: { projectId, operationId } } as const
+/** The kernel compares what the Project's files declare with the saved Environment and proposes changes; with `withAgent` an idle agent of the Project adds its own. */
+export function checkProjectEnvironmentRequest(projectId: string, operationId: string, withAgent: boolean) {
+  return { CheckProjectEnvironment: { projectId, operationId, withAgent } } as const
 }
 
 /** Accept applies the proposal as a Save; dismissing keeps it from being proposed again. */
@@ -86,8 +94,9 @@ export function remoteEnvironmentOperationRequest(operationId: string, targetKer
   return { RemoteEnvironmentOperation: { operationId, targetKernelId, ...(stop ? { stop } : {}) } } as const
 }
 
-export function getEnvironmentOperationRequest(operationId: string) {
-  return { GetEnvironmentOperation: { operationId } } as const
+/** With `waitAfterUpdates` the kernel holds the answer until the operation has more updates than that, or has ended. */
+export function getEnvironmentOperationRequest(operationId: string, waitAfterUpdates?: number) {
+  return { GetEnvironmentOperation: { operationId, ...(waitAfterUpdates === undefined ? {} : { waitAfterUpdates }) } } as const
 }
 
 export function cancelEnvironmentOperationRequest(operationId: string) {
@@ -181,6 +190,23 @@ function nullableInteger(source: Json, key: string, what: string): number | null
   return value
 }
 
+function extensionSource(row: Json): EnvironmentExtensionSource {
+  const what = "Environment extension source"
+  const source = field(row, "source", "Environment extension")
+  if (!isRecord(source)) throw new Error(`${what} must be an object`)
+  return oneOf(source, "kind", ["file", "registration"], what) === "file"
+    ? { kind: "file", path: text(source, "path", what) }
+    : { kind: "registration" }
+}
+
+function extensionView(row: Json): ProjectEnvironmentExtension {
+  return {
+    name: text(row, "name", "Environment extension"),
+    source: extensionSource(row),
+    presence: oneOf(row, "presence", ["present", "missing"], "Environment extension"),
+  }
+}
+
 export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentView {
   const what = "Project Environment"
   if (!isRecord(value)) throw new Error(`${what} must be an object`)
@@ -201,6 +227,8 @@ export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentV
       presence: oneOf(row, "presence", ["present", "missing"], "Environment file"),
       sizeBytes: nullableCount(row, "sizeBytes", "Environment file"),
     })),
+    mcps: list(value, "mcps", what).map(extensionView),
+    skills: list(value, "skills", what).map(extensionView),
     changedAtMs: count(value, "changedAtMs", what),
     machineLabel: text(value, "machineLabel", what),
     checkoutPath: text(value, "checkoutPath", what),
@@ -209,7 +237,7 @@ export function parseProjectEnvironmentView(value: unknown): ProjectEnvironmentV
       const evidence = object(row, "evidence", "Environment proposal")
       return {
         id: text(row, "id", "Environment proposal"),
-        field: oneOf(row, "field", ["setup", "variables", "secret", "file"], "Environment proposal"),
+        field: oneOf(row, "field", ["setup", "variables", "secret", "file", "mcp", "skill"], "Environment proposal"),
         change: oneOf(row, "change", ["add", "remove"], "Environment proposal"),
         text: text(row, "text", "Environment proposal"),
         evidence: { path: text(evidence, "path", "Environment proposal evidence"), excerpt: text(evidence, "excerpt", "Environment proposal evidence") },
@@ -231,9 +259,10 @@ export function parseEnvironmentOperationView(value: unknown): EnvironmentOperat
     endedAtMs: nullableCount(value, "endedAtMs", what),
     exitCode: nullableInteger(value, "exitCode", what),
     reason: nullableText(value, "reason", what),
+    updates: count(value, "updates", what),
     outputTail: text(value, "outputTail", what),
     entries: list(value, "entries", what).map((row) => ({
-      kind: oneOf(row, "kind", ["secret", "file"], "Environment operation entry"),
+      kind: oneOf(row, "kind", ["secret", "file", "mcp", "skill"], "Environment operation entry"),
       name: text(row, "name", "Environment operation entry"),
       state: oneOf(row, "state", ["pending", "importing", "imported", "failed"], "Environment operation entry"),
       reason: nullableText(row, "reason", "Environment operation entry"),

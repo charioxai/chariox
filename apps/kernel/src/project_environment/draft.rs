@@ -53,45 +53,32 @@ fn skipped(path: &str) -> bool {
 
 /// Names of files Git ignores in `checkout`; empty for a folder that is not a Git checkout.
 fn ignored_files(checkout: &Path) -> Vec<String> {
-    use std::io::{BufRead, BufReader};
-    use std::process::Stdio;
-
-    let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(checkout).args([
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "-z",
-        "--",
-        ".",
-    ]);
-    // Exclude generated trees in Git's traversal, before they can fill the name budget.
-    for folder in SKIPPED_FOLDERS {
-        command.arg(format!(":(exclude,glob)**/{folder}/**"));
-    }
-    let Ok(mut child) = command.stdout(Stdio::piped()).stderr(Stdio::null()).spawn() else {
+    let Ok(output) = std::process::Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args([
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+        ])
+        // Exclude generated trees in Git's traversal, before descending into private folders.
+        .args(
+            SKIPPED_FOLDERS
+                .iter()
+                .map(|folder| format!(":(exclude,glob)**/{folder}/**")),
+        )
+        .output()
+    else {
         return Vec::new();
     };
-    let mut names = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        for path in BufReader::new(stdout).split(0) {
-            let Ok(path) = path else { break };
-            let path = String::from_utf8_lossy(&path).into_owned();
-            if !skipped(&path) {
-                names.push(path);
-                if names.len() == LISTED_NAMES {
-                    break;
-                }
-            }
-        }
-    }
-    // The bounded list is complete; do not let Git enumerate the rest of a large checkout.
-    if child.id() > 1 {
-        let _ = child.kill();
-    }
-    let _ = child.wait();
-    names
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|path| !path.ends_with('/') && !skipped(path))
+        .take(LISTED_NAMES)
+        .map(str::to_owned)
+        .collect()
 }
 
 fn top_level_names(checkout: &Path) -> Vec<String> {
@@ -138,9 +125,10 @@ pub(crate) fn draft_facts(checkout: &Path) -> String {
     }
     let ignored = ignored_files(checkout);
     format!(
-        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nManifest files:\n{}",
+        "Project folder entries:\n{}\n\nFiles that Git ignores (names only, contents are private):\n{}\n\nDeclared in project files:\n{}\n\nManifest files:\n{}",
         top_level_names(checkout).join("\n"),
         ignored.join("\n"),
+        super::detect::facts_text(&super::detect::detect(checkout)),
         facts,
     )
 }
@@ -160,16 +148,22 @@ Fill every field the metadata supports; use an empty value only for a field it s
     )
 }
 
-/// The record the agent's answer describes; the first `{...}` object of the text.
+/// The first JSON object of the agent's text that has `key`: a sentence before it, a code fence around it or braces of
+/// its own in the prose do not hide it.
+pub(crate) fn answer_object(output: &str, key: &str) -> Option<serde_json::Value> {
+    output.match_indices('{').find_map(|(start, _)| {
+        serde_json::Deserializer::from_str(&output[start..])
+            .into_iter::<serde_json::Value>()
+            .next()?
+            .ok()
+            .filter(|value| value.get(key).is_some())
+    })
+}
+
+/// The record the agent's answer describes.
 pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, String> {
-    let start = output
-        .find('{')
-        .ok_or("The agent did not answer with an Environment")?;
-    let end = output
-        .rfind('}')
-        .ok_or("The agent did not answer with an Environment")?;
-    let value: serde_json::Value = serde_json::from_str(&output[start..=end])
-        .map_err(|_| "The agent's answer is not valid JSON".to_owned())?;
+    let value =
+        answer_object(output, "setup").ok_or("The agent did not answer with an Environment")?;
     let text = |key: &str| {
         value
             .get(key)
@@ -188,9 +182,20 @@ pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, Stri
             })
             .unwrap_or_default()
     };
-    let mut secrets = names("secrets");
+    // What a kernel never carries is left out rather than failing the draft: reserved or malformed names and paths.
+    let mut secrets: Vec<String> = names("secrets")
+        .into_iter()
+        .filter(|name| {
+            super::environment_variable_name(name)
+                && !super::project_environment_protected_name(name)
+        })
+        .collect();
     secrets.dedup();
-    let variables = text("variables");
+    let variables = text("variables")
+        .lines()
+        .filter(|line| super::parse_variables(line).is_ok())
+        .collect::<Vec<_>>()
+        .join("\n");
     // A name the agent put in both places is a Secret: its value stays out of the record.
     let variable_names: Vec<String> = super::parse_variables(&variables)
         .map_err(|reason| reason.to_owned())?
@@ -198,12 +203,17 @@ pub(crate) fn parse_draft(output: &str) -> Result<ProjectEnvironmentRecord, Stri
         .map(|(name, _)| name)
         .collect();
     secrets.retain(|name| !variable_names.contains(name));
+    let mut files: Vec<String> = names("files")
+        .into_iter()
+        .filter(|path| super::relative_project_path(path).is_ok())
+        .collect();
+    files.dedup();
     let record = ProjectEnvironmentRecord {
         schema: super::PROJECT_ENVIRONMENT_SCHEMA,
         setup_script: text("setup"),
         variables,
         secrets,
-        files: names("files"),
+        files,
         ..Default::default()
     };
     record.validate().map_err(str::to_owned)?;
@@ -248,24 +258,24 @@ mod tests {
     }
 
     #[test]
-    fn draft_and_check_list_files_inside_ignored_directories_and_prune_generated_folders() {
+    fn ignored_private_directories_supply_file_names_without_generated_files_or_contents() {
         let dir = scratch();
-        std::fs::create_dir_all(dir.join("config/private/node_modules")).unwrap();
-        std::fs::create_dir_all(dir.join("node_modules")).unwrap();
-        std::fs::write(
-            dir.join(".gitignore"),
-            "config/private/\n.env\nnode_modules/\n",
-        )
-        .unwrap();
-        for name in [
-            ".env",
-            "config/private/settings.json",
-            "config/private/with space.json",
-            "config/private/line\nbreak.json",
-            "config/private/node_modules/skip.json",
-            "node_modules/skip.json",
+        std::fs::write(dir.join(".gitignore"), "local-config/\nnode_modules/\n").unwrap();
+        for folder in [
+            "local-config",
+            "local-config/nested",
+            "local-config/node_modules",
+            "node_modules",
         ] {
-            std::fs::write(dir.join(name), "synthetic-private-contents").unwrap();
+            std::fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        for name in [
+            "local-config/dev.json",
+            "local-config/nested/service.json",
+            "local-config/node_modules/generated.js",
+            "node_modules/generated.js",
+        ] {
+            std::fs::write(dir.join(name), "synthetic-private-content").unwrap();
         }
         assert!(std::process::Command::new("git")
             .arg("-C")
@@ -274,51 +284,23 @@ mod tests {
             .status()
             .unwrap()
             .success());
-        let expected = vec![
-            ".env",
-            "config/private/line\nbreak.json",
-            "config/private/settings.json",
-            "config/private/with space.json",
-        ];
-        let names = ignored_files(&dir);
-        let facts = draft_facts(&dir);
-        let draft = draft_prompt(&dir);
-        let check = super::super::check_prompt(&facts, &ProjectEnvironmentRecord::default());
-        let _ = std::fs::remove_dir_all(dir);
-        assert_eq!(names, expected);
-        for prompt in [draft, check] {
-            assert!(prompt.contains("config/private/settings.json"));
-            assert!(!prompt.contains("skip.json"));
-            assert!(!prompt.contains("synthetic-private-contents"));
-        }
-    }
-
-    #[test]
-    fn ignored_file_enumeration_keeps_the_name_bound_inside_an_ignored_directory() {
-        let dir = scratch();
-        std::fs::create_dir_all(dir.join("private/node_modules")).unwrap();
-        std::fs::write(dir.join(".gitignore"), "private/\n").unwrap();
-        for index in 0..(LISTED_NAMES + 10) {
-            std::fs::write(dir.join(format!("private/{index:03}.json")), "").unwrap();
+        let prompt = draft_prompt(&dir);
+        assert!(
+            prompt.contains("\nlocal-config/dev.json\n"),
+            "private config file must be offered to Draft"
+        );
+        assert!(prompt.contains("\nlocal-config/nested/service.json\n"));
+        assert!(!prompt.contains("generated.js"));
+        assert!(!prompt.contains("synthetic-private-content"));
+        for i in 0..LISTED_NAMES + 5 {
             std::fs::write(
-                dir.join(format!("private/node_modules/{index:03}.json")),
-                "",
+                dir.join(format!("local-config/config-{i:03}.json")),
+                "private",
             )
             .unwrap();
         }
-        assert!(std::process::Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
-        let names = ignored_files(&dir);
+        assert_eq!(ignored_files(&dir).len(), LISTED_NAMES);
         let _ = std::fs::remove_dir_all(dir);
-        assert_eq!(names.len(), LISTED_NAMES);
-        assert_eq!(names[0], "private/000.json");
-        assert_eq!(names[LISTED_NAMES - 1], "private/119.json");
-        assert!(names.iter().all(|name| !name.contains("node_modules")));
     }
 
     #[test]
@@ -331,7 +313,29 @@ mod tests {
         assert_eq!(record.secrets, vec!["NOTION_TOKEN".to_string()]);
         assert_eq!(record.files, vec![".env".to_string()]);
         assert!(parse_draft("no json").is_err());
-        assert!(parse_draft("{\"files\":[\"../escape\"]}").is_err());
-        assert!(parse_draft("{\"variables\":\"PATH=/x\"}").is_err());
+    }
+
+    #[test]
+    fn braces_in_the_agents_prose_do_not_hide_its_object() {
+        let record = parse_draft(
+            "The {setup} is below:\n{\"setup\":\"echo '{}' > a\",\"secrets\":[]}\nNothing else {x}.",
+        )
+        .unwrap();
+        assert_eq!(record.setup_script, "echo '{}' > a");
+        assert!(parse_draft("{\"unrelated\": 1}").is_err());
+    }
+
+    #[test]
+    fn what_a_kernel_never_carries_is_left_out_of_a_draft_instead_of_failing_it() {
+        let record = parse_draft(
+            "{\"setup\":\"make\",\"variables\":\"# dev\\nPATH=/x\\n1BAD=y\\nLOG=debug\\nCHARIOX_HOME=/h\",\"secrets\":[\"TOKEN\",\"HOME\",\"not a name\"],\"files\":[\".env\",\"../escape\",\"/etc/passwd\",\"config/a.json\"]}",
+        )
+        .unwrap();
+        assert_eq!(record.variables, "# dev\nLOG=debug");
+        assert_eq!(record.secrets, vec!["TOKEN".to_string()]);
+        assert_eq!(
+            record.files,
+            vec![".env".to_string(), "config/a.json".to_string()]
+        );
     }
 }

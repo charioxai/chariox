@@ -177,19 +177,20 @@ impl CharioxMcpServerConfig {
                 }
             }
             CharioxMcpTransportConfig::StreamableHttp {
+                url,
                 bearer_token_credential,
                 http_headers,
                 credential_http_headers,
                 ..
             } => {
                 if let Some(credential_id) = bearer_token_credential.take() {
-                    let secret = secret_service.resolve_mcp_secret(&credential_id)?;
+                    let secret = secret_service.resolve_http_mcp_secret(&credential_id, url)?;
                     http_headers.insert("Authorization".to_string(), format!("Bearer {secret}"));
                 }
                 for (name, binding) in std::mem::take(credential_http_headers) {
                     http_headers.insert(
                         name,
-                        secret_service.resolve_mcp_secret(&binding.credential)?,
+                        secret_service.resolve_http_mcp_secret(&binding.credential, url)?,
                     );
                 }
             }
@@ -233,6 +234,36 @@ impl CharioxMcpRegistry {
             })?;
         atomic_write_config(&path, format!("{payload}\n").as_bytes(), "mcp.install")?;
         Ok(path)
+    }
+
+    /// Registers `config` unless its name is already registered, whatever another writer does meanwhile:
+    /// the file is published by a hard link, which fails instead of replacing. `None` means the name was held.
+    pub fn install_if_absent(
+        &self,
+        config: &CharioxMcpServerConfig,
+    ) -> Result<Option<PathBuf>, DaemonError> {
+        config.validate()?;
+        if self.find_config_path(&config.name)?.is_some() {
+            return Ok(None);
+        }
+        let root = self.primary_root()?;
+        let path = root.join(format!("{}.json", config.name));
+        let payload =
+            serde_json::to_string_pretty(config).map_err(|error| DaemonError::LocalTransport {
+                operation: "mcp.install",
+                message: format!("failed to serialize MCP `{}`: {error}", config.name),
+            })?;
+        let temp_path = write_temp_config(&path, format!("{payload}\n").as_bytes(), "mcp.install")?;
+        let linked = fs::hard_link(&temp_path, &path);
+        let _ = fs::remove_file(&temp_path);
+        match linked {
+            Ok(()) => Ok(Some(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "mcp.install",
+                message: format!("failed to publish MCP config `{}`: {error}", path.display()),
+            }),
+        }
     }
 
     pub fn update(&self, config: &CharioxMcpServerConfig) -> Result<PathBuf, DaemonError> {
@@ -359,6 +390,22 @@ fn atomic_write_config(
     contents: &[u8],
     operation: &'static str,
 ) -> Result<(), DaemonError> {
+    let temp_path = write_temp_config(path, contents, operation)?;
+    fs::rename(&temp_path, path).map_err(|error| {
+        let _ = fs::remove_file(&temp_path);
+        DaemonError::LocalTransport {
+            operation,
+            message: format!("failed to publish MCP config `{}`: {error}", path.display()),
+        }
+    })
+}
+
+/// Writes `contents` beside `path`, ready to be published under that name.
+fn write_temp_config(
+    path: &Path,
+    contents: &[u8],
+    operation: &'static str,
+) -> Result<PathBuf, DaemonError> {
     let parent = path.parent().ok_or_else(|| DaemonError::LocalTransport {
         operation,
         message: format!("MCP config path `{}` has no parent", path.display()),
@@ -386,13 +433,7 @@ fn atomic_write_config(
             temp_path.display()
         ),
     })?;
-    fs::rename(&temp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&temp_path);
-        DaemonError::LocalTransport {
-            operation,
-            message: format!("failed to publish MCP config `{}`: {error}", path.display()),
-        }
-    })
+    Ok(temp_path)
 }
 
 fn home_dir() -> Option<PathBuf> {

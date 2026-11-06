@@ -332,7 +332,9 @@ fn log_unparsed_turn_lifecycle(provider_run_id: &str, message: &JsonRpcMessage) 
 fn codex_read_should_retry(error: &std::io::Error) -> bool {
     matches!(
         error.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
     )
 }
 
@@ -368,6 +370,10 @@ mod tests {
         assert!(codex_read_should_retry(&std::io::Error::from(
             std::io::ErrorKind::TimedOut
         )));
+        assert!(
+            codex_read_should_retry(&std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            "a signal (for example SIGCONT after the host paused the process) must not fail a turn"
+        );
         assert!(!codex_read_should_retry(&std::io::Error::from(
             std::io::ErrorKind::ConnectionReset
         )));

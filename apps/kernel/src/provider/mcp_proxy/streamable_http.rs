@@ -10,6 +10,7 @@ pub(super) fn forward_streamable_http_mcp_request(
     bearer_token_env_var: Option<&str>,
     http_headers: &BTreeMap<String, String>,
     env_http_headers: &BTreeMap<String, String>,
+    project_environment: &BTreeMap<String, String>,
     payload: serde_json::Value,
     timeout_sec: Option<u64>,
 ) -> Result<serde_json::Value, DaemonError> {
@@ -33,12 +34,20 @@ pub(super) fn forward_streamable_http_mcp_request(
         if reserved_header(key) {
             continue;
         }
-        if let Ok(value) = std::env::var(env_var) {
+        if let Some(value) = project_environment
+            .get(env_var)
+            .cloned()
+            .or_else(|| std::env::var(env_var).ok())
+        {
             request = request.set(key, &value);
         }
     }
     if let Some(env_var) = bearer_token_env_var {
-        if let Ok(value) = std::env::var(env_var) {
+        if let Some(value) = project_environment
+            .get(env_var)
+            .cloned()
+            .or_else(|| std::env::var(env_var).ok())
+        {
             request = request.set("Authorization", &format!("Bearer {value}"));
         }
     }
@@ -61,6 +70,15 @@ pub(super) fn forward_streamable_http_mcp_request(
             });
         }
     };
+    if (300..400).contains(&response.status()) {
+        return Err(DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.redirect",
+            message: format!(
+                "MCP endpoint returned HTTP {}; register the destination URL directly",
+                response.status()
+            ),
+        });
+    }
     let content_type = response
         .header("Content-Type")
         .unwrap_or_default()
@@ -142,7 +160,10 @@ fn read_sse_json_rpc_response(
 }
 
 fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
-    let mut builder = crate::outbound_dial::agent_builder().timeout(timeout);
+    // Credential bindings authorize this endpoint, so redirects need a new registration.
+    let mut builder = crate::outbound_dial::agent_builder()
+        .timeout(timeout)
+        .redirects(0);
     if let Some(proxy) = configured_proxy_for_url(url)? {
         builder = builder.proxy(proxy);
     }

@@ -113,6 +113,7 @@ impl DaemonApp {
         request = request.with_working_directory(PathBuf::from(directory));
         request = crate::project_environment::attach_project_provider_environment(
             &self.config,
+            &self.sessions,
             &session,
             Some(&agent),
             request,

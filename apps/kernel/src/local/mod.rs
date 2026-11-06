@@ -82,7 +82,7 @@ pub use api::{
     EventGeneratorEventPage, EventGeneratorParty, EventGeneratorResource,
     EventGeneratorResourcePage, ExportDebugBundleRequest, ExportWorkflowCodeArtifactRequest,
     ExportWorkflowCodePackageRequest, ExportWorkflowCodeSourceRequest,
-    ExportWorkflowPublicationPackageRequest, ExtensionKind, ExternalProviderSessionCapabilities,
+    ExportWorkflowPublicationPackageRequest, ExtensionKind, ExtensionPresence, ExternalProviderSessionCapabilities,
     ExternalProviderSessionPage, ExternalProviderSessionRecord, FocusAgentRequest,
     ForgetRemoteMachineRequest, ForkAgentRequest, GenerateWorkspaceCommitMessageRequest,
     GetClientCatalogSnapshotRequest, GetConnectorAdapterRequest, GetConnectorRequest,
@@ -140,7 +140,7 @@ pub use api::{
     OwnerVaultResult, PairedClientRecord, PairingInviteIntent, PairingInviteRecord,
     PairingJoinRecord, PauseMetaagentTaskRequest, PauseWorkflowRunRequest,
     PollCloudRelayLoginRequest, PollRuntimeNoticesRequest, PreviewPromptSettingRequest,
-    PreviewWorkflowScheduleRequest, ProjectEnvironmentFilePath, ProjectEnvironmentFilePresenceKind,
+    PreviewWorkflowScheduleRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView, ProjectEnvironmentFilePath, ProjectEnvironmentFilePresenceKind,
     ProjectEnvironmentFileView, ProjectEnvironmentSecretName, ProjectEnvironmentSecretView,
     ProjectEnvironmentSetupField, ProjectEnvironmentSetupState, ProjectEnvironmentView,
     PromptBatchSubmissionResult, PromptInputHistoryEntry, PromptInputHistoryEntryKind,
@@ -317,7 +317,7 @@ pub use api::{UserDomainGrant, UserDomainNotice, UserDomainResource, UserDomainW
 pub use client::LocalDaemonClient;
 pub use harness::{run_local_harness, LocalHarnessReport};
 
-pub use api::EnvironmentOperationRequest;
+pub use api::{EnvironmentOperationRequest, GetEnvironmentOperationRequest};
 
 pub use api::{
     AckEventsRequest, EventApprovalPointer, EventInteractionState, EventKernelHealth,

@@ -72,3 +72,22 @@ fn room_admission_peer_workflow_node_binding_needs_no_controller() {
         "A01 regular room peer may be bound to a workflow"
     );
 }
+
+#[test]
+fn room_admission_admits_the_environment_commands_and_no_other() {
+    let admitted = |line: &str| {
+        let tokens = crate::runtime::metaagent_command_registry::tokenize_command(line).unwrap();
+        crate::runtime::room_tool_admission::command(&tokens).is_ok()
+    };
+    for line in [
+        "environment status",
+        "environment update",
+        "environment update from builder",
+        "environment setup",
+        "environment check",
+    ] {
+        assert!(admitted(line), "{line}");
+    }
+    assert!(!admitted("environment drop"));
+    assert!(!admitted("credential list"));
+}

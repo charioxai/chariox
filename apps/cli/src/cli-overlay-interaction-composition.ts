@@ -1,3 +1,4 @@
+import { getRelayStatus } from "./relay-api.js"
 import { createSessionProcessController } from "./session-process-controller.js"
 import { dialogPageSize, dialogTextWidth } from "./cli-dialog-panel-size.js"
 import { createProjectEnvironmentController } from "./project-environment-controller.js"
@@ -30,6 +31,8 @@ type AnyFn = (...args: any[]) => any
 
 export type CliOverlayInteractionCompositionDeps = {
   client: any
+  /** The user's other kernels an Environment can import from. */
+  environmentSourceKernels: () => Promise<readonly import("./project-environment-projection.js").EnvironmentSourceKernel[]>
   renderer: any
   dimensions: AnyFn
   appLogger: any
@@ -106,7 +109,9 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     pageSize: () => dialogPageSize(deps.dimensions().height),
   })
   const environmentController = createProjectEnvironmentController({
-    send: request => deps.client.send(request),
+    client: () => deps.client.currentClient(),
+    kernelId: async client => (await getRelayStatus(client as Parameters<typeof getRelayStatus>[0])).daemon_id,
+    otherKernels: deps.environmentSourceKernels,
     pageSize: () => dialogPageSize(deps.dimensions().height),
     textWidth: () => dialogTextWidth(deps.dimensions().width),
     render: () => dialogOverlayController.render(),
@@ -114,6 +119,8 @@ export function createCliOverlayInteractionComposition(deps: CliOverlayInteracti
     newOperationId: randomUUID,
     now: Date.now,
   })
+  // The dialog shows one kernel's Environment; switching kernels ends it.
+  onCleanup(deps.client.onClientChanged(() => { if (environmentController.isOpen()) environmentController.close() }))
   const handleEnvironmentPaste = (event: { text: string; preventDefault(): void }) => {
     if (environmentController.handlePaste(event.text)) event.preventDefault()
   }

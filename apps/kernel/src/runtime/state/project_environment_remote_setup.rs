@@ -94,9 +94,9 @@ impl KernelRuntimeState {
                 },
                 owner,
             ),
-            RelayPeerRequest::GetProjectEnvironmentOperation { operation_id } => {
-                self.get_environment_operation(EnvironmentOperationRequest { operation_id }, owner)
-            }
+            RelayPeerRequest::GetProjectEnvironmentOperation { operation_id } => self
+                .read_environment_operation(&operation_id, owner)
+                .map(|operation| LocalDaemonResponse::EnvironmentOperation { operation }),
             RelayPeerRequest::CancelProjectEnvironmentOperation { operation_id } => self
                 .cancel_environment_operation(EnvironmentOperationRequest { operation_id }, owner),
             _ => return Err(environment_error("not a Setup request")),

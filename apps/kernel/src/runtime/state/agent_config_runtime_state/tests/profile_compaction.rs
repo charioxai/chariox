@@ -437,6 +437,7 @@ async fn profile_compaction_session_command_accepts_empty_output() {
             std::time::Duration::from_secs(2),
             crate::provider::ProviderUtilityExecutionPolicy::SessionCommand,
             None,
+            None,
         )
         .await
         .unwrap();

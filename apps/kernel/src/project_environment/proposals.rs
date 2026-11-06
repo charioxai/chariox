@@ -1,8 +1,11 @@
 //! What an agent proposed for the saved Environment and what the owner dismissed: kept apart from the
 //! record, so accepting is an ordinary Save and a dismissed proposal is not made again.
+use super::detect::{declared_in, detect};
+use super::draft::answer_object;
 use super::{
-    environment_error, environment_variable_name, parse_variables,
-    project_environment_protected_name, relative_project_path, ProjectEnvironmentRecord,
+    environment_error, environment_variable_name, extension_name, parse_variables,
+    project_environment_protected_name, relative_project_path, ExtensionEntry,
+    ProjectEnvironmentRecord, ProjectRegistrations,
 };
 use crate::error::DaemonError;
 use crate::local::{
@@ -18,6 +21,8 @@ use std::sync::Mutex;
 const DIRECTORY: &str = "project-environment-proposals";
 const MAX_PROPOSALS: usize = 20;
 const MAX_TEXT: usize = 2048;
+/// The evidence of a proposal that comes from a Chariox registration: no Project file shows it.
+const REGISTRATION_EVIDENCE: &str = "Chariox registration";
 
 static WRITES: Mutex<()> = Mutex::new(());
 
@@ -155,7 +160,126 @@ fn applicable(record: &ProjectEnvironmentRecord, proposal: &EnvironmentProposal)
             record.files.iter().any(|path| path == text) != add
                 && (!add || relative_project_path(text).is_ok())
         }
+        EnvironmentProposalField::Mcp | EnvironmentProposalField::Skill => {
+            let entries = extensions(record, proposal.field);
+            entries.iter().any(|entry| entry.name == text) != add
+                && (!add
+                    || (extension_name(text)
+                        && (proposal.evidence.path == REGISTRATION_EVIDENCE
+                            || relative_project_path(&proposal.evidence.path).is_ok())))
+        }
     }
+}
+
+fn extensions(
+    record: &ProjectEnvironmentRecord,
+    field: EnvironmentProposalField,
+) -> &Vec<ExtensionEntry> {
+    if field == EnvironmentProposalField::Mcp {
+        &record.mcps
+    } else {
+        &record.skills
+    }
+}
+
+/// What the Project's files and the registrations granted to its rooms say against the saved record, with no
+/// model: MCPs, skills and variable names they declare that the record lacks, and entries whose declaring file no
+/// longer declares them.
+pub(crate) fn deterministic_proposals(
+    checkout: &Path,
+    record: &ProjectEnvironmentRecord,
+    registered: &ProjectRegistrations,
+) -> Vec<EnvironmentProposal> {
+    let detected = detect(checkout);
+    let mut proposals: Vec<EnvironmentProposal> = Vec::new();
+    let mut propose = |field, change, text: &str, path: &str, excerpt: &str| {
+        let proposal = EnvironmentProposal {
+            id: proposal_id(field, change, text),
+            field,
+            change,
+            text: text.to_owned(),
+            evidence: EnvironmentProposalEvidence {
+                path: path.to_owned(),
+                excerpt: excerpt.to_owned(),
+            },
+        };
+        if applicable(record, &proposal) && !proposals.iter().any(|known| known.id == proposal.id) {
+            proposals.push(proposal);
+        }
+    };
+    for (field, found) in [
+        (EnvironmentProposalField::Mcp, &detected.mcps),
+        (EnvironmentProposalField::Skill, &detected.skills),
+    ] {
+        for entry in found {
+            if let Some(path) = entry.file_path() {
+                propose(
+                    field,
+                    EnvironmentProposalChange::Add,
+                    &entry.name,
+                    path,
+                    &entry.name,
+                );
+            }
+        }
+        // A saved registration is no project file, and one this kernel no longer holds may only be missing here.
+        for entry in extensions(record, field) {
+            let Some(path) = entry.file_path() else {
+                continue;
+            };
+            if declared_in(checkout, path).contains(&entry.name) {
+                continue;
+            }
+            let excerpt = if checkout.join(path).is_file() {
+                format!("not in {path}")
+            } else {
+                "file missing".to_owned()
+            };
+            propose(
+                field,
+                EnvironmentProposalChange::Remove,
+                &entry.name,
+                path,
+                &excerpt,
+            );
+        }
+    }
+    for (field, held) in [
+        (EnvironmentProposalField::Mcp, &registered.mcps),
+        (EnvironmentProposalField::Skill, &registered.skills),
+    ] {
+        for entry in held {
+            propose(
+                field,
+                EnvironmentProposalChange::Add,
+                &entry.name,
+                REGISTRATION_EVIDENCE,
+                "granted to a room of this Project",
+            );
+        }
+    }
+    for key in &registered.key_names {
+        propose(
+            EnvironmentProposalField::Secret,
+            EnvironmentProposalChange::Add,
+            key,
+            REGISTRATION_EVIDENCE,
+            "read by a registered MCP",
+        );
+    }
+    let known = parse_variables(&record.variables).unwrap_or_default();
+    for (name, source) in &detected.variables {
+        if !known.iter().any(|(variable, _)| variable == name) {
+            propose(
+                EnvironmentProposalField::Secret,
+                EnvironmentProposalChange::Add,
+                name,
+                source,
+                name,
+            );
+        }
+    }
+    proposals
 }
 
 /// The proposals in the agent's answer that the record can take, as a check would store them.
@@ -163,14 +287,8 @@ pub(crate) fn parse_proposals(
     output: &str,
     record: &ProjectEnvironmentRecord,
 ) -> Result<Vec<EnvironmentProposal>, String> {
-    let start = output
-        .find('{')
-        .ok_or("The agent did not answer with proposals")?;
-    let end = output
-        .rfind('}')
-        .ok_or("The agent did not answer with proposals")?;
-    let value: serde_json::Value = serde_json::from_str(&output[start..=end])
-        .map_err(|_| "The agent's answer is not valid JSON".to_owned())?;
+    let value =
+        answer_object(output, "proposals").ok_or("The agent did not answer with proposals")?;
     let listed = value
         .get("proposals")
         .and_then(|v| v.as_array())
@@ -267,6 +385,22 @@ pub(crate) fn apply(
                 next.files.retain(|path| path != text);
             }
         }
+        EnvironmentProposalField::Mcp | EnvironmentProposalField::Skill => {
+            let entries = if proposal.field == EnvironmentProposalField::Mcp {
+                &mut next.mcps
+            } else {
+                &mut next.skills
+            };
+            if add {
+                entries.push(if proposal.evidence.path == REGISTRATION_EVIDENCE {
+                    ExtensionEntry::registration(text)
+                } else {
+                    ExtensionEntry::file(text, &proposal.evidence.path)
+                });
+            } else {
+                entries.retain(|entry| entry.name != text);
+            }
+        }
     }
     next.validate().map_err(environment_error)?;
     Ok(next)
@@ -292,6 +426,138 @@ pub(crate) fn check_prompt(facts: &str, record: &ProjectEnvironmentRecord) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn project_with(files: &[(&str, &str)]) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("chariox-env-check-{:032x}", rand::random::<u128>()));
+        for (path, text) in files {
+            let full = dir.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(full, text).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_check_without_a_model_proposes_what_the_files_declare_and_drops_what_they_no_longer_do() {
+        let dir = project_with(&[
+            (".mcp.json", r#"{"mcpServers":{"github":{},"notion":{}}}"#),
+            (".env.example", "STRIPE_SECRET_KEY=\nLOG_LEVEL=info\n"),
+        ]);
+        let mut saved = record();
+        saved.mcps = vec![ExtensionEntry::file("github", ".mcp.json")];
+        saved.variables = "LOG_LEVEL=debug".into();
+        saved.secrets.clear();
+        let found = deterministic_proposals(&dir, &saved, &no_registrations());
+        let shown: Vec<String> = found
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:?} {:?} {} @{} ({})",
+                    p.field, p.change, p.text, p.evidence.path, p.evidence.excerpt
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                "Mcp Add notion @.mcp.json (notion)".to_owned(),
+                "Secret Add STRIPE_SECRET_KEY @.env.example (STRIPE_SECRET_KEY)".to_owned(),
+            ],
+            "github is already saved and LOG_LEVEL is already a Variable"
+        );
+        std::fs::remove_file(dir.join(".mcp.json")).unwrap();
+        let gone = deterministic_proposals(&dir, &saved, &no_registrations());
+        let first = gone
+            .iter()
+            .find(|p| p.field == EnvironmentProposalField::Mcp)
+            .unwrap();
+        assert_eq!(
+            (
+                first.change,
+                first.text.as_str(),
+                first.evidence.path.as_str(),
+                first.evidence.excerpt.as_str()
+            ),
+            (
+                EnvironmentProposalChange::Remove,
+                "github",
+                ".mcp.json",
+                "file missing"
+            )
+        );
+        let other = project_with(&[(".mcp.json", r#"{"mcpServers":{"linear":{}}}"#)]);
+        let still = deterministic_proposals(&other, &saved, &no_registrations());
+        let removed = still
+            .iter()
+            .find(|p| p.change == EnvironmentProposalChange::Remove)
+            .unwrap();
+        assert_eq!(
+            removed.evidence.excerpt, "not in .mcp.json",
+            "the file is there but no longer names it"
+        );
+        let next = apply(&saved, removed).unwrap();
+        assert!(next.mcps.is_empty());
+        let _ = std::fs::remove_dir_all(other);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn no_registrations() -> ProjectRegistrations {
+        ProjectRegistrations {
+            mcps: Vec::new(),
+            skills: Vec::new(),
+            key_names: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_registration_granted_after_the_draft_is_proposed_with_the_keys_it_reads() {
+        let dir = project_with(&[]);
+        let mut saved = record();
+        saved.mcps = vec![ExtensionEntry::registration("notion")];
+        saved.secrets = vec!["NOTION_TOKEN".into()];
+        let registered = ProjectRegistrations {
+            mcps: vec![
+                ExtensionEntry::registration("notion"),
+                ExtensionEntry::registration("linear"),
+            ],
+            skills: vec![ExtensionEntry::registration("dataviz")],
+            key_names: vec!["NOTION_TOKEN".into(), "LINEAR_API_KEY".into()],
+        };
+        let found = deterministic_proposals(&dir, &saved, &registered);
+        let shown: Vec<String> = found
+            .iter()
+            .map(|p| {
+                format!(
+                    "{:?} {:?} {} @{}",
+                    p.field, p.change, p.text, p.evidence.path
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                "Mcp Add linear @Chariox registration".to_owned(),
+                "Skill Add dataviz @Chariox registration".to_owned(),
+                "Secret Add LINEAR_API_KEY @Chariox registration".to_owned(),
+            ],
+            "notion and its key are already saved"
+        );
+        let mut next = saved.clone();
+        for proposal in &found {
+            next = apply(&next, proposal).unwrap();
+        }
+        assert_eq!(
+            next.mcps,
+            vec![
+                ExtensionEntry::registration("notion"),
+                ExtensionEntry::registration("linear")
+            ]
+        );
+        assert_eq!(next.skills, vec![ExtensionEntry::registration("dataviz")]);
+        assert!(next.secrets.contains(&"LINEAR_API_KEY".to_owned()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn record() -> ProjectEnvironmentRecord {
         ProjectEnvironmentRecord {

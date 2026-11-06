@@ -213,6 +213,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
             let selection = crate::project_environment::attach_project_provider_environment(
                 self.app.config(),
+                &self.app.sessions,
                 &session,
                 Some(&agent),
                 LaunchProviderRequest::new(

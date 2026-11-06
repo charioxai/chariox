@@ -3,6 +3,8 @@ use std::time::Duration;
 
 mod utility_admission;
 pub(crate) use utility_admission::ProviderUtilityAdmission;
+mod utility_stop;
+pub(crate) use utility_stop::UtilityStop;
 mod account_credential;
 mod account_endpoints;
 mod claude;
@@ -145,7 +147,8 @@ pub(crate) use managed_isolation::{
     MANAGED_PROVIDER_ISOLATION_ENV, MANAGED_PROVIDER_ISOLATION_MARKER_ENV,
 };
 pub(crate) use mcp_proxy::{
-    dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
+    dispatch_provider_mcp_proxy_request, dispatch_provider_mcp_proxy_request_with_environment,
+    shutdown_provider_mcp_proxy_session,
 };
 pub(crate) use opencode::{
     apply_opencode_discovery_environment, ensure_opencode_account_endpoint,
@@ -461,9 +464,12 @@ pub(crate) fn run_blocking_provider_utility_prompt(
         operation,
         policy,
         None,
+        None,
     )
 }
 
+/// `stop` ends this request's own utility turn and returns once it has ended.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     run: &RuntimeProviderRun,
     visible_user_prompt: &str,
@@ -472,25 +478,18 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
     operation: &'static str,
     policy: ProviderUtilityExecutionPolicy,
     admission: Option<ProviderUtilityAdmission>,
+    stop: Option<&UtilityStop>,
 ) -> Result<String, crate::error::DaemonError> {
     match run.adapter_key() {
-        "codex" => match admission {
-            Some(admission) => codex_runtime::run_codex_utility_prompt_with_admission(
-                run,
-                visible_user_prompt,
-                hidden_system_context,
-                timeout,
-                policy,
-                Some(admission),
-            ),
-            None => codex_runtime::run_codex_utility_prompt(
-                run,
-                visible_user_prompt,
-                hidden_system_context,
-                timeout,
-                policy,
-            ),
-        },
+        "codex" => codex_runtime::run_codex_utility_prompt_with_admission(
+            run,
+            visible_user_prompt,
+            hidden_system_context,
+            timeout,
+            policy,
+            admission,
+            stop,
+        ),
         "opencode" if admission.is_some() => Err(crate::error::DaemonError::LocalTransport {
             operation,
             message: "protected utility submission is unavailable for the OpenCode adapter".into(),
@@ -501,6 +500,7 @@ pub(crate) fn run_blocking_provider_utility_prompt_with_admission(
             hidden_system_context,
             timeout,
             policy,
+            stop,
         ),
         adapter_key => Err(crate::error::DaemonError::LocalTransport {
             operation,

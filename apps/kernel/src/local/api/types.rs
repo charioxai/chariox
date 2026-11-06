@@ -483,4 +483,5 @@ pub use workspace::*;
 /// the unlock options in `CredentialVaultStatus`, a duration on Vault-unlock choices; peer425).
 /// MP-08/MP-09/MP-10/MP-11: 992 adds positive browser-card verification conditions and non-secret receipts (peer431).
 /// MP-08/MP-09/MP-10/MP-11: 993 keeps lifecycle capabilities discoverable without an acquisition offer (peer432).
+/// Environments 982 hold an operation read until it changes, add MCPs and Skills that project files declare, and Check without a model (peer423 carries them in the record).
 pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 991;

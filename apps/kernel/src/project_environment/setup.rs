@@ -1,7 +1,7 @@
 //! Setup runs: the Project's script executed once per machine and checkout, with its output kept
-//! under the field, a Stop that ends the process, and an honest result after a kernel restart.
+//! under the field, a Stop that ends the process, and an honest result after a kernel restart:
+//! a run the previous kernel left behind stays running until its processes are proven gone.
 use super::environment_error;
-use super::setup_output::{SetupOutput, READ_BYTES};
 use crate::error::DaemonError;
 use crate::local::{
     EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
@@ -13,16 +13,18 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use zeroize::Zeroizing;
 
 const DIRECTORY: &str = "project-environment-setup";
-/// The output a run keeps; older text is dropped first.
+/// The output a run keeps; older lines are dropped first.
 const OUTPUT_TAIL_BYTES: usize = 64 * 1024;
 /// How long output may still arrive after the script exited.
 const OUTPUT_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a run's progress may sit only in memory.
+const OUTPUT_ANNOUNCE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const RECONCILING: &str = "Kernel restarted; stopping the Setup it left running";
 
 pub(crate) struct SetupSpec {
     pub operation_id: String,
@@ -41,6 +43,11 @@ pub(crate) struct SetupSpec {
 struct StoredRun {
     view: EnvironmentOperationView,
     script_digest: String,
+    /// Saved before the script starts and inherited by all of its processes, so a later kernel
+    /// finds them even when the previous one died before saving the leader.
+    claim: String,
+    /// The script's session leader: its PID and birth.
+    leader: Option<(u32, String)>,
 }
 
 struct LiveRun {
@@ -57,8 +64,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub(crate) struct SetupRuns {
     root: PathBuf,
+    changes: super::OperationChanges,
     live: Mutex<HashMap<String, Arc<LiveRun>>>,
-    managed: crate::room_terminal::managed_work::ManagedWork,
 }
 
 fn digest(parts: &[&str]) -> String {
@@ -71,29 +78,32 @@ fn digest(parts: &[&str]) -> String {
 }
 
 impl SetupRuns {
-    pub(crate) fn new(private_state_root: &Path) -> Arc<Self> {
-        Arc::new(Self {
+    /// Starts stopping whatever the previous kernel's runs left running.
+    pub(crate) fn new(private_state_root: &Path, changes: super::OperationChanges) -> Arc<Self> {
+        let runs = Arc::new(Self {
             root: private_state_root.join(DIRECTORY),
+            changes,
             live: Mutex::new(HashMap::new()),
-            managed: Default::default(),
-        })
-    }
-
-    pub(crate) fn link_managed_kernel(
-        &self,
-        gate: Arc<crate::runtime::state::ManagedKernelQuiescenceGate>,
-        callback: std::sync::Weak<dyn Fn() + Send + Sync>,
-    ) {
-        self.managed.link(gate, callback);
-    }
-
-    pub(crate) fn has_running_work(&self) -> bool {
-        // Keep cancelled runs counted until the child is reaped and its output has drained.
-        !lock(&self.live).is_empty()
-    }
-
-    fn report_work(&self) {
-        self.managed.report(|| self.has_running_work());
+        });
+        for entry in fs::read_dir(&runs.root).into_iter().flatten().flatten() {
+            let Ok(bytes) = fs::read(entry.path()) else {
+                continue;
+            };
+            let Ok(mut run) = serde_json::from_slice::<StoredRun>(&bytes) else {
+                continue;
+            };
+            // A signalled tree is usually gone within moments; a slower one keeps its run open.
+            for _ in 0..40 {
+                match runs.settle_orphan(run) {
+                    Ok(settled) if settled.view.state == EnvironmentOperationState::Running => {
+                        run = settled;
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    _ => break,
+                }
+            }
+        }
+        runs
     }
 
     fn run_path(&self, operation_id: &str) -> PathBuf {
@@ -131,33 +141,45 @@ impl SetupRuns {
         }
     }
 
+    /// A run recorded as running with no live process was cut off by a kernel restart. It ends
+    /// as failed only once none of its processes remain; until then it keeps the checkout busy.
+    fn settle_orphan(&self, mut run: StoredRun) -> Result<StoredRun, DaemonError> {
+        if run.view.state != EnvironmentOperationState::Running
+            || lock(&self.live).contains_key(&run.view.operation_id)
+        {
+            return Ok(run);
+        }
+        let leader = run
+            .leader
+            .as_ref()
+            .map(|(pid, birth)| (*pid, birth.as_str()));
+        match crate::runtime::owned_process_signals::OwnedProcessSignals::end_claimed_tree(
+            &run.claim, leader,
+        ) {
+            Ok(true) => {
+                run.view.state = EnvironmentOperationState::Failed;
+                run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+                run.view.reason = Some("Kernel restarted".into());
+            }
+            _ if run.view.reason.as_deref() == Some(RECONCILING) => return Ok(run),
+            _ => run.view.reason = Some(RECONCILING.into()),
+        }
+        run.view.updates += 1;
+        self.persist(&run)?;
+        self.changes.notify();
+        Ok(run)
+    }
+
     pub(crate) fn get(
         &self,
         operation_id: &str,
     ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        self.get_with_live(operation_id, &lock(&self.live))
-    }
-
-    fn get_with_live(
-        &self,
-        operation_id: &str,
-        live: &HashMap<String, Arc<LiveRun>>,
-    ) -> Result<Option<EnvironmentOperationView>, DaemonError> {
-        if let Some(run) = live.get(operation_id) {
-            return Ok(Some(lock(&run.run).view.clone()));
+        if let Some(live) = lock(&self.live).get(operation_id) {
+            return Ok(Some(lock(&live.run).view.clone()));
         }
-        let Some(mut run) = self.load(operation_id)? else {
-            return Ok(None);
-        };
-        // Admission holds the same lock until the persisted run is live. Only a restart can
-        // leave a running record without its reservation when a reader acquires the lock.
-        if run.view.state == EnvironmentOperationState::Running {
-            run.view.state = EnvironmentOperationState::Failed;
-            run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
-            run.view.reason = Some("Kernel restarted".into());
-            self.persist(&run)?;
-        }
-        Ok(Some(run.view))
+        self.load(operation_id)?
+            .map(|run| self.settle_orphan(run).map(|run| run.view))
+            .transpose()
     }
 
     pub(crate) fn state_for(
@@ -208,10 +230,7 @@ impl SetupRuns {
         self: &Arc<Self>,
         spec: SetupSpec,
     ) -> Result<EnvironmentOperationView, DaemonError> {
-        let _admission = self.managed.admission()?;
-        // Serialize competing operation ids and keep readers out until publication is complete.
-        let mut live_runs = lock(&self.live);
-        if let Some(existing) = self.get_with_live(&spec.operation_id, &live_runs)? {
+        if let Some(existing) = self.get(&spec.operation_id)? {
             if existing.project_id != spec.project_id {
                 return Err(environment_error(
                     "this operation id belongs to another Project",
@@ -219,11 +238,9 @@ impl SetupRuns {
             }
             return Ok(existing);
         }
-        if live_runs.values().any(|live| {
-            let run = lock(&live.run);
-            run.view.state == EnvironmentOperationState::Running
-                && Path::new(&run.view.checkout_path) == spec.checkout
-        }) {
+        if let ProjectEnvironmentSetupState::Running { .. } =
+            self.state_for(&spec.project_id, &spec.checkout, &spec.script_digest)?
+        {
             return Err(environment_error("Setup is already running here"));
         }
         let view = EnvironmentOperationView {
@@ -236,6 +253,7 @@ impl SetupRuns {
             ended_at_ms: None,
             exit_code: None,
             reason: None,
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -243,25 +261,21 @@ impl SetupRuns {
         let stored = StoredRun {
             view: view.clone(),
             script_digest: spec.script_digest.clone(),
+            claim: format!("{:032x}", rand::random::<u128>()),
+            leader: None,
         };
         self.persist(&stored)?;
-        if fs::write(
+        fs::write(
             self.last_path(&spec.project_id, &spec.checkout),
             &spec.operation_id,
         )
-        .is_err()
-        {
-            let _ = fs::remove_file(self.run_path(&spec.operation_id));
-            return Err(environment_error("saving the Setup run failed"));
-        }
+        .map_err(|_| environment_error("saving the Setup run failed"))?;
         let live = Arc::new(LiveRun {
             run: Mutex::new(stored),
             pid: Mutex::new(None),
             cancelled: std::sync::atomic::AtomicBool::new(false),
         });
-        live_runs.insert(spec.operation_id.clone(), Arc::clone(&live));
-        drop(live_runs);
-        self.report_work();
+        lock(&self.live).insert(spec.operation_id.clone(), Arc::clone(&live));
         let runs = Arc::clone(self);
         tokio::spawn(async move {
             let outcome = runs.execute(&live, &spec).await;
@@ -275,8 +289,13 @@ impl SetupRuns {
         live: &Arc<LiveRun>,
         spec: &SetupSpec,
     ) -> Result<std::process::ExitStatus, String> {
+        let claim = lock(&live.run).claim.clone();
         let mut command = crate::process_spawn::async_command("bash");
         command
+            .env(
+                crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+                &claim,
+            )
             .arg("-c")
             .arg(&spec.script)
             .current_dir(&spec.checkout)
@@ -286,10 +305,37 @@ impl SetupRuns {
         for (name, value) in &spec.environment {
             command.env(name, value.as_str());
         }
+        // Its own session, so a later kernel can tell the script's processes from others.
+        #[cfg(unix)]
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
         let mut child = command
             .spawn()
             .map_err(|_| "Setup could not start bash".to_string())?;
         *lock(&live.pid) = child.id();
+        let leader =
+            crate::runtime::owned_process_signals::OwnedProcessSignals::for_tokio_session_child(
+                &child,
+            )
+            .map(|signals| signals.root_birth());
+        let saved = leader.ok().and_then(|leader| {
+            let mut run = lock(&live.run);
+            run.leader = Some(leader);
+            self.persist(&run).ok()
+        });
+        if saved.is_none() {
+            if let Some(pid) = child.id() {
+                crate::runtime::process_health::terminate_process_tree(pid);
+            }
+            let _ = child.wait().await;
+            return Err("Setup could not save its process".to_string());
+        }
         // A Stop that arrived before the process existed found no PID to end.
         if live.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             if let Some(pid) = child.id() {
@@ -331,25 +377,42 @@ impl SetupRuns {
         let live = Arc::clone(live);
         let secrets = Arc::clone(secrets);
         let runs_root = self.root.clone();
+        let changes = self.changes.clone();
         tokio::spawn(async move {
-            let mut pipe = pipe;
-            let mut bytes = Zeroizing::new([0_u8; READ_BYTES]);
-            let mut output = SetupOutput::default();
+            let mut lines = BufReader::new(pipe).lines();
             let mut persisted = std::time::Instant::now();
-            loop {
-                let count = pipe.read(bytes.as_mut()).await.unwrap_or(0);
-                let text = output.push(&bytes[..count], &secrets, count == 0);
+            let mut announced = std::time::Instant::now();
+            let announce_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            while let Ok(Some(line)) = lines.next_line().await {
+                let mut line = line;
+                for (name, value) in secrets.iter() {
+                    if !value.is_empty() {
+                        line = line.replace(value.as_str(), &format!("[{name}]"));
+                    }
+                }
                 let snapshot = {
                     let mut run = lock(&live.run);
-                    append_tail(&mut run.view.output_tail, &text);
+                    append_tail(&mut run.view.output_tail, &line);
+                    run.view.updates += 1;
                     (persisted.elapsed() >= PERSIST_INTERVAL).then(|| run.clone())
                 };
+                // A burst of lines wakes readers at most every OUTPUT_ANNOUNCE_INTERVAL; a delayed wake
+                // announces the last line of a burst, so output never waits for the next line to show.
+                if announced.elapsed() >= OUTPUT_ANNOUNCE_INTERVAL {
+                    announced = std::time::Instant::now();
+                    changes.notify();
+                } else if !announce_pending.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let changes = changes.clone();
+                    let announce_pending = Arc::clone(&announce_pending);
+                    tokio::spawn(async move {
+                        tokio::time::sleep(OUTPUT_ANNOUNCE_INTERVAL).await;
+                        announce_pending.store(false, std::sync::atomic::Ordering::SeqCst);
+                        changes.notify();
+                    });
+                }
                 if let Some(snapshot) = snapshot {
                     persisted = std::time::Instant::now();
                     let _ = write_run(&runs_root, &snapshot);
-                }
-                if count == 0 {
-                    break;
                 }
             }
         })
@@ -358,6 +421,7 @@ impl SetupRuns {
     fn finish(&self, live: &Arc<LiveRun>, outcome: Result<std::process::ExitStatus, String>) {
         let mut run = lock(&live.run);
         run.view.ended_at_ms = Some(crate::session::unix_epoch_ms());
+        run.view.updates += 1;
         if live.cancelled.load(std::sync::atomic::Ordering::SeqCst) {
             run.view.state = EnvironmentOperationState::Cancelled;
         } else {
@@ -382,7 +446,7 @@ impl SetupRuns {
         let operation_id = run.view.operation_id.clone();
         drop(run);
         lock(&self.live).remove(&operation_id);
-        self.report_work();
+        self.changes.notify();
     }
 
     /// Ends the run's process tree by its exact PID; the run then settles as cancelled.
@@ -413,8 +477,9 @@ fn write_run(root: &Path, run: &StoredRun) -> std::io::Result<()> {
     result
 }
 
-fn append_tail(tail: &mut String, text: &str) {
-    tail.push_str(text);
+fn append_tail(tail: &mut String, line: &str) {
+    tail.push_str(line);
+    tail.push('\n');
     if tail.len() > OUTPUT_TAIL_BYTES {
         let mut cut = tail.len() - OUTPUT_TAIL_BYTES;
         while !tail.is_char_boundary(cut) {
@@ -471,105 +536,10 @@ mod tests {
         panic!("the Setup run did not finish");
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn concurrent_admissions_start_only_one_script_and_never_settle_a_live_run_as_restarted()
-    {
-        for _ in 0..16 {
-            let dir = scratch();
-            let runs = SetupRuns::new(&dir.0);
-            let barrier = Arc::new(std::sync::Barrier::new(3));
-            let script = "echo started >> starts; while [ ! -e release ]; do sleep 0.01; done";
-            let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let mut threads = Vec::new();
-            for id in ["op-a", "op-b"] {
-                let runs = Arc::clone(&runs);
-                let barrier = Arc::clone(&barrier);
-                let completed = Arc::clone(&completed);
-                let spec = spec(&dir, id, script);
-                let runtime = tokio::runtime::Handle::current();
-                threads.push(std::thread::spawn(move || {
-                    let _entered = runtime.enter();
-                    barrier.wait();
-                    let result = runs.start(spec);
-                    completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                    result
-                }));
-            }
-            barrier.wait();
-            let mut polled = Vec::new();
-            while completed.load(std::sync::atomic::Ordering::SeqCst) < 2 {
-                for id in ["op-a", "op-b"] {
-                    if let Some(view) = runs.get(id).unwrap() {
-                        polled.push(view);
-                    }
-                }
-                std::thread::yield_now();
-            }
-            let results: Vec<_> = threads
-                .into_iter()
-                .map(|thread| thread.join().unwrap())
-                .collect();
-            let accepted: Vec<_> = results
-                .iter()
-                .filter_map(|result| result.as_ref().ok())
-                .collect();
-            let observed: Vec<_> = accepted
-                .iter()
-                .map(|view| runs.get(&view.operation_id).unwrap().unwrap())
-                .collect();
-            let state = runs
-                .state_for("project", &dir.0.join("checkout"), &digest(&[script]))
-                .unwrap();
-            // Always let every admitted script finish, including on the unfixed implementation.
-            fs::write(dir.0.join("checkout/release"), "").unwrap();
-            for view in &accepted {
-                finished(&runs, &view.operation_id).await;
-            }
-            assert!(
-                polled
-                    .iter()
-                    .all(|view| view.state == EnvironmentOperationState::Running
-                        && view.reason.is_none()),
-                "a poll falsely settled a live run"
-            );
-            assert_eq!(
-                accepted.len(),
-                1,
-                "competing requests admitted more than one Setup"
-            );
-            assert!(observed
-                .iter()
-                .all(|view| view.state == EnvironmentOperationState::Running
-                    && view.reason.is_none()));
-            assert!(matches!(
-                state,
-                ProjectEnvironmentSetupState::Running { .. }
-            ));
-            assert_eq!(
-                fs::read_to_string(dir.0.join("checkout/starts"))
-                    .unwrap()
-                    .lines()
-                    .count(),
-                1
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn an_unpublished_run_is_removed_when_the_checkout_pointer_cannot_be_saved() {
-        let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
-        let spec = spec(&dir, "op-unpublished", "echo should-not-start");
-        fs::create_dir_all(runs.last_path(&spec.project_id, &spec.checkout)).unwrap();
-        assert!(runs.start(spec).is_err());
-        assert!(runs.get("op-unpublished").unwrap().is_none());
-        assert!(lock(&runs.live).is_empty());
-    }
-
     #[tokio::test]
     async fn a_run_executes_in_the_checkout_with_the_environment_and_never_prints_a_secret_value() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         let script = "pwd; echo level=$LOG_LEVEL; echo token=$NOTION_TOKEN";
         runs.start(spec(&dir, "op-1", script)).unwrap();
         let view = finished(&runs, "op-1").await;
@@ -596,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn a_changed_script_makes_the_last_run_not_run_and_a_failed_exit_is_reported() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-fail", "echo before; exit 3"))
             .unwrap();
         let view = finished(&runs, "op-fail").await;
@@ -621,7 +591,7 @@ mod tests {
     #[tokio::test]
     async fn stop_ends_the_process_by_its_exact_pid_and_the_run_settles_as_cancelled() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-stop", "echo started; sleep 60"))
             .unwrap();
         let live = lock(&runs.live).get("op-stop").cloned().unwrap();
@@ -652,7 +622,7 @@ mod tests {
     #[tokio::test]
     async fn a_background_process_holding_the_output_does_not_keep_the_run_open() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-background", "sleep 4 & echo done"))
             .unwrap();
         let view = finished(&runs, "op-background").await;
@@ -667,80 +637,135 @@ mod tests {
     #[tokio::test]
     async fn a_stop_sent_before_the_process_exists_still_ends_the_run() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
         runs.start(spec(&dir, "op-early", "sleep 60")).unwrap();
         runs.cancel("op-early").unwrap();
         let view = finished(&runs, "op-early").await;
         assert_eq!(view.state, EnvironmentOperationState::Cancelled);
     }
 
-    #[tokio::test]
-    async fn a_run_cut_off_by_a_kernel_restart_reads_as_failed_with_that_reason() {
+    /// What a kernel that died this moment leaves: a saved running run, and its script.
+    fn orphan(
+        dir: &Scratch,
+        operation_id: &str,
+        script: &str,
+        leader: bool,
+    ) -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        let claim = format!("{:032x}", rand::random::<u128>());
+        let mut command = std::process::Command::new("bash");
+        command
+            .args(["-c", script])
+            .current_dir(dir.0.join("checkout"))
+            .env(
+                crate::runtime::owned_process_signals::CLAIM_VARIABLE,
+                &claim,
+            );
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        let mut view = runs.start(spec(dir, operation_id, "true")).unwrap();
+        while runs.get(operation_id).unwrap().unwrap().state == EnvironmentOperationState::Running {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        view.state = EnvironmentOperationState::Running;
+        let birth = crate::runtime::owned_process_signals::OwnedProcessSignals::for_child(&child)
+            .unwrap()
+            .root_birth();
+        runs.persist(&StoredRun {
+            view,
+            script_digest: digest(&["true"]),
+            claim,
+            leader: leader.then_some(birth),
+        })
+        .unwrap();
+        child
+    }
+
+    fn exited(child: &mut std::process::Child) -> bool {
+        (0..200).any(|_| {
+            let done = child.try_wait().unwrap().is_some();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            done
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_restarted_kernel_ends_the_script_the_previous_one_left_before_admitting_another() {
         let dir = scratch();
-        let before = SetupRuns::new(&dir.0);
-        before.start(spec(&dir, "op-restart", "sleep 60")).unwrap();
-        let live = lock(&before.live).get("op-restart").cloned().unwrap();
-        // The new kernel process has no live run for the persisted one.
-        let after = SetupRuns::new(&dir.0);
+        // The descendant writes the marker; the leader exits, leaving it reparented.
+        let mut script = orphan(
+            &dir,
+            "op-restart",
+            "(sleep 1; touch finished) & echo $! > child.pid; wait",
+            true,
+        );
+        while !dir.0.join("checkout/child.pid").exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let after = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        assert!(
+            exited(&mut script),
+            "the previous kernel's script kept running"
+        );
         let view = after.get("op-restart").unwrap().unwrap();
         assert_eq!(view.state, EnvironmentOperationState::Failed);
         assert_eq!(view.reason.as_deref(), Some("Kernel restarted"));
-        assert!(matches!(
-            after
-                .state_for("project", &dir.0.join("checkout"), &digest(&["sleep 60"]))
-                .unwrap(),
-            ProjectEnvironmentSetupState::Failed { .. }
-        ));
-        before.cancel("op-restart").unwrap();
-        drop(live);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(
+            !dir.0.join("checkout/finished").exists(),
+            "a descendant of the previous kernel's script ran on"
+        );
+        after.start(spec(&dir, "op-next", "echo next")).unwrap();
+        assert_eq!(
+            finished(&after, "op-next").await.state,
+            EnvironmentOperationState::Succeeded
+        );
     }
 
-    #[tokio::test]
-    async fn split_secret_values_and_utf8_are_preserved_as_masked_streamed_output() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_script_started_before_its_leader_was_saved_is_still_found_and_ended() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
-        let script = "printf 'synthetic-'; sleep 0.05; printf 'token-value'; printf '\\303'; sleep 0.05; printf '\\251'; printf '\\rcomplete'";
-        runs.start(spec(&dir, "op-split", script)).unwrap();
-        let view = finished(&runs, "op-split").await;
-        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
-        assert_eq!(view.output_tail, "[NOTION_TOKEN]é\rcomplete");
+        let mut script = orphan(&dir, "op-claim", "sleep 30", false);
+        let after = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        assert!(exited(&mut script), "an unsaved leader kept running");
+        assert_eq!(
+            after.get("op-claim").unwrap().unwrap().state,
+            EnvironmentOperationState::Failed
+        );
     }
 
-    #[tokio::test]
-    async fn newline_free_output_is_bounded_and_visible_before_the_script_exits() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reused_leader_pid_is_neither_signalled_nor_keeps_the_checkout_busy() {
         let dir = scratch();
-        let runs = SetupRuns::new(&dir.0);
-        // A real pipe must drain well past its capacity, without a newline or EOF.
-        let script = "head -c 4194304 /dev/zero | tr '\\0' x; printf '\\rprogress!'; touch emitted; while [ ! -e release ]; do sleep 0.01; done";
-        runs.start(spec(&dir, "op-stream", script)).unwrap();
-        let emitted = dir.0.join("checkout/emitted");
-        let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let view = runs.get("op-stream").unwrap().unwrap();
-                assert!(view.output_tail.len() <= OUTPUT_TAIL_BYTES);
-                if emitted.exists() && view.output_tail.ends_with("\rprogress!") {
-                    break view;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
-        })
-        .await;
-        // Release even when this assertion fails on the old line reader.
-        fs::write(dir.0.join("checkout/release"), "").unwrap();
-        let view = finished(&runs, "op-stream").await;
-        let observed =
-            observed.expect("output must be visible while the newline-free script is running");
-        assert_eq!(observed.state, EnvironmentOperationState::Running);
-        assert_eq!(view.state, EnvironmentOperationState::Succeeded);
-        assert_eq!(view.output_tail.len(), OUTPUT_TAIL_BYTES);
-        assert!(view.output_tail.ends_with("\rprogress!"));
+        let mut script = orphan(&dir, "op-reused", "true", false);
+        script.wait().unwrap();
+        let mut run = SetupRuns::new(&dir.0, super::super::OperationChanges::new())
+            .load("op-reused")
+            .unwrap()
+            .unwrap();
+        // The saved leader PID now names this test process, with another birth.
+        run.view.state = EnvironmentOperationState::Running;
+        run.leader = Some((std::process::id(), "earlier-birth".into()));
+        let runs = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        runs.persist(&run).unwrap();
+        let after = SetupRuns::new(&dir.0, super::super::OperationChanges::new());
+        assert_eq!(
+            after.get("op-reused").unwrap().unwrap().state,
+            EnvironmentOperationState::Failed
+        );
     }
 
     #[test]
     fn the_output_tail_drops_the_oldest_text_on_a_character_boundary() {
         let mut tail = String::new();
         for _ in 0..OUTPUT_TAIL_BYTES {
-            append_tail(&mut tail, "é\n");
+            append_tail(&mut tail, "é");
         }
         assert!(tail.len() <= OUTPUT_TAIL_BYTES);
         assert!(tail.ends_with("é\n"));

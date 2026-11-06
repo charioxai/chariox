@@ -367,7 +367,7 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
     return {
       kind: "env",
       raw: trimmed,
-      args: trimmed.replace(/^\/(?:env|environment)\s*/, "").trim().split(/\s+/).filter(Boolean),
+      args: trimmed.replace(/^\/(?:environment|env)\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
   if (trimmed.startsWith("/script")) {

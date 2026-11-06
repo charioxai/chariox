@@ -11,6 +11,7 @@ import type {
   SkillImportOutcome,
   ExtensionKind,
 } from "./cli-types.js"
+import { projectEnvironmentActions } from "./project-environment-command.js"
 import { formatAgentLabel } from "./agent-label.js"
 import { parseVaultUnlockDurationArgument, vaultUnlockDurationUsage, type VaultUnlockDuration } from "@chariox/kernel-client/ipc-requests"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -47,6 +48,7 @@ export type CapabilityCommandHandlerDeps = {
   getSkill?: (name: string) => Promise<CharioxSkillMetadata>
   grantAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
   revokeAgentSkill?: (agentRef: string, name: string) => Promise<AgentInstance>
+  projectEnvironmentCommand?: (args: readonly string[]) => Promise<string>
   listEnvironments?: () => Promise<CharioxEnvironmentConfig[]>
   getEnvironment?: (name: string) => Promise<CharioxEnvironmentConfig>
   registerEnvironment?: (config: CharioxEnvironmentConfig) => Promise<CharioxEnvironmentConfig>
@@ -365,6 +367,14 @@ export async function handleEnvironmentSlashCommand(
   command: Extract<ParsedSlashCommand, { kind: "env" }>,
 ): Promise<void> {
   const [action] = command.args
+  if (command.raw.startsWith("/environment") && deps.projectEnvironmentCommand) {
+    // `/environment` is the Project's Environment; `/env` keeps the Script runtimes.
+    if (projectEnvironmentActions.some((known) => known === action)) {
+      deps.appendNotice(await deps.projectEnvironmentCommand(command.args))
+      return
+    }
+    return deps.flashFooter(`usage: /environment ${projectEnvironmentActions.join(" | ")}`, "error")
+  }
   if (!action || action === "list" || action === "ls") {
     if (!deps.listEnvironments) return deps.flashFooter("Script runtime registry is not available in this daemon", "error")
     const environments = await deps.listEnvironments()

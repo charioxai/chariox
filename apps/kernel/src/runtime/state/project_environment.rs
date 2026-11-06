@@ -1,18 +1,55 @@
 //! The Project Environment as the kernel answers it: read, save, a Secret's value, and Setup runs.
 use super::*;
 use crate::local::{
-    EnvironmentOperationRequest, GetProjectEnvironmentRequest, ProjectEnvironmentFileView,
-    ProjectEnvironmentSecretView, ProjectEnvironmentSetupField, ProjectEnvironmentSetupState,
-    ProjectEnvironmentView, RunProjectEnvironmentSetupRequest, SaveProjectEnvironmentRequest,
-    SetProjectEnvironmentSecretRequest,
+    EnvironmentEntryKind, EnvironmentOperationRequest, EnvironmentOperationState,
+    EnvironmentOperationView, ExtensionPresence, GetEnvironmentOperationRequest,
+    GetProjectEnvironmentRequest, ProjectEnvironmentExtension, ProjectEnvironmentExtensionView,
+    ProjectEnvironmentFileView, ProjectEnvironmentSecretView, ProjectEnvironmentSetupField,
+    ProjectEnvironmentSetupState, ProjectEnvironmentView, RunProjectEnvironmentSetupRequest,
+    SaveProjectEnvironmentRequest, SetProjectEnvironmentSecretRequest,
 };
 use crate::project_environment::{
-    environment_error, file_presence, project_environment_vault_service, secret_presence,
-    ProjectEnvironmentRecord, ProjectEnvironmentStore, SaveOutcome, SetupSpec,
-    PROJECT_ENVIRONMENT_SCHEMA,
+    declared_in, environment_error, file_presence, project_environment_vault_service,
+    secret_presence, ExtensionEntry, ProjectEnvironmentRecord, ProjectEnvironmentStore,
+    RegistrationHost, SaveOutcome, SetupSpec, UserRegistrations, PROJECT_ENVIRONMENT_SCHEMA,
 };
 use std::path::{Path, PathBuf};
 
+fn extension_entry(extension: ProjectEnvironmentExtension) -> ExtensionEntry {
+    ExtensionEntry {
+        name: extension.name,
+        source: extension.source,
+    }
+}
+
+/// A project-file entry is present while its declaring file still declares it in this checkout (Git carries the file,
+/// so a clone has it); a registration is present while this kernel holds it.
+fn extension_views(
+    kind: EnvironmentEntryKind,
+    checkout: &Path,
+    entries: &[ExtensionEntry],
+) -> Vec<ProjectEnvironmentExtensionView> {
+    entries
+        .iter()
+        .map(|entry| {
+            let here = match entry.file_path() {
+                Some(path) => declared_in(checkout, path).contains(&entry.name),
+                None => UserRegistrations.has(kind, &entry.name),
+            };
+            ProjectEnvironmentExtensionView {
+                name: entry.name.clone(),
+                source: entry.source.clone(),
+                presence: if here {
+                    ExtensionPresence::Present
+                } else {
+                    ExtensionPresence::Missing
+                },
+            }
+        })
+        .collect()
+}
+
+const OPERATION_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 const MAX_SECRET_VALUE_BYTES: usize = 64 * 1024;
 
 impl KernelRuntimeState {
@@ -47,6 +84,22 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
+    /// The Project a room's Environment tool works on.
+    pub(super) fn tool_project(
+        &self,
+        session: &crate::session::RuntimeSession,
+        owner_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project = self
+            .owned
+            .session_store
+            .environment_project(session)
+            .ok_or_else(|| {
+                environment_error("this folder belongs to no Project of yours on this machine")
+            })?;
+        self.owned_project(project.id(), owner_user_id)
+    }
+
     /// The Project's own folder, a git worktree of it or a worktree of one of its sessions: nothing else is a checkout.
     pub(super) fn project_checkout(
         &self,
@@ -61,19 +114,10 @@ impl KernelRuntimeState {
         let Some(requested) = requested else {
             return Ok(PathBuf::from(first));
         };
-        let known = project.workspace_ids().iter().any(|id| id == requested)
-            || self
-                .owned
-                .session_store
-                .read()
-                .sessions_in_project(project.id())?
-                .iter()
-                .any(|session| session.worktree_id() == requested)
-            || project.workspace_ids().iter().any(|id| {
-                crate::runtime::workspace_worktrees::list_workspace_worktrees(id, None).is_ok_and(
-                    |worktrees| worktrees.iter().any(|worktree| worktree.path == requested),
-                )
-            });
+        let known = self
+            .owned
+            .session_store
+            .project_has_checkout(project, requested)?;
         if !known {
             return Err(environment_error(
                 "the folder is not a checkout of this Project",
@@ -129,6 +173,8 @@ impl KernelRuntimeState {
                     ProjectEnvironmentFileView::new(path.clone(), file_presence(&checkout, path))
                 })
                 .collect(),
+            mcps: extension_views(EnvironmentEntryKind::Mcp, &checkout, &record.mcps),
+            skills: extension_views(EnvironmentEntryKind::Skill, &checkout, &record.skills),
             changed_at_ms: record.changed_at_ms,
             machine_label: Self::machine_label(&config),
             checkout_path: checkout.to_string_lossy().into_owned(),
@@ -167,6 +213,8 @@ impl KernelRuntimeState {
                 .map(|secret| secret.name)
                 .collect(),
             files: request.files.into_iter().map(|file| file.path).collect(),
+            mcps: request.mcps.into_iter().map(extension_entry).collect(),
+            skills: request.skills.into_iter().map(extension_entry).collect(),
             ..Default::default()
         };
         fields.validate().map_err(environment_error)?;
@@ -265,16 +313,43 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::EnvironmentOperation { operation })
     }
 
-    pub(crate) fn get_environment_operation(
+    /// The operation now, or, when the reader says how many updates it has seen, the first state with
+    /// more of them (or an ended one), at most `OPERATION_WAIT` later.
+    pub(crate) async fn get_environment_operation(
         &self,
-        request: EnvironmentOperationRequest,
+        request: GetEnvironmentOperationRequest,
         caller_user_id: &str,
     ) -> Result<LocalDaemonResponse, DaemonError> {
+        let mut changes = self.owned.environment_operation_changes.subscribe();
+        let deadline = tokio::time::Instant::now() + OPERATION_WAIT;
+        loop {
+            let operation =
+                self.read_environment_operation(&request.operation_id, caller_user_id)?;
+            let seen = request.wait_after_updates;
+            let settled = seen.is_none_or(|seen| {
+                operation.updates > seen || operation.state != EnvironmentOperationState::Running
+            });
+            if settled
+                || tokio::time::timeout_at(deadline, changes.changed())
+                    .await
+                    .is_err()
+            {
+                return Ok(LocalDaemonResponse::EnvironmentOperation { operation });
+            }
+        }
+    }
+
+    /// The operation as it is now, for the owner of its Project.
+    pub(crate) fn read_environment_operation(
+        &self,
+        operation_id: &str,
+        caller_user_id: &str,
+    ) -> Result<EnvironmentOperationView, DaemonError> {
         let operation = self
-            .environment_operation(&request.operation_id)?
+            .environment_operation(operation_id)?
             .ok_or_else(|| environment_error("this operation is unknown"))?;
         self.owned_project(&operation.project_id, caller_user_id)?;
-        Ok(LocalDaemonResponse::EnvironmentOperation { operation })
+        Ok(operation)
     }
 
     pub(crate) fn cancel_environment_operation(
@@ -291,42 +366,14 @@ impl KernelRuntimeState {
         })
     }
 
-    /// Projects that own `checkout`: it is one of their folders or a worktree of one of their sessions.
-    fn projects_owning_checkout(&self, checkout: &Path) -> Vec<crate::session::RuntimeProject> {
-        let by_session: std::collections::BTreeSet<String> = self
-            .owned
-            .session_store
-            .list_sessions()
-            .into_iter()
-            .filter(|session| Path::new(session.worktree_id()) == checkout)
-            .map(|session| session.project_id().to_string())
-            .collect();
-        self.owned
-            .session_store
-            .durable_projects()
-            .into_iter()
-            .filter(|project| {
-                by_session.contains(project.id())
-                    || project
-                        .workspace_ids()
-                        .iter()
-                        .any(|id| Path::new(id) == checkout)
-            })
-            .collect()
-    }
-
     /// A new worktree of a Project gets the Environment's Files outside Git copied in.
     pub(crate) fn copy_environment_files_into_worktree(
         &self,
         base: &Path,
         worktree: &Path,
     ) -> Result<(), DaemonError> {
-        for project in self.projects_owning_checkout(base) {
-            if let Some(record) = self.environment_store().load(project.id())? {
-                crate::project_environment::copy_environment_files(base, worktree, &record.files)?;
-            }
-        }
-        Ok(())
+        self.environment_store()
+            .copy_files_into_worktree(&self.owned.session_store, base, worktree)
     }
 
     /// Moves and slices export the listed files with the checkout, so the ignore rules must know them.
@@ -444,12 +491,15 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<crate::provider::ProviderCredentialEnvironment, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
-        let Some(record) = self.environment_store().load(session.project_id())? else {
+        let Some(project) = self.owned.session_store.environment_project(&session) else {
+            return Ok(Default::default());
+        };
+        let Some(record) = self.environment_store().load(project.id())? else {
             return Ok(Default::default());
         };
         match crate::project_environment::project_launch_environment(
             &self.owned.config_projection.snapshot(),
-            session.project_id(),
+            project.id(),
             &record,
         ) {
             Ok(launch) => Ok(launch.environment),

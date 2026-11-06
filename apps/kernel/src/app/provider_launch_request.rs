@@ -320,6 +320,7 @@ impl DaemonApp {
         request = apply_metaagent_launch_policy(request, agent.as_ref());
         crate::project_environment::attach_project_provider_environment(
             &self.config,
+            &self.sessions,
             &session,
             agent.as_ref(),
             request,

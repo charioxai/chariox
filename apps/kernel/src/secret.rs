@@ -703,7 +703,30 @@ impl RuntimeSecretService {
 
     pub fn resolve_mcp_secret(&self, credential_id: &str) -> Result<String, DaemonError> {
         let credential = self.credential(credential_id)?;
+        if credential
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.use_binding.is_some())
+        {
+            return Err(secret_error(
+                "credential_policy",
+                "a bound MCP credential needs an observed HTTP destination".into(),
+            ));
+        }
         self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
+        self.resolve_secret(credential)
+    }
+
+    pub fn resolve_http_mcp_secret(
+        &self,
+        credential_id: &str,
+        url: &str,
+    ) -> Result<String, DaemonError> {
+        let credential = self.credential(credential_id)?;
+        self.ensure_use_allowed(credential, UserCredentialUse::Mcp)?;
+        let target = url::Url::parse(url)
+            .map_err(|_| secret_error("credential_policy", "invalid MCP endpoint URL".into()))?;
+        self.ensure_host_allowed(credential, &target)?;
         self.resolve_secret(credential)
     }
 
@@ -1064,7 +1087,7 @@ impl RuntimeSecretService {
                 (&binding.target, requested),
                 (
                     crate::config::VaultUseTarget::Site { .. },
-                    UserCredentialUse::Browser | UserCredentialUse::Http
+                    UserCredentialUse::Browser | UserCredentialUse::Http | UserCredentialUse::Mcp
                 ) | (
                     crate::config::VaultUseTarget::Totp { .. },
                     UserCredentialUse::Browser

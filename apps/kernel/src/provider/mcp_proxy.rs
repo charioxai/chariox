@@ -125,6 +125,23 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
     backing: &CharioxMcpServerConfig,
     payload: serde_json::Value,
 ) -> Result<serde_json::Value, DaemonError> {
+    dispatch_provider_mcp_proxy_request_with_environment(
+        owner_provider_run_id,
+        owner_session_id,
+        backing,
+        payload,
+        &std::collections::BTreeMap::new(),
+    )
+}
+
+/// The Project's resolved Secrets supply stdio variables and HTTP authentication.
+pub(crate) fn dispatch_provider_mcp_proxy_request_with_environment(
+    owner_provider_run_id: &str,
+    owner_session_id: &str,
+    backing: &CharioxMcpServerConfig,
+    payload: serde_json::Value,
+    project_environment: &std::collections::BTreeMap<String, String>,
+) -> Result<serde_json::Value, DaemonError> {
     let is_tools_list = payload
         .get("method")
         .and_then(serde_json::Value::as_str)
@@ -142,6 +159,7 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
             bearer_token_env_var.as_deref(),
             http_headers,
             env_http_headers,
+            project_environment,
             payload,
             backing.tool_timeout_sec,
         ),
@@ -150,7 +168,13 @@ pub(crate) fn dispatch_provider_mcp_proxy_request(
             let process = stdio_mcp_supervisor()
                 .lock()
                 .expect("stdio MCP supervisor mutex poisoned")
-                .process(&key, owner_provider_run_id, owner_session_id, backing)?;
+                .process(
+                    &key,
+                    owner_provider_run_id,
+                    owner_session_id,
+                    backing,
+                    project_environment,
+                )?;
             let response = process
                 .lock()
                 .expect("stdio MCP process mutex poisoned")
@@ -749,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn stdio_proxy_reuses_backing_process_and_caches_initialize() {
+    fn stdio_proxy_reuses_backing_process_within_session_and_caches_initialize() {
         crate::test_support::isolated_env_test!();
         if crate::process_spawn::command("node")
             .arg("--version")
@@ -866,7 +890,7 @@ function handle(message) {
         .expect("tools/list should forward");
         let cached_initialize = dispatch_provider_mcp_proxy_request(
             "provider-run-b",
-            "session-b",
+            "session-a",
             &config,
             json!({"jsonrpc": "2.0", "id": 3, "method": "initialize"}),
         )
@@ -889,7 +913,7 @@ function handle(message) {
         );
         #[cfg(unix)]
         assert!(crate::runtime::process_health::process_running(_child_pid));
-        shutdown_provider_mcp_proxy_session("session-b");
+        shutdown_provider_mcp_proxy_session("session-a");
         assert_eq!(
             stdio_mcp_supervisor()
                 .lock()

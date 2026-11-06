@@ -749,6 +749,7 @@ impl ProviderProcessServiceStore {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn run_structured_utility_prompt(
         &self,
         run: &RuntimeProviderRun,
@@ -764,9 +765,12 @@ impl ProviderProcessServiceStore {
             timeout,
             policy,
             None,
+            None,
         )
     }
 
+    /// `stop` ends a fresh metadata child only; a utility on the run's own conversation runs to its end.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run_structured_utility_prompt_with_admission(
         &self,
         run: &RuntimeProviderRun,
@@ -775,6 +779,7 @@ impl ProviderProcessServiceStore {
         timeout: std::time::Duration,
         policy: super::super::ProviderUtilityExecutionPolicy,
         admission: Option<crate::provider::ProviderUtilityAdmission>,
+        stop: Option<crate::provider::UtilityStop>,
     ) -> Result<String, DaemonError> {
         let response_rx = self.write().enqueue_structured_utility_prompt(
             run,
@@ -783,6 +788,7 @@ impl ProviderProcessServiceStore {
             timeout,
             policy,
             admission,
+            stop,
         )?;
         response_rx
             .recv()

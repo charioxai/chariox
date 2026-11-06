@@ -30,6 +30,8 @@ const view = {
   variables: "PORT=3000\n",
   secrets: [{ name: "API_KEY", presence: "locked" }, { name: "DB_URL", presence: "present" }],
   files: [{ path: ".env.local", presence: "missing", sizeBytes: null }, { path: "certs/dev.pem", presence: "present", sizeBytes: 1200 }],
+  mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" }, presence: "present" }, { name: "notion", source: { kind: "registration" }, presence: "missing" }],
+  skills: [{ name: "dataviz", source: { kind: "file", path: ".claude/skills/dataviz/SKILL.md" }, presence: "present" }],
   changedAtMs: 1_700_000_000_000,
   machineLabel: "Miguel's Mac",
   checkoutPath: "/work/project",
@@ -47,18 +49,20 @@ const operation = {
   endedAtMs: null,
   exitCode: null,
   reason: null,
+  updates: 4,
   outputTail: "installing\n",
   entries: [],
   sourceLabel: null,
 }
 
 test("Environment v2 requests use the wire names and drop absent checkoutPath", () => {
-  assert.equal(projectEnvironmentMinimumProtocolVersion, 973)
+  assert.equal(projectEnvironmentMinimumProtocolVersion, 982)
   assert.deepEqual(getProjectEnvironmentRequest("p"), { GetProjectEnvironment: { projectId: "p" } })
   assert.deepEqual(getProjectEnvironmentRequest("p", "/work/p"), { GetProjectEnvironment: { projectId: "p", checkoutPath: "/work/p" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op" } })
   assert.deepEqual(runProjectEnvironmentSetupRequest("p", "op", "/work/p"), { RunProjectEnvironmentSetup: { projectId: "p", operationId: "op", checkoutPath: "/work/p" } })
   assert.deepEqual(getEnvironmentOperationRequest("op"), { GetEnvironmentOperation: { operationId: "op" } })
+  assert.deepEqual(getEnvironmentOperationRequest("op", 0), { GetEnvironmentOperation: { operationId: "op", waitAfterUpdates: 0 } })
   assert.deepEqual(cancelEnvironmentOperationRequest("op"), { CancelEnvironmentOperation: { operationId: "op" } })
   assert.deepEqual(setProjectEnvironmentSecretRequest("p", "API_KEY", "v"), { SetProjectEnvironmentSecret: { projectId: "p", name: "API_KEY", value: "v" } })
 })
@@ -79,10 +83,11 @@ test("Setup on another kernel names the target; its operation is read or stopped
 })
 
 test("Check names only the Project and a proposal is accepted or dismissed by its id; proposals read with their evidence", () => {
-  assert.deepEqual(checkProjectEnvironmentRequest("p", "op"), { CheckProjectEnvironment: { projectId: "p", operationId: "op" } })
+  assert.deepEqual(checkProjectEnvironmentRequest("p", "op", true), { CheckProjectEnvironment: { projectId: "p", operationId: "op", withAgent: true } })
+  assert.deepEqual(checkProjectEnvironmentRequest("p", "op", false), { CheckProjectEnvironment: { projectId: "p", operationId: "op", withAgent: false } })
   assert.deepEqual(resolveEnvironmentProposalRequest("p", "p1", true), { ResolveEnvironmentProposal: { projectId: "p", proposalId: "p1", accept: true } })
   assert.deepEqual(projectEnvironmentFromResponse({ ProjectEnvironment: { environment: view } }).proposals, view.proposals)
-  assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "mcp" }] } } }), /field/)
+  assert.throws(() => projectEnvironmentFromResponse({ ProjectEnvironment: { environment: { ...view, proposals: [{ ...view.proposals[0], field: "tool" }] } } }), /field/)
 })
 
 test("an Import operation reads with its entries and source", () => {
@@ -90,16 +95,18 @@ test("an Import operation reads with its entries and source", () => {
   assert.equal(parsed.kind, "import")
   assert.equal(parsed.sourceLabel, "Mac")
   assert.deepEqual(parsed.entries, [{ kind: "file", name: ".env", state: "failed", reason: "Source offline" }])
-  assert.throws(() => parseEnvironmentOperationView({ ...operation, entries: [{ kind: "mcp", name: "x", state: "failed", reason: null }] }), /kind/)
+  assert.equal(parseEnvironmentOperationView({ ...operation, entries: [{ kind: "mcp", name: "notion", state: "pending", reason: null }] }).entries[0]?.kind, "mcp")
+  assert.throws(() => parseEnvironmentOperationView({ ...operation, entries: [{ kind: "folder", name: "x", state: "failed", reason: null }] }), /kind/)
 })
 
 test("SaveProjectEnvironment carries the revision and wraps names and paths as rows", () => {
   assert.deepEqual(saveProjectEnvironmentRequest({
     projectId: "p", expectedRevision: 4, script: "make", variables: "A=1", secretNames: ["TOKEN"], filePaths: [".env"],
+    mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" } }, { name: "notion", source: { kind: "registration" } }], skills: [],
   }), {
     SaveProjectEnvironment: {
       projectId: "p", expectedRevision: 4, setup: { script: "make" }, variables: "A=1",
-      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }],
+      secrets: [{ name: "TOKEN" }], files: [{ path: ".env" }], mcps: [{ name: "github", source: { kind: "file", path: ".mcp.json" } }, { name: "notion", source: { kind: "registration" } }], skills: [],
     },
   })
 })

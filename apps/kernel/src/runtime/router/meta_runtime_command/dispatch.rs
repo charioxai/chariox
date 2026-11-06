@@ -736,6 +736,11 @@ impl CommandRouter {
                 )
             }
             "slice" => meta_slice_request(&tokens[1..]),
+            "environment" => meta_environment_request(session, &tokens[1..], |from| {
+                self.runtime_state
+                    .environment_source(from)
+                    .map(|(kernel_id, _)| kernel_id)
+            }),
             "mcp" => {
                 let agents = self.runtime_state.session_agents(session.id());
                 meta_extension_request(

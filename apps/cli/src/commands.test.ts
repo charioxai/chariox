@@ -435,6 +435,12 @@ test("parseSlashCommand parses extension commands", () => {
     args: ["register", "py"],
   })
 
+  assert.deepEqual(parseSlashCommand("/environment status"), {
+    kind: "env",
+    raw: "/environment status",
+    args: ["status"],
+  })
+
   assert.deepEqual(parseSlashCommand("/script list"), {
     kind: "script",
     raw: "/script list",

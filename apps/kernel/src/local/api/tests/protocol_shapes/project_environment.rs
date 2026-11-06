@@ -1,5 +1,6 @@
-//! The Project Environment wire (local protocol 990): requests, views and the deleted requests.
+//! The Project Environment wire (local protocol 982): requests, views and the deleted requests.
 use crate::local::*;
+use crate::project_environment::ExtensionSource;
 use serde_json::json;
 
 fn view() -> ProjectEnvironmentView {
@@ -31,6 +32,27 @@ fn view() -> ProjectEnvironmentView {
                 crate::project_environment::FilePresence::Missing,
             ),
         ],
+        mcps: vec![
+            ProjectEnvironmentExtensionView {
+                name: "github".into(),
+                source: ExtensionSource::File {
+                    path: ".mcp.json".into(),
+                },
+                presence: ExtensionPresence::Present,
+            },
+            ProjectEnvironmentExtensionView {
+                name: "notion".into(),
+                source: ExtensionSource::Registration,
+                presence: ExtensionPresence::Missing,
+            },
+        ],
+        skills: vec![ProjectEnvironmentExtensionView {
+            name: "dataviz".into(),
+            source: ExtensionSource::File {
+                path: ".claude/skills/dataviz/SKILL.md".into(),
+            },
+            presence: ExtensionPresence::Present,
+        }],
         changed_at_ms: 7,
         machine_label: "b3 builder".into(),
         checkout_path: "/work/p".into(),
@@ -75,10 +97,24 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
                 files: vec![ProjectEnvironmentFilePath {
                     path: ".env".into(),
                 }],
+                mcps: vec![
+                    ProjectEnvironmentExtension {
+                        name: "github".into(),
+                        source: ExtensionSource::File {
+                            path: ".mcp.json".into(),
+                        },
+                    },
+                    ProjectEnvironmentExtension {
+                        name: "notion".into(),
+                        source: ExtensionSource::Registration,
+                    },
+                ],
+                skills: vec![],
             }),
             json!({"SaveProjectEnvironment": {"projectId": "p", "expectedRevision": 1,
                 "setup": {"script": "make"}, "variables": "A=1",
-                "secrets": [{"name": "T"}], "files": [{"path": ".env"}]}}),
+                "secrets": [{"name": "T"}], "files": [{"path": ".env"}],
+                "mcps": [{"name": "github", "source": {"kind": "file", "path": ".mcp.json"}}, {"name": "notion", "source": {"kind": "registration"}}], "skills": []}}),
         ),
         (
             LocalDaemonRequest::SetProjectEnvironmentSecret(SetProjectEnvironmentSecretRequest {
@@ -165,8 +201,9 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             LocalDaemonRequest::CheckProjectEnvironment(CheckProjectEnvironmentRequest {
                 project_id: "p".into(),
                 operation_id: "op".into(),
+                with_agent: false,
             }),
-            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op"}}),
+            json!({"CheckProjectEnvironment": {"projectId": "p", "operationId": "op", "withAgent": false}}),
         ),
         (
             LocalDaemonRequest::ResolveEnvironmentProposal(ResolveEnvironmentProposalRequest {
@@ -177,10 +214,18 @@ fn environment_requests_have_the_camel_case_wire_of_protocol_972() {
             json!({"ResolveEnvironmentProposal": {"projectId": "p", "proposalId": "0123456789abcdef", "accept": false}}),
         ),
         (
-            LocalDaemonRequest::GetEnvironmentOperation(EnvironmentOperationRequest {
+            LocalDaemonRequest::GetEnvironmentOperation(GetEnvironmentOperationRequest {
                 operation_id: "op".into(),
+                wait_after_updates: None,
             }),
             json!({"GetEnvironmentOperation": {"operationId": "op"}}),
+        ),
+        (
+            LocalDaemonRequest::GetEnvironmentOperation(GetEnvironmentOperationRequest {
+                operation_id: "op".into(),
+                wait_after_updates: Some(3),
+            }),
+            json!({"GetEnvironmentOperation": {"operationId": "op", "waitAfterUpdates": 3}}),
         ),
         (
             LocalDaemonRequest::CancelEnvironmentOperation(EnvironmentOperationRequest {
@@ -213,6 +258,9 @@ fn environment_views_carry_names_and_presence_never_a_value() {
                         {"name": "DATABASE_URL", "presence": "locked"}],
             "files": [{"path": "config/secrets.json", "presence": "present", "sizeBytes": 2800},
                       {"path": ".env", "presence": "missing", "sizeBytes": null}],
+            "mcps": [{"name": "github", "source": {"kind": "file", "path": ".mcp.json"}, "presence": "present"},
+                     {"name": "notion", "source": {"kind": "registration"}, "presence": "missing"}],
+            "skills": [{"name": "dataviz", "source": {"kind": "file", "path": ".claude/skills/dataviz/SKILL.md"}, "presence": "present"}],
             "changedAtMs": 7, "machineLabel": "b3 builder", "checkoutPath": "/work/p",
             "setupState": {"state": "failed", "operationId": "op", "endedAtMs": 9, "exitCode": 1, "reason": null},
             "proposals": [{"id": "0123456789abcdef", "field": "secret", "change": "add", "text": "STRIPE_SECRET_KEY",
@@ -258,6 +306,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         ended_at_ms: None,
         exit_code: None,
         reason: None,
+        updates: 0,
         output_tail: "line\n".into(),
         entries: Vec::new(),
         source_label: None,
@@ -267,7 +316,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         json!({"EnvironmentOperation": {"operation": {
             "operationId": "op", "projectId": "p", "checkoutPath": "/work/p", "kind": "setup",
             "state": "running", "startedAtMs": 1, "endedAtMs": null, "exitCode": null,
-            "reason": null, "outputTail": "line\n", "entries": [], "sourceLabel": null
+            "reason": null, "updates": 0, "outputTail": "line\n", "entries": [], "sourceLabel": null
         }}})
     );
     let import = EnvironmentOperationView {
@@ -297,6 +346,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
             ended_at_ms: Some(2),
             exit_code: None,
             reason: Some("Source offline".into()),
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -307,7 +357,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
         json!({
             "operationId": "op", "projectId": "p", "checkoutPath": "/work/p", "kind": "import",
             "state": "failed", "startedAtMs": 1, "endedAtMs": 2, "exitCode": null,
-            "reason": "Source offline", "outputTail": "",
+            "reason": "Source offline", "updates": 0, "outputTail": "",
             "entries": [
                 {"kind": "file", "name": "config/secrets.json", "state": "imported", "reason": null},
                 {"kind": "secret", "name": "NOTION_TOKEN", "state": "failed", "reason": "Source offline"}
@@ -321,7 +371,7 @@ fn environment_views_carry_names_and_presence_never_a_value() {
     );
 }
 
-/// The kernel-to-kernel requests that carry an Environment (relay peer 429): the wire, and that no
+/// The kernel-to-kernel requests that carry an Environment (relay peer 422): the wire, and that no
 /// Debug output of a response can show a Secret value or a file's bytes.
 #[test]
 fn project_environment_peer_wire_and_redaction() {
@@ -371,6 +421,14 @@ fn project_environment_peer_wire_and_redaction() {
             },
             json!({"kind": "pull_project_environment_file", "project_id": "p", "path": ".env", "offset": 4_194_304}),
         ),
+        (
+            RelayPeerRequest::PullProjectEnvironmentRegistration {
+                project_id: "p".into(),
+                entry_kind: EnvironmentEntryKind::Mcp,
+                name: "notion".into(),
+            },
+            json!({"kind": "pull_project_environment_registration", "project_id": "p", "entry_kind": "mcp", "name": "notion"}),
+        ),
     ] {
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
         assert_eq!(
@@ -383,7 +441,6 @@ fn project_environment_peer_wire_and_redaction() {
     };
     let file = RelayPeerResponse::ProjectEnvironmentFilePulled {
         size_bytes: 14,
-        sha256: Some("2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15".into()),
         content: Some(RemoteEnvironmentFileBytes::encode(b"synthetic-file")),
     };
     assert_eq!(
@@ -392,14 +449,24 @@ fn project_environment_peer_wire_and_redaction() {
     );
     assert_eq!(
         serde_json::to_value(&file).unwrap(),
-        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "sha256": "2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15", "content": "c3ludGhldGljLWZpbGU="})
+        json!({"kind": "project_environment_file_pulled", "size_bytes": 14, "content": "c3ludGhldGljLWZpbGU="})
     );
-    let snapshot = serde_json::to_value(&file).unwrap();
-    let encoded = serde_json::to_vec(&snapshot).unwrap();
-    use sha2::{Digest, Sha256};
-    assert_eq!(
-        format!("{:x}", Sha256::digest(encoded)),
-        "93204c30f7b9cc11a85ad55e4b495b9276f72646f3d04f1693a9484b91ee5a4e"
+    let registration = RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
+        registration: Some(crate::transport::relay_peer::RemoteProjectRegistration(
+            crate::project_environment::Registration::Mcp(
+                crate::mcp::CharioxMcpServerConfig::streamable_http(
+                    "notion",
+                    "https://example.invalid/mcp",
+                ),
+            ),
+        )),
+    };
+    let wire = serde_json::to_value(&registration).unwrap();
+    assert_eq!(wire["kind"], "project_environment_registration_pulled");
+    assert_eq!(wire["registration"]["mcp"]["name"], "notion");
+    assert!(
+        !format!("{registration:?}").contains("example.invalid"),
+        "a registration is redacted in debug output"
     );
     assert_eq!(
         serde_json::to_value(RelayPeerResponse::ProjectEnvironmentRefused {

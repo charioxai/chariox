@@ -563,6 +563,17 @@ impl RemoteEnvironmentFileBytes {
     }
 }
 
+/// An MCP registration or a skill inside an encrypted kernel-to-kernel response; an MCP may carry literal settings.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteProjectRegistration(pub crate::project_environment::Registration);
+
+impl std::fmt::Debug for RemoteProjectRegistration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted Project registration]")
+    }
+}
+
 impl Drop for RemoteEnvironmentFileBytes {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.0);
@@ -804,6 +815,12 @@ pub enum RelayPeerRequest {
         project_id: String,
         path: String,
         offset: u64,
+    },
+    /// The registration of an MCP server or skill the Environment lists, as another kernel can write it.
+    PullProjectEnvironmentRegistration {
+        project_id: String,
+        entry_kind: crate::local::EnvironmentEntryKind,
+        name: String,
     },
     ListWorkflowNotificationSources {
         protocol_version: u32,
@@ -1245,6 +1262,9 @@ pub enum RelayPeerResponse {
         secrets: Vec<String>,
         /// Listed Files that exist in the source's checkout.
         files: Vec<String>,
+        /// Listed MCP registrations and skills this source holds.
+        mcps: Vec<String>,
+        skills: Vec<String>,
     },
     ProjectEnvironmentOperation {
         operation: crate::local::EnvironmentOperationView,
@@ -1256,11 +1276,13 @@ pub enum RelayPeerResponse {
     ProjectEnvironmentSecretPulled {
         value: Option<RemoteCredentialSecretInput>,
     },
+    /// `None` when the source holds no registration of that name.
+    ProjectEnvironmentRegistrationPulled {
+        registration: Option<RemoteProjectRegistration>,
+    },
     ProjectEnvironmentFilePulled {
         /// The whole file's size, so the receiver knows when it has everything.
         size_bytes: u64,
-        /// SHA-256 of the complete source byte stream, binding every chunk to its contents.
-        sha256: Option<String>,
         /// The slice at the requested offset; absent when the file is not there.
         content: Option<RemoteEnvironmentFileBytes>,
     },

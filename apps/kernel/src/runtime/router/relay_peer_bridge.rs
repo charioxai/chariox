@@ -60,6 +60,13 @@ impl CommandRouter {
         self.runtime_state.same_owner_peer_user_id(identity)
     }
 
+    pub(crate) fn environment_peer_user_id(
+        &self,
+        identity: &chariox_relay::protocol::RelayCallerIdentity,
+    ) -> Option<String> {
+        self.runtime_state.environment_peer_user_id(identity)
+    }
+
     pub(crate) fn lease_worker_selected_home(
         &self,
     ) -> Option<crate::config::LeaseWorkerHomeCaller> {

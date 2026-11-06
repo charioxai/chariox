@@ -98,16 +98,20 @@ pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
         self.get_secret(service, key).map(Some)
     }
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError>;
-    /// Atomically preserve any value saved before this commit. False means it already exists.
-    fn insert_secret_if_absent(
+    /// Stores `value` unless an entry exists; returns whether it was stored. The check and the write are one
+    /// step against other writers of the same store, so a value saved meanwhile is never replaced. Stores that
+    /// other writers can reach concurrently override this; the default is for single-writer stores.
+    fn set_secret_if_absent(
         &self,
-        _service: &str,
-        _key: &str,
-        _value: &str,
+        service: &str,
+        key: &str,
+        value: &str,
     ) -> Result<bool, DaemonError> {
-        Err(secret_error(
-            "this Vault backend does not support atomic insertion".to_owned(),
-        ))
+        if self.find_secret(service, key)?.is_some() {
+            return Ok(false);
+        }
+        self.set_secret(service, key, value)?;
+        Ok(true)
     }
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError>;
 }
@@ -154,6 +158,37 @@ impl CharioxEncryptedCredentialVaultStore {
     }
 }
 
+impl CharioxEncryptedCredentialVaultStore {
+    /// One read-modify-write under the vault write lock; returns whether the value was stored.
+    fn write_secret(
+        &self,
+        service: &str,
+        key: &str,
+        value: &str,
+        replace: bool,
+    ) -> Result<bool, DaemonError> {
+        let _write = vault_write_lock()?;
+        let vault_key = unlocked_vault_key(&self.path)?;
+        let mut plaintext = if self.path.exists() {
+            read_vault_plaintext(&self.path, vault_key.as_ref())?
+        } else {
+            VaultPlaintext::default()
+        };
+        let service_secrets = plaintext.secrets.entry(service.to_string()).or_default();
+        if !replace && service_secrets.contains_key(key) {
+            return Ok(false);
+        }
+        service_secrets.insert(key.to_string(), value.to_string());
+        write_vault_plaintext(
+            &self.path,
+            vault_key.as_ref(),
+            &plaintext,
+            &self.kdf_profile,
+        )?;
+        Ok(true)
+    }
+}
+
 impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError> {
         self.find_secret(service, key)?
@@ -171,52 +206,16 @@ impl CredentialVaultStore for CharioxEncryptedCredentialVaultStore {
     }
 
     fn set_secret(&self, service: &str, key: &str, value: &str) -> Result<(), DaemonError> {
-        let _write = vault_write_lock()?;
-        let vault_key = unlocked_vault_key(&self.path)?;
-        let mut plaintext = if self.path.exists() {
-            read_vault_plaintext(&self.path, vault_key.as_ref())?
-        } else {
-            VaultPlaintext::default()
-        };
-        plaintext
-            .secrets
-            .entry(service.to_string())
-            .or_default()
-            .insert(key.to_string(), value.to_string());
-        write_vault_plaintext(
-            &self.path,
-            vault_key.as_ref(),
-            &plaintext,
-            &self.kdf_profile,
-        )
+        self.write_secret(service, key, value, true).map(|_| ())
     }
 
-    fn insert_secret_if_absent(
+    fn set_secret_if_absent(
         &self,
         service: &str,
         key: &str,
         value: &str,
     ) -> Result<bool, DaemonError> {
-        let _write = vault_write_lock()?;
-        let vault_key = unlocked_vault_key(&self.path)?;
-        let mut plaintext = if self.path.exists() {
-            read_vault_plaintext(&self.path, vault_key.as_ref())?
-        } else {
-            VaultPlaintext::default()
-        };
-        let secrets = plaintext.secrets.entry(service.to_owned()).or_default();
-        let std::collections::btree_map::Entry::Vacant(entry) = secrets.entry(key.to_owned())
-        else {
-            return Ok(false);
-        };
-        entry.insert(value.to_owned());
-        write_vault_plaintext(
-            &self.path,
-            vault_key.as_ref(),
-            &plaintext,
-            &self.kdf_profile,
-        )?;
-        Ok(true)
+        self.write_secret(service, key, value, false)
     }
 
     fn delete_secret(&self, service: &str, key: &str) -> Result<(), DaemonError> {
@@ -269,20 +268,19 @@ impl CredentialVaultStore for ProcessMemoryCredentialVaultStore {
         Ok(())
     }
 
-    fn insert_secret_if_absent(
+    fn set_secret_if_absent(
         &self,
         service: &str,
         key: &str,
         value: &str,
     ) -> Result<bool, DaemonError> {
-        use std::collections::btree_map::Entry;
-        let mut secrets = process_memory_vault().lock().map_err(|error| {
+        let mut vault = process_memory_vault().lock().map_err(|error| {
             secret_error(format!("process memory vault lock poisoned: {error}"))
         })?;
-        match secrets.entry((service.to_owned(), key.to_owned())) {
-            Entry::Occupied(_) => Ok(false),
-            Entry::Vacant(entry) => {
-                entry.insert(Zeroizing::new(value.to_owned()));
+        match vault.entry((service.to_string(), key.to_string())) {
+            std::collections::btree_map::Entry::Occupied(_) => Ok(false),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(Zeroizing::new(value.to_string()));
                 Ok(true)
             }
         }
@@ -2271,6 +2269,31 @@ mod tests {
                 .get_secret("chariox-test", "github-token")
                 .expect("secret should read after unlock"),
             "secret-value"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn set_secret_if_absent_keeps_a_value_that_is_already_there() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-if-absent-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let path = root.join("vault.json");
+        let store = test_store(path.clone());
+        create_chariox_encrypted_vault_for_test(&path, "pass").expect("vault should create");
+        unlock_chariox_encrypted_vault(&path, "pass", VaultUnlockLease::KernelShutdown)
+            .expect("vault should unlock");
+        assert!(store
+            .set_secret_if_absent("chariox-test", "token", "first")
+            .expect("absent value stores"));
+        assert!(!store
+            .set_secret_if_absent("chariox-test", "token", "second")
+            .expect("present value is kept"));
+        assert_eq!(
+            store.get_secret("chariox-test", "token").expect("reads"),
+            "first"
         );
         let _ = fs::remove_dir_all(root);
     }

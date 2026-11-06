@@ -105,6 +105,7 @@ pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
 pub(crate) use outside_events::is_outside_event_request;
 use outside_events::InteractionPhase;
+mod environment_tools;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 mod user_app_view_browser;
@@ -137,6 +138,7 @@ mod owner_context_review;
 mod project_environment;
 mod project_environment_check;
 mod project_environment_draft;
+mod project_environment_registrations;
 mod project_environment_remote_setup;
 mod project_environment_transfer;
 mod project_prompt_promotion;
@@ -408,6 +410,7 @@ struct KernelRuntimeOwnedState {
         crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore,
     project_environment_setups: Arc<crate::project_environment::SetupRuns>,
     environment_operations: Arc<crate::project_environment::EnvironmentOperations>,
+    environment_operation_changes: crate::project_environment::OperationChanges,
 }
 
 #[derive(Debug, Clone)]
@@ -1027,6 +1030,7 @@ impl KernelRuntimeState {
                 std::thread::sleep(Duration::from_millis(2));
             }
         };
+        let environment_operation_changes = crate::project_environment::OperationChanges::new();
         let mut runtime = Self {
             external_command_authority: None,
             room_provider_origin: None,
@@ -1223,10 +1227,13 @@ impl KernelRuntimeState {
                     crate::runtime::state::workflow_publication_runtime_lifecycle::WorkflowPublicationRuntimeProcessStore::default(),
                 project_environment_setups: crate::project_environment::SetupRuns::new(
                     &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
                 ),
                 environment_operations: crate::project_environment::EnvironmentOperations::new(
                     &config.private_runtime_state_root(),
+                    environment_operation_changes.clone(),
                 ),
+                environment_operation_changes,
             },
         };
         runtime.link_work_to_managed_kernel();

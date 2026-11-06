@@ -283,6 +283,54 @@ pub(crate) async fn run_provider_utility_prompt_with_admission(
     timeout: Duration,
     admission: Option<crate::provider::ProviderUtilityAdmission>,
 ) -> Result<String, DaemonError> {
+    run_utility(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        admission,
+        None,
+    )
+    .await
+}
+
+/// Stop ends the request's own provider turn or child; the call returns only once that work ended,
+/// so a caller that holds its operation until then never reports work that is still running as over.
+pub(crate) async fn run_provider_utility_prompt_until_stopped(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    stop: crate::provider::UtilityStop,
+) -> Result<String, DaemonError> {
+    run_utility(
+        runtime_state,
+        provider_run,
+        prompt,
+        operation,
+        policy,
+        timeout,
+        None,
+        Some(stop),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_utility(
+    runtime_state: &KernelRuntimeState,
+    provider_run: RuntimeProviderRun,
+    prompt: AgentUtilityPromptParts,
+    operation: &'static str,
+    policy: ProviderUtilityExecutionPolicy,
+    timeout: Duration,
+    admission: Option<crate::provider::ProviderUtilityAdmission>,
+    stop: Option<crate::provider::UtilityStop>,
+) -> Result<String, DaemonError> {
     let provider_run = if policy.is_read_only_discovery() {
         let mut read_only_run = provider_run;
         read_only_run.set_execution_config(
@@ -303,27 +351,21 @@ pub(crate) async fn run_provider_utility_prompt_with_admission(
                 timeout,
                 policy,
                 admission,
+                stop,
             )
             .await;
     }
-    tokio::task::spawn_blocking(move || match admission {
-        Some(admission) => crate::provider::run_blocking_provider_utility_prompt_with_admission(
+    tokio::task::spawn_blocking(move || {
+        crate::provider::run_blocking_provider_utility_prompt_with_admission(
             &provider_run,
             &prompt.visible_user_prompt,
             &prompt.hidden_system_context,
             timeout,
             operation,
             policy,
-            Some(admission),
-        ),
-        None => crate::provider::run_blocking_provider_utility_prompt(
-            &provider_run,
-            &prompt.visible_user_prompt,
-            &prompt.hidden_system_context,
-            timeout,
-            operation,
-            policy,
-        ),
+            admission,
+            stop.as_ref(),
+        )
     })
     .await
     .map_err(|error| DaemonError::LocalTransport {

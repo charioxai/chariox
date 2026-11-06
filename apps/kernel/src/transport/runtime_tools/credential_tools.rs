@@ -446,7 +446,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REQUEST_CREDENTIAL_SECRET_TOOL.to_string(),
-            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
+            description: "Ask the user for a credential secret through a redacted Chariox interaction, then store it as a vault-backed credential handle for its required use_binding. No sudo or task approval is needed. The typed secret is never returned to the model. Declare command_environment (exact name and service origin) or command_stdin for vault.use_env, file for vault.write_file, totp for browser 2FA codes, or site for browser/HTTP/MCP use; create a separate entry for each use. injection.kind=totp accepts a base32 manual key or otpauth://totp URI in the protected field; backup_codes accepts one recovery code per line or a JSON string array.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["credential", "prompt"],
@@ -668,8 +668,18 @@ fn credential_creation_schema() -> Value {
                 "type":"object", "required":["target"], "additionalProperties":false,
                 "properties":{
                     "value_kind":{"type":"string","enum":["secret","payment_card"],"default":"secret"},
-                    "target":{"type":"object","required":["kind","origin"],"additionalProperties":false,
-                        "properties":{"kind":{"type":"string","enum":["site"]},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}}
+                    "target":{"oneOf":[
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"site"},"origin":{"type":"string","description":"One canonical HTTPS origin (HTTP only on loopback)"}}},
+                        {"type":"object","required":["kind","name","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"command_environment"},"name":{"type":"string","description":"Exact environment variable name for vault.use_env"},"origin":{"type":"string"}}},
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"command_stdin"},"origin":{"type":"string"}}},
+                        {"type":"object","required":["kind","path"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"file"},"path":{"type":"string","description":"One absolute canonical workspace file path for vault.write_file"}}},
+                        {"type":"object","required":["kind","origin"],"additionalProperties":false,
+                            "properties":{"kind":{"const":"totp"},"origin":{"type":"string"}}}
+                    ]}
                 }
             },
             "id": {"type": "string"},
@@ -735,6 +745,86 @@ fn credential_alias_spec(spec: &RuntimeToolSpec) -> Option<RuntimeToolSpec> {
     spec.name = alias.to_string();
     spec.description = format!("{} Alias for `{}`.", spec.description, alias);
     Some(spec)
+}
+
+#[cfg(test)]
+mod creation_tests {
+    use super::*;
+
+    #[test]
+    fn credential_catalog_rejects_incomplete_or_mixed_use_targets() {
+        let spec = credential_runtime_tool_specs()
+            .into_iter()
+            .find(|s| s.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .unwrap();
+        for target in [
+            serde_json::json!({"kind":"command_environment","origin":"https://example.com"}),
+            serde_json::json!({"kind":"command_environment","name":"API_KEY"}),
+            serde_json::json!({"kind":"command_stdin"}),
+            serde_json::json!({"kind":"file","path":"/work/.env","origin":"https://example.com"}),
+            serde_json::json!({"kind":"site","origin":"https://example.com","name":"API_KEY"}),
+        ] {
+            let args = serde_json::json!({"credential":{"id":"invalid", "injection":{"kind":"env"},
+                "use_binding":{"target":target}}, "prompt":{"message":"Provide a value"}});
+            assert!(
+                super::super::validate_json_output_schema(
+                    "credential catalog",
+                    &spec.input_schema,
+                    &args.to_string()
+                )
+                .is_err(),
+                "incomplete or mixed target must be refused: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn credential_catalog_accepts_each_declared_use_target() {
+        let spec = credential_runtime_tool_specs()
+            .into_iter()
+            .find(|s| s.name == REQUEST_CREDENTIAL_SECRET_TOOL)
+            .unwrap();
+        for (target, injection, allowed_use) in [
+            (
+                serde_json::json!({"kind":"site","origin":"https://example.com"}),
+                "browser",
+                "browser",
+            ),
+            (
+                serde_json::json!({"kind":"command_environment","name":"API_KEY","origin":"https://example.com"}),
+                "env",
+                "env",
+            ),
+            (
+                serde_json::json!({"kind":"command_stdin","origin":"https://example.com"}),
+                "env",
+                "env",
+            ),
+            (
+                serde_json::json!({"kind":"file","path":"/work/project/.env"}),
+                "file",
+                "file",
+            ),
+            (
+                serde_json::json!({"kind":"totp","origin":"https://example.com"}),
+                "totp",
+                "browser",
+            ),
+        ] {
+            let args = serde_json::json!({
+                "credential":{"id":"declared-use", "injection":{"kind":injection},
+                    "allowed_uses":[allowed_use], "use_binding":{"target":target}},
+                "prompt":{"message":"Provide a value for this use"}
+            });
+            super::super::validate_json_output_schema(
+                "credential catalog",
+                &spec.input_schema,
+                &args.to_string(),
+            )
+            .unwrap_or_else(|e| panic!("advertised {target} use must be creatable: {e}"));
+            serde_json::from_value::<RequestCredentialSecretArgs>(args).unwrap();
+        }
+    }
 }
 
 pub fn canonical_credential_tool_name(tool_name: &str) -> Option<&'static str> {

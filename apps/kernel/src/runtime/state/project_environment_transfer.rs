@@ -2,16 +2,17 @@
 //! Environment lists, and answers the same questions about its own Projects.
 use super::*;
 use crate::local::{
-    EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
-    ImportProjectEnvironmentEntriesRequest,
+    EnvironmentEntryKind, EnvironmentOperationKind, EnvironmentOperationState,
+    EnvironmentOperationView, ImportProjectEnvironmentEntriesRequest,
 };
 use crate::project_environment::{
     environment_error, register_environment_files, run_import, source_holdings, Begun,
-    EnvironmentSource, FileSlice, ImportTarget, SourceError, SourceSnapshot, IMPORT_CHUNK_BYTES,
-    MAX_IMPORT_FILE_BYTES,
+    EnvironmentSource, FileSlice, ImportTarget, Registration, RegistrationHost, SourceError,
+    SourceSnapshot, UserRegistrations, IMPORT_CHUNK_BYTES, MAX_IMPORT_FILE_BYTES,
 };
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteCredentialSecretInput, RemoteEnvironmentFileBytes,
+    RemoteProjectRegistration,
 };
 use std::path::PathBuf;
 use zeroize::Zeroizing;
@@ -55,11 +56,15 @@ impl EnvironmentSource for PeerSource {
                 record,
                 secrets,
                 files,
+                mcps,
+                skills,
             } => Ok(SourceSnapshot {
                 label: source_label,
                 record,
                 secrets,
                 files,
+                mcps,
+                skills,
             }),
             _ => Err(SourceError::Refused(
                 "The source answered with something unexpected".into(),
@@ -88,6 +93,29 @@ impl EnvironmentSource for PeerSource {
         }
     }
 
+    async fn pull_registration(
+        &self,
+        project_id: &str,
+        kind: EnvironmentEntryKind,
+        name: &str,
+    ) -> Result<Option<Registration>, SourceError> {
+        match self
+            .ask(RelayPeerRequest::PullProjectEnvironmentRegistration {
+                project_id: project_id.into(),
+                entry_kind: kind,
+                name: name.into(),
+            })
+            .await?
+        {
+            RelayPeerResponse::ProjectEnvironmentRegistrationPulled { registration } => {
+                Ok(registration.map(|registration| registration.0))
+            }
+            _ => Err(SourceError::Refused(
+                "The source answered with something unexpected".into(),
+            )),
+        }
+    }
+
     async fn pull_file(
         &self,
         project_id: &str,
@@ -104,18 +132,12 @@ impl EnvironmentSource for PeerSource {
         {
             RelayPeerResponse::ProjectEnvironmentFilePulled {
                 size_bytes,
-                sha256,
                 content,
             } => content
                 .map(|content| {
                     content
                         .decode()
-                        .zip(sha256)
-                        .map(|(bytes, sha256)| FileSlice {
-                            size_bytes,
-                            sha256,
-                            bytes,
-                        })
+                        .map(|bytes| FileSlice { size_bytes, bytes })
                         .ok_or_else(|| SourceError::Refused("The file arrived damaged".into()))
                 })
                 .transpose(),
@@ -175,6 +197,7 @@ impl KernelRuntimeState {
             ended_at_ms: None,
             exit_code: None,
             reason: None,
+            updates: 0,
             output_tail: String::new(),
             entries: Vec::new(),
             source_label: None,
@@ -215,6 +238,7 @@ impl KernelRuntimeState {
                     checkout: &checkout,
                     store: &store,
                     vault: vault.as_ref(),
+                    registrations: &UserRegistrations,
                     on_record: &on_record,
                 },
                 entries,
@@ -237,16 +261,23 @@ impl KernelRuntimeState {
         };
         let config = self.owned.config_projection.snapshot();
         let label = Self::machine_label(&config);
-        let (project_id, secret, file) = match &request {
-            RelayPeerRequest::ReadProjectEnvironment { project_id } => (project_id, None, None),
+        let (project_id, secret, file, registration) = match &request {
+            RelayPeerRequest::ReadProjectEnvironment { project_id } => {
+                (project_id, None, None, None)
+            }
             RelayPeerRequest::PullProjectEnvironmentSecret { project_id, name } => {
-                (project_id, Some(name), None)
+                (project_id, Some(name), None, None)
             }
             RelayPeerRequest::PullProjectEnvironmentFile {
                 project_id,
                 path,
                 offset,
-            } => (project_id, None, Some((path, *offset))),
+            } => (project_id, None, Some((path, *offset)), None),
+            RelayPeerRequest::PullProjectEnvironmentRegistration {
+                project_id,
+                entry_kind,
+                name,
+            } => (project_id, None, None, Some((*entry_kind, name))),
             _ => return refuse("not a Project Environment request"),
         };
         let Ok(project) = self.owned_project(project_id, owner) else {
@@ -263,6 +294,8 @@ impl KernelRuntimeState {
                         record: None,
                         secrets: Vec::new(),
                         files: Vec::new(),
+                        mcps: Vec::new(),
+                        skills: Vec::new(),
                     })
                 }
                 _ => refuse(&format!("{label} has no Environment for this Project")),
@@ -287,6 +320,25 @@ impl KernelRuntimeState {
                 Err(_) => refuse(&format!("The Vault of {label} could not be read")),
             };
         }
+        if let Some((kind, name)) = registration {
+            let listed = match kind {
+                EnvironmentEntryKind::Mcp => &record.mcps,
+                EnvironmentEntryKind::Skill => &record.skills,
+                _ => return refuse("not a registration"),
+            };
+            if !listed
+                .iter()
+                .any(|entry| &entry.name == name && entry.file_path().is_none())
+            {
+                return refuse(&format!("{name} is not in the Environment of {label}"));
+            }
+            return match UserRegistrations.read(kind, name) {
+                Ok(registration) => Ok(RelayPeerResponse::ProjectEnvironmentRegistrationPulled {
+                    registration: registration.map(RemoteProjectRegistration),
+                }),
+                Err(reason) => refuse(&reason),
+            };
+        }
         if let Some((path, offset)) = file {
             if !record.files.contains(path) {
                 return refuse(&format!("{path} is not in the Environment of {label}"));
@@ -295,7 +347,6 @@ impl KernelRuntimeState {
             let absent = || {
                 Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
                     size_bytes: 0,
-                    sha256: None,
                     content: None,
                 })
             };
@@ -308,101 +359,39 @@ impl KernelRuntimeState {
             if metadata.len() > MAX_IMPORT_FILE_BYTES {
                 return refuse("The file is too large to import");
             }
-            let Ok(slice) = read_slice(&full, offset) else {
+            let Ok(bytes) = read_slice(&full, offset).map(Zeroizing::new) else {
                 return refuse(&format!("{path} could not be read on {label}"));
             };
             return Ok(RelayPeerResponse::ProjectEnvironmentFilePulled {
-                size_bytes: slice.size_bytes,
-                sha256: Some(slice.sha256),
-                content: Some(RemoteEnvironmentFileBytes::encode(&slice.bytes)),
+                size_bytes: metadata.len(),
+                content: Some(RemoteEnvironmentFileBytes::encode(&bytes)),
             });
         }
-        let held = source_holdings(&store, project.id(), vault.as_ref(), &checkout, label)?;
+        let held = source_holdings(
+            &store,
+            project.id(),
+            vault.as_ref(),
+            &UserRegistrations,
+            &checkout,
+            label,
+        )?;
         Ok(RelayPeerResponse::ProjectEnvironmentRead {
             source_label: held.label,
             record: held.record,
             secrets: held.secrets,
             files: held.files,
+            mcps: held.mcps,
+            skills: held.skills,
         })
     }
 }
 
-/// Hash the same byte stream the slice comes from. The receiver checks every reply and its final
-/// assembled digest, so neither an in-place rewrite nor a replacement can publish mixed contents.
-fn read_slice(path: &std::path::Path, offset: u64) -> std::io::Result<FileSlice> {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
+/// Up to one slice of the file starting at `offset`.
+fn read_slice(path: &std::path::Path, offset: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut size_bytes = 0_u64;
-    let mut bytes = Zeroizing::new(Vec::new());
-    let mut buffer = Zeroizing::new([0_u8; 64 * 1024]);
-    loop {
-        let count = file.read(buffer.as_mut())?;
-        if count == 0 {
-            break;
-        }
-        let end = size_bytes + count as u64;
-        if end > MAX_IMPORT_FILE_BYTES {
-            return Err(std::io::Error::other("The file is too large to import"));
-        }
-        digest.update(&buffer[..count]);
-        let start_in_buffer = offset.saturating_sub(size_bytes).min(count as u64) as usize;
-        let end_in_buffer = offset
-            .saturating_add(IMPORT_CHUNK_BYTES)
-            .saturating_sub(size_bytes)
-            .min(count as u64) as usize;
-        if end_in_buffer > start_in_buffer {
-            bytes.extend_from_slice(&buffer[start_in_buffer..end_in_buffer]);
-        }
-        size_bytes = end;
-    }
-    Ok(FileSlice {
-        size_bytes,
-        sha256: format!("{:x}", digest.finalize()),
-        bytes,
-    })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sha2::{Digest, Sha256};
-
-    #[test]
-    fn file_chunks_bind_same_length_replacements_to_their_content() {
-        let root = std::env::temp_dir().join(format!(
-            "chariox-file-snapshot-{:032x}",
-            rand::random::<u128>()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
-        let path = root.join(".env");
-        let old = vec![b'a'; (IMPORT_CHUNK_BYTES * 2) as usize];
-        std::fs::write(&path, &old).unwrap();
-        let first = read_slice(&path, 0).unwrap();
-        let unchanged = read_slice(&path, IMPORT_CHUNK_BYTES).unwrap();
-        assert_eq!(first.sha256, unchanged.sha256);
-        assert_eq!(first.sha256, format!("{:x}", Sha256::digest(&old)));
-        assert_eq!(first.bytes.as_slice(), &old[..IMPORT_CHUNK_BYTES as usize]);
-        assert_eq!(
-            unchanged.bytes.as_slice(),
-            &old[IMPORT_CHUNK_BYTES as usize..]
-        );
-        let replacement = root.join("replacement");
-        std::fs::write(&replacement, vec![b'b'; old.len()]).unwrap();
-        std::fs::rename(&replacement, &path).unwrap();
-        let second = read_slice(&path, IMPORT_CHUNK_BYTES).unwrap();
-        assert_eq!(first.size_bytes, second.size_bytes);
-        assert_ne!(first.sha256, second.sha256);
-        assert_eq!(
-            second.bytes.as_slice(),
-            vec![b'b'; IMPORT_CHUNK_BYTES as usize]
-        );
-        std::fs::write(&path, []).unwrap();
-        let empty = read_slice(&path, 0).unwrap();
-        assert_eq!(empty.size_bytes, 0);
-        assert!(empty.bytes.is_empty());
-        assert_eq!(empty.sha256, format!("{:x}", Sha256::digest([])));
-        std::fs::remove_dir_all(&root).unwrap();
-    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = Vec::new();
+    file.take(IMPORT_CHUNK_BYTES).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }

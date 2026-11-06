@@ -203,6 +203,7 @@ impl CommandRouter {
             LocalDaemonRequest::GetEnvironmentOperation(request) => Some(Box::pin(async move {
                 self.runtime_state
                     .get_environment_operation(request.clone(), caller_user_id)
+                    .await
                     .map(Some)
             })),
             LocalDaemonRequest::CancelEnvironmentOperation(request) => Some(Box::pin(async move {
