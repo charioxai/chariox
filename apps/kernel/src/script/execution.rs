@@ -1,5 +1,5 @@
 use crate::runtime::bounded_process::BoundedChildExt as _;
-use crate::runtime::bounded_process::BoundedCommandExt as _;
+use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -332,8 +332,9 @@ fn run_node_test(
     if let Some(package_root) = package_root {
         command.current_dir(package_root);
     }
+    // The script's own test_run decides how long it takes.
     let output = command
-        .bounded_output()
+        .output_for(Work::Mutation)
         .map_err(io_error("script.inspect"))?;
     if output.status.success() {
         Ok(())

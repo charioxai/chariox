@@ -19,10 +19,23 @@ fn capture_error(error: capture::CaptureError) -> io::Error {
 }
 
 const COMMAND_LIMIT: Duration = Duration::from_secs(60);
+/// Active lifetime of work that changes state or builds: Git commit and push
+/// with their hooks, worktree checkout, pull request creation, cold builds.
+const MUTATION_LIMIT: Duration = Duration::from_secs(30 * 60);
+
+/// What a command is for, which decides how long it may stay active.
+#[derive(Clone, Copy)]
+pub(crate) enum Work {
+    /// Probes and reads: status, rev-parse, diff, log, config.
+    Query,
+    /// Long-running by nature; ends at its own deadline, never the query cap.
+    Mutation,
+}
 
 #[cfg(test)]
 thread_local! {
     static TEST_COMMAND_LIMIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+    static TEST_MUTATION_LIMIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
 }
 
 fn command_limit() -> Duration {
@@ -31,6 +44,34 @@ fn command_limit() -> Duration {
         return limit;
     }
     COMMAND_LIMIT
+}
+
+fn work_limit(work: Work) -> Duration {
+    match work {
+        Work::Query => command_limit(),
+        Work::Mutation => {
+            #[cfg(test)]
+            if let Some(limit) = TEST_MUTATION_LIMIT.with(std::cell::Cell::get) {
+                return limit;
+            }
+            MUTATION_LIMIT
+        }
+    }
+}
+
+/// Shortens the mutation deadline on this thread so tests can show that a
+/// hung mutation ends at its own deadline with its process tree reaped.
+#[cfg(test)]
+pub(crate) fn with_test_mutation_limit<T>(limit: Duration, run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_MUTATION_LIMIT.with(|cell| cell.set(None));
+        }
+    }
+    TEST_MUTATION_LIMIT.with(|cell| cell.set(Some(limit)));
+    let _reset = Reset;
+    run()
 }
 
 /// Shortens the generic command cap on this thread so tests can show that
@@ -52,6 +93,9 @@ const REAP_LIMIT: Duration = Duration::from_secs(1);
 pub(crate) trait BoundedCommandExt {
     #[track_caller]
     fn bounded_output(&mut self) -> io::Result<Output>;
+    /// Output of a command whose lifetime depends on what it does.
+    #[track_caller]
+    fn output_for(&mut self, work: Work) -> io::Result<Output>;
     fn bounded_status(&mut self) -> io::Result<ExitStatus>;
     #[track_caller]
     fn output_with_deadline(&mut self, timeout: Duration) -> io::Result<Output>;
@@ -89,7 +133,11 @@ impl BoundedCommandExt for Command {
 
     #[track_caller]
     fn bounded_output(&mut self) -> io::Result<Output> {
-        self.output_with_deadline(command_limit())
+        self.output_for(Work::Query)
+    }
+    #[track_caller]
+    fn output_for(&mut self, work: Work) -> io::Result<Output> {
+        self.output_with_deadline(work_limit(work))
     }
     #[track_caller]
     fn output_with_progress(
@@ -177,14 +225,14 @@ impl BoundedChildExt for dyn portable_pty::Child + Send + Sync {
 }
 
 pub(crate) trait AsyncBoundedCommandExt {
-    async fn bounded_status(&mut self) -> io::Result<ExitStatus>;
     async fn bounded_output(&mut self) -> io::Result<Output>;
+    async fn status_for(&mut self, work: Work) -> io::Result<ExitStatus>;
 }
 
 impl AsyncBoundedCommandExt for tokio::process::Command {
-    async fn bounded_status(&mut self) -> io::Result<ExitStatus> {
+    async fn status_for(&mut self, work: Work) -> io::Result<ExitStatus> {
         self.kill_on_drop(true);
-        tokio::time::timeout(COMMAND_LIMIT, self.status())
+        tokio::time::timeout(work_limit(work), self.status())
             .await
             .map_err(|_| {
                 io::Error::new(
@@ -330,5 +378,42 @@ mod progress_tests {
             .unwrap_err();
         assert!(error.to_string().contains("cancelled"));
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn mutation_work_outlives_the_query_cap_and_ends_at_its_own_deadline() {
+        let slow = || {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 2"]);
+            command
+        };
+        with_test_command_limit(Duration::from_millis(300), || {
+            assert!(slow().bounded_output().is_err());
+            assert!(slow().output_for(Work::Mutation).unwrap().status.success());
+            with_test_mutation_limit(Duration::from_millis(300), || {
+                let error = slow().output_for(Work::Mutation).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            });
+        });
+    }
+
+    #[test]
+    fn async_mutation_status_outlives_the_query_cap() {
+        let slow = || {
+            let mut command = tokio::process::Command::new("sh");
+            command.args(["-c", "sleep 2"]);
+            command
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // Test limits are per thread, so the runtime runs on this thread.
+        with_test_command_limit(Duration::from_millis(300), || {
+            runtime.block_on(async {
+                assert!(slow().status_for(Work::Query).await.is_err());
+                assert!(slow().status_for(Work::Mutation).await.unwrap().success());
+            })
+        });
     }
 }

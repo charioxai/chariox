@@ -1,7 +1,7 @@
 //! MP-08/MP-10/MP-11: loopback gateways have the kernel's lifetime, never a relay tunnel.
 use super::agent_trigger_http::http_error;
 use super::*;
-use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
+use crate::runtime::bounded_process::{AsyncBoundedCommandExt as _, Work};
 use crate::session::AgentTrigger;
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -137,7 +137,7 @@ async fn launch_gateway(
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
-        .bounded_status()
+        .status_for(Work::Mutation)
         .await
         .map_err(|e| http_error(format!("cannot prepare local HTTP gateway: {e}")))?;
     if !prepared.success() {

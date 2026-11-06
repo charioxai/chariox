@@ -1,4 +1,4 @@
-use crate::runtime::bounded_process::BoundedCommandExt as _;
+use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::path::{Path, PathBuf};
 
 use crate::error::DaemonError;
@@ -24,7 +24,8 @@ pub(crate) fn run_workspace_git_command(
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(worktree_path)
-        .bounded_output()
+        // add, commit and push run repository hooks and talk to the network.
+        .output_for(Work::Mutation)
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: error.to_string(),
@@ -52,7 +53,8 @@ pub(crate) fn run_git(repo_root: &Path, args: &[&str]) -> Result<(), DaemonError
     let output = crate::process_spawn::command("git")
         .args(args)
         .current_dir(repo_root)
-        .bounded_output()
+        // worktree add and remove check out a tree and run post-checkout hooks.
+        .output_for(Work::Mutation)
         .map_err(|error| DaemonError::LocalTransport {
             operation: "run git command",
             message: error.to_string(),

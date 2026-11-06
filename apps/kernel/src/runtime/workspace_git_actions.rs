@@ -1,4 +1,4 @@
-use crate::runtime::bounded_process::BoundedCommandExt as _;
+use crate::runtime::bounded_process::{BoundedCommandExt as _, Work};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::DaemonError;
@@ -253,7 +253,7 @@ fn run_gh_output(
     let output = crate::process_spawn::command("gh")
         .args(args)
         .current_dir(worktree_path)
-        .bounded_output()
+        .output_for(Work::Mutation)
         .map_err(|error| DaemonError::LocalTransport {
             operation,
             message: error.to_string(),
@@ -355,5 +355,141 @@ mod tests {
         );
         assert_eq!(result.commit_sha.as_deref(), Some("abc123"));
         assert_eq!(result.branch.as_deref(), Some("origin/feature"));
+    }
+
+    #[cfg(unix)]
+    mod slow_hooks {
+        use super::super::{commit_workspace_changes, push_workspace_branch};
+        use crate::runtime::bounded_process::{with_test_command_limit, with_test_mutation_limit};
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::path::{Path, PathBuf};
+        use std::time::{Duration, Instant};
+
+        const QUERY_CAP: Duration = Duration::from_secs(1);
+
+        fn git(cwd: &Path, args: &[&str]) {
+            let output = crate::process_spawn::command("git")
+                .args(args)
+                .current_dir(cwd)
+                .output()
+                .expect("git should run");
+            assert!(
+                output.status.success(),
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        fn install_hook(repo_git_dir: &Path, name: &str, body: &str) {
+            let hook = repo_git_dir.join("hooks").join(name);
+            std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+            std::fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        struct Fixture {
+            root: PathBuf,
+            clone: PathBuf,
+            remote: PathBuf,
+        }
+
+        impl Fixture {
+            fn new(label: &str) -> Self {
+                let root = std::env::temp_dir().join(format!(
+                    "chariox-git-{label}-{}-{}",
+                    std::process::id(),
+                    crate::session::unix_epoch_ms()
+                ));
+                let remote = root.join("remote.git");
+                let clone = root.join("clone");
+                std::fs::create_dir_all(&root).unwrap();
+                git(&root, &["init", "--bare", "-b", "main", "remote.git"]);
+                git(&root, &["clone", "remote.git", "clone"]);
+                git(&clone, &["config", "user.email", "tests@example.invalid"]);
+                git(&clone, &["config", "user.name", "Chariox Tests"]);
+                std::fs::write(clone.join("README.md"), "seed\n").unwrap();
+                git(&clone, &["add", "."]);
+                git(&clone, &["commit", "-m", "seed"]);
+                git(&clone, &["push", "-u", "origin", "HEAD:main"]);
+                git(&clone, &["branch", "--set-upstream-to=origin/main"]);
+                std::fs::write(clone.join("change.txt"), "change\n").unwrap();
+                Self {
+                    root,
+                    clone,
+                    remote,
+                }
+            }
+
+            fn path(&self) -> &str {
+                self.clone.to_str().unwrap()
+            }
+        }
+
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+
+        #[test]
+        fn commit_with_a_hook_slower_than_the_query_cap_succeeds() {
+            let fixture = Fixture::new("slow-commit");
+            install_hook(&fixture.clone.join(".git"), "pre-commit", "sleep 3");
+            let started = Instant::now();
+            let result = with_test_command_limit(QUERY_CAP, || {
+                commit_workspace_changes("w", fixture.path(), "slow hook")
+            });
+            assert!(result.is_ok(), "commit failed: {:?}", result.err());
+            assert!(started.elapsed() >= Duration::from_secs(3));
+        }
+
+        #[test]
+        fn push_with_a_remote_hook_slower_than_the_query_cap_succeeds() {
+            let fixture = Fixture::new("slow-push");
+            git(&fixture.clone, &["add", "."]);
+            git(&fixture.clone, &["commit", "-m", "to push"]);
+            install_hook(&fixture.remote, "pre-receive", "sleep 3");
+            let result = with_test_command_limit(QUERY_CAP, || {
+                push_workspace_branch("w", fixture.path(), false)
+            });
+            assert!(result.is_ok(), "push failed: {:?}", result.err());
+        }
+
+        fn process_is_alive(pid: i32) -> bool {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map(|stat| !stat.contains(") Z "))
+                .unwrap_or(false)
+        }
+
+        #[test]
+        fn hung_commit_hook_ends_at_the_mutation_deadline_with_its_tree_reaped() {
+            let fixture = Fixture::new("hung-commit");
+            let pid_file = fixture.root.join("hook.pid");
+            install_hook(
+                &fixture.clone.join(".git"),
+                "pre-commit",
+                &format!("sleep 300 &\necho $! > '{}'\nwait", pid_file.display()),
+            );
+            let started = Instant::now();
+            let error = with_test_mutation_limit(Duration::from_secs(2), || {
+                commit_workspace_changes("w", fixture.path(), "hung hook")
+            })
+            .expect_err("a hung hook must end at the mutation deadline");
+            assert!(started.elapsed() < Duration::from_secs(20), "{error}");
+            let pid: i32 = std::fs::read_to_string(&pid_file)
+                .expect("hook should have started its child")
+                .trim()
+                .parse()
+                .unwrap();
+            let reaped_by = Instant::now() + Duration::from_secs(5);
+            while process_is_alive(pid) && Instant::now() < reaped_by {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(
+                !process_is_alive(pid),
+                "hook child {pid} outlived the deadline"
+            );
+        }
     }
 }
