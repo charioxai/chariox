@@ -6,9 +6,12 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 // Version 3 adds provider reply context to publish and delivery envelopes and
-// makes same-interest fan-out an explicit route contract.
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 3;
-pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 4;
+// makes same-interest fan-out an explicit route contract. Version 4 replaces the bearer token of
+// the AEDS connection with a challenge the kernel answers by signing with its identity key.
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 4;
+// Version 5 authenticates AEGS management by the kernel's identity key (see `kernel_identity`)
+// and binds a connection to its secret owner id instead of a Cloud-signed capability.
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -209,6 +212,14 @@ pub enum AegsSubscriptionRefusal {
 pub struct AegsRefusedSubscription {
     pub binding_id: String,
     pub reason: AegsSubscriptionRefusal,
+}
+
+/// Removes one kernel from the kernels that share an owner id. The kernel can never rejoin with
+/// the same key, even if it still knows the owner id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsOwnerKernelRevokeRequest {
+    pub owner_id: String,
+    pub kernel_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -675,9 +686,13 @@ pub struct KernelEnvironmentResume {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum KernelToAedsMessage {
+    /// The answer to `AedsToKernelMessage::Challenge`. `kernel_id` is the fingerprint of
+    /// `public_key`; `signature` covers `kernel_identity::aeds_hello_message(nonce, kernel_id)`.
     Hello {
         protocol_version: u32,
         kernel_id: String,
+        public_key: String,
+        signature: String,
         environments: Vec<KernelEnvironmentResume>,
     },
     ReconcileRoutes {
@@ -694,6 +709,10 @@ pub enum KernelToAedsMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AedsToKernelMessage {
+    /// Sent first on every connection: a fresh, single-use nonce the kernel must sign.
+    Challenge {
+        nonce: String,
+    },
     HelloAccepted {
         protocol_version: u32,
         heartbeat_interval_ms: u64,

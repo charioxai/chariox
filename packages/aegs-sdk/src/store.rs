@@ -84,6 +84,13 @@ pub struct AegsStoreMetrics {
     pub provider_hooks: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerMembership {
+    Member,
+    Revoked,
+    OwnerLimit,
+}
+
 #[derive(Clone)]
 pub struct AegsStore {
     connection: Arc<Mutex<Connection>>,
@@ -118,6 +125,7 @@ impl AegsStore {
             CREATE TABLE IF NOT EXISTS subscriptions (
                 binding_id TEXT PRIMARY KEY NOT NULL,
                 owner_id TEXT NOT NULL,
+                kernel_id TEXT NOT NULL DEFAULT '',
                 generator_id TEXT NOT NULL,
                 connection_id TEXT NOT NULL,
                 connection_scope TEXT NOT NULL,
@@ -130,6 +138,14 @@ impl AegsStore {
             );
             CREATE INDEX IF NOT EXISTS subscriptions_matching
                 ON subscriptions(generator_id, event_type, connection_scope, active);
+            CREATE TABLE IF NOT EXISTS owner_kernels (
+                owner_id TEXT NOT NULL,
+                kernel_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                added_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(owner_id, kernel_id)
+            );
+            CREATE INDEX IF NOT EXISTS owner_kernels_by_kernel ON owner_kernels(kernel_id);
             CREATE TABLE IF NOT EXISTS connections (
                 connection_id TEXT PRIMARY KEY NOT NULL,
                 owner_id TEXT NOT NULL DEFAULT 'legacy',
@@ -218,6 +234,7 @@ impl AegsStore {
             ",
         )?;
         migrate_subscription_owner(&connection)?;
+        migrate_subscription_kernel(&connection)?;
         migrate_connection_owner(&connection)?;
         migrate_connection_lifecycle_timestamps(&connection)?;
         migrate_action_receipt_fingerprint(&connection)?;
@@ -284,25 +301,28 @@ impl AegsStore {
 
     pub fn reconcile(
         &self,
-        owner_id: &str,
+        kernel_id: &str,
         generator_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<Vec<String>, String> {
-        self.reconcile_scoped(owner_id, None, generator_id, claims)
+        self.reconcile_for_owner(kernel_id, kernel_id, generator_id, claims)
     }
 
-    /// Reconcile one owner's desired bindings while enforcing the owner scope
-    /// carried by a signed management capability. Static operator tokens pass
-    /// `None` and retain their intentionally global administrative behavior.
-    pub fn reconcile_scoped(
+    /// Reconcile the bindings one kernel holds for `owner_id`. The kernel is the subscriber
+    /// (the audience of every publication names it); the owner groups the kernels that share
+    /// the connections. The caller has already checked the claims against the owner's
+    /// connections.
+    pub fn reconcile_for_owner(
         &self,
+        kernel_id: &str,
         owner_id: &str,
-        allowed_connection_owners: Option<&[String]>,
         generator_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<Vec<String>, String> {
-        if owner_id.trim().is_empty() {
-            return Err("subscription reconciliation owner_id is required".to_string());
+        if kernel_id.trim().is_empty() || owner_id.trim().is_empty() {
+            return Err(
+                "subscription reconciliation needs a kernel id and an owner id".to_string(),
+            );
         }
         for claim in claims {
             if claim.generator_id != generator_id {
@@ -320,33 +340,6 @@ impl AegsStore {
         let transaction = connection
             .transaction()
             .map_err(|error| error.to_string())?;
-        if let Some(allowed_connection_owners) = allowed_connection_owners {
-            for claim in claims {
-                let connection_owner = transaction
-                    .query_row(
-                        "SELECT owner_id FROM connections WHERE connection_id = ?1",
-                        params![claim.connection_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        format!(
-                            "connection {} is not owned by an allowed management principal",
-                            claim.connection_id
-                        )
-                    })?;
-                if !allowed_connection_owners
-                    .iter()
-                    .any(|allowed| allowed == &connection_owner)
-                {
-                    return Err(format!(
-                        "connection {} belongs to an owner outside the management capability",
-                        claim.connection_id
-                    ));
-                }
-            }
-        }
         let claimed_binding_ids = claims
             .iter()
             .map(|claim| claim.binding_id.as_str())
@@ -355,11 +348,11 @@ impl AegsStore {
             let mut statement = transaction
                 .prepare(
                     "SELECT binding_id FROM subscriptions
-                     WHERE generator_id = ?1 AND owner_id = ?2",
+                     WHERE generator_id = ?1 AND kernel_id = ?2",
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map(params![generator_id, owner_id], |row| {
+                .query_map(params![generator_id, kernel_id], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|error| error.to_string())?
@@ -372,8 +365,8 @@ impl AegsStore {
                 transaction
                     .execute(
                         "UPDATE subscriptions SET active = 0
-                         WHERE binding_id = ?1 AND owner_id = ?2",
-                        params![binding_id, owner_id],
+                         WHERE binding_id = ?1 AND kernel_id = ?2",
+                        params![binding_id, kernel_id],
                     )
                     .map_err(|error| error.to_string())?;
             }
@@ -388,9 +381,10 @@ impl AegsStore {
                     INSERT INTO subscriptions (
                         binding_id, owner_id, generator_id, connection_id, connection_scope,
                         event_interest_key, event_type, event_type_version, filter_json,
-                        revision, active
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                        revision, active, kernel_id
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                     ON CONFLICT(binding_id) DO UPDATE SET
+                        owner_id = excluded.owner_id,
                         generator_id = excluded.generator_id,
                         connection_id = excluded.connection_id,
                         connection_scope = excluded.connection_scope,
@@ -401,7 +395,7 @@ impl AegsStore {
                         revision = excluded.revision,
                         active = excluded.active
                     WHERE
-                        excluded.owner_id = subscriptions.owner_id
+                        excluded.kernel_id = subscriptions.kernel_id
                         AND excluded.revision >= subscriptions.revision
                     ",
                     params![
@@ -416,6 +410,7 @@ impl AegsStore {
                         filter_json,
                         claim.revision as i64,
                         claim.active,
+                        kernel_id,
                     ],
                 )
                 .map_err(|error| error.to_string())?;
@@ -497,7 +492,7 @@ impl AegsStore {
         let connection = self.lock()?;
         let mut statement = connection
             .prepare(&format!(
-                "SELECT owner_id, binding_id FROM subscriptions
+                "SELECT kernel_id, binding_id FROM subscriptions
                  WHERE generator_id = ?1 AND event_interest_key = ?2 AND active = 1
                    AND (?3 IS NULL OR connection_id = ?3)
                    AND {SUBSCRIPTION_AUTHORIZED}
@@ -514,6 +509,100 @@ impl AegsStore {
                     })
                 },
             )
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Adds `kernel_id` to the kernels that share `owner_id` the first time it presents the
+    /// owner id. The owner id is the secret that proves the kernel's user holds the connection;
+    /// a kernel removed from the set stays removed even if it still knows the secret.
+    pub(crate) fn admit_kernel_to_owner(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+        max_owners_per_kernel: Option<usize>,
+    ) -> Result<OwnerMembership, String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM owner_kernels WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let membership = match state.as_deref() {
+            Some("member") => OwnerMembership::Member,
+            Some(_) => OwnerMembership::Revoked,
+            None => {
+                let owners: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM owner_kernels WHERE kernel_id = ?1 AND state = 'member'",
+                        params![kernel_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if max_owners_per_kernel.is_some_and(|cap| owners as usize >= cap) {
+                    OwnerMembership::OwnerLimit
+                } else {
+                    transaction
+                        .execute(
+                            "INSERT INTO owner_kernels (owner_id, kernel_id, state, added_at_ms)
+                             VALUES (?1, ?2, 'member', ?3)",
+                            params![owner_id, kernel_id, now_ms as i64],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    OwnerMembership::Member
+                }
+            }
+        };
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(membership)
+    }
+
+    /// Removes a kernel from an owner's set for good and stops its subscriptions at once.
+    pub(crate) fn revoke_owner_kernel(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO owner_kernels (owner_id, kernel_id, state, added_at_ms)
+                 VALUES (?1, ?2, 'revoked', ?3)
+                 ON CONFLICT(owner_id, kernel_id) DO UPDATE SET state = 'revoked'",
+                params![owner_id, kernel_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE subscriptions SET active = 0 WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn owner_kernels(&self, owner_id: &str) -> Result<Vec<(String, String)>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT kernel_id, state FROM owner_kernels WHERE owner_id = ?1
+                 ORDER BY added_at_ms, kernel_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![owner_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
@@ -1420,6 +1509,29 @@ fn migrate_subscription_owner(connection: &Connection) -> Result<(), rusqlite::E
     Ok(())
 }
 
+/// Subscriptions used to name only an owner that doubled as the kernel. Those rows cannot say
+/// which kernel holds them; kernels claim their subscriptions again on every reconcile.
+fn migrate_subscription_kernel(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(subscriptions)")?;
+    let has_kernel = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "kernel_id");
+    drop(columns);
+    if !has_kernel {
+        connection.execute(
+            "ALTER TABLE subscriptions ADD COLUMN kernel_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    connection.execute_batch(
+        "DELETE FROM subscription_authorities WHERE binding_id IN
+             (SELECT binding_id FROM subscriptions WHERE kernel_id = '');
+         DELETE FROM subscriptions WHERE kernel_id = '';",
+    )
+}
+
 fn migrate_connection_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
     let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
     let has_owner = columns
@@ -1689,9 +1801,9 @@ mod tests {
         owned.connection_id = "connection-a".to_string();
         assert_eq!(
             store
-                .reconcile_scoped(
+                .reconcile_for_owner(
                     "kernel-a",
-                    Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                    "owner-a",
                     "dev.chariox.github",
                     &[owned.clone()],
                 )
@@ -1710,35 +1822,28 @@ mod tests {
             vec![owned.clone()]
         );
 
-        let mut foreign = owned.clone();
-        foreign.connection_id = "connection-b".to_string();
-        assert!(store
-            .reconcile_scoped(
-                "kernel-a",
-                Some(&["owner-a".to_string(), "kernel-a".to_string()]),
-                "dev.chariox.github",
-                &[foreign],
-            )
-            .unwrap_err()
-            .contains("outside the management capability"));
-
-        let mut takeover = owned;
+        let mut takeover = owned.clone();
         takeover.connection_id = "connection-b".to_string();
         takeover.revision = 2;
         assert!(store
-            .reconcile_scoped(
-                "kernel-b",
-                Some(&["owner-b".to_string(), "kernel-b".to_string()]),
-                "dev.chariox.github",
-                &[takeover],
-            )
+            .reconcile_for_owner("kernel-b", "owner-b", "dev.chariox.github", &[takeover],)
             .unwrap()
             .is_empty());
         let stored = store
-            .all_for_owner("dev.chariox.github", "kernel-a")
+            .all_for_owner("dev.chariox.github", "owner-a")
             .unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].connection_id, "connection-a");
+        assert_eq!(
+            store
+                .audience_for_interest("dev.chariox.github", &owned.event_interest_key, None)
+                .unwrap()
+                .iter()
+                .map(|route| route.kernel_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kernel-a"],
+            "only the kernel that holds the binding is in the audience"
+        );
     }
 
     #[test]
@@ -2187,12 +2292,7 @@ mod mp11_delivery_gate_tests {
             active: true,
         };
         store
-            .reconcile_scoped(
-                "kernel",
-                Some(&["user".into()]),
-                &claim.generator_id,
-                &[claim.clone()],
-            )
+            .reconcile_for_owner("kernel", "user", &claim.generator_id, &[claim.clone()])
             .unwrap();
         let selected = store
             .matching_for_delivery(
@@ -2215,12 +2315,7 @@ mod mp11_delivery_gate_tests {
             .unwrap()
             .is_empty());
         store
-            .reconcile_scoped(
-                "kernel",
-                Some(&["user".into()]),
-                &claim.generator_id,
-                &[claim.clone()],
-            )
+            .reconcile_for_owner("kernel", "user", &claim.generator_id, &[claim.clone()])
             .unwrap();
         assert!(store
             .delivery_guard(&selected[0].0, selected[0].1)

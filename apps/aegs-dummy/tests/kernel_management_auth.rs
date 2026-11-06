@@ -103,7 +103,11 @@ impl Kernel {
     }
 
     fn call(&self, aegs: &Aegs, call: Call) -> (u16, Value) {
-        let body = call.body.to_string();
+        let body = if call.method == "GET" {
+            String::new()
+        } else {
+            call.body.to_string()
+        };
         let signer = call.signer.unwrap_or(self);
         let timestamp_ms = call.timestamp_ms.unwrap_or_else(now_ms);
         let nonce = call
@@ -296,7 +300,7 @@ fn a_kernel_with_a_valid_key_and_another_owner_id_gets_nothing() {
         &aegs,
         "/v1/connections/query",
         "owner-guess-000000000000000002",
-        json!({"generator_id": GENERATOR, "owner_id": "owner-guess-000000000000000002"}),
+        json!({"generator_id": GENERATOR, "owner_id": "owner-guess-000000000000000002", "limit": 10}),
     );
     assert_eq!(connections["connections"], json!([]), "{connections}");
 }

@@ -2,7 +2,7 @@ mod auth;
 mod conformance;
 mod conformance_attestation;
 mod hooks;
-mod management_capability;
+mod kernel_auth;
 mod manifest;
 mod oauth;
 mod provider;

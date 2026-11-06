@@ -30,13 +30,14 @@ impl AegsServer {
     /// list the connection's resources: the caller keeps what is stored and the kernel retries.
     pub(super) async fn vet_subscription_claims(
         &self,
+        owner_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<(Vec<SubscriptionClaim>, Vec<AegsRefusedSubscription>), String> {
         let mut kept = Vec::with_capacity(claims.len());
         let mut refused = Vec::new();
         for claim in claims {
             let verdict = if claim.active {
-                self.scope_refusal(claim).await?
+                self.scope_refusal(owner_id, claim).await?
             } else {
                 None
             };
@@ -53,9 +54,15 @@ impl AegsServer {
 
     async fn scope_refusal(
         &self,
+        owner_id: &str,
         claim: &SubscriptionClaim,
     ) -> Result<Option<AegsSubscriptionRefusal>, String> {
-        let Some(connection) = self.store.connection(&claim.connection_id)? else {
+        // A connection of another owner is indistinguishable from one that does not exist.
+        let Some(connection) = self
+            .store
+            .connection(&claim.connection_id)?
+            .filter(|connection| connection.owner_id == owner_id)
+        else {
             return Ok(Some(AegsSubscriptionRefusal::ConnectionNotFound));
         };
         if connection.status != "ready" {

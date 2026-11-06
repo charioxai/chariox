@@ -16,8 +16,8 @@ use chariox_aegs_sdk::{
     AegsProvider, AegsStore, NormalizedEvent, ProviderDelivery, WebhookInput, WebhookRoute,
 };
 use inbox_support::{
-    free_port, post, seed_subscription, spawn_server, wait_until, AedsMode, FakeAeds, CHILD_ENV,
-    GENERATOR, MANAGEMENT_TOKEN,
+    free_port, post, seed_subscription, signed_management_headers, spawn_server, wait_until,
+    AedsMode, FakeAeds, CHILD_ENV, GENERATOR,
 };
 
 const DELIVERY_HEADER: &str = "x-drill-delivery";
@@ -156,17 +156,21 @@ fn seed_failed_event(database: &std::path::Path, delivery_id: &str) {
 }
 
 fn management(port: u16, path: &str, body: serde_json::Value) -> (u16, serde_json::Value) {
-    let reply = post(
-        port,
+    let body_text = body.to_string();
+    let signed = signed_management_headers(
         path,
-        &[
-            ("authorization", &format!("Bearer {MANAGEMENT_TOKEN}")),
-            ("content-type", "application/json"),
-        ],
-        &body.to_string(),
-        Duration::from_secs(20),
-    )
-    .expect("management request got no answer");
+        body["owner_id"]
+            .as_str()
+            .expect("management bodies name their owner"),
+        &body_text,
+    );
+    let mut headers: Vec<(&str, &str)> = signed
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    headers.push(("content-type", "application/json"));
+    let reply = post(port, path, &headers, &body_text, Duration::from_secs(20))
+        .expect("management request got no answer");
     let value = serde_json::from_str(&reply.body).unwrap_or(serde_json::Value::Null);
     (reply.status, value)
 }

@@ -14,7 +14,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
-use super::{enforce_management_owner, error, json, read_body, AegsServer};
+use super::{enforce_management_owner, error, json, AegsServer};
 use crate::store::{Requeue, SelectedInterest};
 use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
@@ -326,17 +326,29 @@ impl AegsServer {
     }
 }
 
+fn parse_management_json<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+) -> Result<T, Box<Response<Full<Bytes>>>> {
+    serde_json::from_slice(body).map_err(|message| {
+        Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_json",
+            message.to_string(),
+        ))
+    })
+}
+
 impl AegsServer {
     /// `POST /v1/events/query`: the owner's stored webhooks, newest first.
     pub(super) async fn query_received_events(
         &self,
         request: Request<Incoming>,
     ) -> Response<Full<Bytes>> {
-        let authorization = match self.authorize_management(&request) {
-            Ok(authorization) => authorization,
+        let (authorization, body) = match self.authenticate_management(request).await {
+            Ok(authenticated) => authenticated,
             Err(response) => return *response,
         };
-        let query: AegsReceivedEventQuery = match self.read_management_json(request).await {
+        let query: AegsReceivedEventQuery = match parse_management_json(&body) {
             Ok(value) => value,
             Err(response) => return *response,
         };
@@ -371,12 +383,11 @@ impl AegsServer {
         &self,
         request: Request<Incoming>,
     ) -> Response<Full<Bytes>> {
-        let authorization = match self.authorize_management(&request) {
-            Ok(authorization) => authorization,
+        let (authorization, body) = match self.authenticate_management(request).await {
+            Ok(authenticated) => authenticated,
             Err(response) => return *response,
         };
-        let replay: AegsReceivedEventReplayRequest = match self.read_management_json(request).await
-        {
+        let replay: AegsReceivedEventReplayRequest = match parse_management_json(&body) {
             Ok(value) => value,
             Err(response) => return *response,
         };
@@ -448,23 +459,9 @@ impl AegsServer {
         }
     }
 
-    async fn read_management_json<T: serde::de::DeserializeOwned>(
-        &self,
-        request: Request<Incoming>,
-    ) -> Result<T, Box<Response<Full<Bytes>>>> {
-        let body = read_body(request).await.map_err(Box::new)?;
-        serde_json::from_slice(&body).map_err(|message| {
-            Box::new(error(
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                message.to_string(),
-            ))
-        })
-    }
-
     fn check_management_target(
         &self,
-        authorization: &super::ManagementAuthorization,
+        authorization: &crate::kernel_auth::AuthenticatedKernel,
         owner_id: &str,
         generator_id: &str,
         validation: Result<(), String>,
