@@ -124,7 +124,9 @@ export async function main(argv, out = console.log) {
   }
   const finish = () => { writePrinted(stateFile, printed); lines.forEach(line => out(line)); return 0 }
 
-  let cursor
+  // The first record skipped as another reader's, in any batch of this wait: acknowledgement is cumulative, so nothing
+  // at or after it may be acknowledged, not even by a later batch.
+  let cursor, foreignSeen = false
   while (Date.now() < windowEnd) {
     const seconds = Math.max(1, Math.min(MAX_WAIT_SECONDS, Math.ceil((Math.min(windowEnd, fallbackAt) - Date.now()) / 1000)))
     const waited = await chariox("events", "wait", "--timeout", String(seconds), ...(cursor === undefined ? [] : ["--since", String(cursor)]))
@@ -134,8 +136,8 @@ export async function main(argv, out = console.log) {
     if (waited.code === 0) {
       const batch = JSON.parse(waited.stdout)
       // The grant's stream is shared with other sources and targets: only the unbroken run of records this script
-      // consumed from the front of the batch is acknowledged, so nobody else's record is dropped with them.
-      let acknowledgeThrough, foreignSeen = false
+      // consumed from the front of the stream is acknowledged, so nobody else's record is dropped with them.
+      let acknowledgeThrough
       for (const event of batch.events ?? []) {
         if (event.type === "subscription_ended") return unreachable()
         const mine = event.type === "gap" || (event.type === "notification" && sourceIds.has(event.value.source_id))

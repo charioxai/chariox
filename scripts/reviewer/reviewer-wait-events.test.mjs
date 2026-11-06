@@ -129,3 +129,15 @@ return { stdout: "{}" }`)
   assert.match(result.out[1], /^\d\d:\d\dZ review Failed charioxai\/chariox #1279 @0e8b5e6fd8: lost$/)
   rmSync(dir, { recursive: true })
 })
+
+test("a record of another source skipped in an earlier batch is not acknowledged with a later run", async () => {
+  const dir = scratch()
+  const waits = `readFileSync(${JSON.stringify(join(dir, "calls"))}, "utf8").split("\\n").filter(line => line.startsWith("events wait")).length`
+  const binary = cli(dir, `${sources}
+if (args[1] === "wait") return ${waits} === 1 ? { stdout: JSON.stringify({ events: [${JSON.stringify(foreign(3))}], next_cursor: 3 }) } : { stdout: JSON.stringify({ events: [${JSON.stringify(notification("r1", "Completed", {}, 4))}], next_cursor: 4 }) }
+return { stdout: "{}" }`)
+  const result = await wait(dir, binary, "--window-minutes", "1")
+  assert.deepEqual(result.out, ["09:17Z review Completed charioxai/chariox #1279 @0e8b5e6fd8"])
+  assert.ok(!/events ack/.test(calls(dir)), `the unread record of batch 1 precedes the run: nothing may be acknowledged\n${calls(dir)}`)
+  rmSync(dir, { recursive: true })
+})
