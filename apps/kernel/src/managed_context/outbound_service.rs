@@ -2060,6 +2060,7 @@ mod tests {
                     },
                 ),
                 git_credential_target: None,
+                event_connection_target: None,
             },
         )
         .expect("the new machine applies the package");

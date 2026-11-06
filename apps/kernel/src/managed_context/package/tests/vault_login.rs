@@ -188,6 +188,7 @@ impl Transfer {
             context_import_target: None,
             provider_account_target: Some(self.target_accounts()),
             git_credential_target: None,
+            event_connection_target: None,
         })
     }
 
@@ -405,6 +406,7 @@ fn a_seal_for_another_machine_or_context_is_refused() {
         context_import_target: None,
         provider_account_target: Some(transfer.target_accounts()),
         git_credential_target: None,
+        event_connection_target: None,
     })
     .expect_err("a seal made for kernel-1 is not opened for another-kernel");
     assert!(!error.to_string().contains(FIRST_TOKEN));
