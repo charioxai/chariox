@@ -1544,9 +1544,11 @@ fn a_copy_between_kernels_of_different_cloud_ids_stays_the_local_users_connectio
 }
 
 /// Driven by the two-kernel proof (`GHOWNER.md` section 4): kernel A installs a
-/// connection at a loopback event service through its own handler, the record
-/// moves to kernel B through the real package export and import, and the owner
-/// ids go to a private file for the proof script (never printed).
+/// connection at a loopback event service through its local CLI path, A's Cloud
+/// owner moves the record to kernel B (its own registry, another Cloud user)
+/// through the real package export and import, B reads it from the event
+/// service and lists it through its own local CLI path. The owner ids go to a
+/// private file for the proof script (never printed).
 #[test]
 #[ignore = "driven by the two-kernel proof, which supplies the loopback event service"]
 fn two_kernel_proof_driver() {
@@ -1556,18 +1558,26 @@ fn two_kernel_proof_driver() {
     let aegs_url = std::env::var("GHOWNER_PROOF_AEGS_URL").expect("event service url");
     let token = std::env::var("GHOWNER_PROOF_MANAGEMENT_TOKEN").expect("management token");
     let owners_file = std::env::var("GHOWNER_PROOF_OWNERS_FILE").expect("owners file");
-    let mut config = crate::DaemonConfig::for_tests();
-    config.event_generator_management_targets.insert(
-        "dev.chariox.dummy".to_string(),
-        crate::config::EventGeneratorManagementTarget {
-            url: aegs_url,
-            token,
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
-        },
-    );
-    let kernel_a = crate::local::test_support::LocalRouterTestHarness::with_config(config);
+    let kernel_config = |cloud_user_id: &str| {
+        let mut config = config_of_cloud_user(cloud_user_id);
+        config.event_registry_url = Some("https://registry.invalid".to_string());
+        config.event_generator_management_targets.insert(
+            "dev.chariox.dummy".to_string(),
+            crate::config::EventGeneratorManagementTarget {
+                url: aegs_url.clone(),
+                token: token.clone(),
+                expires_at_ms: None,
+                owner_ids: None,
+                owner_scoped: None,
+            },
+        );
+        config
+    };
+    let (config_a, config_b) = (kernel_config("cloud-a"), kernel_config("cloud-b"));
+    let kernel_a =
+        crate::local::test_support::LocalRouterTestHarness::with_config(config_a.clone());
+    let kernel_b =
+        crate::local::test_support::LocalRouterTestHarness::with_config(config_b.clone());
     kernel_a
         .dispatch(crate::local::LocalDaemonRequest::InstallEventConnection(
             crate::local::InstallEventConnectionRequest {
@@ -1577,34 +1587,70 @@ fn two_kernel_proof_driver() {
         ))
         .expect("kernel A installs the connection");
     kernel_a.reconcile_pending_event_connections();
-    let user = crate::session::DEFAULT_LOCAL_USER_ID;
-    let source = kernel_a.runtime_state().event_connection_registry().clone();
-    let connections = source.list(user, None).expect("list kernel A connections");
-    assert_eq!(connections.len(), 1, "kernel A holds the new connection");
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let list = |kernel: &crate::local::test_support::LocalRouterTestHarness| match kernel
+        .dispatch(crate::local::LocalDaemonRequest::ListEventConnections(
+            crate::local::ListEventConnectionsRequest {
+                generator_id: None,
+                cursor: None,
+                limit: 50,
+            },
+        ))
+        .expect("list through the local CLI path")
+    {
+        crate::local::LocalDaemonResponse::EventConnectionsPage { page } => page.connections,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let connections = list(&kernel_a);
+    assert_eq!(connections.len(), 1, "kernel A lists the new connection");
     let connection_id = connections[0].connection_id.clone();
     assert_eq!(
         connections[0].status,
         crate::local::EventConnectionStatus::Ready
     );
+    assert!(list(&kernel_b).is_empty(), "kernel B holds nothing yet");
 
     let fixture = event_connection_fixture("proof", &[&connection_id]);
-    let records =
-        event_connections::export_selected(&fixture.binding.plan.event_connections, &source, user)
-            .expect("export kernel A's record");
+    let source = crate::managed_context::outbound_service::EventConnectionSource::new(
+        kernel_a.runtime_state().event_connection_registry().clone(),
+        &config_a,
+        "cloud-a",
+    );
+    let records = event_connections::export_selected(
+        &fixture.binding.plan.event_connections,
+        &source.registry,
+        &source.owner_user_id,
+    )
+    .expect("export kernel A's record");
     let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
     export.development = ManagedContextPackageDevelopment::Empty;
     export.event_connections = ManagedContextPackageEventConnections::Selected { records };
     let exported = export_managed_context_package(export).expect("package kernel A's record");
-    let target = event_registry(&fixture.root, "kernel-b");
-    apply_managed_context_package(event_apply_request(&fixture, &exported, &target))
-        .expect("kernel B imports the record");
+    let target = kernel_b.runtime_state().event_connection_registry().clone();
+    let mut request = event_apply_request(&fixture, &exported, &target);
+    request.event_connection_target = Some(ManagedContextEventConnectionImportTarget::new(
+        target.clone(),
+        &config_b,
+        "cloud-b",
+    ));
+    apply_managed_context_package(request).expect("kernel B imports the record");
+    kernel_b.load_imported_event_connections(local, std::slice::from_ref(&connection_id));
 
-    let owner_a = source
-        .connection_event_owner_id(user, &connection_id)
+    let on_b = list(&kernel_b);
+    assert_eq!(on_b.len(), 1, "kernel B's local CLI lists the copy");
+    assert_eq!(on_b[0].connection_id, connection_id);
+    assert_eq!(on_b[0].status, crate::local::EventConnectionStatus::Ready);
+    let on_a = list(&kernel_a);
+    assert_eq!(on_b[0].scopes, on_a[0].scopes, "B shows A's scopes");
+    assert_eq!(on_b[0].metadata, on_a[0].metadata, "B shows A's metadata");
+    let owner_a = kernel_a
+        .runtime_state()
+        .event_connection_registry()
+        .connection_event_owner_id(local, &connection_id)
         .unwrap()
         .expect("kernel A's owner");
     let owner_b = target
-        .connection_event_owner_id(TARGET_OWNER, &connection_id)
+        .connection_event_owner_id(local, &connection_id)
         .unwrap()
         .expect("kernel B's owner");
     assert_eq!(owner_a, owner_b, "the copy resolves the same owner");
@@ -1617,7 +1663,15 @@ fn two_kernel_proof_driver() {
     write!(
         file,
         "{}",
-        serde_json::json!({"connection_id": connection_id, "owner_a": owner_a, "owner_b": owner_b})
+        serde_json::json!({
+            "connection_id": connection_id,
+            "owner_a": owner_a,
+            "owner_b": owner_b,
+            "b_local_cli_lists_it": true,
+            "b_status_via_local_cli": format!("{:?}", on_b[0].status),
+            "b_scopes_equal_a": on_b[0].scopes == on_a[0].scopes,
+            "b_cloud_id_space_empty": target.get("cloud-b", &connection_id).unwrap().is_none(),
+        })
     )
     .expect("write owners");
     fixture.cleanup();
