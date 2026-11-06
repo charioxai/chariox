@@ -117,8 +117,7 @@ async fn connector(
                 .event_delivery_url
                 .as_ref()
                 .map(|url| format!("{url}{connection_id}")),
-            token: None,
-            kernel_id: config.daemon_id.clone(),
+            identity: crate::transport::gateway_identity::GatewayIdentity::from_config(config),
             environment_id: config.event_delivery_environment_id.clone(),
             generator_management_targets: config.event_generator_management_targets.clone(),
             config_projection: state.owned.config_projection.clone(),
@@ -354,10 +353,7 @@ async fn exercise(fanout: bool) {
         GENERATOR.into(),
         crate::config::EventGeneratorManagementTarget {
             url: services.generator_url.clone(),
-            token: "fixture-only".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         },
     );
     let mut app = DaemonApp::bootstrap(config.clone()).unwrap();

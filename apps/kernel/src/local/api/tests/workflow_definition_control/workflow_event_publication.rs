@@ -17,7 +17,7 @@ struct ReadyConnectionServer {
     revoked: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     scopes_reduced: Arc<AtomicBool>,
-    capability_issued: Arc<AtomicBool>,
+    management_url_discovered: Arc<AtomicBool>,
     management_url: String,
     requests: Arc<Mutex<Vec<String>>>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -39,13 +39,13 @@ impl ReadyConnectionServer {
         let revoked = Arc::new(AtomicBool::new(false));
         let unavailable = Arc::new(AtomicBool::new(false));
         let scopes_reduced = Arc::new(AtomicBool::new(false));
-        let capability_issued = Arc::new(AtomicBool::new(false));
+        let management_url_discovered = Arc::new(AtomicBool::new(false));
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_revoked = Arc::clone(&revoked);
         let thread_unavailable = Arc::clone(&unavailable);
         let thread_scopes_reduced = Arc::clone(&scopes_reduced);
-        let thread_capability_issued = Arc::clone(&capability_issued);
+        let thread_management_url_discovered = Arc::clone(&management_url_discovered);
         let thread_management_url = management_url.clone();
         let thread_requests = Arc::clone(&requests);
         let thread = std::thread::spawn(move || {
@@ -58,7 +58,7 @@ impl ReadyConnectionServer {
                             &thread_revoked,
                             &thread_unavailable,
                             &thread_scopes_reduced,
-                            &thread_capability_issued,
+                            &thread_management_url_discovered,
                             &thread_management_url,
                             &thread_requests,
                         )
@@ -76,7 +76,7 @@ impl ReadyConnectionServer {
             revoked,
             unavailable,
             scopes_reduced,
-            capability_issued,
+            management_url_discovered,
             management_url,
             requests,
             thread: Some(thread),
@@ -86,10 +86,7 @@ impl ReadyConnectionServer {
     fn target(&self) -> crate::config::EventGeneratorManagementTarget {
         crate::config::EventGeneratorManagementTarget {
             url: format!("http://{}", self.address),
-            token: "test-management-token".to_string(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         }
     }
 }
@@ -150,7 +147,7 @@ fn serve_ready_connection(
     revoked: &AtomicBool,
     unavailable: &AtomicBool,
     scopes_reduced: &AtomicBool,
-    capability_issued: &AtomicBool,
+    management_url_discovered: &AtomicBool,
     management_url: &str,
     requests: &Mutex<Vec<String>>,
 ) {
@@ -177,17 +174,10 @@ fn serve_ready_connection(
     let catalog_detail_request = request
         .starts_with("GET /v1/event-generators/dev.chariox.dummy HTTP/1.1")
         || request.starts_with("GET /v1/event-generators/dev.chariox.dummy?");
-    let capability_request = request
-        .starts_with("POST /v1/event-generators/dev.chariox.dummy/management-capability HTTP/1.1");
-    if !catalog_detail_request && !capability_request {
-        assert!(
-            request
-                .to_ascii_lowercase()
-                .contains("authorization: bearer test-management-token")
-                || request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer registry-issued-token")
-        );
+    if catalog_detail_request {
+        management_url_discovered.store(true, Ordering::Relaxed);
+    } else {
+        assert_signed_by_the_kernel(&request);
     }
     if unavailable.load(Ordering::Relaxed) {
         let body = serde_json::json!({
@@ -240,24 +230,6 @@ fn serve_ready_connection(
                 "input_schema": {"type": "object"}
             }],
             "signature": {"key_id": "test", "algorithm": "ed25519", "value": "test"}
-        })
-        .to_string()
-    } else if capability_request {
-        assert!(request.contains("\"sessionToken\":\"cloud-session-token\""));
-        assert!(
-            !request.contains("\"generatorId\":"),
-            "the path-bound generator ID must not be duplicated into the strict Cloud request body"
-        );
-        assert!(request.contains("\"version\":\"1.0.0\""));
-        assert!(request.contains(&format!(
-            "\"manifestDigest\":\"{}\"",
-            crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
-        )));
-        assert!(request.contains(&format!("\"managementUrl\":\"{management_url}\"")));
-        capability_issued.store(true, Ordering::Relaxed);
-        serde_json::json!({
-            "token": "registry-issued-token",
-            "expiresAt": "2100-01-01T00:00:00Z"
         })
         .to_string()
     } else if request.starts_with("POST /v1/authorizations HTTP/1.1") {
@@ -414,7 +386,7 @@ fn kernel_rejects_insecure_registry_issued_management_target_after_capability_is
             .contains("Insecure request attempted with https_only set"),
         "unexpected error: {error}"
     );
-    assert!(server.capability_issued.load(Ordering::Relaxed));
+    assert!(server.management_url_discovered.load(Ordering::Relaxed));
 }
 
 #[test]
@@ -475,7 +447,7 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         .unwrap()
         .expect("the authorization records its owner");
     assert_eq!(expected_owner_id.len(), 32);
-    assert!(server.capability_issued.load(Ordering::Relaxed));
+    assert!(server.management_url_discovered.load(Ordering::Relaxed));
     assert_eq!(
         server.management_url,
         format!("https://aegs-public.test:{}", server.address.port())
@@ -487,9 +459,55 @@ fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
         .find(|request| request.starts_with("POST /v1/authorizations HTTP/1.1"))
         .expect("authorization request should reach the AEGS");
     let normalized = authorization_request.to_ascii_lowercase();
-    assert!(normalized.contains("authorization: bearer registry-issued-token"));
+    assert!(
+        !normalized.contains("authorization:"),
+        "no bearer token is sent"
+    );
     assert!(normalized.contains(&format!("x-chariox-owner-id: {expected_owner_id}")));
     assert!(authorization_request.contains(&format!("\"owner_id\":\"{expected_owner_id}\"")));
+}
+
+/// The request carries the kernel's identity-key signature and it verifies over the request's
+/// method, path, body and owner.
+fn assert_signed_by_the_kernel(request: &str) {
+    use chariox_event_protocol::kernel_identity::{
+        kernel_id_for_public_key, verify, ManagementRequest, KERNEL_KEY_HEADER,
+        KERNEL_NONCE_HEADER, KERNEL_SIGNATURE_HEADER, KERNEL_TIMESTAMP_HEADER, OWNER_ID_HEADER,
+    };
+    let (head, body) = request.split_once("\r\n\r\n").expect("a complete request");
+    let mut lines = head.lines();
+    let mut first = lines.next().expect("a request line").split_whitespace();
+    let (method, path) = (first.next().unwrap(), first.next().unwrap());
+    let header = |name: &str| {
+        lines
+            .clone()
+            .find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                key.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| value.trim().to_string())
+            })
+            .unwrap_or_else(|| panic!("the request has no {name} header"))
+    };
+    assert!(
+        !head.to_ascii_lowercase().contains("authorization:"),
+        "no bearer token is sent"
+    );
+    let public_key = header(KERNEL_KEY_HEADER);
+    assert_eq!(kernel_id_for_public_key(&public_key).len(), 64);
+    let nonce = header(KERNEL_NONCE_HEADER);
+    let message = ManagementRequest {
+        method,
+        path,
+        generator_id: "dev.chariox.dummy",
+        owner_id: &header(OWNER_ID_HEADER),
+        timestamp_ms: header(KERNEL_TIMESTAMP_HEADER).parse().unwrap(),
+        nonce: &nonce,
+        body: body.as_bytes(),
+    }
+    .message();
+    verify(&public_key, &message, &header(KERNEL_SIGNATURE_HEADER))
+        .expect("the request is signed by the key it presents");
 }
 
 fn http_request_complete(request: &[u8]) -> bool {

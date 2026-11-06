@@ -44,7 +44,7 @@ impl Services {
                 let response = tokio::time::timeout(Duration::from_secs(5), async {
                     let mut bytes = Vec::new();
                     let mut chunk = [0; 4096];
-                    let (headers, body) = loop {
+                    let (headers, body, raw_body) = loop {
                         let count = stream.read(&mut chunk).await.unwrap();
                         assert!(count > 0 && bytes.len() + count <= 64 * 1024);
                         bytes.extend_from_slice(&chunk[..count]);
@@ -55,17 +55,40 @@ impl Services {
                                 key.eq_ignore_ascii_case("content-length").then(|| value.trim().parse().unwrap())
                             }).unwrap();
                             if bytes.len() >= end + 4 + length {
-                                break (headers, serde_json::from_slice::<Value>(&bytes[end + 4..end + 4 + length]).unwrap());
+                                break (headers, serde_json::from_slice::<Value>(&bytes[end + 4..end + 4 + length]).unwrap(), bytes[end + 4..end + 4 + length].to_vec());
                             }
                         }
                     };
-                    assert!(headers.lines().any(|v| v.eq_ignore_ascii_case("authorization: Bearer fixture-only")));
+                    assert!(!headers.to_ascii_lowercase().contains("authorization:"));
+                    let header = |name: &str| headers.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.trim().eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                    }).unwrap();
+                    let mut request_line = headers.lines().next().unwrap().split_whitespace();
+                    let (method, request_path) = (request_line.next().unwrap(), request_line.next().unwrap());
+                    use chariox_event_protocol::kernel_identity as identity;
+                    let kernel_key = header(identity::KERNEL_KEY_HEADER);
+                    identity::verify(
+                        &kernel_key,
+                        &identity::ManagementRequest {
+                            method,
+                            path: request_path,
+                            generator_id: GENERATOR,
+                            owner_id: &header(identity::OWNER_ID_HEADER),
+                            timestamp_ms: header(identity::KERNEL_TIMESTAMP_HEADER).parse().unwrap(),
+                            nonce: &header(identity::KERNEL_NONCE_HEADER),
+                            body: &raw_body,
+                        }
+                        .message(),
+                        &header(identity::KERNEL_SIGNATURE_HEADER),
+                    )
+                    .expect("the kernel signs every AEGS request with its identity key");
                     let path = headers.lines().next().unwrap().split_whitespace().nth(1).unwrap();
                     let response = match path {
                         "/v1/subscriptions/reconcile" => {
                             let request: AegsSubscriptionReconcileRequest = serde_json::from_value(body).unwrap();
-                            assert_eq!(request.owner_id, "daemon-test");
-                            let accepted_binding_ids = store.reconcile(&request.owner_id, &request.generator_id, &request.subscriptions).unwrap();
+                            assert_eq!(request.owner_id, crate::runtime::event_catalog_control::event_connection_owner_id("daemon-test", "local"));
+                            let accepted_binding_ids = store.reconcile_for_owner(&identity::kernel_id_for_public_key(&kernel_key), &request.owner_id, &request.generator_id, &request.subscriptions).unwrap();
                             serde_json::to_value(AegsSubscriptionReconcileResponse { accepted_binding_ids, authoritative: true, refused: Vec::new() }).unwrap()
                         }
                         "/v1/connections/query" => {
@@ -105,17 +128,39 @@ impl Services {
                 )
                 .await
                 .unwrap();
+                send(
+                    &mut socket,
+                    AedsToKernelMessage::Challenge {
+                        nonce: "fixture-nonce".into(),
+                    },
+                )
+                .await;
                 let frame = socket.next().await.unwrap().unwrap();
                 let KernelToAedsMessage::Hello {
                     protocol_version,
                     kernel_id,
+                    public_key,
+                    signature,
                     environments,
                 } = serde_json::from_str(frame.to_text().unwrap()).unwrap()
                 else {
                     panic!("hello first")
                 };
-                assert_eq!(protocol_version, 3);
-                assert_eq!(kernel_id, "daemon-test");
+                assert_eq!(protocol_version, 4);
+                // The kernel proves its relay identity key signed this connection's challenge.
+                assert_eq!(
+                    kernel_id,
+                    chariox_event_protocol::kernel_identity::kernel_id_for_public_key(&public_key)
+                );
+                chariox_event_protocol::kernel_identity::verify(
+                    &public_key,
+                    &chariox_event_protocol::kernel_identity::aeds_hello_message(
+                        "fixture-nonce",
+                        &kernel_id,
+                    ),
+                    &signature,
+                )
+                .expect("the hello is signed over the challenge");
                 assert_eq!(environments.len(), 1);
                 assert_eq!(environments[0].environment_id, "evval-fixture");
                 let bindings: BTreeSet<_> = environments[0]
@@ -127,7 +172,7 @@ impl Services {
                 send(
                     &mut socket,
                     AedsToKernelMessage::HelloAccepted {
-                        protocol_version: 3,
+                        protocol_version: 4,
                         heartbeat_interval_ms: 15_000,
                     },
                 )

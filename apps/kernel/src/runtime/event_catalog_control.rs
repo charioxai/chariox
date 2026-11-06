@@ -16,9 +16,9 @@ use crate::local::{
     LocalDaemonRequest, LocalDaemonResponse,
 };
 use crate::runtime::aegs_network_policy::is_globally_reachable_aegs_destination;
-use crate::runtime::cloud_api_client::issue_event_generator_management_capability;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+use crate::transport::gateway_identity::GatewayIdentity;
 
 const CATALOG_CACHE_FRESH_TTL: Duration = Duration::from_secs(60);
 const CATALOG_CACHE_STALE_TTL: Duration = Duration::from_secs(5 * 60);
@@ -41,17 +41,52 @@ type AegsAgentBuilderFactory =
 #[derive(Clone)]
 pub(crate) struct AegsManagementHttpClient {
     agent_builder: Arc<AegsAgentBuilderFactory>,
+    identity: Option<GatewayIdentity>,
 }
 
 impl Default for AegsManagementHttpClient {
     fn default() -> Self {
         Self {
             agent_builder: Arc::new(aegs_management_agent_builder),
+            identity: None,
         }
     }
 }
 
 impl AegsManagementHttpClient {
+    /// The same client, signing as the kernel whose configuration is `config`.
+    pub(crate) fn signing_as(&self, config: &crate::config::DaemonConfig) -> Self {
+        Self {
+            identity: Some(GatewayIdentity::from_config(config)),
+            ..self.clone()
+        }
+    }
+
+    /// Adds the kernel's signature over `request` (method, path, generator, owner, body).
+    fn sign(
+        &self,
+        request: ureq::Request,
+        path: &str,
+        generator_id: &str,
+        owner_id: &str,
+        body: &str,
+    ) -> Result<ureq::Request, String> {
+        let identity = self
+            .identity
+            .as_ref()
+            .ok_or_else(|| "the kernel identity is not available for AEGS requests".to_string())?;
+        let headers = identity.management_headers(
+            request.method(),
+            path,
+            generator_id,
+            owner_id,
+            body.as_bytes(),
+        )?;
+        Ok(headers
+            .iter()
+            .fold(request, |request, (name, value)| request.set(name, value)))
+    }
+
     fn agent_builder(
         &self,
         target: &crate::config::EventGeneratorManagementTarget,
@@ -68,6 +103,7 @@ impl AegsManagementHttpClient {
     ) -> Self {
         Self {
             agent_builder: Arc::new(agent_builder),
+            identity: None,
         }
     }
 }
@@ -82,6 +118,7 @@ pub(crate) async fn execute_event_catalog_request_with_client(
     let config = config_projection.snapshot();
     let caller_user_id =
         &crate::event_connection::event_connection_user_id(&config, caller_user_id);
+    let management_client = &management_client.signing_as(&config);
     if matches!(request, LocalDaemonRequest::GetEventDeliveryStatus(_)) {
         return Ok(LocalDaemonResponse::EventDeliveryStatus {
             status: crate::transport::event_delivery_client::event_delivery_status(
@@ -133,7 +170,6 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             config_projection,
             &config,
             caller_user_id,
-            std::slice::from_ref(&event_owner_id),
             &request,
         )
         .await?;
@@ -162,7 +198,6 @@ pub(crate) async fn execute_event_catalog_request_with_client(
             config_projection,
             &config,
             caller_user_id,
-            std::slice::from_ref(&owner_id),
             &request,
         )
         .await?;
@@ -196,7 +231,6 @@ pub(crate) async fn resolve_event_generator_management_targets(
     config_projection: &DaemonConfigProjectionStore,
     config: &crate::config::DaemonConfig,
     caller_user_id: &str,
-    connection_owner_ids: &[String],
     request: &LocalDaemonRequest,
 ) -> Result<BTreeMap<String, crate::config::EventGeneratorManagementTarget>, DaemonError> {
     let generator_ids =
@@ -208,41 +242,13 @@ pub(crate) async fn resolve_event_generator_management_targets(
         // merely to render an installed-connection list.
         return Ok(targets);
     }
-    let Some(profile) = config.cloud_relay.as_ref() else {
+    // A generator without a configured target is looked up in the registry, which only lists
+    // where its AEGS answers; the kernel then authenticates to that AEGS with its own key.
+    let Some(registry_url) = config.event_registry_url.clone() else {
         return Ok(targets);
     };
-    let registry_url = config.event_registry_url.clone().ok_or_else(|| {
-        catalog_error("event generator management bootstrap requires a registry URL".to_string())
-    })?;
-    // The credential is requested for this kernel and used for the owners named
-    // here: the connection's owner for a request on a connection.
-    let requested_owner_ids = std::iter::once(config.daemon_id.clone())
-        .chain(connection_owner_ids.iter().cloned())
-        .collect::<Vec<_>>();
     for generator_id in generator_ids {
-        let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
-        if targets.get(&generator_id).is_some_and(|target| {
-            requested_owner_ids.iter().all(|owner| {
-                let scoped_valid = target
-                    .owner_scoped
-                    .as_ref()
-                    .and_then(|scoped| scoped.get(owner))
-                    .is_some_and(|credential| {
-                        credential
-                            .expires_at_ms
-                            .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms)
-                    });
-                let legacy_valid = target.owner_scoped.is_none()
-                    && target
-                        .owner_ids
-                        .as_ref()
-                        .is_none_or(|owners| owners.contains(owner))
-                    && target
-                        .expires_at_ms
-                        .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms);
-                scoped_valid || legacy_valid
-            })
-        }) {
+        if targets.contains_key(&generator_id) {
             continue;
         }
         let detail_request = LocalDaemonRequest::GetEventGeneratorDetail(
@@ -269,47 +275,15 @@ pub(crate) async fn resolve_event_generator_management_targets(
         let Some(management_url) = detail.summary.management_url.clone() else {
             continue;
         };
-        let owner_ids = requested_owner_ids.to_vec();
-        let capability = issue_event_generator_management_capability(
-            profile,
-            &config.daemon_id,
+        config_projection.merge_event_generator_management_target(
             &generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            &management_url,
-        )
-        .await?;
-        let expires_at_ms = chrono::DateTime::parse_from_rfc3339(&capability.expires_at)
-            .map_err(|error| {
-                catalog_error(format!(
-                    "cloud returned an invalid management capability expiry: {error}"
-                ))
-            })?
-            .timestamp_millis()
-            .try_into()
-            .map_err(|_| {
-                catalog_error("management capability expiry is before the Unix epoch".to_string())
-            })?;
-        let credential = crate::config::EventGeneratorManagementTargetCredential {
-            url: management_url.clone(),
-            token: capability.token.clone(),
-            expires_at_ms: Some(expires_at_ms),
-        };
-        let owner_scoped = requested_owner_ids
-            .iter()
-            .cloned()
-            .map(|owner| (owner, credential.clone()))
-            .collect();
-        let resolved_target = crate::config::EventGeneratorManagementTarget {
-            url: management_url,
-            token: capability.token,
-            expires_at_ms: Some(expires_at_ms),
-            owner_ids: Some(owner_ids),
-            owner_scoped: Some(owner_scoped),
-        };
-        config_projection.merge_event_generator_management_target(&generator_id, resolved_target);
-        // Read the merged projection so concurrent owner/generator resolutions
-        // are preserved in the map returned to this operation.
+            crate::config::EventGeneratorManagementTarget {
+                url: management_url,
+                registry_discovered: true,
+            },
+        );
+        // Read the merged projection so concurrent resolutions are preserved in the map
+        // returned to this operation.
         targets = config_projection
             .snapshot()
             .event_generator_management_targets;
@@ -565,6 +539,7 @@ async fn query_connection_summary(
     connection_id: &str,
 ) -> Result<Option<chariox_event_protocol::AegsConnectionSummary>, DaemonError> {
     let config = config_projection.snapshot();
+    let management_client = &management_client.signing_as(&config);
     let target_request =
         LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
             generator_id: Some(generator_id.to_string()),
@@ -576,7 +551,6 @@ async fn query_connection_summary(
         config_projection,
         &config,
         caller_user_id,
-        std::slice::from_ref(&owner_id.to_string()),
         &target_request,
     )
     .await?;
@@ -1182,44 +1156,15 @@ fn encode_offset(offset: usize) -> String {
     format!("offset-{offset}")
 }
 
-/// Select the capability scoped to one request owner. Static administrator
-/// targets have no owner scope and are returned unchanged; registry-issued
-/// targets must have an exact owner entry so a concurrent user cannot reuse a
-/// different user's short-lived token.
-pub(crate) fn select_event_generator_management_target(
-    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+pub(crate) fn event_generator_management_target<'a>(
+    targets: &'a BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     generator_id: &str,
-    owner_id: &str,
-) -> Result<crate::config::EventGeneratorManagementTarget, DaemonError> {
-    let target = targets.get(generator_id).ok_or_else(|| {
+) -> Result<&'a crate::config::EventGeneratorManagementTarget, DaemonError> {
+    targets.get(generator_id).ok_or_else(|| {
         catalog_error(format!(
             "event generator `{generator_id}` has no configured management target"
         ))
-    })?;
-    if let Some(scoped) = target.owner_scoped.as_ref() {
-        let credential = scoped.get(owner_id).ok_or_else(|| {
-            catalog_error(format!(
-                "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
-            ))
-        })?;
-        return Ok(crate::config::EventGeneratorManagementTarget {
-            url: credential.url.clone(),
-            token: credential.token.clone(),
-            expires_at_ms: credential.expires_at_ms,
-            owner_ids: Some(vec![owner_id.to_string()]),
-            owner_scoped: None,
-        });
-    }
-    if target
-        .owner_ids
-        .as_ref()
-        .is_some_and(|owners| !owners.iter().any(|owner| owner == owner_id))
-    {
-        return Err(catalog_error(format!(
-            "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
-        )));
-    }
-    Ok(target.clone())
+    })
 }
 
 fn aegs_management_request(
@@ -1258,18 +1203,17 @@ fn aegs_management_request(
             ))
         }
     };
-    let target = select_event_generator_management_target(targets, generator_id, owner_id)?;
+    let target = event_generator_management_target(targets, generator_id)?;
     let url = format!("{}{path}", target.url);
     let agent = management_client
-        .agent_builder(&target)
+        .agent_builder(target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
         .build();
-    let response = agent
-        .post(&url)
-        .set("authorization", &format!("Bearer {}", target.token))
-        .set("x-chariox-owner-id", owner_id)
+    let response = management_client
+        .sign(agent.post(&url), path, generator_id, owner_id, &body)
+        .map_err(catalog_error)?
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?;
@@ -1423,12 +1367,12 @@ impl std::fmt::Display for AegsActionFailure {
 }
 
 pub(crate) fn invoke_aegs_action(
-    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    config: &crate::config::DaemonConfig,
     request: &chariox_event_protocol::AegsProviderActionRequest,
 ) -> Result<chariox_event_protocol::AegsProviderActionResponse, AegsActionFailure> {
     send_aegs_json(
-        &AegsManagementHttpClient::default(),
-        targets,
+        &AegsManagementHttpClient::default().signing_as(config),
+        &config.event_generator_management_targets,
         &request.generator_id,
         "/v1/actions",
         request,
@@ -1483,11 +1427,11 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
                 .map(str::to_string)
         })
         .ok_or_else(|| unsent("AEGS request is missing owner_id".to_string()))?;
-    let target = select_event_generator_management_target(targets, generator_id, &owner_id)
+    let target = event_generator_management_target(targets, generator_id)
         .map_err(|error| unsent(error.to_string()))?;
     let body = serde_json::to_string(request).map_err(|error| unsent(error.to_string()))?;
-    let mut http_request = management_client
-        .agent_builder(&target)
+    let http_request = management_client
+        .agent_builder(target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -1495,10 +1439,10 @@ fn send_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         // failure on its second hop: a 3xx is answered as a response.
         .redirects(0)
         .build()
-        .post(&format!("{}{path}", target.url))
-        .set("authorization", &format!("Bearer {}", target.token));
-    http_request = http_request.set("x-chariox-owner-id", &owner_id);
-    let response = http_request
+        .post(&format!("{}{path}", target.url));
+    let response = management_client
+        .sign(http_request, path, generator_id, &owner_id, &body)
+        .map_err(unsent)?
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| {
@@ -1616,17 +1560,11 @@ where
     R: ureq::Resolver + 'static,
 {
     let builder = crate::outbound_dial::agent_builder();
-    if is_registry_issued_management_target(target) {
+    if target.registry_discovered {
         builder.https_only(true).resolver(resolver)
     } else {
         builder
     }
-}
-
-fn is_registry_issued_management_target(
-    target: &crate::config::EventGeneratorManagementTarget,
-) -> bool {
-    target.expires_at_ms.is_some() && target.owner_ids.is_some()
 }
 
 fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
@@ -2321,27 +2259,6 @@ mod tests {
         )
         .expect_err("one private DNS answer must reject the entire target");
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn static_management_targets_retain_self_hosted_network_access() {
-        let static_target = crate::config::EventGeneratorManagementTarget {
-            url: "http://127.0.0.1:43132".to_string(),
-            token: "operator-token".to_string(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
-        };
-        assert!(!is_registry_issued_management_target(&static_target));
-
-        let registry_target = crate::config::EventGeneratorManagementTarget {
-            url: "https://aegs.example.test".to_string(),
-            token: "signed-capability".to_string(),
-            expires_at_ms: Some(1_700_000_000_000),
-            owner_ids: Some(vec!["kernel-1".to_string()]),
-            owner_scoped: None,
-        };
-        assert!(is_registry_issued_management_target(&registry_target));
     }
 
     #[test]

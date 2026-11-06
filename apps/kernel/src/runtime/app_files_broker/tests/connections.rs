@@ -94,10 +94,7 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
         "dev.chariox.slack".to_string(),
         crate::config::EventGeneratorManagementTarget {
             url,
-            token: "token".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         },
     )]);
     let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();
@@ -248,10 +245,7 @@ fn lost_reply_is_uncertain(reply: Option<u16>) {
         "dev.chariox.slack".to_string(),
         crate::config::EventGeneratorManagementTarget {
             url,
-            token: "token".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         },
     )]);
     let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();

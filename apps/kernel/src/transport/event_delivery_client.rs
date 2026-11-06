@@ -10,21 +10,26 @@ use chariox_event_protocol::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
+use crate::transport::gateway_identity::GatewayIdentity;
 
 #[derive(Clone)]
 pub(crate) struct EventDeliveryClientConfig {
     pub url: Option<String>,
-    pub token: Option<String>,
-    pub kernel_id: String,
+    pub identity: GatewayIdentity,
     pub environment_id: String,
     pub generator_management_targets:
         BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     pub config_projection: DaemonConfigProjectionStore,
+}
+
+impl EventDeliveryClientConfig {
+    fn kernel_id(&self) -> String {
+        self.identity.kernel_id()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -216,29 +221,23 @@ async fn connect_once(
     let mut request = url
         .into_client_request()
         .map_err(|error| format!("invalid AEDS URL: {error}"))?;
-    if let Some(token) = config.token.as_deref() {
-        request.headers_mut().insert(
-            AUTHORIZATION,
-            format!("Bearer {token}")
-                .parse()
-                .map_err(|error| format!("invalid AEDS token header: {error}"))?,
-        );
-    }
     let (websocket, _) = crate::outbound_dial::connect_websocket(request)
         .await
         .map_err(|error| format!("failed to connect to AEDS: {error}"))?;
     let (mut sink, mut stream) = websocket.split();
+    let kernel_id = config.kernel_id();
+    let nonce = receive_challenge(&mut stream).await?;
     let mut environments =
-        runtime_state.event_delivery_resumes(&config.kernel_id, &config.environment_id)?;
+        runtime_state.event_delivery_resumes(&kernel_id, &config.environment_id)?;
     let mut route_signature =
         serde_json::to_string(&environments).map_err(|error| error.to_string())?;
     send(
         &mut sink,
-        &KernelToAedsMessage::Hello {
-            protocol_version: EVENT_DELIVERY_PROTOCOL_VERSION,
-            kernel_id: config.kernel_id.clone(),
-            environments: environments.clone(),
-        },
+        &config.identity.hello(
+            EVENT_DELIVERY_PROTOCOL_VERSION,
+            &nonce,
+            environments.clone(),
+        )?,
     )
     .await?;
     let mut reconciliation = tokio::time::interval(Duration::from_secs(5));
@@ -267,6 +266,9 @@ async fn connect_once(
                 let message: AedsToKernelMessage =
                     serde_json::from_str(text).map_err(|error| format!("invalid AEDS message: {error}"))?;
                 match message {
+                    AedsToKernelMessage::Challenge { .. } => {
+                        return Err("AEDS sent a second challenge".to_string());
+                    }
                     AedsToKernelMessage::HelloAccepted { protocol_version, heartbeat_interval_ms } => {
                         if protocol_version != EVENT_DELIVERY_PROTOCOL_VERSION {
                             return Err(format!("AEDS negotiated unsupported protocol {protocol_version}"));
@@ -391,7 +393,7 @@ async fn connect_once(
             _ = reconciliation.tick() => {
                 // A failed read skips this round; the last claims stay.
                 let next = match runtime_state.event_delivery_resumes(
-                    &config.kernel_id,
+                    &kernel_id,
                     &config.environment_id,
                 ) {
                     Ok(next) => next,
@@ -465,8 +467,6 @@ async fn reconcile_aegs_subscriptions(
             &config.config_projection,
             &current_config,
             caller_user_id,
-            // Reconciliation is owned by this kernel's id alone.
-            &[],
             &request,
         )
         .await
@@ -482,44 +482,59 @@ async fn reconcile_aegs_subscriptions(
             Err(failures.join("; "))
         };
     }
-    let kernel_owner_id = config.kernel_id.clone();
+    let current_config = config.config_projection.snapshot();
+    let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+        &current_config.daemon_id,
+        current_config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.as_str())
+            .unwrap_or(crate::session::DEFAULT_LOCAL_USER_ID),
+    );
     for generator_id in generator_management_targets.keys() {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
-            owner_id: config.kernel_id.clone(),
+            owner_id: owner_id.clone(),
             generator_id: generator_id.clone(),
             subscriptions: claims.remove(generator_id).unwrap_or_default(),
         };
-        let target =
-            match crate::runtime::event_catalog_control::select_event_generator_management_target(
-                &generator_management_targets,
-                generator_id,
-                &request.owner_id,
-            ) {
-                Ok(target) => target,
-                Err(error) => {
-                    failures.push(error.to_string());
-                    continue;
-                }
-            };
+        let target = match crate::runtime::event_catalog_control::event_generator_management_target(
+            &generator_management_targets,
+            generator_id,
+        ) {
+            Ok(target) => target.clone(),
+            Err(error) => {
+                failures.push(error.to_string());
+                continue;
+            }
+        };
+        let identity = config.identity.clone();
         let generator_id = generator_id.clone();
-        let kernel_owner_id = kernel_owner_id.clone();
         let result = tokio::task::spawn_blocking(move || {
-            let url = format!("{}/v1/subscriptions/reconcile", target.url);
+            let path = "/v1/subscriptions/reconcile";
             let encoded = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-            let response =
+            let headers = identity.management_headers(
+                "PUT",
+                path,
+                &generator_id,
+                &request.owner_id,
+                encoded.as_bytes(),
+            )?;
+            let mut http_request =
                 crate::runtime::event_catalog_control::aegs_management_agent_builder(&target)
                     .timeout_connect(Duration::from_secs(3))
                     .timeout_read(Duration::from_secs(10))
                     .timeout_write(Duration::from_secs(10))
                     .build()
-                    .put(&url)
-                    .set("authorization", &format!("Bearer {}", target.token))
-                    .set("x-chariox-owner-id", &kernel_owner_id)
-                    .set("content-type", "application/json")
-                    .send_string(&encoded)
-                    .map_err(|error| {
-                        format!("AEGS {generator_id} reconciliation request failed: {error}")
-                    })?;
+                    .put(&format!("{}{path}", target.url));
+            for (name, value) in &headers {
+                http_request = http_request.set(name, value);
+            }
+            let response = http_request
+                .set("content-type", "application/json")
+                .send_string(&encoded)
+                .map_err(|error| {
+                    format!("AEGS {generator_id} reconciliation request failed: {error}")
+                })?;
             let response_body = response.into_string().map_err(|error| error.to_string())?;
             let response: chariox_event_protocol::AegsSubscriptionReconcileResponse =
                 serde_json::from_str(&response_body)
@@ -575,6 +590,28 @@ fn record_disconnected(error: Option<String>) {
     health.last_error = error;
 }
 
+/// AEDS speaks first: a single-use nonce the hello must sign.
+async fn receive_challenge<S>(stream: &mut S) -> Result<String, String>
+where
+    S: futures_util::Stream<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+{
+    let first = tokio::time::timeout(Duration::from_secs(10), stream.next())
+        .await
+        .map_err(|_| "AEDS did not send a challenge".to_string())?
+        .ok_or_else(|| "AEDS closed the connection before its challenge".to_string())?
+        .map_err(|error| error.to_string())?;
+    let text = first.to_text().map_err(|error| error.to_string())?;
+    match serde_json::from_str::<AedsToKernelMessage>(text)
+        .map_err(|error| format!("invalid AEDS message: {error}"))?
+    {
+        AedsToKernelMessage::Challenge { nonce } => Ok(nonce),
+        AedsToKernelMessage::Error { code, .. } => {
+            Err(format!("AEDS refused the connection: {code}"))
+        }
+        _ => Err("AEDS did not open with a challenge".to_string()),
+    }
+}
+
 async fn send<S>(sink: &mut S, message: &KernelToAedsMessage) -> Result<(), String>
 where
     S: futures_util::Sink<Message> + Unpin,
@@ -589,6 +626,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An AEDS stand-in speaks first: the challenge a kernel must sign.
+    async fn send_challenge(
+        socket: &mut tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+    ) {
+        socket
+            .send(Message::Text(
+                serde_json::to_string(&AedsToKernelMessage::Challenge {
+                    nonce: "fixture-nonce".to_string(),
+                })
+                .expect("encode challenge")
+                .into(),
+            ))
+            .await
+            .expect("send challenge");
+    }
 
     fn delivery(delivery_id: &str) -> chariox_event_protocol::EventDeliveryEnvelope {
         chariox_event_protocol::EventDeliveryEnvelope {
@@ -729,6 +782,7 @@ mod tests {
                 let mut socket = tokio_tungstenite::accept_async(stream)
                     .await
                     .expect("upgrade AEDS fixture connection");
+                send_challenge(&mut socket).await;
                 socket
                     .next()
                     .await
@@ -788,8 +842,7 @@ mod tests {
         });
         let config = EventDeliveryClientConfig {
             url: Some(format!("ws://{address}")),
-            token: None,
-            kernel_id: "kernel-test".to_string(),
+            identity: GatewayIdentity::from_config(&crate::config::DaemonConfig::for_tests()),
             environment_id: "environment-test".to_string(),
             generator_management_targets: BTreeMap::new(),
             config_projection: DaemonConfigProjectionStore::new(
@@ -844,6 +897,7 @@ mod tests {
             let mut socket = tokio_tungstenite::accept_async(stream)
                 .await
                 .expect("upgrade AEDS fixture connection");
+            send_challenge(&mut socket).await;
             let hello = socket
                 .next()
                 .await
@@ -884,8 +938,7 @@ mod tests {
         });
         let config = EventDeliveryClientConfig {
             url: Some(format!("ws://{address}")),
-            token: None,
-            kernel_id: "kernel-heartbeat-test".to_string(),
+            identity: GatewayIdentity::from_config(&crate::config::DaemonConfig::for_tests()),
             environment_id: "environment-heartbeat-test".to_string(),
             generator_management_targets: BTreeMap::new(),
             config_projection: DaemonConfigProjectionStore::new(
@@ -950,10 +1003,7 @@ mod tests {
         });
         let target = |url: String| crate::config::EventGeneratorManagementTarget {
             url,
-            token: "token".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         };
         let targets = BTreeMap::from([
             (
@@ -1020,8 +1070,7 @@ mod tests {
         }
         let config = EventDeliveryClientConfig {
             url: None,
-            token: None,
-            kernel_id: "kernel-test".to_string(),
+            identity: GatewayIdentity::from_config(&crate::config::DaemonConfig::for_tests()),
             environment_id: "environment-test".to_string(),
             generator_management_targets: targets,
             config_projection: DaemonConfigProjectionStore::new(daemon_config),

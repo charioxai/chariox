@@ -248,8 +248,9 @@ impl DaemonApp {
             let config_projection = app.config_projection_store();
             crate::transport::event_delivery_client::EventDeliveryClientConfig {
                 url: app.config().event_delivery_url.clone(),
-                token: app.config().event_delivery_token.clone(),
-                kernel_id: app.config().daemon_id.clone(),
+                identity: crate::transport::gateway_identity::GatewayIdentity::from_config(
+                    app.config(),
+                ),
                 environment_id: app.config().event_delivery_environment_id.clone(),
                 generator_management_targets: app
                     .config()
