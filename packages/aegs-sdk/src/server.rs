@@ -1233,6 +1233,7 @@ impl AegsServer {
                 &kernel.kernel_id,
                 now,
                 self.management_auth.max_owners_per_kernel(),
+                self.management_auth.max_memberships_total(),
             )
             .map_err(|message| {
                 Box::new(error(
@@ -1247,6 +1248,11 @@ impl AegsServer {
                 StatusCode::FORBIDDEN,
                 "kernel_revoked",
                 "this kernel was removed from the owner's kernels",
+            ))),
+            OwnerMembership::GatewayLimit => Err(Box::new(error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "gateway_capacity",
+                "the gateway holds the most kernels and owners the operator allows",
             ))),
             OwnerMembership::OwnerLimit => Err(Box::new(error(
                 StatusCode::FORBIDDEN,

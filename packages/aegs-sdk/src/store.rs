@@ -72,6 +72,7 @@ pub(crate) enum OwnerMembership {
     Member,
     Revoked,
     OwnerLimit,
+    GatewayLimit,
 }
 
 #[derive(Clone)]
@@ -497,6 +498,7 @@ impl AegsStore {
         kernel_id: &str,
         now_ms: u64,
         max_owners_per_kernel: Option<usize>,
+        max_memberships_total: Option<usize>,
     ) -> Result<OwnerMembership, String> {
         let mut connection = self.lock()?;
         let transaction = connection
@@ -521,8 +523,17 @@ impl AegsStore {
                         |row| row.get(0),
                     )
                     .map_err(|error| error.to_string())?;
+                let memberships: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM owner_kernels WHERE state = 'member'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
                 if max_owners_per_kernel.is_some_and(|cap| owners as usize >= cap) {
                     OwnerMembership::OwnerLimit
+                } else if max_memberships_total.is_some_and(|cap| memberships as usize >= cap) {
+                    OwnerMembership::GatewayLimit
                 } else {
                     transaction
                         .execute(

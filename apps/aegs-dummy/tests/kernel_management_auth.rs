@@ -545,3 +545,68 @@ fn open_admission_caps_the_request_rate_of_one_kernel() {
         "{statuses:?}"
     );
 }
+
+#[test]
+fn open_admission_caps_the_kernel_owner_pairs_of_all_kernels_together() {
+    let aegs = Aegs::start_with(&[
+        ("CHARIOX_AEGS_ADMISSION", "open".to_string()),
+        ("CHARIOX_AEGS_OPEN_MAX_MEMBERSHIPS_TOTAL", "2".to_string()),
+    ]);
+    let (first, second, third) = (Kernel::new(), Kernel::new(), Kernel::new());
+    first.authorize(&aegs, OWNER);
+    second.authorize(&aegs, "owner-second-00000000000000005");
+    // Neither kernel is over its own cap: only the gateway-wide one is full.
+    let (status, body) = third.post(
+        &aegs,
+        "/v1/authorizations",
+        "owner-third-000000000000000007",
+        json!({"generator_id": GENERATOR, "owner_id": "owner-third-000000000000000007"}),
+    );
+    assert_eq!(
+        (status, error_code(&body)),
+        (503, "gateway_capacity"),
+        "{body}"
+    );
+    // The two admitted pairs keep working.
+    assert_eq!(
+        first
+            .call(
+                &aegs,
+                Call::new("GET", "/v1/subscriptions", Some(OWNER), Value::Null)
+            )
+            .0,
+        200
+    );
+}
+
+#[test]
+fn open_admission_caps_the_request_rate_of_all_kernels_together() {
+    let aegs = Aegs::start_with(&[
+        ("CHARIOX_AEGS_ADMISSION", "open".to_string()),
+        (
+            "CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL",
+            "4".to_string(),
+        ),
+    ]);
+    let (first, second) = (Kernel::new(), Kernel::new());
+    let mut statuses = Vec::new();
+    for _ in 0..4 {
+        for (kernel, owner) in [(&first, OWNER), (&second, "owner-second-00000000000000005")] {
+            let (status, body) = kernel.call(
+                &aegs,
+                Call::new("GET", "/v1/subscriptions", Some(owner), Value::Null),
+            );
+            statuses.push((status, error_code(&body).to_string()));
+        }
+    }
+    assert!(
+        statuses[..4].iter().all(|(status, _)| *status == 200),
+        "{statuses:?}"
+    );
+    assert!(
+        statuses[4..]
+            .iter()
+            .all(|(status, code)| (*status, code.as_str()) == (429, "gateway_rate_limited")),
+        "{statuses:?}"
+    );
+}

@@ -26,6 +26,10 @@ const MAX_OWNER_ID_BYTES: usize = 256;
 const MAX_ALLOWLIST_BYTES: u64 = 1024 * 1024;
 const DEFAULT_OPEN_MAX_OWNERS_PER_KERNEL: usize = 8;
 const DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE: u32 = 600;
+/// Across all kernels: 500 requests a second.
+const DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL: u32 = 30_000;
+/// Kernel and owner pairs across the gateway: about 2 500 kernels at the per-kernel cap.
+const DEFAULT_OPEN_MAX_MEMBERSHIPS_TOTAL: usize = 20_000;
 const MAX_RATE_WINDOWS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +49,7 @@ pub(crate) enum Refusal {
     OwnerInvalid,
     NotAdmitted,
     RateLimited,
+    GatewayRateLimited,
 }
 
 impl Refusal {
@@ -59,6 +64,7 @@ impl Refusal {
             Self::OwnerInvalid => (StatusCode::FORBIDDEN, "owner_invalid"),
             Self::NotAdmitted => (StatusCode::FORBIDDEN, "kernel_not_admitted"),
             Self::RateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+            Self::GatewayRateLimited => (StatusCode::TOO_MANY_REQUESTS, "gateway_rate_limited"),
         }
     }
 
@@ -77,6 +83,7 @@ impl Refusal {
             Self::OwnerInvalid => "the owner id is longer than 256 bytes or not printable ASCII",
             Self::NotAdmitted => "the operator's admission policy does not list this kernel",
             Self::RateLimited => "the kernel exceeded its request budget",
+            Self::GatewayRateLimited => "the gateway is at its request budget for all kernels",
         }
     }
 }
@@ -85,9 +92,13 @@ impl Refusal {
 /// secret owner id and the per-connection audience decide who sees what.
 #[derive(Debug, Clone)]
 pub(crate) enum Admission {
+    /// Per-kernel caps, and gateway-wide caps on requests and on kernel and owner pairs, so
+    /// that many free keys cannot add up to more than the gateway carries.
     Open {
         max_owners_per_kernel: usize,
         max_requests_per_minute: u32,
+        max_requests_per_minute_total: u32,
+        max_memberships_total: usize,
     },
     /// Only kernel ids listed in a JSON object file (`{"<kernel_id>": "<label>"}`), read on
     /// every request, so removing an id takes effect without a restart.
@@ -131,6 +142,14 @@ impl Admission {
                 "CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE",
                 DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE,
             )?,
+            max_requests_per_minute_total: parse_positive(
+                "CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL",
+                DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL,
+            )?,
+            max_memberships_total: parse_positive(
+                "CHARIOX_AEGS_OPEN_MAX_MEMBERSHIPS_TOTAL",
+                DEFAULT_OPEN_MAX_MEMBERSHIPS_TOTAL,
+            )?,
         })
     }
 
@@ -140,6 +159,16 @@ impl Admission {
                 max_owners_per_kernel,
                 ..
             } => Some(*max_owners_per_kernel),
+            Self::Allowlist { .. } => None,
+        }
+    }
+
+    pub(crate) fn max_memberships_total(&self) -> Option<usize> {
+        match self {
+            Self::Open {
+                max_memberships_total,
+                ..
+            } => Some(*max_memberships_total),
             Self::Allowlist { .. } => None,
         }
     }
@@ -194,6 +223,8 @@ pub(crate) struct ManagementAuth {
     admission: Admission,
     seen_nonces: Arc<Mutex<HashMap<(String, String), u64>>>,
     request_windows: Arc<Mutex<HashMap<String, (u64, u32)>>>,
+    /// The gateway-wide request window; the lock covers a counter update only.
+    gateway_window: Arc<Mutex<(u64, u32)>>,
 }
 
 impl ManagementAuth {
@@ -202,11 +233,16 @@ impl ManagementAuth {
             admission,
             seen_nonces: Arc::default(),
             request_windows: Arc::default(),
+            gateway_window: Arc::default(),
         }
     }
 
     pub(crate) fn max_owners_per_kernel(&self) -> Option<usize> {
         self.admission.max_owners_per_kernel()
+    }
+
+    pub(crate) fn max_memberships_total(&self) -> Option<usize> {
+        self.admission.max_memberships_total()
     }
 
     /// Verifies the signature, then the operator's admission and request budget. The caller
@@ -298,11 +334,25 @@ impl ManagementAuth {
     fn spend_request_budget(&self, kernel_id: &str, now_ms: u64) -> Result<(), Refusal> {
         let Admission::Open {
             max_requests_per_minute,
+            max_requests_per_minute_total,
             ..
         } = &self.admission
         else {
             return Ok(());
         };
+        {
+            let mut window = self
+                .gateway_window
+                .lock()
+                .map_err(|_| Refusal::GatewayRateLimited)?;
+            if now_ms.saturating_sub(window.0) >= 60_000 {
+                *window = (now_ms, 0);
+            }
+            window.1 += 1;
+            if window.1 > *max_requests_per_minute_total {
+                return Err(Refusal::GatewayRateLimited);
+            }
+        }
         let mut windows = self
             .request_windows
             .lock()
@@ -332,6 +382,8 @@ impl ManagementAuth {
         Self::new(Admission::Open {
             max_owners_per_kernel: DEFAULT_OPEN_MAX_OWNERS_PER_KERNEL,
             max_requests_per_minute: u32::MAX,
+            max_requests_per_minute_total: u32::MAX,
+            max_memberships_total: usize::MAX,
         })
     }
 }
