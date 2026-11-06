@@ -61,6 +61,13 @@ export type KernelEvent =
     task: AgentTaskExecution
   }
   | {
+    /** A sub-agent tree changed: read it again with `ListDescendants`. */
+    event: "agent_tree"
+    session_id?: string
+    root: string
+    rev: number
+  }
+  | {
     event: "room_workflows_changed"
     inventory: import("./kernel-types.js").RoomWorkflowInventory
   }

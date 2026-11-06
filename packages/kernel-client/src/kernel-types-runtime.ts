@@ -588,6 +588,8 @@ export interface AgentTreeNode {
   needs_user: boolean
   deadline_ms: number | null
   created_at_ms: number
+  /** The user holds this node's decision. Absent = false (the kernel adds the boolean in a later head). */
+  needs_user?: boolean
 }
 
 /** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */
@@ -597,3 +599,5 @@ export interface AgentTree {
   totals: { live: number; running: number; needs_user: number }
   nodes: AgentTreeNode[]
 }
+
+export type AgentTreeResponse = { AgentTree: { tree: AgentTree } }
