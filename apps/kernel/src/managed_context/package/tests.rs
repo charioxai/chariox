@@ -1413,3 +1413,83 @@ fn event_connections_need_an_owner_managed_destination() {
     .is_err());
     fixture.cleanup();
 }
+
+/// Driven by the two-kernel proof (`GHOWNER.md` section 4): kernel A installs a
+/// connection at a loopback event service through its own handler, the record
+/// moves to kernel B through the real package export and import, and the owner
+/// ids go to a private file for the proof script (never printed).
+#[test]
+#[ignore = "driven by the two-kernel proof, which supplies the loopback event service"]
+fn two_kernel_proof_driver() {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let aegs_url = std::env::var("GHOWNER_PROOF_AEGS_URL").expect("event service url");
+    let token = std::env::var("GHOWNER_PROOF_MANAGEMENT_TOKEN").expect("management token");
+    let owners_file = std::env::var("GHOWNER_PROOF_OWNERS_FILE").expect("owners file");
+    let mut config = crate::DaemonConfig::for_tests();
+    config.event_generator_management_targets.insert(
+        "dev.chariox.dummy".to_string(),
+        crate::config::EventGeneratorManagementTarget {
+            url: aegs_url,
+            token,
+            expires_at_ms: None,
+            owner_ids: None,
+            owner_scoped: None,
+        },
+    );
+    let kernel_a = crate::local::test_support::LocalRouterTestHarness::with_config(config);
+    kernel_a
+        .dispatch(crate::local::LocalDaemonRequest::InstallEventConnection(
+            crate::local::InstallEventConnectionRequest {
+                generator_id: "dev.chariox.dummy".to_string(),
+                return_url: None,
+            },
+        ))
+        .expect("kernel A installs the connection");
+    kernel_a.reconcile_pending_event_connections();
+    let user = crate::session::DEFAULT_LOCAL_USER_ID;
+    let source = kernel_a.runtime_state().event_connection_registry().clone();
+    let connections = source.list(user, None).expect("list kernel A connections");
+    assert_eq!(connections.len(), 1, "kernel A holds the new connection");
+    let connection_id = connections[0].connection_id.clone();
+    assert_eq!(
+        connections[0].status,
+        crate::local::EventConnectionStatus::Ready
+    );
+
+    let fixture = event_connection_fixture("proof", &[&connection_id]);
+    let records =
+        event_connections::export_selected(&fixture.binding.plan.event_connections, &source, user)
+            .expect("export kernel A's record");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.event_connections = ManagedContextPackageEventConnections::Selected { records };
+    let exported = export_managed_context_package(export).expect("package kernel A's record");
+    let target = event_registry(&fixture.root, "kernel-b");
+    apply_managed_context_package(event_apply_request(&fixture, &exported, &target))
+        .expect("kernel B imports the record");
+
+    let owner_a = source
+        .connection_event_owner_id(user, &connection_id)
+        .unwrap()
+        .expect("kernel A's owner");
+    let owner_b = target
+        .connection_event_owner_id(TARGET_OWNER, &connection_id)
+        .unwrap()
+        .expect("kernel B's owner");
+    assert_eq!(owner_a, owner_b, "the copy resolves the same owner");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(owners_file)
+        .expect("create the private owners file");
+    write!(
+        file,
+        "{}",
+        serde_json::json!({"connection_id": connection_id, "owner_a": owner_a, "owner_b": owner_b})
+    )
+    .expect("write owners");
+    fixture.cleanup();
+}
