@@ -57,10 +57,17 @@ no provider actions, credentials, reply capability or event runtime tools.
 - `delivery_id` identifies one AEDS-to-kernel delivery. `occurrence_id` identifies the
   upstream fact after AEGS source deduplication.
 
-AEDS's wire contract permits multiple routes for an interest. The current kernel
-App-route adapter rejects a second active route for the same interest; this document
-does not claim live AEDS fanout qualification. App automations independently fan
-out declared outgoing occurrences to workflow targets.
+AEDS's wire contract permits multiple routes for an interest. The kernel accepts
+several App inbox routes with the same generator, event type, scope and filter; only
+a repeated route ID is refused (`Conflict`). A route's `binding_id` is
+`sha256(owner, installation ID, route ID)` and every route claim carries revision 1,
+so AEDS refuses a claim only when another kernel already holds the same `binding_id`.
+A second kernel that recreates the first kernel's installation and route IDs
+therefore receives nothing; it uses a different route ID. The refusal is not an
+error to the caller: the kernel logs `event route conflicts with another route` and
+the route gets no deliveries. This document does not claim live AEDS fanout
+qualification. App automations independently fan out declared outgoing occurrences
+to workflow and agent targets, each named by the handler.
 
 ## Delivery
 
