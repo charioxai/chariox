@@ -6819,3 +6819,19 @@ Room agents use `chariox.notification_sources {}` to discover this Room's source
 trigger. No target agent or busy policy is accepted. App automation summaries
 carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
 current catalog, signer, automation revision and agent target before queueing.
+
+### A Vault provider login travels with a new managed machine — local 1003 / relay peer 441
+
+MP-08 / MP-09 / MP-10 / MP-11: a profile whose login is a Vault credential (a Claude setup token) is part of the
+managed-context provider-account component (`providerAccounts` selection; the plan, its digest, the manifest and the
+import receipt do not change). Each such profile travels as `{schema_version, profile, sealed, generated_at_ms}`:
+`sealed` is an `EncryptedRelayPayload` from the source kernel's relay key to the new machine's, bound to the context,
+both kernel ids, the provider and the profile id. The package, its digest and the receipt hold ciphertext and ids only.
+The new machine opens the seal, runs the provider's own check, writes the value into its own Vault (local 973) under the
+deterministic handle, then registers the profile authenticated; a profile of that id already there is a typed refusal and
+the accounts installed before it roll back. `ProviderAccountProfile.context_transfer` is `available` (omitted) or
+`unavailable`, which marks only a login whose Vault is not a Chariox Vault (the earlier `vault_credential` is gone).
+`PreflightProviderAccountPortability` accepts a Vault login and, with a Vault login selected, finds the Vault unlocked:
+the existing unlock card appears in the launching session, an agent's included, and a caller without a session gets the
+typed `vault_locked` refusal. Focused checks: `cargo test -p chariox-kernel --lib vault_login` and
+`vault_login_1003_shapes_are_pinned`.
