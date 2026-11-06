@@ -47,11 +47,12 @@ impl AgentStore {
             .filter(|agent_id| {
                 self.agents
                     .get(*agent_id)
-                    .is_some_and(|agent| !agent.archived())
+                    .is_some_and(|agent| !agent.archived() && !agent.is_sub_agent())
             })
             .cloned()
             .collect::<Vec<_>>();
-        let positions = calculate_agent_layout(existing_agent_ids.len() + agents.len());
+        let room_agents = agents.iter().filter(|agent| !agent.is_sub_agent()).count();
+        let positions = calculate_agent_layout(existing_agent_ids.len() + room_agents);
 
         for (index, agent_id) in existing_agent_ids.iter().enumerate() {
             if let Some(agent) = self.agents.get_mut(agent_id) {
@@ -73,12 +74,15 @@ impl AgentStore {
             .or_default();
         session_index.reserve(agents.len());
 
-        let existing_count = existing_agent_ids.len();
+        let mut next_cell = existing_agent_ids.len();
         let mut stored_agents = Vec::with_capacity(agents.len());
-        for (index, mut agent) in agents.drain(..).enumerate() {
+        for mut agent in agents.drain(..) {
             debug_assert_eq!(agent.session_id(), session_id);
-            if let Some(position) = positions.get(existing_count + index) {
-                agent.set_position(position.clone());
+            if !agent.is_sub_agent() {
+                if let Some(position) = positions.get(next_cell) {
+                    agent.set_position(position.clone());
+                }
+                next_cell += 1;
             }
             agent.set_state(
                 agent
@@ -191,6 +195,16 @@ impl AgentStore {
         self.session_agent_ids(session_id).map_or(0, Vec::len)
     }
 
+    /// The room's own agents: sub-agents hold no cell and no slot.
+    pub(crate) fn count_room_agents(&self, session_id: &str) -> usize {
+        self.session_agent_ids(session_id).map_or(0, |ids| {
+            ids.iter()
+                .filter_map(|id| self.agents.get(id))
+                .filter(|agent| !agent.is_sub_agent())
+                .count()
+        })
+    }
+
     pub(crate) fn session_summary(&self, session_id: &str) -> AgentSessionSummary {
         let mut summary = AgentSessionSummary::default();
         let Some(agent_ids) = self.session_agent_ids(session_id) else {
@@ -198,7 +212,7 @@ impl AgentStore {
         };
         for agent_id in agent_ids {
             if let Some(agent) = self.agents.get(agent_id) {
-                if !agent.archived() {
+                if !agent.archived() && !agent.is_sub_agent() {
                     summary.count += 1;
                 }
                 if let Some(alias) = agent.alias() {
@@ -308,6 +322,32 @@ mod tests {
         assert!(summary.aliases.contains("alpha"));
         assert!(summary.aliases.contains("beta"));
         assert_eq!(summary.aliases.len(), 2);
+    }
+
+    // MP-08/MP-09/MP-10/MP-11 A4: a sub-agent takes no room slot and no grid cell.
+    #[test]
+    fn sub_agents_take_no_room_count_and_no_layout_cell() {
+        let mut store = AgentStore::new();
+        store.insert(agent("agent-1", "session-a", Some("root")));
+        let mut worker = agent("agent-2", "session-a", Some("worker"));
+        worker.set_parent_agent(Some(crate::agent::AgentRef::local("agent-1")));
+        store.insert(worker);
+
+        assert_eq!(store.session_summary("session-a").count, 1);
+        assert!(store
+            .session_summary("session-a")
+            .aliases
+            .contains("worker"));
+
+        let mut second = agent("agent-3", "session-a", Some("second"));
+        second.set_parent_agent(None);
+        let stored = store.insert_session_batch_and_apply_layout("session-a", vec![second], None);
+        let layout = calculate_agent_layout(2);
+        assert_eq!(
+            stored[0].position(),
+            &layout[1],
+            "the next room agent takes the second cell, not the third"
+        );
     }
 
     #[test]

@@ -214,7 +214,7 @@ impl AgentService {
             .store
             .get_by_session(&request.session_id)
             .iter()
-            .filter(|agent| !agent.archived())
+            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
             .count();
         if request.parent_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
@@ -437,7 +437,7 @@ impl AgentService {
             .store
             .get_by_session(&session_id)
             .into_iter()
-            .filter(|agent| !agent.archived())
+            .filter(|agent| !agent.archived() && !agent.is_sub_agent())
             .collect();
 
         if !remaining_agents.is_empty() {
@@ -1266,7 +1266,7 @@ impl AgentService {
     }
 
     fn calculate_position_for_new_agent(&self, session_id: &str) -> GridPosition {
-        let current_count = self.store.count_by_session(session_id);
+        let current_count = self.store.count_room_agents(session_id);
         let positions = calculate_agent_layout(current_count + 1);
 
         positions
@@ -1619,6 +1619,45 @@ mod workflow_copy_alias_tests {
             )
             .expect("a person's second agent should be created");
         assert_eq!(focused(&sessions), Some(next.id().to_string()));
+    }
+
+    // MP-08/MP-09/MP-10/MP-11 A4: sub-agents never consume the room's `max_agents`.
+    #[test]
+    fn sub_agents_do_not_consume_max_agents() {
+        let mut service = AgentService::new();
+        let mut config = DaemonConfig::for_tests();
+        config.user_config.workflow.session_default_max_agents = Some(2);
+        let mut sessions = SessionService::new(&config);
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        let root = service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("the room agent");
+        for _ in 0..3 {
+            service
+                .create_agent(
+                    CreateAgentRequest::new(session.id(), "codex").with_parent_agent_id(root.id()),
+                    &mut sessions,
+                )
+                .expect("a sub-agent");
+        }
+        service
+            .create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            )
+            .expect("three sub-agents leave room for the second room agent");
+        assert!(matches!(
+            service.create_agent(
+                CreateAgentRequest::new(session.id(), "codex"),
+                &mut sessions,
+            ),
+            Err(DaemonError::AgentLimitReached { .. })
+        ));
     }
 
     #[test]
