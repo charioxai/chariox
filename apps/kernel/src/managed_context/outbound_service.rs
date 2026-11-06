@@ -1800,6 +1800,190 @@ mod tests {
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
 
+    /// Two real kernels on this host: the source prepares the package through the outbound
+    /// service for a ticket naming the new machine, whose Vault was created from the source's
+    /// sealed key seed (local 973); the new machine applies it. A fake token only; no provider call.
+    #[test]
+    fn a_vault_login_reaches_the_new_machines_own_vault_through_the_outbound_service() {
+        crate::test_support::isolated_env_test!();
+        let _lock = crate::env_lock::lock();
+        let _claude = crate::test_support::TestClaudeExecutable::new();
+        const TOKEN: &str = "sk-ant-oat01-FAKETWOKERNELPROOF-0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrs";
+        // A Cloud-owned kernel keeps its owner's accounts under the local account authority.
+        const OWNER: &str = crate::session::DEFAULT_LOCAL_USER_ID;
+        let root = std::env::temp_dir().join(format!(
+            "chariox-vault-carry-proof-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let kernel = |id: &str| {
+            let home = root.join(id);
+            std::fs::create_dir_all(&home).unwrap();
+            let mut config = DaemonConfig::new(id, id, "owner");
+            config.user_config.credential_vault.backend =
+                crate::config::CredentialVaultBackend::CharioxEncrypted;
+            config.user_config.credential_vault.path =
+                home.join("vault.json").display().to_string();
+            config.cloud_relay = Some(PersistedCloudRelayProfile {
+                user_id: "owner-a".into(),
+                realm_id: "realm".into(),
+                ..Default::default()
+            });
+            let profiles = crate::account_profile::ProviderAccountProfileRegistry::open(
+                home.join("accounts.json"),
+            )
+            .unwrap();
+            (home, config, profiles)
+        };
+        let (home_a, config_a, profiles_a) = kernel("kernel-a");
+        let (home_b, config_b, profiles_b) = kernel("kernel-b");
+
+        // Kernel A holds the Vault-backed profile.
+        std::env::set_var("CHARIOX_HOME", &home_a);
+        crate::secret::unlock_chariox_encrypted_vault(
+            Path::new(&config_a.user_config.credential_vault.path),
+            "two-kernel-proof-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        let profile = profiles_a
+            .create_managed(OWNER, "claude", "Vault token")
+            .unwrap();
+        crate::test_support::authenticate_provider_account(
+            &profiles_a,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        crate::provider::store_provider_account_credential(
+            &config_a,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+            TOKEN,
+            false,
+        )
+        .unwrap();
+        // The new machine's own Vault comes from A's sealed key (local 973).
+        let seed = crate::secret::export_vault_key_seed(
+            Path::new(&config_a.user_config.credential_vault.path),
+            &config_a.daemon_id,
+            &config_a.relay_private_key,
+            &config_b.daemon_id,
+            &config_b.relay_public_key,
+        )
+        .unwrap();
+        crate::secret::create_vault_from_key_seed(
+            Path::new(&config_b.user_config.credential_vault.path),
+            &seed,
+            &config_b.daemon_id,
+            &config_b.relay_private_key,
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+
+        let source_thumbprint = public_key_thumbprint(&config_a.relay_public_key);
+        let ticket = ManagedContextTransferTicket {
+            environment_id: "environment-b".into(),
+            context_plan: ManagedKernelContextPlan::provider_accounts_for_tests(
+                "context-two-kernels",
+                "kernel-a",
+                &source_thumbprint,
+                &[("claude", &profile.profile_id)],
+            ),
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "kernel-b".into(),
+                kernel_id: "kernel-b".into(),
+                key_thumbprint: public_key_thumbprint(&config_b.relay_public_key),
+                relay_public_key: config_b.relay_public_key.clone(),
+            },
+        };
+        let store = ManagedContextOutboundOperationStore::open(root.join("outbound")).unwrap();
+        std::env::set_var("CHARIOX_HOME", &home_a);
+        let prepared = prepare_managed_context_package(&config_a, &store, &profiles_a, &ticket)
+            .expect("the outbound service seals the Vault login for the new machine");
+        let package = std::fs::read(&prepared.package.package_path).unwrap();
+        assert!(!package
+            .windows(TOKEN.len())
+            .any(|window| window == TOKEN.as_bytes()));
+
+        // The new machine applies it.
+        std::env::set_var("CHARIOX_HOME", &home_b);
+        let receipt = crate::managed_context::package::apply_managed_context_package(
+            crate::managed_context::package::ManagedContextPackageApplicationRequest {
+                transfer_id: "ctx_two_kernels".into(),
+                package_path: prepared.package.package_path.clone(),
+                expected_package_sha256: prepared.package.package_sha256.clone(),
+                expected_binding: crate::managed_context::package::ManagedContextPackageBinding {
+                    plan: prepared.package.plan.clone(),
+                    target_environment_id: ticket.environment_id.clone(),
+                    source_kernel_id: config_a.daemon_id.clone(),
+                    source_key_thumbprint: source_thumbprint,
+                    target_kernel_id: config_b.daemon_id.clone(),
+                    target_key_thumbprint: ticket.target.key_thumbprint.clone(),
+                },
+                development_destination_root: root.join("unused-development"),
+                target_private_key: config_b.relay_private_key.clone(),
+                context_import_target: None,
+                provider_account_target: Some(
+                    crate::managed_context::package::ManagedContextProviderAccountImportTarget {
+                        registry: profiles_b.clone(),
+                        owner_user_id: OWNER.into(),
+                        config: config_b.clone(),
+                    },
+                ),
+                git_credential_target: None,
+            },
+        )
+        .expect("the new machine applies the package");
+
+        assert!(
+            !format!("{receipt:?}{}", serde_json::to_string(&receipt).unwrap()).contains(TOKEN)
+        );
+        let imported = profiles_b
+            .get(OWNER, "claude", &profile.profile_id)
+            .unwrap();
+        assert_eq!(
+            imported.auth_state,
+            crate::account_profile::ProviderAccountAuthState::Authenticated
+        );
+        assert!(
+            imported.last_validated_at_ms.is_some(),
+            "the verified marker"
+        );
+        let env = crate::provider::resolve_provider_account_credentials(
+            &config_b,
+            OWNER,
+            "claude",
+            &profile.profile_id,
+        )
+        .unwrap();
+        assert_eq!(
+            env.iter().map(|(_, value)| value).collect::<Vec<_>>(),
+            vec![TOKEN],
+            "B's own Vault holds the token under the same handle"
+        );
+        // The same passphrase opens both Vaults; each kernel keeps its own file.
+        crate::secret::lock_chariox_encrypted_vault(&config_b.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::clear_vault_secret_process_cache().unwrap();
+        crate::secret::unlock_chariox_encrypted_vault(
+            Path::new(&config_b.user_config.credential_vault.path),
+            "two-kernel-proof-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .expect("the same passphrase opens the new machine's Vault");
+        crate::secret::lock_chariox_encrypted_vault(&config_a.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&config_b.user_config.credential_vault.path)
+            .unwrap();
+        retire_artifact_root(&prepared.artifact_root).unwrap();
+        std::env::remove_var("CHARIOX_HOME");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn mp08_mp11_source_vault_seals_compound_shell_assignments_in_overlay() {
         crate::test_support::isolated_env_test!();
