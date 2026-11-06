@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "protocol": 1000,
   "upgradeFrom": [
-    966,
+    999,
     1000
   ],
   "rollbackTo": [
-    966,
+    999,
     1000
   ]
 }

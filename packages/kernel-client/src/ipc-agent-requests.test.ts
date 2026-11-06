@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { abortAgentMoveRequest, archiveAgentRequest, listDescendantsRequest, setAgentParentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
+import { LOCAL_DAEMON_PROTOCOL_VERSION, type OutsideEvent } from "./kernel-types.js"
 
 test("agent substitute add request carries the chosen account profile", () => {
 
@@ -67,4 +67,23 @@ test("Move cancellation requires its allocated protocol", () => {
   assert.deepEqual(abortAgentMoveRequest("room", "agent", 638), {
     MoveAgentToLocal: { session_id: "room", agent_ref: "agent", abort_pending: true },
   })
+})
+
+test("an outside interaction event names the room agent a sub-agent decision is shown in", () => {
+  const event: OutsideEvent = {
+    cursor: 1,
+    kernel: "k",
+    machine: "m",
+    session_id: "room",
+    agent_id: "room-agent",
+    summary: "Approve Tool?",
+    at_ms: 1,
+    refs: { interaction_id: "perm-1" },
+    type: "interaction",
+    value: { state: "pending", shown_in: "room-agent" },
+  }
+  const closed: OutsideEvent["type"] = "interaction"
+  assert.equal(event.type, closed)
+  assert.equal(event.type === "interaction" && event.value.shown_in, "room-agent")
+  assert.ok(LOCAL_DAEMON_PROTOCOL_VERSION >= 1000)
 })

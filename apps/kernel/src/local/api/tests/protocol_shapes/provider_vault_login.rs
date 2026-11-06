@@ -1,15 +1,14 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: local 1003 / relay peer 441 carry a Vault provider login to
+//! MP-08 / MP-09 / MP-10 / MP-11: local 1000 / relay peer 439 carry a Vault provider login to
 //! a new managed machine. The wire holds ciphertext and ids; a login that cannot move says so.
 use super::*;
 use crate::account_profile::{ProviderAccountProfileOrigin, ProviderAccountReplicaMetadata};
 
 #[test]
-fn vault_login_1003_shapes_are_pinned() {
+fn vault_login_1000_shapes_are_pinned() {
     assert_eq!(
         LOCAL_DAEMON_PROTOCOL_VERSION,
         crate::test_support::expected_local_protocol_version()
     );
-    assert!(LOCAL_DAEMON_PROTOCOL_VERSION >= 1003);
 
     // A login that can move leaves the field out; one that cannot says `unavailable`.
     let available =

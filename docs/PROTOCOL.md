@@ -715,7 +715,7 @@ backfills creator authority. Spawn creator is derived from the authenticated
 provider actor, not accepted from a client command. Relay peer shapes are
 unchanged in this PR.
 
-Local daemon protocol 1001 replaces `spawned_by_agent_id` and the agent's
+Local daemon protocol 1000 replaces `spawned_by_agent_id` and the agent's
 `controlled_by_metaagent_id` with one edge, `parent_agent_id` (`{"agent_id"}`,
 absent for a root), and adds `spawn_key`, the parent's command id of the spawn
 that created the agent. A caller controls an agent exactly when the caller is
@@ -732,7 +732,24 @@ same command id returns the same child. The end of a child's work reaches its
 parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
 `success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
 on a question when the kernel restarted ends as `interrupted_by_restart`. The
-relay peer protocol stays 438.
+relay peer protocol needs no change for it.
+
+Local daemon protocol 1000 makes a
+sub-agent's decision one card with one holder. The kernel keeps the holder (the
+nearest parent that may answer, else the user) as state for routing and audit and
+does not project it. While the user holds a sub-agent's decision, the session
+interaction carries `shown_in_agent_id`, the room agent whose panel shows it, and
+an external agent following the room hears the same interaction id as an
+`interaction` event with `value.shown_in` set; a decision a parent agent holds is
+not listed to the user until it reaches the user. A holder agent gets an urgent
+`child_decision` inbox event (`interaction_id`, `child_agent_id`, `child_alias`,
+`question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
+command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
+pass <interaction>`; both return `ChildDecision {status}` with `status` one of
+`answered`, `passed`, `not_holder`, `settled_by_user`, `invalid_answer`, and no
+text. The decision moves up at once, with no model turn, when its holder's turn
+ends, errors, is cancelled or is blocked. A decision answered by a parent closes
+as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
 
 Agents may spawn without room agent-count limits, message any current room
 agent, create workflows, and observe/run peers' workflows. Agent rename/delete
@@ -6861,7 +6878,7 @@ changing nothing; a later import failure removes only the records this import cr
 services validate the connection the first time the target refreshes or attaches it. Clients check
 local >= 1000 and relay peer >= 439 before sending `eventConnections`.
 
-Local daemon protocol 1004 (provisional) adds `ListDescendants { session_id, agent_id }`, answered by
+Local daemon protocol 1000 adds `ListDescendants { session_id, agent_id }`, answered by
 `AgentTree { tree }` (`root`, `rev`, `totals {live, running, needs_user}` and `nodes` in creation order). A node
 carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
 while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
@@ -6869,7 +6886,7 @@ while it runs or before it ran) and `needs_user` (the user holds a pending decis
 `agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
 or announced as room members.
 
-### A Vault provider login travels with a new managed machine — local 1003 / relay peer 441
+### A Vault provider login travels with a new managed machine — local 1000 / relay peer 439
 
 MP-08 / MP-09 / MP-10 / MP-11: a profile whose login is a Vault credential (a Claude setup token) is part of the
 managed-context provider-account component (`providerAccounts` selection; the plan, its digest, the manifest and the
