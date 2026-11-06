@@ -7,6 +7,7 @@ use super::*;
 const RECONCILE_RETRY_MS: i64 = 30_000;
 
 /// One unconfirmed remote install or detach the source kernel must be brought in line with.
+#[derive(Debug)]
 pub(crate) struct RemoteReconcile {
     pub owner: String,
     pub subscription_id: String,
