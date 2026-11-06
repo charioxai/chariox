@@ -362,6 +362,11 @@ impl AgentInstance {
         self.parent_agent_id.is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_created_at_ms_for_test(&mut self, at_ms: u64) {
+        self.created_at_ms = at_ms;
+    }
+
     pub fn spawn_key(&self) -> Option<&str> {
         self.spawn_key.as_deref()
     }

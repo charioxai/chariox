@@ -205,6 +205,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ListDescendants(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

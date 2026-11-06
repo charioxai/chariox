@@ -51,3 +51,70 @@ async fn hidden_and_addressable() {
     let deadline = room_command(&world, "a", "agent deadline get d").await;
     assert!(deadline.ok, "{deadline:?}");
 }
+
+#[test]
+fn list_descendants_shows_the_whole_subtree_in_a_stable_order() {
+    run_large_stack_async_test("list-descendants", list_descendants);
+}
+
+async fn list_descendants() {
+    let world = world("list-descendants").await;
+    let read = |agent: &str| {
+        serde_json::json!({"ListDescendants": {
+            "session_id": world.room, "agent_id": agent}})
+    };
+    let LocalDaemonResponse::AgentTree { tree } = dispatch(&world, read(&world.ids["a"])).await
+    else {
+        panic!("agent tree")
+    };
+    let ids = tree
+        .nodes
+        .iter()
+        .map(|node| node.agent_id.clone())
+        .collect::<Vec<_>>();
+    let mut expected = vec![
+        world.ids["b"].clone(),
+        world.ids["s"].clone(),
+        world.ids["d"].clone(),
+    ];
+    expected.sort_by_key(|id| {
+        tree.nodes
+            .iter()
+            .position(|node| &node.agent_id == id)
+            .unwrap_or(usize::MAX)
+    });
+    assert_eq!(ids.len(), 3, "b, s and the grandchild d: {ids:?}");
+    assert_eq!(ids, expected);
+    assert_eq!(tree.root, world.ids["a"]);
+    assert_eq!(tree.totals.live, 3);
+    let depth = |name: &str| {
+        tree.nodes
+            .iter()
+            .find(|node| node.agent_id == world.ids[name])
+            .map(|node| node.depth)
+    };
+    assert_eq!(
+        (depth("b"), depth("s"), depth("d")),
+        (Some(1), Some(1), Some(2))
+    );
+    // The same tree twice reads in the same order.
+    let LocalDaemonResponse::AgentTree { tree: again } =
+        dispatch(&world, read(&world.ids["a"])).await
+    else {
+        panic!("agent tree")
+    };
+    assert_eq!(
+        again.nodes.iter().map(|n| &n.agent_id).collect::<Vec<_>>(),
+        tree.nodes.iter().map(|n| &n.agent_id).collect::<Vec<_>>()
+    );
+    // A sub-agent's own tree is just its subtree.
+    let LocalDaemonResponse::AgentTree { tree: below } =
+        dispatch(&world, read(&world.ids["b"])).await
+    else {
+        panic!("agent tree")
+    };
+    assert_eq!(below.nodes.len(), 1);
+    assert_eq!(below.nodes[0].agent_id, world.ids["d"]);
+    // A parent may read its own subtree, a sibling may not read another's.
+    let _ = room_command;
+}

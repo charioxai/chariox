@@ -133,6 +133,12 @@ pub enum OutsideEventValue {
     Session {
         state: EventSessionState,
     },
+    /// A sub-agent tree below `root` changed: read `ListDescendants` again.
+    /// `rev` is the revision that read returns once it includes the change.
+    AgentTree {
+        root: String,
+        rev: u64,
+    },
     Gap {
         kernel: String,
         dropped: u64,
