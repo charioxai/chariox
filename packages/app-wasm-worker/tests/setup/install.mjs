@@ -60,7 +60,7 @@ try {
     extractorSource: await readFile(join(sourceRoot, 'deploy/managed-kernel/extract-release.py'), 'utf8'),
     servicePersistence: async () => {}, serviceManager: async () => 'LoadState=not-found\nFragmentPath=\nDropInPaths=\nActiveState=inactive\nUnitFileState=disabled\n',
   });
-  const install = join(home, '.local/share/chariox/ssh-machines/local');
+  const install = join(home, '.local/share/chariox/machines/local');
   process.stdout.write(join(install, await readlink(join(install, 'current')), 'bin/chariox-app-wasm-worker'));
 } finally {
   await new Promise(resolve => server.close(resolve));
