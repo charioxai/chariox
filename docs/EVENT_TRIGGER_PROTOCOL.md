@@ -183,6 +183,15 @@ expires at its deadline (7 days); the holder then reads one `gap` event. The fol
 its grant: revoke, expiry and holder exit end it, and a restart keeps it only for a grant that
 lasts until its holder exits and whose holder lives. A new grant follows again. At most 64
 sources per grant. Paired kernels do not inherit grants: a source of another kernel is refused.
+`ListNotificationSources {}` answers `NotificationSources {sources}` (the picker's summaries, no
+outputs): the enabled, available sources of this kernel that the grant's owner may follow, and
+every one of them is accepted by `SubscribeEvents`. Listing creates the owner-action source
+("Agent needs your action") of each of the owner's Rooms, so it can be followed before any task has
+blocked. Only a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
+refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
+--source ID|NAME` follows, `chariox events unsubscribe --source ID|all` unfollows, and `chariox
+events mcp` offers the same as tools next to `chariox_next_notification`, which returns each
+`notification` or `gap` record once.
 
 **Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
 channel. Peer 437 carries the per-exit source fields in `ListWorkflowNotificationSources`,
