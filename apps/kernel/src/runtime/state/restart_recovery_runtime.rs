@@ -666,10 +666,13 @@ impl KernelRuntimeState {
                 // A question the turn blocked on died with the old process. Resuming the
                 // provider would hand the model a refusal nobody gave; end the turn as
                 // interrupted by the restart instead.
-                if session.active_interaction_for_agent(agent_id).is_some_and(|interaction| {
-                    interaction.kind() == crate::session::RuntimeInteractionKind::Choice
-                        && interaction.native_origin().is_some()
-                }) {
+                if session
+                    .active_interaction_for_agent(agent_id)
+                    .is_some_and(|interaction| {
+                        interaction.kind() == crate::session::RuntimeInteractionKind::Choice
+                            && interaction.native_origin().is_some()
+                    })
+                {
                     summary.unanswerable_local_prompts.push((
                         session.id().to_string(),
                         agent_id.to_string(),

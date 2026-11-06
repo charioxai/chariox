@@ -1561,7 +1561,6 @@ mod agent_assessment_result;
 mod agent_delegation_runtime;
 pub(crate) use agent_assessment_result::PrivateAssessmentDispatch;
 mod agent_deadline_runtime;
-mod agent_parent_runtime;
 mod agent_goal_context;
 mod agent_goal_migration;
 mod agent_goal_native_approval;
@@ -1573,9 +1572,10 @@ mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
-mod child_finished_event;
 #[cfg(test)]
 mod agent_membership_read_tests;
+mod agent_parent_runtime;
+mod child_finished_event;
 
 mod agent_owner_cancellation;
 mod agent_process_group;

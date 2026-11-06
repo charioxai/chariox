@@ -202,9 +202,7 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|agent| agent.parent_agent_id() == Some(target.id()))
             {
-                return Err(denied(
-                    "agent still has sub-agents; delete them first",
-                ));
+                return Err(denied("agent still has sub-agents; delete them first"));
             }
             let session = self.owned.session_store.get_session(room)?;
             if session.workflow_runs().iter().any(|run| {

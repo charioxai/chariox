@@ -30,7 +30,10 @@ impl KernelRuntimeState {
             if let Some(target) = target {
                 let actor = self.owned.agent_store.get_agent(&turn.agent_id)?;
                 let child = self.owned.agent_store.get_agent(target)?;
-                let agents = self.owned.agent_store.get_session_agents(actor.session_id());
+                let agents = self
+                    .owned
+                    .agent_store
+                    .get_session_agents(actor.session_id());
                 crate::runtime::room_tool_admission::in_subtree(&actor, &child, &agents)?;
             }
             self.authorize_room_agent_request(&turn.agent_id, request)?;

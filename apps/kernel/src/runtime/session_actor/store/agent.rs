@@ -301,8 +301,9 @@ impl SessionRuntimeStore {
                 .room_member_user_id(&request.session_id, &caller_user_id),
         );
         let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent => create_request
-                .with_parent_agent_id(metaagent_id),
+            Some(metaagent_id) if !request.metaagent => {
+                create_request.with_parent_agent_id(metaagent_id)
+            }
             _ => create_request,
         };
         let create_request = match idempotency_key {
@@ -602,8 +603,7 @@ impl SessionRuntimeStore {
             )
             .with_owner_user_id(member_user_id.clone());
             if let Some(metaagent_id) = caller_metaagent_id.as_deref() {
-                create_request = create_request
-                    .with_parent_agent_id(metaagent_id);
+                create_request = create_request.with_parent_agent_id(metaagent_id);
             }
             if let Some(alias) = item.alias {
                 create_request = create_request.with_alias(alias);

@@ -20,8 +20,7 @@ impl KernelRuntimeState {
         let owned_agents = session_agents
             .iter()
             .filter(|candidate| {
-                !candidate.is_metaagent()
-                    && candidate.parent_agent_id() == Some(agent.id())
+                !candidate.is_metaagent() && candidate.parent_agent_id() == Some(agent.id())
             })
             .collect::<Vec<_>>();
         let pending_interactions = session
@@ -40,8 +39,7 @@ impl KernelRuntimeState {
                         .agent_store
                         .get_agent(agent_id)
                         .is_ok_and(|target| {
-                            !target.is_metaagent()
-                                && target.parent_agent_id() == Some(agent.id())
+                            !target.is_metaagent() && target.parent_agent_id() == Some(agent.id())
                         })
             })
             .collect::<Vec<_>>();

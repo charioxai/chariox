@@ -134,7 +134,10 @@ fn child_finished(team: &Team) -> Vec<crate::durable_state::agent_lifecycle::Inb
 async fn a_finished_child_is_one_urgent_event_for_its_parent() {
     let team = team("child-finished-urgent", false, false).await;
     team.runtime
-        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
         .await
         .unwrap();
     let events = child_finished(&team);
@@ -170,7 +173,10 @@ async fn a_child_stopped_by_its_deadline_says_so() {
         })
         .unwrap();
     team.runtime
-        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
         .await
         .unwrap();
     let events = child_finished(&team);
@@ -185,7 +191,10 @@ async fn a_finish_wakes_a_parked_parent_in_the_same_second() {
     let team = team("child-finished-wake", false, false).await;
     let started = std::time::Instant::now();
     team.runtime
-        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
         .await
         .unwrap();
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
@@ -201,7 +210,10 @@ async fn a_finish_wakes_a_parked_parent_in_the_same_second() {
 async fn a_finish_steers_a_running_parent() {
     let team = team("child-finished-steer", false, true).await;
     team.runtime
-        .finish_agent_task_settlement(Some((team.task.clone(), team.correction)), &team.child_prompt)
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
         .await
         .unwrap();
     let event = &child_finished(&team)[0];

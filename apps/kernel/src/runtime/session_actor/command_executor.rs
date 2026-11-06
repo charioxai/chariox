@@ -410,7 +410,12 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::SpawnAgent(request) => Box::pin(async move {
                 self.store
-                    .spawn_agent(request, caller_user_id, caller_metaagent_id, idempotency_key)
+                    .spawn_agent(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        idempotency_key,
+                    )
                     .await
             }),
             LocalDaemonRequest::SpawnAgents(request) => Box::pin(async move {

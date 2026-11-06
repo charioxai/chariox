@@ -129,7 +129,9 @@ impl KernelRuntimeOwnedState {
                     if self.config_projection.snapshot().room_agent_tools {
                         let actor = self.agent_store.get_agent(metaagent_id)?;
                         let agents = self.agent_store.get_session_agents(actor.session_id());
-                        crate::runtime::room_tool_admission::workflow_node(&actor, &agent, &agents)?;
+                        crate::runtime::room_tool_admission::workflow_node(
+                            &actor, &agent, &agents,
+                        )?;
                     }
                     if !self.config_projection.snapshot().room_agent_tools
                         && agent.parent_agent_id() != Some(metaagent_id)

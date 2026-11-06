@@ -230,7 +230,11 @@ pub(super) fn parse_meta_agent_spawn_args(
                     "--permission" => {
                         permission_level = Some(
                             crate::provider::AgentPermissionLevel::parse(value).ok_or_else(
-                                || meta_command_error("usage: agent spawn --permission required|yolo"),
+                                || {
+                                    meta_command_error(
+                                        "usage: agent spawn --permission required|yolo",
+                                    )
+                                },
                             )?,
                         )
                     }

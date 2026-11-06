@@ -108,8 +108,7 @@ impl<'a> KernelSessionService<'a> {
                         request = request.with_account_profile(account_profile.to_string());
                     }
                     if let Some(metaagent_id) = controlled_by_metaagent_id.as_deref() {
-                        request = request
-                            .with_parent_agent_id(metaagent_id);
+                        request = request.with_parent_agent_id(metaagent_id);
                     }
                     let created =
                         self.spawn_workflow_code_generated_agent(request, agent.alias.as_deref())?;
@@ -148,7 +147,9 @@ impl<'a> KernelSessionService<'a> {
                         if self.app.config().room_agent_tools {
                             let actor = self.app.agents.get_agent(metaagent_id)?;
                             let agents = self.app.agents.get_session_agents(actor.session_id());
-                            crate::runtime::room_tool_admission::workflow_node(&actor, &agent, &agents)?;
+                            crate::runtime::room_tool_admission::workflow_node(
+                                &actor, &agent, &agents,
+                            )?;
                         }
                         if !self.app.config().room_agent_tools
                             && agent.parent_agent_id() != Some(metaagent_id)

@@ -67,11 +67,7 @@ fn room_admission_sibling_peer_and_ancestor_are_outside_the_subtree() {
             &agents,
             true,
         );
-        assert!(
-            result.is_err(),
-            "{} must not control {target}",
-            actor.id()
-        );
+        assert!(result.is_err(), "{} must not control {target}", actor.id());
     }
 }
 
@@ -136,7 +132,10 @@ fn spawn_flags_carry_the_free_choices_and_the_bounded_ones() {
         spawn.permission_level,
         Some(crate::provider::AgentPermissionLevel::Required)
     );
-    assert_eq!(spawn.deadline, Some(std::time::Duration::from_secs(90 * 60)));
+    assert_eq!(
+        spawn.deadline,
+        Some(std::time::Duration::from_secs(90 * 60))
+    );
     assert_eq!(spawn.command_id.as_deref(), Some("c-1"));
     for bad in [
         "w1 --permission root",

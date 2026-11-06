@@ -19,7 +19,10 @@ impl KernelRuntimeState {
             });
         }
         if let Some(parent_id) = request.parent_agent_id.as_deref() {
-            let agents = self.owned.agent_store.get_session_agents(&request.session_id);
+            let agents = self
+                .owned
+                .agent_store
+                .get_session_agents(&request.session_id);
             let parent = agents
                 .iter()
                 .find(|candidate| candidate.id() == parent_id)
@@ -36,10 +39,10 @@ impl KernelRuntimeState {
                 ));
             }
         }
-        let agent = self
-            .owned
-            .agent_store
-            .set_parent_agent(&request.agent_id, request.parent_agent_id.map(AgentRef::local))?;
+        let agent = self.owned.agent_store.set_parent_agent(
+            &request.agent_id,
+            request.parent_agent_id.map(AgentRef::local),
+        )?;
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
         Ok(LocalDaemonResponse::AgentParentChanged { agent })

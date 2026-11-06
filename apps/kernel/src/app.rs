@@ -126,7 +126,9 @@ use crate::session::{RuntimeSession, SessionService, SessionStateStore};
 use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 pub(crate) use kernel_agent::KernelAgentService;
-pub(crate) use kernel_session::{settle_remote_spawn_failure, KernelSessionReadService, KernelSessionService};
+pub(crate) use kernel_session::{
+    settle_remote_spawn_failure, KernelSessionReadService, KernelSessionService,
+};
 pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;

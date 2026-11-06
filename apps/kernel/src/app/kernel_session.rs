@@ -322,10 +322,7 @@ impl<'a> KernelSessionService<'a> {
             if self.app.kernel_ref_is_local(&kernel_ref) {
                 request.kernel_ref = None;
             } else {
-                let agent = match self
-                    .app
-                    .spawn_worker_agent(request, &kernel_ref, authorize)
-                {
+                let agent = match self.app.spawn_worker_agent(request, &kernel_ref, authorize) {
                     Ok(agent) => agent,
                     Err(error) => {
                         return Err(settle_remote_spawn_failure(
