@@ -137,7 +137,7 @@ for (const drag of [false, true]) for (const paste of [false, true]) {
         renderer: harness.renderer, promptInputRefController: ref, isAttached: () => true,
         dimensions: () => ({ width: 80, height: 8 }), sessionState: () => ({ processes: [], agents: [] }),
         scheduleTimer: setTimeout, retainPromptFocus: () => { setTimeout(ref.focus, 0) },
-        options: {}, client: { send: async () => { throw Error("Unexpected kernel request") } },
+        options: {}, client: { send: async () => { throw Error("Unexpected kernel request") }, onClientChanged: () => () => {} },
         formatError: String, debugLogsEnabled: false, appLogger: null,
         currentFocusedRenderable: () => harness.renderer.currentFocusedRenderable, describeRenderableDebug: String,
         availableSessions: empty, waitingRoomProjects: empty, sessionBrowserIndex: () => 0,
