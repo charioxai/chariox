@@ -69,7 +69,8 @@ async fn queue_has_no_side_effect_and_cancel_never_spawns() {
 async fn start_now_keeps_binary_input_offsets_streams_and_one_execution() {
     let directory = TempDir::new();
     let marker = directory.path().join("marker");
-    let service = limited(128 * 1024 * 1024, 0);
+    // Only memory holds a command whose output volume no completed run has shown.
+    let service = limited(0, u64::MAX / 2);
     let id = tests::open(
         &service,
         &format!(
