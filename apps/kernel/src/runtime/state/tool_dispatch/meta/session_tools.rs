@@ -21,7 +21,7 @@ impl KernelRuntimeState {
             .iter()
             .filter(|candidate| {
                 !candidate.is_metaagent()
-                    && candidate.controlled_by_metaagent_id() == Some(agent.id())
+                    && candidate.parent_agent_id() == Some(agent.id())
             })
             .collect::<Vec<_>>();
         let pending_interactions = session
@@ -41,7 +41,7 @@ impl KernelRuntimeState {
                         .get_agent(agent_id)
                         .is_ok_and(|target| {
                             !target.is_metaagent()
-                                && target.controlled_by_metaagent_id() == Some(agent.id())
+                                && target.parent_agent_id() == Some(agent.id())
                         })
             })
             .collect::<Vec<_>>();
@@ -324,7 +324,7 @@ impl KernelRuntimeState {
                 agent.session_id() == metaagent.session_id()
                     && (self.room_agent_tools_enabled()
                         || (!agent.is_metaagent()
-                            && agent.controlled_by_metaagent_id() == Some(metaagent.id())))
+                            && agent.parent_agent_id() == Some(metaagent.id())))
             })
             .collect()
     }
@@ -661,7 +661,7 @@ mod tests {
             Some("worktree-1".to_string()),
             crate::agent::GridPosition::new(0, 1, 1, 1),
         );
-        worker.set_controlled_by_metaagent_id(Some(metaagent_id.to_string()));
+        worker.set_parent_agent(Some(crate::agent::AgentRef::local(metaagent_id)));
         worker
     }
 }

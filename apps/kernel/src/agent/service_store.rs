@@ -477,6 +477,14 @@ impl AgentServiceStore {
         self.write().alias_agent(agent_id, alias)
     }
 
+    pub fn set_parent_agent(
+        &self,
+        agent_id: &str,
+        parent: Option<super::AgentRef>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_parent_agent(agent_id, parent)
+    }
+
     pub fn add_agent_substitute(
         &self,
         agent_id: &str,

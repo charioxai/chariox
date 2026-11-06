@@ -147,6 +147,27 @@ impl CommandRouter {
             .await;
             return Ok(result);
         }
+        if let Some(result) = self
+            .dispatch_meta_agent_tree_command(
+                Some(&provider_run),
+                &session,
+                &metaagent,
+                &args.command,
+                &tokens,
+            )
+            .await?
+        {
+            self.audit_meta_run_command(
+                Some(provider_run.id()),
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
+        }
         let request = match self
             .meta_command_request(&session, &metaagent, &tokens)
             .await
@@ -373,6 +394,21 @@ impl CommandRouter {
                 &tokens[2..],
             ))
             .await?;
+            self.audit_meta_run_command(
+                None,
+                &session,
+                &metaagent,
+                &args.command,
+                if result.ok { "succeeded" } else { "failed" },
+                result.payload.clone(),
+            )
+            .await;
+            return Ok(result);
+        }
+        if let Some(result) = self
+            .dispatch_meta_agent_tree_command(None, &session, &metaagent, &args.command, &tokens)
+            .await?
+        {
             self.audit_meta_run_command(
                 None,
                 &session,
@@ -653,11 +689,12 @@ impl CommandRouter {
             provider: spawn
                 .provider
                 .or_else(|| Some(metaagent.provider().to_string())),
-            account_profile: if same_provider {
-                metaagent.account_profile().map(str::to_string)
-            } else {
-                None
-            },
+            // The account profile is the caller's choice, not an authority limit.
+            account_profile: spawn.account_profile.or_else(|| {
+                same_provider
+                    .then(|| metaagent.account_profile().map(str::to_string))
+                    .flatten()
+            }),
             model: spawn.model.or_else(|| {
                 same_provider
                     .then(|| metaagent.model().map(str::to_string))
@@ -669,7 +706,9 @@ impl CommandRouter {
                     .flatten()
             }),
             execution_mode: metaagent.execution_mode_override(),
-            permission_level: metaagent.permission_level_override(),
+            permission_level: spawn
+                .permission_level
+                .or(metaagent.permission_level_override()),
             worktree_id: spawn
                 .worktree_id
                 .or_else(|| metaagent.worktree_id().map(str::to_string)),
@@ -682,15 +721,22 @@ impl CommandRouter {
             worktree_placement: spawn.worktree_placement,
             metaagent: false,
         });
-        let response = match Box::pin(self.dispatch(
-            meta_kernel_command(provider_run, metaagent, &request),
-            request,
-        ))
-        .await
-        {
+        let mut spawn_command = meta_kernel_command(provider_run, metaagent, &request);
+        spawn_command.idempotency_key = spawn.command_id.clone();
+        let response = match Box::pin(self.dispatch(spawn_command, request)).await {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
+        if let (Some(after), LocalDaemonResponse::AgentSpawned { agent, .. }) =
+            (spawn.deadline, &response)
+        {
+            if let Err(error) = self
+                .arm_child_deadline(provider_run, session, metaagent, agent, after)
+                .await
+            {
+                return Ok(meta_command_failure_result(command, error));
+            }
+        }
         let mut result = meta_command_success_result(
             command,
             &response,
@@ -846,7 +892,7 @@ impl CommandRouter {
         }
     }
 
-    async fn ensure_metaagent_command_attachment(
+    pub(super) async fn ensure_metaagent_command_attachment(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,
@@ -873,7 +919,7 @@ impl CommandRouter {
         }
     }
 
-    async fn resolve_owned_regular_agent(
+    pub(super) async fn resolve_owned_regular_agent(
         &self,
         session_id: &str,
         metaagent: &crate::agent::AgentInstance,
@@ -891,7 +937,7 @@ impl CommandRouter {
         let owned_agents = agents
             .into_iter()
             .filter(|agent| {
-                !agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+                !agent.is_metaagent() && agent.parent_agent_id() == Some(metaagent.id())
             })
             .collect::<Vec<_>>();
         owned_agents

@@ -319,7 +319,7 @@ impl KernelRuntimeState {
                         };
                         if child.session_id() != task.room_id
                             || child.owner_user_id() != session.owner_user_id()
-                            || child.spawned_by_agent_id() != Some(&task.agent_id)
+                            || child.parent_agent_id() != Some(&task.agent_id)
                         {
                             first_error.get_or_insert_with(|| {
                                 crate::durable_state::agent_lifecycle::error(

@@ -439,7 +439,7 @@ impl<'a> KernelAgentService<'a> {
             return Ok(());
         }
         let Some(metaagent_id) = completed_agent
-            .controlled_by_metaagent_id()
+            .parent_agent_id()
             .map(str::to_string)
         else {
             return Ok(());

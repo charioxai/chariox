@@ -46,7 +46,7 @@ async fn forwarded_delete() {
             .bind_remote_execution(parent.id(), parent_binding.clone())
             .unwrap();
         let mut child = child.clone();
-        child.record_spawn_creator(Some(parent.id().to_string()));
+        child.set_parent_agent(Some(crate::agent::AgentRef::local(parent.id())));
         app.agents_mut().restore_agent(child);
     }
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncContext {

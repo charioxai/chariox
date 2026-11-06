@@ -57,7 +57,7 @@ fn room_admission_saved_artifact_run_preserves_peer_metadata() {
                     crate::test_support::admit_room_test_turn(&mut app, room.id(), actor.id());
                     let child = KernelSessionService::new(&mut app)
                         .spawn_agent(crate::agent::CreateAgentRequest::new(room.id(), "dev-stub")
-                            .with_spawned_by_agent_id(actor.id()))
+                            .with_parent_agent_id(actor.id()))
                         .unwrap();
                     let registry = WorkflowCodeArtifactRegistry::new(vec![config
                         .workflow_code_artifact_root().join("rooms").join(room.id())]);
@@ -278,7 +278,7 @@ async fn room_admission_existing_peer_workflow_is_runnable_without_child_authori
         "A01-S04 any room agent may run an existing public workflow"
     );
     assert!(
-        crate::runtime::room_tool_admission::workflow_node(&actor, &peer).is_err(),
+        crate::runtime::room_tool_admission::workflow_node(&actor, &peer, &[]).is_err(),
         "creating a new peer binding must retain its mutation fence"
     );
     assert!(state

@@ -202,7 +202,7 @@ async fn a_meta_app_binding_approval_counts_as_a_runtime_tool_wait_inner() {
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("worker")
-                .with_controlled_by_metaagent_id(metaagent.id()),
+                .with_parent_agent_id(metaagent.id()),
         )
         .expect("worker should spawn");
     // The wait registry is per process, so this run's id must be unique

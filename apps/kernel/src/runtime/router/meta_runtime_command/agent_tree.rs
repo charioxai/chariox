@@ -1,0 +1,211 @@
+//! Room commands for the agent tree: a parent reads and controls the agents below it.
+use super::result::{meta_command_error, meta_command_failure_result};
+use super::request::meta_kernel_command;
+use super::*;
+
+/// `agent children` lists at most this many descendants.
+const CHILDREN_LISTED_LIMIT: usize = 64;
+
+impl CommandRouter {
+    /// The commands that read or control the tree below the caller; `None` for any other command.
+    pub(super) async fn dispatch_meta_agent_tree_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        tokens: &[String],
+    ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if tokens.first().map(String::as_str) != Some("agent") {
+            return Ok(None);
+        }
+        let args = tokens.get(2..).unwrap_or_default();
+        Ok(match tokens.get(1).map(String::as_str) {
+            Some("cancel") => Some(
+                self.dispatch_meta_agent_cancel_command(provider_run, session, caller, command, args)
+                    .await?,
+            ),
+            Some("children") => Some(self.meta_agent_children_result(session, caller, command, args)),
+            _ => None,
+        })
+    }
+
+    /// Sets the child's deadline to `after` from now, never later than the
+    /// parent's own. A child that cannot be bounded is not left running.
+    pub(super) async fn arm_child_deadline(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        parent: &crate::agent::AgentInstance,
+        child: &crate::agent::AgentInstance,
+        after: std::time::Duration,
+    ) -> Result<(), DaemonError> {
+        let mut deadline_ms = crate::session::unix_epoch_ms()
+            .saturating_add(u64::try_from(after.as_millis()).unwrap_or(u64::MAX));
+        if let LocalDaemonResponse::AgentDeadline {
+            deadline: Some(parent_deadline),
+        } = self
+            .runtime_state
+            .get_agent_deadline(crate::local::GetAgentDeadlineRequest {
+                session_id: session.id().to_string(),
+                agent_id: parent.id().to_string(),
+            })?
+        {
+            deadline_ms = deadline_ms.min(parent_deadline.deadline_ms);
+        }
+        let request = LocalDaemonRequest::SetAgentDeadline(crate::local::SetAgentDeadlineRequest {
+            session_id: session.id().to_string(),
+            agent_id: child.id().to_string(),
+            deadline_ms,
+        });
+        if let Err(error) = Box::pin(self.dispatch(
+            meta_kernel_command(provider_run, parent, &request),
+            request,
+        ))
+        .await
+        {
+            let destroy = LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+                session_id: session.id().to_string(),
+                agent_id: child.id().to_string(),
+            });
+            let _ = Box::pin(self.dispatch(
+                meta_kernel_command(provider_run, parent, &destroy),
+                destroy,
+            ))
+            .await;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// `agent cancel <agent>` stops the active turn of an agent below the caller and keeps the agent.
+    pub(super) async fn dispatch_meta_agent_cancel_command(
+        &self,
+        provider_run: Option<&crate::provider::RuntimeProviderRun>,
+        session: &crate::session::RuntimeSession,
+        parent: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        let [reference] = args else {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error("usage: agent cancel <agent-ref>"),
+            ));
+        };
+        let target = match self
+            .resolve_owned_regular_agent(session.id(), parent, reference)
+            .await
+        {
+            Ok(target) => target,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+        let attachment_id = match self
+            .ensure_metaagent_command_attachment(session.id(), parent)
+            .await
+        {
+            Ok(id) => id,
+            Err(error) => return Ok(meta_command_failure_result(command, error)),
+        };
+        let request = LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
+            session_id: session.id().to_string(),
+            attachment_id,
+            target_agent_id: Some(target.id().to_string()),
+            expected_prompt_id: None,
+        });
+        match Box::pin(self.dispatch(
+            meta_kernel_command(provider_run, parent, &request),
+            request,
+        ))
+        .await
+        {
+            Ok(response) => Ok(super::result::meta_command_success_result(
+                command,
+                &response,
+                parent,
+                self.runtime_state.room_agent_tools_enabled(),
+            )),
+            Err(error) => Ok(meta_command_failure_result(command, error)),
+        }
+    }
+
+    /// `agent children [agent]` lists everything below the caller, or below one of its descendants.
+    pub(super) fn meta_agent_children_result(
+        &self,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        args: &[String],
+    ) -> RuntimeToolResult {
+        let agents = self.runtime_state.session_agents(session.id());
+        let root = match args {
+            [] => caller.clone(),
+            [reference] => {
+                match crate::runtime::room_tool_admission::resolve_agent(
+                    &agents,
+                    caller.session_id(),
+                    reference,
+                )
+                .cloned()
+                {
+                    Ok(root) if root.id() == caller.id() => root,
+                    Ok(root) => {
+                        if let Err(error) = crate::runtime::room_tool_admission::in_subtree(
+                            caller, &root, &agents,
+                        ) {
+                            return meta_command_failure_result(command, error);
+                        }
+                        root
+                    }
+                    Err(error) => return meta_command_failure_result(command, error),
+                }
+            }
+            _ => {
+                return meta_command_failure_result(
+                    command,
+                    meta_command_error("usage: agent children [agent-ref]"),
+                )
+            }
+        };
+        let mut listed = Vec::new();
+        let mut frontier = vec![(root.id().to_string(), 1_u32)];
+        while let Some((parent_id, depth)) = frontier.pop() {
+            for agent in agents
+                .iter()
+                .filter(|agent| agent.parent_agent_id() == Some(parent_id.as_str()))
+            {
+                if listed.len() == CHILDREN_LISTED_LIMIT {
+                    break;
+                }
+                let deadline = match self.runtime_state.get_agent_deadline(
+                    crate::local::GetAgentDeadlineRequest {
+                        session_id: session.id().to_string(),
+                        agent_id: agent.id().to_string(),
+                    },
+                ) {
+                    Ok(LocalDaemonResponse::AgentDeadline { deadline }) => deadline,
+                    _ => None,
+                };
+                listed.push(serde_json::json!({
+                    "id": agent.id(),
+                    "agent_ref": agent.agent_ref(),
+                    "alias": agent.alias(),
+                    "parent": parent_id,
+                    "depth": depth,
+                    "state": format!("{:?}", agent.state()),
+                    "is_processing": agent.is_processing(),
+                    "has_active_prompt": session.active_prompt_for_agent(agent.id()).is_some(),
+                    "deadline": deadline,
+                }));
+                frontier.push((agent.id().to_string(), depth + 1));
+            }
+        }
+        RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({
+                "command": command,
+                "response": {"type": "AgentChildren", "root": root.id(), "children": listed},
+            }),
+        }
+    }
+}

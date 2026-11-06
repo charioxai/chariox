@@ -142,8 +142,7 @@ fn room_creator_lineage_protocol_450_snapshot() {
         None,
         crate::agent::GridPosition::new(0, 0, 1, 1),
     );
-    agent.record_spawn_creator(Some("parent".into()));
-    agent.set_controlled_by_metaagent_id(Some("unrelated-controller".into()));
+    agent.set_parent_agent(Some(crate::agent::AgentRef::local("parent")));
     let definition = WorkflowDefinition::new_controlled_by_metaagent("definition", None, "peer");
     let run = crate::session::WorkflowRun::new(
         "run",
@@ -174,7 +173,7 @@ fn room_creator_lineage_protocol_450_snapshot() {
         serde_json::to_value(&run).unwrap(),
         serde_json::to_value(&queued).unwrap(),
     ];
-    let snapshot = serde_json::json!({"agent": encoded[0]["spawned_by_agent_id"], "workflow": encoded[1]["created_by_agent_id"], "run": encoded[2]["created_by_agent_id"], "queue_item": encoded[3]["created_by_agent_id"]});
+    let snapshot = serde_json::json!({"agent": encoded[0]["parent_agent_id"], "workflow": encoded[1]["created_by_agent_id"], "run": encoded[2]["created_by_agent_id"], "queue_item": encoded[3]["created_by_agent_id"]});
     assert_eq!(
         snapshot,
         serde_json::json!({"agent":"parent","workflow":"peer","run":"parent","queue_item":"parent"})
@@ -190,9 +189,9 @@ fn room_creator_lineage_protocol_450_snapshot() {
     legacy
         .as_object_mut()
         .unwrap()
-        .remove("spawned_by_agent_id");
+        .remove("parent_agent_id");
     let restored: crate::agent::AgentInstance = serde_json::from_value(legacy).unwrap();
-    assert_eq!(restored.spawned_by_agent_id(), None);
+    assert_eq!(restored.parent_agent_id(), None);
     for (value, key) in encoded[1..].iter().zip(["created_by_agent_id"; 3]) {
         let mut legacy = value.clone();
         legacy.as_object_mut().unwrap().remove(key);
@@ -219,6 +218,6 @@ fn room_creator_lineage_protocol_450_snapshot() {
     }
     assert!(agent
         .materialized_for_workflow_runtime("copy", "copy-ref", "room", "worktree")
-        .spawned_by_agent_id()
+        .parent_agent_id()
         .is_none());
 }

@@ -118,10 +118,39 @@ fn summarize_meta_command_response(
                 .iter()
                 .filter(|agent| {
                     agent.session_id() == metaagent.session_id()
-                        && (room_tools || (!agent.is_metaagent() && agent.controlled_by_metaagent_id() == Some(metaagent.id())))
+                        && (room_tools || (!agent.is_metaagent() && agent.parent_agent_id() == Some(metaagent.id())))
                 })
                 .map(summarize_meta_agent)
                 .collect::<Vec<_>>(),
+        }),
+        LocalDaemonResponse::PromptCancelled { cancellation } => serde_json::json!({
+            "type": "PromptCancelled",
+            "cancellation": cancellation,
+        }),
+        LocalDaemonResponse::AgentDeadline { deadline } => serde_json::json!({
+            "type": "AgentDeadline",
+            "deadline": deadline,
+        }),
+        LocalDaemonResponse::ProviderUsageSnapshot { accounts } => serde_json::json!({
+            "type": "ProviderUsageSnapshot",
+            "accounts": accounts.iter().map(|account| serde_json::json!({
+                "provider": account.provider,
+                "profile_id": account.profile_id,
+                "label": account.label,
+                "auth_state": account.auth_state,
+                "usage": account.usage,
+            })).collect::<Vec<_>>(),
+        }),
+        LocalDaemonResponse::ProviderAccountProfilesListed { profiles } => serde_json::json!({
+            "type": "ProviderAccountProfilesListed",
+            "profiles": profiles.iter().map(|profile| serde_json::json!({
+                "provider": profile.provider,
+                "profile_id": profile.profile_id,
+                "label": profile.label,
+                "is_default": profile.is_default,
+                "auth_state": profile.auth_state,
+                "plan": profile.plan,
+            })).collect::<Vec<_>>(),
         }),
         LocalDaemonResponse::WorkflowCreated { workflow, .. } => serde_json::json!({
             "type": "WorkflowCreated",

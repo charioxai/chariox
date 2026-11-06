@@ -1164,7 +1164,7 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     snapshot["AgentMovedToRemote"]["agent"]
         .as_object_mut()
         .unwrap()
-        .remove("spawned_by_agent_id");
+        .remove("parent_agent_id");
     snapshot["AgentMovedToRemote"]["agent"]
         .as_object_mut()
         .unwrap()

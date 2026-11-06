@@ -96,7 +96,7 @@ impl AgentService {
         let mut session_summary = self.store.session_summary(session.id());
         let current_count = session_summary.count;
         let new_count = requests.len();
-        if requests.iter().any(|r| r.spawned_by_agent_id.is_none())
+        if requests.iter().any(|r| r.parent_agent_id.is_none())
             && current_count + new_count > session.max_agents() as usize
         {
             return Err(DaemonError::AgentLimitReached {
@@ -148,8 +148,8 @@ impl AgentService {
                 GridPosition::new(0, 0, 1, 1),
             );
             agent.set_owner_user_id(request.owner_user_id);
-            agent.record_spawn_creator(request.spawned_by_agent_id);
-            agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
+            agent.set_parent_agent(request.parent_agent_id);
+            agent.set_spawn_key(request.spawn_key);
             agent.set_role(request.role);
             agent.set_account_profile(request.account_profile);
             agent.set_execution_mode_override(request.execution_mode_override);
@@ -195,7 +195,7 @@ impl AgentService {
             .iter()
             .filter(|agent| !agent.archived())
             .count();
-        if request.spawned_by_agent_id.is_none() && current_count >= session.max_agents() as usize {
+        if request.parent_agent_id.is_none() && current_count >= session.max_agents() as usize {
             return Err(DaemonError::AgentLimitReached {
                 session_id: request.session_id.clone(),
                 max_agents: session.max_agents(),
@@ -234,8 +234,8 @@ impl AgentService {
             position,
         );
         agent.set_owner_user_id(request.owner_user_id);
-        agent.record_spawn_creator(request.spawned_by_agent_id);
-        agent.set_controlled_by_metaagent_id(request.controlled_by_metaagent_id);
+        agent.set_parent_agent(request.parent_agent_id);
+        agent.set_spawn_key(request.spawn_key);
         if request.role == crate::agent::AgentRole::Meta {
             return Err(DaemonError::LocalTransport {
                 operation: "create agent",
@@ -312,7 +312,7 @@ impl AgentService {
             session_id,
             worktree_id,
         );
-        agent.record_spawn_creator(creator.map(str::to_string));
+        agent.set_parent_agent(creator.map(crate::agent::AgentRef::local));
         if let Some(copied_alias) = copied_alias {
             agent.set_alias(Some(copied_alias));
         }
@@ -1090,11 +1090,11 @@ impl AgentService {
         self.store.get_by_session(session_id)
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_controlled_by_metaagent_id(
+    /// The user-only edge change; the caller has refused every agent.
+    pub(crate) fn set_parent_agent(
         &mut self,
         agent_id: &str,
-        metaagent_id: Option<String>,
+        parent: Option<crate::agent::AgentRef>,
     ) -> Result<AgentInstance, DaemonError> {
         let agent = self
             .store
@@ -1102,7 +1102,7 @@ impl AgentService {
             .ok_or_else(|| DaemonError::AgentNotFound {
                 agent_id: agent_id.to_string(),
             })?;
-        agent.set_controlled_by_metaagent_id(metaagent_id);
+        agent.set_parent_agent(parent);
         Ok(agent.clone())
     }
 
@@ -1328,13 +1328,13 @@ impl Default for AgentService {
 }
 
 /// The new agent that takes the session focus: a person's last new agent.
-/// Only a person moves the focus, so an agent created on a metaagent's behalf
-/// (a meta-mode spawn, or workflow code for a metaagent) never takes it.
+/// Only a person moves the focus, so an agent created on a parent's behalf
+/// (a spawn, or workflow code for a metaagent) never takes it.
 pub(crate) fn new_agent_focus_target(agents: &[AgentInstance]) -> Option<&AgentInstance> {
     agents
         .iter()
         .rev()
-        .find(|agent| agent.controlled_by_metaagent_id().is_none())
+        .find(|agent| agent.parent_agent_id().is_none())
 }
 
 #[cfg(test)]
@@ -1557,7 +1557,7 @@ mod workflow_copy_alias_tests {
         let helper = service
             .create_agent(
                 CreateAgentRequest::new(session.id(), "codex")
-                    .with_controlled_by_metaagent_id(person_agent.id()),
+                    .with_parent_agent_id(person_agent.id()),
                 &mut sessions,
             )
             .expect("the metaagent's agent should be created");
@@ -1576,7 +1576,7 @@ mod workflow_copy_alias_tests {
                 vec![
                     CreateAgentRequest::new(session.id(), "codex"),
                     CreateAgentRequest::new(session.id(), "codex")
-                        .with_controlled_by_metaagent_id(person_agent.id()),
+                        .with_parent_agent_id(person_agent.id()),
                 ],
                 &mut sessions,
             )

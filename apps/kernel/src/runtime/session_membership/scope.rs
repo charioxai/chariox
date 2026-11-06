@@ -400,6 +400,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::SetAgentParent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),

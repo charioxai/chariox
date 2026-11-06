@@ -48,7 +48,7 @@ fn setup(name: &str, spawned: &[&str], peers: &[&str]) -> Setup {
                 .spawn_agent(
                     CreateAgentRequest::new(session.id(), "dev-stub")
                         .with_alias(*child)
-                        .with_spawned_by_agent_id(first.id()),
+                        .with_parent_agent_id(first.id()),
                 )
                 .unwrap(),
         );

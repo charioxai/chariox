@@ -71,6 +71,32 @@ pub(super) struct MetaAgentSpawnArgs {
     pub(super) slice_ref: Option<String>,
     pub(super) worktree_placement: Option<GitWorktreePlacement>,
     pub(super) slice_create: Option<MetaAgentSliceCreate>,
+    pub(super) account_profile: Option<String>,
+    pub(super) permission_level: Option<crate::provider::AgentPermissionLevel>,
+    pub(super) deadline: Option<std::time::Duration>,
+    pub(super) command_id: Option<String>,
+}
+
+/// `90s`, `30m`, `2h` or `1d`: how long from now.
+pub(super) fn parse_deadline_after(value: &str) -> Result<std::time::Duration, DaemonError> {
+    let usage = || meta_command_error("a deadline is a duration such as 90s, 30m, 2h or 1d");
+    let split = value.len().saturating_sub(1);
+    let (number, unit) = value.split_at(split);
+    let number: u64 = number.parse().map_err(|_| usage())?;
+    let seconds = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3_600,
+        "d" => 86_400,
+        _ => return Err(usage()),
+    };
+    if number == 0 {
+        return Err(usage());
+    }
+    number
+        .checked_mul(seconds)
+        .map(std::time::Duration::from_secs)
+        .ok_or_else(usage)
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +120,10 @@ pub(super) fn parse_meta_agent_spawn_args(
     let mut slice_ref = None;
     let mut slice_create = None;
     let mut slice_display_mode = None;
+    let mut account_profile = None;
+    let mut permission_level = None;
+    let mut deadline = None;
+    let mut command_id = None;
 
     let mut index = 0;
     while index < args.len() {
@@ -187,6 +217,26 @@ pub(super) fn parse_meta_agent_spawn_args(
                     return Err(meta_command_error("usage: agent spawn --from <ref>"));
                 }
                 from_ref = Some(value.clone());
+                index += 2;
+            }
+            "--account-profile" | "--permission" | "--deadline" | "--command-id" => {
+                let usage = format!("usage: agent spawn {arg} <value>");
+                let value = args
+                    .get(index + 1)
+                    .filter(|value| !value.starts_with("--"))
+                    .ok_or_else(|| meta_command_error(usage))?;
+                match arg.as_str() {
+                    "--account-profile" => account_profile = Some(value.clone()),
+                    "--permission" => {
+                        permission_level = Some(
+                            crate::provider::AgentPermissionLevel::parse(value).ok_or_else(
+                                || meta_command_error("usage: agent spawn --permission required|yolo"),
+                            )?,
+                        )
+                    }
+                    "--deadline" => deadline = Some(parse_deadline_after(value)?),
+                    _ => command_id = Some(value.clone()),
+                }
                 index += 2;
             }
             "--machine" | "--kernel" => {
@@ -346,6 +396,10 @@ pub(super) fn parse_meta_agent_spawn_args(
         slice_ref,
         worktree_placement,
         slice_create,
+        account_profile,
+        permission_level,
+        deadline,
+        command_id,
     })
 }
 

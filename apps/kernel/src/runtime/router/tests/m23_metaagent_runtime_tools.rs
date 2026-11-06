@@ -28,7 +28,7 @@ fn mark_test_agent_controlled_by_metaagent(
     metaagent_id: &str,
 ) {
     app.agents_mut()
-        .set_controlled_by_metaagent_id(agent_id, Some(metaagent_id.to_string()))
+        .set_parent_agent(agent_id, Some(crate::agent::AgentRef::local(metaagent_id)))
         .expect("test agent should exist");
 }
 
@@ -300,4 +300,5 @@ mod workflow_code_crud;
 mod workflow_code_patterns;
 
 mod room_admission;
+mod subtree;
 mod room_prompt_dispatch;

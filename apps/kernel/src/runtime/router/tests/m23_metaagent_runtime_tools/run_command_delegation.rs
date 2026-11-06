@@ -27,7 +27,7 @@ async fn metaagent_run_command_submits_prompts_through_router_path_inner() {
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("worker")
-                .with_controlled_by_metaagent_id(metaagent.id()),
+                .with_parent_agent_id(metaagent.id()),
         )
         .expect("worker should spawn");
     let _worker_run = launch_test_provider(
@@ -302,8 +302,8 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
             .agents()
             .get_agent(&beta_id)
             .expect("beta worker should exist");
-        assert_eq!(alpha.controlled_by_metaagent_id(), Some(meta_a.id()));
-        assert_eq!(beta.controlled_by_metaagent_id(), Some(meta_b.id()));
+        assert_eq!(alpha.parent_agent_id(), Some(meta_a.id()));
+        assert_eq!(beta.parent_agent_id(), Some(meta_b.id()));
     }
 
     let list_a = router
@@ -432,7 +432,7 @@ async fn metaagent_prompt_command_does_not_steer_active_workflow_turns_inner() {
         .spawn_agent(
             CreateAgentRequest::new(session.id(), "dev-stub")
                 .with_alias("worker")
-                .with_controlled_by_metaagent_id(metaagent.id()),
+                .with_parent_agent_id(metaagent.id()),
         )
         .expect("worker should spawn");
     let _worker_run = launch_test_provider(

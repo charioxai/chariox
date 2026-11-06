@@ -609,6 +609,11 @@ impl AgentExecutionMode {
         matches!(self, Self::Build)
     }
 
+    /// A plan-mode agent cannot start a build-mode child; build may start either.
+    pub fn permits(self, child: Self) -> bool {
+        self == Self::Build || child == Self::Plan
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "build" => Some(Self::Build),
@@ -642,6 +647,11 @@ pub enum AgentPermissionLevel {
 impl AgentPermissionLevel {
     pub fn is_yolo(&self) -> bool {
         matches!(self, Self::Yolo)
+    }
+
+    /// An agent that must ask cannot start a child that does not ask.
+    pub fn permits(self, child: Self) -> bool {
+        self == Self::Yolo || child == Self::Required
     }
 
     pub fn parse(value: &str) -> Option<Self> {
