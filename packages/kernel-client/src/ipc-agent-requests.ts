@@ -252,3 +252,8 @@ export function abortAgentMoveRequest(sessionId: string, agentRef: string, local
   }
   return { MoveAgentToLocal: { session_id: sessionId, agent_ref: agentRef, abort_pending: true } }
 }
+
+// The sub-agents below one agent, in creation order; the state of each is one word.
+export function listDescendantsRequest(sessionId: string, agentId: string) {
+  return { ListDescendants: { session_id: sessionId, agent_id: agentId } }
+}

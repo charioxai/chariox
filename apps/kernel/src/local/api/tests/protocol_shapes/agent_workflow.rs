@@ -275,3 +275,59 @@ fn the_parent_edge_and_set_agent_parent_have_their_shapes() {
         (Some("parent"), Some("spawn-1"))
     );
 }
+
+/// Protocol 1004: the sub-agent tree read and its change event.
+#[test]
+fn the_agent_tree_read_and_change_event_have_their_shapes() {
+    assert_eq!(
+        LOCAL_DAEMON_PROTOCOL_VERSION,
+        crate::test_support::expected_local_protocol_version()
+    );
+    let request: crate::local::LocalDaemonRequest = serde_json::from_value(
+        serde_json::json!({"ListDescendants":{"session_id":"room","agent_id":"root"}}),
+    )
+    .unwrap();
+    assert!(matches!(
+        request,
+        crate::local::LocalDaemonRequest::ListDescendants(r) if r.agent_id == "root"
+    ));
+    let tree = crate::local::AgentTree {
+        root: "root".into(),
+        rev: 7,
+        totals: crate::local::AgentTreeTotals {
+            live: 1,
+            running: 0,
+            needs_user: 1,
+        },
+        nodes: vec![crate::local::AgentTreeNode {
+            agent_id: "child".into(),
+            parent_agent_id: Some("root".into()),
+            kernel_id: None,
+            alias: Some("worker".into()),
+            provider: "codex".into(),
+            model: None,
+            depth: 1,
+            state: crate::local::AgentTreeState::Waiting,
+            outcome: None,
+            needs_user: true,
+            deadline_ms: None,
+            created_at_ms: 5,
+        }],
+    };
+    assert_eq!(
+        serde_json::to_value(crate::local::LocalDaemonResponse::AgentTree { tree }).unwrap(),
+        serde_json::json!({"AgentTree":{"tree":{"root":"root","rev":7,
+            "totals":{"live":1,"running":0,"needs_user":1},
+            "nodes":[{"agent_id":"child","parent_agent_id":"root","kernel_id":null,
+                "alias":"worker","provider":"codex","model":null,"depth":1,
+                "state":"waiting","outcome":null,"needs_user":true,"deadline_ms":null,"created_at_ms":5}]}}})
+    );
+    assert_eq!(
+        serde_json::to_value(crate::local::OutsideEventValue::AgentTree {
+            root: "root".into(),
+            rev: 9
+        })
+        .unwrap(),
+        serde_json::json!({"type":"agent_tree","value":{"root":"root","rev":9}})
+    );
+}

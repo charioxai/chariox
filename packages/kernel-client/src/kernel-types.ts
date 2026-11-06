@@ -49,6 +49,7 @@ export type OutsideEvent = {
   | { type: "process"; value: { process_id: string; state: SessionProcessState; waited_ms?: number; ended?: string } }
   | { type: "steer"; value: { steer_id: string } }
   | { type: "session"; value: { state: "agent_added" | "agent_removed" | "ended" } }
+  | { type: "agent_tree"; value: { root: string; rev: number } }
   | { type: "gap"; value: { kernel: string; dropped: number; from: number; to: number } }
   | { type: "kernel_health"; value: { online: boolean; reason: string } }
   | { type: "subscription_ended"; value: { reason: string } }

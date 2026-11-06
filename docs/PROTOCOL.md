@@ -6841,3 +6841,11 @@ Room agents use `chariox.notification_sources {}` to discover this Room's source
 trigger. No target agent or busy policy is accepted. App automation summaries
 carry `target_kind: workflow_endpoint | agent`. App-target receipts revalidate the
 current catalog, signer, automation revision and agent target before queueing.
+
+Local daemon protocol 1004 (provisional) adds `ListDescendants { session_id, agent_id }`, answered by
+`AgentTree { tree }` (`root`, `rev`, `totals {live, running, needs_user}` and `nodes` in creation order). A node
+carries `state` (starting|running|waiting|idle|ended|error|unreachable), `outcome` (how its latest turn ended, null
+while it runs or before it ran) and `needs_user` (the user holds a pending decision of that node;
+`totals.needs_user` counts them); no holder, path or card. `rev` moves only when the read differs. The follow event
+`agent_tree { root, rev }` is published once per change of the tree below `root`. Sub-agents are never listed, counted
+or announced as room members.

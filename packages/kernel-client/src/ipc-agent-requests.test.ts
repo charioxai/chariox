@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { abortAgentMoveRequest, archiveAgentRequest, setAgentParentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
+import { abortAgentMoveRequest, archiveAgentRequest, listDescendantsRequest, setAgentParentRequest, updateAgentSubstitutesRequest } from "./ipc-agent-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
 test("agent substitute add request carries the chosen account profile", () => {
@@ -55,6 +55,10 @@ test("archive and restore share one explicit agent-scoped request", () => {
 test("moving an agent in the tree names its new parent or none", () => {
   assert.deepEqual(setAgentParentRequest("room", "child", "parent"), { SetAgentParent: { session_id: "room", agent_id: "child", parent_agent_id: "parent" } })
   assert.deepEqual(setAgentParentRequest("room", "child", null), { SetAgentParent: { session_id: "room", agent_id: "child", parent_agent_id: null } })
+})
+
+test("the sub-agent tree is read by room and agent id", () => {
+  assert.deepEqual(listDescendantsRequest("room", "root"), { ListDescendants: { session_id: "room", agent_id: "root" } })
 })
 
 // MP-08 / MP-09 / MP-10 / MP-11: older kernels must never interpret cancellation as Return.
