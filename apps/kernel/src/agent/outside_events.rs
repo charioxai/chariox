@@ -23,21 +23,8 @@ pub(super) fn publish_membership(
     state: EventSessionState,
 ) -> Result<(), crate::error::DaemonError> {
     if agent.is_sub_agent() {
-        // A sub-agent is no member of the room: followers hear that its parent's tree changed.
-        let Some(store) = store else {
-            return Ok(());
-        };
-        let root = agent.parent_agent_id().unwrap_or_default();
-        store.outside_publish(
-            agent.session_id(),
-            Some(root),
-            OutsideEventValue::AgentTree {
-                root: root.to_string(),
-                rev: super::tree_rev::bump(),
-            },
-            "agent tree changed",
-            EventRefs::default(),
-        )?;
+        // A sub-agent is no member of the room: followers hear of it through the
+        // tree change event the kernel publishes when the tree it belongs to differs.
         return Ok(());
     }
     if let Some(store) = store {

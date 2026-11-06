@@ -1,10 +1,9 @@
 pub(crate) mod authority_limit;
 mod failed_requests;
-mod tree_rev;
-pub(crate) use tree_rev::current as current_tree_rev;
 mod service;
 mod service_store;
 mod store;
+pub(crate) mod tree_rev;
 mod types;
 
 pub use failed_requests::FailedRequest;

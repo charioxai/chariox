@@ -19,24 +19,24 @@ pub(super) struct Family {
     pub(super) kids: Vec<Kid>,
 }
 
-struct Team {
-    runtime: KernelRuntimeState,
-    room: String,
-    parent: String,
-    child: String,
-    child_prompt: crate::session::PromptQueueItem,
-    child_run: String,
-    task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
-    correction: bool,
+pub(super) struct Team {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) room: String,
+    pub(super) parent: String,
+    pub(super) child: String,
+    pub(super) child_prompt: crate::session::PromptQueueItem,
+    pub(super) child_run: String,
+    pub(super) task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    pub(super) correction: bool,
 }
 
 /// A parent and its child in one room; the child has an active turn and a task, not yet settled.
-async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
+pub(super) async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
     team_with(label, Some(settle_cancelled), parent_running).await
 }
 
 /// `settle_cancelled: None` leaves the child working.
-async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
+pub(super) async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
     let Family {
         runtime,
         room,
