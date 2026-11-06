@@ -723,3 +723,69 @@ fn terminal_pairing_link_adds_terminal_to_waiting_room_inventory() {
         assert_eq!(joined.terminal_type, TerminalType::Web);
     });
 }
+
+#[test]
+fn waiting_room_inventory_marks_vault_logins_as_not_carried_by_context_transfer() {
+    crate::test_support::isolated_env_test!();
+    let harness = LocalRouterTestHarness::new();
+    let owner = crate::session::DEFAULT_LOCAL_USER_ID;
+    let (token_profile, file_profile) = harness.with_app_mut(|app| {
+        let registry = app.provider_account_profile_registry();
+        (
+            registry
+                .create_managed(owner, "claude", "Vault token")
+                .unwrap(),
+            registry.create_managed(owner, "codex", "Files").unwrap(),
+        )
+    });
+    let vault = std::env::temp_dir().join(format!(
+        "chariox-waiting-room-vault-{}",
+        rand::random::<u64>()
+    ));
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.user_config.credential_vault.backend =
+        crate::config::CredentialVaultBackend::CharioxEncrypted;
+    config.user_config.credential_vault.path = vault.display().to_string();
+    crate::secret::unlock_chariox_encrypted_vault(
+        &vault,
+        "test-only-vault-passphrase",
+        crate::secret::VaultUnlockLease::Operation,
+    )
+    .unwrap();
+    crate::provider::store_provider_account_credential(
+        &config,
+        owner,
+        "claude",
+        &token_profile.profile_id,
+        "sk-ant-oat01-TESTONLY-waiting-room-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        false,
+    )
+    .unwrap();
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::GetWaitingRoomInventory(
+            GetWaitingRoomInventoryRequest,
+        ))
+        .unwrap();
+    let LocalDaemonResponse::WaitingRoomInventory { snapshot } = response else {
+        panic!("expected inventory");
+    };
+    let state = |profile_id: &str| {
+        snapshot
+            .provider_accounts
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+            .unwrap()
+            .context_transfer
+    };
+    assert_eq!(
+        state(&token_profile.profile_id),
+        crate::account_profile::ProviderAccountContextTransfer::VaultCredential
+    );
+    assert_eq!(
+        state(&file_profile.profile_id),
+        crate::account_profile::ProviderAccountContextTransfer::Available
+    );
+    crate::secret::lock_chariox_encrypted_vault(&vault).unwrap();
+    let _ = std::fs::remove_file(&vault);
+}

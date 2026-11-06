@@ -218,9 +218,13 @@ async fn projected_waiting_room_full_snapshot(
         unix_epoch_ms(),
         &caller,
     )?;
-    let accounts = runtime_state
+    let mut accounts = runtime_state
         .provider_account_profile_registry()
         .list(&account_owner_user_id, None)?;
+    crate::runtime::provider_account_portability::mark_context_transfer(
+        &account_owner_user_id,
+        &mut accounts,
+    )?;
     let github_credential_available =
         match crate::managed_context::scm::GitCredentialCommandContext::inventory_from_process() {
             Ok(context) => tokio::task::spawn_blocking(move || {
