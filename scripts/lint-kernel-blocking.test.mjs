@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { blockingViolations } from './lint-kernel-blocking.mjs'
 
 const path = 'apps/kernel/src/provider/example.rs'
@@ -19,4 +24,23 @@ test('bounded methods and helper implementation are admitted', () => {
 
 test('receipt modules do not exempt new child waits or process output', () => {
   assert.equal(blockingViolations('fn stop() { child.wait(); command.output(); }', 'apps/kernel/src/room_terminal/store.rs').length, 2)
+})
+
+test('the gate runs without ripgrep on PATH and still flags a planted violation', () => {
+  const script = fileURLToPath(new URL('./lint-kernel-blocking.mjs', import.meta.url))
+  const root = mkdtempSync(join(tmpdir(), 'blocking-lint-'))
+  try {
+    mkdirSync(join(root, 'apps/kernel/src/provider'), { recursive: true })
+    writeFileSync(join(root, 'apps/kernel/src/provider/clean.rs'), 'fn run() {}\n')
+    const run = () => spawnSync(process.execPath, [script], { cwd: root, encoding: 'utf8', env: { PATH: join(root, 'no-binaries') } })
+    const clean = run()
+    assert.ok(clean.status === 0, `clean tree: ${clean.stderr}`)
+    assert.match(clean.stdout, /1 files checked, 0 violations/)
+    writeFileSync(join(root, 'apps/kernel/src/provider/planted.rs'), 'fn stop() { child.wait(); }\n')
+    const planted = run()
+    assert.ok(planted.status === 1, `planted tree exit ${planted.status}`)
+    assert.match(planted.stderr, /planted\.rs:1: raw subprocess call/)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })

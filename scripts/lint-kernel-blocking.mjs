@@ -1,6 +1,5 @@
 // MP-08 / MP-09 / MP-10 / MP-11: keep subprocess waits out of shared state paths.
-import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { productionSource } from './lib/rust-production-source.mjs'
 
@@ -28,7 +27,7 @@ export function blockingViolations(source, path) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
-  const files = execFileSync('rg', ['--files', 'apps/kernel/src'], { encoding: 'utf8' }).trim().split('\n').filter(path => path.endsWith('.rs'))
+  const files = readdirSync('apps/kernel/src', { recursive: true }).filter(path => path.endsWith('.rs')).map(path => `apps/kernel/src/${path}`).sort()
   const violations = files.flatMap(path => blockingViolations(readFileSync(path, 'utf8'), path))
   for (const violation of violations) console.error(`${violation.path}:${violation.line}: ${violation.rule}`)
   console.log(`Kernel blocking discipline: ${files.length} files checked, ${violations.length} violations`)
