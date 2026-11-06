@@ -426,6 +426,10 @@ fn apply(
                     return Err(error("workflow notification source limit"));
                 }
             }
+            if source.kind == crate::local::NotificationSourceKind::OwnerAction {
+                // Blocked-task alerts go to the Room's current owner only.
+                tx.execute("UPDATE workflow_notification_exit_sources SET enabled=0,payload_json=json_set(payload_json,'$.enabled',json('false')) WHERE kernel_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND owner_id<>?5",params![source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.owner_user_id]).map_err(sql)?;
+            }
             tx.execute("INSERT INTO workflow_notification_exit_sources VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(source_id) DO UPDATE SET enabled=excluded.enabled,payload_json=excluded.payload_json",params![source.source_id,source.owner_user_id,source.kernel_id,source.session_id,source.workflow_id,source.exit_node_id,source.enabled,encode(&source)?]).map_err(sql)?;
             Ok(NotificationOutcome::Source(source))
         }
@@ -485,7 +489,7 @@ fn apply(
             prompt_id,
             session_id,
         } => {
-            tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_object('ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
+            tx.execute("UPDATE app_outbox SET state='queued',queued_prompt_id=?4,queued_session_id=?5,invocation_json=json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) WHERE source_kind='workflow_completion' AND automation_id=?1 AND installation_id=?2 AND occurrence_id=?3 AND state='accepted'",params![subscription_id,source_id,occurrence_id,prompt_id,session_id]).map_err(sql)?;
             Ok(NotificationOutcome::Queued)
         }
         NotificationOperation::ReserveAgentLineage {
@@ -831,6 +835,24 @@ impl DurableKernelStateStore {
             }
         }
         Ok(found.then_some(ancestry))
+    }
+
+    /// The prompt already admitted for a receipt that is still waiting for settlement.
+    pub(crate) fn admitted_agent_notification_prompt(
+        &self,
+        receipt_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let db = self.lock_connection("workflow.notifications.admitted")?;
+        db.query_row(
+            "SELECT queued_prompt_id FROM app_outbox WHERE receipt_id=?1
+               AND source_kind IN ('workflow_completion','app_event')
+               AND state IN ('accepted','retryable')",
+            [receipt_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(sql)
     }
 
     pub(crate) fn reserve_agent_notification_lineage(

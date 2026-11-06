@@ -101,3 +101,31 @@ fn unbind_in(
     )?;
     Ok(())
 }
+
+/// The Steer association made before an App receipt settles. The App outbox clears the
+/// invocation when it marks the receipt queued; the caller restores the association.
+pub(in crate::durable_state) fn association_in(
+    tx: &Transaction<'_>,
+    receipt_id: &str,
+) -> rusqlite::Result<Option<String>> {
+    tx.query_row(
+        "SELECT json_extract(invocation_json,'$.steered_into_prompt_id') FROM app_outbox WHERE receipt_id=?1",
+        [receipt_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map(Option::flatten)
+}
+
+pub(in crate::durable_state) fn restore_association_in(
+    tx: &Transaction<'_>,
+    receipt_id: &str,
+    target: &str,
+) -> rusqlite::Result<()> {
+    tx.execute(
+        "UPDATE app_outbox SET invocation_json=json_set(coalesce(invocation_json,'{}'),'$.steered_into_prompt_id',?2)
+         WHERE receipt_id=?1",
+        params![receipt_id, target],
+    )?;
+    Ok(())
+}

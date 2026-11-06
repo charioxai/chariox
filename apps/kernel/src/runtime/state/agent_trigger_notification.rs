@@ -516,8 +516,9 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// Admits the prompt for one accepted receipt. The receipt's lineage commits with the
-    /// admission itself; the caller settles the receipt afterwards.
+    /// Admits the prompt for one accepted receipt, or returns the prompt admitted for it
+    /// before a restart. The receipt's lineage commits with the admission itself; the
+    /// caller settles the receipt afterwards.
     pub(super) async fn queue_agent_notification_input(
         &self,
         session_id: &str,
@@ -539,6 +540,16 @@ impl KernelRuntimeState {
             .agent_id();
         self.owned
             .expire_queued_agent_notifications(session_id, agent_id, now)?;
+        // Admission fence: a receipt that already names its prompt was admitted durably.
+        // Whether that prompt is still queued or already ran, was steered or was cancelled,
+        // the occurrence is delivered once; the caller settles it with that prompt.
+        if let Some(prompt_id) = self
+            .owned
+            .durable_state_store
+            .admitted_agent_notification_prompt(receipt_id)?
+        {
+            return Ok(Some(prompt_id));
+        }
         if now >= deadline {
             return Ok(None);
         }

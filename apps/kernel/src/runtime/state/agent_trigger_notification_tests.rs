@@ -668,6 +668,71 @@ async fn owner_action_source_queues_a_reduced_alert_once() {
     assert!(!rig.queued_prompts()[0].contains("private reason excluded"));
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: after a Room ownership change only the new owner has the blocked-task source.
+#[tokio::test]
+async fn owner_action_source_follows_a_room_ownership_change() {
+    let rig = rig().await;
+    let store = &rig.runtime.owned.durable_state_store;
+    let mut room = rig
+        .runtime
+        .owned
+        .session_store
+        .get_session(&rig.session_id)
+        .unwrap();
+    let former = rig
+        .runtime
+        .owned
+        .ensure_owner_action_notification_source(&room)
+        .unwrap();
+    room.add_member(
+        "heir",
+        Some("local".into()),
+        crate::session::CollaborationLevel::Full,
+    );
+    room.set_owner_user_id("heir");
+    room.add_member(
+        "local",
+        Some("local".into()),
+        crate::session::CollaborationLevel::Full,
+    );
+    rig.runtime
+        .owned
+        .session_store
+        .write()
+        .restore_session(room.clone());
+    let current = rig
+        .runtime
+        .owned
+        .ensure_owner_action_notification_source(&room)
+        .unwrap();
+    assert_eq!(current.owner_user_id, "heir");
+    assert_ne!(current.source_id, former.source_id);
+    let owner_action = |owner: &str| -> Vec<String> {
+        store
+            .notification_inventory(owner)
+            .unwrap()
+            .0
+            .into_iter()
+            .filter(|s| s.kind == crate::local::NotificationSourceKind::OwnerAction && s.enabled)
+            .map(|s| s.source_id)
+            .collect()
+    };
+    assert_eq!(owner_action("heir"), vec![current.source_id.clone()]);
+    assert!(
+        owner_action("local").is_empty(),
+        "the former owner no longer gets it"
+    );
+    rig.runtime
+        .create_agent_trigger(rig.request(&current.source_id), "local")
+        .await
+        .expect("the new owner's source resolves for a subscription");
+    assert!(rig
+        .runtime
+        .create_agent_trigger(rig.request(&former.source_id), "local")
+        .await
+        .is_err());
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: replay after queue commit cannot duplicate an occurrence.
 #[tokio::test]
 async fn a_notification_queue_replay_reuses_the_admitted_prompt() {
@@ -1923,14 +1988,83 @@ async fn r7_app_agent_receipts_recognize_local_and_remote_general_steer() {
                     .unwrap();
             }
             assert_eq!(store.app_event_candidate("local", catalog.clone(), &emitted.receipt_id).unwrap().receipt().state, ReceiptState::Delivered, "general Steer delivered the App notification ({mode}, late_association={late_association})");
+            assert_eq!(
+                rig.lineage_of_the_active_agent(),
+                vec![format!("agent:{}", rig.agent_id)],
+                "the steered turn keeps the App notification's lineage ({mode}, late_association={late_association})"
+            );
+            let workflow = rig.workflow_with_exit("reply");
+            let source = rig.register(&workflow);
+            rig.runtime
+                .create_agent_trigger(rig.request(&source), "local")
+                .await
+                .unwrap();
+            rig.assert_the_cycle_is_dropped(&workflow).await;
         }
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: settling the receipt after a Steer keeps the steered turn's lineage.
+#[tokio::test]
+async fn a_steer_before_the_receipt_settles_keeps_the_steered_turn_lineage() {
+    for remote in [false, true] {
+        let rig = rig().await;
+        let workflow = rig.workflow_with_exit("pipeline");
+        let source = rig.register(&workflow);
+        rig.runtime
+            .create_agent_trigger(rig.request(&source), "local")
+            .await
+            .unwrap();
+        rig.complete(&workflow, "steer-early", "released");
+        let (subscription, envelope, queued) = rig.admit_workflow_notification_unsettled().await;
+        if remote {
+            let (prepared, reservation) = rig.remote_steer_intent(&queued);
+            rig.runtime
+                .owned
+                .finish_remote_queued_prompt_steer(
+                    &rig.session_id,
+                    &rig.agent_id,
+                    &rig.attachment_id,
+                    &prepared,
+                    &prepared.remote_execution,
+                    reservation,
+                    &prepared.provider_run_id,
+                )
+                .unwrap();
+        } else {
+            rig.runtime
+                .owned
+                .steer_queued_prompt(&rig.session_id, &rig.agent_id, &rig.attachment_id, &queued)
+                .unwrap();
+        }
+        rig.runtime
+            .settle_agent_notification(&subscription, &envelope, &queued)
+            .unwrap();
+        let lineage = rig.lineage_of_the_active_agent();
+        assert_eq!(lineage.last().unwrap(), &format!("agent:{}", rig.agent_id));
+        let room = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+        assert!(
+            lineage.contains(&store::workflow_identity(
+                room.host_daemon_id(),
+                &rig.session_id,
+                &workflow
+            )),
+            "remote={remote}"
+        );
+        rig.assert_the_cycle_is_dropped(&workflow).await;
     }
 }
 
 impl Rig {
     /// The notification pump up to the old association point: the prompt for the
     /// accepted occurrence is admitted, its receipt is not settled yet.
-    async fn admit_workflow_notification_unsettled(&self) {
+    async fn admit_workflow_notification_unsettled(
+        &self,
+    ) -> (
+        WorkflowNotificationSubscription,
+        crate::local::WorkflowNotificationEnvelope,
+        String,
+    ) {
         self.runtime.owned.route_workflow_notifications();
         let store = &self.runtime.owned.durable_state_store;
         let (subscription, envelope) = store
@@ -1942,7 +2076,8 @@ impl Rig {
             })
             .expect("an accepted occurrence for the agent");
         let receipt = store::receipt_id(&subscription, &envelope).unwrap();
-        self.runtime
+        let prompt = self
+            .runtime
             .queue_agent_notification_input(
                 &subscription.session_id,
                 subscription.trigger_id.as_deref().unwrap(),
@@ -1952,10 +2087,16 @@ impl Rig {
             .await
             .unwrap()
             .expect("the notification prompt is admitted");
+        (subscription, envelope, prompt)
     }
 
     /// The App router up to its old association point.
-    async fn admit_app_notification_unsettled(&self) {
+    async fn admit_app_notification_unsettled(
+        &self,
+    ) -> (
+        std::sync::Arc<chariox_app_runtime::app_outbox::EventCatalog>,
+        chariox_app_runtime::app_outbox::Receipt,
+    ) {
         let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
             &self.runtime.owned.durable_state_store,
             "local",
@@ -1972,6 +2113,72 @@ impl Rig {
             .await
             .unwrap()
             .expect("the App notification prompt is admitted");
+        (catalog, receipt)
+    }
+
+    /// What happens to an admitted notification prompt before its receipt settles.
+    async fn end_the_admitted_notification(&self, outcome: &str, prompt: &str) {
+        match outcome {
+            "queued" => {}
+            "completed" => {
+                self.start_the_queued_notification();
+                let room = self
+                    .runtime
+                    .owned
+                    .session_store
+                    .get_session(&self.session_id)
+                    .unwrap();
+                self.runtime
+                    .owned
+                    .prompt_state_owner
+                    .complete_active_prompt_only(&room, &self.agent_id)
+                    .unwrap();
+                self.runtime
+                    .owned
+                    .persist_prompt_session_state(&room, &self.agent_id)
+                    .unwrap();
+            }
+            "steered" => {
+                self.runtime
+                    .owned
+                    .steer_queued_prompt(
+                        &self.session_id,
+                        &self.agent_id,
+                        &self.attachment_id,
+                        prompt,
+                    )
+                    .unwrap();
+            }
+            "cancelled" => {
+                self.runtime
+                    .owned
+                    .cancel_queued_prompt(
+                        &self.session_id,
+                        &self.agent_id,
+                        &self.attachment_id,
+                        prompt,
+                    )
+                    .unwrap();
+            }
+            other => unreachable!("{other}"),
+        }
+        assert!(
+            outcome == "queued" || self.queued_prompts().is_empty(),
+            "{outcome}"
+        );
+    }
+
+    /// State and prompt of every agent notification receipt.
+    fn notification_receipts(&self) -> Vec<(String, Option<String>)> {
+        let db = rusqlite::Connection::open(self.runtime.owned.durable_state_store.path()).unwrap();
+        let mut query = db
+            .prepare("SELECT state,queued_prompt_id FROM app_outbox WHERE source_kind IN ('workflow_completion','app_event') ORDER BY receipt_id")
+            .unwrap();
+        query
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
     }
 
     /// The provider takes the admitted notification prompt as its next turn.
@@ -2099,6 +2306,104 @@ async fn a_restart_between_admission_and_settlement_keeps_the_notification_linea
                 .unwrap();
         }
         rig.assert_the_cycle_is_dropped(&workflow).await;
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a receipt that names its admitted prompt is settled from it, never fired again.
+#[tokio::test]
+async fn an_admitted_receipt_is_settled_from_its_prompt_after_a_restart() {
+    for outcome in ["queued", "steered", "cancelled"] {
+        let config = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+            "n1-admission-fence",
+        );
+        let (root, runtime, session_id, agent_id, attachment_id, _, _) =
+            super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt_and_config(
+                config.clone(),
+                &[],
+            )
+            .await;
+        let mut rig = Rig {
+            _root: root,
+            runtime,
+            session_id,
+            agent_id,
+            attachment_id,
+        };
+        let workflow = rig.workflow_with_exit("fence-pipeline");
+        let source = rig.register(&workflow);
+        rig.runtime
+            .create_agent_trigger(rig.request(&source), "local")
+            .await
+            .unwrap();
+        rig.complete(&workflow, "first", "released");
+        let (_, _, prompt) = rig.admit_workflow_notification_unsettled().await;
+        rig.end_the_admitted_notification(outcome, &prompt).await;
+        let mut restart_config = config.clone();
+        let restart_path = super::super::agent_trigger_runtime_state::tests::durable_state_config(
+            "n1-admission-fence-restart",
+        )
+        .user_config
+        .state
+        .path
+        .unwrap();
+        rusqlite::Connection::open(rig.runtime.owned.durable_state_store.path())
+            .unwrap()
+            .execute("VACUUM INTO ?1", rusqlite::params![restart_path])
+            .unwrap();
+        restart_config.user_config.state.path = Some(restart_path);
+        let restarted = crate::app::DaemonApp::bootstrap(restart_config).unwrap();
+        rig.runtime = super::super::local_prompt_dispatch_runtime::tests::owned_runtime_state(
+            &std::sync::Arc::new(tokio::sync::Mutex::new(restarted)),
+        )
+        .await;
+        rig.pass().await;
+        assert_eq!(
+            rig.queued_prompts().len(),
+            usize::from(outcome == "queued"),
+            "no second prompt for the occurrence ({outcome}): {:?} {:?}",
+            rig.queued_prompts(),
+            rig.notification_receipts()
+        );
+        let receipts = rig.notification_receipts();
+        assert_eq!(receipts.len(), 1, "{outcome}");
+        assert!(
+            !["accepted", "retryable"].contains(&receipts[0].0.as_str())
+                && receipts[0].1.as_deref() == Some(prompt.as_str()),
+            "the receipt is settled from its admitted prompt ({outcome}): {receipts:?}"
+        );
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the App router settles an admitted receipt from its prompt.
+#[tokio::test]
+async fn an_admitted_app_receipt_is_settled_from_its_prompt() {
+    use chariox_app_runtime::app_outbox::ReceiptState;
+    for outcome in ["queued", "completed", "steered", "cancelled"] {
+        let rig = rig().await;
+        let (catalog, receipt) = rig.admit_app_notification_unsettled().await;
+        let store = &rig.runtime.owned.durable_state_store;
+        let prompt = store
+            .admitted_agent_notification_prompt(&receipt.receipt_id)
+            .unwrap()
+            .expect("admission names the prompt");
+        rig.end_the_admitted_notification(outcome, &prompt).await;
+        rig.runtime
+            .route_app_agent_installation("local", catalog.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            rig.queued_prompts().len(),
+            usize::from(outcome == "queued"),
+            "no second prompt for the occurrence ({outcome})"
+        );
+        let settled = store
+            .app_event_candidate("local", catalog, &receipt.receipt_id)
+            .unwrap()
+            .receipt()
+            .clone();
+        assert_ne!(settled.state, ReceiptState::Accepted, "{outcome}");
+        assert_ne!(settled.state, ReceiptState::Retryable, "{outcome}");
+        assert_eq!(settled.queued_prompt_id, Some(prompt), "{outcome}");
     }
 }
 

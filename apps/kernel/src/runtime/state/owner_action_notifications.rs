@@ -11,13 +11,19 @@ impl KernelRuntimeOwnedState {
         session: &crate::session::RuntimeSession,
     ) -> Result<crate::local::WorkflowNotificationSource, DaemonError> {
         use sha2::{Digest, Sha256};
+        // Each owner of the Room has their own source: a former owner's row never takes
+        // the current owner's alerts, and Register retires it.
         let source = crate::local::WorkflowNotificationSource {
             kind: crate::local::NotificationSourceKind::OwnerAction,
             source_id: format!(
                 "owner_action_{:x}",
                 Sha256::digest(
-                    serde_json::to_vec(&(session.host_daemon_id(), session.id()))
-                        .expect("identities serialize")
+                    serde_json::to_vec(&(
+                        session.host_daemon_id(),
+                        session.id(),
+                        session.owner_user_id()
+                    ))
+                    .expect("identities serialize")
                 )
             ),
             owner_user_id: session.owner_user_id().into(),

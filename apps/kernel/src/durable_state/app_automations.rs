@@ -219,6 +219,10 @@ fn apply(
             if config.target.kind != chariox_app_runtime::app_outbox::AutomationTargetKind::Agent {
                 return Err(OutboxError::Invalid.into());
             }
+            let steered = super::workflow_notifications::agent_steer::association_in(
+                &tx,
+                &receipt.receipt_id,
+            )?;
             AppOutbox::mark_queued_in(
                 &tx,
                 &automation,
@@ -227,6 +231,13 @@ fn apply(
                 &prompt_id,
                 crate::session::unix_epoch_ms(),
             )?;
+            if let Some(target) = steered {
+                super::workflow_notifications::agent_steer::restore_association_in(
+                    &tx,
+                    &receipt.receipt_id,
+                    &target,
+                )?;
+            }
             tx.execute("UPDATE app_outbox SET queued_agent_id=?1 WHERE receipt_id=?2 AND owner_id=?3 AND installation_id=?4",
                 rusqlite::params![config.target.endpoint_id,receipt.receipt_id,owner,catalog.installation_id()])?;
             super::app_event_maintenance::agent::reconcile_prompt_in(&tx, &receipt.receipt_id)?;

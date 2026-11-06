@@ -104,7 +104,7 @@ pub(in crate::durable_state) fn record_prompt_state_in(
         tx.execute(
             "UPDATE app_outbox SET queued_prompt_id=?2,queued_session_id=?3,
                invocation_json=CASE source_kind WHEN 'workflow_completion'
-                 THEN json_object('ancestry',json_extract(payload_json,'$.ancestry')) ELSE invocation_json END
+                 THEN json_set(coalesce(invocation_json,'{}'),'$.ancestry',json_extract(payload_json,'$.ancestry')) ELSE invocation_json END
              WHERE receipt_id=?1 AND state IN ('accepted','retryable')",
             params![receipt, prompt.id(), state.session_id],
         )?;
