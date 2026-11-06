@@ -496,10 +496,7 @@ impl KernelGateway {
         {
             Ok(connection) => Ok(connection),
             Err(error) if hosted::is_revoked(&error) => Err(self.gateway_revoked().await),
-            Err(error) => Err(GatewayError::Unreachable {
-                name: target.into(),
-                detail: error::plain_cause("the relay did not accept the connection", &error),
-            }),
+            Err(error) => Err(error::cloud_connection_refused(target, &error)),
         }
     }
 
