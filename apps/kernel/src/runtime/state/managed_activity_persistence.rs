@@ -62,7 +62,7 @@ struct PendingManagedActivityTransitions {
     observations: VecDeque<PendingManagedActivityTransition>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct ManagedActivityTransitionInner {
     restored: bool,
     latest_durable: Option<ManagedActivityObservation>,
@@ -77,11 +77,21 @@ struct ManagedActivityTransitionInner {
     recorded_in_flight_agent_count: Option<u8>,
 }
 
+#[cfg(test)]
+#[derive(Debug)]
+pub(super) struct ManagedActivityIoPause {
+    pub(super) arrived: std::sync::mpsc::SyncSender<()>,
+    pub(super) release: std::sync::mpsc::Receiver<()>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ManagedActivityTransitionState {
     store: DurableKernelStateStore,
     kernel_id: Arc<Mutex<Option<String>>>,
     inner: Arc<Mutex<ManagedActivityTransitionInner>>,
+    persistence: Arc<crate::blocking_io::Serial>,
+    #[cfg(test)]
+    pub(super) before_journal: Arc<Mutex<Option<ManagedActivityIoPause>>>,
 }
 
 impl ManagedActivityTransitionState {
@@ -90,6 +100,9 @@ impl ManagedActivityTransitionState {
             store,
             kernel_id: Arc::new(Mutex::new(kernel_id)),
             inner: Arc::new(Mutex::new(ManagedActivityTransitionInner::default())),
+            persistence: Default::default(),
+            #[cfg(test)]
+            before_journal: Default::default(),
         }
     }
 
@@ -149,11 +162,26 @@ impl ManagedActivityTransitionState {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn record_current_transition(
         &self,
         sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
-        self.record_sampled_transition(sample, false)
+        self.prepare()?;
+        self.capture_current_transition(sample)?;
+        self.flush()?;
+        Ok(self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned")
+            .latest_durable)
+    }
+
+    pub(super) fn capture_current_transition(
+        &self,
+        sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
+    ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
+        self.capture_sampled_transition(sample, false)
     }
 
     /// Registrations change the count with nothing to mark the boundary. Records
@@ -164,26 +192,29 @@ impl ManagedActivityTransitionState {
         &self,
         sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
-        self.record_sampled_transition(sample, true)
+        self.capture_sampled_transition(sample, true)
     }
 
-    fn record_sampled_transition(
+    fn capture_sampled_transition(
         &self,
         sample: impl FnOnce() -> (u64, ManagedActivityCounts, u64),
         registrations_only: bool,
     ) -> Result<Option<ManagedActivityObservation>, DaemonError> {
-        let Some(kernel_id) = self.kernel_id() else {
+        if self.kernel_id().is_none() {
             return Ok(None);
-        };
+        }
         let mut inner = self
             .inner
             .lock()
             .expect("managed activity transition mutex poisoned");
-        // Sample while holding the same lock as persistence. Sampling first permits
-        // a delayed caller to append stale busy state after a newer idle transition,
-        // even at the same projection sequence.
+        // Capture and sequence under the mutation boundary. Persistence drains these
+        // immutable entries in order after the caller releases that boundary.
         let (runtime_sequence, counts, changed_at_ms) = sample();
-        self.restore_locked(&kernel_id, &mut inner)?;
+        if !inner.restored {
+            return Err(activity_state_error(
+                "managed activity must be restored before capture",
+            ));
+        }
         if runtime_sequence < inner.last_runtime_sequence {
             return Ok(inner
                 .pending
@@ -205,7 +236,6 @@ impl ManagedActivityTransitionState {
                 .or(inner.latest_durable)
                 .is_some_and(|latest| latest.working_agent_count == counts.working_agent_count)
         {
-            self.flush_pending_locked(&kernel_id, &mut inner)?;
             return Ok(inner
                 .pending
                 .back()
@@ -234,8 +264,11 @@ impl ManagedActivityTransitionState {
             },
         });
         inner.pending_journal_dirty = true;
-        self.flush_pending_locked(&kernel_id, &mut inner)?;
-        Ok(inner.latest_durable)
+        Ok(inner
+            .pending
+            .back()
+            .map(|entry| entry.observation)
+            .or(inner.latest_durable))
     }
 
     #[cfg(test)]
@@ -247,19 +280,31 @@ impl ManagedActivityTransitionState {
             .map(|(_, observation)| observation)
     }
 
+    #[cfg(test)]
     pub(super) fn current_observation_with_sequence(
         &self,
         working_agent_count: u8,
     ) -> Result<(u64, ManagedActivityObservation), DaemonError> {
-        let kernel_id = self.kernel_id().ok_or_else(|| {
-            activity_state_error("managed activity tracking is not enabled for this kernel")
-        })?;
-        let mut inner = self
+        self.prepare()?;
+        self.flush()?;
+        self.durable_observation_with_sequence(working_agent_count)
+    }
+
+    /// Stop may inspect this while holding admission/mutation. It never waits for
+    /// storage and rejects every captured transition not yet durably acknowledged.
+    pub(super) fn durable_observation_with_sequence(
+        &self,
+        working_agent_count: u8,
+    ) -> Result<(u64, ManagedActivityObservation), DaemonError> {
+        let inner = self
             .inner
             .lock()
             .expect("managed activity transition mutex poisoned");
-        self.restore_locked(&kernel_id, &mut inner)?;
-        self.flush_pending_locked(&kernel_id, &mut inner)?;
+        if !inner.restored || !inner.pending.is_empty() || inner.pending_journal_dirty {
+            return Err(activity_state_error(
+                "managed activity publication is not durable yet",
+            ));
+        }
         let observation = inner.latest_durable.ok_or_else(|| {
             activity_state_error("managed activity has no durable initial observation")
         })?;
@@ -271,6 +316,71 @@ impl ManagedActivityTransitionState {
         Ok((inner.latest_durable_sequence, observation))
     }
 
+    pub(super) fn prepare(&self) -> Result<(), DaemonError> {
+        let Some(kernel_id) = self.kernel_id() else {
+            return Ok(());
+        };
+        if self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned")
+            .restored
+        {
+            return Ok(());
+        }
+        let _persistence = self.persistence.acquire();
+        let mut snapshot = self
+            .inner
+            .lock()
+            .expect("managed activity transition mutex poisoned")
+            .clone();
+        if !snapshot.restored {
+            self.restore(&kernel_id, &mut snapshot)?;
+            *self
+                .inner
+                .lock()
+                .expect("managed activity transition mutex poisoned") = snapshot;
+        }
+        Ok(())
+    }
+
+    pub(super) fn flush(&self) -> Result<(), DaemonError> {
+        let Some(kernel_id) = self.kernel_id() else {
+            return Ok(());
+        };
+        let _persistence = self.persistence.acquire();
+        loop {
+            let mut snapshot = self
+                .inner
+                .lock()
+                .expect("managed activity transition mutex poisoned")
+                .clone();
+            if !snapshot.restored {
+                return Err(activity_state_error(
+                    "managed activity must be restored before persistence",
+                ));
+            }
+            // This copy owns all disk/SQLite work. Captures can append to the shared
+            // queue while it is blocked, but only this permit may replace the journal.
+            let result = self.flush_pending(&kernel_id, &mut snapshot);
+            let mut inner = self
+                .inner
+                .lock()
+                .expect("managed activity transition mutex poisoned");
+            inner.latest_durable = snapshot.latest_durable;
+            inner.latest_durable_sequence = snapshot.latest_durable_sequence;
+            inner
+                .pending
+                .retain(|entry| entry.transition_sequence > snapshot.latest_durable_sequence);
+            inner.pending_journal_dirty =
+                snapshot.pending_journal_dirty || inner.pending.len() != snapshot.pending.len();
+            result?;
+            if inner.pending.is_empty() && !inner.pending_journal_dirty {
+                return Ok(());
+            }
+        }
+    }
+
     fn kernel_id(&self) -> Option<String> {
         self.kernel_id
             .lock()
@@ -278,7 +388,7 @@ impl ManagedActivityTransitionState {
             .clone()
     }
 
-    fn restore_locked(
+    fn restore(
         &self,
         kernel_id: &str,
         inner: &mut ManagedActivityTransitionInner,
@@ -400,7 +510,7 @@ impl ManagedActivityTransitionState {
             .with_extension("managed-activity.pending.json")
     }
 
-    fn persist_pending_locked(
+    fn persist_pending(
         &self,
         kernel_id: &str,
         inner: &mut ManagedActivityTransitionInner,
@@ -418,6 +528,17 @@ impl ManagedActivityTransitionState {
         // The existing private-file helper fsyncs both the atomic replacement and
         // parent directory. This kernel-owned outbox retains T0 when SQLite rejects
         // an append and the process exits before an in-memory retry succeeds.
+        #[cfg(test)]
+        {
+            let pause = self.before_journal.lock().unwrap().take();
+            if let Some(pause) = pause {
+                pause.arrived.send(()).unwrap();
+                pause
+                    .release
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            }
+        }
         crate::config::write_private_file(&self.pending_journal_path(), &payload).map_err(
             |error| activity_state_error(format!("could not persist activity journal: {error}")),
         )?;
@@ -425,12 +546,12 @@ impl ManagedActivityTransitionState {
         Ok(())
     }
 
-    fn flush_pending_locked(
+    fn flush_pending(
         &self,
         kernel_id: &str,
         inner: &mut ManagedActivityTransitionInner,
     ) -> Result<(), DaemonError> {
-        self.persist_pending_locked(kernel_id, inner)?;
+        self.persist_pending(kernel_id, inner)?;
         while let Some(entry) = inner.pending.front().copied() {
             let observation = entry.observation;
             self.store.append_event(
@@ -453,7 +574,7 @@ impl ManagedActivityTransitionState {
             inner.pending.pop_front();
             inner.pending_journal_dirty = true;
         }
-        self.persist_pending_locked(kernel_id, inner)
+        self.persist_pending(kernel_id, inner)
     }
 }
 

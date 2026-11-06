@@ -1,8 +1,9 @@
+import type { ManagedEnvironmentCreateInput } from "./managed-environment-shutdown-policy.js"
 import type { ManagedContextLaunchTarget, ManagedContextTransferStatus } from "@chariox/kernel-client/ipc-managed-context-requests"
 import type { ManagedContextTransferTicket, ManagedEnvironmentCatalog, ManagedEnvironmentContextPlanInput, ManagedEnvironmentReimagePreflight, ManagedEnvironmentReimageResult, ManagedEnvironmentResult, ManagedEnvironmentSummary, ManagedEnvironmentPreReimageObservationAcknowledgement } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { CloudControlProfile } from "./cloud-control-auth.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { CreateManagedEnvironmentInput, RequestManagedEnvironmentLifecycleInput, RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type { RequestManagedEnvironmentLifecycleInput, RequestManagedEnvironmentReimageInput } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { getManagedContextLaunchTargetRequest, getManagedContextTransferStatusRequest, observeManagedEnvironmentPreReimageRequest, preflightProviderAccountPortabilityRequest, providerAccountPortabilityPreflightMinimumProtocolVersion, startManagedContextTransferRequest } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 import { sendWithProtocolMinimum } from "./protocol-minimum-diagnostic.js"
@@ -28,7 +29,7 @@ export async function getManagedEnvironmentReimagePreflight(profile: CloudContro
   if (preflight.environmentId !== environmentId) throw new Error("Cloud returned reimage preflight for a different managed environment")
   return preflight
 }
-export async function createManagedEnvironment(profile: CloudControlProfile, input: CreateManagedEnvironmentInput, client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
+export async function createManagedEnvironment(profile: CloudControlProfile, input: ManagedEnvironmentCreateInput, client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
   await preflightProviderAccountPortability(client, input.contextPlan)
   const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, "/managed-environments", input)
   validateManagedEnvironmentResult(result)

@@ -220,6 +220,44 @@ reference execution, normal App-open/Room UI, live-page revocation/update stagin
 TUI, managed parity, performance and soaks remain unproven. The test page's normal
 waiting-room shell remains Connecting. See `APP_VIEW_DELIVERY_AV2.md` and the r7
 identity/cleanup receipts. No broader MP item or full AV2 acceptance is closed.
+## MP-08 / MP-09 / MP-10 / MP-11 exited terminal activity
+
+A terminal owner remembers its observed PTY exit, which is permanent for that
+owner. Rendering, pumping or persistence of its retained output cannot turn lock
+contention into a new busy/idle activity cycle and renew last-work shutdown.
+A live terminal with a busy owner still counts conservatively as work; its
+managed admission fence is unchanged. Ordinary and managed terminals use the
+same owner. Real-PTY regressions cover both states through the terminal service.
+This adds no serialized shape and does not establish production-signed or paid
+shutdown acceptance by itself.
+
+## MP-08 / MP-09 / MP-10 / MP-11 transfer-aware shutdown admission
+
+Kernel-file requests and managed-context import disk tasks hold activity until the
+actual blocking task finishes, including after their requesting future is cancelled.
+They acquire the existing managed stop admission fence before starting; a stop
+reservation refuses new file work. Managed-context capabilities also count as
+pending work between chunks until completion/failure or their existing expiry.
+Publication and its Cloud receipt remain work across async gaps. The existing
+signed activity count and quiescence contract carry these observations unchanged;
+no public serialized shape or protocol number changes. General file reads/writes
+remain ordinary resumable chunk requests; a home agent should select manual or a
+time limit for a sequence of calls with long gaps. Focused regressions and isolated
+live drills are separate evidence; this entry does not close the three-hour or
+production-signed paid acceptance rows.
+
+## MP-08 / MP-09 / MP-10 / MP-11 admission intent and activity persistence
+
+Environment admission publishes one counted provisional owner before releasing the
+stop fence and operation registry. Intent reads and atomic durable writes run
+outside those mutexes; duplicates wait for that owner's publication, and failed
+publication retracts it. Polling rechecks the registry generation after disk reads.
+Activity mutations capture ordered transition identities and timestamps under the
+mutation boundary, then drain the journal and SQLite outside it. Stop rejects
+unacknowledged activity, so a delayed idle write cannot replace newer busy work.
+The pending journal still precedes database appends and acknowledges committed
+sequences on restart. These focused source regressions do not replace the final
+head's isolated shutdown-policy drill or production-signed paid validation.
 
 ## MP-08 / MP-09 / MP-10 / MP-11 process disk telemetry (2026-11-02)
 

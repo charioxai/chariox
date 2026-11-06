@@ -1,3 +1,4 @@
+import type { ManagedEnvironmentCreateInput } from "./managed-environment-shutdown-policy.js"
 import assert from "node:assert/strict"
 import test from "node:test"
 
@@ -41,6 +42,14 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   await prepared.commit()
   assert.equal(harness.connectionCommits, 1)
   assert.equal(harness.connectionRollbacks, 0)
+})
+
+test("managed TUI launch forwards a hard deadline through its create boundary", async () => {
+  const harness = createHarness({ createResults: [result(environment("ready"))] })
+  const selection = { ...newSelection(emptyPlan()), shutdownPolicy: {kind: "time_limit" as const, durationSeconds: 10800} }
+  await harness.controller.prepare(selection, harness.attempt)
+  assert.deepEqual(harness.createdInputs[0]?.shutdownPolicy, selection.shutdownPolicy)
+  assert.equal(Object.hasOwn(harness.createdInputs[0]!, "autoStopPolicy"), false)
 })
 
 test("managed TUI launch starts and monitors direct source transfer", async () => {
@@ -320,7 +329,7 @@ function createHarness(options: HarnessOptions) {
   let now = 0
   let keySequence = 0
   let existing = options.existing
-  const createdInputs: Array<{ clientRequestId: string; managedRepositoryRoot: string }> = []
+  const createdInputs: ManagedEnvironmentCreateInput[] = []
   const lifecycleRequests: Array<{
     environmentId: string
     action: "start"
@@ -470,7 +479,7 @@ function newSelection(contextPlan: ManagedEnvironmentContextPlan) {
     computeClass: "agent-small",
     region: "hel1",
     managedRepositoryRoot: "/home/chariox",
-    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+    shutdownPolicy: { kind: "last_work_finished" as const, warningSeconds: 30 },
     contextPlan: {
       sourceTargetId: contextPlan.source?.sourceTargetId ?? null,
       kernelContext: contextPlan.kernelContext,

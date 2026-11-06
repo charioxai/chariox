@@ -229,12 +229,6 @@ export function waitingRoomManagedMachineFocusTargets(
     )),
     { focus: "managed-git-credentials" as const },
     { focus: "managed-auto-stop" as const },
-    ...(state.managedAutoStopPreset === "custom"
-      ? [
-          { focus: "managed-custom-minimum" as const },
-          { focus: "managed-custom-idle" as const },
-        ]
-      : []),
   ].map((target) => ({
     sessionIndex: 0,
     machineIndex: 0,

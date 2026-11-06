@@ -289,14 +289,18 @@ impl CommandRouter {
                 "only the kernel's owner at a Chariox terminal or as a local grant holder can use kernel files",
             ));
         }
+        let operation = self.runtime_state.begin_file_operation()?;
         let request = request.clone();
         // Hashing and copying a large file must not stall the request loop.
-        let outcome = tokio::task::spawn_blocking(move || match &request {
-            LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
-            LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
-            LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
-            LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
-            _ => unreachable!("filtered above"),
+        let outcome = tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            match &request {
+                LocalDaemonRequest::StatKernelFile(r) => files::stat(r),
+                LocalDaemonRequest::ListKernelDirectory(r) => files::list(r),
+                LocalDaemonRequest::ReadKernelFile(r) => files::read(r),
+                LocalDaemonRequest::WriteKernelFile(r) => files::write(r),
+                _ => unreachable!("filtered above"),
+            }
         })
         .await;
         outcome.unwrap_or_else(|join| Err(error(format!("kernel file task failed: {join}"))))

@@ -620,7 +620,7 @@ test("waiting room activation never falls back to a local session for managed la
           computeClass: "agent-small",
           region: "hel1",
           managedRepositoryRoot: "/home/chariox",
-          autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+          shutdownPolicy: { kind: "last_work_finished", warningSeconds: 30 },
           contextPlan: {
             sourceTargetId: null,
             kernelContext: "empty",
@@ -652,7 +652,7 @@ test("waiting room activation creates the session on the prepared managed kernel
       computeClass: "agent-small",
       region: "hel1",
       managedRepositoryRoot: "/home/chariox",
-      autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+      shutdownPolicy: { kind: "last_work_finished", warningSeconds: 30 },
       contextPlan: {
         sourceTargetId: null,
         kernelContext: "empty",

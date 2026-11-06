@@ -164,6 +164,7 @@ mod human_browser_action_runtime_state;
 mod human_environment_action_runtime_state;
 mod leased_agent_operations;
 mod managed_activity_runtime_state;
+mod managed_file_activity;
 mod managed_kernel_quiescence_state;
 pub(crate) use managed_kernel_quiescence_state::{
     ManagedKernelAdmissionGuard, ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
@@ -308,6 +309,8 @@ struct KernelRuntimeOwnedState {
     room_terminals: crate::room_terminal::RoomTerminalService,
     room_execs: crate::room_exec::RoomExecService,
     disk_usage: crate::runtime::disk_usage::DiskUsageStore,
+    active_file_operations: Arc<std::sync::atomic::AtomicUsize>,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     environment_execution_gates: environment_execution_gate::EnvironmentExecutionGates,
     computer_input_executions:
         crate::runtime::computer_input_execution::ComputerInputExecutionStore,
@@ -826,6 +829,7 @@ impl KernelRuntimeState {
             agent_runtime_projection,
             app_control,
             managed_kernel_registration,
+            managed_context_transfers,
             runtime_tool_call_activity,
             kernel_browser_host,
             dictation,
@@ -849,6 +853,7 @@ impl KernelRuntimeState {
                         app.agent_runtime_projection_store(),
                         app.app_control_service(),
                         app.managed_kernel_registration(),
+                        app.managed_context_transfer_store(),
                         app.runtime_tool_call_activity.clone(),
                         app.kernel_browser_host.clone(),
                         app.dictation.clone(),
@@ -926,6 +931,13 @@ impl KernelRuntimeState {
                 durable_state_store.clone(),
                 managed_activity_kernel_id.clone(),
             );
+        if let Err(error) = managed_activity_transitions.prepare() {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed activity could not be restored before runtime admission",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
         let managed_activity_mutation_lock = Arc::new(std::sync::Mutex::new(()));
         let managed_kernel_quiescence = managed_kernel_registration.as_ref().map(|_| {
             let kernel_id = config.daemon_id.clone();
@@ -1130,6 +1142,8 @@ impl KernelRuntimeState {
                 room_terminals,
                 room_execs: Default::default(),
                 disk_usage: Default::default(),
+                active_file_operations: Default::default(),
+                managed_context_transfers,
                 computer_input_executions:
                     crate::runtime::computer_input_execution::ComputerInputExecutionStore::default(),
                 room_browser_health_inflight: Arc::new(std::sync::Mutex::new(BTreeSet::new())),

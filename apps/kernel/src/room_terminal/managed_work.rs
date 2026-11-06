@@ -17,6 +17,7 @@ struct Link {
 pub(crate) struct ManagedWork {
     link: OnceLock<Link>,
     working: Mutex<bool>,
+    reports: crate::blocking_io::Serial,
 }
 
 impl ManagedWork {
@@ -45,6 +46,7 @@ impl ManagedWork {
             return;
         };
         // A late idle sample must not overwrite a newer busy report and lose its completion.
+        let _report = self.reports.acquire();
         let mut working = self
             .working
             .lock()
@@ -52,6 +54,7 @@ impl ManagedWork {
         let is_working = is_working();
         if *working != is_working {
             *working = is_working;
+            drop(working);
             if let Some(work_changed) = link.work_changed.upgrade() {
                 work_changed();
             }

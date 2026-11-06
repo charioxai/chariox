@@ -60,7 +60,9 @@ impl KernelRuntimeState {
         self.owned
             .managed_activity_transitions
             .enable_before_activity(kernel_id, sequence)?;
-        self.owned.record_managed_activity_transition_unlocked();
+        drop(_mutation);
+        self.owned.managed_activity_transitions.prepare()?;
+        self.owned.record_managed_activity_transition();
         Ok(())
     }
 
@@ -77,23 +79,39 @@ impl KernelRuntimeState {
     ) -> Result<(u64, super::ManagedActivityObservation, u64), crate::error::DaemonError> {
         self.owned.room_execs.report_work();
         self.owned.room_terminals.report_work();
-        let _mutation = self
-            .owned
-            .managed_activity_mutation_lock
-            .lock()
-            .expect("managed activity mutation mutex poisoned");
+        self.owned.managed_activity_transitions.prepare()?;
         loop {
-            let sequence = self.managed_activity_change_sequence();
-            match self.owned.current_managed_activity_observation_unlocked() {
-                Ok((transition_sequence, observation))
-                    if sequence == self.managed_activity_change_sequence() =>
-                {
-                    return Ok((sequence, observation, transition_sequence));
-                }
-                Ok(_) => {}
-                Err(_) if sequence != self.managed_activity_change_sequence() => {}
-                Err(error) => return Err(error),
+            let (sequence, counts) = {
+                let _mutation = self
+                    .owned
+                    .managed_activity_mutation_lock
+                    .lock()
+                    .expect("managed activity mutation mutex poisoned");
+                let sequence = self.managed_activity_change_sequence();
+                let counts = self.owned.managed_activity_counts_unlocked();
+                self.owned
+                    .managed_activity_transitions
+                    .record_registration_change(|| {
+                        (sequence, counts, crate::session::unix_epoch_ms())
+                    })?;
+                (sequence, counts)
+            };
+            self.owned.managed_activity_transitions.flush()?;
+            let _mutation = self
+                .owned
+                .managed_activity_mutation_lock
+                .lock()
+                .expect("managed activity mutation mutex poisoned");
+            if sequence != self.managed_activity_change_sequence()
+                || counts != self.owned.managed_activity_counts_unlocked()
+            {
+                continue;
             }
+            let (transition_sequence, observation) = self
+                .owned
+                .managed_activity_transitions
+                .durable_observation_with_sequence(counts.working_agent_count)?;
+            return Ok((sequence, observation, transition_sequence));
         }
     }
 
@@ -243,7 +261,7 @@ impl KernelRuntimeOwnedState {
     ) -> Result<(u64, super::ManagedActivityObservation), crate::error::DaemonError> {
         self.record_registration_change_unlocked();
         self.managed_activity_transitions
-            .current_observation_with_sequence(self.managed_working_agent_count_unlocked())
+            .durable_observation_with_sequence(self.managed_working_agent_count_unlocked())
     }
 
     pub(super) fn managed_activity_counts_unlocked(&self) -> ManagedActivityCounts {
@@ -256,8 +274,19 @@ impl KernelRuntimeOwnedState {
         let any_work = work_in_flight(active_turn_count, &sessions)
             .max(u8::from(self.room_terminals.has_running_work()))
             .max(u8::from(self.room_execs.has_running_work()))
+            .max(u8::from(
+                self.active_file_operations
+                    .load(std::sync::atomic::Ordering::Acquire)
+                    != 0,
+            ))
             .max(u8::from(self.project_environment_setups.has_running_work()))
             .max(u8::from(self.environment_operations.has_running_work()));
+        // Capability expiry is sampled like a registered wake, rather than
+        // being an in-flight mutation that requires its own completion event.
+        let pending_transfer = u8::from(
+            self.managed_context_transfers
+                .has_pending_transfer(crate::session::unix_epoch_ms()),
+        );
 
         let mut in_flight: BTreeSet<(&str, &str)> = BTreeSet::new();
         for turn in active_turns.values() {
@@ -305,7 +334,12 @@ impl KernelRuntimeOwnedState {
         // agent, so zero always means the machine has nothing to wait for.
         let count = |agents: usize, floor: u8| u8::try_from(agents).unwrap_or(u8::MAX).max(floor);
         ManagedActivityCounts {
-            working_agent_count: count(working.len(), any_work.max(u8::from(awaiting.is_err()))),
+            working_agent_count: count(
+                working.len(),
+                any_work
+                    .max(pending_transfer)
+                    .max(u8::from(awaiting.is_err())),
+            ),
             in_flight_agent_count: count(in_flight.len(), any_work),
         }
     }
@@ -332,11 +366,17 @@ impl KernelRuntimeOwnedState {
     }
 
     pub(super) fn record_managed_activity_transition(&self) {
-        let _mutation = self
-            .managed_activity_mutation_lock
-            .lock()
-            .expect("managed activity mutation mutex poisoned");
-        self.record_managed_activity_transition_unlocked();
+        self.begin_managed_activity_mutation().record();
+    }
+
+    fn flush_managed_activity(&self) {
+        if let Err(error) = self.managed_activity_transitions.flush() {
+            crate::logging::error_with_fields(
+                "managed_kernel.activity",
+                "managed activity transition could not be persisted",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
     }
 
     pub(super) fn begin_managed_activity_mutation(&self) -> ManagedActivityMutation<'_> {
@@ -412,7 +452,7 @@ impl KernelRuntimeOwnedState {
         }
         if let Err(error) = self
             .managed_activity_transitions
-            .record_current_transition(|| {
+            .capture_current_transition(|| {
                 (
                     self.runtime_projection_changes.sequence(),
                     self.managed_activity_counts_unlocked(),
@@ -437,10 +477,12 @@ pub(super) struct ManagedActivityMutation<'a> {
 }
 
 impl ManagedActivityMutation<'_> {
-    // Persist the state sampled under the same boundary as its authoritative local mutation.
-    // Consuming the guard prevents a later mutation from overtaking this capture.
+    // Sequence the sample with its mutation, then let the ordered journal drain
+    // without keeping the mutation mutex across disk or SQLite persistence.
     pub(super) fn record(self) {
         self.state.record_managed_activity_transition_unlocked();
+        drop(self._guard);
+        self.state.flush_managed_activity();
     }
 
     pub(super) fn record_prompt_finish_at(self, observed_at_ms: Option<u64>) {
@@ -453,6 +495,8 @@ impl ManagedActivityMutation<'_> {
             .record_prompt_finish(observed_at_ms.unwrap_or_else(crate::session::unix_epoch_ms));
         self.state
             .record_managed_activity_transition_at_unlocked(Some(aggregate_finished_at_ms));
+        drop(self._guard);
+        self.state.flush_managed_activity();
     }
 }
 
@@ -731,6 +775,244 @@ mod tests {
             .map(|event| event.payload["workingAgentCount"].as_u64())
             .collect::<Vec<_>>();
         assert_eq!(counts, vec![Some(0), Some(1), Some(0)]);
+    }
+
+    #[tokio::test]
+    async fn activity_journal_io_releases_the_real_file_mutation_boundary() {
+        use crate::runtime::state::{
+            ManagedKernelQuiescenceChallenge, ManagedKernelQuiescenceGate,
+        };
+        use std::time::{Duration, Instant};
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+        ));
+        let mut runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime.owned.managed_kernel_quiescence = Some(
+            ManagedKernelQuiescenceGate::restore(
+                runtime.owned.durable_state_store.clone(),
+                "kernel-journal-lock".into(),
+                runtime.owned.managed_activity_mutation_lock.clone(),
+            )
+            .unwrap(),
+        );
+        runtime
+            .ensure_managed_activity_tracking("kernel-journal-lock")
+            .unwrap();
+        let (_, idle, sequence) = runtime
+            .managed_activity_report_snapshot_with_transition()
+            .unwrap();
+        runtime.confirm_managed_activity_report(1, sequence, idle);
+        let challenge = ManagedKernelQuiescenceChallenge {
+            challenge_id: "journal-stop".into(),
+            account_id: "account".into(),
+            environment_id: "environment".into(),
+            machine_id: "machine".into(),
+            kernel_id: "kernel-journal-lock".into(),
+            desired_revision: 1,
+            idle_sequence: 1,
+            idle_deadline_at: "2026-11-05T00:00:00.000Z".into(),
+            stop_operation_id: "stop".into(),
+            nonce: "nonce".into(),
+        };
+        let work = runtime.begin_file_operation().unwrap();
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+        *runtime
+            .owned
+            .managed_activity_transitions
+            .before_journal
+            .lock()
+            .unwrap() = Some(
+            super::super::managed_activity_persistence::ManagedActivityIoPause {
+                arrived: arrived_tx,
+                release: release_rx,
+            },
+        );
+        let finishing = std::thread::spawn(move || drop(work));
+        arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let acquired = runtime
+            .owned
+            .managed_activity_mutation_lock
+            .try_lock()
+            .is_ok();
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
+        let stopping = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || {
+                stopped_tx
+                    .send(
+                        runtime
+                            .reserve_managed_kernel_for_stop(challenge)
+                            .unwrap_or(false),
+                    )
+                    .unwrap()
+            })
+        };
+        let stop_rejected = stopped_rx.recv_timeout(Duration::from_millis(250)).ok() == Some(false);
+        let starting = {
+            let runtime = runtime.clone();
+            std::thread::spawn(move || runtime.begin_file_operation().unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_millis(250);
+        while runtime
+            .owned
+            .active_file_operations
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 0
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let busy_captured = runtime
+            .owned
+            .active_file_operations
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 1;
+        release_tx.send(()).unwrap();
+        finishing.join().unwrap();
+        stopping.join().unwrap();
+        let work = starting.join().unwrap();
+        assert!(
+            acquired,
+            "MP-08/09/10/11: activity journal IO must not hold the mutation boundary"
+        );
+        assert!(
+            stop_rejected,
+            "Stop must reject undurable publication without waiting for disk"
+        );
+        assert!(
+            busy_captured,
+            "new busy work must publish while old idle persistence waits"
+        );
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(
+                "kernel-journal-lock",
+                "managed_kernel.activity.changed",
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.payload["workingAgentCount"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0, 1]
+        );
+        assert_eq!(
+            runtime
+                .managed_activity_report_snapshot()
+                .unwrap()
+                .1
+                .working_agent_count,
+            1
+        );
+        drop(work);
+    }
+
+    #[tokio::test]
+    async fn provisional_failure_republishes_idle_after_other_work_samples_it() {
+        use crate::local::{
+            EnvironmentOperationKind, EnvironmentOperationState, EnvironmentOperationView,
+        };
+        use crate::runtime::state::ManagedKernelQuiescenceGate;
+        use std::time::Duration;
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap(),
+        ));
+        let mut runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        runtime.owned.managed_kernel_quiescence = Some(
+            ManagedKernelQuiescenceGate::restore(
+                runtime.owned.durable_state_store.clone(),
+                "kernel-provisional-rollback".into(),
+                runtime.owned.managed_activity_mutation_lock.clone(),
+            )
+            .unwrap(),
+        );
+        runtime
+            .ensure_managed_activity_tracking("kernel-provisional-rollback")
+            .unwrap();
+        runtime.link_work_to_managed_kernel();
+        let operations = runtime.owned.environment_operations.clone();
+        let blocked_directory = runtime
+            .owned
+            .config_projection
+            .snapshot()
+            .private_runtime_state_root()
+            .join("project-environment-operations");
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let failed_path = blocked_directory.clone();
+        *operations.before_persist.lock().unwrap() = Some(Arc::new(move || {
+            arrived_tx.send(()).unwrap();
+            release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            std::fs::write(&failed_path, b"injected intent failure").unwrap();
+        }));
+        let starting = {
+            let operations = operations.clone();
+            std::thread::spawn(move || {
+                operations
+                    .begin(EnvironmentOperationView {
+                        operation_id: "sampled-rollback".into(),
+                        project_id: "p".into(),
+                        checkout_path: "/work/p".into(),
+                        kind: EnvironmentOperationKind::Import,
+                        state: EnvironmentOperationState::Running,
+                        started_at_ms: 1,
+                        ended_at_ms: None,
+                        exit_code: None,
+                        reason: None,
+                        output_tail: String::new(),
+                        entries: Vec::new(),
+                        source_label: None,
+                    })
+                    .is_err()
+            })
+        };
+        arrived_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        // A separate real mutation samples the provisional Environment owner,
+        // then finishes while that intent is still blocked on storage.
+        let file = runtime.begin_file_operation().unwrap();
+        drop(file);
+        assert_eq!(
+            runtime
+                .managed_activity_report_snapshot()
+                .unwrap()
+                .1
+                .working_agent_count,
+            1
+        );
+        release_tx.send(()).unwrap();
+        assert!(starting.join().unwrap());
+        assert!(!operations.has_running_work());
+        let (_, idle) = runtime
+            .managed_activity_report_snapshot()
+            .expect("sampled provisional busy must become durable idle after failed intent");
+        assert_eq!(idle.working_agent_count, 0);
+        let events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(
+                "kernel-provisional-rollback",
+                "managed_kernel.activity.changed",
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.payload["workingAgentCount"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0]
+        );
+        std::fs::remove_file(blocked_directory).unwrap();
+        assert!(operations.get("sampled-rollback").unwrap().is_none());
     }
 
     #[tokio::test]

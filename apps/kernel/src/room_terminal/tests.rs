@@ -2950,3 +2950,63 @@ async fn unrelated_echo_while_screen_paused(rendering: bool) {
         "another terminal's echo waited for paused screen work"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exited_terminal_does_not_become_work_when_its_state_is_locked() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let terminal = service
+        .open(OpenRoomTerminal {
+            project_environment: Default::default(),
+            session_id: "room-1".into(),
+            working_directory: root.path().into(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/true".into()]),
+        })
+        .unwrap();
+    let owner = service.terminal_for_test(&terminal.terminal_id);
+    until("terminal exit", || async {
+        service.pump_once();
+        !owner.lock().terminal.is_running()
+    })
+    .await;
+    assert!(!service.has_running_work());
+    // Rendering or persistence of an exited terminal cannot invent a new work cycle.
+    let state = owner.lock();
+    assert!(
+        !service.has_running_work(),
+        "an exited PTY became busy solely because its state was locked"
+    );
+    drop(state);
+    service.end_session("room-1");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_terminal_state_contention_remains_managed_work() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let terminal = service
+        .open(OpenRoomTerminal {
+            project_environment: Default::default(),
+            session_id: "room-1".into(),
+            working_directory: root.path().into(),
+            cols: 80,
+            rows: 24,
+            title: None,
+            opened_by: TerminalActor::User,
+            command: Some(vec!["/bin/cat".into()]),
+        })
+        .unwrap();
+    let owner = service.terminal_for_test(&terminal.terminal_id);
+    let state = owner.lock();
+    assert!(state.terminal.is_running());
+    assert!(
+        service.has_running_work(),
+        "a busy live owner must still fence managed Stop"
+    );
+    drop(state);
+    service.end_session("room-1");
+}

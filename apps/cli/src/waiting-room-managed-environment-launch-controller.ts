@@ -1,3 +1,4 @@
+import type { ManagedEnvironmentShutdownPolicy } from "./managed-environment-shutdown-policy.js"
 import { LocalIpcError } from "./ipc.js"
 import type {
   ManagedContextLaunchTarget,
@@ -45,7 +46,7 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
     region: string
     computeClass: string
     managedRepositoryRoot: string
-    autoStopPolicy: { minimumRuntimeSeconds: number; idleDelaySeconds: number | null }
+    shutdownPolicy: ManagedEnvironmentShutdownPolicy
     contextPlan: Extract<ManagedEnvironmentLaunchSelection, { kind: "new" }>["contextPlan"]
   }): Promise<ManagedEnvironmentResult>
   getEnvironment(environmentId: string): Promise<ManagedEnvironmentSummary>
@@ -98,7 +99,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       region: selection.region,
       computeClass: selection.computeClass,
       managedRepositoryRoot: selection.managedRepositoryRoot,
-      autoStopPolicy: selection.autoStopPolicy,
+      shutdownPolicy: selection.shutdownPolicy,
       contextPlan: selection.contextPlan,
     }
     const signature = JSON.stringify(requestWithoutId)

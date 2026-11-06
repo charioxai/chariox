@@ -97,8 +97,28 @@ impl ManagedKernelActivityReporter {
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), DaemonError> {
         let mut cursor = ActivityCursor::default();
-        runtime.ensure_managed_activity_tracking(&self.binding.kernel_id)?;
         let mut persistence_retry_delay = MIN_RETRY_DELAY;
+        loop {
+            if *shutdown.borrow() {
+                return Ok(());
+            }
+            match runtime.ensure_managed_activity_tracking(&self.binding.kernel_id) {
+                Ok(()) => break,
+                Err(error) => {
+                    if !self
+                        .wait_for_persistence_retry(
+                            error,
+                            &mut shutdown,
+                            &mut persistence_retry_delay,
+                        )
+                        .await
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        persistence_retry_delay = MIN_RETRY_DELAY;
         let Some((mut change_sequence, mut observation, mut local_transition_sequence)) = self
             .retry_activity_snapshot(&runtime, &mut shutdown, &mut persistence_retry_delay, None)
             .await
@@ -315,36 +335,46 @@ impl ManagedKernelActivityReporter {
                     return Some(snapshot);
                 }
                 Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "managed_kernel.activity",
-                        "managed activity persistence unavailable; reporter will retry",
-                        serde_json::json!({
-                            "resource_id": self.binding.resource_id,
-                            "machine_id": self.binding.machine_id,
-                            "kernel_id": self.binding.kernel_id,
-                            "retry_delay_ms": (*retry_delay).as_millis(),
-                            "error": error.to_string(),
-                        }),
-                    );
-                    #[cfg(test)]
-                    if let Some(retry_started) = &self.persistence_retry_started {
-                        let _ = retry_started.send(*retry_delay);
-                    }
-                    let sleep = tokio::time::sleep(jittered(*retry_delay));
-                    tokio::pin!(sleep);
-                    tokio::select! {
-                        changed = shutdown.changed() => {
-                            if changed.is_err() || *shutdown.borrow() {
-                                return None;
-                            }
-                        }
-                        _ = &mut sleep => {
-                            *retry_delay = (*retry_delay)
-                                .saturating_mul(2)
-                                .min(MAX_RETRY_DELAY);
-                        }
+                    if !self
+                        .wait_for_persistence_retry(error, shutdown, retry_delay)
+                        .await
+                    {
+                        return None;
                     }
                 }
+            }
+        }
+    }
+
+    async fn wait_for_persistence_retry(
+        &self,
+        error: DaemonError,
+        shutdown: &mut tokio::sync::watch::Receiver<bool>,
+        retry_delay: &mut Duration,
+    ) -> bool {
+        crate::logging::warn_with_fields(
+            "managed_kernel.activity",
+            "managed activity persistence unavailable; reporter will retry",
+            serde_json::json!({
+                "resource_id": self.binding.resource_id,
+                "disposable_worker": self.binding.worker,
+                "machine_id": self.binding.machine_id,
+                "kernel_id": self.binding.kernel_id,
+                "retry_delay_ms": (*retry_delay).as_millis(),
+                "error": error.to_string(),
+            }),
+        );
+        #[cfg(test)]
+        if let Some(retry_started) = &self.persistence_retry_started {
+            let _ = retry_started.send(*retry_delay);
+        }
+        let sleep = tokio::time::sleep(jittered(*retry_delay));
+        tokio::pin!(sleep);
+        tokio::select! {
+            changed = shutdown.changed() => changed.is_ok() && !*shutdown.borrow(),
+            _ = &mut sleep => {
+                *retry_delay = (*retry_delay).saturating_mul(2).min(MAX_RETRY_DELAY);
+                true
             }
         }
     }
@@ -1100,6 +1130,134 @@ mod tests {
             .expect("activity reporter task should not panic")
             .expect("activity reporter should succeed");
         fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initial_journal_read_failure_retries_then_reports_after_repair() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, mut request_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        let request = http_request_body(&read_http_request(&mut stream));
+                        write_http_response(
+                            &mut stream,
+                            &serde_json::json!({
+                                "acceptedSequence": request["sequence"],
+                                "workingAgentCount": request["workingAgentCount"],
+                            }),
+                        );
+                        request_tx.send(request).unwrap();
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "initial report never arrived"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("activity fixture failed: {error}"),
+                }
+            }
+        });
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let journal = app
+            .durable_state_store()
+            .path()
+            .with_extension("managed-activity.pending.json");
+        std::fs::create_dir(&journal).unwrap();
+        let runtime =
+            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), retry_rx.recv())
+                .await
+                .unwrap(),
+            Some(MIN_RETRY_DELAY)
+        );
+        assert!(
+            !task.is_finished(),
+            "journal restore failure must retain the reporter"
+        );
+        assert!(
+            matches!(
+                request_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
+            "no activity may be reported before journal restore succeeds"
+        );
+        std::fs::remove_dir(journal).unwrap();
+        let request = tokio::time::timeout(Duration::from_secs(3), request_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request["workingAgentCount"], 0);
+        assert_eq!(request["sequence"], 1);
+        assert_eq!(
+            request["signature"],
+            activity_signature(
+                &binding(),
+                1,
+                0,
+                request["activityChangedAt"].as_str().unwrap()
+            )
+            .unwrap()
+        );
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        fixture.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn initial_journal_restore_backoff_is_shutdown_responsive() {
+        let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let journal = app
+            .durable_state_store()
+            .path()
+            .with_extension("managed-activity.pending.json");
+        std::fs::create_dir(&journal).unwrap();
+        let runtime =
+            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+        let (retry_tx, mut retry_rx) = tokio::sync::mpsc::unbounded_channel();
+        let reporter = ManagedKernelActivityReporter {
+            binding: binding(),
+            confirmation_wait_started: None,
+            persistence_retry_started: Some(retry_tx),
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), retry_rx.recv())
+                .await
+                .unwrap(),
+            Some(MIN_RETRY_DELAY)
+        );
+        shutdown_tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_millis(250), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        std::fs::remove_dir(journal).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
