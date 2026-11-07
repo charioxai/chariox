@@ -298,6 +298,44 @@ async fn folders() {
 }
 
 #[test]
+fn a_sub_agent_cannot_leave_its_parents_folders_through_a_git_worktree() {
+    run_large_stack_async_test("authority-folders-worktree", folders_by_worktree);
+}
+
+async fn folders_by_worktree() {
+    let world = world("authority-folders-worktree").await;
+    let workspace = world._env.root.join("workspace");
+    let outside = world._env.root.join("outside").join("elsewhere");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    for args in [
+        &["init", "-q"][..],
+        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let refused = room_command(
+        &world,
+        "a",
+        &format!(
+            "agent spawn wt --provider dev-stub --worktree {} --branch outside-branch",
+            outside.display()
+        ),
+    )
+    .await;
+    assert!(
+        !refused.ok && !outside.exists(),
+        "a sub-agent was placed outside its parent's folders: ok={} created={} {refused:?}",
+        refused.ok,
+        outside.exists()
+    );
+}
+
+#[test]
 fn a_deadline_is_never_later_than_the_parents_and_follows_it_down() {
     run_large_stack_async_test("authority-deadline", deadline);
 }
