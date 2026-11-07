@@ -70,6 +70,9 @@ import { KernelSocketResponsiveness } from "./kernel-socket-responsiveness.js"
 // worker kernel endpoint. Keep the control request open long enough for first
 // run provisioning while lifecycle progress remains request/response based.
 const IPC_TIMEOUT_MS = 600_000
+// A busy kernel still answers a loopback upgrade in milliseconds; one that has not after this long
+// is not accepting, and the connect fails so the request can retry or report instead of waiting.
+const LOCAL_HANDSHAKE_TIMEOUT_MS = 15_000
 const DEFAULT_KERNEL_EVENT_STALE_MS = 0
 const DEFAULT_KERNEL_PING_INTERVAL_MS = 5_000
 const DEFAULT_KERNEL_MAX_MISSED_PONGS = 2
@@ -317,6 +320,7 @@ export class LocalIpcClient {
   private eventHandlers = new Set<KernelEventHandler>()
   private activeKernelSubscription: KernelSubscriptionState | null = null
   private reconnectTimeout: NodeJS.Timeout | null = null
+  private localHandshakeTimeoutMs = LOCAL_HANDSHAKE_TIMEOUT_MS
   private reconnectDelayMs = 250
   private linkResumedAt: number | null = null
   private lastReceivedEventId: number | null = null
@@ -975,15 +979,17 @@ export class LocalIpcClient {
     if (this.localAuthToken && this.localAuthEndpoint) {
       return new WebSocket(this.localAuthEndpoint, {
         headers: { authorization: `Bearer ${this.localAuthToken}` },
+        handshakeTimeout: this.localHandshakeTimeoutMs,
       })
     }
     // A laptop kernel writes a new token at each start, so read it for every
     // connection: a reconnect after a kernel restart presents the new one.
     // A missing or stale token receives a non-retryable authentication error.
     const laptopKernelToken = readLocalKernelAuthToken(this.socketPath, this.localAuthEnvironment)
+    const handshakeTimeout = this.localHandshakeTimeoutMs
     return laptopKernelToken
-      ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` } })
-      : new WebSocket(this.socketPath)
+      ? new WebSocket(this.socketPath, { headers: { authorization: `Bearer ${laptopKernelToken}` }, handshakeTimeout })
+      : new WebSocket(this.socketPath, { handshakeTimeout })
   }
 
   private async ensureWebSocket(lane: KernelSocketLane = "control"): Promise<WebSocket> {
