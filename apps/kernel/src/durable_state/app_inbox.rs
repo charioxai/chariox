@@ -250,10 +250,7 @@ fn publish_to_followers_in(
     }
     let published = super::workflow_notifications::app_event::emit_in(
         tx,
-        &route.owner_id,
-        &route.installation_id,
-        &route.route_id,
-        &route.event_name,
+        route,
         occurrence_id,
         payload,
         now_ms,

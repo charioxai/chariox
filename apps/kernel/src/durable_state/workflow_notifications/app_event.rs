@@ -3,6 +3,7 @@
 //! nobody follows is recorded by the inbox for the App and queued for no one else.
 use super::*;
 use crate::session::WorkflowOutputPayload;
+use chariox_app_runtime::app_inbox::InboxRoute;
 
 /// Longest event text a notification carries; the App's own copy keeps the whole payload.
 const TEXT_BYTES: usize = 32 * 1024;
@@ -11,15 +12,12 @@ const TEXT_BYTES: usize = 32 * 1024;
 /// `workflow_id`) and the incoming event the route accepts (its `exit_node_id`).
 pub(crate) fn emit_in(
     tx: &Transaction<'_>,
-    owner: &str,
-    installation: &str,
-    route_id: &str,
-    event_name: &str,
+    route: &InboxRoute,
     occurrence_id: &str,
     payload: &serde_json::Value,
     now_ms: u64,
 ) -> Result<(), DaemonError> {
-    let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND enabled=1",params![owner,installation,route_id,exit_key(crate::local::NotificationSourceKind::AppEvent,event_name)],|r|r.get(0)).optional().map_err(sql)?;
+    let source_json: Option<String> = tx.query_row("SELECT payload_json FROM workflow_notification_exit_sources WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND exit_node_id=?4 AND enabled=1",params![route.owner_id,route.installation_id,route.route_id,exit_key(crate::local::NotificationSourceKind::AppEvent,&route.event_name)],|r|r.get(0)).optional().map_err(sql)?;
     let Some(source_json) = source_json else {
         return Ok(());
     };
