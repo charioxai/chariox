@@ -1,6 +1,6 @@
 //! A4: the tree a client reads follows the sub-agents' turns: state, outcome and a
 //! revision that moves exactly when the read differs, announced once to followers.
-use super::child_finished::{team, team_with, Team};
+use super::child_finished::{family, team, team_with, Team};
 use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::local::{
@@ -159,4 +159,72 @@ async fn followers_hear_one_event_per_change() {
     assert_eq!(events[1].0, team.parent);
     assert_eq!(events[1].1, read(&team).rev);
     assert!(events[1].1 > events[0].1);
+}
+
+// An older sub-agent the user places under a newer one stays in the tree, one level deeper, and
+// never joins the room's own agents.
+#[tokio::test]
+async fn an_older_agent_placed_under_a_newer_sibling_is_listed_once_below_it() {
+    let family = family("tree-reparent", 2, None, true).await;
+    let (older, newer) = (&family.kids[0].child, &family.kids[1].child);
+    let agents = family
+        .runtime
+        .owned
+        .agent_store
+        .get_session_agents(&family.room);
+    let created = |id: &str| {
+        agents
+            .iter()
+            .find(|a| a.id() == id)
+            .unwrap()
+            .created_at_ms()
+    };
+    // The reviewer scenario needs the moved agent to be the older one.
+    let (older, newer) = if (created(older), older) <= (created(newer), newer) {
+        (older, newer)
+    } else {
+        (newer, older)
+    };
+    family
+        .runtime
+        .set_agent_parent(
+            USER,
+            crate::local::SetAgentParentRequest {
+                session_id: family.room.clone(),
+                agent_id: older.clone(),
+                parent_agent_id: Some(newer.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    let LocalDaemonResponse::AgentTree { tree } = family
+        .runtime
+        .list_descendants(
+            USER,
+            ListDescendantsRequest {
+                session_id: family.room.clone(),
+                agent_id: family.parent.clone(),
+            },
+        )
+        .unwrap()
+    else {
+        panic!("agent tree expected")
+    };
+    let shape = tree
+        .nodes
+        .iter()
+        .map(|node| (node.agent_id.clone(), node.depth))
+        .collect::<Vec<_>>();
+    assert!(shape.contains(&(newer.clone(), 1)), "{shape:?}");
+    assert!(shape.contains(&(older.clone(), 2)), "{shape:?}");
+    assert_eq!(shape.len(), 2, "each listed once: {shape:?}");
+    let room_agents = family
+        .runtime
+        .owned
+        .agent_store
+        .get_session_agents(&family.room)
+        .iter()
+        .filter(|agent| !agent.is_sub_agent())
+        .count();
+    assert_eq!(room_agents, 1, "only the parent is a room agent");
 }

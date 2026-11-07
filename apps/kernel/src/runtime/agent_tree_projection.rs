@@ -55,31 +55,44 @@ pub(crate) fn project_agent_tree(
             .iter()
             .any(|interaction| interaction.agent_id() == Some(agent_id))
     };
-    let mut depth = std::collections::HashMap::from([(root.to_owned(), 0u32)]);
-    let mut ordered = agents.iter().collect::<Vec<_>>();
-    ordered.sort_by(|left, right| {
+    // Membership and depth come from the parent edges, whatever the creation order: the user can
+    // place an older agent under a newer descendant. Only the display order is by creation.
+    let mut children = std::collections::HashMap::<&str, Vec<&AgentInstance>>::new();
+    for agent in agents {
+        if let Some(parent) = agent.parent_agent_id() {
+            children.entry(parent).or_default().push(agent);
+        }
+    }
+    let mut members = Vec::new();
+    let mut seen = std::collections::HashSet::from([root]);
+    let mut level = vec![(root, 0u32)];
+    while !level.is_empty() {
+        let mut next = Vec::new();
+        for (parent, depth) in level {
+            for child in children.get(parent).into_iter().flatten() {
+                if seen.insert(child.id()) {
+                    members.push((*child, depth + 1));
+                    next.push((child.id(), depth + 1));
+                }
+            }
+        }
+        level = next;
+    }
+    members.sort_by(|(left, _), (right, _)| {
         (left.created_at_ms(), left.id()).cmp(&(right.created_at_ms(), right.id()))
     });
-    // Parents are created before their children: one creation-order pass places every node.
     let mut nodes = Vec::new();
-    for agent in ordered {
-        let Some(parent) = agent.parent_agent_id() else {
-            continue;
-        };
-        let Some(parent_depth) = depth.get(parent).copied() else {
-            continue;
-        };
-        depth.insert(agent.id().to_owned(), parent_depth + 1);
+    for (agent, depth) in members {
         let turn = turn_of(agent.id());
         let state = node_state(agent, pending(agent.id()), turn);
         nodes.push(AgentTreeNode {
             agent_id: agent.id().to_owned(),
-            parent_agent_id: Some(parent.to_owned()),
+            parent_agent_id: agent.parent_agent_id().map(str::to_owned),
             kernel_id: None,
             alias: agent.alias().map(str::to_owned),
             provider: agent.provider().to_owned(),
             model: agent.model().map(str::to_owned),
-            depth: parent_depth + 1,
+            depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
             needs_user: pending(agent.id())
@@ -159,6 +172,69 @@ mod tests {
             project_agent_tree(&session, session.agents(), "missing", &|_| None, &|_| None)
                 .is_none()
         );
+    }
+
+    fn shape(tree: &AgentTree) -> Vec<(&str, u32)> {
+        tree.nodes
+            .iter()
+            .map(|node| (node.agent_id.as_str(), node.depth))
+            .collect()
+    }
+
+    // Reviewer scenario: R and X are room agents, Y is spawned under R, then X is placed under Y.
+    #[test]
+    fn an_older_agent_moved_under_a_newer_descendant_stays_in_the_tree() {
+        let session = session(vec![
+            agent("r", None, 1),
+            agent("x", Some("y"), 2),
+            agent("y", Some("r"), 3),
+            agent("z", Some("x"), 4),
+        ]);
+        let tree =
+            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        assert_eq!(shape(&tree), vec![("x", 2), ("y", 1), ("z", 3)]);
+        let x_nodes = tree
+            .nodes
+            .iter()
+            .filter(|node| node.agent_id == "x")
+            .count();
+        assert_eq!(x_nodes, 1, "listed once, as a descendant");
+        assert!(session
+            .agents()
+            .iter()
+            .find(|a| a.id() == "x")
+            .unwrap()
+            .is_sub_agent());
+    }
+
+    #[test]
+    fn a_deep_chain_in_reverse_creation_order_keeps_every_depth() {
+        let session = session(vec![
+            agent("r", None, 1),
+            agent("d4", Some("d3"), 2),
+            agent("d3", Some("d2"), 3),
+            agent("d2", Some("d1"), 4),
+            agent("d1", Some("r"), 5),
+        ]);
+        let tree =
+            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        assert_eq!(
+            shape(&tree),
+            vec![("d4", 4), ("d3", 3), ("d2", 2), ("d1", 1)]
+        );
+    }
+
+    #[test]
+    fn a_parent_cycle_outside_the_root_never_loops_or_enters_the_tree() {
+        let session = session(vec![
+            agent("r", None, 1),
+            agent("a", Some("b"), 2),
+            agent("b", Some("a"), 3),
+            agent("c", Some("r"), 4),
+        ]);
+        let tree =
+            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        assert_eq!(shape(&tree), vec![("c", 1)]);
     }
 
     fn ask(agent_id: &str) -> crate::session::RuntimeInteraction {
