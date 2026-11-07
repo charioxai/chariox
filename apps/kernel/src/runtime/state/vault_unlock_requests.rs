@@ -64,6 +64,7 @@ pub(super) fn notify_vault_unlocked(path: &Path, surface: VaultUnlockSurface) {
 impl KernelRuntimeState {
     /// A successful unlock in another session resumes this wait through the
     /// same authority path and withdraws only this wait's obsolete prompt.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn await_vault_unlock_interaction(
         &self,
         session_id: &str,
