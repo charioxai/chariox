@@ -255,6 +255,38 @@ impl KernelRuntimeOwnedState {
         terminal_answer: bool,
         answerer: Option<&crate::runtime::command::KernelCaller>,
     ) -> Result<(), DaemonError> {
+        self.resolve_runtime_interaction_routed(
+            session_id,
+            interaction_id,
+            choice_id,
+            custom_reply,
+            caller_user_id,
+            passkey_verified,
+            authorizing_terminal,
+            take_host,
+            terminal_answer,
+            answerer,
+            None,
+        )
+    }
+
+    /// `as_holder`: the agent answering as the decision's holder. It must still be the holder,
+    /// by the authority it has now, when the answer reaches the interaction lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn resolve_runtime_interaction_routed(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        choice_id: &str,
+        custom_reply: Option<&str>,
+        caller_user_id: Option<&str>,
+        passkey_verified: bool,
+        authorizing_terminal: Option<&str>,
+        take_host: bool,
+        terminal_answer: bool,
+        answerer: Option<&crate::runtime::command::KernelCaller>,
+        as_holder: Option<&str>,
+    ) -> Result<(), DaemonError> {
         let _mutation = self
             .pending_interactions
             .mutation
@@ -293,6 +325,11 @@ impl KernelRuntimeOwnedState {
             return Err(interaction_error(
                 "Agent interaction was withdrawn because its turn or agent ended",
             ));
+        }
+        if as_holder
+            .is_some_and(|agent| pending.holder != super::DecisionHolder::Agent(agent.into()))
+        {
+            return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
         }
         if pending
             .kernel_operation_owner
@@ -356,6 +393,13 @@ impl KernelRuntimeOwnedState {
                     .cloned()
             })
             .ok_or_else(|| interaction_error("interaction is not active"))?;
+        // The authority limit is rechecked here, under the interaction lock: an answer from an
+        // agent that no longer holds the decision by its current authority is refused.
+        if let (Some(agent), Some(session)) = (as_holder, session.as_ref()) {
+            if !self.holder_may_answer(session, &pending, &interaction, agent) {
+                return Err(interaction_error(super::decision_holder::HOLDER_CHANGED));
+            }
+        }
         if interaction.asking_task_id().is_some()
             && interaction.timeout_sec().is_some_and(|seconds| {
                 interaction
@@ -572,7 +616,9 @@ impl KernelRuntimeOwnedState {
                 session_id,
                 &interaction,
                 InteractionPhase::Resolved(crate::local::EventResolution {
-                    via: if terminal_answer || take_host {
+                    via: if as_holder.is_some() {
+                        crate::local::EventResolutionVia::ParentAgent
+                    } else if terminal_answer || take_host {
                         crate::local::EventResolutionVia::Terminal
                     } else {
                         crate::local::EventResolutionVia::ExternalAgent
@@ -590,6 +636,7 @@ impl KernelRuntimeOwnedState {
             .write()
             .remove(interaction_id)
             .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
+        self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
         if passkey_verified
@@ -793,6 +840,7 @@ impl KernelRuntimeOwnedState {
         }
         let consume = || {
             self.pending_interactions.write().remove(interaction_id);
+            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
             if pending.passkey_prompt.is_some() {
                 let reason = if pending
                     .kernel_operation_deadline

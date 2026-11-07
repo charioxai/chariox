@@ -110,6 +110,9 @@ pub enum OutsideEventValue {
         /// How a resolved decision ended.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolution: Option<EventResolution>,
+        /// A sub-agent's decision the user holds is shown in this agent's panel: the room agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shown_in: Option<String>,
     },
     Terminal {
         exit_code: Option<u32>,
@@ -284,6 +287,8 @@ pub struct EventResolution {
 pub enum EventResolutionVia {
     Terminal,
     ExternalAgent,
+    /// A parent agent answered its sub-agent's decision.
+    ParentAgent,
     Timeout,
     /// Withdrawn without an answer: the asker went away or a newer decision replaced it.
     Cancelled,

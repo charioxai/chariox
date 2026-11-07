@@ -199,6 +199,8 @@ impl KernelRuntimeState {
             forwarding,
             None,
         )?;
+        self.announce_child_decision(session_id, event_interaction.id())
+            .await?;
         // Login challenges and PTY output are human-only ephemeral state.
         if event_interaction
             .id()

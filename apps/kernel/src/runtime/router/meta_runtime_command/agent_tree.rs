@@ -34,6 +34,10 @@ impl CommandRouter {
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
             }
+            Some("answer" | "pass") => Some(
+                self.dispatch_meta_child_decision_command(session, caller, command, tokens)
+                    .await?,
+            ),
             _ => None,
         })
     }
@@ -224,5 +228,49 @@ impl CommandRouter {
                 "response": {"type": "AgentChildren", "root": root.id(), "children": listed},
             }),
         }
+    }
+}
+
+impl CommandRouter {
+    /// `agent answer <interaction> <choice|text>` and `agent pass <interaction>`: only the
+    /// agent that holds a sub-agent's decision may settle or hand it on. The result carries a
+    /// typed status and no text.
+    async fn dispatch_meta_child_decision_command(
+        &self,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+        command: &str,
+        tokens: &[String],
+    ) -> Result<RuntimeToolResult, DaemonError> {
+        use crate::runtime::state::ChildDecisionStatus;
+        let status = match (
+            tokens.get(1).map(String::as_str),
+            tokens.get(2..).unwrap_or_default(),
+        ) {
+            (Some("answer"), [interaction, answer @ ..]) if !answer.is_empty() => self
+                .runtime_state
+                .answer_child_decision(session.id(), caller.id(), interaction, &answer.join(" "))?,
+            (Some("pass"), [interaction]) => {
+                self.runtime_state
+                    .pass_child_decision(session.id(), caller.id(), interaction)
+                    .await?
+            }
+            _ => return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent answer <interaction> <choice|text> | agent pass <interaction>",
+                ),
+            )),
+        };
+        Ok(RuntimeToolResult {
+            ok: matches!(
+                status,
+                ChildDecisionStatus::Answered | ChildDecisionStatus::Passed
+            ),
+            payload: serde_json::json!({
+                "command": super::result::redacted_meta_command_for_payload(command),
+                "response": {"type": "ChildDecision", "status": status},
+            }),
+        })
     }
 }

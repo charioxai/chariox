@@ -413,6 +413,7 @@ impl KernelRuntimeOwnedState {
             sessions.restore_session(session);
         }
         self.pending_interactions.write().remove(id);
+        self.withdraw_settled_child_decision(&pending.session_id, id, pending);
         drop(sessions);
         activity_mutation.record();
         if let Some(sender) = pending

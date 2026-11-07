@@ -274,10 +274,18 @@ impl KernelRuntimeOwnedState {
         interaction: &crate::session::RuntimeInteraction,
         phase: InteractionPhase<'_>,
     ) -> Result<(), DaemonError> {
+        // A decision an ancestor agent holds is not listed to the user; it is listed when it
+        // reaches the user, in the room agent's panel.
+        if matches!(&phase, InteractionPhase::Pending(pending) if pending.holder != super::DecisionHolder::User)
+        {
+            return Ok(());
+        }
         let (value, summary) = self.outside_interaction_value(interaction, phase);
         self.durable_state_store.outside_publish(
             session_id,
-            interaction.agent_id(),
+            interaction
+                .shown_in_agent_id()
+                .or_else(|| interaction.agent_id()),
             value,
             &summary,
             EventRefs {
@@ -302,6 +310,7 @@ impl KernelRuntimeOwnedState {
                         pointer: None,
                         question: None,
                         resolution: Some(resolution),
+                        shown_in: interaction.shown_in_agent_id().map(str::to_owned),
                     },
                     "decision closed".into(),
                 )
@@ -315,6 +324,7 @@ impl KernelRuntimeOwnedState {
                     pointer: None,
                     question: Some(Box::new(question::event_question(interaction))),
                     resolution: None,
+                    shown_in: interaction.shown_in_agent_id().map(str::to_owned),
                 },
                 interaction.title().unwrap_or("interaction").into(),
             );
@@ -357,6 +367,7 @@ impl KernelRuntimeOwnedState {
                 pointer: Some(pointer),
                 question: None,
                 resolution: None,
+                shown_in: interaction.shown_in_agent_id().map(str::to_owned),
             },
             "owner approval".into(),
         )
