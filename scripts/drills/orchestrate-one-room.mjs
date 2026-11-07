@@ -295,7 +295,7 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own Chariox tools. Do not ask the owner anything. Never retry a refused call more than once; record the exact answer.
 1. Spawn three workers, each with its own git worktree: room command \`agent spawn wN --provider ${provider} --model ${model} --effort low --worktree ${join(root, "wt")}/wN --branch wN\` for N = 1, 2, 3. Do not prompt w2.
 2. Prompt w1 (room \`prompt\`): "Run the shell command: until [ -e ${goPath} ]; do sleep 1; done. Then write the single word ALPHA into result.txt in your working directory. End your reply with W1DONE." (w1 stays BUSY.)
-   Prompt w3: "Arm a timer with the chariox events_timer tool (delay_ms 600000, label w3-wait), then yield on it with chariox events_yield (deadline 15 minutes ahead) and end your turn. When you are woken, handle what the inbox shows, write it into result.txt, and end with W3DONE." (w3 is YIELDED once it has parked; wait until room \`agent list\` shows w3 is no longer processing before you send to it.)
+   Prompt w3: "Arm a timer with the chariox events_timer tool (delay_ms 600000, label w3-wait), then yield on it with chariox events_yield (deadline 15 minutes ahead) and end your turn. When you are woken, read your inbox with chariox events_inbox, do what each message asks as you would for any request from your parent, write the inbox text into result.txt, and end with W3DONE." (w3 is YIELDED once it has parked; wait until room \`agent list\` shows w3 is no longer processing before you send to it.)
 3. Send, with chariox send_agent_message (default, not urgent, no reply wanted):
    to w1 (busy): "Also write the word BUSYMSG into msg.txt in your working directory after result.txt."
    to w2 (idle): "Write the word IDLEMSG into msg.txt in your working directory."
@@ -446,7 +446,9 @@ Steps:
     }
     if (!reportAt && existsSync(reportPath)) { reportAt = Date.now(); note("report-written") }
     const o = s?.agents?.find(x => x.id === orch)
-    if (reportAt && o && !o.is_processing && !s.prompt_states?.[orch]?.active_prompt) break
+    // The report can come before the busy receiver ends its turn: its messages are judged after that.
+    const othersBusy = scenario === "messages" && (s?.agents ?? []).some(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt && Date.now() - reportAt < 180000)
+    if (reportAt && o && !o.is_processing && !s.prompt_states?.[orch]?.active_prompt && !othersBusy) break
     await delay(2000)
   }
   note("follow-ended", { wall_s: Math.round((Date.now() - since) / 1000), report: !!reportAt, fallbackAnswers })
