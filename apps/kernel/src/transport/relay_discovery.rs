@@ -505,40 +505,48 @@ fn backoff_key(config: &DaemonConfig) -> String {
 }
 
 /// A relay that just failed to answer is not dialed again until its backoff
-/// has passed; callers get the wait in the error instead of a new connection.
+/// has passed; callers get the dial's failure and the wait instead of a new
+/// connection, so they classify it as they did the dial (a stopped slice relay
+/// refuses, a struggling one times out).
 fn admit_or_back_off(relay: &str) -> Result<(), DaemonError> {
     backoff::ConnectBackoff::shared()
         .admit(relay, tokio::time::Instant::now())
-        .map_err(|left| DaemonError::LocalTransport {
-            operation: "relay metadata backoff",
+        .map_err(|refused| DaemonError::LocalTransport {
+            operation: refused.failure.operation,
             message: format!(
-                "relay unreachable, retry in {} seconds",
-                left.as_secs_f64().ceil() as u64
+                "{}; relay unreachable, retry in {} seconds",
+                refused.failure.message,
+                refused.left.as_secs_f64().ceil() as u64
             ),
         })
 }
 
 fn record_dial_outcome<T>(relay: &str, result: &Result<T, DaemonError>) {
     let shared = backoff::ConnectBackoff::shared();
-    match result {
-        Err(error) if relay_unreachable(error) => shared.record_failure(
+    match result.as_ref().err().and_then(unreachable_failure) {
+        Some(failure) => shared.record_failure(
             relay,
             tokio::time::Instant::now(),
             0.5 + rand::random::<f64>() / 2.0,
+            failure,
         ),
-        _ => shared.record_success(relay),
+        None => shared.record_success(relay),
     }
 }
 
-fn relay_unreachable(error: &DaemonError) -> bool {
-    relay_metadata_error_is_retryable(error)
-        || matches!(
-            error,
-            DaemonError::LocalTransport {
-                operation: "connect relay metadata socket",
-                ..
-            }
-        )
+fn unreachable_failure(error: &DaemonError) -> Option<backoff::Failure> {
+    match error {
+        DaemonError::LocalTransport { operation, message }
+            if *operation == "connect relay metadata socket"
+                || relay_metadata_error_is_retryable(error) =>
+        {
+            Some(backoff::Failure {
+                operation,
+                message: message.clone(),
+            })
+        }
+        _ => None,
+    }
 }
 
 async fn query_relay_attempts(
