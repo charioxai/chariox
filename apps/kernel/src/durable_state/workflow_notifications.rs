@@ -144,6 +144,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       state TEXT NOT NULL, prior_status TEXT, prior_json TEXT, prior_grant TEXT,
       desired_json TEXT, next_attempt_at_ms INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
       generation INTEGER NOT NULL, dirty INTEGER NOT NULL DEFAULT 0,
+      established INTEGER NOT NULL DEFAULT 1,
       PRIMARY KEY(owner_id,subscription_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_generations (
       owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, generation INTEGER NOT NULL,

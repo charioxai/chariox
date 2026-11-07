@@ -149,10 +149,16 @@ pub(super) fn begin_in(
     let id = id.unwrap_or_else(|| sub.subscription_id.clone());
     // An install still in flight holds the last state the source confirmed; the row a second
     // attach finds now is only that install's attempt.
-    let in_flight:Option<(Option<String>,Option<String>,Option<String>)>=tx.query_row("SELECT prior_status,prior_json,prior_grant FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![sub.owner_user_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
-    let (status, json, grant) = in_flight.unwrap_or((status, json, grant));
+    let in_flight:Option<(Option<String>,Option<String>,Option<String>,bool)>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![sub.owner_user_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    // The source is known to hold the prior state only when no entry owes it: an unconfirmed
+    // install or detach, or a reconciliation not yet answered, leaves the source unknown.
+    let owed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile')",params![sub.owner_user_id,id],|r|r.get(0)).map_err(sql)?;
+    let (status, json, grant, established) = match in_flight {
+        Some(held) => held,
+        None => (status, json, grant, !owed),
+    };
     let generation = bump_in(tx, &sub.owner_user_id, &id)?;
-    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs(owner_id,subscription_id,source_kernel_id,state,prior_status,prior_json,prior_grant,desired_json,next_attempt_at_ms,attempts,generation,dirty) VALUES (?1,?2,?3,'installing',?4,?5,?6,NULL,CAST(strftime('%s','now') AS INTEGER)*1000,0,?7,0)",params![sub.owner_user_id,id,sub.source_kernel_id,status,json,grant,generation]).map_err(sql)?;
+    tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs(owner_id,subscription_id,source_kernel_id,state,prior_status,prior_json,prior_grant,desired_json,next_attempt_at_ms,attempts,generation,dirty,established) VALUES (?1,?2,?3,'installing',?4,?5,?6,NULL,CAST(strftime('%s','now') AS INTEGER)*1000,0,?7,0,?8)",params![sub.owner_user_id,id,sub.source_kernel_id,status,json,grant,generation,established]).map_err(sql)?;
     Ok(generation)
 }
 
@@ -184,8 +190,8 @@ pub(super) fn install_failed_in(
 }
 
 fn undo_in(tx: &Transaction<'_>, owner: &str, subscription_id: &str) -> Result<(), DaemonError> {
-    let held:Option<(Option<String>,Option<String>,Option<String>)>=tx.query_row("SELECT prior_status,prior_json,prior_grant FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![owner,subscription_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
-    let Some((status, json, grant)) = held else {
+    let held:Option<(Option<String>,Option<String>,Option<String>,bool)>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![owner,subscription_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    let Some((status, json, grant, established)) = held else {
         return Ok(());
     };
     // The restored state is a new state of the source: whatever still runs for the attempt is stale.
@@ -215,8 +221,9 @@ fn undo_in(tx: &Transaction<'_>, owner: &str, subscription_id: &str) -> Result<(
         (Some(status), Some(json)) if status == "active" => Some(json.clone()),
         _ => None,
     };
-    if desired.is_some() && desired == attempted {
-        // The source holds the same subscription whether or not it installed the repeat.
+    if established && desired.is_some() && desired == attempted {
+        // The source confirmed this subscription before the repeat, so it holds the same one
+        // whether or not it installed the repeat.
         tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id]).map_err(sql)?;
         return Ok(());
     }
