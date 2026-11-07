@@ -172,8 +172,9 @@ impl Fixture {
             .is_none()
     }
 
-    /// The unlock prompt that is open and is not `after`, with its message.
-    async fn next_prompt(&self, after: Option<&str>) -> (String, String) {
+    /// The open unlock prompt asked after the question stamped `after`, with its message.
+    /// A refusal arrives in the same card, so the stamp tells the questions apart.
+    async fn next_prompt(&self, after: Option<u64>) -> (String, String, u64) {
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 let snapshot = self
@@ -184,9 +185,13 @@ impl Fixture {
                     .unwrap();
                 if let Some(prompt) = snapshot
                     .active_interaction_for_agent(&self.agent)
-                    .filter(|prompt| Some(prompt.id()) != after)
+                    .filter(|prompt| after.is_none_or(|after| prompt.requested_at_ms() > after))
                 {
-                    break (prompt.id().to_owned(), prompt.message().to_owned());
+                    break (
+                        prompt.id().to_owned(),
+                        prompt.message().to_owned(),
+                        prompt.requested_at_ms(),
+                    );
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
@@ -383,13 +388,13 @@ async fn parallel_guesses_are_checked_one_at_a_time_inside_the_budget() {
 async fn the_budget_is_shared_with_the_interaction_unlock() {
     let f = Fixture::locked();
     let operation = f.the_agents_operation();
-    let mut previous: Option<String> = None;
+    let mut previous: Option<u64> = None;
     for _ in 0..5 {
-        let (id, _) = f.next_prompt(previous.as_deref()).await;
+        let (id, _, stamp) = f.next_prompt(previous).await;
         f.answer_prompt(&id, "unlock_kernel", Some(WRONG)).await;
-        previous = Some(id);
+        previous = Some(stamp);
     }
-    let (id, message) = f.next_prompt(previous.as_deref()).await;
+    let (id, message, stamp) = f.next_prompt(previous).await;
     assert!(
         message.starts_with("That is not the Vault passphrase"),
         "{message}"
@@ -398,7 +403,7 @@ async fn the_budget_is_shared_with_the_interaction_unlock() {
     assert_eq!(code, "vault_unlock_rate_limited");
     f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
         .await;
-    let (id, message) = f.next_prompt(Some(&id)).await;
+    let (id, message, _) = f.next_prompt(Some(stamp)).await;
     assert!(
         message.contains("Too many wrong passphrases"),
         "a locked-out owner cannot unlock through the prompt either: {message}"
@@ -418,10 +423,10 @@ async fn wrong_unlocks_count_against_the_interaction_unlock() {
         assert_eq!(code_of(f.unlock(WRONG).await).0, "vault_passphrase_wrong");
     }
     let operation = f.the_agents_operation();
-    let (id, _) = f.next_prompt(None).await;
+    let (id, _, stamp) = f.next_prompt(None).await;
     f.answer_prompt(&id, "unlock_kernel", Some(PASSPHRASE))
         .await;
-    let (id, message) = f.next_prompt(Some(&id)).await;
+    let (id, message, _) = f.next_prompt(Some(stamp)).await;
     assert!(
         message.contains("Too many wrong passphrases"),
         "the budget is spent: {message}"

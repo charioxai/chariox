@@ -365,6 +365,7 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let mut pending = super::super::PendingInteraction {
+            checking_answer: Default::default(),
             goal_approval: None,
             async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,

@@ -263,6 +263,9 @@ impl KernelRuntimeOwnedState {
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
             let abandoned = pending.async_task_id.is_none()
+                && !pending
+                    .checking_answer
+                    .load(std::sync::atomic::Ordering::SeqCst)
                 && pending.responder.lock().map_or(true, |sender| {
                     sender.as_ref().is_none_or(|sender| sender.is_closed())
                 });

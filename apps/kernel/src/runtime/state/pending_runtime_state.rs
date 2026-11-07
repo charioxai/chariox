@@ -88,6 +88,9 @@ pub(super) struct PendingInteraction {
     /// Who may answer now: kernel state for routing and audit, never projected.
     pub(super) holder: super::DecisionHolder,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
+    /// A Vault passphrase was answered and is being checked: the card stays open
+    /// without a responder until its waiter shows the refusal or closes it.
+    pub(super) checking_answer: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Internal ownership of the originating prompt/run, including forwarded worker runs.
@@ -163,7 +166,11 @@ impl PendingInteraction {
     /// The component that asked is gone or the interaction was answered: no
     /// receiver waits for a resolution any more.
     pub(super) fn nobody_waits(&self) -> bool {
-        if self.async_task_id.is_some() {
+        if self.async_task_id.is_some()
+            || self
+                .checking_answer
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return false;
         }
         self.responder.lock().map_or(true, |responder| {

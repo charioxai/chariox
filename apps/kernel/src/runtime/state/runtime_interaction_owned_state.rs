@@ -583,6 +583,21 @@ impl KernelRuntimeOwnedState {
                 message: format!("interaction {interaction_id} does not define choice {choice_id}"),
             });
         };
+        // A Vault passphrase is checked while its card stays on screen: the waiter
+        // closes the card when the Vault is open, or shows the refusal in it.
+        let holds_card = pending.terminal_credential_owner.is_some()
+            && interaction.id().starts_with("vault-unlock-")
+            && custom_reply.is_some()
+            && interaction
+                .choice(choice_id)
+                .is_none_or(|choice| choice.vault_unlock().is_some());
+        if holds_card
+            && pending
+                .checking_answer
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(interaction_error("The Vault is checking a passphrase"));
+        }
         // Validate the decision after waiting for the session writer. Its time
         // is pinned before publication so a slow commit cannot bank elevation.
         if pending
@@ -611,7 +626,7 @@ impl KernelRuntimeOwnedState {
         }
         let decision_at = (std::time::Instant::now(), crate::session::unix_epoch_ms());
         // Keep the decision and its responder available if the event commit fails.
-        if session.is_some() {
+        if session.is_some() && !holds_card {
             self.publish_outside_interaction(
                 session_id,
                 &interaction,
@@ -631,12 +646,18 @@ impl KernelRuntimeOwnedState {
             self.persist_session_activity(session, decision_at.1)?;
         }
         self.answer_goal_native_approval(pending.goal_approval.as_ref())?;
-        let pending = self
-            .pending_interactions
-            .write()
-            .remove(interaction_id)
-            .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
-        self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
+        let pending = {
+            let mut store = self.pending_interactions.write();
+            if holds_card {
+                store.get(interaction_id).cloned()
+            } else {
+                store.remove(interaction_id)
+            }
+            .ok_or_else(|| interaction_error("interaction is no longer pending"))?
+        };
+        if !holds_card {
+            self.withdraw_settled_child_decision(session_id, interaction_id, &pending);
+        }
         // MP-08/MP-10/MP-11: pin time at the winning fresh decision, before
         // waking its consumer. Scheduler delays cannot bank elevation time.
         if passkey_verified
@@ -658,7 +679,9 @@ impl KernelRuntimeOwnedState {
                 .record_answered(session_id, interaction_id);
         }
         if let Some(mut session) = session.take() {
-            session.remove_active_interaction(interaction_id);
+            if !holds_card {
+                session.remove_active_interaction(interaction_id);
+            }
             sessions.restore_session(session);
         }
         // The count reads the Room store: record it only after this write lock is released.
@@ -700,6 +723,52 @@ impl KernelRuntimeOwnedState {
         interaction_id: &str,
     ) -> Result<(), DaemonError> {
         self.timeout_runtime_interaction_if_current(session_id, interaction_id, None)
+    }
+
+    /// A refused passphrase keeps its card: the same interaction takes the refusal
+    /// and a fresh responder, so no client ever sees it leave.
+    pub(super) fn rearm_vault_card(
+        &self,
+        session_id: &str,
+        refreshed: crate::session::RuntimeInteraction,
+    ) -> Result<tokio::sync::oneshot::Receiver<super::PendingInteractionResolution>, DaemonError>
+    {
+        let _mutation = self
+            .pending_interactions
+            .mutation
+            .lock()
+            .map_err(|_| interaction_error("Interaction store is unavailable"))?;
+        let pending = self
+            .pending_interactions
+            .write()
+            .get(refreshed.id())
+            .filter(|pending| {
+                pending.session_id == session_id && pending.belongs_to(&self.session_store)
+            })
+            .cloned()
+            .ok_or_else(|| interaction_error("interaction is no longer pending"))?;
+        let activity_mutation = self.begin_managed_activity_mutation();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        if !session.replace_active_interaction(refreshed) {
+            return Err(interaction_error("interaction is not active"));
+        }
+        self.persist_session_activity(&mut session, crate::session::unix_epoch_ms())?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *pending
+            .responder
+            .lock()
+            .expect("pending interaction responder mutex poisoned") = Some(sender);
+        pending
+            .checking_answer
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        sessions.restore_session(session);
+        drop(sessions);
+        activity_mutation.record();
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(receiver)
     }
 
     /// The Vault was unlocked somewhere else: this unlock card is answered "unlocked"

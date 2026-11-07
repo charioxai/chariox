@@ -1,5 +1,6 @@
 //! MP-08 / MP-10 / MP-11: a human wait must be visible in the requesting
 //! session. Only the short Vault mutation is serialized across sessions.
+use super::runtime_vault_unlock_state::CloseInteractionOnDrop;
 use super::*;
 use crate::local::VaultUnlockSurface;
 use std::collections::BTreeMap;
@@ -71,6 +72,7 @@ impl KernelRuntimeState {
         vault_path: &Path,
         unlocks: &mut watch::Receiver<Option<VaultUnlockSurface>>,
         deadline: tokio::time::Instant,
+        card: &mut Option<CloseInteractionOnDrop>,
     ) -> Result<Option<PendingInteractionResolution>, DaemonError> {
         let id = interaction.id().to_owned();
         let agent_id = interaction.agent_id().map(str::to_owned);
@@ -78,9 +80,24 @@ impl KernelRuntimeState {
             .as_deref()
             .map(|agent| self.begin_vault_wait(session_id, agent))
             .unwrap_or_default();
-        let wait = self.await_vault_interaction_until(
+        // The first attempt opens the card; a retry puts its refusal into the open one.
+        let receiver = match card {
+            None => {
+                let receiver =
+                    self.create_terminal_credential_interaction(session_id, interaction)?;
+                *card = Some(CloseInteractionOnDrop {
+                    state: self.clone(),
+                    session_id: session_id.to_string(),
+                    interaction_id: id.clone(),
+                });
+                receiver
+            }
+            Some(_) => self.owned.rearm_vault_card(session_id, interaction)?,
+        };
+        let wait = self.wait_for_vault_resolution(
             session_id,
-            interaction,
+            &id,
+            receiver,
             operation,
             "vault unlock",
             Some(deadline),

@@ -1060,6 +1060,19 @@ impl RuntimeSession {
             .sort_by_key(|left| (left.asking_task_id().is_some(), left.requested_at_ms()));
     }
 
+    /// Swaps the content of an open card for a fresh question with the same id, in the same place.
+    pub(crate) fn replace_active_interaction(&mut self, interaction: RuntimeInteraction) -> bool {
+        let Some(open) = self
+            .active_interactions
+            .iter_mut()
+            .find(|open| open.id() == interaction.id())
+        else {
+            return false;
+        };
+        *open = interaction;
+        true
+    }
+
     pub(crate) fn update_active_interaction_view(
         &mut self,
         id: &str,

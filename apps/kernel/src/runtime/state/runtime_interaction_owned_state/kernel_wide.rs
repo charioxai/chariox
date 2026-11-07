@@ -91,6 +91,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                checking_answer: Default::default(),
                 goal_approval: None,
                 session_id: scope.into(),
                 session_store_identity: self.session_store.weak_identity(),
@@ -167,6 +168,7 @@ impl KernelRuntimeOwnedState {
         pending.insert(
             interaction.id().into(),
             super::super::PendingInteraction {
+                checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,
                 session_id: scope.into(),
