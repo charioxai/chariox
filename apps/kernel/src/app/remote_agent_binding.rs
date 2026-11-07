@@ -17,7 +17,7 @@ use crate::transport::relay_peer::{
 
 use super::remote_kernel_selection::{
     ensure_kernel_can_host_provider, kernel_presence_matches_ref,
-    no_remote_kernel_available_message, select_remote_kernel,
+    no_remote_kernel_available_message, select_remote_kernel, usable_kernel_refs_message,
 };
 
 mod cleanup;
@@ -715,13 +715,25 @@ impl DaemonApp {
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
-        let discovery_config =
-            self.remote_worker_discovery_config(kernel_ref, relay_config.clone())?;
-        let worker_kernel = self.select_remote_kernel_by_ref_with_config(
-            kernel_ref,
-            &request.provider,
-            &discovery_config,
-        )?;
+        // Until a worker is chosen nothing exists over there: the caller may settle its obligation.
+        let unplaced = |error: DaemonError| match error {
+            error @ DaemonError::NoRemoteKernelAvailable { .. } => error,
+            error => DaemonError::NoRemoteKernelAvailable {
+                machine_ref: kernel_ref.to_string(),
+                provider: request.provider.clone(),
+                message: error.to_string(),
+            },
+        };
+        let discovery_config = self
+            .remote_worker_discovery_config(kernel_ref, relay_config.clone())
+            .map_err(unplaced)?;
+        let worker_kernel = self
+            .select_remote_kernel_by_ref_with_config(
+                kernel_ref,
+                &request.provider,
+                &discovery_config,
+            )
+            .map_err(unplaced)?;
         authorize()?;
         let worker_worktree_id =
             self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
@@ -1449,13 +1461,23 @@ impl DaemonApp {
             slice_recovery::recorded_slice_worker_id(&self.slices, kernel_ref)?;
         if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = projected_kernels.into_iter().find(|kernel| {
+            if let Some(kernel) = projected_kernels.iter().find(|kernel| {
                 match expected_slice_worker.as_deref() {
                     Some(expected) => kernel.kernel_id == expected,
                     None => kernel_presence_matches_ref(kernel, kernel_ref),
                 }
             }) {
-                return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
+                return ensure_kernel_can_host_provider(kernel.clone(), kernel_ref, provider);
+            }
+            // A machine name, as the machine and kernel pickers show it.
+            if expected_slice_worker.is_none() {
+                if let Some(kernel) = select_remote_kernel(
+                    slice_recovery::ordinary_machine_workers(&self.slices, projected_kernels),
+                    kernel_ref,
+                    provider,
+                ) {
+                    return Ok(kernel);
+                }
             }
         }
         let mut last_error = None;
@@ -1481,10 +1503,19 @@ impl DaemonApp {
                 }
             }
         }
-        Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
+        let error = last_error.unwrap_or_else(|| DaemonError::LocalTransport {
             operation: "select remote kernel",
             message: format!("kernel `{kernel_ref}` did not appear"),
-        }))
+        });
+        let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
+        Err(DaemonError::NoRemoteKernelAvailable {
+            machine_ref: kernel_ref.to_string(),
+            provider: provider.to_string(),
+            message: format!(
+                "{error}; {}",
+                usable_kernel_refs_message(&projected_kernels, provider)
+            ),
+        })
     }
 
     fn can_use_connected_relay_inventory(

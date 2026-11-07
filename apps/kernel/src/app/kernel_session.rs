@@ -554,8 +554,8 @@ fn workflow_code_validation_error_message(
     }
 }
 
-/// A remote spawn failed. When the relay turned the request away nothing was created
-/// over there, so the delegate obligation ends rejected and its owner can go on.
+/// A remote spawn failed. When no kernel was chosen or the relay turned the request away
+/// nothing was created over there, so the delegate obligation ends rejected and its owner can go on.
 /// Any other failure may have created the agent: the obligation stays open for inspection.
 pub(crate) fn settle_remote_spawn_failure(
     store: &crate::durable_state::DurableKernelStateStore,
@@ -563,7 +563,9 @@ pub(crate) fn settle_remote_spawn_failure(
     kernel_ref: &str,
     error: DaemonError,
 ) -> DaemonError {
-    if !crate::transport::relay_client::relay_refusal(&error) {
+    let nothing_created = matches!(error, DaemonError::NoRemoteKernelAvailable { .. })
+        || crate::transport::relay_client::relay_refusal(&error);
+    if !nothing_created {
         return crate::runtime::room_dispatch_registration::dispatch_error(
             obligation,
             None,

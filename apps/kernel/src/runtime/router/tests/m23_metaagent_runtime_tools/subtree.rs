@@ -532,6 +532,22 @@ async fn remote_refusal() {
         !unresolved(&refused),
         "ORCH-11: a definite refusal settles the obligation"
     );
+    // No kernel was chosen: nothing was created, so the obligation ends rejected as well.
+    let unplaced = register();
+    crate::app::settle_remote_spawn_failure(
+        &store,
+        Some(&unplaced),
+        "worker",
+        DaemonError::NoRemoteKernelAvailable {
+            machine_ref: "worker".into(),
+            provider: "codex".into(),
+            message: "kernel `worker` is not visible".into(),
+        },
+    );
+    assert!(
+        !unresolved(&unplaced),
+        "a spawn that found no kernel leaves no open delegate obligation"
+    );
     // Any other failure may have created the agent: the obligation stays for inspection.
     let uncertain = register();
     let error = crate::app::settle_remote_spawn_failure(

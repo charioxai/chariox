@@ -809,6 +809,48 @@ async fn slice_selector_ordinary_explicit_alias_remains_supported() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_accepts_the_machine_alias_the_person_sees() {
+    let fixture = Fixture::with_slice_identity(false).await;
+    let home = fixture.home.lock().await;
+    home.slices().restore_records(Vec::new());
+    let mut presence = fixture.presences[1].clone();
+    presence.machine_alias = Some("hkb-kernel".into());
+    presence.kernel_alias = Some("worker-1".into());
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), vec![presence.clone()]);
+    let selected = home
+        .select_remote_kernel_by_ref_with_config(
+            "hkb-kernel",
+            &presence.available_providers[0],
+            home.config(),
+        )
+        .unwrap();
+    assert_eq!(selected.kernel_id, presence.kernel_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_refusal_names_the_usable_kernels() {
+    let fixture = Fixture::with_slice_identity(false).await;
+    let home = fixture.home.lock().await;
+    let mut presence = fixture.presences[1].clone();
+    presence.machine_alias = Some("hkb-kernel".into());
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), vec![presence.clone()]);
+    let error = home
+        .select_remote_kernel_by_ref_with_config(
+            "no-such-machine",
+            &presence.available_providers[0],
+            home.config(),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&presence.kernel_id) && error.contains("hkb-kernel"),
+        "the refusal must name what can be used: {error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn slice_selector_move_to_canonical_worker_does_not_treat_it_as_machine() {
     let fixture = Fixture::new().await;
     let home = fixture.home.lock().await;

@@ -119,6 +119,35 @@ pub(super) fn ensure_kernel_can_host_provider(
     Ok(kernel)
 }
 
+/// What a person can name instead of a missing kernel: the kernels that could host the provider.
+pub(super) fn usable_kernel_refs_message(
+    kernels: &[RelayKernelPresence],
+    provider: &str,
+) -> String {
+    let usable = kernels
+        .iter()
+        .filter(|kernel| {
+            kernel.accepting_remote_leases
+                && kernel
+                    .available_providers
+                    .iter()
+                    .any(|candidate| candidate == provider)
+        })
+        .map(|kernel| match kernel.machine_alias.as_deref() {
+            Some(machine) => format!("`{}` (machine `{machine}`)", kernel.kernel_id),
+            None => format!("`{}`", kernel.kernel_id),
+        })
+        .collect::<Vec<_>>();
+    if usable.is_empty() {
+        format!("no visible kernel is accepting `{provider}` agents; next: connect a worker kernel")
+    } else {
+        format!(
+            "next: use a kernel id or machine name from: {}",
+            usable.join(", ")
+        )
+    }
+}
+
 fn kernel_presence_matches_machine_ref(kernel: &RelayKernelPresence, machine_ref: &str) -> bool {
     kernel.machine_id == machine_ref
         || kernel.machine_alias.as_deref() == Some(machine_ref)
