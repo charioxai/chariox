@@ -682,6 +682,7 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     mod local_access;
+    mod reconnect;
 
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
