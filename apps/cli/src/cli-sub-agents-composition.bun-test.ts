@@ -49,3 +49,17 @@ test("AO-UI-01 nothing is handled while detached or with no sub-agents", () => {
     dispose()
   })
 })
+
+test("AO-UI-01 a click on a stripe selects that agent's sub-agents and opens the card on them", async () => {
+  await createRoot(async dispose => {
+    const other: AgentTree = { ...tree, root: "other", nodes: [node("b1", "other", "running", 1)], totals: { live: 1, running: 1, needs_user: 0 } }
+    const client = { send: async (request: { ListDescendants: { agent_id: string } }) => ({ AgentTree: { tree: request.ListDescendants.agent_id === "other" ? other : tree } }), onKernelEvent: () => () => {} }
+    const session = { id: "s1", agents: [{ id: "room" }, { id: "other" }] }
+    const sub = createCliSubAgentsComposition({ client: client as never, session: () => session as never, attached: () => true, focusedAgentId: () => "room", width: () => 100 })
+    await sub.controller.refresh("room"); await sub.controller.refresh("other")
+    sub.stripeFor("other")!.open()
+    assert.equal(sub.cardOpen(), true)
+    assert.deepEqual(sub.controller.lines().map(row => row.id), ["b1"])
+    dispose()
+  })
+})

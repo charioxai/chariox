@@ -66,7 +66,7 @@ export function createCliSubAgentsComposition(deps: {
     bindRender(render: () => void) { draw = render },
     stripeFor(agentId: string | null | undefined) {
       const stripe = deps.attached() ? controller.stripe(agentId) : null
-      return stripe && { ...stripe, open: () => controller.openCard() }
+      return stripe && { ...stripe, open: () => { controller.select(agentId ?? null); controller.openCard() } }
     },
     cardRows: () => subAgentsCardRows(controller.lines(), controller.selectedIndex, new Set(controller.lines().filter(row => controller.isCollapsed(row.id)).map(row => row.id)), dialogTextWidth(deps.width())),
     closeCard: () => controller.closeCard(),
