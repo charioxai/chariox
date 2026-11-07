@@ -1294,6 +1294,136 @@ mod tests {
         wrong_passphrase_retry(true).await;
     }
 
+    // PCD-04: clients never see the card leave while the passphrase is checked; the refusal arrives in the same card.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_wrong_passphrase_keeps_one_card_on_screen() {
+        let workspace = crate::test_support::TestWorktree::new("vault-one-card");
+        let private_state = crate::test_support::TestWorktree::new("vault-one-card-state");
+        let path = private_state.path().join("vault.json");
+        crate::secret::create_chariox_encrypted_vault_for_test(&path, "test passphrase").unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&path).unwrap();
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.credential_vault.backend =
+            crate::config::CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path = path.display().to_string();
+        let mut app = crate::app::DaemonApp::bootstrap(config).unwrap();
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(workspace.session_request())
+            .unwrap();
+        let state =
+            super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app(app);
+        let (session_id, agent_id) = (session.id().to_owned(), agent.id().to_owned());
+        let asking = {
+            let (state, session_id, agent_id) =
+                (state.clone(), session_id.clone(), agent_id.clone());
+            tokio::spawn(async move {
+                state
+                    .ensure_vault_unlocked_for_agent(&session_id, &agent_id, "runtime_tool_test")
+                    .await
+                    .map(|_| ())
+            })
+        };
+        let visible = {
+            let (state, session_id, agent_id) =
+                (state.clone(), session_id.clone(), agent_id.clone());
+            move || {
+                state
+                    .owned
+                    .session_store
+                    .get_session(&session_id)
+                    .unwrap()
+                    .active_interactions()
+                    .iter()
+                    .filter(|card| card.agent_id() == Some(agent_id.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            }
+        };
+        let first = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            loop {
+                if let Some(card) = visible().pop() {
+                    return card;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the Vault card is on screen");
+        let sampling = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let sampler = {
+            let (visible, sampling) = (visible.clone(), sampling.clone());
+            tokio::spawn(async move {
+                let mut seen: Vec<Vec<(String, bool)>> = Vec::new();
+                while sampling.load(std::sync::atomic::Ordering::SeqCst) {
+                    let now = visible()
+                        .iter()
+                        .map(|card| {
+                            (
+                                card.id().to_owned(),
+                                card.message().starts_with("That is not the Vault passphrase"),
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    if seen.last() != Some(&now) {
+                        seen.push(now);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                }
+                seen
+            })
+        };
+        let answer = |passphrase: &'static str| {
+            let (state, session_id, id) = (state.clone(), session_id.clone(), first.id().to_owned());
+            async move {
+                state
+                    .resolve_terminal_runtime_interaction(
+                        &session_id,
+                        &id,
+                        "unlock_kernel",
+                        Some(passphrase),
+                        Some(crate::session::DEFAULT_LOCAL_USER_ID),
+                    )
+                    .await
+            }
+        };
+        answer("not the passphrase").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while !visible()
+                .pop()
+                .is_some_and(|card| card.message().starts_with("That is not the Vault passphrase"))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the refusal shows in the card");
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        sampling.store(false, std::sync::atomic::Ordering::SeqCst);
+        let seen = sampler.await.unwrap();
+        assert!(
+            seen.iter().all(|cards| cards.len() == 1),
+            "a client saw no card or two cards: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|cards| cards[0].0 == first.id()),
+            "the refusal came in another card: {seen:?}"
+        );
+        assert_eq!(visible().len(), 1);
+        assert!(!asking.is_finished(), "the agent's operation still waits");
+        answer("test passphrase").await.unwrap();
+        asking
+            .await
+            .unwrap()
+            .expect("the right passphrase after a wrong one still unlocks");
+        assert!(visible().is_empty(), "the unlock closes the card");
+        assert!(
+            crate::secret::chariox_encrypted_vault_status(&path)
+                .unwrap()
+                .unlocked
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_expired_vault_wait_ignores_a_queued_answer() {
         let workspace = crate::test_support::TestWorktree::new("vault-queued-answer");
