@@ -2025,6 +2025,13 @@ mod tests {
             vec![TOKEN],
             "B's own Vault holds the token under the same handle"
         );
+        // Nothing either kernel left on disk holds the token: not the package, the receipt, the
+        // outbound state, the profile registries, the logs, nor the Vaults (sealed data only).
+        assert_eq!(
+            crate::test_support::secret_scan::files_holding_secret(&root, TOKEN),
+            Vec::new(),
+            "no file of the carry holds the token in plain, hex or base64 form"
+        );
         // The same passphrase opens both Vaults; each kernel keeps its own file.
         crate::secret::lock_chariox_encrypted_vault(&config_b.user_config.credential_vault.path)
             .unwrap();
