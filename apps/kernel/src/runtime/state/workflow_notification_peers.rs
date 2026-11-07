@@ -293,7 +293,34 @@ impl KernelRuntimeState {
                     "shared access cannot detach remote workflow notifications",
                 ));
             }
-            self.detach_notification_subscription(&sub).await?;
+            // An agent listens through its trigger, which the room's pane shows: detaching the
+            // subscription removes the trigger, so no trigger is left that no longer fires.
+            let trigger = (sub.target_kind == WorkflowNotificationTargetKind::Agent)
+                .then_some(sub.trigger_id.as_deref())
+                .flatten()
+                .filter(|trigger_id| {
+                    self.owned
+                        .session_store
+                        .get_session(&sub.session_id)
+                        .is_ok_and(|session| {
+                            session
+                                .agent_triggers()
+                                .iter()
+                                .any(|trigger| trigger.id() == *trigger_id)
+                        })
+                });
+            if let Some(trigger_id) = trigger {
+                self.delete_agent_trigger(
+                    crate::local::DeleteAgentTriggerRequest {
+                        session_id: sub.session_id.clone(),
+                        trigger_id: trigger_id.into(),
+                    },
+                    owner,
+                )
+                .await?;
+            } else {
+                self.detach_notification_subscription(&sub).await?;
+            }
             return Ok(LocalDaemonResponse::WorkflowNotificationDetached {
                 subscription_id: sub.subscription_id,
             });
