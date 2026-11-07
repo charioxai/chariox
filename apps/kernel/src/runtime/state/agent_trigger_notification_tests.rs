@@ -2,8 +2,9 @@ use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prom
 use super::workflow_notification_peers::VERSION;
 use super::*;
 use crate::local::{
-    AgentTriggerSourceRequest, DeleteAgentTriggerRequest, ListWorkflowNotificationsRequest,
-    LocalDaemonRequest, RegisterWorkflowNotificationSourceRequest, UpdateAgentTriggerRequest,
+    AgentTriggerSourceRequest, DeleteAgentTriggerRequest, DetachWorkflowNotificationRequest,
+    ListWorkflowNotificationsRequest, LocalDaemonRequest,
+    RegisterWorkflowNotificationSourceRequest, UpdateAgentTriggerRequest,
 };
 use crate::session::{
     AgentTriggerBusyPolicy, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
@@ -2771,4 +2772,74 @@ async fn accepting_agent_notifications_while_the_session_store_is_written_never_
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     finished.expect("accepting an agent notification waited on the session store for ever");
     writer.join().unwrap();
+}
+
+impl Rig {
+    /// `/workflow trigger notification list ... detach <subscription-id>` of the one listener.
+    async fn detach_subscription(&self) {
+        let subscription = self.subscriptions().remove(0);
+        let response = self
+            .runtime
+            .execute_workflow_notification_command(
+                LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
+                    session_id: self.session_id.clone(),
+                    subscription_id: subscription.subscription_id.clone(),
+                }),
+                "local",
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            LocalDaemonResponse::WorkflowNotificationDetached { subscription_id }
+                if subscription_id == subscription.subscription_id
+        ));
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 (N1): the trigger is the agent's listener, so detaching its
+// subscription from the notification list removes the trigger with it.
+#[tokio::test]
+async fn detaching_an_agent_notification_subscription_removes_its_trigger() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+
+    rig.detach_subscription().await;
+
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    assert!(
+        session.agent_triggers().is_empty(),
+        "the trigger outlived its subscription"
+    );
+    assert!(rig.subscriptions().is_empty());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 (N1): subscribing again after a detach listens again.
+#[tokio::test]
+async fn subscribing_again_after_a_detach_queues_the_next_occurrence() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    rig.detach_subscription().await;
+
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    assert_eq!(rig.subscriptions().len(), 1);
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(queued[0].contains("release 0 approved"), "{queued:?}");
 }
