@@ -686,6 +686,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         op @ (Operation::Progress { .. }
         | Operation::SourceOutcome { .. }
         | Operation::DelegateUnavailable { .. }
+        | Operation::ReleaseSpawn { .. }
         | Operation::Sweep { .. }
         | Operation::ArchiveTask { .. }
         | Operation::CancelTask { .. }

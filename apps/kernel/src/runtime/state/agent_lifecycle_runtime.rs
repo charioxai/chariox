@@ -1064,6 +1064,19 @@ impl KernelRuntimeState {
                 let Some(source) = obligation.resource_id.as_ref() else {
                     continue;
                 };
+                // Deleting an agent that was never given work loses nothing.
+                if obligation.kind == "delegate"
+                    && obligation.completion_task_id.is_none()
+                    && self.owned.agent_store.get_agent(source).is_err()
+                {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::ReleaseSpawn {
+                            room: task.room_id.clone(),
+                            source: source.clone(),
+                        })?;
+                    continue;
+                }
                 let outcome = match obligation.kind.as_str() {
                     "delegate" => {
                         let child_task = match &obligation.completion_task_id {

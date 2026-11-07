@@ -445,6 +445,12 @@ pub(crate) enum Operation {
         reason: DelegateGoneReason,
         now: u64,
     },
+    /// A deleted agent that was never given work: its parents' spawn
+    /// obligations on it end without a failure.
+    ReleaseSpawn {
+        room: String,
+        source: String,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,

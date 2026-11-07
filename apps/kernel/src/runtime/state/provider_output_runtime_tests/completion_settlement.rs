@@ -3644,6 +3644,86 @@ async fn a12_destroyed_bound_goal_source_reconciles_without_periodic_poll() {
     assert!(task.goal.is_some());
 }
 
+/// A parent that deletes a sub-agent it never gave work is not left with a
+/// failed delegation that needs its owner: there was nothing to lose.
+#[tokio::test]
+async fn deleting_a_sub_agent_that_was_never_prompted_releases_the_spawn() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let worktree = crate::test_support::TestWorktree::new("spawn-deleted-unprompted");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, parent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    let child = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(crate::agent::CreateAgentRequest::new(
+            session.id(),
+            "dev-stub",
+        ))
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let store = &runtime.owned.durable_state_store;
+    let owner = session.owner_user_id().to_string();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: owner.clone(),
+            room: session.id().into(),
+            agent: parent.id().into(),
+            prompt: "parent-task".into(),
+            run: None,
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::RegisterObligation {
+            owner: owner.clone(),
+            room: session.id().into(),
+            agent: parent.id().into(),
+            prompt: "parent-task".into(),
+            run: None,
+            id: "spawn".into(),
+            kind: "delegate".into(),
+            resource: Some(child.id().into()),
+            now: 1,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::DispatchReceipt {
+            id: "spawn".into(),
+            accepted: true,
+            resource: Some(child.id().into()),
+        })
+        .unwrap();
+    runtime.destroy_agent(child.id(), &owner).await.unwrap();
+    let status = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            let task = store
+                .agent_tasks(Some(session.id()), Some(parent.id()))
+                .unwrap()
+                .remove(0);
+            if task.obligations[0].status != "open" {
+                return task.obligations[0].status.clone();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the deletion settles the spawn without a periodic sweep");
+    assert_eq!(
+        status, "cancelled",
+        "nothing was delegated, so nothing failed"
+    );
+    assert!(
+        store
+            .agent_inbox(session.id(), parent.id(), 0)
+            .unwrap()
+            .is_empty(),
+        "the parent deleted it itself: no lost-source event"
+    );
+}
+
 /// G18: a durable write refused while a completed turn settles keeps that turn
 /// pending; after the writer recovers the retry settles it instead of leaving
 /// the agent busy for good.
