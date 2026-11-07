@@ -2169,7 +2169,12 @@ mod mp11_delivery_gate_tests {
             active: true,
         };
         store
-            .reconcile_for_owner("kernel", "user", &claim.generator_id, &[claim.clone()])
+            .reconcile_for_owner(
+                "kernel",
+                "user",
+                &claim.generator_id,
+                std::slice::from_ref(&claim),
+            )
             .unwrap();
         let selected = store
             .matching_for_delivery(
@@ -2192,7 +2197,12 @@ mod mp11_delivery_gate_tests {
             .unwrap()
             .is_empty());
         store
-            .reconcile_for_owner("kernel", "user", &claim.generator_id, &[claim.clone()])
+            .reconcile_for_owner(
+                "kernel",
+                "user",
+                &claim.generator_id,
+                std::slice::from_ref(&claim),
+            )
             .unwrap();
         assert!(store
             .delivery_guard(&selected[0].0, selected[0].1)
@@ -2231,7 +2241,7 @@ mod mp11_delivery_gate_tests {
             active: true,
         };
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         assert_eq!(
             store
@@ -2256,7 +2266,7 @@ mod mp11_delivery_gate_tests {
             .unwrap()
             .is_empty());
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         assert_eq!(
             store
