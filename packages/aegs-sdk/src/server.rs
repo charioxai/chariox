@@ -332,7 +332,14 @@ impl AegsServer {
                             }),
                         )
                     }
-                    Err(message) => error(StatusCode::BAD_REQUEST, "invalid_subscription", message),
+                    Err(crate::store::ReconcileError::KernelRevoked) => error(
+                        StatusCode::FORBIDDEN,
+                        "kernel_revoked",
+                        "this kernel was removed from the owner's kernels",
+                    ),
+                    Err(crate::store::ReconcileError::Invalid(message)) => {
+                        error(StatusCode::BAD_REQUEST, "invalid_subscription", message)
+                    }
                 }
             }
             (Method::GET, "/v1/owners/kernels") => {
@@ -2467,18 +2474,31 @@ mod mp11_delivery_http_tests {
         assert_eq!(status, 403, "{body}");
         assert_eq!(body["error"]["code"], "kernel_revoked", "{body}");
         let stored = store.all_for_owner("dev.chariox.github", "owner").unwrap();
+        let held_now = stored
+            .iter()
+            .find(|claim| claim.binding_id == "held")
+            .unwrap();
         assert!(
-            stored.iter().all(|claim| !claim.active),
-            "the revoked kernel's subscriptions stayed inactive: {stored:?}"
+            !held_now.active,
+            "the revoked kernel's subscription stays inactive"
         );
+        assert_eq!(held_now.revision, 1, "the parked claim was not stored");
         assert!(store
             .matching("dev.chariox.github", "event", "scope")
             .unwrap()
-            .is_empty());
-        assert!(store
+            .iter()
+            .all(|claim| claim.binding_id != "held"));
+        let audience = store
             .audience_for_interest("dev.chariox.github", "interest", None)
-            .unwrap()
-            .is_empty());
+            .unwrap();
+        assert!(
+            audience.iter().all(|route| route.kernel_id != kernel_a_id),
+            "no private event is routed to the revoked kernel: {audience:?}"
+        );
+        assert!(
+            !audience.is_empty(),
+            "the owner's other subscriptions are still delivered"
+        );
     }
 
     #[tokio::test]

@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -98,6 +98,12 @@ pub struct AegsStore {
     delivery_gate: Arc<tokio::sync::RwLock<()>>,
 }
 
+/// A subscription may receive events only while its kernel has not been removed from the
+/// owner's kernels.
+const KERNEL_IS_MEMBER: &str =
+    "NOT EXISTS (SELECT 1 FROM owner_kernels m WHERE m.owner_id = subscriptions.owner_id
+        AND m.kernel_id = subscriptions.kernel_id AND m.state <> 'member')";
+
 /// A subscription may receive events only while its connection is ready and its authority
 /// (connection owner, provider and generation) is the one recorded when it was reconciled.
 const SUBSCRIPTION_AUTHORIZED: &str =
@@ -109,6 +115,32 @@ const SUBSCRIPTION_AUTHORIZED: &str =
         WHERE a.binding_id = subscriptions.binding_id
           AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
           AND a.generation = g.generation)))";
+
+/// Why a reconciliation was not stored.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReconcileError {
+    /// The kernel was removed from the owner's kernels, possibly while the caller was
+    /// checking its claims.
+    KernelRevoked,
+    Invalid(String),
+}
+
+impl From<String> for ReconcileError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+impl From<ReconcileError> for String {
+    fn from(error: ReconcileError) -> Self {
+        match error {
+            ReconcileError::KernelRevoked => {
+                "this kernel was removed from the owner's kernels".to_string()
+            }
+            ReconcileError::Invalid(message) => message,
+        }
+    }
+}
 
 impl AegsStore {
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
@@ -306,31 +338,32 @@ impl AegsStore {
         generator_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<Vec<String>, String> {
-        self.reconcile_for_owner(kernel_id, kernel_id, generator_id, claims)
+        Ok(self.reconcile_for_owner(kernel_id, kernel_id, generator_id, claims)?)
     }
 
     /// Reconcile the bindings one kernel holds for `owner_id`. The kernel is the subscriber
     /// (the audience of every publication names it); the owner groups the kernels that share
     /// the connections. The caller has already checked the claims against the owner's
-    /// connections.
+    /// connections, which can take long enough for the kernel to be removed from the owner's
+    /// kernels, so the transaction checks the membership again.
     pub fn reconcile_for_owner(
         &self,
         kernel_id: &str,
         owner_id: &str,
         generator_id: &str,
         claims: &[SubscriptionClaim],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, ReconcileError> {
         if kernel_id.trim().is_empty() || owner_id.trim().is_empty() {
-            return Err(
+            return Err(ReconcileError::Invalid(
                 "subscription reconciliation needs a kernel id and an owner id".to_string(),
-            );
+            ));
         }
         for claim in claims {
             if claim.generator_id != generator_id {
-                return Err(format!(
+                return Err(ReconcileError::Invalid(format!(
                     "binding {} belongs to generator {}, not {}",
                     claim.binding_id, claim.generator_id, generator_id
-                ));
+                )));
             }
             claim.validate()?;
         }
@@ -339,8 +372,19 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
+        let membership: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM owner_kernels WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if membership.is_some_and(|state| state != "member") {
+            return Err(ReconcileError::KernelRevoked);
+        }
         let claimed_binding_ids = claims
             .iter()
             .map(|claim| claim.binding_id.as_str())
@@ -455,7 +499,7 @@ impl AegsStore {
                 FROM subscriptions
                 WHERE generator_id = ?1 AND event_type = ?2
                   AND connection_scope = ?3 AND active = 1
-                  AND {SUBSCRIPTION_AUTHORIZED}
+                  AND {KERNEL_IS_MEMBER} AND {SUBSCRIPTION_AUTHORIZED}
                 ORDER BY binding_id
                 "
             ))
@@ -496,7 +540,7 @@ impl AegsStore {
                 "SELECT kernel_id, binding_id FROM subscriptions
                  WHERE generator_id = ?1 AND event_interest_key = ?2 AND active = 1
                    AND (?3 IS NULL OR connection_id = ?3)
-                   AND {SUBSCRIPTION_AUTHORIZED}
+                   AND {KERNEL_IS_MEMBER} AND {SUBSCRIPTION_AUTHORIZED}
                  ORDER BY binding_id"
             ))
             .map_err(|error| error.to_string())?;
@@ -585,7 +629,7 @@ impl AegsStore {
     ) -> Result<(), String> {
         let mut connection = self.lock()?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
         transaction
             .execute(
@@ -769,16 +813,16 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "
                 SELECT binding_id, generator_id, connection_id, connection_scope,
                        event_interest_key, event_type, event_type_version, filter_json,
                        revision, active
                 FROM subscriptions
-                WHERE connection_id = ?1 AND active = 1
+                WHERE connection_id = ?1 AND active = 1 AND {KERNEL_IS_MEMBER}
                 ORDER BY binding_id
-                ",
-            )
+                "
+            ))
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(params![connection_id], |row| {
@@ -2514,5 +2558,82 @@ mod shared_connection_tests {
         // Revoking the connection stops every kernel's subscription at the source.
         store.revoke_connection("connection", "owner", 5).unwrap();
         assert!(bindings(&store).is_empty());
+    }
+    #[test]
+    fn a_revoked_kernel_cannot_reconcile_and_is_not_in_any_audience() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        let audience_kernels = |store: &AegsStore| {
+            store
+                .audience_for_interest(generator, "interest-chariox/repo", None)
+                .unwrap()
+                .into_iter()
+                .map(|route| route.kernel_id)
+                .collect::<Vec<_>>()
+        };
+        for kernel in ["kernel-a", "kernel-b"] {
+            store
+                .admit_kernel_to_owner("owner", kernel, 1, None, None)
+                .unwrap();
+            store
+                .reconcile_for_owner(
+                    kernel,
+                    "owner",
+                    generator,
+                    &[claim(&format!("binding-{kernel}"), "chariox/repo")],
+                )
+                .unwrap();
+        }
+        assert_eq!(audience_kernels(&store), ["kernel-a", "kernel-b"]);
+        store.revoke_owner_kernel("owner", "kernel-a", 2).unwrap();
+        assert_eq!(audience_kernels(&store), ["kernel-b"]);
+        let refused = store.reconcile_for_owner(
+            "kernel-a",
+            "owner",
+            generator,
+            &[claim("binding-kernel-a", "chariox/repo")],
+        );
+        assert_eq!(refused, Err(ReconcileError::KernelRevoked));
+        assert_eq!(audience_kernels(&store), ["kernel-b"]);
+    }
+
+    /// Delivery re-checks the membership itself: a subscription that is still active under a
+    /// revoked kernel (whatever left it so) is never selected.
+    #[test]
+    fn membership_revoked_under_an_active_subscription_stops_delivery() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        store
+            .admit_kernel_to_owner("owner", "kernel-a", 1, None, None)
+            .unwrap();
+        store
+            .reconcile_for_owner(
+                "kernel-a",
+                "owner",
+                generator,
+                &[claim("binding-a", "chariox/repo")],
+            )
+            .unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE owner_kernels SET state = 'revoked' WHERE kernel_id = 'kernel-a'",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .matching(generator, "event", "chariox/repo")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .audience_for_interest(generator, "interest-chariox/repo", None)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .active_subscriptions_for_connection("connection")
+            .unwrap()
+            .is_empty());
     }
 }
