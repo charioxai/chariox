@@ -1,7 +1,6 @@
 //! A finishing child tells its parent once: the `child_finished` event is also the receipt of the
 //! delegation, so acknowledging it settles the obligation and no second event is delivered.
 use super::child_finished::family;
-use super::*;
 use crate::durable_state::agent_lifecycle::Operation;
 
 #[tokio::test]

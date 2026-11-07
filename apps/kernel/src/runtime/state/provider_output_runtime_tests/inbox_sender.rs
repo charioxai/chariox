@@ -1,7 +1,6 @@
 //! The inbox says what the sender of each event is, from the agent tree: an instruction from the
 //! reader's parent, a report from its sub-agent, information from a peer.
 use super::child_finished::family;
-use super::*;
 use crate::durable_state::agent_lifecycle::{occurrence, Operation};
 
 fn send(team: &super::child_finished::Family, to: &str, from: &str, id: &str) {

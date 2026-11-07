@@ -1,7 +1,6 @@
 //! A4: the tree a client reads follows the sub-agents' turns: state, outcome and a
 //! revision that moves exactly when the read differs, announced once to followers.
 use super::child_finished::{team, team_with, Team};
-use super::*;
 use crate::durable_state::agent_lifecycle::outside::Mutation;
 use crate::durable_state::agent_lifecycle::{Operation, Outcome};
 use crate::local::{
