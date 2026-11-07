@@ -23,6 +23,9 @@ async fn stale_delegated_prompt() {
     let peer = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(CreateAgentRequest::new(session.id(), "dev-stub").with_alias("cold-peer"))
         .unwrap();
+    app.agents()
+        .set_parent_agent(peer.id(), Some(crate::agent::AgentRef::local(actor.id())))
+        .unwrap();
     crate::app::KernelSessionService::new(&mut app)
         .attach(crate::attachment::AttachRequest::new(
             session.id(),
