@@ -386,8 +386,16 @@ done
     rig.runtime
         .reload_updated_user_app_view("alice", view)
         .await;
-    let reloaded = rig.runtime.app_control().user_views().get("alice", &view_id);
-    assert_eq!(reloaded.unwrap().0.generation, generation, "the Tab moved to the new generation");
+    let reloaded = rig
+        .runtime
+        .app_control()
+        .user_views()
+        .get("alice", &view_id);
+    assert_eq!(
+        reloaded.unwrap().0.generation,
+        generation,
+        "the Tab moved to the new generation"
+    );
 
     let context = rig
         .runtime

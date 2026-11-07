@@ -355,6 +355,14 @@ impl KernelRuntimeState {
         if reloaded.is_err() {
             // Not reloaded: stay on the old generation so the next poll retries.
             instances.set_generation(owner, &view.view_id, binding.generation);
+            return;
+        }
+        // An uninstall drops the Room-side queue binding and an update leaves the
+        // old generation in it; the retained view is the authority for both.
+        if let Some((binding, _)) = instances.get(owner, &view.view_id) {
+            self.app_control()
+                .views()
+                .register(&view.view_id, &view.view_id, binding);
         }
     }
 
