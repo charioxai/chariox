@@ -736,7 +736,7 @@ async fn a_decision_the_user_holds_for_a_sub_agent_is_reported_in_the_room_agent
     );
     assert_eq!(
         before.told(&t),
-        [record.clone()],
+        std::slice::from_ref(&record),
         "live: same id, shown in the room agent"
     );
     let later = Follower::follow(&t);
