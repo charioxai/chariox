@@ -549,10 +549,8 @@ impl KernelRuntimeOwnedState {
                 .is_none_or(|choice| choice.vault_unlock().is_some());
         if holds_card
             && pending
-                .responder
-                .lock()
-                .expect("pending interaction responder mutex poisoned")
-                .is_none()
+                .checking_answer
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
             return Err(interaction_error("The Vault is checking a passphrase"));
         }
@@ -712,6 +710,9 @@ impl KernelRuntimeOwnedState {
             .responder
             .lock()
             .expect("pending interaction responder mutex poisoned") = Some(sender);
+        pending
+            .checking_answer
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         sessions.restore_session(session);
         drop(sessions);
         activity_mutation.record();

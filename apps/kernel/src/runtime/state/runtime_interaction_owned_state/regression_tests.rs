@@ -261,6 +261,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,
                 kernel_wide_interaction: None,
