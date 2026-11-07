@@ -654,3 +654,45 @@ fn a_repeat_attach_that_fails_keeps_the_reinstall_the_source_still_owes() {
         pair.finish().await;
     });
 }
+
+#[test]
+fn a_detach_whose_request_never_left_this_kernel_is_still_owed_to_the_source() {
+    on_a_big_stack(async {
+        let pair = pair("wfgen-detachowed").await;
+        let subscription = pair.attach_now().await.unwrap();
+        assert!(pair.source_holds());
+        // The kernel stopped between the local detach and its request to the source.
+        pair.target
+            .store
+            .notify(NotificationOperation::Detach {
+                subscription_id: subscription.subscription_id.clone(),
+                owner: "local".into(),
+                kernel: subscription.target_kernel_id.clone(),
+            })
+            .unwrap();
+        assert!(!pair.destination_holds());
+        assert_eq!(
+            pair.target.store.unconfirmed_detaches(),
+            1,
+            "nothing remembers that the source must still drop the follow"
+        );
+        pair.target_runtime
+            .reconcile_remote_notification_installs(later())
+            .await;
+        assert!(!pair.source_holds());
+        assert_eq!(pair.target.store.unconfirmed_installs(), 0);
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_detach_the_source_confirmed_leaves_nothing_owed() {
+    on_a_big_stack(async {
+        let pair = pair("wfgen-detachdone").await;
+        let subscription = pair.attach_now().await.unwrap();
+        pair.detach_now(&subscription).await;
+        assert!(!pair.source_holds() && !pair.destination_holds());
+        assert_eq!(pair.target.store.unconfirmed_installs(), 0);
+        pair.finish().await;
+    });
+}
