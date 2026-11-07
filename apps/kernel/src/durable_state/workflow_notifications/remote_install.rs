@@ -5,15 +5,18 @@ use super::*;
 
 /// The source kernel is asked again this long after an unconfirmed install or detach.
 const RECONCILE_RETRY_MS: i64 = 30_000;
-/// A reconciliation the source never matched is dropped after this many asks (about ten minutes).
+/// A reconciliation the source never matched is parked after this many asks (about ten minutes)
+/// and asked again only when the source kernel connects again.
 const RECONCILE_MAX_ATTEMPTS: i64 = 20;
+/// The next attempt of a parked reconciliation: no clock reaches it.
+const PARKED: i64 = i64::MAX;
 /// An install still unsettled this long after it began lost its task (a crash): it is settled
 /// as unconfirmed. Far above the peer request timeout.
 const INSTALL_SETTLE_AFTER_MS: i64 = 60_000;
 
-/// Why a reconciliation entry was dropped without the source matching it.
+/// Why a reconciliation entry stopped being asked without the source matching it.
 #[derive(Debug)]
-enum ReconcileDropped {
+enum ReconcileParked {
     AttemptsExhausted,
 }
 
@@ -130,9 +133,9 @@ pub(super) fn claim_in(
     limit: usize,
 ) -> Result<Vec<RemoteReconcile>, DaemonError> {
     let rows = {
-        let mut q = tx.prepare("SELECT owner_id,subscription_id,source_kernel_id,desired_json,attempts FROM workflow_notification_remote_installs WHERE state='reconcile' AND next_attempt_at_ms<=?1 ORDER BY next_attempt_at_ms,subscription_id LIMIT ?2").map_err(sql)?;
+        let mut q = tx.prepare("SELECT owner_id,subscription_id,source_kernel_id,desired_json,attempts FROM workflow_notification_remote_installs WHERE state='reconcile' AND next_attempt_at_ms<=?1 AND next_attempt_at_ms<?3 ORDER BY next_attempt_at_ms,subscription_id LIMIT ?2").map_err(sql)?;
         let rows = q
-            .query_map(params![now as i64, limit as i64], |r| {
+            .query_map(params![now as i64, limit as i64, PARKED], |r| {
                 Ok((
                     r.get(0)?,
                     r.get(1)?,
@@ -148,12 +151,12 @@ pub(super) fn claim_in(
     let mut due = Vec::new();
     for (owner, subscription_id, source_kernel_id, desired, attempts) in rows {
         if attempts >= RECONCILE_MAX_ATTEMPTS {
-            tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile'",params![owner,subscription_id]).map_err(sql)?;
+            tx.execute("UPDATE workflow_notification_remote_installs SET next_attempt_at_ms=?3 WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile'",params![owner,subscription_id,PARKED]).map_err(sql)?;
             crate::logging::warn_with_fields(
                 "workflow.notifications",
-                "remote notification reconciliation dropped",
+                "remote notification reconciliation parked",
                 serde_json::json!({
-                    "reason": format!("{:?}", ReconcileDropped::AttemptsExhausted),
+                    "reason": format!("{:?}", ReconcileParked::AttemptsExhausted),
                     "subscription_id": subscription_id,
                     "source_kernel_id": source_kernel_id,
                 }),
@@ -182,6 +185,16 @@ pub(super) fn reconciled_in(
     Ok(())
 }
 
+/// The source kernels connected again: their unreconciled entries are due now, with a fresh
+/// set of attempts. Only entries of those kernels change, so one connection asks at most once
+/// per entry per window.
+pub(super) fn connected_in(tx: &Transaction<'_>, kernels: &[String]) -> Result<(), DaemonError> {
+    for kernel in kernels {
+        tx.execute("UPDATE workflow_notification_remote_installs SET next_attempt_at_ms=0,attempts=0 WHERE state='reconcile' AND source_kernel_id=?1",params![kernel]).map_err(sql)?;
+    }
+    Ok(())
+}
+
 /// Installs that began long ago and were never settled (the kernel stopped between the local
 /// commit and the source's answer) are settled as unconfirmed: the prior row comes back and the
 /// source is reconciled.
@@ -200,4 +213,22 @@ pub(super) fn settle_interrupted_in(tx: &Transaction<'_>, now: u64) -> Result<()
         undo_in(tx, &owner, &subscription_id)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+impl DurableKernelStateStore {
+    /// Unreconciled entries, read without claiming them.
+    pub(crate) fn unconfirmed_installs(&self) -> i64 {
+        self.lock_connection("test")
+            .unwrap()
+            .query_row("SELECT count(*) FROM workflow_notification_remote_installs WHERE state='reconcile'",[],|r|r.get(0))
+            .unwrap()
+    }
+    /// Detaches no source kernel has confirmed yet, read without claiming them.
+    pub(crate) fn unconfirmed_detaches(&self) -> i64 {
+        self.lock_connection("test")
+            .unwrap()
+            .query_row("SELECT count(*) FROM workflow_notification_remote_installs WHERE state='reconcile' AND desired_json IS NULL",[],|r|r.get(0))
+            .unwrap()
+    }
 }

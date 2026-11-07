@@ -357,7 +357,7 @@ async fn a_first_remote_attach_the_peer_does_not_answer_is_reconciled_as_absent(
 }
 
 #[tokio::test]
-async fn a_reconciliation_the_source_never_matches_is_dropped_after_its_attempts() {
+async fn a_reconciliation_the_source_never_matches_is_parked_after_its_attempts() {
     let (f, runtime, _source, publication) = setup();
     assert!(runtime
         .execute_workflow_notification_command(attach(&f, "remote-source", &publication), "local")
@@ -372,8 +372,52 @@ async fn a_reconciliation_the_source_never_matches_is_dropped_after_its_attempts
         "an unmatched reconciliation is asked a bounded number of times"
     );
     assert!(due_reconciles(&f, u64::MAX / 2).is_empty());
+    assert_eq!(
+        f.store.unconfirmed_installs(),
+        1,
+        "the entry was forgotten while its source kernel was offline"
+    );
+    f.store
+        .notify(NotificationOperation::RemoteKernelsConnected {
+            kernels: vec!["other-home".into()],
+        })
+        .unwrap();
+    assert_eq!(
+        due_reconciles(&f, 1).len(),
+        1,
+        "the source kernel connected again and is asked at once"
+    );
     drop(runtime);
     cleanup(f);
+}
+
+#[test]
+fn a_kernel_that_appears_in_the_inventory_is_reported_once() {
+    let projection = crate::runtime::projection::RemoteRelayInventoryProjectionStore::default();
+    let presence = |id: &str| chariox_relay::protocol::RelayKernelPresence {
+        kernel_id: id.into(),
+        machine_id: "machine".into(),
+        machine_alias: None,
+        relay_alias: None,
+        kernel_alias: None,
+        available_providers: vec![],
+        provider_accounts: vec![],
+        capabilities: vec![],
+        accepting_remote_leases: false,
+        leased_agent_count: 0,
+        local_session_count: 0,
+        public_key: String::new(),
+    };
+    projection.update(vec![], vec![presence("a")]);
+    assert_eq!(projection.take_appeared_kernels(), vec!["a".to_string()]);
+    projection.update(vec![], vec![presence("a")]);
+    assert!(projection.take_appeared_kernels().is_empty());
+    projection.update(vec![], vec![]);
+    projection.update(vec![], vec![presence("a"), presence("b")]);
+    assert_eq!(
+        projection.take_appeared_kernels(),
+        vec!["a".to_string(), "b".to_string()]
+    );
 }
 
 #[tokio::test]

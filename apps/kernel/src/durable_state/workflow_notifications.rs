@@ -243,6 +243,11 @@ pub(crate) enum NotificationOperation {
         owner: String,
         subscription_id: String,
     },
+    /// These source kernels connected again: what is still unreconciled on them is asked at once,
+    /// with a fresh set of attempts.
+    RemoteKernelsConnected {
+        kernels: Vec<String>,
+    },
     /// A `RemoteAttach` this kernel is about to install on the source kernel: the subscription it
     /// replaces is kept until the source answers.
     AttachToRemoteSource {
@@ -574,6 +579,10 @@ fn apply(
             subscription_id,
         } => {
             remote_install::reconciled_in(tx, &owner, &subscription_id)?;
+            Ok(NotificationOutcome::Swept)
+        }
+        NotificationOperation::RemoteKernelsConnected { kernels } => {
+            remote_install::connected_in(tx, &kernels)?;
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::Accept {
