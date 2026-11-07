@@ -395,7 +395,10 @@ mod tests {
         assert_eq!(tree.nodes[0].state, AgentTreeState::Ended);
         assert_eq!(tree.nodes[1].state, AgentTreeState::Idle);
         assert_eq!(tree.nodes[1].deadline_ms, Some(99));
-        assert_eq!(tree.totals.live, 0, "an ended and an idle node are not live");
+        assert_eq!(
+            tree.totals.live, 0,
+            "an ended and an idle node are not live"
+        );
     }
 
     // The client's live states are starting, running, waiting and unreachable: a child whose latest
@@ -430,11 +433,7 @@ mod tests {
             },
         )
         .unwrap();
-        let states = tree
-            .nodes
-            .iter()
-            .map(|node| node.state)
-            .collect::<Vec<_>>();
+        let states = tree.nodes.iter().map(|node| node.state).collect::<Vec<_>>();
         assert_eq!(
             states,
             vec![
