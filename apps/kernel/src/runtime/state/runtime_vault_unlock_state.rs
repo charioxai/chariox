@@ -1401,7 +1401,7 @@ mod tests {
         let sampler = {
             let (visible, sampling) = (visible.clone(), sampling.clone());
             tokio::spawn(async move {
-                let mut seen: Vec<Vec<(String, bool)>> = Vec::new();
+                let mut seen: Vec<Vec<(String, bool, usize)>> = Vec::new();
                 while sampling.load(std::sync::atomic::Ordering::SeqCst) {
                     let now = visible()
                         .iter()
@@ -1410,6 +1410,7 @@ mod tests {
                                 card.id().to_owned(),
                                 card.message()
                                     .starts_with("That is not the Vault passphrase"),
+                                card.message().lines().count(),
                             )
                         })
                         .collect::<Vec<_>>();
@@ -1457,6 +1458,11 @@ mod tests {
         assert!(
             seen.iter().all(|cards| cards[0].0 == first.id()),
             "the refusal came in another card: {seen:?}"
+        );
+        assert!(
+            seen.iter()
+                .all(|cards| cards[0].2 == first.message().lines().count()),
+            "the refusal changed the card's line count, so the card moves: {seen:?}"
         );
         assert_eq!(visible().len(), 1);
         assert!(!asking.is_finished(), "the agent's operation still waits");
