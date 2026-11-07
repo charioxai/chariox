@@ -157,3 +157,85 @@ test("queued keys after Escape are discarded before kernel mutation",async()=>{
     assert.equal(h.requests.some(r=>r.KernelBrowser?.command.op==="input"),false)
   }finally{await h.controller.dispose()}
 })
+
+// MP-08/MP-10: a person typing into an App form field must never lose a key.
+function typingKernel(delayMs: number) {
+  let field = "", inFlight = 0, maxInFlight = 0
+  const log: string[] = [], notices: string[] = []
+  const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+  const client = { async send(request: any): Promise<any> {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight)
+    try {
+      await sleep(delayMs)
+      if (request.ListUserAppViews) return { UserAppViewsListed: { views: [view] } }
+      if (request.OpenUserAppView) return { UserAppViewOpened: { view } }
+      if (request.CloseUserAppView) return { UserAppViewClosed: { view_id: "v" } }
+      const command = request.KernelBrowser?.command
+      if (command?.op === "input") {
+        const input = command.input
+        if (input.kind === "text") { field += input.text; log.push(`t:${input.text}`) }
+        else if (input.key === "Backspace") { field = field.slice(0, -1); log.push("k:Backspace") }
+        else { log.push(`k:${input.key}`) }
+        return { KernelBrowser: { result: { generation: 3 } } }
+      }
+      if (command?.op === "snapshot")
+        return { KernelBrowser: { result: { generation: 3, snapshot: { accessibility_nodes: [{ node_ref: "n", role: "textbox", name: "Message", value: field, focused: true }] } } } }
+      throw new Error("unexpected request")
+    } finally { inFlight-- }
+  } }
+  const controller = createUserAppViewController({ client: () => client, onView() {}, onOpen() {}, onClose() {}, scroll() {}, notify(v) { notices.push(v) } })
+  return { controller, field: () => field, log, notices, maxInFlight: () => maxInFlight }
+}
+const typed = (char: string) => key(char === " " ? "space" : char, char)
+const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+test("a burst of 100 keys is applied in order and none is dropped", async () => {
+  const kernel = typingKernel(8)
+  try {
+    await kernel.controller.handle(["view", "open", "fixture"])
+    const text = Array.from({ length: 100 }, (_, i) => "abcdefghij"[i % 10]!)
+    for (const char of text) kernel.controller.handleKey(typed(char))
+    await kernel.controller.idle()
+    assert.ok(kernel.field() === text.join(""), `field ${kernel.field().length} of 100 keys: ${kernel.field()}`)
+    assert.deepEqual(kernel.notices, [])
+  } finally { await kernel.controller.dispose() }
+})
+test("a burst of backspaces and Enter keeps every key and its order", async () => {
+  const kernel = typingKernel(8)
+  try {
+    await kernel.controller.handle(["view", "open", "fixture"])
+    for (const char of "hello world") kernel.controller.handleKey(typed(char))
+    for (let i = 0; i < 6; i++) kernel.controller.handleKey(key("backspace"))
+    kernel.controller.handleKey(key("return"))
+    for (const char of "again") kernel.controller.handleKey(typed(char))
+    await kernel.controller.idle()
+    assert.ok(kernel.field() === "helloagain", `field ${kernel.field()}`)
+    assert.deepEqual(kernel.log.filter(entry => entry.startsWith("k:") && entry !== "k:Backspace"), ["k:Enter"])
+    assert.ok(kernel.log.indexOf("k:Enter") < kernel.log.findIndex(entry => entry === "t:a"), "Enter stays before the later text")
+    assert.deepEqual(kernel.notices, [])
+  } finally { await kernel.controller.dispose() }
+})
+test("sustained typing at 30 keys per second never drops a key", async () => {
+  const kernel = typingKernel(20)
+  try {
+    await kernel.controller.handle(["view", "open", "fixture"])
+    const text = "the quick brown fox jumps over the lazy dog, then types sixty keys."
+    for (const char of text) { kernel.controller.handleKey(typed(char)); await pause(33) }
+    await kernel.controller.idle()
+    assert.ok(kernel.field() === text, `field ${kernel.field().length} of ${text.length}: ${kernel.field()}`)
+    assert.deepEqual(kernel.notices, [])
+  } finally { await kernel.controller.dispose() }
+})
+test("45 backspaces at 0.35 s intervals clear the whole field", async () => {
+  const kernel = typingKernel(150)
+  try {
+    await kernel.controller.handle(["view", "open", "fixture"])
+    kernel.controller.handleKey(typed("x"))
+    const start = "y".repeat(45)
+    kernel.controller.handlePaste({ text: start, rawText: start, preventDefault() {}, stopPropagation() {} } as any)
+    await kernel.controller.idle()
+    for (let i = 0; i < 46; i++) { kernel.controller.handleKey(key("backspace")); await pause(35) }
+    await kernel.controller.idle()
+    assert.ok(kernel.field() === "", `left ${kernel.field().length} characters`)
+  } finally { await kernel.controller.dispose() }
+})
