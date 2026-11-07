@@ -251,6 +251,91 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     assert_eq!(rig.queued_prompts().len(), 3);
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: subscribing one agent to one source again is the same listener.
+#[tokio::test]
+async fn subscribing_the_same_agent_to_a_source_twice_keeps_one_listener() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+
+    let LocalDaemonResponse::AgentTriggerCreated { trigger: first, .. } = rig
+        .runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut again = rig.request(&source);
+    again.prompt = Some("Summarise the pipeline result".into());
+    let LocalDaemonResponse::AgentTriggerCreated {
+        trigger: second, ..
+    } = rig
+        .runtime
+        .create_agent_trigger(again, "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(second.id(), first.id());
+    assert_eq!(second.prompt(), "Summarise the pipeline result");
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    assert_eq!(session.agent_triggers().len(), 1);
+    assert_eq!(rig.subscriptions().len(), 1);
+
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(queued[0].starts_with("Summarise the pipeline result"));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a store that already holds two listeners of one agent and
+// source delivers each occurrence once.
+#[tokio::test]
+async fn listeners_already_duplicated_in_a_store_deliver_each_occurrence_once() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
+    let mut copy = rig.subscriptions().remove(0);
+    copy.subscription_id = "wf_subscription_00000000000000000000000000000001".into();
+    let trigger = rig
+        .runtime
+        .owned
+        .session_store
+        .write()
+        .create_agent_notification_trigger(
+            &rig.session_id,
+            &rig.agent_id,
+            "local",
+            AgentTriggerNotificationSource::Workflow {
+                source_id: source.clone(),
+            },
+            copy.subscription_id.clone(),
+            "pipeline".into(),
+            Some("Triage what the pipeline reports".into()),
+        )
+        .unwrap();
+    copy.publication_id = trigger.id().into();
+    copy.trigger_id = Some(trigger.id().into());
+    rig.runtime
+        .subscribe_agent_notification(&home, copy)
+        .await
+        .unwrap();
+    assert_eq!(rig.subscriptions().len(), 2);
+
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+}
+
 // MP-08 / MP-10 (VS-S2-5): a subscription lasts as long as its trigger and agent.
 #[tokio::test]
 async fn deleting_the_trigger_or_losing_the_agent_ends_the_subscription() {

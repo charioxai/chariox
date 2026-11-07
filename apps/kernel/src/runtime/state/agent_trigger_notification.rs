@@ -78,6 +78,35 @@ impl KernelRuntimeState {
                 .await?
             }
         };
+        // The agent already listens to this workflow: subscribing again keeps the one listener
+        // and takes the new prompt, so each completion reaches the agent once.
+        let listener = match source {
+            AgentTriggerNotificationSource::Workflow { .. } => self
+                .owned
+                .session_store
+                .get_session(&request.session_id)?
+                .agent_triggers()
+                .iter()
+                .find(|t| {
+                    t.agent_id() == request.agent_id
+                        && matches!(t.source(), AgentTriggerSource::Notification { source: s, .. } if s == source)
+                })
+                .map(|t| t.id().to_owned()),
+            AgentTriggerNotificationSource::App { .. } => None,
+        };
+        if let Some(trigger_id) = listener {
+            let trigger = self.owned.session_store.write().update_agent_trigger(
+                &request.session_id,
+                &trigger_id,
+                None,
+                request.prompt.filter(|p| !p.trim().is_empty()),
+                Some(true),
+            )?;
+            let session = self
+                .owned
+                .persist_agent_trigger_session(&request.session_id, "agent_trigger_updated")?;
+            return Ok(LocalDaemonResponse::AgentTriggerCreated { trigger, session });
+        }
         self.authorize_current_external_command()?;
         let subscription_id = format!("wf_subscription_{:032x}", rand::random::<u128>());
         let trigger = self
@@ -407,11 +436,15 @@ impl KernelRuntimeState {
         if subscriptions.is_empty() {
             return;
         }
-        for subscription in &subscriptions {
-            if !self.owned.agent_notification_target_live(subscription) {
-                self.detach_agent_notification(subscription).await;
+        let mut live = Vec::new();
+        for subscription in subscriptions {
+            if self.owned.agent_notification_target_live(&subscription) {
+                live.push(subscription);
+            } else {
+                self.detach_agent_notification(&subscription).await;
             }
         }
+        let subscriptions = one_listener_per_agent_and_source(live);
         let now = crate::session::unix_epoch_ms();
         let Ok(candidates) = self
             .owned
@@ -623,6 +656,17 @@ impl KernelRuntimeOwnedState {
                     )
             })
     }
+}
+
+/// A store written before subscribing twice was idempotent may hold several listeners of one
+/// agent on one source; only the first (by id) delivers, so an occurrence reaches the agent once.
+fn one_listener_per_agent_and_source(
+    mut subscriptions: Vec<WorkflowNotificationSubscription>,
+) -> Vec<WorkflowNotificationSubscription> {
+    subscriptions.sort_by(|a, b| a.subscription_id.cmp(&b.subscription_id));
+    let mut seen = BTreeSet::new();
+    subscriptions.retain(|s| seen.insert((s.endpoint_id.clone(), s.source_id.clone())));
+    subscriptions
 }
 
 /// The notification subscription of a trigger, if it is one.
