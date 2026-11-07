@@ -661,11 +661,21 @@ impl KernelRuntimeState {
         let Some(placement) = request.worktree_placement.take() else {
             return Ok(request);
         };
-        let resolved = crate::git_worktree_placement::prepare_git_worktree(
+        let parent = request
+            .parent_agent_id
+            .as_ref()
+            .and_then(|parent| self.owned.agent_store.get_agent(parent.agent_id()).ok());
+        let resolved = crate::git_worktree_placement::prepare_git_worktree_checked(
             &placement,
             std::path::Path::new(base_worktree),
             request.worktree_id.as_deref(),
             "agent.spawn",
+            |target| match &parent {
+                Some(parent) => crate::agent::authority_limit::check_directory_to_create(
+                    parent, &session, target,
+                ),
+                None => Ok(()),
+            },
         )?;
         self.copy_environment_files_into_worktree(
             std::path::Path::new(base_worktree),

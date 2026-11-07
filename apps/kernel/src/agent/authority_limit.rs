@@ -122,6 +122,44 @@ pub(crate) fn check_directory(
             "the directory `{directory}` cannot be used: {error}"
         ))
     })?;
+    keep_inside_parent_folders(parent, session, directory, &wanted)
+}
+
+/// The same limit for a folder a spawn is about to create, such as a git worktree: the deepest
+/// existing ancestor is resolved, and the part that does not exist yet may not climb out.
+pub(crate) fn check_directory_to_create(
+    parent: &AgentInstance,
+    session: &RuntimeSession,
+    directory: &Path,
+) -> Result<(), DaemonError> {
+    let mut existing = directory;
+    let mut missing = Vec::new();
+    while !existing.exists() {
+        let (Some(name), Some(above)) = (existing.file_name(), existing.parent()) else {
+            return Err(refused(format!(
+                "the directory `{}` cannot be used",
+                directory.display()
+            )));
+        };
+        missing.push(name);
+        existing = above;
+    }
+    let mut wanted = existing.canonicalize().map_err(|error| {
+        refused(format!(
+            "the directory `{}` cannot be used: {error}",
+            directory.display()
+        ))
+    })?;
+    wanted.extend(missing.into_iter().rev());
+    keep_inside_parent_folders(parent, session, &directory.display().to_string(), &wanted)
+}
+
+fn keep_inside_parent_folders(
+    parent: &AgentInstance,
+    session: &RuntimeSession,
+    directory: &str,
+    wanted: &Path,
+) -> Result<(), DaemonError> {
     let roots = [
         parent
             .worktree_id()
