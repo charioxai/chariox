@@ -39,6 +39,7 @@ use crate::runtime::state::KernelRuntimeState;
 
 use directory::{is_gateway_ready, Directory};
 pub(crate) use error::{is_public_code, GatewayError};
+#[cfg(test)]
 pub(crate) use events::Added;
 pub(crate) use forward::forward_audited;
 use identity::GatewayIdentity;
