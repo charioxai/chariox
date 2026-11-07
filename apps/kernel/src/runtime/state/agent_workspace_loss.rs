@@ -3,6 +3,18 @@
 //! the directory, instead of letting the provider run on against nothing.
 use super::*;
 
+/// A repository, or a gitfile pointing at one. The provider's command sandbox
+/// mounts an empty `.git` directory over a plain folder while a command runs
+/// and removes it afterwards; that placeholder holds no worktree.
+fn holds_git_worktree(directory: &std::path::Path) -> bool {
+    let git = directory.join(".git");
+    match std::fs::symlink_metadata(&git) {
+        Ok(metadata) if metadata.is_dir() => git.join("HEAD").exists(),
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
 impl KernelRuntimeState {
     /// The run's directory is gone, or no longer holds the git worktree the sweep
     /// saw there. A substitute would run in the same directory, so a lost
@@ -14,7 +26,7 @@ impl KernelRuntimeState {
         let Some(directory) = run.working_directory() else {
             return false;
         };
-        !directory.join(".git").exists()
+        !holds_git_worktree(directory)
             && (!directory.exists()
                 || self
                     .owned
@@ -45,7 +57,7 @@ impl KernelRuntimeState {
                 continue;
             };
             running.insert(run.id().to_string());
-            if directory.join(".git").exists() {
+            if holds_git_worktree(directory) {
                 self.owned
                     .git_workspaces_seen
                     .lock()
