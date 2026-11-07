@@ -116,8 +116,18 @@ impl Tree {
             .unwrap()
     }
 
-    /// Settles `agent`'s admitted turn as cancelled through the real settlement path.
-    async fn end_turn(&self, agent: &str) {
+    /// Settles `agent`'s admitted turn in the store: cancelled, or done with an answer.
+    fn settle_turn(
+        &self,
+        agent: &str,
+        cancelled: bool,
+    ) -> (
+        (
+            crate::durable_state::agent_lifecycle::AgentTaskExecution,
+            bool,
+        ),
+        crate::session::PromptQueueItem,
+    ) {
         let session = self.session();
         let prompt = session.active_prompt_for_agent(agent).unwrap().clone();
         let run = self
@@ -143,18 +153,44 @@ impl Tree {
                 agent: agent.into(),
                 prompt: prompt.id().into(),
                 run: run.id().into(),
-                has_answer: false,
-                cancelled: true,
+                has_answer: !cancelled,
+                cancelled,
                 now: 2,
             })
             .unwrap()
         else {
             panic!("settled")
         };
+        ((task, correction), prompt)
+    }
+
+    /// Settles `agent`'s admitted turn through the real settlement path.
+    async fn end_turn_as(&self, agent: &str, cancelled: bool) {
+        let (settlement, prompt) = self.settle_turn(agent, cancelled);
         self.runtime
-            .finish_agent_task_settlement(Some((task, correction)), &prompt)
+            .finish_agent_task_settlement(Some(settlement), &prompt)
             .await
             .unwrap();
+    }
+
+    /// Settles `agent`'s admitted turn as cancelled through the real settlement path.
+    async fn end_turn(&self, agent: &str) {
+        self.end_turn_as(agent, true).await
+    }
+
+    fn present(&self, id: &str) -> (bool, bool) {
+        (
+            self.session()
+                .active_interactions()
+                .iter()
+                .any(|i| i.id() == id),
+            self.runtime
+                .owned
+                .pending_interactions
+                .write()
+                .get(id)
+                .is_some(),
+        )
     }
 }
 
@@ -339,7 +375,7 @@ async fn a_parent_that_ends_mid_hold_hands_the_decision_up_with_no_model_turn() 
         AgentPermissionLevel::Yolo,
     )
     .await;
-    t.raise(permission("perm-6", &t.c)).await;
+    let _answer = t.raise(permission("perm-6", &t.c)).await;
     assert_eq!(t.decision_events(&t.p).len(), 1);
     t.end_turn(&t.p).await;
     assert!(t.all_closed(&t.p), "the former holder's event is withdrawn");
@@ -639,4 +675,159 @@ fn every_user_only_kind_is_the_users() {
     for (name, pending, interaction, expected) in table {
         assert_eq!(user_only(&pending, &interaction), expected, "{name}");
     }
+}
+
+/// What an external agent following the whole room is told about decisions, in order:
+/// (event agent, interaction id, shown_in, state). `before` subscribes first (the live path);
+/// a later subscriber gets the open decisions replayed.
+struct Follower {
+    grant: String,
+}
+
+impl Follower {
+    fn follow(t: &Tree) -> Self {
+        let grant = t.runtime.insert_access_grant_for_test(&t.room);
+        let target = crate::local::EventTarget {
+            kernel: t.runtime.owned.config_projection.snapshot().daemon_id,
+            session_id: t.room.clone(),
+            agent_id: None,
+        };
+        t.runtime
+            .subscribe_outside_part(&grant, true, vec![target])
+            .unwrap();
+        Self { grant }
+    }
+
+    fn told(&self, t: &Tree) -> Vec<(Option<String>, Option<String>, Option<String>)> {
+        t.runtime
+            .outside_store()
+            .outside_list(&self.grant, None, 100)
+            .unwrap()
+            .unwrap()
+            .events
+            .into_iter()
+            .filter_map(|event| match event.value {
+                crate::local::OutsideEventValue::Interaction {
+                    state: crate::local::EventInteractionState::Pending,
+                    shown_in,
+                    ..
+                } => Some((event.agent_id, event.refs.interaction_id, shown_in)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn a_decision_the_user_holds_for_a_sub_agent_is_reported_in_the_room_agents_panel() {
+    let t = tree(
+        "decision-outside-user",
+        AgentPermissionLevel::Required,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    let before = Follower::follow(&t);
+    t.raise(permission("perm-ea1", &t.c)).await;
+    let record = (
+        Some(t.g.clone()),
+        Some("perm-ea1".to_string()),
+        Some(t.g.clone()),
+    );
+    assert_eq!(
+        before.told(&t),
+        [record.clone()],
+        "live: same id, shown in the room agent"
+    );
+    let later = Follower::follow(&t);
+    assert_eq!(
+        later.told(&t),
+        [record],
+        "replay of the open decision says the same"
+    );
+}
+
+#[tokio::test]
+async fn a_decision_an_ancestor_holds_is_not_listed_to_the_user_until_it_reaches_the_user() {
+    let t = tree(
+        "decision-outside-agent",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let before = Follower::follow(&t);
+    t.raise(permission("perm-ea2", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1, "p holds it");
+    assert!(
+        before.told(&t).is_empty(),
+        "held by an agent: nothing listed live"
+    );
+    assert!(
+        Follower::follow(&t).told(&t).is_empty(),
+        "nor replayed to a later follower"
+    );
+    t.runtime.move_decisions_up(&t.room, &t.p).await.unwrap();
+    assert!(
+        before.told(&t).is_empty(),
+        "g holds it now: still not the user's"
+    );
+    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    assert_eq!(
+        before.told(&t),
+        [(
+            Some(t.g.clone()),
+            Some("perm-ea2".to_string()),
+            Some(t.g.clone())
+        )],
+        "the user holds it: one record, same id, shown in the room agent"
+    );
+}
+
+/// The holder changes, the interaction stays: it is the same pending decision, still waited on by
+/// its asker (a receiver nobody holds is an abandoned decision, which the kernel sweeps away).
+#[tokio::test]
+async fn the_decision_survives_when_its_holder_ends_its_turn() {
+    let t = tree(
+        "decision-survives",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-s1", &t.c)).await;
+    t.end_turn(&t.p).await;
+    assert_eq!(
+        t.present("perm-s1"),
+        (true, true),
+        "still listed and still pending"
+    );
+    assert!(answer.try_recv().is_err(), "the asker still waits");
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.g, "perm-s1", "allow")
+            .unwrap(),
+        ChildDecisionStatus::Answered,
+        "the next holder answers it"
+    );
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("allow")
+    );
+}
+
+/// A decision whose asker went away is abandoned: the kernel sweeps it, whoever holds it.
+#[tokio::test]
+async fn a_decision_nobody_waits_for_is_withdrawn_with_its_holder_event() {
+    let t = tree(
+        "decision-abandoned",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    drop(t.raise(permission("perm-s2", &t.c)).await);
+    assert_eq!(t.decision_events(&t.p).len(), 1);
+    t.runtime.owned.withdraw_stale_agent_interactions();
+    assert_eq!(t.present("perm-s2"), (false, false));
+    assert!(
+        t.all_closed(&t.p),
+        "the holder's event is withdrawn with it"
+    );
 }

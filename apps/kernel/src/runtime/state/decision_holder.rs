@@ -310,7 +310,15 @@ impl KernelRuntimeOwnedState {
             match &holder {
                 DecisionHolder::User => {
                     let shown = self.decision_shown_in(session_id, &interaction);
-                    session.show_interaction_in(&id, shown);
+                    session.show_interaction_in(&id, shown.clone());
+                    // The follower hears of it now: it was not listed while an agent held it.
+                    let mut pending = pending;
+                    pending.holder = DecisionHolder::User;
+                    self.publish_outside_interaction(
+                        session_id,
+                        &interaction.shown_in(shown),
+                        InteractionPhase::Pending(&pending),
+                    )?;
                     sessions.restore_session(session);
                 }
                 DecisionHolder::Agent(_) => announce.push(id.clone()),

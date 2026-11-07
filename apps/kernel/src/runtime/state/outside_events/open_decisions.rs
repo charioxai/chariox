@@ -33,11 +33,17 @@ impl KernelRuntimeOwnedState {
                 else {
                     continue;
                 };
+                if pending.holder != DecisionHolder::User {
+                    continue;
+                }
                 let (value, summary) = self
                     .outside_interaction_value(interaction, InteractionPhase::Pending(&pending));
                 open.push(OpenDecision {
                     session_id: id.into(),
-                    agent_id: interaction.agent_id().map(str::to_string),
+                    agent_id: interaction
+                        .shown_in_agent_id()
+                        .or_else(|| interaction.agent_id())
+                        .map(str::to_string),
                     interaction_id: interaction.id().into(),
                     summary,
                     value,
