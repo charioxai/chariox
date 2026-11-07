@@ -111,3 +111,53 @@ test("the card and view follow the focused room agent that has sub-agents", asyn
   controller.select("other"); assert.deepEqual(controller.lines().map(r => r.id), ["b1"])
   controller.select("nobody"); assert.deepEqual(controller.lines().map(r => r.id), ["a1", "a2", "a3"])
 })
+
+const delayed = () => {
+  const gates = new Map<string, () => void>()
+  const requests: string[] = []
+  const answers: Record<string, AgentTree> = {
+    a: tree(1, [node("a1", "a", "running", 1)], "a"),
+    b: tree(1, [node("b1", "b", "running", 1)], "b"),
+  }
+  const controller = new SubAgentsController({
+    send: async <T>(request: unknown) => {
+      const root = (request as { ListDescendants: { agent_id: string } }).ListDescendants.agent_id
+      requests.push(root)
+      await new Promise<void>(resolve => gates.set(root, resolve))
+      return { AgentTree: { tree: answers[root]! } } as T
+    },
+    changed: () => {}, sessionId: () => "s1",
+  })
+  return { controller, gates, requests }
+}
+
+for (const order of [["a", "b"], ["b", "a"]] as const) {
+  test(`the focused root chosen before the trees arrive wins when the reads finish ${order.join(" then ")}`, async () => {
+    const { controller, gates } = delayed()
+    const reads = [controller.refresh("a"), controller.refresh("b")]
+    controller.select("b")
+    for (const id of order) { gates.get(id)!(); await Promise.resolve(); await Promise.resolve() }
+    await Promise.all(reads)
+    assert.deepEqual(controller.lines().map(r => r.id), ["b1"], "the children of the focused agent show")
+    assert.equal(controller.stripe("b")!.text, "1 agent running")
+  })
+}
+
+test("selecting a root whose tree never arrives keeps the first known tree, and the request settles when that tree arrives", async () => {
+  const { controller } = make({ room: three(), late: tree(1, [node("b1", "late", "running", 1)], "late") })
+  await controller.refresh("room")
+  controller.select("late")
+  assert.deepEqual(controller.lines().map(r => r.id), ["a1", "a2", "a3"])
+  await controller.refresh("late")
+  assert.deepEqual(controller.lines().map(r => r.id), ["b1"])
+})
+
+test("the request ends with the tree it asked for: the root falls back and a later arrival does not pull the view back", async () => {
+  const { controller } = make({ room: three(), other: tree(1, [node("b1", "other", "running", 1)], "other") })
+  await controller.refresh("room"); await controller.refresh("other")
+  controller.select("other")
+  controller.apply(tree(2, [], "other"))
+  assert.deepEqual(controller.lines().map(r => r.id), ["a1", "a2", "a3"])
+  controller.apply(tree(3, [node("b1", "other", "running", 1)], "other"))
+  assert.deepEqual(controller.lines().map(r => r.id), ["a1", "a2", "a3"])
+})

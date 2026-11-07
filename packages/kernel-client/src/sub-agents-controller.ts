@@ -15,6 +15,8 @@ export class SubAgentsController {
   private trees = new Map<string, AgentTree>()
   private readonly collapsed = new Set<string>()
   private root: string | null = null
+  /** The focused agent the card and view were asked to show; kept until its tree arrives or the tree it had goes. */
+  private requested: string | null = null
   private card = false
   private cardIndex = 0
   private view = false
@@ -25,8 +27,8 @@ export class SubAgentsController {
 
   /** The room agent whose sub-agents the card and view show: the focused one if it has any, else the first that has. */
   select(focusedAgentId: string | null): void {
-    const next = focusedAgentId && this.trees.has(focusedAgentId) ? focusedAgentId : [...this.trees.keys()][0] ?? null
-    if (next !== this.root) { this.root = next; this.cardIndex = 0; this.focused = null; this.settle() }
+    this.requested = focusedAgentId
+    this.reconcile(!focusedAgentId || !this.trees.has(focusedAgentId))
   }
 
   /** Reads the tree of one agent again; a failed read keeps the last state. */
@@ -43,15 +45,27 @@ export class SubAgentsController {
   apply(tree: AgentTree): void {
     const known = this.trees.get(tree.root)
     if (known && tree.rev < known.rev) return
-    if (tree.nodes.length === 0) this.trees.delete(tree.root); else this.trees.set(tree.root, tree)
-    if (this.root === null || this.root === tree.root) this.root = this.trees.has(tree.root) ? tree.root : [...this.trees.keys()][0] ?? null
+    if (tree.nodes.length === 0) {
+      this.trees.delete(tree.root)
+      if (known && this.requested === tree.root) this.requested = null
+    } else this.trees.set(tree.root, tree)
+    this.reconcile()
+  }
+
+  /** The requested agent once it has a tree; until then the first that has one when the request just changed, else the
+   * agent already shown. */
+  private reconcile(requestChanged = false): void {
+    const next = this.requested && this.trees.has(this.requested) ? this.requested
+      : !requestChanged && this.root && this.trees.has(this.root) ? this.root
+      : [...this.trees.keys()][0] ?? null
+    if (next !== this.root) { this.root = next; this.cardIndex = 0; this.focused = null }
     this.settle()
   }
 
   /** A new room: nothing of the old one stays. */
   reset(): void {
     this.generation += 1
-    this.trees = new Map(); this.collapsed.clear(); this.root = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
+    this.trees = new Map(); this.collapsed.clear(); this.root = null; this.requested = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
     this.deps.changed()
   }
 
