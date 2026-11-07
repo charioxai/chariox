@@ -23,8 +23,8 @@ use crate::error::DaemonError;
 mod credentials;
 pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
 pub(crate) mod authorization;
-mod inventory_batches;
 mod backoff;
+mod inventory_batches;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;

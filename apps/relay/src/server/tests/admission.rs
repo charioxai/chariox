@@ -24,7 +24,11 @@ async fn stalled_connections_from_one_address_do_not_delay_a_kernel_registration
 
     let mut stalled = Vec::new();
     for _ in 0..200 {
-        stalled.push(TcpStream::connect(addr).await.expect("stalled peer connects"));
+        stalled.push(
+            TcpStream::connect(addr)
+                .await
+                .expect("stalled peer connects"),
+        );
     }
 
     let (mut socket, _) = timeout(
@@ -38,7 +42,9 @@ async fn stalled_connections_from_one_address_do_not_delay_a_kernel_registration
         registration: test_registration_with_token("daemon-1", "machine-1", "Linux", 1, "secret"),
     };
     socket
-        .send(Message::Text(serde_json::to_string(&register).unwrap().into()))
+        .send(Message::Text(
+            serde_json::to_string(&register).unwrap().into(),
+        ))
         .await
         .expect("register frame sends");
     timeout(Duration::from_secs(2), async {
