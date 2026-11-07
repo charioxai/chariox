@@ -12,6 +12,9 @@ use super::*;
 /// The version of the state the source kernel must hold for one subscription.
 pub(crate) type Generation = i64;
 
+/// What the source held before an install: its status, JSON and grant, and whether it was confirmed.
+type PriorState = (Option<String>, Option<String>, Option<String>, bool);
+
 /// The source kernel is asked again this long after an unconfirmed install or detach.
 const RECONCILE_RETRY_MS: i64 = 30_000;
 /// A reconciliation the source never matched is parked after this many asks (about ten minutes)
@@ -149,7 +152,7 @@ pub(super) fn begin_in(
     let id = id.unwrap_or_else(|| sub.subscription_id.clone());
     // An install still in flight holds the last state the source confirmed; the row a second
     // attach finds now is only that install's attempt.
-    let in_flight:Option<(Option<String>,Option<String>,Option<String>,bool)>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![sub.owner_user_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    let in_flight:Option<PriorState>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![sub.owner_user_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
     // The source is known to hold the prior state only when no entry owes it: an unconfirmed
     // install or detach, or a reconciliation not yet answered, leaves the source unknown.
     let owed: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='reconcile')",params![sub.owner_user_id,id],|r|r.get(0)).map_err(sql)?;
@@ -190,7 +193,7 @@ pub(super) fn install_failed_in(
 }
 
 fn undo_in(tx: &Transaction<'_>, owner: &str, subscription_id: &str) -> Result<(), DaemonError> {
-    let held:Option<(Option<String>,Option<String>,Option<String>,bool)>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![owner,subscription_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+    let held:Option<PriorState>=tx.query_row("SELECT prior_status,prior_json,prior_grant,established FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2 AND state='installing'",params![owner,subscription_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
     let Some((status, json, grant, established)) = held else {
         return Ok(());
     };
