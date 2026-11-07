@@ -1,0 +1,19 @@
+[package]
+name = "matrix-entry-gate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "=0.63.0"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"
+strip = true
