@@ -52,20 +52,20 @@ export class Rig{
 }
 export const canon=o=>JSON.stringify(sortKeys(o));
 function sortKeys(v){if(Array.isArray(v))return v.map(sortKeys);if(v&&typeof v==='object')return Object.fromEntries(Object.keys(v).sort().map(k=>[k,sortKeys(v[k])]));return v}
-export function wfSource({alias,module,config,provider='dev-stub',model='default',nodes=['entry'],maxConcurrent=32}){
+export function wfSource({alias,module,config,provider='dev-stub',model='default',nodes=['entry'],maxConcurrent=32,agentExtra={}}){
   const cfg=config?JSON.parse(canon(config)):null;
   const def={alias,maxConcurrent,flushAgentContextBeforeRun:false};if(cfg)def.gate={abi:'gate_v1',module_sha256:module,config:cfg,config_sha256:sha(canon(cfg))};
   let s=`workflow.define(${JSON.stringify(def)})\n`;
   const hs=nodes.map(n=>`n_${n}`);
-  for(const n of nodes)s+=`const n_${n}=workflow.node({handle:${JSON.stringify(n)},agent:workflow.newAgent({alias:${JSON.stringify(alias+'-'+n)},provider:${JSON.stringify(provider)},model:${JSON.stringify(model)}}),instructions:'Acknowledge the handoff with one word.',canCompleteWorkflowRun:true,maxTurns:1})\n`;
+  for(const n of nodes)s+=`const n_${n}=workflow.node({handle:${JSON.stringify(n)},agent:workflow.newAgent({alias:${JSON.stringify(alias+'-'+n)},provider:${JSON.stringify(provider)},model:${JSON.stringify(model)}${Object.entries(agentExtra).map(([k,v])=>','+k+':'+JSON.stringify(v)).join('')}}),instructions:'Acknowledge the handoff with one word.',canCompleteWorkflowRun:true,maxTurns:1})\n`;
   s+=cfg?`workflow.endpoint([${hs.join(',')}],{alias:'entry'})\n`:`workflow.endpoint(${hs[0]},{alias:'entry'})\n`;
   return s}
 const log=(f,o)=>appendFileSync(f,JSON.stringify({t:new Date().toISOString(),...o})+'\n');
 export function recorder(file){mkdirSync(EV,{recursive:true});return (name,o)=>{log(`${EV}/${file}.jsonl`,{name,...o});console.log(file+': '+name+' '+(o.result??''))}}
-export async function boot(rig,{alias='gw',config={label:'v1',step_ms:300},nodes=['entry'],wasm=R+'/matrix-gate.wasm',provider='dev-stub',model='default'}={}){
+export async function boot(rig,{alias='gw',config={label:'v1',step_ms:300},nodes=['entry'],wasm=R+'/matrix-gate.wasm',provider='dev-stub',model='default',agentExtra={}}={}){
   await rig.newWorkflow('gate-upload');
   const module=await rig.put('gate-upload',wasm);
-  const rep=await rig.apply(wfSource({alias,module,config,nodes,provider,model}));
+  const rep=await rig.apply(wfSource({alias,module,config,nodes,provider,model,agentExtra}));
   rig.alias=alias;rig.module=module;rig.config=config;rig.nodes=nodes;return {module,rep}}
 export async function submit(rig,prompt,alias=rig.alias){const r=await rig.invoke(alias,'entry',prompt);
   const e=r.WorkflowEntryAccepted?.entry??r.WorkflowRunInvoked?.entry??r.entry;if(!e?.entry_id)throw Error('no entry in '+JSON.stringify(r).slice(0,500));return e}
