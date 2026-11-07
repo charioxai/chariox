@@ -217,6 +217,21 @@ impl KernelRuntimeOwnedState {
             .collect()
     }
 
+    /// The decisions of `session_id` some agent, not the user, holds now.
+    pub(super) fn decisions_held_by_agents(
+        &self,
+        session_id: &str,
+    ) -> std::collections::HashSet<String> {
+        self.pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, pending)| {
+                pending.session_id == session_id && pending.holder != DecisionHolder::User
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
     /// Withdraws the `child_decision` event `holder` was sent for `interaction_id`: an event not
     /// yet delivered expires, a delivered one is closed as handled. Never fails the caller.
     pub(super) fn withdraw_child_decision_event(

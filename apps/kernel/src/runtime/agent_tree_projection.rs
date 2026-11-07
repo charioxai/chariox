@@ -1,12 +1,11 @@
 //! A4: the descendants of one agent as a client reads them (`ListDescendants`).
 //!
-//! The decision holder is slice A3's; until it exists the rule is: a pending
-//! interaction of a sub-agent, or a turn blocked on its owner, leaves that
-//! node `waiting` (an ancestor or the user will answer it), and an interaction
-//! of the root itself is its panel's own card and no node's. A node whose
-//! interaction is pending is the user's to answer (`needs_user`): until the
-//! holder exists nothing else could answer it. A turn blocked without an
-//! interaction is `waiting` only.
+//! A pending interaction of a sub-agent, or a turn blocked on its owner, leaves
+//! that node `waiting`, and an interaction of the root itself is its panel's own
+//! card and no node's. A node needs the user (`needs_user`) only while the user
+//! is the current holder of one of its pending decisions (slice A3): a decision
+//! an ancestor agent holds keeps the node waiting and shows no card. A turn
+//! blocked without an interaction is `waiting` only.
 //! A node is `running` while its turn lives (processing, or a task working or
 //! parked on a wait or on its children); its `outcome` is how its latest turn
 //! ended and is null while it runs or before it ever ran.
@@ -41,10 +40,12 @@ fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<NodeTurn>) -> A
 
 /// `None` when `root` is not an agent of the session. Nodes are the descendants
 /// of `root` (not `root` itself) in creation order. The revision is the caller's.
+/// `held_by_agent` says whether an ancestor agent, not the user, holds an interaction.
 pub(crate) fn project_agent_tree(
     session: &RuntimeSession,
     agents: &[AgentInstance],
     root: &str,
+    held_by_agent: &dyn Fn(&str) -> bool,
     deadline_ms: &dyn Fn(&str) -> Option<u64>,
     turn_of: &dyn Fn(&str) -> Option<NodeTurn>,
 ) -> Option<AgentTree> {
@@ -54,6 +55,11 @@ pub(crate) fn project_agent_tree(
             .active_interactions()
             .iter()
             .any(|interaction| interaction.agent_id() == Some(agent_id))
+    };
+    let user_holds = |agent_id: &str| {
+        session.active_interactions().iter().any(|interaction| {
+            interaction.agent_id() == Some(agent_id) && !held_by_agent(interaction.id())
+        })
     };
     // Membership and depth come from the parent edges, whatever the creation order: the user can
     // place an older agent under a newer descendant. Only the display order is by creation.
@@ -95,7 +101,7 @@ pub(crate) fn project_agent_tree(
             depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
-            needs_user: pending(agent.id())
+            needs_user: user_holds(agent.id())
                 && !matches!(state, AgentTreeState::Ended | AgentTreeState::Error),
             deadline_ms: deadline_ms(agent.id()),
             created_at_ms: agent.created_at_ms(),
@@ -159,8 +165,15 @@ mod tests {
             agent("c1", Some("root"), 2),
             agent("other", None, 5),
         ]);
-        let tree =
-            project_agent_tree(&session, session.agents(), "root", &|_| None, &|_| None).unwrap();
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
         let shape = tree
             .nodes
             .iter()
@@ -168,10 +181,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(shape, vec![("c1", 1), ("c2", 1), ("g", 2)]);
         assert_eq!(tree.totals.live, 3);
-        assert!(
-            project_agent_tree(&session, session.agents(), "missing", &|_| None, &|_| None)
-                .is_none()
-        );
+        assert!(project_agent_tree(
+            &session,
+            session.agents(),
+            "missing",
+            &|_| false,
+            &|_| None,
+            &|_| None
+        )
+        .is_none());
     }
 
     fn shape(tree: &AgentTree) -> Vec<(&str, u32)> {
@@ -190,8 +208,15 @@ mod tests {
             agent("y", Some("r"), 3),
             agent("z", Some("x"), 4),
         ]);
-        let tree =
-            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "r",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
         assert_eq!(shape(&tree), vec![("x", 2), ("y", 1), ("z", 3)]);
         let x_nodes = tree
             .nodes
@@ -216,8 +241,15 @@ mod tests {
             agent("d2", Some("d1"), 4),
             agent("d1", Some("r"), 5),
         ]);
-        let tree =
-            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "r",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
         assert_eq!(
             shape(&tree),
             vec![("d4", 4), ("d3", 3), ("d2", 2), ("d1", 1)]
@@ -232,8 +264,15 @@ mod tests {
             agent("b", Some("a"), 3),
             agent("c", Some("r"), 4),
         ]);
-        let tree =
-            project_agent_tree(&session, session.agents(), "r", &|_| None, &|_| None).unwrap();
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "r",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
         assert_eq!(shape(&tree), vec![("c", 1)]);
     }
 
@@ -267,8 +306,15 @@ mod tests {
         ]);
         session.add_active_interaction(ask("c1"));
         session.add_active_interaction(ask("root"));
-        let tree =
-            project_agent_tree(&session, session.agents(), "root", &|_| None, &|_| None).unwrap();
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
         let held = tree
             .nodes
             .iter()
@@ -287,6 +333,40 @@ mod tests {
         );
     }
 
+    // A decision an ancestor agent holds keeps the node waiting without asking the user.
+    #[test]
+    fn a_decision_held_by_an_agent_keeps_the_node_waiting_without_the_user() {
+        let mut session = session(vec![
+            agent("root", None, 1),
+            agent("c1", Some("root"), 2),
+            agent("c2", Some("root"), 3),
+        ]);
+        session.add_active_interaction(ask("c1"));
+        session.add_active_interaction(ask("c2"));
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|id| id == "ask-c1",
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap();
+        let held = tree
+            .nodes
+            .iter()
+            .map(|node| (node.agent_id.as_str(), node.needs_user, node.state))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            held,
+            vec![
+                ("c1", false, AgentTreeState::Waiting),
+                ("c2", true, AgentTreeState::Waiting)
+            ]
+        );
+        assert_eq!(tree.totals.needs_user, 1);
+    }
+
     #[test]
     fn archived_is_ended_and_leaves_the_live_total() {
         let mut ended = agent("c1", Some("root"), 2);
@@ -300,6 +380,7 @@ mod tests {
             &session,
             session.agents(),
             "root",
+            &|_| false,
             &|id| (id == "c2").then_some(99),
             &|_| None,
         )

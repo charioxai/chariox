@@ -43,10 +43,12 @@ impl KernelRuntimeState {
         tasks: &[crate::durable_state::agent_lifecycle::AgentTaskExecution],
     ) -> Option<(AgentTree, bool)> {
         let store = &self.owned.durable_state_store;
+        let held_by_agent = self.owned.decisions_held_by_agents(session.id());
         let mut tree = project_agent_tree(
             session,
             &self.owned.agent_store.get_session_agents(session.id()),
             root,
+            &|interaction_id| held_by_agent.contains(interaction_id),
             &|agent_id| {
                 store
                     .agent_deadline(session.id(), agent_id)

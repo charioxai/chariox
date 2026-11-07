@@ -872,3 +872,110 @@ async fn a_holder_whose_task_is_blocked_hands_the_decision_up() {
     assert_eq!(t.decision_events(&t.g).len(), 1, "g holds it now");
     assert_eq!(t.present("perm-b1"), (true, true));
 }
+
+impl Tree {
+    /// The nodes of the top agent's tree as (alias, state, needs_user), with the user count.
+    fn needs(&self) -> (Vec<(String, crate::local::AgentTreeState, bool)>, u32) {
+        let request = crate::local::ListDescendantsRequest {
+            session_id: self.room.clone(),
+            agent_id: self.g.clone(),
+        };
+        let crate::local::LocalDaemonResponse::AgentTree { tree } = self
+            .runtime
+            .list_descendants(crate::session::DEFAULT_LOCAL_USER_ID, request)
+            .unwrap()
+        else {
+            panic!("agent tree expected")
+        };
+        let nodes = tree
+            .nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.alias.clone().unwrap_or_default(),
+                    node.state,
+                    node.needs_user,
+                )
+            })
+            .collect();
+        (nodes, tree.totals.needs_user)
+    }
+}
+
+// A decision an ancestor agent holds keeps the node waiting but is no card for the user.
+#[tokio::test]
+async fn a_node_whose_decision_an_agent_holds_does_not_need_the_user() {
+    use crate::local::AgentTreeState::Waiting;
+    let t = tree(
+        "tree-held-by-agent",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let _answer = t.raise(permission("perm-held", &t.c)).await;
+    let (nodes, users) = t.needs();
+    assert!(
+        nodes.contains(&("c".into(), Waiting, false)),
+        "p holds it: {nodes:?}"
+    );
+    assert_eq!(users, 0);
+}
+
+// The parent ends and the decision climbs to the user: now the node needs the user.
+#[tokio::test]
+async fn a_decision_that_moves_up_to_the_user_makes_the_node_need_the_user() {
+    use crate::local::AgentTreeState::Waiting;
+    let t = tree(
+        "tree-moves-up",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Required,
+    )
+    .await;
+    let _answer = t.raise(permission("perm-up", &t.c)).await;
+    assert!(
+        t.needs().0.contains(&("c".into(), Waiting, false)),
+        "g holds it"
+    );
+    t.runtime.move_decisions_up(&t.room, &t.g).await.unwrap();
+    let (nodes, users) = t.needs();
+    assert!(nodes.contains(&("c".into(), Waiting, true)), "{nodes:?}");
+    assert_eq!(users, 1);
+}
+
+// Two pending decisions: the one the user holds counts, the one an agent holds does not.
+#[tokio::test]
+async fn only_the_nodes_the_user_holds_a_decision_of_need_the_user() {
+    use crate::local::AgentTreeState::Waiting;
+    let t = tree(
+        "tree-mixed",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let secret = RuntimeInteraction::new(
+        "secret-mixed",
+        &t.c,
+        RuntimeInteractionKind::Choice,
+        RuntimeInteractionLevel::Warning,
+        Some("Token".into()),
+        "Enter the token",
+        vec![RuntimeInteractionChoice::new(
+            "cancel", "Cancel", "cancel", None,
+        )],
+        Some(RuntimeInteractionCustomChoice::secret(
+            "secret",
+            "Token",
+            None,
+            Some(1),
+            Some(80),
+        )),
+        None,
+        None,
+    );
+    t.raise(secret).await;
+    let _answer = t.raise(permission("perm-mixed", &t.p)).await;
+    let (nodes, users) = t.needs();
+    assert!(nodes.contains(&("c".into(), Waiting, true)), "{nodes:?}");
+    assert!(nodes.contains(&("p".into(), Waiting, false)), "{nodes:?}");
+    assert_eq!(users, 1);
+}
