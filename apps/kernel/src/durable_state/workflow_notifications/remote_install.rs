@@ -398,7 +398,11 @@ impl DurableKernelStateStore {
     pub(crate) fn receipts(&self) -> i64 {
         self.lock_connection("test")
             .unwrap()
-            .query_row("SELECT count(*) FROM app_outbox WHERE source_kind='workflow_completion'",[],|r|r.get(0))
+            .query_row(
+                "SELECT count(*) FROM app_outbox WHERE source_kind='workflow_completion'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap()
     }
     /// Detaches no source kernel has confirmed yet, read without claiming them.

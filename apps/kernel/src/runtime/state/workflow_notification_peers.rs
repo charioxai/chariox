@@ -406,11 +406,9 @@ impl KernelRuntimeState {
                                     subscription,
                                 })
                             }
-                            NotificationOutcome::Superseded { generation } => {
-                                Ok(RelayPeerResponse::WorkflowNotificationSuperseded {
-                                    generation,
-                                })
-                            }
+                            NotificationOutcome::Superseded { generation } => Ok(
+                                RelayPeerResponse::WorkflowNotificationSuperseded { generation },
+                            ),
                             _ => Err(store::error("notification subscription failed")),
                         }
                     }

@@ -86,7 +86,11 @@ fn an_older_unsubscribe_is_ignored_after_a_newer_subscribe_also_across_a_restart
     let (a, sub) = remote_follow(&mut f);
     assert_eq!(attach(&f, &sub, 2), None);
     restart(&mut f);
-    assert_eq!(detach(&f, &sub, 1), Some(2), "the older cleanup was applied");
+    assert_eq!(
+        detach(&f, &sub, 1),
+        Some(2),
+        "the older cleanup was applied"
+    );
     assert!(followed_queue(&f).is_some());
     // A run ends in the interval the stale cleanup would have left the follow disabled.
     run(&mut f, &a, "inside-the-window");
@@ -101,7 +105,11 @@ fn an_older_subscribe_is_ignored_after_a_newer_unsubscribe_also_across_a_restart
     assert_eq!(attach(&f, &sub, 1), None);
     assert_eq!(detach(&f, &sub, 3), None);
     restart(&mut f);
-    assert_eq!(attach(&f, &sub, 2), Some(3), "the older install was applied");
+    assert_eq!(
+        attach(&f, &sub, 2),
+        Some(3),
+        "the older install was applied"
+    );
     assert!(followed_queue(&f).is_none());
     run(&mut f, &a, "after-the-detach");
     assert_eq!(f.store.receipts(), 0, "a detached follow was notified");

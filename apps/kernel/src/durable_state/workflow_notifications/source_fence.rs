@@ -14,7 +14,8 @@ pub(super) fn refuse_in(
     generation: u64,
 ) -> Result<Option<u64>, DaemonError> {
     let seen: Option<i64> = tx.query_row("SELECT generation FROM workflow_notification_source_fence WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id],|r|r.get(0)).optional().map_err(sql)?;
-    let incoming = i64::try_from(generation).map_err(|_| error("notification generation out of range"))?;
+    let incoming =
+        i64::try_from(generation).map_err(|_| error("notification generation out of range"))?;
     if let Some(seen) = seen.filter(|seen| *seen > incoming) {
         return Ok(Some(seen as u64));
     }

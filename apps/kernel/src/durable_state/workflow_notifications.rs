@@ -9,11 +9,11 @@ pub(crate) mod outside_agent;
 mod outside_agent_tests;
 pub(crate) mod remote_install;
 pub(crate) mod run_finished;
+#[cfg(test)]
+mod run_finished_tests;
 mod source_fence;
 #[cfg(test)]
 mod source_fence_tests;
-#[cfg(test)]
-mod run_finished_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -343,7 +343,9 @@ pub(crate) enum NotificationOutcome {
         generation: Option<remote_install::Generation>,
     },
     /// The source kernel ignored a peer's attach or detach: it has seen this newer generation.
-    Superseded { generation: u64 },
+    Superseded {
+        generation: u64,
+    },
     Swept,
 }
 pub(super) struct NotificationRequest {
