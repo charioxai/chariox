@@ -381,7 +381,8 @@ impl AegsServer {
                 }
                 match self
                     .store
-                    .revoke_owner_kernel(&revoke.owner_id, &revoke.kernel_id, now_ms())
+                    .revoke_owner_kernel_wait(&revoke.owner_id, &revoke.kernel_id, now_ms())
+                    .await
                 {
                     Ok(()) => json(StatusCode::OK, serde_json::json!({"revoked": true})),
                     Err(message) => {

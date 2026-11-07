@@ -620,8 +620,20 @@ impl AegsStore {
         Ok(membership)
     }
 
+    /// Like `revoke_owner_kernel`, once no publication that already named the kernel is in
+    /// flight: after it returns, no event reaches the kernel.
+    pub(crate) async fn revoke_owner_kernel_wait(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let _guard = self.delivery_gate.write().await;
+        self.revoke_owner_kernel(owner_id, kernel_id, now_ms)
+    }
+
     /// Removes a kernel from an owner's set for good and stops its subscriptions at once.
-    pub(crate) fn revoke_owner_kernel(
+    fn revoke_owner_kernel(
         &self,
         owner_id: &str,
         kernel_id: &str,
@@ -2635,5 +2647,29 @@ mod shared_connection_tests {
             .active_subscriptions_for_connection("connection")
             .unwrap()
             .is_empty());
+    }
+    #[tokio::test]
+    async fn revoking_a_kernel_waits_for_the_publication_that_names_it() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        store
+            .admit_kernel_to_owner("owner", "kernel-a", 1, None, None)
+            .unwrap();
+        let held = claim("binding-a", "chariox/repo");
+        store
+            .reconcile_for_owner("kernel-a", "owner", generator, &[held.clone()])
+            .unwrap();
+        let generation = store.connection_generation("connection").unwrap();
+        let in_flight = store.delivery_guard(&held, generation).await.unwrap();
+        let other = store.clone();
+        let revoke =
+            tokio::spawn(
+                async move { other.revoke_owner_kernel_wait("owner", "kernel-a", 2).await },
+            );
+        tokio::task::yield_now().await;
+        assert!(!revoke.is_finished());
+        drop(in_flight);
+        revoke.await.unwrap().unwrap();
+        assert!(store.delivery_guard(&held, generation).await.is_err());
     }
 }
