@@ -201,6 +201,39 @@ async fn command_table() {
 }
 
 #[test]
+fn only_an_agent_above_may_prompt_an_agent() {
+    run_large_stack_async_test("subtree-prompt", prompt_table);
+}
+
+// A prompt starts the target's turn, which ends the target's own tool calls for this test:
+// the refusals run first, then the allowed prompts from the deepest caller up.
+async fn prompt_table() {
+    let world = world("subtree-prompt").await;
+    // sibling, peer, upward, peer to a child, another room.
+    for (caller, target) in [
+        ("b", "s"),
+        ("a", "peer"),
+        ("b", "a"),
+        ("peer", "b"),
+        ("q", "b"),
+    ] {
+        let result = room_command(&world, caller, &format!("prompt {target} say hello")).await;
+        assert!(
+            refused_by_policy(&result),
+            "{caller} -> {target}: prompt: {result:?}"
+        );
+    }
+    // a child and a grandchild are prompted by their ancestors.
+    for (caller, target) in [("b", "d"), ("a", "s"), ("a", "b")] {
+        let result = room_command(&world, caller, &format!("prompt {target} say hello")).await;
+        assert!(
+            !refused_by_policy(&result),
+            "{caller} -> {target}: prompt: {result:?}"
+        );
+    }
+}
+
+#[test]
 fn only_the_user_moves_an_agent_in_the_tree() {
     run_large_stack_async_test("subtree-set-parent", set_parent);
 }
