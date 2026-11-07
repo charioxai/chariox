@@ -354,13 +354,15 @@ impl KernelGateway {
         kernel: &chariox_relay::protocol::RelayKernelPresence,
     ) -> Result<Arc<Link>, GatewayError> {
         let mut links = self.links.lock().await;
-        if let Some(link) = links
+        let previous = links
             .get(&kernel.kernel_id)
-            .filter(|link| link.usable() && link.has_target_key(&kernel.public_key))
-        {
+            .filter(|link| link.has_target_key(&kernel.public_key))
+            .cloned();
+        if let Some(link) = previous.as_ref().filter(|link| link.usable()) {
             return Ok(Arc::clone(link));
         }
-        let link = self.open_link(target, kernel).await?;
+        let opened = self.open_link(target, kernel).await;
+        let link = link::replacement_or_previous(opened, previous)?;
         links.insert(kernel.kernel_id.clone(), Arc::clone(&link));
         Ok(link)
     }
@@ -497,10 +499,7 @@ impl KernelGateway {
         {
             Ok(connection) => Ok(connection),
             Err(error) if hosted::is_revoked(&error) => Err(self.gateway_revoked().await),
-            Err(error) => Err(GatewayError::Unreachable {
-                name: target.into(),
-                detail: error::plain_cause("the relay did not accept the connection", &error),
-            }),
+            Err(error) => Err(error::cloud_connection_refused(target, &error)),
         }
     }
 

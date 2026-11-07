@@ -114,6 +114,7 @@ use subscriptions::{
 pub use connection_state::RelayClientState;
 pub(crate) use connection_state::RelayDisplayTunnelClientEvent;
 pub(crate) use connection_state::{RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind};
+pub(crate) use connector::cloud_retry_hint;
 #[cfg(test)]
 pub use connector::{
     run_daemon_relay_connector, run_daemon_relay_connector_with_router_and_static_relay,

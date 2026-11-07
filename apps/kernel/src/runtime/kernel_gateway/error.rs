@@ -65,6 +65,25 @@ pub(crate) fn plain_cause(what: &str, error: &dyn std::fmt::Display) -> String {
     what.to_string()
 }
 
+/// Cloud issues the relay token a new connection runs on, so failing to get one is not
+/// the relay refusing. A Cloud rate limit says how long to wait; only that reaches the agent.
+pub(crate) fn cloud_connection_refused(name: &str, error: &dyn std::fmt::Display) -> GatewayError {
+    let detail = match crate::transport::relay_client::cloud_retry_hint(&error.to_string()) {
+        Some(wait) => {
+            tracing::warn!(%error, "Chariox Cloud is limiting new relay connections");
+            format!(
+                "Chariox Cloud is limiting new relay connections; retry in {} seconds",
+                wait.as_secs()
+            )
+        }
+        None => plain_cause("no relay connection was issued", error),
+    };
+    GatewayError::Unreachable {
+        name: name.into(),
+        detail,
+    }
+}
+
 impl GatewayError {
     pub(crate) fn code(&self) -> &str {
         match self {
@@ -177,6 +196,27 @@ pub(crate) fn is_public_code(code: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 12:09-12:12Z 11-06: Cloud's 429 on the client token read as a relay refusal.
+    #[test]
+    fn a_cloud_refusal_is_not_blamed_on_the_relay() {
+        let limited = "local transport `cloud relay request` failed: cloud relay request failed with 429: cloud_api_code=rate_limited: Rate limit exceeded, retry in 10 seconds";
+        let message = cloud_connection_refused("lanes-executor", &limited).message();
+        assert!(!message.contains("relay did not accept"), "{message}");
+        assert!(
+            message.contains("Chariox Cloud") && message.contains("retry in 10 seconds"),
+            "{message}"
+        );
+        let other = "cloud relay request failed with 503: accountId=acct-1";
+        let error = cloud_connection_refused("b3", &other);
+        assert_eq!(error.code(), "kernel_unreachable");
+        assert!(
+            !error.message().contains("relay did not accept")
+                && !error.message().contains("accountId"),
+            "{}",
+            error.message()
+        );
+    }
 
     #[test]
     fn a_transport_failure_reaches_the_agent_without_its_raw_text() {
