@@ -4,6 +4,7 @@ import type { ProviderLoginStripState } from "./provider-login-interaction-contr
 import type { AgentTriggerStripItem } from "@chariox/kernel-client/agent-trigger-state"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
 import type { QueuedJob } from "@chariox/kernel-client/queued-jobs"
+import type { SubAgentStripeItem } from "./interaction-strip-renderer.js"
 
 type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: string }> = {
   renderer: TRenderer
@@ -18,6 +19,7 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
@@ -45,6 +47,7 @@ export type AgentInteractionStripControllerDeps<
   customReply: (interactionId: string) => string
   customEditing: (interactionId: string) => boolean
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
+  subAgentStripeForAgent?: (agentId: string | null | undefined) => SubAgentStripeItem | null
   queuedJobsForAgent?: (agentId: string | null | undefined) => readonly QueuedJob[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void
@@ -78,6 +81,7 @@ export function createAgentInteractionStripController<
         customReply: deps.customReply,
         customEditing: deps.customEditing,
         queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+        ...(deps.subAgentStripeForAgent ? { subAgentStripeForAgent: deps.subAgentStripeForAgent } : {}),
         ...(deps.queuedJobsForAgent ? { queuedJobsForAgent: deps.queuedJobsForAgent } : {}),
         selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
         onQueuedPromptAction: deps.onQueuedPromptAction,

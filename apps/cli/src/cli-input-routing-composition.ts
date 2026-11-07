@@ -42,6 +42,7 @@ export type CliInputRoutingCompositionDeps = {
   cloudClient?: import("./cloud-client.js").CloudClient
 
   roomWorkflowsOwnsInput?: () => boolean
+  handleSubAgentsKey?: AnyFn
   handleRoomWorkflowsKey?: (event: import("./global-keyboard-shortcut-controller.js").GlobalKeyboardShortcutEvent) => boolean
   handleKernelApprovalKey?: (event: import("./kernel-approval-controller.js").KernelApprovalKey) => boolean
   openKernelApprovals: () => void
@@ -780,6 +781,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
     ...(deps.handleSessionProcessesKey ? { handleSessionProcessesKey: deps.handleSessionProcessesKey } : {}),
     handleProjectEnvironmentKey: deps.handleProjectEnvironmentKey,
+    ...(deps.handleSubAgentsKey ? { handleSubAgentsKey: deps.handleSubAgentsKey } : {}),
     handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,
     requestExit: () => {

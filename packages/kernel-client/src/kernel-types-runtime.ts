@@ -597,3 +597,5 @@ export interface AgentTree {
   totals: { live: number; running: number; needs_user: number }
   nodes: AgentTreeNode[]
 }
+
+export type AgentTreeResponse = { AgentTree: { tree: AgentTree } }
