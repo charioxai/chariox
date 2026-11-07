@@ -284,3 +284,34 @@ fn a_steer_reads_from_before_the_oldest_pending_row() {
         "a row that is no longer pending is not read again"
     );
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: the read state is durable and belongs to one agent's row only.
+#[test]
+fn a_shown_row_stays_shown_after_a_restart() {
+    let f = Fixture::new();
+    let shown = occur(&f, "a", "message", false);
+    let unseen = occur(&f, "b", "message", false);
+    let other = occurrence(ROOM, "other", "peer", "c", "message", serde_json::json!({}));
+    let Outcome::Event(other) = f.apply(Operation::Occur(other)) else {
+        panic!("event")
+    };
+    f.apply(Operation::MarkShown {
+        room: ROOM.into(),
+        agent: AGENT.into(),
+        // A sequence of another agent's row is not marked through this agent.
+        sequences: vec![shown.sequence, other.sequence],
+    });
+    let sequences = |store: &DurableKernelStateStore, agent: &str| -> Vec<u64> {
+        store
+            .agent_unread_inbox(ROOM, agent, 0, u64::MAX >> 1, None)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.sequence)
+            .collect()
+    };
+    assert_eq!(sequences(&f.store, AGENT), vec![unseen.sequence]);
+    assert_eq!(sequences(&f.store, "other"), vec![other.sequence]);
+    let reopened = DurableKernelStateStore::open(f.root.join("state.sqlite")).unwrap();
+    assert_eq!(sequences(&reopened, AGENT), vec![unseen.sequence]);
+    assert_eq!(sequences(&reopened, "other"), vec![other.sequence]);
+}

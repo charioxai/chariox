@@ -98,6 +98,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_source_occurrences(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,success INTEGER NOT NULL,public_answer TEXT,UNIQUE(room_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,room_id TEXT NOT NULL,agent_id TEXT NOT NULL,source_id TEXT NOT NULL,occurrence_id TEXT NOT NULL,payload TEXT NOT NULL,UNIQUE(room_id,agent_id,source_id,occurrence_id));
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
@@ -513,6 +514,39 @@ impl DurableKernelStateStore {
                     r.get::<_, String>(3)?,
                 ))
             })
+            .map_err(sql)?;
+        rows.map(|r| {
+            let (seq, source, id, payload) = r.map_err(sql)?;
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+
+    /// Open rows with `after < sequence <= upto` the agent was never shown by an inbox read, whatever
+    /// cursor it passed: the read state is the ledger's, not the agent's.
+    pub(crate) fn agent_unread_inbox(
+        &self,
+        room: &str,
+        agent: &str,
+        after: u64,
+        upto: u64,
+        work: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox.unread")?;
+        let correlated = WORK_CORRELATED.replace("?3", "?5");
+        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND sequence<=?4 AND NOT EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) AND json_extract(payload,'$.state') NOT IN ('acknowledged','handled','expired','failed') AND (?5 IS NULL OR {correlated}) ORDER BY sequence LIMIT {INBOX_PAGE}")).map_err(sql)?;
+        let rows = q
+            .query_map(
+                params![room, agent, sql_integer(after)?, sql_integer(upto)?, work],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
             .map_err(sql)?;
         rows.map(|r| {
             let (seq, source, id, payload) = r.map_err(sql)?;

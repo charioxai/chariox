@@ -402,6 +402,12 @@ pub(crate) enum Operation {
         agent: String,
         sequence: u64,
     },
+    /// An inbox read returned these rows to the agent: only shown rows can be acknowledged through a range.
+    MarkShown {
+        room: String,
+        agent: String,
+        sequences: Vec<u64>,
+    },
     Defer {
         room: String,
         agent: String,

@@ -46,14 +46,21 @@ impl KernelRuntimeState {
             (n as usize).clamp(1, READ_LIMIT_MAX)
         });
         let work = self.owned.sudo_work_task(room, actor);
-        let page =
-            self.owned
-                .durable_state_store
-                .agent_work_inbox(room, actor, after, work.as_deref())?;
-        let page_full = page.len() >= ledger::INBOX_PAGE;
-        let open: Vec<InboxEvent> = page.into_iter().filter(is_open).collect();
+        let store = &self.owned.durable_state_store;
+        // `after` only pages: a row at or below it that was never shown is returned again.
+        let mut open = store.agent_unread_inbox(room, actor, 0, after, work.as_deref())?;
+        let page = store.agent_work_inbox(room, actor, after, work.as_deref())?;
+        let page_full = open.len() >= ledger::INBOX_PAGE || page.len() >= ledger::INBOX_PAGE;
+        open.extend(page.into_iter().filter(is_open));
         let more = open.len() > limit || page_full;
         let shown: Vec<&InboxEvent> = open.iter().take(limit).collect();
+        if !shown.is_empty() {
+            store.agent_lifecycle(Operation::MarkShown {
+                room: room.into(),
+                agent: actor.into(),
+                sequences: shown.iter().map(|event| event.sequence).collect(),
+            })?;
+        }
         let reader = self.owned.agent_store.get_agent(actor)?;
         let agents = self.owned.agent_store.get_session_agents(room);
         let views: Vec<(SenderRelation, serde_json::Value)> = shown
@@ -163,11 +170,23 @@ impl KernelRuntimeState {
                 let Some(last) = page.last().map(|event| event.sequence) else {
                     break;
                 };
+                // A row the agent was never shown stays as it is, whatever sequence the ack names.
+                let unread: std::collections::HashSet<u64> = self
+                    .owned
+                    .durable_state_store
+                    .agent_unread_inbox(room, actor, cursor, last, work.as_deref())?
+                    .into_iter()
+                    .map(|event| event.sequence)
+                    .collect();
                 for event in page
                     .iter()
                     .filter(|event| event.sequence <= through && is_open(event))
                 {
-                    if ledger::needs_answer(event) {
+                    if unread.contains(&event.sequence) {
+                        skipped.push(
+                            serde_json::json!({"sequence": event.sequence, "reason": "not_read"}),
+                        );
+                    } else if ledger::needs_answer(event) {
                         skipped.push(serde_json::json!({"sequence": event.sequence, "reason": "needs_answer"}));
                     } else if matches!(event.state.as_str(), "submitting" | "uncertain" | "blocked")
                     {

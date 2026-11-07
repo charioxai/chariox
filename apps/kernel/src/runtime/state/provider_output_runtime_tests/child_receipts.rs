@@ -132,7 +132,11 @@ async fn a_retry_after_the_lead_still_shows_all_three_children_and_the_ack_throu
         .sequence;
     let read = team
         .runtime
-        .read_agent_inbox(&team.room, &team.parent, &serde_json::json!({"after": lead}))
+        .read_agent_inbox(
+            &team.room,
+            &team.parent,
+            &serde_json::json!({"after": lead}),
+        )
         .unwrap();
     let events = read["events"].as_array().unwrap();
     let finished: Vec<u64> = events

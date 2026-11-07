@@ -185,6 +185,20 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             }
             Ok(Outcome::Event(e))
         }
+        Operation::MarkShown {
+            room,
+            agent,
+            sequences,
+        } => {
+            for sequence in sequences {
+                tx.execute(
+                    "INSERT OR IGNORE INTO agent_inbox_shown(sequence) SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3",
+                    params![room, agent, sql_integer(sequence)?],
+                )
+                .map_err(sql)?;
+            }
+            Ok(Outcome::Saved)
+        }
         Operation::Expire {
             room,
             agent,

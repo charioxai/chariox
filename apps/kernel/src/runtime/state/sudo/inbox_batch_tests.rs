@@ -211,12 +211,12 @@ async fn a_retry_with_a_later_after_still_returns_the_rows_never_shown() {
         vec![a.sequence, b.sequence, c.sequence],
         "{read}"
     );
-    // Once shown, a row is not returned again below the cursor.
+    // Once shown, a row below the cursor is not returned again; the cursor pages as before.
     let again = f
         .state
         .read_agent_inbox(&room, &agent, &serde_json::json!({"after": b.sequence}))
         .unwrap();
-    assert!(sequences(&again).is_empty(), "{again}");
+    assert_eq!(sequences(&again), vec![c.sequence], "{again}");
 }
 
 // An ack through a sequence settles only the rows the agent was shown; the others stay pending and are reported.
@@ -230,7 +230,12 @@ async fn ack_through_does_not_settle_rows_that_were_never_returned() {
     // The agent was shown only c (as a read starting at c would do).
     let ack_c = f
         .state
-        .ack_agent_inbox(&room, &agent, &serde_json::json!({"sequence": c.sequence}), 1)
+        .ack_agent_inbox(
+            &room,
+            &agent,
+            &serde_json::json!({"sequence": c.sequence}),
+            1,
+        )
         .unwrap();
     assert_eq!(ack_c["acknowledged"], c.sequence);
     let acked = f
@@ -269,7 +274,12 @@ async fn read_then_ack_through_settles_a_pending_row() {
     assert_eq!(sequences(&read), vec![a.sequence]);
     let acked = f
         .state
-        .ack_agent_inbox(&room, &agent, &serde_json::json!({"through": b.sequence}), 1)
+        .ack_agent_inbox(
+            &room,
+            &agent,
+            &serde_json::json!({"through": b.sequence}),
+            1,
+        )
         .unwrap();
     assert_eq!(acked["acknowledged"], serde_json::json!([a.sequence]));
     assert_eq!(
