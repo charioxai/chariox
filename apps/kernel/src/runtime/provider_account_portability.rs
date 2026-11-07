@@ -23,7 +23,8 @@ pub(crate) async fn execute_preflight(
     if check_preflight(config, profiles, command, request)? {
         // A locked Vault shows its unlock card in the launching session and the launch goes on
         // when it opens. A caller without a session gets the typed `vault_locked` refusal.
-        let _unlocked = runtime_state
+        // The unlock stays open for the export that follows the machine's creation.
+        let unlocked = runtime_state
             .ensure_vault_unlocked_for_command_context(
                 command,
                 None,
@@ -31,6 +32,7 @@ pub(crate) async fn execute_preflight(
                 "provider_account_portability",
             )
             .await?;
+        runtime_state.hold_vault_for_login_export(unlocked, command);
     }
     Ok(LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {})
 }
