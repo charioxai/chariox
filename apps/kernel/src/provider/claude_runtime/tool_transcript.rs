@@ -58,12 +58,19 @@ pub(crate) fn bounded_result_images(content: Option<&Value>) -> (Vec<String>, us
             continue;
         }
         let Some((media_type, data)) = (|| {
-            let source = item.get("source")?;
-            if source.get("type")?.as_str()? != "base64" {
-                return None;
-            }
-            let media_type = source.get("media_type")?.as_str()?;
-            let data = source.get("data")?.as_str()?;
+            let (media_type, data) = match item.get("source") {
+                Some(source) => {
+                    if source.get("type")?.as_str()? != "base64" {
+                        return None;
+                    }
+                    (
+                        source.get("media_type")?.as_str()?,
+                        source.get("data")?.as_str()?,
+                    )
+                }
+                // An MCP image block carries its type and data on the block itself.
+                None => (item.get("mimeType")?.as_str()?, item.get("data")?.as_str()?),
+            };
             let base64 = data
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='));
