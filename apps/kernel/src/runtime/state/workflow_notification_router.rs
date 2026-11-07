@@ -409,7 +409,7 @@ impl KernelRuntimeState {
 }
 impl KernelRuntimeOwnedState {
     /// A local source's occurrence for a local agent is accepted as a remote one is on delivery.
-    fn accept_local_agent_notification(
+    pub(super) fn accept_local_agent_notification(
         &self,
         sub: &WorkflowNotificationSubscription,
         env: &WorkflowNotificationEnvelope,
@@ -421,7 +421,9 @@ impl KernelRuntimeOwnedState {
                 let (sources, _, _) = self
                     .durable_state_store
                     .notification_inventory(&sub.owner_user_id)?;
-                if !self.agent_notification_target_live(sub)
+                if !sessions
+                    .get_session(&sub.session_id)
+                    .is_ok_and(|session| self.agent_notification_target_live(&session, sub))
                     || !sources
                         .iter()
                         .any(|s| s.source_id == env.source_id && source_available(&sessions, s))

@@ -2707,7 +2707,9 @@ async fn the_agent_target_check_under_a_held_session_read_completes_while_a_writ
             let sessions = owned.session_store.read();
             ready_tx.send(()).unwrap();
             go_rx.recv().unwrap();
-            let live = owned.agent_notification_target_live(&subscription);
+            let live = sessions
+                .get_session(&subscription.session_id)
+                .is_ok_and(|session| owned.agent_notification_target_live(&session, &subscription));
             drop(sessions);
             done_tx.send(live).unwrap();
         })
@@ -2724,5 +2726,49 @@ async fn the_agent_target_check_under_a_held_session_read_completes_while_a_writ
         .expect("the target check re-locked the session store under a waiting writer");
     assert!(live);
     reader.join().unwrap();
+    writer.join().unwrap();
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 (W1): accepting a local agent notification while the session
+// store is written all the time (the output pump settling runs) never wedges the kernel.
+#[tokio::test]
+async fn accepting_agent_notifications_while_the_session_store_is_written_never_blocks() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    let subscription = rig.subscriptions().remove(0);
+    let envelope = crate::local::WorkflowNotificationEnvelope {
+        source_id: source,
+        display_name: "pipeline".into(),
+        occurrence_id: "occurrence-w1".into(),
+        output: WorkflowOutputPayload::new("release approved", vec![]),
+        ancestry: vec![],
+        deadline_ms: crate::session::unix_epoch_ms() + 3_600_000,
+    };
+    let owned = rig.runtime.owned.clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let writer = {
+        let (owned, stop) = (owned.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                drop(owned.session_store.write());
+                std::thread::yield_now();
+            }
+        })
+    };
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for _ in 0..2_000 {
+            owned.accept_local_agent_notification(&subscription, &envelope);
+        }
+        done_tx.send(()).unwrap();
+    });
+    let finished = done_rx.recv_timeout(std::time::Duration::from_secs(30));
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    finished.expect("accepting an agent notification waited on the session store for ever");
     writer.join().unwrap();
 }

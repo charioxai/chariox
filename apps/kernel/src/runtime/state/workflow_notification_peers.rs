@@ -449,7 +449,9 @@ impl KernelRuntimeState {
                             .filter(|s| self.owned.notification_grant_live(s))
                             .ok_or_else(|| store::error("notification not attached"))?;
                         if sub.target_kind == WorkflowNotificationTargetKind::Agent {
-                            if !self.owned.agent_notification_target_live(&sub) {
+                            if !sessions.get_session(&sub.session_id).is_ok_and(|session| {
+                                self.owned.agent_notification_target_live(&session, &sub)
+                            }) {
                                 return Err(store::error("notification target changed"));
                             }
                         } else {

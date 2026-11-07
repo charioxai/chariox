@@ -438,7 +438,15 @@ impl KernelRuntimeState {
         }
         let mut live = Vec::new();
         for subscription in subscriptions {
-            if self.owned.agent_notification_target_live(&subscription) {
+            if self
+                .owned
+                .session_store
+                .get_session(&subscription.session_id)
+                .is_ok_and(|session| {
+                    self.owned
+                        .agent_notification_target_live(&session, &subscription)
+                })
+            {
                 live.push(subscription);
             } else {
                 self.detach_agent_notification(&subscription).await;
@@ -472,7 +480,15 @@ impl KernelRuntimeState {
                     accepted: true,
                     at: now.saturating_add(1000),
                 });
-            if !self.owned.agent_notification_target_live(&subscription) {
+            if !self
+                .owned
+                .session_store
+                .get_session(&subscription.session_id)
+                .is_ok_and(|session| {
+                    self.owned
+                        .agent_notification_target_live(&session, &subscription)
+                })
+            {
                 continue;
             }
             if let Err(error) = self.queue_agent_notification(&subscription, envelope).await {
@@ -629,15 +645,16 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
-    /// The agent of a subscription is present and its notification trigger exists.
+    /// The agent of a subscription is present and its notification trigger exists in `session`,
+    /// the subscription's room. The caller reads the room once, so this never locks the session
+    /// store: a second read under a held one waits for ever once a writer queues between them.
     pub(super) fn agent_notification_target_live(
         &self,
+        session: &crate::session::RuntimeSession,
         subscription: &WorkflowNotificationSubscription,
     ) -> bool {
-        let Ok(session) = self.session_store.get_session(&subscription.session_id) else {
-            return false;
-        };
-        session.status() != crate::session::SessionStatus::Ended
+        session.id() == subscription.session_id
+            && session.status() != crate::session::SessionStatus::Ended
             && session.has_member(&subscription.created_by_user_id)
             && session.owner_user_id() == subscription.owner_user_id
             && self
