@@ -1,7 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: transactional lifecycle policy.
 use super::*;
 /// Why a task is Blocked when its turn ended twice without finishing its obligations or yielding on them.
-pub(super) const INVALID_TURN_END_REASON: &str = "Repeated invalid turn end; owner must resume or cancel";
+pub(super) const INVALID_TURN_END_REASON: &str =
+    "Repeated invalid turn end; owner must resume or cancel";
 
 pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError> {
     let browser_access = matches!(&op, Operation::BlockForBrowserAccess { .. });

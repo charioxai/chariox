@@ -175,7 +175,12 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         changed = true;
                     }
                 }
-                if turn_end_block && !t.obligations.iter().any(AgentObligation::requires_resolution) {
+                if turn_end_block
+                    && !t
+                        .obligations
+                        .iter()
+                        .any(AgentObligation::requires_resolution)
+                {
                     t.state = ExecutionState::Done;
                     t.reason.clear();
                 }
