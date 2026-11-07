@@ -77,3 +77,83 @@ test("A3/A4 a decision a sub-agent asks in the room agent's panel is labelled wi
     dispose()
   })
 })
+
+// MP-08 / MP-09 / MP-10 / MP-11 subview: a root that leaves the room's agents (deleted, or placed under another agent)
+// takes its cached tree, its open view and its stripe with it, whatever the room id.
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+const rooms = () => {
+  const handlers: Array<(event: { event: string }) => void> = []
+  const answers: Record<string, () => Promise<AgentTree>> = {}
+  const client = {
+    send: async (request: { ListDescendants: { agent_id: string } }) => ({ AgentTree: { tree: await answers[request.ListDescendants.agent_id]!() } }),
+    onKernelEvent: (handler: (event: { event: string }) => void) => { handlers.push(handler); return () => {} },
+  }
+  const session = { id: "s1", agents: [{ id: "a" }, { id: "b" }] as Array<{ id: string }> }
+  const sub = createCliSubAgentsComposition({ client: client as never, session: () => session as never, attached: () => true, focusedAgentId: () => "a", width: () => 100 })
+  const roomChanged = async () => { handlers.forEach(handler => handler({ event: "session_snapshot" })); await flush() }
+  const tree = (root: string, rev: number, nodes: AgentTreeNode[]): AgentTree => ({ root, rev, nodes, totals: { live: nodes.length, running: nodes.length, needs_user: 0 } })
+  return { sub, session, answers, roomChanged, tree }
+}
+
+test("AO-UI-02 deleting a root drops its cached tree, its stripe and its open view", async () => {
+  await createRoot(async dispose => {
+    const { sub, session, answers, roomChanged, tree } = rooms()
+    answers.a = async () => tree("a", 1, [node("a1", "a", "running", 1)])
+    answers.b = async () => tree("b", 1, [])
+    await sub.controller.refresh("a"); await sub.controller.refresh("b")
+    sub.stripeFor("a")!.open(); sub.controller.chooseRow("a1")
+    assert.equal(sub.viewVisible(), true)
+    session.agents = [{ id: "b" }]
+    await roomChanged()
+    assert.deepEqual([sub.stripeFor("a"), sub.viewVisible(), sub.cardOpen(), sub.controller.available], [null, false, false, false])
+    dispose()
+  })
+})
+
+test("AO-UI-02 a root placed under another agent leaves the room's trees and the other root's tree shows it", async () => {
+  await createRoot(async dispose => {
+    const { sub, session, answers, roomChanged, tree } = rooms()
+    answers.a = async () => tree("a", 1, [node("a1", "a", "running", 1)])
+    answers.b = async () => tree("b", 1, [])
+    await sub.controller.refresh("a"); await sub.controller.refresh("b")
+    session.agents = [{ id: "b" }]
+    answers.b = async () => tree("b", 2, [node("a", "b", "running", 1), node("a1", "a", "running", 2)])
+    await roomChanged()
+    assert.equal(sub.stripeFor("a"), null, "a is no room agent any more")
+    assert.deepEqual(sub.stripeFor("b")!.text, "2 agents running")
+    assert.deepEqual(sub.controller.lines().map(row => row.id), ["a"])
+    dispose()
+  })
+})
+
+test("AO-UI-02 a read of a deleted root that is still on its way is dropped", async () => {
+  await createRoot(async dispose => {
+    const { sub, session, answers, roomChanged, tree } = rooms()
+    let answer: (value: AgentTree) => void = () => {}
+    answers.a = () => new Promise<AgentTree>(resolve => { answer = resolve })
+    answers.b = async () => tree("b", 1, [])
+    const late = sub.controller.refresh("a")
+    session.agents = [{ id: "b" }]
+    await roomChanged()
+    answer(tree("a", 1, [node("a1", "a", "running", 1)]))
+    await late
+    assert.equal(sub.stripeFor("a"), null)
+    dispose()
+  })
+})
+
+test("AO-UI-02 a root deleted and created again under the same id reads fresh, whatever its old revision was", async () => {
+  await createRoot(async dispose => {
+    const { sub, session, answers, roomChanged, tree } = rooms()
+    answers.a = async () => tree("a", 9, [node("a1", "a", "running", 1)])
+    answers.b = async () => tree("b", 1, [])
+    await sub.controller.refresh("a")
+    session.agents = [{ id: "b" }]
+    await roomChanged()
+    session.agents = [{ id: "a" }, { id: "b" }]
+    answers.a = async () => tree("a", 1, [node("a2", "a", "running", 1)])
+    await roomChanged()
+    assert.deepEqual(sub.controller.lines().map(row => row.id), ["a2"])
+    dispose()
+  })
+})
