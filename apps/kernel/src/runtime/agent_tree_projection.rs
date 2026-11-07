@@ -390,4 +390,86 @@ mod tests {
         assert_eq!(tree.nodes[1].deadline_ms, Some(99));
         assert_eq!(tree.totals.live, 1);
     }
+
+    // The client's live states are starting, running, waiting and unreachable: a child whose latest
+    // turn finished is idle with its outcome and no longer counts, or the view stays open on done rows.
+    #[test]
+    fn a_child_whose_turn_finished_is_idle_and_not_live() {
+        let session = session(vec![
+            agent("root", None, 1),
+            agent("done", Some("root"), 2),
+            agent("cancelled", Some("root"), 3),
+            agent("busy", Some("root"), 4),
+        ]);
+        let finished = |outcome| NodeTurn {
+            live: false,
+            blocked: false,
+            outcome: Some(outcome),
+        };
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|id| match id {
+                "done" => Some(finished(TurnOutcomeKind::Completed)),
+                "cancelled" => Some(finished(TurnOutcomeKind::Cancelled)),
+                _ => Some(NodeTurn {
+                    live: true,
+                    blocked: false,
+                    outcome: None,
+                }),
+            },
+        )
+        .unwrap();
+        let states = tree
+            .nodes
+            .iter()
+            .map(|node| node.state)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            vec![
+                AgentTreeState::Idle,
+                AgentTreeState::Idle,
+                AgentTreeState::Running
+            ]
+        );
+        assert_eq!(tree.totals.live, 1);
+    }
+
+    // The client controller tests read this file as the kernel's answer once every child finished.
+    #[test]
+    fn the_tree_of_finished_children_is_the_shared_client_fixture() {
+        let session = session(vec![
+            agent("room", None, 1),
+            agent("done", Some("room"), 2),
+            agent("cancelled", Some("room"), 3),
+        ]);
+        let tree = project_agent_tree(
+            &session,
+            session.agents(),
+            "room",
+            &|_| false,
+            &|_| None,
+            &|id| {
+                Some(NodeTurn {
+                    live: false,
+                    blocked: false,
+                    outcome: Some(if id == "done" {
+                        TurnOutcomeKind::Completed
+                    } else {
+                        TurnOutcomeKind::Cancelled
+                    }),
+                })
+            },
+        )
+        .unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/agent-tree-finished.json"
+        ))
+        .unwrap();
+        assert_eq!(serde_json::to_value(&tree).unwrap(), fixture);
+    }
 }

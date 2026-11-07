@@ -1,6 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11 A6/A7 (TUI): the stripe, list card and Sub-agents view lifecycle.
 import assert from "node:assert/strict"
 import test from "node:test"
+import { readFileSync } from "node:fs"
 import type { AgentTree, AgentTreeNode, AgentTreeState } from "./kernel-types-runtime.js"
 import { SubAgentsController } from "./sub-agents-controller.js"
 
@@ -78,6 +79,20 @@ test("AO-UI-03 the last live sub-agent ending closes the view; the finished rows
   assert.equal(controller.stripe("room")!.text, "3 agents done")
   controller.openCard(); controller.chooseRow("a1")
   assert.deepEqual([controller.cardOpen, controller.viewOpen], [false, false], "with none live a row only closes the card")
+})
+
+// The kernel's own answer once every child finished (the Rust projection test asserts this file): the totals are the
+// kernel's, not recomputed here, so the two sides cannot drift apart.
+const finishedByKernel = (rev: number): AgentTree => ({ ...JSON.parse(readFileSync(new URL("../../../fixtures/agent-tree-finished.json", import.meta.url), "utf8")) as AgentTree, rev })
+
+test("AO-UI-03 the kernel's tree of finished children closes the view and keeps it closed", async () => {
+  const { controller } = make({ room: three(1) })
+  await controller.refresh("room"); controller.chooseRow("a1")
+  assert.equal(controller.viewOpen, true)
+  controller.apply(finishedByKernel(2))
+  assert.deepEqual([controller.viewOpen, controller.focusedPanelId], [false, null], "the last child finishing closes the view")
+  controller.openCard(); controller.chooseRow("done")
+  assert.deepEqual([controller.cardOpen, controller.viewOpen], [false, false], "a done row does not reopen it")
 })
 
 test("AO-UI-02 the parent's task ending drops every sub-agent: stripe, card and view go", async () => {
