@@ -277,6 +277,14 @@ fn outline_blob_preview(events: &[&HistoryEvent]) -> Option<String> {
             if snapshot.is_empty() {
                 return None;
             }
+            // The pictures stay out of the preview, but their count tells a client to read the call when it shows it.
+            let image_count = snapshot
+                .get("images")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len);
+            if image_count > 0 {
+                snapshot.insert("imageCount".to_string(), image_count.into());
+            }
             for key in [
                 "output",
                 "text",
@@ -846,6 +854,59 @@ mod tests {
 
         let preview = blobs[0].preview.as_deref().expect("tool preview");
         assert!(!preview.contains("images") && !preview.contains("base64"));
+    }
+
+    #[test]
+    fn a_tool_blob_preview_counts_the_pictures_its_result_returned() {
+        let events = vec![
+            provider_tool_event_with_text(
+                1,
+                "call-chart",
+                serde_json::json!({
+                    "id": "call-chart", "tool": "render_chart", "status": "running",
+                    "input": { "title": "t".repeat(2_000) },
+                })
+                .to_string(),
+            ),
+            provider_tool_event_with_text(
+                2,
+                "call-chart",
+                serde_json::json!({
+                    "id": "call-chart", "tool": "render_chart", "status": "completed",
+                    "input": { "title": "t".repeat(2_000) },
+                    "output": "drawn",
+                    "images": ["data:image/png;base64,iVBORw0KGgo=", "data:image/png;base64,R0lGODlh"],
+                })
+                .to_string(),
+            ),
+            provider_tool_event_with_text(
+                3,
+                "call-text",
+                serde_json::json!({
+                    "id": "call-text", "tool": "render_chart", "status": "completed",
+                    "output": "no picture", "images": [],
+                })
+                .to_string(),
+            ),
+        ];
+
+        let blobs = outline_blobs_from_events(&events, 0, &BTreeSet::new(), &BTreeSet::new());
+
+        let preview = blobs[0].preview.as_deref().expect("tool preview");
+        assert!(!preview.contains("base64") && !preview.contains("\"images\""));
+        let preview: serde_json::Value = serde_json::from_str(preview).unwrap();
+        assert_eq!(preview["imageCount"], 2);
+        assert_eq!(preview["status"], "completed");
+        assert_eq!(
+            preview["input"]["title"]
+                .as_str()
+                .map(|title| title.chars().count()),
+            Some(513),
+            "the preview strings are still cut"
+        );
+        let plain: serde_json::Value =
+            serde_json::from_str(blobs[1].preview.as_deref().expect("tool preview")).unwrap();
+        assert!(plain.get("imageCount").is_none());
     }
 
     #[test]
