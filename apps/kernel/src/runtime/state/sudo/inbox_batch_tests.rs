@@ -184,6 +184,104 @@ async fn ack_through_skips_an_event_that_needs_an_answer() {
     assert_eq!(rows(&f)[1].state, "pending");
 }
 
+fn sequences(read: &serde_json::Value) -> Vec<u64> {
+    read["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["sequence"].as_u64().unwrap())
+        .collect()
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: `after` is only a paging cursor. A retry with a later cursor (after a failed first call)
+// still returns the rows the agent was never shown.
+#[tokio::test]
+async fn a_retry_with_a_later_after_still_returns_the_rows_never_shown() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let a = occur(&f, "a", "message", serde_json::json!({"message": "a"}));
+    let b = occur(&f, "b", "message", serde_json::json!({"message": "b"}));
+    let c = occur(&f, "c", "message", serde_json::json!({"message": "c"}));
+    let read = f
+        .state
+        .read_agent_inbox(&room, &agent, &serde_json::json!({"after": b.sequence}))
+        .unwrap();
+    assert_eq!(
+        sequences(&read),
+        vec![a.sequence, b.sequence, c.sequence],
+        "{read}"
+    );
+    // Once shown, a row is not returned again below the cursor.
+    let again = f
+        .state
+        .read_agent_inbox(&room, &agent, &serde_json::json!({"after": b.sequence}))
+        .unwrap();
+    assert!(sequences(&again).is_empty(), "{again}");
+}
+
+// An ack through a sequence settles only the rows the agent was shown; the others stay pending and are reported.
+#[tokio::test]
+async fn ack_through_does_not_settle_rows_that_were_never_returned() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let a = occur(&f, "a", "message", serde_json::json!({"message": "a"}));
+    let b = occur(&f, "b", "message", serde_json::json!({"message": "b"}));
+    let c = occur(&f, "c", "message", serde_json::json!({"message": "c"}));
+    // The agent was shown only c (as a read starting at c would do).
+    let ack_c = f
+        .state
+        .ack_agent_inbox(&room, &agent, &serde_json::json!({"sequence": c.sequence}), 1)
+        .unwrap();
+    assert_eq!(ack_c["acknowledged"], c.sequence);
+    let acked = f
+        .state
+        .ack_agent_inbox(
+            &room,
+            &agent,
+            &serde_json::json!({"through": c.sequence + 5}),
+            1,
+        )
+        .unwrap();
+    assert_eq!(acked["acknowledged"], serde_json::json!([]), "{acked}");
+    assert_eq!(
+        acked["skipped"],
+        serde_json::json!([
+            {"sequence": a.sequence, "reason": "not_read"},
+            {"sequence": b.sequence, "reason": "not_read"},
+        ])
+    );
+    let all = rows(&f);
+    assert_eq!(all[0].state, "pending");
+    assert_eq!(all[1].state, "pending");
+}
+
+// The legitimate flow: read a row (pending or delivered), then ack through it.
+#[tokio::test]
+async fn read_then_ack_through_settles_a_pending_row() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let a = occur(&f, "a", "message", serde_json::json!({"message": "a"}));
+    let b = occur(&f, "b", "message", serde_json::json!({"message": "b"}));
+    let read = f
+        .state
+        .read_agent_inbox(&room, &agent, &serde_json::json!({"limit": 1}))
+        .unwrap();
+    assert_eq!(sequences(&read), vec![a.sequence]);
+    let acked = f
+        .state
+        .ack_agent_inbox(&room, &agent, &serde_json::json!({"through": b.sequence}), 1)
+        .unwrap();
+    assert_eq!(acked["acknowledged"], serde_json::json!([a.sequence]));
+    assert_eq!(
+        acked["skipped"],
+        serde_json::json!([{"sequence": b.sequence, "reason": "not_read"}]),
+        "b was cut by the limit and never shown"
+    );
+    let all = rows(&f);
+    assert_eq!(all[0].state, "acknowledged");
+    assert_eq!(all[1].state, "pending");
+}
+
 #[test]
 fn a_one_mebibyte_payload_is_bounded_at_sixteen_kibibytes() {
     let (cut, truncated) = super::super::tool_dispatch::agent_inbox_read::bounded_payload(
