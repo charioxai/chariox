@@ -541,7 +541,7 @@ pub(crate) fn start_managed_context_outbound_operation(
             }
         }
         // The Vault login is read from the Vault, which preflight's unlock may no longer cover.
-        let vault_open = match runtime.as_ref() {
+        let vault_open = match caller.as_ref().map(|caller| &caller.runtime) {
             Some(runtime) => match package_export_reads_vault_login(
                 &config,
                 &store,
