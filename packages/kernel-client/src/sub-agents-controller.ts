@@ -13,6 +13,8 @@ export interface SubAgentsDeps {
 
 export class SubAgentsController {
   private trees = new Map<string, AgentTree>()
+  /** The newest revision read per root, kept after its tree empties so a late older read cannot bring ended agents back. */
+  private revs = new Map<string, number>()
   private readonly collapsed = new Set<string>()
   private root: string | null = null
   /** The focused agent the card and view were asked to show; kept until its tree arrives or the tree it had goes. */
@@ -44,7 +46,9 @@ export class SubAgentsController {
 
   apply(tree: AgentTree): void {
     const known = this.trees.get(tree.root)
-    if (known && tree.rev < known.rev) return
+    const newest = this.revs.get(tree.root)
+    if (newest !== undefined && tree.rev < newest) return
+    this.revs.set(tree.root, tree.rev)
     if (tree.nodes.length === 0) {
       this.trees.delete(tree.root)
       if (known && this.requested === tree.root) this.requested = null
@@ -65,7 +69,7 @@ export class SubAgentsController {
   /** A new room: nothing of the old one stays. */
   reset(): void {
     this.generation += 1
-    this.trees = new Map(); this.collapsed.clear(); this.root = null; this.requested = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
+    this.trees = new Map(); this.revs = new Map(); this.collapsed.clear(); this.root = null; this.requested = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
     this.deps.changed()
   }
 
