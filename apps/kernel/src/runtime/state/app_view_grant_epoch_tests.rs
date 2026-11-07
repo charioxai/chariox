@@ -606,3 +606,67 @@ async fn room_app_view_backend_preserves_actor_and_revocation() {
 
 #[path = "app_view_actor_roundtrip_tests.rs"]
 mod actor_roundtrip_tests;
+
+/// MP-08/MP-11 S1-04: an agent that holds the App and the browser but has not
+/// claimed this view is told what is missing, not that the App is not granted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app_grant() {
+    let ViewFixture {
+        state,
+        agent,
+        binding,
+        view,
+        _cleanup,
+        ..
+    } = prepare(Mode::ToolEcho);
+    let host = &state.owned.kernel_browser_host;
+    host.revoke_grants("alice", Some(agent.id()));
+    host.set_focus("alice", Some(agent.id()));
+    host.load("alice", agent.id()).unwrap();
+    assert!(agent.has_extension_grant(crate::extension::ExtensionKind::App, "installed"));
+    let method = tool_method(&state);
+    let mut tracked = state.app_control().views().track_call(&view, &view, None);
+    let error = state
+        .invoke_user_app_view_call(
+            "alice",
+            &view,
+            &binding,
+            &method,
+            serde_json::json!({"text":"unclaimed"}),
+            &mut tracked,
+            ViewCaller::Agent(&agent),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "AGENT_APP_NOT_GRANTED");
+    assert!(
+        error.message.contains("claim") && !error.message.contains("no grant for this App"),
+        "the owner already granted the App; the message must name the missing claim: {}",
+        error.message
+    );
+    // Claiming the view, as a click on its Tab does, removes the refusal.
+    let admission = host.admit("alice", agent.id()).unwrap();
+    host.claim_resource(
+        Some(&admission),
+        UserDomainResource::AppView { view_id: view.clone() },
+        false,
+    )
+    .unwrap();
+    let mut tracked = state.app_control().views().track_call(&view, &view, None);
+    let claimed = state
+        .invoke_user_app_view_call(
+            "alice",
+            &view,
+            &binding,
+            &method,
+            serde_json::json!({"text":"claimed"}),
+            &mut tracked,
+            ViewCaller::Agent(&agent),
+        )
+        .await;
+    assert!(
+        !matches!(&claimed, Err(error) if error.code == "AGENT_APP_NOT_GRANTED"),
+        "a claimed view reaches the App: {claimed:?}"
+    );
+    cleanup_worker(&state).await;
+}
