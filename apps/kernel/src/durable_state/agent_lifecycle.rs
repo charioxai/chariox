@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod batch_tests;
 #[cfg(test)]
+mod unread_steer_tests;
+#[cfg(test)]
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
