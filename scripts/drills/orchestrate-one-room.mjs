@@ -399,6 +399,7 @@ Steps:
   const seen = { agents: new Map(), interactions: new Map(), prompts: new Map(), shown: new Map() }
   const orchTurns = []
   const treeNoted = new Set()
+  const raceCards = new Map()
   let peerProbed = false, lateDone = false, sudoAt = null, probes = null, probesAt = null
   let reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
@@ -463,6 +464,29 @@ Steps:
       if (holdTitle.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: scenario === "ask" ? "go" : "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
     // The person's side of the decisions drill: a secret request is the user's alone and its card shows in the room agent's panel; a worker the person races the parent for is answered at once; every other card is left to the parents.
+    // Landing 5 race drill: w1's delegable decision is answered by the person at once (the parent's later answer must lose),
+    // w2's is left to the parent and the person answers it late (must lose), the secret goes to the person, c's holder p ends its turn.
+    if (scenario === "race" && s) {
+      const open = new Set((s.active_interactions ?? []).map(x => x.id))
+      for (const it of s.active_interactions ?? []) {
+        const prev = raceCards.get(it.id)
+        const shown = it.shown_in_agent_id ?? null
+        if (prev) { if (prev.shown !== shown) { note("race-shown-changed", { id: it.id, asker: prev.who, from: prev.shown, to: shown }); prev.shown = shown } continue }
+        const tree = await a.rpc(listDescendantsRequest(R, orch)).then(r => r.AgentTree.tree, () => null)
+        const who = tree?.nodes.find(n => n.agent_id === it.agent_id)?.alias ?? it.agent_id
+        const listed = (await a.rpc({ ListAgents: { session_id: R } }).then(r => r.AgentsListed.agents.map(x => x.alias), () => null))
+        raceCards.set(it.id, { who, shown, at: Date.now(), late: false, choice: ((it.choices ?? []).find(c => /allow|approve|yes|^ok$/i.test(c.id)) ?? it.choices?.[0])?.id })
+        note("race-interaction", { id: it.id, asker: who, shown_in: shown === orch ? "orchestrator" : shown, secret: it.custom_choice?.input_kind === "secret", title: it.title, choices: (it.choices ?? []).map(c => c.id), keys: Object.keys(it), listed_agents: listed, sub_agents_in_tree: tree?.nodes.length })
+        const choice = (it.choices ?? []).find(c => /allow|approve|yes|^ok$/i.test(c.id)) ?? it.choices?.[0]
+        if (who === "w1" && choice) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: choice.id } }).then(() => note("race-user-first", { id: it.id, asker: who, choice: choice.id }), e => note("race-user-first-refused", { id: it.id, message: e.message.slice(0, 200) }))
+        if (it.custom_choice?.input_kind === "secret") setTimeout(() => a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: it.custom_choice.id, custom_reply: "drill-not-a-real-secret" } }).then(() => note("race-user-secret-answer", { id: it.id, asker: who }), e => note("race-user-secret-refused", { id: it.id, message: e.message.slice(0, 200) })), 15000)
+      }
+      for (const [id, c] of raceCards) if (c.who === "w2" && !c.late && !open.has(id) && Date.now() - c.at > 1500) {
+        c.late = true
+        const choice = { id: c.choice }
+        await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: id, choice_id: choice.id } }).then(r => note("race-user-late", { id, ok: true, response: JSON.stringify(r).slice(0, 200) }), e => note("race-user-late", { id, ok: false, message: e.message.slice(0, 300) }))
+      }
+    }
     if ((scenario === "decisions" || scenario === "orch") && s) {
       const alias = new Map((s.agents ?? []).map(x => [x.id, x.alias]))
       for (const it of s.active_interactions ?? []) {
