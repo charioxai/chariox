@@ -109,26 +109,26 @@ impl DurableKernelStateStore {
             .map_err(|_| "STORAGE_UNAVAILABLE")
     }
 
-    /// The active installations granted one of the owner's connections. A grant
-    /// that outlived its installation is not a dependency.
+    /// The owner and installation of every grant of one connection id, for
+    /// active installations only: a grant that outlived its installation is
+    /// not a dependency. The caller picks the grants whose owner it means.
     pub(crate) fn app_connection_grantees(
         &self,
-        owner: &str,
         connection_id: &str,
-    ) -> Result<Vec<String>, &'static str> {
+    ) -> Result<Vec<(String, String)>, &'static str> {
         let connection = self
             .lock_connection("durable_state.app_connection_grantees")
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let mut statement = connection
             .prepare(
-                "SELECT g.installation_id FROM app_connection_grants g
+                "SELECT g.owner_id, g.installation_id FROM app_connection_grants g
                  JOIN app_installations i ON i.installation_id=g.installation_id
-                 WHERE g.owner_id=?1 AND g.connection_id=?2 AND i.active_json IS NOT NULL
-                 ORDER BY g.installation_id",
+                 WHERE g.connection_id=?1 AND i.active_json IS NOT NULL
+                 ORDER BY g.owner_id, g.installation_id",
             )
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         let rows = statement
-            .query_map(params![owner, connection_id], |row| row.get(0))
+            .query_map(params![connection_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|_| "STORAGE_UNAVAILABLE")?;
         rows.collect::<Result<_, _>>()
             .map_err(|_| "STORAGE_UNAVAILABLE")

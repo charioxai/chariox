@@ -107,17 +107,22 @@ impl KernelRuntimeState {
     }
 
     /// The App inbox routes and connection grants that use one of the
-    /// owner's event connections.
+    /// person's event connections. `owner_id` is the record owner; routes and
+    /// grants keep the owner that created them, so both are compared mapped.
     pub(crate) fn event_connection_dependencies(
         &self,
         owner_id: &str,
         connection_id: &str,
     ) -> Result<Vec<crate::local::EventConnectionDependency>, String> {
+        let config = self.owned.config_projection.snapshot();
+        let is_record_owner = |app_owner: &str| {
+            crate::event_connection::event_connection_user_id(&config, app_owner) == owner_id
+        };
         let mut dependencies = self
             .app_event_routes()?
             .into_iter()
             .filter(|route| {
-                route.owner_id == owner_id
+                is_record_owner(&route.owner_id)
                     && route
                         .source
                         .as_ref()
@@ -132,15 +137,20 @@ impl KernelRuntimeState {
         let grantees = self
             .owned
             .durable_state_store
-            .app_connection_grantees(owner_id, connection_id)
+            .app_connection_grantees(connection_id)
             .map_err(|code| format!("App connection grants could not be read: {code}"))?;
-        dependencies.extend(grantees.into_iter().map(|installation_id| {
-            crate::local::EventConnectionDependency {
-                installation_id,
-                route_id: None,
-                active: true,
-            }
-        }));
+        dependencies.extend(
+            grantees
+                .into_iter()
+                .filter(|(grant_owner, _)| is_record_owner(grant_owner))
+                .map(
+                    |(_, installation_id)| crate::local::EventConnectionDependency {
+                        installation_id,
+                        route_id: None,
+                        active: true,
+                    },
+                ),
+        );
         Ok(dependencies)
     }
 
