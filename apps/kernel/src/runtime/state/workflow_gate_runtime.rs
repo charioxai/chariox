@@ -373,6 +373,11 @@ impl KernelRuntimeOwnedState {
                     });
             }
         }
+        // A released prompt is already durable and in the live session; publish the
+        // projection like every other enqueue, or the queue view lags one release.
+        for session_id in &sessions_to_dispatch {
+            let _ = self.session_snapshot(session_id);
+        }
         sessions_to_dispatch
     }
 }
