@@ -127,14 +127,21 @@ impl Rig {
             .collect()
     }
 
-    fn open_user_view(&self, queue_generation: Option<u64>) -> String {
-        let generation = self
-            .runtime
+    fn installation_generation(&self) -> u64 {
+        self.runtime
             .owned
             .durable_state_store
             .get_app_installation("alice", APP)
             .unwrap()
-            .generation;
+            .generation
+    }
+
+    fn open_user_view(&self, queue_generation: Option<u64>) -> String {
+        self.open_user_view_built_for(self.installation_generation(), queue_generation)
+    }
+
+    /// A view whose page was built for `generation`, as one opened before an update.
+    fn open_user_view_built_for(&self, generation: u64, queue_generation: Option<u64>) -> String {
         let binding = AppViewBinding {
             owner: "alice".into(),
             installation: APP.into(),
@@ -325,6 +332,75 @@ async fn native_user_app_view_requires_the_app_grant_and_current_queue_generatio
             .code,
         "APP_VIEW_STALE",
         "a user view whose registered App generation changed is refused"
+    );
+}
+
+/// MP-08/MP-11 S1-11: an uninstall forgets the Room-side queue binding of an open
+/// user view; the reinstall reloads the same Tab onto the new generation, and the
+/// agent must be able to use that view again without opening it a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_user_view_reloaded_after_uninstall_and_reinstall_is_usable_by_the_agent_again() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    rig.stage_signed_v2_fixture();
+    let generation = rig.installation_generation();
+    let view_id = rig.open_user_view_built_for(generation - 1, None);
+    rig.start_signed_v2_fixture_worker();
+    let controller = rig.root.join("reinstall-view-controller.sh");
+    std::fs::write(
+        &controller,
+        r#"#!/bin/sh
+while IFS= read -r request; do
+  id=${request#*:}; id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*) printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$" ;;
+    *'"method":"browser.app.agent"'*) printf '{"id":%s,"ok":true,"result":{"ok":true,"value":{"native":true}}}\n' "$id" ;;
+    *) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
+  esac
+done
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&controller, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let host = rig.runtime.kernel_browser_host_for_test();
+    host.install_fixture_backend("alice", &controller, &rig.root);
+    host.protected_request(
+        "alice",
+        None,
+        "host.browser",
+        json!({"op":"start"}),
+        json!({"values":[],"targets":[],"unknown":false}),
+    )
+    .unwrap();
+
+    // Uninstall: the Room registry forgets the installation's views; the open Tab stays.
+    rig.runtime
+        .app_control()
+        .views()
+        .forget_installation("alice", APP);
+    // Reinstall: the poll reloads the retained view onto the new generation.
+    let listed = rig.runtime.app_control().user_views().list("alice");
+    let view = listed.iter().find(|v| v.view_id == view_id).unwrap();
+    rig.runtime
+        .reload_updated_user_app_view("alice", view)
+        .await;
+    let reloaded = rig.runtime.app_control().user_views().get("alice", &view_id);
+    assert_eq!(reloaded.unwrap().0.generation, generation, "the Tab moved to the new generation");
+
+    let context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .expect("the agent reaches the reloaded view");
+    assert_eq!(context.binding.generation, generation);
+    assert_eq!(
+        rig.runtime
+            .view_call(&context, ViewAgentCallKind::State, None, None)
+            .await
+            .unwrap(),
+        json!({"native":true})
     );
 }
 

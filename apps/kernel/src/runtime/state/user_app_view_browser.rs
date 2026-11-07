@@ -316,7 +316,7 @@ impl KernelRuntimeState {
     /// An update that committed while a view is open reloads its page onto the
     /// new release (MP-08/MP-10): same Tab, and the App's drafts stay in its web
     /// storage. Until then the controller keeps serving the old generation's files.
-    async fn reload_updated_user_app_view(&self, owner: &str, view: &UserAppView) {
+    pub(super) async fn reload_updated_user_app_view(&self, owner: &str, view: &UserAppView) {
         let instances = self.app_control().user_views();
         let (Some((binding, _)), Some(browser), Some(target)) = (
             instances.get(owner, &view.view_id),
