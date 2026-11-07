@@ -436,8 +436,10 @@ export type AgentMoveStatus = { target_ref?: string | null } & (
 )
 
 export type AgentInstance = {
-  /** Unknown legacy lineage is never inferred from controller links. */
-  spawned_by_agent_id?: string | null
+  /** The agent that controls this one and everything below it; only the user changes it. */
+  parent_agent_id?: { agent_id: string } | null
+  /** The parent's command id of the spawn that created this agent. */
+  spawn_key?: string | null
   id: string
   agent_ref: string
   session_id: string
