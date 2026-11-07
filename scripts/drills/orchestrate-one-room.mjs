@@ -324,7 +324,21 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
 6. When c1 has finished, delete c2 with \`agent delete c2\` (you never gave it work; this ends your wait on its spawn, so later yields need not cover it). Then YOU control c1's sub-agent g1 (your grandchild): run \`agent children\`, \`agent deadline get g1\`, \`agent cancel g1\` and record the answers (they are allowed).
 7. Write ${join(work, "orchestrator-report.json")}: per step the command, the exact answer, and per child the OK/REFUSED lines it reported. Then delete c1, c2, p, m with \`agent delete <name>\` (delete the sub-agents of a child first if a delete is refused) and reply ORCHDONE.
 `
-  const brief = scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  // One card, one holder: a worker's decision goes to the parent that may answer it, else to the person as the same interaction.
+  const decisionsBrief = `# Orchestrator brief (drill, decisions scenario)
+You are the ORCHESTRATOR of this Chariox Room (session ${R}); your agent id is ${orch}. Use only your room commands (chariox room run_command) and chariox events tools. No /sudo. Do not ask the owner anything. Never retry a refused call more than once: record the exact answer. Never use shell sleeps or poll.
+Keep ${join(work, "orchestrator-state.json")} updated after every step.
+1. Spawn w1, w2, w3 with \`agent spawn <name> --provider claude --model ${model} --effort low --permission required --worktree ${join(root, "wt")}/<name> --branch <name>\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission yolo --worktree ${join(root, "wt")}/p --branch p\`. A worker at the required level asks before it acts: that is the point of the drill.
+2. FIRST subscribe to w1, w2, w3 and p (chariox events_subscribe with each agent id), THEN prompt them with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
+   w1: "Use your shell tool to run exactly: echo ALPHA > result.txt . Then reply W1DONE."
+   w2: "Call the chariox request_credential_secret tool with these arguments: credential {id 'drill-key', injection {kind 'header', name 'X-Drill-Key', value '{{secret}}'}, use_binding {target {kind 'site', origin 'https://example.invalid'}}}, prompt {message 'Drill: type any text', timeout_sec 900}. If it is refused for an argument, retry ONCE with injection {kind 'env', name 'DRILL_KEY'}. When it returns reply W2DONE."
+   w3: "Use your shell tool to run exactly: echo GAMMA > result.txt . Then reply W3DONE."
+   p: "Run these room commands with the chariox room run_command tool and report each exact answer: (1) agent spawn c --provider claude --model ${model} --effort low --permission required --worktree ${join(root, "wt")}/c --branch c (2) prompt c 'Use your shell tool to run exactly: echo DELTA > result.txt . Then reply CDONE.' Then END YOUR TURN at once with PDONE: do not wait for c and do not subscribe. IMPORTANT: if you are woken later by a child_decision event, you must NOT answer it or pass it and you must call no tool: reply PDONE2 only."
+3. Yield on your registrations (events_subscriptions lists them) with a deadline 15 minutes ahead and END YOUR TURN. If events_yield is refused, do not retry: just END YOUR TURN, because every event wakes you anyway. Each worker decision that you may answer arrives as an urgent child_decision event (payload: interaction_id, child_agent_id, child_alias, question, choices, needs_answer).
+4. On each wake: read the events (chariox events_inbox). For every child_decision event run the room command \`agent answer <interaction_id> <id of the choice that allows the action>\` (take the choice ids from the event; the one meaning allow) and append the interaction_id, the child_alias, the time and the EXACT typed answer to the state file. The answer may come back as settled_by_user or not_holder: record it and go on, never retry. Ack the events; for a child_finished event record the child and the outcome. After you answered a decision of c (p's child), subscribe to c with the child_agent_id of the event. Keep waking until you have seen the child_finished of w1, w2, w3, p AND c. Do NOT write the report before that.
+5. Then write ${join(work, "orchestrator-report.json")}: one entry per child_decision event (interaction_id, child_alias, answer status) and one per child_finished event (child, outcome kind). Note whether you ever received a child_decision for w2. Then delete w1, w2, w3, p with \`agent delete <name>\` and reply ORCHDONE.
+`
+  const brief = scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
 the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
@@ -355,7 +369,7 @@ Steps:
   note("brief-submitted", { deadline })
 
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
-  const seen = { agents: new Map(), interactions: new Map(), prompts: new Map() }
+  const seen = { agents: new Map(), interactions: new Map(), prompts: new Map(), shown: new Map() }
   const orchTurns = []
   let reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
@@ -419,6 +433,25 @@ Steps:
     if ((scenario === "restart" || scenario === "ask") && restarted && s) for (const it of s.active_interactions ?? []) {
       if (holdTitle.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: scenario === "ask" ? "go" : "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
+    // The person's side of the decisions drill: a secret request is the user's alone and its card shows in the room agent's panel; a worker the person races the parent for is answered at once; every other card is left to the parents.
+    if (scenario === "decisions" && s) {
+      const alias = new Map((s.agents ?? []).map(x => [x.id, x.alias]))
+      for (const it of s.active_interactions ?? []) {
+        const open = seen.interactions.get(it.id)
+        if (!open) continue
+        const who = alias.get(it.agent_id) ?? it.agent_id
+        const shown = it.shown_in_agent_id ?? null
+        if (seen.shown.get(it.id) !== shown) { seen.shown.set(it.id, shown); note("interaction-listing", { id: it.id, asker: who, shown_in: shown === orch ? "orchestrator" : shown, secret: it.custom_choice?.input_kind === "secret", title: it.title }) }
+        const age = Date.now() - open
+        const secret = it.custom_choice?.input_kind === "secret"
+        const ask = (what, choice, reply) => a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: choice, ...(reply ? { custom_reply: reply } : {}) } })
+          .then(() => { seen.interactions.set(it.id, 0); note("user-answer", { which: what, id: it.id, asker: who }) }, e => note("user-answer-refused", { which: what, id: it.id, asker: who, message: e.message.slice(0, 200) }))
+        if (secret && age > 15000) await ask("secret", it.custom_choice.id, "drill-not-a-real-secret")
+        else if (!secret && who === "w3" && age > 4000) await ask("race-user", (it.choices ?? []).find(c => /allow|approve|yes/i.test(c.id))?.id ?? it.choices?.[0]?.id)
+        else if (/needs your action/.test(it.title ?? "") && age > 30000) await ask("task-blocked-resume", "resume")
+        else if (!secret && age > 240000) await ask("driver-fallback", (it.choices ?? []).find(c => /allow|approve|yes|resume|^ok$/i.test(c.id))?.id ?? it.choices?.[0]?.id)
+      }
+    }
     // The person lowers the sub-agent that waits on the popup, then lets it go on.
     if (scenario === "authority" && s) for (const it of s.active_interactions ?? []) {
       if (!/lower me/.test(it.title ?? "") || !seen.interactions.get(it.id)) continue
@@ -473,6 +506,7 @@ Steps:
   writeFileSync(join(evidence, "room-events.json"), redact(JSON.stringify(listed, null, 1)).slice(0, 2000000), { mode: 0o600 })
   const byType = {}, byAgent = {}
   for (const e of events) { const t = e.value?.type ?? e.type ?? "?"; byType[t] = (byType[t] ?? 0) + 1; const ag = e.agent_id ?? e.value?.agent_id ?? "-"; byAgent[ag] = (byAgent[ag] ?? 0) + 1 }
+  note("parent-agent-resolutions", { count: (JSON.stringify(events).match(/ParentAgent|parent_agent/g) ?? []).length })
   note("room-events", { count: events.length, bytes: JSON.stringify(events).length, byType, byAgent, error: listed.error?.slice(0, 200) })
   const final = await state(a, R).catch(() => null)
   const outline = await a.rpc({ GetSessionHistoryOutline: { session_id: R, agent_ids: (final?.agents ?? []).map(x => x.id), latest_prompt_count: 20, include_prefetched_content: false } }).catch(e => ({ error: e.message }))
