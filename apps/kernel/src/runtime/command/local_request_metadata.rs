@@ -424,6 +424,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::ListDescendants(request) => {
+            LocalRequestMetadata::new("agent.descendants.list", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::AliasAgent(request) => {
             LocalRequestMetadata::new("agent.alias", Interactive)
                 .session(&request.session_id)
@@ -993,6 +998,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasSession(_) => "session.alias",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
+        LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",

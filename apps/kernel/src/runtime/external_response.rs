@@ -452,6 +452,7 @@ response_policies! {
         AgentAliased,
         AgentProfileUpdated,
         AgentDeadline,
+        AgentTree,
         AgentSpawned,
         AgentsSpawned,
         TurnUndone,

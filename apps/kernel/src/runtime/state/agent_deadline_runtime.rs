@@ -166,7 +166,20 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
+    /// The agent's own work, or work of any sub-agent below it (A4).
     fn deadline_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
+        if self.agent_work_remains(room, agent)? {
+            return Ok(true);
+        }
+        for descendant in self.descendants_depth_first(agent) {
+            if self.agent_work_remains(room, descendant.id())? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn agent_work_remains(&self, room: &str, agent: &str) -> Result<bool, DaemonError> {
         let session = match self.owned.session_store.get_session(room) {
             Ok(session) => session,
             Err(DaemonError::SessionNotFound { .. }) => return Ok(false),
@@ -183,7 +196,16 @@ impl KernelRuntimeState {
             || !self.owned.unsettled_agent_wakes(room, agent)?.is_empty())
     }
 
+    /// A deadline ends the agent and every sub-agent below it, depth-first.
     async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
+        self.stop_one_deadline_agent(room, agent).await?;
+        for descendant in self.descendants_depth_first(agent) {
+            self.stop_one_deadline_agent(room, descendant.id()).await?;
+        }
+        Ok(())
+    }
+
+    async fn stop_one_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
         let owned = &self.owned;
         let session = match owned.session_store.get_session(room) {
             Ok(session) => session,

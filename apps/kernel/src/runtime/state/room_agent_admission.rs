@@ -109,6 +109,7 @@ impl KernelRuntimeState {
         let (room, target_id, deleting) = match request {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::CancelActivePrompt(r) => match r.target_agent_id.as_ref() {
                 // An agent may always stop its own turn.
                 Some(target) if target == actor.id() => return Ok(()),
@@ -197,15 +198,8 @@ impl KernelRuntimeState {
             .agent_store
             .get_session_agents(actor.session_id());
         in_subtree(&actor, &target, &agents)?;
-        // Deletion never silently cancels or destroys the target's descendants/work.
-        // Keep them visible for the owner and require explicit settlement by the child.
+        // Deleting an agent ends its sub-agents with it (A4); only its own unsettled runs refuse.
         if deleting {
-            if agents
-                .iter()
-                .any(|agent| agent.parent_agent_id() == Some(target.id()))
-            {
-                return Err(denied("agent still has sub-agents; delete them first"));
-            }
             let session = self.owned.session_store.get_session(room)?;
             if session.workflow_runs().iter().any(|run| {
                 !run.status().is_terminal() && run.created_by_agent_id() == Some(target.id())

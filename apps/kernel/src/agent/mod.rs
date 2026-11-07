@@ -3,6 +3,7 @@ mod failed_requests;
 mod service;
 mod service_store;
 mod store;
+pub(crate) mod tree_rev;
 mod types;
 
 pub use failed_requests::FailedRequest;

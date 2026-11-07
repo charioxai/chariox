@@ -19,24 +19,28 @@ pub(super) struct Family {
     pub(super) kids: Vec<Kid>,
 }
 
-struct Team {
-    runtime: KernelRuntimeState,
-    room: String,
-    parent: String,
-    child: String,
-    child_prompt: crate::session::PromptQueueItem,
-    child_run: String,
-    task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
-    correction: bool,
+pub(super) struct Team {
+    pub(super) runtime: KernelRuntimeState,
+    pub(super) room: String,
+    pub(super) parent: String,
+    pub(super) child: String,
+    pub(super) child_prompt: crate::session::PromptQueueItem,
+    pub(super) child_run: String,
+    pub(super) task: crate::durable_state::agent_lifecycle::AgentTaskExecution,
+    pub(super) correction: bool,
 }
 
 /// A parent and its child in one room; the child has an active turn and a task, not yet settled.
-async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
+pub(super) async fn team(label: &str, settle_cancelled: bool, parent_running: bool) -> Team {
     team_with(label, Some(settle_cancelled), parent_running).await
 }
 
 /// `settle_cancelled: None` leaves the child working.
-async fn team_with(label: &str, settle_cancelled: Option<bool>, parent_running: bool) -> Team {
+pub(super) async fn team_with(
+    label: &str,
+    settle_cancelled: Option<bool>,
+    parent_running: bool,
+) -> Team {
     let Family {
         runtime,
         room,
@@ -322,4 +326,44 @@ async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     assert_eq!(events[0].payload["deadline_reached"], true);
     assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
     assert!(events[0].urgent);
+}
+
+// A4: the parent's deadline ends the sub-agents below it.
+#[tokio::test]
+async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
+    let team = team_with("child-finished-parent-deadline", None, false).await;
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::SetDeadline {
+            room: team.room.clone(),
+            agent: team.parent.clone(),
+            deadline: crate::session::unix_epoch_ms() + 30,
+        })
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    team.runtime
+        .tick_agent_deadlines(crate::session::unix_epoch_ms())
+        .await
+        .unwrap();
+    assert_eq!(
+        team.runtime
+            .owned
+            .provider_store
+            .get_run(&team.child_run)
+            .unwrap()
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+        "the child's run ended with its parent's deadline"
+    );
+    assert!(
+        team.runtime
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(&team.room), Some(&team.child))
+            .unwrap()
+            .iter()
+            .all(|task| task.state
+                == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)
+    );
 }

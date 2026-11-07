@@ -11,6 +11,7 @@ import { resolve, join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
+import { hiddenBrief, runHidden } from "./hidden-subagents-scenario.mjs"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
@@ -216,6 +217,12 @@ async function main() {
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
+  if (scenario === "hidden") {
+    writeFileSync(join(work, "BRIEF.md"), hiddenBrief({ model, work }))
+    const verdicts = await runHidden({ a, R, orch, attached, model, work, note, until, restart, evidence })
+    if (!verdicts.every(v => v.ok)) process.exitCode = 1
+    return
+  }
   // The driver follows R through the outside-events inbox too, to count what a Room with several agents emits.
   await a.rpc({ SubscribeEvents: { targets: [{ kernel: a.status.daemon_id, session_id: R }] } }).then(() => note("driver-events-subscribed"), e => note("driver-events-refused", { message: e.message.slice(0, 200) }))
   const restartBrief = `# Orchestrator brief (drill, restart scenario)

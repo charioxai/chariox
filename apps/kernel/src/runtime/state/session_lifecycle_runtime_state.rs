@@ -821,12 +821,29 @@ impl KernelRuntimeState {
         self.destroy_agent(agent_id, caller_user_id).await
     }
 
+    /// Destroys the agent, then its sub-agents depth-first (A4).
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        self.authorize_current_external_command()?;
+        let destroyed = self
+            .destroy_one_agent(agent_id, caller_user_id, false)
+            .await?;
+        self.destroy_sub_agents_of(destroyed.id()).await;
+        Ok(destroyed)
+    }
+
+    /// `cascade` destroys a sub-agent whose parent the command already removed:
+    /// the command's own target is gone, so only its epoch, peer and grant are
+    /// rechecked, not its reach.
+    pub(super) async fn destroy_one_agent(
+        &self,
+        agent_id: &str,
+        caller_user_id: &str,
+        cascade: bool,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        self.authorize_destroy(cascade)?;
         let agent = self.owned.agent_store.get_agent(agent_id)?;
         let local_provider_run_ids = if agent.remote_execution().is_none() {
             self.owned
@@ -854,7 +871,7 @@ impl KernelRuntimeState {
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
         self.revoke_agent_app_capability_grants(&agent).await?;
-        self.authorize_current_external_command()?;
+        self.authorize_destroy(cascade)?;
         // Relay projection ingestion also owns the app lock. Keep the worker
         // acknowledgement and home deletion in one critical section so an
         // already-admitted snapshot cannot revive the run after it is ended.
@@ -866,10 +883,10 @@ impl KernelRuntimeState {
             // A private connector owns a current-thread runtime. Its reader and
             // writer must keep polling while synchronous cleanup waits for ACKs.
             self.with_app_side_effect_blocking(move |app| {
-                state.authorize_current_external_command()?;
+                state.authorize_destroy(cascade)?;
                 crate::app::KernelSessionService::new(app)
                     .destroy_agent_worker_execution_authorized(&agent, &|| {
-                        state.authorize_current_external_command()
+                        state.authorize_destroy(cascade)
                     })
                     .map_err(|error| DaemonError::AgentWorkerCleanup {
                         agent_id: agent_id.clone(),
@@ -905,6 +922,14 @@ impl KernelRuntimeState {
         // reconciliation path rather than the next 30-second periodic sweep.
         self.schedule_agent_lifecycle_sweep();
         Ok(destroyed)
+    }
+
+    fn authorize_destroy(&self, cascade: bool) -> Result<(), DaemonError> {
+        if cascade {
+            self.authorize_current_external_response()
+        } else {
+            self.authorize_current_external_command()
+        }
     }
 
     fn agents_leased_to_workers(&self, session_id: &str) -> Vec<crate::agent::AgentInstance> {

@@ -427,19 +427,22 @@ async fn spawn_deadline() {
 }
 
 #[test]
-fn deleting_an_agent_with_sub_agents_is_refused_until_they_are_gone() {
+fn deleting_an_agent_ends_its_sub_agents_with_it() {
     run_large_stack_async_test("subtree-delete-with-children", delete_with_children);
 }
 
 async fn delete_with_children() {
     let world = world("subtree-delete-with-children").await;
-    let refused = room_command(&world, "a", "agent delete b").await;
-    assert!(
-        !refused.ok && error_text(&refused).contains("sub-agents"),
-        "{refused:?}"
-    );
-    assert!(room_command(&world, "a", "agent delete d").await.ok);
-    assert!(room_command(&world, "a", "agent delete b").await.ok);
+    let deleted = room_command(&world, "a", "agent delete b").await;
+    assert!(deleted.ok, "{deleted:?}");
+    let app = world.app.lock().await;
+    for gone in ["b", "d"] {
+        assert!(
+            app.agents().get_agent(&world.ids[gone]).is_err(),
+            "{gone} outlived its parent"
+        );
+    }
+    assert!(app.agents().get_agent(&world.ids["s"]).is_ok());
 }
 
 #[test]

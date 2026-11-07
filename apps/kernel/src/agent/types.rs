@@ -355,6 +355,18 @@ impl AgentInstance {
         self.parent_agent_id.as_ref().map(AgentRef::agent_id)
     }
 
+    /// A sub-agent is a descendant of its parent, never a member of the room:
+    /// no list, snapshot or count carries it. It keeps its room id only as the
+    /// host of its worktree, history and interactions.
+    pub fn is_sub_agent(&self) -> bool {
+        self.parent_agent_id.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_created_at_ms_for_test(&mut self, at_ms: u64) {
+        self.created_at_ms = at_ms;
+    }
+
     pub fn spawn_key(&self) -> Option<&str> {
         self.spawn_key.as_deref()
     }

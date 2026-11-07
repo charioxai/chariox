@@ -28,16 +28,7 @@ impl KernelRuntimeState {
             .durable_state_store
             .agent_deadline(&task.room_id, &task.agent_id)?
             .is_some_and(|deadline| deadline.state == crate::local::AgentDeadlineState::Reached);
-        let outcome = if task.state == ExecutionState::Done {
-            TurnOutcome::completed()
-        } else {
-            // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
-            failure
-                .cloned()
-                .or_else(|| self.owned.recorded_turn_outcome(task))
-                .filter(|outcome| outcome.kind != crate::provider::TurnOutcomeKind::Completed)
-                .unwrap_or_else(TurnOutcome::cancelled)
-        };
+        let outcome = self.owned.finished_task_outcome(task, failure);
         let mut event = ledger::occurrence(
             &task.room_id,
             parent.id(),
@@ -88,6 +79,24 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeOwnedState {
+    /// How a finished task's turn ended.
+    pub(super) fn finished_task_outcome(
+        &self,
+        task: &AgentTaskExecution,
+        failure: Option<&TurnOutcome>,
+    ) -> TurnOutcome {
+        if task.state == ExecutionState::Done {
+            TurnOutcome::completed()
+        } else {
+            // A task that did not finish its work ended cancelled or failed, whatever its turn recorded.
+            failure
+                .cloned()
+                .or_else(|| self.recorded_turn_outcome(task))
+                .filter(|outcome| outcome.kind != crate::provider::TurnOutcomeKind::Completed)
+                .unwrap_or_else(TurnOutcome::cancelled)
+        }
+    }
+
     /// The outcome the child's last turn recorded in its history, if any.
     fn recorded_turn_outcome(&self, task: &AgentTaskExecution) -> Option<TurnOutcome> {
         self.operational_history_store

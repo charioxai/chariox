@@ -310,16 +310,17 @@ async fn multiple_metaagents_in_one_session_are_isolated_inner() {
         .dispatch_authenticated_runtime_tool_call(
             &meta_a_auth,
             crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
-            serde_json::json!({ "command": "agent list" }),
+            serde_json::json!({ "command": "agent children" }),
         )
         .await
-        .expect("meta A list command should dispatch");
+        .expect("meta A children command should dispatch");
     assert!(list_a.ok, "{:?}", list_a.payload);
+    // Its workers are sub-agents: `agent list` never carries them (A4), `agent children` does.
     let listed_agents = list_a
         .payload
-        .pointer("/response/agents")
+        .pointer("/response/children")
         .and_then(serde_json::Value::as_array)
-        .expect("agent list should include agents");
+        .expect("agent children should include the workers");
     assert_eq!(listed_agents.len(), 1);
     assert_eq!(
         listed_agents[0]

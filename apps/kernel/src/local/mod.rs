@@ -13,7 +13,8 @@ pub use api::{
 pub use api::{CreatedResource, CreatedResourceState, ResourceRevokeMethod};
 mod api;
 pub use api::{
-    AgentDeadline, AgentDeadlineState, GetAgentDeadlineRequest, SetAgentDeadlineRequest,
+    AgentDeadline, AgentDeadlineState, AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals,
+    GetAgentDeadlineRequest, ListDescendantsRequest, SetAgentDeadlineRequest,
 };
 pub use api::{
     CaptureVisibleRegionRequest, ScreenshotRegion, ScreenshotSurface, VisibleRegionCapture,

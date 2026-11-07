@@ -571,3 +571,29 @@ export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: str
 export type VaultSecretStatus = "pending" | "stored" | "cancelled" | "timed_out"
 export type VaultSecretRequestedResponse = { VaultSecretRequested: { interaction_id: string; link: string; expires_at: number; credential_id: string } }
 export type VaultSecretStatusResponse = { VaultSecretStatusReported: { interaction_id: string; credential_id: string; status: VaultSecretStatus } }
+
+export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ended' | 'error' | 'unreachable'
+
+export interface AgentTreeNode {
+  agent_id: string
+  parent_agent_id: string | null
+  kernel_id: string | null
+  alias: string | null
+  provider: string
+  model: string | null
+  depth: number
+  state: AgentTreeState
+  outcome: TurnOutcomeKind | null
+  /** The user holds a pending decision of this node (no holder, path or card). */
+  needs_user: boolean
+  deadline_ms: number | null
+  created_at_ms: number
+}
+
+/** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */
+export interface AgentTree {
+  root: string
+  rev: number
+  totals: { live: number; running: number; needs_user: number }
+  nodes: AgentTreeNode[]
+}

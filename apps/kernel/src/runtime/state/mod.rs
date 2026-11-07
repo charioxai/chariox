@@ -1576,6 +1576,8 @@ mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
 mod agent_parent_runtime;
+mod agent_subtree_cascade;
+mod agent_tree_runtime;
 mod child_finished_event;
 
 mod agent_owner_cancellation;

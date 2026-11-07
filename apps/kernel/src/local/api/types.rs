@@ -12,6 +12,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_deadline;
 mod agent_lifecycle;
+mod agent_tree;
 mod agent_triggers;
 mod agent_utility;
 mod apps;
@@ -62,6 +63,7 @@ mod workspace;
 
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
+pub use agent_tree::*;
 pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;

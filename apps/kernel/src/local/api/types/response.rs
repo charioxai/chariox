@@ -14,6 +14,7 @@ pub enum LocalDaemonResponse {
     EventsAcknowledged { cursor: u64 },
     EventsCursorExpired { oldest_cursor: u64 },
     AgentDeadline { deadline: Option<AgentDeadline> },
+    AgentTree { tree: AgentTree },
     OwnMachineEnrollment { enrollment: OwnMachineEnrollmentCommand },
     ProjectEnvironment { environment: ProjectEnvironmentView },
     ProjectEnvironmentSaved { environment: ProjectEnvironmentView },

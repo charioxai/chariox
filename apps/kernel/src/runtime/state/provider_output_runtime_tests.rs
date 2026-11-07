@@ -147,6 +147,7 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
@@ -177,6 +178,7 @@ mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_exit_diagnostic;
 mod structured_output;
+mod subtree_cascade;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {
