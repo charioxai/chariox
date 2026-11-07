@@ -155,18 +155,37 @@ impl KernelRuntimeState {
             .flatten()
             .ok_or_else(agent_not_granted)?;
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        let holds = self
+        let owns = self
             .user_domain_owner_aliases(&user)
             .iter()
-            .any(|alias| alias == owner)
-            && self.owned.kernel_browser_host.holds_resource(
-                &user,
-                agent.id(),
-                &crate::local::UserDomainResource::AppView {
-                    view_id: view_id.into(),
-                },
-            );
-        holds.then_some(agent).ok_or_else(agent_not_granted)
+            .any(|alias| alias == owner);
+        let resource = crate::local::UserDomainResource::AppView {
+            view_id: view_id.into(),
+        };
+        if owns
+            && self
+                .owned
+                .kernel_browser_host
+                .holds_resource(&user, agent.id(), &resource)
+        {
+            return Ok(agent);
+        }
+        // The owner may already have granted the App: then the claim is what is missing.
+        let holds_app = self
+            .app_control()
+            .user_views()
+            .get(owner, view_id)
+            .is_some_and(|(binding, _)| {
+                agent.has_extension_grant(
+                    crate::extension::ExtensionKind::App,
+                    &binding.installation,
+                )
+            });
+        Err(if owns && holds_app {
+            crate::runtime::app_view_authority::view_not_claimed()
+        } else {
+            agent_not_granted()
+        })
     }
 
     pub(super) fn forget_user_app_view(&self, owner: &str, id: &str) {
