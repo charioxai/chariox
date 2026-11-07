@@ -135,11 +135,13 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::PreflightProviderAccountPortability(request) = request {
             return crate::runtime::provider_account_portability::execute_preflight(
+                &self.runtime_state,
                 &self.config_projection.snapshot(),
                 &self.provider_account_profiles,
                 command,
                 request,
             )
+            .await
             .map(Some);
         }
         if let LocalDaemonRequest::IssueOwnMachineEnrollment(request) = request {

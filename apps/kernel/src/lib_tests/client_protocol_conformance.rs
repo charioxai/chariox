@@ -80,8 +80,8 @@ fn client_protocol_conformance_gate_covers_required_surfaces_and_axes() {
         ".github/workflows/ci.yml",
         &[
             "Client protocol conformance gate",
-            "@anthropic-ai/claude-code@2.1.212",
-            "test \"$(claude --version)\" = \"2.1.212 (Claude Code)\"",
+            "@anthropic-ai/claude-code@2.1.296",
+            "test \"$(claude --version)\" = \"2.1.296 (Claude Code)\"",
             "cargo test -p chariox-kernel client_protocol_conformance",
             "cargo test --workspace",
             "pnpm test",

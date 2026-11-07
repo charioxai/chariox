@@ -397,6 +397,7 @@ impl CommandRouter {
                 &completion_config,
                 &caller.owner_user_id,
             ),
+            config: completion_config.clone(),
         };
         let event_connection_target = ManagedContextEventConnectionImportTarget::new(
             self.runtime_state.event_connection_registry().clone(),

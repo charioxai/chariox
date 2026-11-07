@@ -506,6 +506,35 @@ impl ManagedKernelContextPlan {
         plan
     }
 
+    /// An otherwise empty plan that selects `accounts` (provider, profile) from a source kernel.
+    #[cfg(test)]
+    pub(crate) fn provider_accounts_for_tests(
+        context_id: &str,
+        source_kernel_id: &str,
+        source_key_thumbprint: &str,
+        accounts: &[(&str, &str)],
+    ) -> Self {
+        let mut plan = Self::empty_for_tests(context_id);
+        plan.source = Some(ManagedKernelContextSource {
+            source_target_id: "source-target-test".to_string(),
+            relay_realm_id: "realm".to_string(),
+            machine_id: source_kernel_id.to_string(),
+            kernel_id: source_kernel_id.to_string(),
+            key_thumbprint: source_key_thumbprint.to_string(),
+        });
+        plan.provider_accounts = ManagedKernelProviderAccounts::Selected {
+            accounts: accounts
+                .iter()
+                .map(|(provider, account_profile)| ManagedKernelProviderAccount {
+                    provider: provider.to_string(),
+                    account_profile: account_profile.to_string(),
+                })
+                .collect(),
+        };
+        plan.plan_digest = plan.compute_digest().expect("test plan digest");
+        plan
+    }
+
     #[cfg(test)]
     pub(crate) fn empty_for_tests(context_id: &str) -> Self {
         let mut plan = Self {

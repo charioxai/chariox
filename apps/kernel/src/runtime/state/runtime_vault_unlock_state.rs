@@ -33,11 +33,21 @@ impl VaultUnlockGuard {
         }
     }
 
-    fn not_required() -> Self {
+    pub(super) fn not_required() -> Self {
         Self {
             path: None,
             lock_on_drop: false,
         }
+    }
+
+    /// Whether dropping this guard locks the Vault: it was opened for this one operation.
+    pub(super) fn locks_on_drop(&self) -> bool {
+        self.lock_on_drop
+    }
+
+    /// Ends the guard without locking, for a hold whose unlock runs out on its own.
+    pub(super) fn disarm(mut self) {
+        self.lock_on_drop = false;
     }
 
     /// No guard keeps the vault open: a lease can expire and another

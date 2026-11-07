@@ -1,5 +1,7 @@
 use super::*;
 
+mod vault_login;
+
 use crate::managed_context::kernel::{
     KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
 };
@@ -363,6 +365,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     };
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vault_logins: Vec::new(),
     };
     assert!(!format!("{export:?}").contains("provider-package-secret"));
     let exported = export_managed_context_package(export).expect("export provider account package");
@@ -381,6 +384,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     let provider_target = ManagedContextProviderAccountImportTarget {
         registry: target_registry.clone(),
         owner_user_id: "owner-a".to_string(),
+        config: crate::config::DaemonConfig::for_tests(),
     };
     let request = || ManagedContextPackageApplicationRequest {
         transfer_id: "ctx_provider_account".to_string(),
@@ -481,6 +485,7 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
     let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
     export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
         materializations: vec![materialization],
+        vault_logins: Vec::new(),
     };
     let package_path = export.package_path.clone();
     let error = export_managed_context_package(export)
@@ -672,6 +677,7 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     let target_binding = ManagedContextProviderAccountImportTarget {
         registry: target.clone(),
         owner_user_id: "owner-a".to_string(),
+        config: crate::config::DaemonConfig::for_tests(),
     };
     rollback_imported_provider_accounts(Some(&target_binding), &imported)
         .expect_err("one conflicting receipt must report rollback failure");

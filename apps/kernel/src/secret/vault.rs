@@ -633,6 +633,28 @@ pub fn extend_chariox_encrypted_vault(
     })
 }
 
+/// Keeps an open unlock alive until `until_ms` without changing what kind of unlock it is. A
+/// shorter or absent expiry is left alone; a locked Vault stays locked.
+pub(crate) fn hold_chariox_vault_unlock_until(
+    path: impl AsRef<Path>,
+    until_ms: u64,
+) -> Result<(), DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let mut unlocked = unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
+    let now_ms = crate::session::unix_epoch_ms();
+    if let Some(vault) = unlocked
+        .get_mut(&path)
+        .filter(|vault| !vault.is_expired(now_ms))
+    {
+        if let Some(expires_at_ms) = vault.expires_at_ms.as_mut() {
+            *expires_at_ms = (*expires_at_ms).max(until_ms);
+        }
+    }
+    Ok(())
+}
+
 /// Whether the Vault is open on the owner client's single-use unlock, which
 /// the next credential operation uses up.
 pub fn chariox_vault_single_use_unlocked(path: impl AsRef<Path>) -> Result<bool, DaemonError> {

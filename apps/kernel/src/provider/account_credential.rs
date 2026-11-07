@@ -203,6 +203,57 @@ pub(crate) fn store_provider_account_credential(
     })
 }
 
+/// Removes the account's Vault credential and its record, as an undone transfer leaves none.
+pub(crate) fn remove_provider_account_credential(
+    config: &DaemonConfig,
+    owner_user_id: &str,
+    provider: &str,
+    profile_id: &str,
+) -> Result<(), DaemonError> {
+    let credential_id = provider_account_credential_id(owner_user_id, provider, profile_id);
+    let service = crate::secret::RuntimeSecretService::with_vault_config(
+        Vec::new(),
+        &config.user_config.credential_vault,
+    )?;
+    if service.vault_slot_holds_value(&credential_id)? {
+        service.delete_vault_secret(&credential_id)?;
+    }
+    let registry = crate::credential::CharioxCredentialRegistry::user()?;
+    if registry.get(&credential_id)?.is_some() {
+        registry.remove(&credential_id)?;
+    }
+    Ok(())
+}
+
+/// The provider's own check that a login is accepted, run against the profile's root before
+/// anything is stored. Claude is the only provider that holds a login in the Vault today.
+pub(crate) fn verify_account_login(
+    provider: &str,
+    root_environment: &std::collections::BTreeMap<String, String>,
+    secret: &str,
+) -> Result<(), DaemonError> {
+    validate_provider_account_credential_input(provider, secret)?;
+    let mut environment = root_environment.clone();
+    environment.insert(CLAUDE_OAUTH_TOKEN_ENV.into(), secret.trim().into());
+    let checked = super::resolve_claude_executable().and_then(|executable| {
+        super::verify_claude_setup_token(&executable, &environment).map_err(|error| match error {
+            super::ClaudeCredentialCheckError::Rejected => DaemonError::LocalTransport {
+                operation: "verify provider account login",
+                message: "the provider rejected this login; sign in to the account again"
+                    .to_string(),
+            },
+            super::ClaudeCredentialCheckError::Inconclusive(_) => DaemonError::LocalTransport {
+                operation: "verify provider account login",
+                message: "the provider could not check this login yet; try again".to_string(),
+            },
+        })
+    });
+    if let Some(value) = environment.get_mut(CLAUDE_OAUTH_TOKEN_ENV) {
+        zeroize::Zeroize::zeroize(value);
+    }
+    checked
+}
+
 pub(crate) fn validate_provider_account_credential_input(
     provider: &str,
     secret: &str,
