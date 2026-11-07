@@ -644,6 +644,21 @@ async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app
         "the owner already granted the App; the message must name the missing claim: {}",
         error.message
     );
+    // The page's own call, attributed to the agent, is refused the same way.
+    let actor = crate::runtime::browser_controller_app_view::BrowserAppViewActor {
+        kind: "agent".into(),
+        id: agent.id().into(),
+    };
+    let error = state
+        .user_app_view_agent("alice", &view, &actor)
+        .err()
+        .expect("an unclaimed view refuses the agent's page call");
+    assert_eq!(error.code, "AGENT_APP_NOT_GRANTED");
+    assert!(
+        error.message.contains("claim"),
+        "the page call names the missing claim: {}",
+        error.message
+    );
     // Claiming the view, as a click on its Tab does, removes the refusal.
     let admission = host.admit("alice", agent.id()).unwrap();
     host.claim_resource(
@@ -654,6 +669,7 @@ async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app
         false,
     )
     .unwrap();
+    assert!(state.user_app_view_agent("alice", &view, &actor).is_ok());
     let mut tracked = state.app_control().views().track_call(&view, &view, None);
     let claimed = state
         .invoke_user_app_view_call(

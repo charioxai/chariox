@@ -144,7 +144,7 @@ impl KernelRuntimeState {
 
     /// MP-08/MP-11: the agent whose input drove a call must still hold this
     /// App view in its own user-domain grant, for the view's owner.
-    fn user_app_view_agent(
+    pub(super) fn user_app_view_agent(
         &self,
         owner: &str,
         view_id: &str,
