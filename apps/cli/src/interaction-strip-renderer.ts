@@ -36,6 +36,8 @@ type InteractionStripRenderOptions = {
   maxAgentsPerScreen: number
   focusedAgentId: string | null
   activeInteractionForAgent: (agentId: string | null | undefined) => RuntimeInteraction | null
+  /** Who asks, for a sub-agent's decision shown in the room agent's panel; null when the panel's own agent asks. */
+  askingAgentLabel?: (interaction: RuntimeInteraction) => string | null
   selectedChoiceIndex: (interactionId: string) => number
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
@@ -120,6 +122,7 @@ function renderInteractionStrip(
       onLinkClick: () => options.onProviderLoginLinkClick?.(interaction),
     })
   } else if (interaction) {
+    const asking = options.askingAgentLabel?.(interaction) ?? null
     const titleLine = new TextRenderable(options.renderer, {
       wrapMode: "char",
       fg: interaction.level === "critical"
@@ -130,9 +133,7 @@ function renderInteractionStrip(
       attributes: TextAttributes.BOLD,
     })
     const titlePrefix = interaction.level.toUpperCase()
-    titleLine.content = interaction.title
-      ? `${titlePrefix} • ${interaction.title}`
-      : titlePrefix
+    titleLine.content = [titlePrefix, asking, interaction.title].filter(Boolean).join(" • ")
     const messageLine = new TextRenderable(options.renderer, {
       wrapMode: "word",
       fg: theme.text,

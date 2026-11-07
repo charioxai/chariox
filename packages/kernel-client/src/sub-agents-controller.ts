@@ -87,6 +87,15 @@ export class SubAgentsController {
     return agentId ? subAgentStripe(this.trees.get(agentId) ?? null) : null
   }
 
+  /** The name a sub-agent goes by in the room agent's trees; null while the trees do not list it. */
+  alias(agentId: string): string | null {
+    for (const tree of this.trees.values()) {
+      const node = tree.nodes.find(candidate => candidate.agent_id === agentId)
+      if (node) return node.alias
+    }
+    return null
+  }
+
   lines(): SubAgentRow[] { const tree = this.current(); return tree ? visibleSubAgentRows(subAgentRows(tree), this.collapsed) : [] }
   panels(): SubAgentPanel[] { const tree = this.current(); return tree ? subAgentPanels(tree) : [] }
   get cardOpen(): boolean { return this.card }

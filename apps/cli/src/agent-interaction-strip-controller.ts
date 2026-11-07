@@ -14,6 +14,7 @@ type AgentInteractionStripRenderOptions<TRenderer, TBox, TAgent extends { id: st
   maxAgentsPerScreen: number
   focusedAgentId: string | null
   activeInteractionForAgent: (agentId: string | null | undefined) => RuntimeInteraction | null
+  askingAgentLabel?: (interaction: RuntimeInteraction) => string | null
   selectedChoiceIndex: (interactionId: string) => number
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
@@ -42,6 +43,7 @@ export type AgentInteractionStripControllerDeps<
   maxAgentsPerScreen: () => number
   focusedAgentId: () => string | null
   activeInteractionForAgent: (agentId: string | null | undefined) => RuntimeInteraction | null
+  askingAgentLabel?: (interaction: RuntimeInteraction) => string | null
   selectedChoiceIndex: (interactionId: string) => number
   setSelectedChoiceIndex: (interactionId: string, index: number) => void
   customReply: (interactionId: string) => string
@@ -76,6 +78,7 @@ export function createAgentInteractionStripController<
         maxAgentsPerScreen: deps.maxAgentsPerScreen(),
         focusedAgentId: deps.focusedAgentId(),
         activeInteractionForAgent: deps.activeInteractionForAgent,
+        ...(deps.askingAgentLabel ? { askingAgentLabel: deps.askingAgentLabel } : {}),
         selectedChoiceIndex: deps.selectedChoiceIndex,
         setSelectedChoiceIndex: deps.setSelectedChoiceIndex,
         customReply: deps.customReply,

@@ -4,7 +4,7 @@ import { createEffect, createSignal, onCleanup, untrack } from "solid-js"
 import { SubAgentsController } from "@chariox/kernel-client/sub-agents-controller"
 import { dialogTextWidth } from "./cli-dialog-panel-size.js"
 import type { LocalIpcClient } from "./ipc.js"
-import type { RuntimeSession } from "./cli-types.js"
+import type { RuntimeInteraction, RuntimeSession } from "./cli-types.js"
 import { subAgentsCardRows } from "./sub-agents-card-view.js"
 
 type Key = { name: string; ctrl?: boolean; meta?: boolean; shift?: boolean; eventType?: string; preventDefault?(): void; stopPropagation?(): void }
@@ -64,6 +64,13 @@ export function createCliSubAgentsComposition(deps: {
     controller, revision, viewVisible, cardOpen,
     /** Re-draws the screens that show the controller's state (the stack and the card), set once they exist. */
     bindRender(render: () => void) { draw = render },
+    /** Names the sub-agent that asks a decision shown in its room agent's panel; null when the shown agent asks itself. */
+    askingAgentLabel(interaction: RuntimeInteraction): string | null {
+      const asking = interaction.agent_id
+      if (!asking || !interaction.shown_in_agent_id || interaction.shown_in_agent_id === asking) return null
+      revision()
+      return controller.alias(asking) ?? "sub-agent"
+    },
     stripeFor(agentId: string | null | undefined) {
       const stripe = deps.attached() ? controller.stripe(agentId) : null
       return stripe && { ...stripe, open: () => { controller.select(agentId ?? null); controller.openCard() } }

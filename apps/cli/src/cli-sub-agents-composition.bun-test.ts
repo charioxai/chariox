@@ -63,3 +63,17 @@ test("AO-UI-01 a click on a stripe selects that agent's sub-agents and opens the
     dispose()
   })
 })
+
+test("A3/A4 a decision a sub-agent asks in the room agent's panel is labelled with the sub-agent's name", async () => {
+  await createRoot(async dispose => {
+    const client = { send: async () => ({ AgentTree: { tree } }), onKernelEvent: () => () => {} }
+    const sub = createCliSubAgentsComposition({ client: client as never, session: () => ({ id: "s1", agents: [{ id: "room" }] }) as never, attached: () => true, focusedAgentId: () => "room", width: () => 100 })
+    await sub.controller.refresh("room")
+    const card = (agent_id: string, shown_in_agent_id: string | null) => ({ id: "card", agent_id, shown_in_agent_id }) as never
+    assert.equal(sub.askingAgentLabel(card("a2", "room")), "a2")
+    assert.equal(sub.askingAgentLabel(card("unlisted", "room")), "sub-agent", "a child the tree does not list yet is still not the room agent")
+    assert.equal(sub.askingAgentLabel(card("room", null)), null, "the room agent's own decision names nobody")
+    assert.equal(sub.askingAgentLabel(card("room", "room")), null)
+    dispose()
+  })
+})

@@ -860,6 +860,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
     workingAnimationFrame, activeInteractionForAgent,
     subAgentStripeForAgent: subAgents.stripeFor,
+    askingAgentLabel: subAgents.askingAgentLabel,
     queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => queuedPromptStripItemsForAgentId(agentId),
     selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => selectedQueuedPromptIndexForAgent(agentId),
     onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") =>
