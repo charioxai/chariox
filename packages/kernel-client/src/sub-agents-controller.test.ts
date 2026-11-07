@@ -161,3 +161,14 @@ test("the request ends with the tree it asked for: the root falls back and a lat
   controller.apply(tree(3, [node("b1", "other", "running", 1)], "other"))
   assert.deepEqual(controller.lines().map(r => r.id), ["a1", "a2", "a3"])
 })
+
+test("a late read older than the empty tree that closed the stripe does not bring the agents back", () => {
+  const { controller } = make()
+  controller.apply(three(5))
+  assert.equal(controller.stripe("room")!.text.length > 0, true)
+  controller.apply(tree(6, []))
+  assert.ok(controller.stripe("room") === null, "the last sub-agent ended")
+  // The read made before the change answers after it.
+  controller.apply(three(5))
+  assert.ok(controller.stripe("room") === null, "a read older than rev 6 must not show agents again")
+})
