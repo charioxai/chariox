@@ -536,6 +536,13 @@ impl CommandRouter {
             Ok(target) => target,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
+        if let Err(error) = crate::runtime::room_tool_admission::in_subtree(
+            metaagent,
+            &target,
+            &self.runtime_state.session_agents(session.id()),
+        ) {
+            return Ok(meta_command_failure_result(command, error));
+        }
         if let Some(flag) = args[1..]
             .iter()
             .find(|arg| matches!(arg.as_str(), "--wait" | "--show-reply" | "--show-summary"))
