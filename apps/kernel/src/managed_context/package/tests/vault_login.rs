@@ -1,7 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: a Vault-backed provider login travels in the
 //! managed-context package, sealed, and lands in the new machine's own Vault.
 use super::*;
-use crate::account_profile::{ProviderAccountAuthState, VaultLoginSeal};
+use crate::account_profile::{ProviderAccountAuthState, VaultLoginOpen, VaultLoginSeal};
+use crate::provider_vault_login::VaultLoginMaterialization;
 use crate::config::{CredentialVaultBackend, DaemonConfig};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 
@@ -416,4 +417,119 @@ fn a_seal_for_another_machine_or_context_is_refused() {
         .get(OWNER, "claude", &profile_id)
         .is_err());
     assert_eq!(transfer.target.vault_token(&profile_id), None);
+}
+
+/// The official check of this test machine waits until two checks run at once, so two imports
+/// of the same profile are both past their first look at the registry before either writes.
+fn make_provider_checks_overlap() {
+    let executable = PathBuf::from(std::env::var_os("CHARIOX_CLAUDE_BIN").expect("test claude"));
+    fs::write(
+        &executable,
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then echo 2.2.0; exit 0; fi
+if [ "$1" = -p ]; then
+  dir=$(dirname "$0")
+  touch "$dir/check.$$"
+  waited=0
+  while [ "$(ls "$dir"/check.* 2>/dev/null | wc -l)" -lt 2 ] && [ "$waited" -lt 50 ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"usage":{"output_tokens":7},"result":"CHARIOX_AUTH_OK"}'
+  exit 0
+fi
+while IFS= read -r line; do :; done
+"#,
+    )
+    .expect("rewrite the test claude executable");
+}
+
+#[test]
+fn two_imports_of_one_login_never_delete_the_winning_credential() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::new("vault-login-race");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let export = |context_id: &str| {
+        transfer.source.enter();
+        transfer
+            .source
+            .registry
+            .export_vault_login(
+                &transfer.source.config,
+                OWNER,
+                "claude",
+                &profile_id,
+                &transfer.seal(context_id),
+            )
+            .expect("export Vault login")
+    };
+    let first = export("context-race-a");
+    crate::provider::store_provider_account_credential(
+        &transfer.source.config,
+        OWNER,
+        "claude",
+        &profile_id,
+        SECOND_TOKEN,
+        true,
+    )
+    .expect("rotate the source login");
+    let second = export("context-race-b");
+    make_provider_checks_overlap();
+    transfer.target.enter();
+    let binding = &transfer.fixture.binding;
+    let install = |context_id: &str, login: &VaultLoginMaterialization| {
+        transfer.target.registry.install_vault_login_replica(
+            &transfer.target.config,
+            OWNER,
+            context_id,
+            &format!("package-{context_id}"),
+            &VaultLoginOpen {
+                target_private_key: &transfer.target.config.relay_private_key,
+                source_key_thumbprint: &binding.source_key_thumbprint,
+                source_kernel_id: &binding.source_kernel_id,
+                target_kernel_id: &binding.target_kernel_id,
+            },
+            login,
+        )
+    };
+
+    let (result_a, result_b) = std::thread::scope(|scope| {
+        let a = scope.spawn(|| install("context-race-a", &first));
+        let b = scope.spawn(|| install("context-race-b", &second));
+        (a.join().expect("import a"), b.join().expect("import b"))
+    });
+
+    let outcomes = [
+        ("context-race-a", FIRST_TOKEN, result_a),
+        ("context-race-b", SECOND_TOKEN, result_b),
+    ];
+    let winners: Vec<_> = outcomes
+        .iter()
+        .filter(|(_, _, result)| result.is_ok())
+        .collect();
+    assert_eq!(winners.len(), 1, "one import wins the profile: {outcomes:?}");
+    for (context_id, _, result) in &outcomes {
+        if let Err(error) = result {
+            let message = error.to_string();
+            assert!(
+                message.contains("in progress") || message.contains("refusing to replace"),
+                "{context_id} gets a typed refusal: {message}"
+            );
+        }
+    }
+    let (context_id, token, _) = winners[0];
+    transfer.target.enter();
+    let stored = transfer
+        .target
+        .registry
+        .get(OWNER, "claude", &profile_id)
+        .expect("the winning import published the profile");
+    assert_eq!(stored.auth_state, ProviderAccountAuthState::Authenticated);
+    assert_eq!(
+        transfer.target.vault_token(&profile_id).as_deref(),
+        Some(*token),
+        "the winning login ({context_id}) still resolves from the Vault"
+    );
 }
