@@ -648,7 +648,9 @@ async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app
     let admission = host.admit("alice", agent.id()).unwrap();
     host.claim_resource(
         Some(&admission),
-        UserDomainResource::AppView { view_id: view.clone() },
+        UserDomainResource::AppView {
+            view_id: view.clone(),
+        },
         false,
     )
     .unwrap();
