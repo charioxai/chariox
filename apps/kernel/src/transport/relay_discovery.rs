@@ -881,6 +881,39 @@ mod tests {
         );
     }
 
+    /// MP-08 / MP-11: a poll the backoff refuses answers with the dial failure that
+    /// started the delay, so callers still tell a stopped slice relay from a timeout.
+    #[tokio::test]
+    async fn a_poll_refused_by_the_backoff_names_the_dial_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        let Some(DaemonError::LocalTransport {
+            operation: dialed_operation,
+            message: dialed_message,
+        }) = list_live_machines(&config).await.err()
+        else {
+            panic!("the first poll dials the closed port and fails to connect");
+        };
+        assert!(
+            dialed_message.contains("Connection refused"),
+            "{dialed_message}"
+        );
+        let refused = list_live_machines(&config).await.err();
+        let Some(DaemonError::LocalTransport { operation, message }) = &refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(*operation, dialed_operation, "{refused:?}");
+        assert!(
+            message.contains(&dialed_message) && message.contains("retry in"),
+            "{refused:?}"
+        );
+    }
+
     #[tokio::test]
     async fn an_unreachable_relay_is_not_dialed_again_on_every_poll() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
