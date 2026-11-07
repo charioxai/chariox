@@ -851,7 +851,8 @@ mod owner_mapping_tests {
             user_id: "cloud-owner".to_string(),
             ..Default::default()
         });
-        let harness = crate::local::test_support::LocalRouterTestHarness::with_config(config.clone());
+        let harness =
+            crate::local::test_support::LocalRouterTestHarness::with_config(config.clone());
         harness
             .runtime_state()
             .event_connection_registry()
