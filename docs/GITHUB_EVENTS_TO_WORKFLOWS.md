@@ -134,8 +134,35 @@ delivered and each target runs once.
 ## Follow the events from an agent outside Chariox
 
 An agent that runs outside Chariox (a Claude Code or Codex CLI session) cannot be an
-automation target, but it can follow the workflow the event starts. It asks for a
-Kernel Access grant (`chariox access request --until-exit`; the owner approves it), then:
+automation target, but it registers for the notifications itself. It asks for a Kernel
+Access grant (`chariox access request --until-exit`; the owner approves it), then follows
+either the App's events directly or the workflow an event starts.
+
+### Directly: the App's event
+
+Every inbox route of an installed App (step 4) is a notification source of its own, named
+for the App's incoming event and the route's repository: `pull_request_updated@<owner>/<repository>`,
+shown as "Pull request updated (<owner>/<repository>)". A route with no connection scope is named
+for the event alone. A source exists while the App is installed and its route exists; an event
+kind with no route has no source, because no event of that kind can arrive.
+
+```
+chariox events sources                                       # lists one source per route, kind app_event
+chariox events subscribe --source "pull_request_updated@<owner>/<repository>"
+chariox events wait                                          # returns when an event arrives
+chariox events ack <cursor>
+```
+
+The notification arrives when the kernel accepts the event, before the App's handler runs, and its
+text is the event text (`Handle GitHub pull_request.synchronize for <owner>/<repository> #<number>
+at head <sha>`). Following needs the same grant as every other source and adds no authority. An
+event that arrives while nobody follows its source is kept for the App only; a later follower
+receives events from the moment it subscribes. A restart keeps the follow for a grant that lasts
+until its holder exits, and an unread notification is kept for 7 days. At most 64 sources per grant.
+
+### Through the workflow the event starts
+
+An agent can also follow the workflow the event starts (step 3):
 
 ```
 chariox events sources                      # lists "<workflow> run finished" for each workflow
@@ -145,11 +172,10 @@ chariox events ack <cursor>
 ```
 
 The record's output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`
-and `prompt`, which is the event text (`Handle GitHub pull_request.synchronize for
-<owner>/<repository> #<number> at head <sha>`), plus `failure` for a failed run. The
-notification arrives when the run ends, not when the event arrives; a stopped run emits
-nothing. To be told the moment an event arrives, or to receive its payload, use an agent
-trigger (step 3) on a Room agent.
+and `prompt`, which is the event text, plus `failure` for a failed run. The notification
+arrives when the run ends, not when the event arrives; a stopped run emits nothing. Use this
+path to be told what a workflow did with an event, and the direct path to be told that the
+event arrived.
 
 ## Several routes and several kernels
 

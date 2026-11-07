@@ -208,7 +208,14 @@ blocked, and the "run finished" source of each of their workflows (kind `workflo
 workflow that completed or failed, whether or not it reached an exit, with the run id as the
 occurrence id. Its output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`,
 `prompt` (the run's invocation prompt, at most 2,000 characters) and, for a failed run,
-`failure` (the first failure message, at most 2,000 characters). A stopped run emits nothing. Only
+`failure` (the first failure message, at most 2,000 characters). A stopped run emits nothing.
+Listing also offers one `app_event` source for each active inbox route of the owner's installed Apps
+(`session_id` is the installation, `workflow_id` the route, `exit_node_id` the incoming event, `name` the App's
+incoming event name followed by `@<connection scope>` when the route has one). The kernel publishes
+a newly accepted occurrence of the route to every grant that follows it in the commit that accepts
+it, with the inbox occurrence id as the occurrence id and the event's `text` (at most 32 KiB) as the
+output message; a repeated occurrence adds nothing, and an event nobody follows queues for no one.
+A route that is removed or whose installation is no longer active leaves the listing. Only
 a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
 refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
 --source ID|NAME` follows, `chariox events unsubscribe --source ID|all` unfollows, and `chariox
