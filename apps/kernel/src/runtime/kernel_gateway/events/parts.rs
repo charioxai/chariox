@@ -186,6 +186,7 @@ impl KernelGateway {
         match unsubscribe(UnsubscribeEventsRequest {
             targets: if all { vec![] } else { removed.to_vec() },
             all,
+            sources: Vec::new(),
         })
         .await
         {

@@ -1874,6 +1874,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session_async(
                         session_id: session_id.clone(),
                         agent_id: Some(remote_agent_id.clone()),
                     }],
+                    sources: Vec::new(),
                 }),
             )
             .unwrap();

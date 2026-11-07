@@ -65,6 +65,14 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
         trigger_id: Some("trigger".into()),
         ..sub.clone()
     };
+    // The grant's own event part receives it: the grant id is its publication and endpoint.
+    let outside_sub: WorkflowNotificationSubscription = serde_json::from_value(serde_json::json!({
+        "subscription_id":"grant-sub","source_id":"src","owner_user_id":"u","created_by_user_id":"u",
+        "target_kernel_id":"k","target_kind":"outside_agent","session_id":"t","workflow_id":"",
+        "publication_id":"grant-a","endpoint_id":"grant-a","queue_id":"grant","source_available":true,
+        "source_kernel_id":"k"
+    }))
+    .unwrap();
     let env = WorkflowNotificationEnvelope {
         source_id: "src".into(),
         display_name: "reviewer-2".into(),
@@ -96,7 +104,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
                 display_name: source.display_name,
                 available: true,
             }],
-            subscriptions: vec![sub.clone(), agent_sub],
+            subscriptions: vec![sub.clone(), agent_sub, outside_sub],
             listeners: vec![sub],
             diagnostics: vec![WorkflowNotificationDiagnostic {
                 source_id: "src".into(),
@@ -108,7 +116,7 @@ fn workflow_notification_437_shapes_have_no_caller_owner_or_ancestry() {
     let wire = serde_json::json!({"requests":[register,attach,list,LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {session_id:"t".into(),subscription_id:"sub".into()})],"responses":responses,"envelope":env,"acks":[WorkflowNotificationAck::Accepted,WorkflowNotificationAck::Duplicate,WorkflowNotificationAck::Expired,WorkflowNotificationAck::LoopDropped]});
     assert_eq!(
         format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-        "56864f4ded54b2efa2692e303e71bc5ca9487136540bffd84932b43640d1326c"
+        "42c058ca9f0493ab27db44de0a0ce0dcb07ef1a8e49c2fec0ac43319301824f6"
     );
     for field in ["owner_user_id", "ancestry", "output"] {
         let mut request =

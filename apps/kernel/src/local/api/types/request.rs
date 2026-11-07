@@ -5,6 +5,7 @@ pub enum LocalDaemonRequest {
     SubscribeEvents(SubscribeEventsRequest),
     UnsubscribeEvents(UnsubscribeEventsRequest),
     GetEventSubscription(GetEventSubscriptionRequest),
+    ListNotificationSources(ListNotificationSourcesRequest),
     ListEvents(ListEventsRequest),
     WaitEvents(WaitEventsRequest),
     AckEvents(AckEventsRequest),

@@ -1154,6 +1154,7 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
                         session_id: f.room.clone(),
                         agent_id: Some(f.agent.clone()),
                     }],
+                    sources: Vec::new(),
                 },
             ),
         )

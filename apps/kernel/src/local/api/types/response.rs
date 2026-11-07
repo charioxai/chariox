@@ -9,6 +9,7 @@ pub enum LocalDaemonResponse {
     ProviderUsageSnapshot { accounts: Vec<ProviderUsageAccount> },
     AgentUsageSnapshot { snapshot: AgentUsageSnapshot },
     EventSubscription { subscription: EventSubscription },
+    NotificationSources { sources: Vec<WorkflowNotificationSourceSummary> },
     EventsListed { events: Vec<OutsideEvent>, next_cursor: u64, oldest_cursor: u64, timed_out: bool },
     EventsAcknowledged { cursor: u64 },
     EventsCursorExpired { oldest_cursor: u64 },

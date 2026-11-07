@@ -1,9 +1,9 @@
 // MP-08 / MP-09 / MP-10 / MP-11: one durable inbox, usable by any harness.
 import { CommandFailure } from "./agent-command-table.js"
 import type { SendRequest } from "./kernel-files.js"
-import type { OutsideEvent, EventsBatch } from "@chariox/kernel-client/kernel-types"
+import type { OutsideEvent, EventsBatch, EventSubscription, WorkflowNotificationSourceSummary } from "@chariox/kernel-client/kernel-types"
 
-export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "list", "wait", "watch", "ack", "mcp"] as const
+export const EVENT_VERBS = ["subscribe", "unsubscribe", "subscription", "sources", "list", "wait", "watch", "ack", "mcp"] as const
 export type EventVerb = typeof EVENT_VERBS[number]
 export type EventFlags = Map<string, string | true>
 
@@ -35,7 +35,48 @@ function batch(response: unknown): EventsBatch {
 }
 function ended(events: readonly OutsideEvent[]): boolean { return events.some(event => event.type === "subscription_ended") }
 
+// Notification sources are followed by id; a person or model may name one by its display name instead.
+export async function listSources(send: SendRequest): Promise<WorkflowNotificationSourceSummary[]> {
+  const wire = await send({ ListNotificationSources: {} }) as { NotificationSources?: { sources: WorkflowNotificationSourceSummary[] } }
+  if (!wire?.NotificationSources) throw new CommandFailure("events_response_invalid", "kernel returned no source list; update Chariox")
+  return wire.NotificationSources.sources
+}
+// A source is named by id or, when no id matches, by display name.
+function resolveSource(sources: readonly { source_id: string; display_name: string }[], reference: string, refused: string): string {
+  const named = sources.some(source => source.source_id === reference) ? [] : sources.filter(source => source.display_name.toLowerCase() === reference.toLowerCase())
+  if (named.length > 1) throw new CommandFailure("usage", `several sources are named "${reference}"; name one by its source_id: ${named.map(source => source.source_id).join(", ")}`)
+  const found = named[0] ?? sources.find(source => source.source_id === reference)
+  if (!found) throw new CommandFailure("events_refused", `source not available: "${reference}" ${refused}`)
+  return found.source_id
+}
+// What the kernel answers to a subscription request: `{ subscription }`, printed as it is.
+function subscriptionBody(response: unknown): { subscription: EventSubscription } {
+  const wire = response as { EventSubscription?: { subscription: EventSubscription } } | undefined
+  if (!wire?.EventSubscription?.subscription) throw new CommandFailure("events_response_invalid", "kernel returned no subscription; update Chariox")
+  return wire.EventSubscription
+}
+export async function followSource(send: SendRequest, reference: string): Promise<{ subscription: EventSubscription }> {
+  const source = resolveSource(await listSources(send), reference, "is not a source you can follow; run chariox events sources")
+  return subscriptionBody(await send({ SubscribeEvents: { targets: [], sources: [source] } }))
+}
+// Removal reads what the grant follows, not what the kernel offers: a disabled or unavailable source is gone from the
+// offer but stays followed until it is detached. `all` ends every followed source and leaves followed targets alone.
+export async function unfollowSource(send: SendRequest, reference: string): Promise<{ subscription: EventSubscription }> {
+  const current = subscriptionBody(await send({ GetEventSubscription: {} }))
+  const followed = current.subscription.sources ?? []
+  if (reference === "all") return followed.length ? subscriptionBody(await send({ UnsubscribeEvents: { sources: followed.map(source => source.source_id) } })) : current
+  const source = resolveSource(followed, reference, "is not followed; run chariox events subscription")
+  return subscriptionBody(await send({ UnsubscribeEvents: { sources: [source] } }))
+}
+
 export async function runEventsVerb(verb: EventVerb, flags: EventFlags, args: readonly string[], send: SendRequest, write: (value: unknown) => void): Promise<number> {
+  if (verb === "sources") { write({ sources: await listSources(send) }); return 0 }
+  if ((verb === "subscribe" || verb === "unsubscribe") && flags.has("--source")) {
+    const source = flags.get("--source")
+    if (typeof source !== "string" || !source || ["--kernel", "--session", "--agent", "--all"].some(flag => flags.has(flag))) throw new CommandFailure("usage", `events ${verb} --source takes a source id or name and no other target flag`)
+    write(await (verb === "subscribe" ? followSource : unfollowSource)(send, source))
+    return 0
+  }
   if (verb === "subscribe" || verb === "unsubscribe") {
     const all = flags.has("--all")
     if (all && (verb !== "unsubscribe" || flags.has("--kernel") || flags.has("--session") || flags.has("--agent"))) throw new CommandFailure("usage", "unsubscribe uses targets or --all")

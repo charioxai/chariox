@@ -1,4 +1,5 @@
 use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
+use super::workflow_notification_peers::VERSION;
 use super::*;
 use crate::local::{
     AgentTriggerSourceRequest, DeleteAgentTriggerRequest, ListWorkflowNotificationsRequest,
@@ -2541,4 +2542,59 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
         2,
         "a workflow the original turn invoked still notifies"
     );
+}
+
+#[tokio::test]
+async fn a_remote_agent_follow_the_source_does_not_confirm_is_reconciled_as_absent() {
+    let rig = rig().await;
+    let owner = "local";
+    let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
+    let subscription = WorkflowNotificationSubscription {
+        subscription_id: "sub-unconfirmed".into(),
+        source_id: "wf_source_remote".into(),
+        owner_user_id: owner.into(),
+        created_by_user_id: owner.into(),
+        target_kernel_id: home.clone(),
+        target_kind: WorkflowNotificationTargetKind::Agent,
+        session_id: rig.session_id.clone(),
+        workflow_id: String::new(),
+        publication_id: "trigger-unconfirmed".into(),
+        endpoint_id: rig.agent_id.clone(),
+        queue_id: AGENT_QUEUE_ID.into(),
+        source_available: true,
+        source_kernel_id: "remote-kernel".into(),
+        agent_id: Some(rig.agent_id.clone()),
+        trigger_id: Some("trigger-unconfirmed".into()),
+    };
+    assert!(rig
+        .runtime
+        .subscribe_agent_notification(&home, subscription)
+        .await
+        .is_err());
+    let (_, active, _) = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .notification_inventory(owner)
+        .unwrap();
+    assert!(active.is_empty(), "the refused follow stays active");
+    let crate::durable_state::workflow_notifications::NotificationOutcome::Reconciles(due) = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .notify(NotificationOperation::ClaimRemoteReconciles {
+            now: 1_000,
+            limit: 8,
+        })
+        .unwrap()
+    else {
+        panic!("a claim answers with the due reconciliations");
+    };
+    assert_eq!(
+        due.len(),
+        1,
+        "the source may hold a row nothing here knows of"
+    );
+    assert!(due[0].desired.is_none());
+    assert_eq!(due[0].source_kernel_id, "remote-kernel");
 }

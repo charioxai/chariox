@@ -17,6 +17,8 @@ struct RemoteRelayInventoryProjectionState {
     remote_kernels: Vec<RelayKernelPresence>,
     refreshed_at_ms: u64,
     refresh_requested_at_ms: u64,
+    /// Kernels that were absent from the previous inventory and are present now, until taken.
+    appeared_kernels: std::collections::BTreeSet<String>,
 }
 
 impl RemoteRelayInventoryProjectionStore {
@@ -26,6 +28,17 @@ impl RemoteRelayInventoryProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         (state.remote_machines.clone(), state.remote_kernels.clone())
+    }
+
+    /// The kernels that (re)appeared in the inventory since the last call.
+    pub(crate) fn take_appeared_kernels(&self) -> Vec<String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::take(&mut state.appeared_kernels)
+            .into_iter()
+            .collect()
     }
 
     pub(crate) fn is_fresh(&self, now_ms: u64, stale_after_ms: u64) -> bool {
@@ -79,10 +92,22 @@ impl RemoteRelayInventoryProjectionStore {
             .into_iter()
             .map(filter_remote_machine_product_providers)
             .collect();
+        let previous: std::collections::BTreeSet<String> = state
+            .remote_kernels
+            .iter()
+            .map(|kernel| kernel.kernel_id.clone())
+            .collect();
         state.remote_kernels = remote_kernels
             .into_iter()
             .map(filter_remote_kernel_product_providers)
             .collect();
+        let appeared: Vec<String> = state
+            .remote_kernels
+            .iter()
+            .filter(|kernel| !previous.contains(&kernel.kernel_id))
+            .map(|kernel| kernel.kernel_id.clone())
+            .collect();
+        state.appeared_kernels.extend(appeared);
         state.refreshed_at_ms = unix_epoch_ms();
         state.refresh_requested_at_ms = state.refreshed_at_ms;
     }

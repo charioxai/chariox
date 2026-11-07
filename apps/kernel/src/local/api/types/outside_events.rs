@@ -14,6 +14,10 @@ pub struct EventTarget {
 #[serde(deny_unknown_fields)]
 pub struct SubscribeEventsRequest {
     pub targets: Vec<EventTarget>,
+    /// Notification sources of this kernel (workflow exits and owner actions) by id. Their
+    /// occurrences reach the grant's own event stream; nothing else can receive them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +25,8 @@ pub struct SubscribeEventsRequest {
 pub struct UnsubscribeEventsRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<EventTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
 }
@@ -28,6 +34,11 @@ pub struct UnsubscribeEventsRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GetEventSubscriptionRequest {}
+
+/// The notification sources a grant may follow with `SubscribeEvents{sources}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListNotificationSourcesRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,6 +148,16 @@ pub enum OutsideEventValue {
     SubscriptionEnded {
         reason: String,
     },
+    /// One occurrence of a notification source the grant follows. Delivered once per
+    /// occurrence until acknowledged; `deadline_ms` is when an unread one expires.
+    Notification {
+        source_id: String,
+        source_kind: NotificationSourceKind,
+        display_name: String,
+        occurrence_id: String,
+        output: crate::session::WorkflowOutputPayload,
+        deadline_ms: u64,
+    },
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -179,10 +200,23 @@ pub struct EventKernelIssue {
     pub code: String,
     pub message: String,
 }
+/// A notification source the grant follows. `available` turns false when the source can no
+/// longer emit (disabled, workflow or Room gone); the follow stays until the grant drops it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSourceFollow {
+    pub source_id: String,
+    pub display_name: String,
+    pub kind: NotificationSourceKind,
+    pub session_id: String,
+    pub subscription_id: String,
+    pub available: bool,
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventSubscription {
     pub subscription_id: String,
     pub targets: Vec<EventTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<EventSourceFollow>,
     pub kernels: Vec<EventKernelHealth>,
     pub acknowledged_cursor: u64,
     pub ended: Option<String>,

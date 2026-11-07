@@ -64,7 +64,10 @@ impl KernelGateway {
             kernel,
             origin,
             &event_command_id(),
-            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest { targets }),
+            &LocalDaemonRequest::SubscribeEvents(SubscribeEventsRequest {
+                targets,
+                sources: Vec::new(),
+            }),
             PULL_DEADLINE,
         )
         .await

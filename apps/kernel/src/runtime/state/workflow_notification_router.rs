@@ -4,8 +4,8 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
     workflow_notifications::{
-        self as store, naming, NotificationOperation, NotificationOutcome, PreparedNotification,
-        SourceAdmission,
+        self as store, naming, remote_install::Generation, NotificationOperation,
+        NotificationOutcome, PreparedNotification, SourceAdmission,
     },
 };
 use crate::{error::DaemonError, local::*, session::SessionService};
@@ -30,14 +30,19 @@ pub(super) fn source_available(
         s.owner_user_id() == source.owner_user_id
             && s.host_daemon_id() == source.kernel_id
             && s.status() != crate::session::SessionStatus::Ended
-    }) && (source.kind == crate::local::NotificationSourceKind::OwnerAction
-        || sessions
+    }) && match source.kind {
+        crate::local::NotificationSourceKind::OwnerAction => true,
+        crate::local::NotificationSourceKind::WorkflowRun => sessions
+            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+            .is_ok(),
+        crate::local::NotificationSourceKind::WorkflowExit => sessions
             .resolve_workflow_ref(&source.session_id, &source.workflow_id)
             .is_ok_and(|workflow| {
                 workflow
                     .node(&source.exit_node_id)
                     .is_some_and(|node| node.can_complete_workflow_run())
-            }))
+            }),
+    }
 }
 /// Summaries name each source from its workflow's current definition: the
 /// alias, followed by the exit's ordinal when more than one exit of the
@@ -54,6 +59,7 @@ pub(super) fn summaries(
                 .iter()
                 .filter(|other| {
                     other.enabled
+                        && other.kind != NotificationSourceKind::WorkflowRun
                         && other.kernel_id == source.kernel_id
                         && other.session_id == source.session_id
                         && other.workflow_id == source.workflow_id
@@ -77,7 +83,11 @@ pub(super) fn summaries(
                 workflow_id: source.workflow_id.clone(),
                 exit_node_id: source.exit_node_id.clone(),
                 exit_ordinal: ordinal,
-                display_name: naming::display_name(&name, ordinal, notifying),
+                display_name: if source.kind == NotificationSourceKind::WorkflowRun {
+                    naming::run_display_name(&name)
+                } else {
+                    naming::display_name(&name, ordinal, notifying)
+                },
                 name,
                 available: source.available,
             }
@@ -89,6 +99,28 @@ impl KernelRuntimeState {
         &self,
         request: LocalDaemonRequest,
         owner: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.execute_workflow_notification_request_installing(request, owner)
+            .map(|(response, _)| response)
+    }
+
+    /// Also answers the generation of the remote install an attach left to do.
+    pub(super) fn execute_workflow_notification_request_installing(
+        &self,
+        request: LocalDaemonRequest,
+        owner: &str,
+    ) -> Result<(LocalDaemonResponse, Option<Generation>), DaemonError> {
+        let installing = std::cell::Cell::new(None);
+        let response =
+            self.execute_workflow_notification_request_into(request, owner, &installing)?;
+        Ok((response, installing.get()))
+    }
+
+    fn execute_workflow_notification_request_into(
+        &self,
+        request: LocalDaemonRequest,
+        owner: &str,
+        installing: &std::cell::Cell<Option<Generation>>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let LocalDaemonRequest::ListWorkflowNotifications(list) = &request {
             let session = self.owned.session_store.get_session(&list.session_id)?;
@@ -224,7 +256,7 @@ impl KernelRuntimeState {
                                 target,
                             }
                         } else {
-                            NotificationOperation::RemoteAttach { subscription }
+                            NotificationOperation::AttachToRemoteSource { subscription }
                         };
                         if let Some(grant) = self.notification_grant() {
                             operation = NotificationOperation::Granted {
@@ -234,6 +266,15 @@ impl KernelRuntimeState {
                         }
                         match self.owned.durable_state_store.notify(operation)? {
                             NotificationOutcome::Subscription(subscription) => {
+                                Ok(LocalDaemonResponse::WorkflowNotificationAttached {
+                                    subscription,
+                                })
+                            }
+                            NotificationOutcome::RemoteInstalling {
+                                subscription,
+                                generation,
+                            } => {
+                                installing.set(Some(generation));
                                 Ok(LocalDaemonResponse::WorkflowNotificationAttached {
                                     subscription,
                                 })
@@ -323,7 +364,7 @@ impl KernelRuntimeState {
     }
 
     /// An enabled source of this kernel, or an available one of another kernel's cached picker.
-    fn attachable_source(
+    pub(super) fn attachable_source(
         &self,
         sessions: &SessionService,
         owner: &str,
@@ -404,7 +445,10 @@ impl KernelRuntimeOwnedState {
     /// No network, App worker, AEDS or registry dependency is involved.
     pub(super) fn route_workflow_notifications(&self) -> (BTreeSet<String>, bool) {
         let mut queued_sessions = BTreeSet::new();
-        let now = crate::session::unix_epoch_ms();
+        // The sweep reads the outside event clock, which a debug build lets a drill move forward.
+        let Ok(now) = crate::durable_state::agent_lifecycle::outside::outside_now_ms() else {
+            return (queued_sessions, false);
+        };
         if self
             .durable_state_store
             .notify(NotificationOperation::Sweep { now })
@@ -465,6 +509,10 @@ impl KernelRuntimeOwnedState {
                 }
                 if sub.target_kind == WorkflowNotificationTargetKind::Agent {
                     self.accept_local_agent_notification(&sub, &env);
+                    continue;
+                }
+                if sub.target_kind == WorkflowNotificationTargetKind::OutsideAgent {
+                    self.deliver_outside_agent_notification(&sub, &env, accepted);
                     continue;
                 }
                 let operation = self
@@ -550,13 +598,21 @@ impl KernelRuntimeOwnedState {
 }
 
 #[cfg(test)]
+mod outside_agent_admission_tests;
+#[cfg(test)]
+mod outside_agent_follow_tests;
+#[cfg(test)]
+mod outside_agent_listing_tests;
+#[cfg(test)]
+mod outside_agent_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::durable_state::workflow_notifications::tests::{cleanup, Fixture};
     use crate::{app::DaemonApp, config::DaemonConfig, runtime::router::CommandRouter};
     use std::sync::Arc;
     use tokio::sync::Mutex;
-    fn runtime(f: &mut Fixture) -> KernelRuntimeState {
+    pub(super) fn router(f: &mut Fixture) -> CommandRouter {
         // Bootstrap only local kernel services with every mutable root owned by this fixture.
         let mut config = DaemonConfig::for_tests();
         config.user_config.state.path = Some(f.root.join("runtime/state.db").display().to_string());
@@ -569,8 +625,8 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(f.root.join("artifacts/index.db").display().to_string());
         let app = DaemonApp::bootstrap(config).unwrap();
-        let runtime =
-            CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1).runtime_state();
+        let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+        let runtime = router.runtime_state();
         f.store = runtime.owned.durable_state_store.clone();
         for session in f.sessions.list_sessions() {
             for agent in session.agents() {
@@ -585,7 +641,10 @@ mod tests {
                 .persist_workflow_runtime_transition(&session, "notification router fixture")
                 .unwrap();
         }
-        runtime
+        router
+    }
+    fn runtime(f: &mut Fixture) -> KernelRuntimeState {
+        router(f).runtime_state()
     }
     #[test]
     fn r6_source_listeners_include_a_consumer_in_another_room() {

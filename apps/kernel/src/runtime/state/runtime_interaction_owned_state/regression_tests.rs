@@ -31,6 +31,7 @@ impl Fixture {
                         session_id: self.session.clone(),
                         agent_id: None,
                     }],
+                    sources: Vec::new(),
                 }),
             )
             .unwrap();
