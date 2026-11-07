@@ -2349,6 +2349,138 @@ mod mp11_delivery_http_tests {
         );
     }
 
+    /// Lists the fixture connection's one scope, but only once the test releases it, so a
+    /// reconciliation can be parked inside its scope check.
+    struct GatedListingProvider {
+        entered: Arc<AtomicBool>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl AegsProvider for GatedListingProvider {
+        fn generator_id(&self) -> &'static str {
+            "dev.chariox.github"
+        }
+        fn provider_slug(&self) -> &'static str {
+            "github"
+        }
+        fn normalize_webhook(
+            &self,
+            _: WebhookInput<'_>,
+            _: &crate::WebhookRoute,
+        ) -> Result<crate::NormalizedEvent, String> {
+            Err("not used".into())
+        }
+        fn event_subject(&self, _: &crate::NormalizedEvent) -> Option<String> {
+            None
+        }
+        fn query_resources(
+            &self,
+            query: &chariox_event_protocol::AegsProviderResourceQuery,
+        ) -> Result<chariox_event_protocol::AegsProviderResourcePage, String> {
+            self.entered.store(true, Ordering::SeqCst);
+            self.release
+                .lock()
+                .map_err(|_| "release gate poisoned".to_string())?
+                .recv_timeout(std::time::Duration::from_secs(20))
+                .map_err(|_| format!("listing of {} was never released", query.connection_id))?;
+            SignedProvider.query_resources(query)
+        }
+    }
+
+    /// Another member kernel revokes a kernel while its reconciliation waits for the provider
+    /// to list the connection. The reconciliation must not bring the revoked kernel's
+    /// subscriptions back, and no private event may reach it afterwards.
+    #[tokio::test]
+    async fn reconcile_parked_in_scope_check_cannot_revive_a_kernel_revoked_meanwhile() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server(&publisher);
+        let (release, gate) = std::sync::mpsc::channel();
+        let entered = Arc::new(AtomicBool::new(false));
+        let server = Arc::new(AegsServer {
+            management_auth: ManagementAuth::open_for_tests(),
+            provider: Arc::new(GatedListingProvider {
+                entered: entered.clone(),
+                release: std::sync::Mutex::new(gate),
+            }),
+            ..(*server).clone()
+        });
+        let kernel_a_id = chariox_event_protocol::kernel_identity::kernel_id_for_public_key(
+            &test_kernel("kernel-a").1,
+        );
+        let held = claim_for("held", true);
+        store
+            .reconcile_for_owner(&kernel_a_id, "owner", &held.generator_id, &[held.clone()])
+            .unwrap();
+        for kernel in ["kernel-a", "kernel-b"] {
+            let (status, body) = management_send_as(
+                "GET",
+                &server,
+                "/v1/owners/kernels",
+                kernel,
+                "owner",
+                serde_json::Value::Null,
+            )
+            .await;
+            assert_eq!(status, 200, "{body}");
+        }
+        let reconciling = {
+            let server = server.clone();
+            let claims = [crate::SubscriptionClaim {
+                revision: 2,
+                ..held.clone()
+            }];
+            tokio::spawn(async move {
+                management_send_as(
+                    "PUT",
+                    &server,
+                    "/v1/subscriptions/reconcile",
+                    "kernel-a",
+                    "owner",
+                    serde_json::json!({
+                        "owner_id": "owner",
+                        "generator_id": "dev.chariox.github",
+                        "subscriptions": claims,
+                    }),
+                )
+                .await
+            })
+        };
+        let parked_by = std::time::Instant::now();
+        while !entered.load(Ordering::SeqCst) {
+            assert!(
+                parked_by.elapsed() < std::time::Duration::from_secs(10),
+                "the reconciliation never reached the provider listing"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let (status, body) = management_send_as(
+            "POST",
+            &server,
+            "/v1/owners/kernels/revoke",
+            "kernel-b",
+            "owner",
+            serde_json::json!({"owner_id": "owner", "kernel_id": kernel_a_id}),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        release.send(()).unwrap();
+        let (status, body) = reconciling.await.unwrap();
+        assert_eq!(status, 403, "{body}");
+        assert_eq!(body["error"]["code"], "kernel_revoked", "{body}");
+        let stored = store.all_for_owner("dev.chariox.github", "owner").unwrap();
+        assert!(
+            stored.iter().all(|claim| !claim.active),
+            "the revoked kernel's subscriptions stayed inactive: {stored:?}"
+        );
+        assert!(store
+            .matching("dev.chariox.github", "event", "scope")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .audience_for_interest("dev.chariox.github", "interest", None)
+            .unwrap()
+            .is_empty());
+    }
+
     #[tokio::test]
     async fn signed_webhook_is_acknowledged_when_aeds_refuses_the_first_publication() {
         let publisher = PublisherFixture::new();
@@ -2549,6 +2681,7 @@ mod mp11_delivery_http_tests {
     }
 
     fn signed_headers(
+        kernel: &str,
         method: &str,
         path: &str,
         owner: &str,
@@ -2556,7 +2689,7 @@ mod mp11_delivery_http_tests {
     ) -> Vec<(&'static str, String)> {
         use chariox_event_protocol::kernel_identity as identity;
         static NEXT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let (private, public) = test_kernel(owner);
+        let (private, public) = test_kernel(kernel);
         let nonce = format!("nonce-{}", NEXT_NONCE.fetch_add(1, Ordering::Relaxed));
         let timestamp_ms = now_ms();
         let signature = identity::sign(
@@ -2597,6 +2730,18 @@ mod mp11_delivery_http_tests {
         owner: &'static str,
         body: serde_json::Value,
     ) -> (u16, serde_json::Value) {
+        management_send_as(method, server, path, owner, owner, body).await
+    }
+
+    /// Signs as `kernel`, which may be one of several kernels sharing `owner`.
+    async fn management_send_as(
+        method: &'static str,
+        server: &Arc<AegsServer>,
+        path: &'static str,
+        kernel: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}{path}", listener.local_addr().unwrap());
         let server = server.clone();
@@ -2617,7 +2762,7 @@ mod mp11_delivery_http_tests {
         let response = tokio::task::spawn_blocking(move || {
             let body = body.to_string();
             let mut request = ureq::request(method, &url).set("connection", "close");
-            for (name, value) in signed_headers(method, path, owner, &body) {
+            for (name, value) in signed_headers(kernel, method, path, owner, &body) {
                 request = request.set(name, &value);
             }
             match request
