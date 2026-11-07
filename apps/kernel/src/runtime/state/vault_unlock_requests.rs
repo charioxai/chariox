@@ -57,6 +57,13 @@ pub(super) fn vault_unlock_notifications(
     requests(path).unlocked.subscribe()
 }
 
+/// How a wait for a Vault unlock ended.
+pub(super) enum VaultUnlockWait {
+    Answered(PendingInteractionResolution),
+    /// A person unlocked the Vault in another window; the card is already withdrawn.
+    UnlockedElsewhere(VaultUnlockSurface),
+}
+
 pub(super) fn notify_vault_unlocked(path: &Path, surface: VaultUnlockSurface) {
     requests(path).unlocked.send_replace(Some(surface));
 }
@@ -74,7 +81,7 @@ impl KernelRuntimeState {
         unlocks: &mut watch::Receiver<Option<VaultUnlockSurface>>,
         deadline: tokio::time::Instant,
         card: &mut Option<CloseInteractionOnDrop>,
-    ) -> Result<Option<PendingInteractionResolution>, DaemonError> {
+    ) -> Result<VaultUnlockWait, DaemonError> {
         let id = interaction.id().to_owned();
         let agent_id = interaction.agent_id().map(str::to_owned);
         let waiting = agent_id
@@ -107,7 +114,7 @@ impl KernelRuntimeState {
         let result = loop {
             tokio::select! {
                 biased;
-                result = &mut wait => break result.map(Some),
+                result = &mut wait => break result.map(VaultUnlockWait::Answered),
                 Ok(()) = unlocks.changed() => {
                     let surface = (*unlocks.borrow_and_update()).unwrap_or(VaultUnlockSurface::Card);
                     match crate::secret::chariox_encrypted_vault_status(vault_path) {
@@ -115,7 +122,7 @@ impl KernelRuntimeState {
                             break self
                                 .owned
                                 .settle_vault_unlocked(session_id, &id, surface)
-                                .map(|()| None);
+                                .map(|()| VaultUnlockWait::UnlockedElsewhere(surface));
                         }
                         Ok(_) => {}
                         Err(error) => break Err(error),
@@ -124,10 +131,10 @@ impl KernelRuntimeState {
             }
         };
         let refusal = match &result {
-            Ok(Some(resolution)) if resolution.status == "timed_out" => {
+            Ok(VaultUnlockWait::Answered(resolution)) if resolution.status == "timed_out" => {
                 Some("The Vault unlock timed out".to_owned())
             }
-            Ok(Some(resolution)) if !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") => {
+            Ok(VaultUnlockWait::Answered(resolution)) if !matches!(resolution.choice_id.as_deref(), Some(choice) if choice != "cancel") => {
                 Some("The Vault unlock was declined".to_owned())
             }
             Err(error) => Some(format!("The Vault unlock failed: {error}")),

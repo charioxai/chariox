@@ -466,6 +466,51 @@ async fn vflag_plain_agent_reads_vault_status_and_opens_the_popup() {
     assert_eq!(status["status"]["unlocked"], true);
 }
 
+// PCD-05: an unlock through another window answers the waiting agent as unlocked and says where it happened.
+#[tokio::test]
+async fn an_unlock_through_the_vault_window_tells_the_waiting_agent_where() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    let popup = call(
+        &f,
+        "chariox.manage_credential_vault",
+        json!({"action": "popup"}),
+    );
+    let window = async {
+        let session = &f.request.session_id;
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !f
+                .state
+                .owned
+                .session_snapshot(session)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .any(|card| card.id().starts_with("vault-unlock-"))
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        f.state
+            .unlock_credential_vault_for_owner(
+                "local",
+                crate::local::UnlockCredentialVaultRequest {
+                    passphrase: crate::local::VaultPassphrase::new(PASSKEY),
+                    duration: crate::local::VaultUnlockDuration::Minutes { minutes: 30 },
+                    surface: crate::local::VaultUnlockSurface::VaultWindow,
+                },
+            )
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(popup, window);
+    let result = result.unwrap();
+    assert_eq!(result["action"], "unlocked");
+    assert_eq!(result["via"], "the Vault window");
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: a provider that gives up on a waiting popup call (its tool timeout)
 // must not leave a card nobody can answer.
 #[tokio::test]

@@ -134,6 +134,17 @@ impl VaultUnlockSurface {
             Self::Terminal => "terminal",
         }
     }
+
+    /// Where a person unlocked, in the words an agent reports back.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Card => "an unlock card",
+            Self::VaultWindow => "the Vault window",
+            Self::Settings => "Settings",
+            Self::Sidebar => "the sidebar",
+            Self::Terminal => "the terminal",
+        }
+    }
 }
 
 /// The durations a client offers when it asks for the Vault passphrase, and

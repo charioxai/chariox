@@ -1,11 +1,45 @@
 use super::vault_unlock_requests::{
     notify_vault_unlocked, vault_unlock_notifications, vault_unlock_session_request_lock,
+    VaultUnlockWait,
 };
 use super::*;
 
 pub(crate) struct VaultUnlockGuard {
     path: Option<std::path::PathBuf>,
     lock_on_drop: bool,
+    /// Where the owner unlocked, when the Vault was opened by someone else's window while this call waited.
+    unlocked_via: Option<crate::local::VaultUnlockSurface>,
+}
+
+/// The answer to a Vault management request: the Vault status, what was done, and where
+/// a person unlocked it when the call only waited for that.
+#[derive(Debug)]
+pub(crate) struct VaultManaged {
+    pub(crate) status: crate::secret::CharioxVaultUnlockStatus,
+    pub(crate) action: String,
+    pub(crate) unlocked_via: Option<crate::local::VaultUnlockSurface>,
+}
+
+impl VaultManaged {
+    /// What the agent's tool call returns, naming where a person unlocked when it only waited for that.
+    pub(crate) fn tool_payload(&self) -> serde_json::Value {
+        let mut payload = serde_json::json!({
+            "action": self.action,
+            "status": self.status,
+        });
+        if let Some(surface) = self.unlocked_via {
+            payload["via"] = surface.words().into();
+        }
+        payload
+    }
+
+    fn done(status: crate::secret::CharioxVaultUnlockStatus, action: String) -> Self {
+        Self {
+            status,
+            action,
+            unlocked_via: None,
+        }
+    }
 }
 
 impl VaultUnlockGuard {
@@ -13,6 +47,7 @@ impl VaultUnlockGuard {
         Self {
             path: Some(path),
             lock_on_drop: true,
+            unlocked_via: None,
         }
     }
 
@@ -20,6 +55,7 @@ impl VaultUnlockGuard {
         Self {
             path: Some(path),
             lock_on_drop: false,
+            unlocked_via: None,
         }
     }
 
@@ -37,7 +73,21 @@ impl VaultUnlockGuard {
         Self {
             path: None,
             lock_on_drop: false,
+            unlocked_via: None,
         }
+    }
+
+    fn unlocked_elsewhere(
+        path: std::path::PathBuf,
+        surface: crate::local::VaultUnlockSurface,
+    ) -> Result<Self, DaemonError> {
+        let mut guard = Self::for_existing_unlock(path)?;
+        guard.unlocked_via = Some(surface);
+        Ok(guard)
+    }
+
+    pub(super) fn unlocked_via(&self) -> Option<crate::local::VaultUnlockSurface> {
+        self.unlocked_via
     }
 
     /// Whether dropping this guard locks the Vault: it was opened for this one operation.
@@ -608,7 +658,7 @@ impl KernelRuntimeState {
             if let Some(problem) = problem.as_deref() {
                 interaction = interaction.showing_problem(problem);
             }
-            let Some(resolution) = self
+            let resolution = match self
                 .await_vault_unlock_interaction(
                     session_id,
                     interaction.clone(),
@@ -619,8 +669,11 @@ impl KernelRuntimeState {
                     &mut card,
                 )
                 .await?
-            else {
-                return VaultUnlockGuard::for_existing_unlock(vault_path.clone());
+            {
+                VaultUnlockWait::Answered(resolution) => resolution,
+                VaultUnlockWait::UnlockedElsewhere(surface) => {
+                    return VaultUnlockGuard::unlocked_elsewhere(vault_path.clone(), surface);
+                }
             };
             let (passphrase, duration) = vault_unlock_answer(&interaction, resolution, operation)?;
             let lease = duration.lease(&vault_config, true);
@@ -690,23 +743,27 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<(crate::secret::CharioxVaultUnlockStatus, String), DaemonError> {
+    ) -> Result<VaultManaged, DaemonError> {
         let user_config = self.owned.config_projection.snapshot().user_config;
         let vault_config = user_config.credential_vault;
         if vault_config.backend != crate::config::CredentialVaultBackend::CharioxEncrypted {
             let status = crate::secret::chariox_encrypted_vault_status(expand_vault_path(
                 &vault_config.path,
             ))?;
-            return Ok((status, "not_required".to_string()));
+            return Ok(VaultManaged::done(status, "not_required".to_string()));
         }
         let vault_path = expand_vault_path(&vault_config.path);
         let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
         if !status.unlocked {
-            let _guard = self
+            let guard = self
                 .ensure_vault_unlocked_for_agent(session_id, agent_id, "credential_vault_manage")
                 .await?;
             let status = crate::secret::chariox_encrypted_vault_status(&vault_path)?;
-            return Ok((status, "unlocked".to_string()));
+            return Ok(VaultManaged {
+                status,
+                action: "unlocked".to_string(),
+                unlocked_via: guard.unlocked_via(),
+            });
         }
 
         let resolution = self
@@ -719,11 +776,13 @@ impl KernelRuntimeState {
             .await?;
         let choice_id = resolution.choice_id.as_deref().unwrap_or("dismiss");
         if choice_id == "change_passphrase" {
-            return self
+            let (status, action) = self
                 .change_credential_vault_passphrase(session_id, agent_id, &vault_path)
-                .await;
+                .await?;
+            return Ok(VaultManaged::done(status, action));
         }
-        apply_vault_manage_choice(&vault_path, choice_id, &vault_config)
+        let (status, action) = apply_vault_manage_choice(&vault_path, choice_id, &vault_config)?;
+        Ok(VaultManaged::done(status, action))
     }
 
     /// Asks for the current passphrase and the new one twice, each in its own

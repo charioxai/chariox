@@ -481,15 +481,12 @@ impl KernelRuntimeState {
                                 message: "provider run is not bound to an agent".to_string(),
                             }
                         })?;
-                        let (status, action) = self
+                        let managed = self
                             .manage_credential_vault_unlock(provider_run.session_id(), agent_id)
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
-                            payload: serde_json::json!({
-                                "action": action,
-                                "status": status,
-                            }),
+                            payload: managed.tool_payload(),
                         })
                     }
                     other => Err(DaemonError::LocalTransport {
@@ -674,15 +671,12 @@ impl KernelRuntimeState {
                         })
                     }
                     "popup" => {
-                        let (status, action) = self
+                        let managed = self
                             .manage_credential_vault_unlock(&context.home_session_id, agent.id())
                             .await?;
                         Ok(crate::transport::runtime_tools::RuntimeToolResult {
                             ok: true,
-                            payload: serde_json::json!({
-                                "action": action,
-                                "status": status,
-                            }),
+                            payload: managed.tool_payload(),
                         })
                     }
                     other => Err(DaemonError::LocalTransport {

@@ -224,6 +224,7 @@ impl Fixture {
             runtime
                 .manage_credential_vault_unlock(&session, &agent)
                 .await
+                .map(|managed| (managed.status, managed.action))
         })
     }
 
@@ -261,13 +262,18 @@ async fn an_unlock_from_the_vault_window_closes_the_open_card_and_the_agent_goes
         });
         f.the_open_unlock_prompt().await;
         f.unlock_for(PASSPHRASE, duration).await.unwrap();
-        let (status, action) = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
+        let managed = tokio::time::timeout(std::time::Duration::from_secs(30), operation)
             .await
             .expect("the agent's operation is woken by the unlock")
             .unwrap()
             .expect("the operation succeeds");
-        assert_eq!(action, "unlocked", "{duration:?}");
-        assert!(status.unlocked);
+        assert_eq!(managed.action, "unlocked", "{duration:?}");
+        assert_eq!(
+            managed.unlocked_via,
+            Some(crate::local::VaultUnlockSurface::VaultWindow),
+            "{duration:?}: the agent is told where the person unlocked"
+        );
+        assert!(managed.status.unlocked);
         assert!(
             f.no_prompt_is_open().await,
             "{duration:?}: the card closed by itself"
