@@ -219,14 +219,6 @@
     "seam": "event gateway"
   },
   {
-    "path": "/v1/event-generators/{}/management-capability",
-    "callers": [
-      "apps/kernel/src/runtime/cloud_api_client.rs"
-    ],
-    "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
-    "seam": "event gateway"
-  },
-  {
     "path": "/v1/events/query",
     "callers": [
       "apps/kernel/src/runtime/event_catalog_control.rs"

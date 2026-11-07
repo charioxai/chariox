@@ -64,6 +64,7 @@ fn grant(store: &DurableKernelStateStore, connection: &str) {
             installation: "installed".into(),
             generator_id: "dev.chariox.slack".into(),
             connection_id: connection.into(),
+            event_owner_id: "event-owner-1".into(),
             now_ms: 1,
         })
         .unwrap();
@@ -709,6 +710,7 @@ fn an_old_owner_exit_before_dispatch_does_not_cancel_an_approved_update() {
             installation: id.clone(),
             generator_id: "dev.chariox.slack".into(),
             connection_id: "end-owner".into(),
+            event_owner_id: "event-owner-1".into(),
             now_ms: 1,
         })
         .unwrap();

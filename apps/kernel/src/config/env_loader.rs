@@ -231,10 +231,6 @@ impl DaemonConfig {
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),
-            event_delivery_token: env::var("CHARIOX_AEDS_TOKEN")
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
             event_delivery_environment_id,
             event_registry_url: env::var("CHARIOX_EVENT_REGISTRY_URL")
                 .ok()
@@ -264,12 +260,9 @@ impl DaemonConfig {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EventGeneratorManagementTargetInput {
     url: String,
-    #[serde(default)]
-    token: Option<String>,
-    #[serde(default)]
-    token_file: Option<PathBuf>,
 }
 
 fn load_event_generator_management_targets(
@@ -327,33 +320,12 @@ fn parse_event_generator_management_targets(
                 "target {generator_id} must use HTTPS or loopback HTTP"
             ));
         }
-        let token = value
-            .token
-            .filter(|token| !token.trim().is_empty())
-            .map(Ok)
-            .or_else(|| {
-                value.token_file.map(|path| {
-                    fs::read_to_string(&path).map_err(|error| {
-                        format!(
-                            "failed to read token file {} for {generator_id}: {error}",
-                            path.display()
-                        )
-                    })
-                })
-            })
-            .transpose()?
-            .map(|token| token.trim().to_string())
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| format!("target {generator_id} requires a token"))?;
         if targets
             .insert(
                 generator_id.clone(),
                 super::EventGeneratorManagementTarget {
                     url,
-                    token,
-                    expires_at_ms: None,
-                    owner_ids: None,
-                    owner_scoped: None,
+                    registry_discovered: false,
                 },
             )
             .is_some()
@@ -464,18 +436,15 @@ mod tests {
         let targets = parse_event_generator_management_targets(
             r#"{
                 "dev.chariox.dummy": {
-                    "url": "http://127.0.0.1:43132/",
-                    "token": " local-token "
+                    "url": "http://127.0.0.1:43132/"
                 },
                 "dev.chariox.github": {
-                    "url": "https://events.example.test/github",
-                    "token": "remote-token"
+                    "url": "https://events.example.test/github"
                 }
             }"#,
         )
         .unwrap();
         assert_eq!(targets["dev.chariox.dummy"].url, "http://127.0.0.1:43132");
-        assert_eq!(targets["dev.chariox.dummy"].token, "local-token");
         assert_eq!(
             targets["dev.chariox.github"].url,
             "https://events.example.test/github"
@@ -487,8 +456,7 @@ mod tests {
         let targets = parse_event_generator_management_targets(
             r#"{
                 "dev.arroba.github": {
-                    "url": "https://events.example.test/github",
-                    "token": "remote-token"
+                    "url": "https://events.example.test/github"
                 }
             }"#,
         )
@@ -503,8 +471,7 @@ mod tests {
         let error = parse_event_generator_management_targets(
             r#"{
                 "dev.chariox.github": {
-                    "url": "http://events.example.test:43132",
-                    "token": "token"
+                    "url": "http://events.example.test:43132"
                 }
             }"#,
         )
@@ -513,15 +480,16 @@ mod tests {
     }
 
     #[test]
-    fn event_generator_management_targets_require_credentials() {
+    fn event_generator_management_targets_reject_operator_tokens() {
         let error = parse_event_generator_management_targets(
             r#"{
                 "dev.chariox.github": {
-                    "url": "https://events.example.test/github"
+                    "url": "https://events.example.test/github",
+                    "token": "operator-token"
                 }
             }"#,
         )
         .unwrap_err();
-        assert!(error.contains("requires a token"));
+        assert!(error.contains("unknown field `token`"), "{error}");
     }
 }

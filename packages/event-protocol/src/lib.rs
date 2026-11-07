@@ -1,12 +1,17 @@
+pub mod kernel_identity;
+
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 // Version 3 adds provider reply context to publish and delivery envelopes and
-// makes same-interest fan-out an explicit route contract.
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 3;
-pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 4;
+// makes same-interest fan-out an explicit route contract. Version 4 replaces the bearer token of
+// the AEDS connection with a challenge the kernel answers by signing with its identity key.
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 4;
+// Version 5 authenticates AEGS management by the kernel's identity key (see `kernel_identity`)
+// and binds a connection to its secret owner id instead of a Cloud-signed capability.
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 5;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -186,6 +191,35 @@ pub struct AegsSubscriptionReconcileRequest {
 pub struct AegsSubscriptionReconcileResponse {
     pub accepted_binding_ids: Vec<String>,
     pub authoritative: bool,
+    /// Claims the AEGS did not take, each with the typed reason.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<AegsRefusedSubscription>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AegsSubscriptionRefusal {
+    /// No connection with that id exists at the AEGS.
+    ConnectionNotFound,
+    /// The connection exists but is revoked, expired or still awaiting authorization.
+    ConnectionNotReady,
+    /// The connection does not give access to the scope: a subscription would read events of a
+    /// resource the connection's owner cannot see.
+    ScopeNotInConnection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsRefusedSubscription {
+    pub binding_id: String,
+    pub reason: AegsSubscriptionRefusal,
+}
+
+/// Removes one kernel from the kernels that share an owner id. The kernel can never rejoin with
+/// the same key, even if it still knows the owner id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsOwnerKernelRevokeRequest {
+    pub owner_id: String,
+    pub kernel_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,9 +686,13 @@ pub struct KernelEnvironmentResume {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum KernelToAedsMessage {
+    /// The answer to `AedsToKernelMessage::Challenge`. `kernel_id` is the fingerprint of
+    /// `public_key`; `signature` covers `kernel_identity::aeds_hello_message(nonce, kernel_id)`.
     Hello {
         protocol_version: u32,
         kernel_id: String,
+        public_key: String,
+        signature: String,
         environments: Vec<KernelEnvironmentResume>,
     },
     ReconcileRoutes {
@@ -671,6 +709,10 @@ pub enum KernelToAedsMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AedsToKernelMessage {
+    /// Sent first on every connection: a fresh, single-use nonce the kernel must sign.
+    Challenge {
+        nonce: String,
+    },
     HelloAccepted {
         protocol_version: u32,
         heartbeat_interval_ms: u64,
@@ -701,6 +743,15 @@ pub struct EventRouteConflict {
     pub existing_publication_id: String,
 }
 
+/// One route an occurrence may reach: the binding a kernel holds an active subscription for at
+/// the producer. AEDS delivers only to routes the producer names, because an interest key is
+/// derivable from public names and any kernel can claim it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventRouteAudience {
+    pub kernel_id: String,
+    pub binding_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PublishEventRequest {
     pub producer_id: String,
@@ -718,6 +769,10 @@ pub struct PublishEventRequest {
     pub reply_context: Option<Value>,
     #[serde(default = "default_delivery_ttl_seconds")]
     pub ttl_seconds: u64,
+    /// The routes this occurrence may reach. AEDS refuses a publication whose JSON has no
+    /// `audience` array; an empty one delivers to nobody.
+    #[serde(default)]
+    pub audience: Vec<EventRouteAudience>,
 }
 
 impl PublishEventRequest {
@@ -725,6 +780,10 @@ impl PublishEventRequest {
         require_opaque_id("producer_id", &self.producer_id)?;
         require_opaque_id("event_interest_key", &self.event_interest_key)?;
         require_opaque_id("occurrence_id", &self.occurrence_id)?;
+        for route in &self.audience {
+            require_opaque_id("audience kernel_id", &route.kernel_id)?;
+            require_opaque_id("audience binding_id", &route.binding_id)?;
+        }
         if self.event_type.trim().is_empty() {
             return Err("event_type is required".to_string());
         }

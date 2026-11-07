@@ -120,33 +120,15 @@ fn parse_remote_lease_capacity(value: Option<&str>) -> Result<Option<usize>, &'s
         .ok_or("must be a positive integer")
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventGeneratorManagementTargetCredential {
-    pub url: String,
-    pub token: String,
-    #[serde(default)]
-    pub expires_at_ms: Option<u64>,
-}
-
+/// Where one generator's AEGS answers management requests. The kernel authenticates to it
+/// with its identity key; nothing else is configured or issued.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorManagementTarget {
     pub url: String,
-    pub token: String,
-    /// Signed capabilities are short-lived. Static administrator-provided
-    /// targets leave this unset; registry-issued targets are refreshed before
-    /// this instant so actions never use an expired capability.
+    /// The URL came from the generator registry, not from the operator's configuration: it
+    /// must resolve to public addresses only.
     #[serde(default)]
-    pub expires_at_ms: Option<u64>,
-    /// Owners authorized by a registry-issued capability. Static targets do
-    /// not carry this restriction because their operator token is the policy.
-    #[serde(default)]
-    pub owner_ids: Option<Vec<String>>,
-    /// Registry-issued capabilities are cached independently per owner. A
-    /// generator can serve several kernel/user owners at once; retaining only
-    /// one token per generator would let concurrent resolutions overwrite one
-    /// another and cause intermittent 403s.
-    #[serde(default)]
-    pub owner_scoped: Option<BTreeMap<String, EventGeneratorManagementTargetCredential>>,
+    pub registry_discovered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +165,6 @@ pub struct DaemonConfig {
     remote_lease_capacity_parse_error: Option<&'static str>,
     pub room_environment_worker_binding: Option<RoomEnvironmentWorkerBinding>,
     pub event_delivery_url: Option<String>,
-    pub event_delivery_token: Option<String>,
     pub event_delivery_environment_id: String,
     pub event_registry_url: Option<String>,
     pub event_generator_management_targets: BTreeMap<String, EventGeneratorManagementTarget>,
@@ -294,7 +275,6 @@ impl DaemonConfig {
             remote_lease_capacity_parse_error: None,
             room_environment_worker_binding: None,
             event_delivery_url: None,
-            event_delivery_token: None,
             event_delivery_environment_id: daemon_id.clone(),
             event_registry_url: None,
             event_generator_management_targets: BTreeMap::new(),

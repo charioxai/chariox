@@ -145,10 +145,7 @@ impl AppConnectionBroker {
         );
         let request = chariox_event_protocol::AegsProviderActionRequest {
             generator_id: grant.generator_id,
-            owner_id: crate::runtime::event_catalog_control::event_connection_owner_id(
-                &config.daemon_id,
-                &self.owner,
-            ),
+            owner_id: grant.event_owner_id,
             connection_id: grant.connection_id,
             action_id: action.action,
             input: action.input,
@@ -158,19 +155,16 @@ impl AppConnectionBroker {
         request
             .validate()
             .map_err(|_| error("INVALID_ARGUMENT", false))?;
-        let response = crate::runtime::event_catalog_control::invoke_aegs_action(
-            &config.event_generator_management_targets,
-            &request,
-        )
-        .map_err(|failure| {
-            // The generator may have acted: never replay it, and a retry is
-            // safe only under the App's own idempotency key (V1-INT-08).
-            if failure.outcome_unknown() {
-                error("APP_CONNECTION_OUTCOME_UNCERTAIN", keyed)
-            } else {
-                error("CONNECTION_ACTION_FAILED", failure.retryable())
-            }
-        })?;
+        let response = crate::runtime::event_catalog_control::invoke_aegs_action(&config, &request)
+            .map_err(|failure| {
+                // The generator may have acted: never replay it, and a retry is
+                // safe only under the App's own idempotency key (V1-INT-08).
+                if failure.outcome_unknown() {
+                    error("APP_CONNECTION_OUTCOME_UNCERTAIN", keyed)
+                } else {
+                    error("CONNECTION_ACTION_FAILED", failure.retryable())
+                }
+            })?;
         Ok(json!({
             "accepted": response.accepted,
             "result": response.result,

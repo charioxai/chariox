@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,8 +10,7 @@ use chariox_event_protocol::{
     AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
     AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
     AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
-    AegsConnectionTestEventResponse, AegsProviderActionRequest, AegsProviderResourceQuery,
-    PublishEventRequest,
+    AegsConnectionTestEventResponse, AegsProviderResourceQuery, PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -21,67 +20,25 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::TcpListener;
 
-use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
-use crate::store::ActionReceiptLookupError;
+use crate::kernel_auth::{Admission, AuthenticatedKernel, ManagementAuth, Refusal};
+use crate::store::OwnerMembership;
 use crate::{
     baseline_provider_connection_inspection, now_ms, AedsPublisher, AegsProvider, AegsStore,
     ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION, MAX_WEBHOOK_BYTES,
 };
 
 mod inbox;
+mod scopes;
 use inbox::InboxAttempt;
-
-fn action_receipt_is_durable(action_id: &str) -> bool {
-    // Context lookups are bounded, read-only queries. Persisting their full provider response
-    // would retain conversation history and user profiles indefinitely in the AEGS database.
-    !matches!(action_id, "event.context" | "notification.context")
-}
 
 #[derive(Clone)]
 struct AegsServer {
     producer_id: String,
-    management_token: Option<String>,
-    management_public_key: Option<ed25519_dalek::VerifyingKey>,
-    management_issuer: String,
-    management_url: Option<String>,
-    manifest_digest: Option<String>,
+    management_auth: ManagementAuth,
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
-    action_locks: ActionLockMap,
-}
-
-enum ManagementAuthorization {
-    Static,
-    Signed(Box<crate::management_capability::ManagementCapabilityClaims>),
-}
-
-type ActionLock = Arc<tokio::sync::Mutex<()>>;
-type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
-
-struct ActionLockLease {
-    key: String,
-    action_lock: Weak<tokio::sync::Mutex<()>>,
-    locks: ActionLockMap,
-    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-}
-
-impl Drop for ActionLockLease {
-    fn drop(&mut self) {
-        // Release the owned guard before checking the reference count. If a
-        // retry arrived while this action was running, its Arc keeps the map
-        // entry alive and the waiter will remove it when it finishes.
-        let _ = self.guard.take();
-        let Ok(mut locks) = self.locks.lock() else {
-            return;
-        };
-        let remove = locks.get(&self.key).is_some_and(|entry| {
-            Weak::ptr_eq(&Arc::downgrade(entry), &self.action_lock) && Arc::strong_count(entry) == 2
-        });
-        if remove {
-            locks.remove(&self.key);
-        }
-    }
+    scope_cache: scopes::ScopeCache,
 }
 
 pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn std::error::Error>>
@@ -104,38 +61,9 @@ where
         )
         .into());
     }
-    let management_url = std::env::var("CHARIOX_AEGS_MANAGEMENT_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| !value.is_empty());
-    let manifest_digest = std::env::var("CHARIOX_AEGS_MANIFEST_DIGEST")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let management_public_key = std::env::var("CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY")
-        .ok()
-        .map(|value| parse_public_key(&value))
-        .transpose()
-        .map_err(|error| format!("invalid CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY: {error}"))?;
-    if management_public_key.is_some() && (management_url.is_none() || manifest_digest.is_none()) {
-        return Err(
-            "signed management capabilities require CHARIOX_AEGS_MANAGEMENT_URL and CHARIOX_AEGS_MANIFEST_DIGEST"
-                .into(),
-        );
-    }
     let server = AegsServer {
         producer_id: producer_id.clone(),
-        management_token: read_secret(
-            "CHARIOX_AEGS_MANAGEMENT_TOKEN",
-            "CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE",
-        )?,
-        management_public_key,
-        management_issuer: std::env::var("CHARIOX_AEGS_MANAGEMENT_ISSUER")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "chariox-cloud".to_string()),
-        management_url,
-        manifest_digest,
+        management_auth: ManagementAuth::new(Admission::from_env(address.ip().is_loopback())?),
         publisher: AedsPublisher::new(
             producer_id.clone(),
             read_secret(
@@ -147,7 +75,7 @@ where
         ),
         store,
         provider,
-        action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        scope_cache: Default::default(),
     };
     if server.provider.authorization_configured() {
         spawn_subscription_maintenance(Arc::clone(&server.provider));
@@ -262,15 +190,14 @@ impl AegsServer {
                 Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
             },
             (Method::GET, "/v1/subscriptions") => {
-                let authorization = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization, _) = match self.authenticate_management(request).await {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
                 };
-                let subscriptions = match management_owner(&request, &authorization) {
-                    Some(owner_id) => self.store.all_for_owner(&self.producer_id, &owner_id),
-                    None => self.store.all(&self.producer_id),
-                };
-                match subscriptions {
+                match self
+                    .store
+                    .all_for_owner(&self.producer_id, &authorization.owner_id)
+                {
                     Ok(subscriptions) => json(
                         StatusCode::OK,
                         serde_json::json!({"subscriptions": subscriptions}),
@@ -281,13 +208,9 @@ impl AegsServer {
                 }
             }
             (Method::PUT, "/v1/subscriptions/reconcile") => {
-                let authorization = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization, body) = match self.authenticate_management(request).await {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let reconcile: chariox_event_protocol::AegsSubscriptionReconcileRequest =
                     match serde_json::from_slice(&body) {
@@ -314,15 +237,26 @@ impl AegsServer {
                         ),
                     );
                 }
-                let allowed_connection_owners = match &authorization {
-                    ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
-                    ManagementAuthorization::Static => None,
-                };
-                match self.store.reconcile_scoped(
+                let (subscriptions, refused) = match self
+                    .vet_subscription_claims(&reconcile.owner_id, &reconcile.subscriptions)
+                    .await
+                {
+                        Ok(vetted) => vetted,
+                        Err(message) => {
+                            return error(
+                                StatusCode::BAD_GATEWAY,
+                                "scope_check_unavailable",
+                                format!(
+                                    "the connection's resources could not be listed; stored subscriptions are unchanged: {message}"
+                                ),
+                            )
+                        }
+                    };
+                match self.store.reconcile_for_owner(
+                    &authorization.kernel_id,
                     &reconcile.owner_id,
-                    allowed_connection_owners,
                     &reconcile.generator_id,
-                    &reconcile.subscriptions,
+                    &subscriptions,
                 ) {
                     Ok(accepted_binding_ids) => {
                         let provider = Arc::clone(&self.provider);
@@ -356,170 +290,65 @@ impl AegsServer {
                             serde_json::json!({
                                 "accepted_binding_ids": accepted_binding_ids,
                                 "authoritative": true,
+                                "refused": refused,
                             }),
                         )
                     }
                     Err(message) => error(StatusCode::BAD_REQUEST, "invalid_subscription", message),
                 }
             }
-            (Method::POST, "/v1/actions") => {
-                let authorization = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+            (Method::GET, "/v1/owners/kernels") => {
+                let (authorization, _) = match self.authenticate_management(request).await {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
                 };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
-                };
-                let action: AegsProviderActionRequest = match serde_json::from_slice(&body) {
-                    Ok(value) => value,
-                    Err(error_value) => {
-                        return error(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_json",
-                            error_value.to_string(),
-                        )
-                    }
-                };
-                if let Err(response) = enforce_management_owner(&authorization, &action.owner_id) {
-                    return *response;
-                }
-                if let Err(message) = action.validate() {
-                    return error(StatusCode::BAD_REQUEST, "invalid_action", message);
-                }
-                if action.generator_id != self.producer_id {
-                    return error(
-                        StatusCode::CONFLICT,
-                        "generator_mismatch",
-                        format!(
-                            "this AEGS owns {}, not {}",
-                            self.producer_id, action.generator_id
-                        ),
-                    );
-                }
-                let connection = match self
-                    .store
-                    .claim_connection_owner(&action.connection_id, &action.owner_id)
-                {
-                    Ok(connection) => connection,
+                match self.store.owner_kernels(&authorization.owner_id) {
+                    Ok(kernels) => json(
+                        StatusCode::OK,
+                        serde_json::json!({"kernels": kernels
+                            .into_iter()
+                            .map(|(kernel_id, state)| serde_json::json!({"kernel_id": kernel_id, "state": state}))
+                            .collect::<Vec<_>>()}),
+                    ),
                     Err(message) => {
-                        return error(StatusCode::NOT_FOUND, "connection_not_found", message)
+                        error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
                     }
-                };
-                if connection.status != "ready" {
-                    return error(
-                        StatusCode::CONFLICT,
-                        "connection_not_ready",
-                        "the provider connection is not ready for outbound actions",
-                    );
                 }
-                // Serialize each idempotency key across concurrent HTTP retries. The durable
-                // receipt makes retries safe after completion; this lock also prevents two
-                // simultaneous retries from both reaching the provider before that receipt is
-                // written.
-                let action_lock_key = format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    action.owner_id, action.connection_id, action.idempotency_key
-                );
-                let action_lock = match self.action_locks.lock() {
-                    Ok(mut locks) => locks
-                        .entry(action_lock_key.clone())
-                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                        .clone(),
-                    Err(_) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_lock_failed",
-                            "AEGS action lock was poisoned",
-                        )
-                    }
+            }
+            (Method::POST, "/v1/owners/kernels/revoke") => {
+                let (authorization, body) = match self.authenticate_management(request).await {
+                    Ok(authenticated) => authenticated,
+                    Err(response) => return *response,
                 };
-                let _action_lock_lease = ActionLockLease {
-                    key: action_lock_key,
-                    action_lock: Arc::downgrade(&action_lock),
-                    locks: Arc::clone(&self.action_locks),
-                    guard: Some(Arc::clone(&action_lock).lock_owned().await),
-                };
-                let request_fingerprint = crate::action_request_fingerprint(
-                    &action.action_id,
-                    &action.input,
-                    &action.context,
-                );
-                let durable_receipt = action_receipt_is_durable(&action.action_id);
-                if durable_receipt {
-                    match self.store.action_receipt(
-                        &action.owner_id,
-                        &action.connection_id,
-                        &action.idempotency_key,
-                        &request_fingerprint,
-                    ) {
-                        Ok(Some(response)) => return json(StatusCode::OK, response),
-                        Ok(None) => {}
-                        Err(ActionReceiptLookupError::Conflict(message)) => {
-                            return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
-                        }
-                        Err(ActionReceiptLookupError::Storage(message)) => {
+                let revoke: chariox_event_protocol::AegsOwnerKernelRevokeRequest =
+                    match serde_json::from_slice(&body) {
+                        Ok(value) => value,
+                        Err(error_value) => {
                             return error(
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                "action_receipt_lookup_failed",
-                                message,
+                                StatusCode::BAD_REQUEST,
+                                "invalid_json",
+                                error_value.to_string(),
                             )
                         }
-                    }
+                    };
+                if let Err(response) = enforce_management_owner(&authorization, &revoke.owner_id) {
+                    return *response;
                 }
-                let provider = Arc::clone(&self.provider);
-                let action_for_provider = action.clone();
-                let response = match tokio::task::spawn_blocking(move || {
-                    provider.perform_action(&action_for_provider)
-                })
-                .await
+                match self
+                    .store
+                    .revoke_owner_kernel(&revoke.owner_id, &revoke.kernel_id, now_ms())
                 {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(message)) => {
-                        return error(StatusCode::BAD_GATEWAY, "provider_action_failed", message)
-                    }
+                    Ok(()) => json(StatusCode::OK, serde_json::json!({"revoked": true})),
                     Err(message) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "provider_action_failed",
-                            message.to_string(),
-                        )
-                    }
-                };
-                if response.action_id != action.action_id
-                    || response.idempotency_key != action.idempotency_key
-                {
-                    return error(
-                        StatusCode::BAD_GATEWAY,
-                        "invalid_provider_action_response",
-                        "provider action response identity did not match the request",
-                    );
-                }
-                if durable_receipt {
-                    if let Err(message) = self.store.record_action_receipt(
-                        &action.owner_id,
-                        &action.connection_id,
-                        &response,
-                        &request_fingerprint,
-                        now_ms(),
-                    ) {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_receipt_failed",
-                            message,
-                        );
+                        error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message)
                     }
                 }
-                json(StatusCode::ACCEPTED, response)
             }
             (Method::POST, "/v1/authorizations") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let authorization: AegsAuthorizationStartRequest =
                     match serde_json::from_slice(&body) {
@@ -591,13 +420,10 @@ impl AegsServer {
             (Method::POST, "/v1/events/query") => self.query_received_events(request).await,
             (Method::POST, "/v1/events/replay") => self.replay_received_event(request).await,
             (Method::POST, "/v1/connections/query") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let query: AegsConnectionQuery = match serde_json::from_slice(&body) {
                     Ok(value) => value,
@@ -682,13 +508,10 @@ impl AegsServer {
                 )
             }
             (Method::POST, "/v1/connections/inspect") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let inspection: AegsConnectionInspectionRequest =
                     match serde_json::from_slice(&body) {
@@ -726,13 +549,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/refresh") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let refresh: AegsConnectionRefreshRequest = match serde_json::from_slice(&body) {
                     Ok(value) => value,
@@ -809,13 +629,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/test-event") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let test: AegsConnectionTestEventRequest = match serde_json::from_slice(&body) {
                     Ok(value) => value,
@@ -892,13 +709,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/revoke") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let revoke: AegsConnectionRevokeRequest = match serde_json::from_slice(&body) {
                     Ok(value) => value,
@@ -973,13 +787,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/reconnect") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let reconnect: AegsConnectionReconnectRequest = match serde_json::from_slice(&body)
                 {
@@ -1063,13 +874,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/resources/query") => {
-                let authorization_guard = match self.authorize_management(&request) {
-                    Ok(authorization) => authorization,
+                let (authorization_guard, body) = match self.authenticate_management(request).await
+                {
+                    Ok(authenticated) => authenticated,
                     Err(response) => return *response,
-                };
-                let body = match read_body(request).await {
-                    Ok(body) => body,
-                    Err(response) => return response,
                 };
                 let query: AegsProviderResourceQuery = match serde_json::from_slice(&body) {
                     Ok(value) => value,
@@ -1191,7 +999,7 @@ impl AegsServer {
                     Ok(body) => body,
                     Err(response) => return response,
                 };
-                let event: PublishEventRequest = match serde_json::from_slice(&body) {
+                let mut event: PublishEventRequest = match serde_json::from_slice(&body) {
                     Ok(event) => event,
                     Err(error_value) => {
                         return error(
@@ -1199,6 +1007,18 @@ impl AegsServer {
                             "invalid_json",
                             error_value.to_string(),
                         )
+                    }
+                };
+                // A direct emission reaches the kernels subscribed to its interest, never a
+                // route the caller names.
+                event.audience = match self.store.audience_for_interest(
+                    &self.producer_id,
+                    &event.event_interest_key,
+                    None,
+                ) {
+                    Ok(audience) => audience,
+                    Err(message) => {
+                        return error(StatusCode::INTERNAL_SERVER_ERROR, "store_error", message)
                     }
                 };
                 match self.publisher.publish(event).await {
@@ -1379,106 +1199,84 @@ impl AegsServer {
         })
     }
 
-    fn authorize_management(
+    /// Reads the body, verifies the kernel's signature over it, applies the operator's
+    /// admission policy and adds the kernel to the owner's set on its first request with the
+    /// owner id. Returns who is asking and the verified body.
+    async fn authenticate_management(
         &self,
-        request: &Request<Incoming>,
-    ) -> Result<ManagementAuthorization, Box<Response<Full<Bytes>>>> {
-        let presented = request
-            .headers()
-            .get("authorization")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "));
-        if self
-            .management_token
-            .as_deref()
-            .is_some_and(|expected| Some(expected) == presented)
-        {
-            return Ok(ManagementAuthorization::Static);
-        }
-        if let Some(public_key) = self.management_public_key.as_ref() {
-            let Some(presented) = presented else {
-                return Err(Box::new(error(
-                    StatusCode::UNAUTHORIZED,
-                    "unauthorized",
-                    "valid AEGS management capability required",
-                )));
-            };
-            let claims = verify_management_capability_scoped(
-                presented,
-                public_key,
-                &self.management_issuer,
+        request: Request<Incoming>,
+    ) -> Result<(AuthenticatedKernel, Bytes), Box<Response<Full<Bytes>>>> {
+        let (parts, body) = request.into_parts();
+        let method = parts.method.to_string();
+        let path = parts.uri.path().to_string();
+        let body = read_body(Request::from_parts(parts.clone(), body))
+            .await
+            .map_err(Box::new)?;
+        let now = now_ms();
+        let kernel = self
+            .management_auth
+            .authenticate(
+                &parts.headers,
+                &method,
+                &path,
                 &self.producer_id,
-                now_ms() / 1_000,
-                self.management_url.as_deref(),
-                self.manifest_digest.as_deref(),
+                &body,
+                now,
+            )
+            .await
+            .map_err(refusal_response)?;
+        let membership = self
+            .store
+            .admit_kernel_to_owner(
+                &kernel.owner_id,
+                &kernel.kernel_id,
+                now,
+                self.management_auth.max_owners_per_kernel(),
+                self.management_auth.max_memberships_total(),
             )
             .map_err(|message| {
-                Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized", message))
+                Box::new(error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "store_failed",
+                    message,
+                ))
             })?;
-            let presented_owner = request
-                .headers()
-                .get("x-chariox-owner-id")
-                .and_then(|value| value.to_str().ok());
-            if presented_owner
-                .is_none_or(|owner| !claims.owner_ids.iter().any(|allowed| allowed == owner))
-            {
-                return Err(Box::new(error(
-                    StatusCode::FORBIDDEN,
-                    "management_owner_mismatch",
-                    "the management capability is not bound to the requested owner",
-                )));
-            }
-            return Ok(ManagementAuthorization::Signed(Box::new(claims)));
-        }
-        if self.management_token.is_none() && self.management_public_key.is_none() {
-            return Err(Box::new(error(
+        match membership {
+            OwnerMembership::Member => Ok((kernel, body)),
+            OwnerMembership::Revoked => Err(Box::new(error(
+                StatusCode::FORBIDDEN,
+                "kernel_revoked",
+                "this kernel was removed from the owner's kernels",
+            ))),
+            OwnerMembership::GatewayLimit => Err(Box::new(error(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "management_disabled",
-                "AEGS management token or signed capability key is not configured",
-            )));
+                "gateway_capacity",
+                "the gateway holds the most kernels and owners the operator allows",
+            ))),
+            OwnerMembership::OwnerLimit => Err(Box::new(error(
+                StatusCode::FORBIDDEN,
+                "owner_limit_reached",
+                "this kernel already holds the most owners the operator allows",
+            ))),
         }
-        Err(Box::new(error(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "valid AEGS management capability required",
-        )))
     }
 }
 
-fn management_owner(
-    request: &Request<Incoming>,
-    authorization: &ManagementAuthorization,
-) -> Option<String> {
-    match authorization {
-        ManagementAuthorization::Signed(_) => request
-            .headers()
-            .get("x-chariox-owner-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string),
-        ManagementAuthorization::Static => request
-            .headers()
-            .get("x-chariox-owner-id")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string),
-    }
+fn refusal_response(refusal: Refusal) -> Box<Response<Full<Bytes>>> {
+    let (status, code) = refusal.status_and_code();
+    Box::new(error(status, code, refusal.message()))
 }
 
 fn enforce_management_owner(
-    authorization: &ManagementAuthorization,
+    authenticated: &AuthenticatedKernel,
     requested_owner: &str,
 ) -> Result<(), Box<Response<Full<Bytes>>>> {
-    if let ManagementAuthorization::Signed(claims) = authorization {
-        if !claims
-            .owner_ids
-            .iter()
-            .any(|owner| owner == requested_owner)
-        {
-            return Err(Box::new(error(
-                StatusCode::FORBIDDEN,
-                "management_owner_mismatch",
-                "the management capability is not bound to the requested owner",
-            )));
-        }
+    if authenticated.owner_id != requested_owner {
+        return Err(Box::new(error(
+            StatusCode::FORBIDDEN,
+            "management_owner_mismatch",
+            "the request body names a different owner than the one the kernel signed",
+        )));
     }
     Ok(())
 }
@@ -1854,36 +1652,6 @@ mod tests {
         assert_eq!(inspection.last_successful_health_check_at_ms, None);
         assert!(!inspection.test_event_supported);
     }
-
-    #[test]
-    fn context_actions_do_not_persist_provider_responses() {
-        assert!(!action_receipt_is_durable("event.context"));
-        assert!(!action_receipt_is_durable("notification.context"));
-        assert!(action_receipt_is_durable("notification.reply"));
-        assert!(action_receipt_is_durable("custom.action"));
-    }
-
-    #[test]
-    fn signed_management_capability_cannot_cross_owner_boundary() {
-        let authorization = ManagementAuthorization::Signed(Box::new(
-            crate::management_capability::ManagementCapabilityClaims {
-                issuer: "chariox-cloud".to_string(),
-                audience: "aegs-management".to_string(),
-                subject: "kernel-1".to_string(),
-                generator_id: "dev.chariox.slack".to_string(),
-                manifest_digest: "sha256:test".to_string(),
-                management_url: "https://aegs.example.test".to_string(),
-                user_id: "user-1".to_string(),
-                owner_ids: vec!["owner-1".to_string(), "kernel-1".to_string()],
-                issued_at: 100,
-                expires_at: 200,
-                token_id: "cap-1".to_string(),
-            },
-        ));
-        assert!(enforce_management_owner(&authorization, "owner-1").is_ok());
-        let response = enforce_management_owner(&authorization, "owner-2").unwrap_err();
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    }
 }
 
 #[cfg(test)]
@@ -1988,6 +1756,22 @@ mod mp11_delivery_http_tests {
         fn event_subject(&self, _: &crate::NormalizedEvent) -> Option<String> {
             Some("#7".into())
         }
+        /// The one scope every fixture connection has.
+        fn query_resources(
+            &self,
+            _: &chariox_event_protocol::AegsProviderResourceQuery,
+        ) -> Result<chariox_event_protocol::AegsProviderResourcePage, String> {
+            Ok(chariox_event_protocol::AegsProviderResourcePage {
+                resources: vec![chariox_event_protocol::AegsProviderResource {
+                    id: "1".into(),
+                    name: "scope".into(),
+                    kind: "repository".into(),
+                    connection_scope: "scope".into(),
+                    filter: None,
+                }],
+                next_cursor: None,
+            })
+        }
     }
     fn event() -> crate::NormalizedEvent {
         crate::NormalizedEvent {
@@ -2007,6 +1791,8 @@ mod mp11_delivery_http_tests {
         accepted: Arc<AtomicUsize>,
         /// Interest keys of the accepted publications, in order.
         interests: Arc<std::sync::Mutex<Vec<String>>>,
+        /// The `audience` of each accepted publication, in order (`null` when it had none).
+        audiences: Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
         refusals: Arc<AtomicUsize>,
         stop: Arc<AtomicBool>,
         hold: Arc<AtomicBool>,
@@ -2027,6 +1813,8 @@ mod mp11_delivery_http_tests {
             let refusals = Arc::new(AtomicUsize::new(0));
             let interests = Arc::new(std::sync::Mutex::new(Vec::new()));
             let recorded = interests.clone();
+            let audiences = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded_audiences = audiences.clone();
             let (accepts, refuse) = (accepted.clone(), refusals.clone());
             let stop = Arc::new(AtomicBool::new(false));
             let count = calls.clone();
@@ -2087,6 +1875,10 @@ mod mp11_delivery_http_tests {
                                 .lock()
                                 .unwrap()
                                 .push(request["event_interest_key"].as_str().unwrap().into());
+                            recorded_audiences
+                                .lock()
+                                .unwrap()
+                                .push(request["audience"].clone());
                             let body = r#"{"occurrence_id":"occurrence","accepted_route_count":1,"delivery_ids":[],"duplicate":false}"#;
                             write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
                         }
@@ -2102,6 +1894,7 @@ mod mp11_delivery_http_tests {
                 calls,
                 accepted,
                 interests,
+                audiences,
                 refusals,
                 stop,
                 hold,
@@ -2208,27 +2001,159 @@ mod mp11_delivery_http_tests {
             .unwrap();
         let claim = subscription_claim();
         store
-            .reconcile_scoped(
+            .reconcile_for_owner(
                 reconciler,
-                Some(&["owner".to_string()]),
+                "owner",
                 &claim.generator_id,
                 std::slice::from_ref(&claim),
             )
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: claim.generator_id.clone(),
-            management_token: None,
-            management_public_key: None,
-            management_issuer: "fixture".into(),
-            management_url: None,
-            manifest_digest: None,
+            management_auth: ManagementAuth::open_for_tests(),
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         (server, store)
     }
+    fn claim_for(binding_id: &str, active: bool) -> crate::SubscriptionClaim {
+        crate::SubscriptionClaim {
+            binding_id: binding_id.into(),
+            active,
+            ..subscription_claim()
+        }
+    }
+
+    /// AEDS delivers only to the routes the producer names, because anyone can claim an
+    /// interest key. The audience is every kernel with an active subscription for the key.
+    #[tokio::test]
+    async fn publication_names_the_kernels_holding_a_subscription_for_the_interest() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server_reconciled_by(&publisher, "kernel-1");
+        for (kernel, binding, active) in [
+            ("kernel-2", "binding-2", true),
+            ("kernel-3", "binding-3", false),
+        ] {
+            store
+                .reconcile_for_owner(
+                    kernel,
+                    "owner",
+                    "dev.chariox.github",
+                    &[claim_for(binding, active)],
+                )
+                .unwrap();
+        }
+        signed_webhook(server).await;
+        let audiences = publisher.audiences.lock().unwrap().clone();
+        assert_eq!(
+            audiences,
+            vec![serde_json::json!([
+                {"kernel_id": "kernel-1", "binding_id": "binding"},
+                {"kernel_id": "kernel-2", "binding_id": "binding-2"},
+            ])]
+        );
+    }
+
+    /// Two users watching one scope share an interest key: each connection is published to on
+    /// its own, naming only its own kernels.
+    #[tokio::test]
+    async fn connections_sharing_an_interest_are_published_to_separately() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = subscribed_server_reconciled_by(&publisher, "kernel-1");
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::Value::Null,
+                1,
+            )
+            .unwrap();
+        let claim_b = crate::SubscriptionClaim {
+            binding_id: "binding-b".into(),
+            connection_id: "connection-b".into(),
+            ..subscription_claim()
+        };
+        store
+            .reconcile_for_owner("kernel-b", "owner-b", "dev.chariox.github", &[claim_b])
+            .unwrap();
+        let (status, _) = post_signed_webhook_at(server, "/webhooks/github", None).await;
+        assert_eq!(status, 202);
+        let mut audiences = publisher.audiences.lock().unwrap().clone();
+        audiences.sort_by_key(|audience| audience.to_string());
+        assert_eq!(
+            audiences,
+            vec![
+                serde_json::json!([{"kernel_id": "kernel-1", "binding_id": "binding"}]),
+                serde_json::json!([{"kernel_id": "kernel-b", "binding_id": "binding-b"}]),
+            ]
+        );
+    }
+
+    async fn reconcile_as(
+        server: &Arc<AegsServer>,
+        kernel: &'static str,
+        claims: &[crate::SubscriptionClaim],
+    ) -> (u16, serde_json::Value) {
+        let body = serde_json::json!({
+            "owner_id": kernel,
+            "generator_id": "dev.chariox.github",
+            "subscriptions": claims,
+        });
+        management_send("PUT", server, "/v1/subscriptions/reconcile", kernel, body).await
+    }
+
+    /// A connection can only watch scopes it has: the interest key of a stranger's repository is
+    /// derivable, so a subscription for it would be a way to read that repository's events.
+    #[tokio::test]
+    async fn reconcile_refuses_a_scope_the_connection_does_not_have() {
+        let publisher = PublisherFixture::new();
+        let (server, store) = two_owner_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_auth: ManagementAuth::open_for_tests(),
+            ..(*server).clone()
+        });
+        let foreign = crate::SubscriptionClaim {
+            binding_id: "foreign".into(),
+            connection_scope: "stranger/private-repo".into(),
+            event_interest_key: "foreign-interest".into(),
+            ..subscription_claim()
+        };
+        let own = claim_for("own", true);
+        let (status, body) = reconcile_as(&server, "owner", &[own, foreign]).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["accepted_binding_ids"], serde_json::json!(["own"]));
+        assert_eq!(
+            body["refused"],
+            serde_json::json!([{"binding_id": "foreign", "reason": "scope_not_in_connection"}])
+        );
+        assert!(store
+            .matching("dev.chariox.github", "event", "stranger/private-repo")
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The claim of a connection the AEGS does not know is refused as well.
+    #[tokio::test]
+    async fn reconcile_refuses_a_connection_the_aegs_does_not_know() {
+        let publisher = PublisherFixture::new();
+        let (server, _) = two_owner_server(&publisher);
+        let unknown = crate::SubscriptionClaim {
+            binding_id: "unknown".into(),
+            connection_id: "no-such-connection".into(),
+            ..subscription_claim()
+        };
+        let (status, body) = reconcile_as(&server, "owner", &[unknown]).await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["accepted_binding_ids"], serde_json::json!([]));
+        assert_eq!(
+            body["refused"],
+            serde_json::json!([{"binding_id": "unknown", "reason": "connection_not_found"}])
+        );
+    }
+
     #[tokio::test]
     async fn signed_webhook_is_acknowledged_when_aeds_refuses_the_first_publication() {
         let publisher = PublisherFixture::new();
@@ -2412,7 +2337,66 @@ mod mp11_delivery_http_tests {
         );
     }
 
+    /// The kernel behind a test request is derived from the owner name, so each name is its own
+    /// kernel with its own key.
+    fn test_kernel(name: &str) -> (String, String) {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+        let secret = p256::SecretKey::from_slice(&sha2::Sha256::digest(name.as_bytes())).unwrap();
+        let public = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(
+            &secret.public_key(),
+            false,
+        );
+        (
+            base64::engine::general_purpose::STANDARD.encode(secret.to_bytes()),
+            base64::engine::general_purpose::STANDARD.encode(public.as_bytes()),
+        )
+    }
+
+    fn signed_headers(
+        method: &str,
+        path: &str,
+        owner: &str,
+        body: &str,
+    ) -> Vec<(&'static str, String)> {
+        use chariox_event_protocol::kernel_identity as identity;
+        static NEXT_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let (private, public) = test_kernel(owner);
+        let nonce = format!("nonce-{}", NEXT_NONCE.fetch_add(1, Ordering::Relaxed));
+        let timestamp_ms = now_ms();
+        let signature = identity::sign(
+            &private,
+            &identity::ManagementRequest {
+                method,
+                path,
+                generator_id: "dev.chariox.github",
+                owner_id: owner,
+                timestamp_ms,
+                nonce: &nonce,
+                body: body.as_bytes(),
+            }
+            .message(),
+        )
+        .unwrap();
+        vec![
+            (identity::KERNEL_KEY_HEADER, public),
+            (identity::KERNEL_TIMESTAMP_HEADER, timestamp_ms.to_string()),
+            (identity::KERNEL_NONCE_HEADER, nonce),
+            (identity::KERNEL_SIGNATURE_HEADER, signature),
+            (identity::OWNER_ID_HEADER, owner.to_string()),
+        ]
+    }
+
     async fn management_post(
+        server: &Arc<AegsServer>,
+        path: &'static str,
+        owner: &'static str,
+        body: serde_json::Value,
+    ) -> (u16, serde_json::Value) {
+        management_send("POST", server, path, owner, body).await
+    }
+    async fn management_send(
+        method: &'static str,
         server: &Arc<AegsServer>,
         path: &'static str,
         owner: &'static str,
@@ -2436,11 +2420,15 @@ mod mp11_delivery_http_tests {
                 .unwrap();
         });
         let response = tokio::task::spawn_blocking(move || {
-            let request = ureq::post(&url)
-                .set("authorization", "Bearer management-token")
-                .set("x-chariox-owner-id", owner)
-                .set("connection", "close");
-            match request.send_json(body) {
+            let body = body.to_string();
+            let mut request = ureq::request(method, &url).set("connection", "close");
+            for (name, value) in signed_headers(method, path, owner, &body) {
+                request = request.set(name, &value);
+            }
+            match request
+                .set("content-type", "application/json")
+                .send_string(&body)
+            {
                 Ok(response) => (response.status(), response.into_json().unwrap()),
                 Err(ureq::Error::Status(status, response)) => {
                     (status, response.into_json().unwrap_or_default())
@@ -2455,12 +2443,39 @@ mod mp11_delivery_http_tests {
     }
 
     #[tokio::test]
+    async fn the_gateway_only_generates_events_and_has_no_actions_route() {
+        let publisher = PublisherFixture::new();
+        let (server, _) = subscribed_server(&publisher);
+        let server = Arc::new(AegsServer {
+            management_auth: ManagementAuth::open_for_tests(),
+            ..(*server).clone()
+        });
+        let (status, body) = management_post(
+            &server,
+            "/v1/actions",
+            "owner-a",
+            serde_json::json!({
+                "generator_id": "dev.chariox.github",
+                "owner_id": "owner-a",
+                "connection_id": "connection-a",
+                "action_id": "notification.reply",
+                "input": {},
+                "context": {},
+                "idempotency_key": "reply-1"
+            }),
+        )
+        .await;
+        assert_eq!(status, 404, "{body}");
+        assert_eq!(body["error"]["code"], "not_found", "{body}");
+    }
+
+    #[tokio::test]
     async fn owner_sees_received_events_and_replays_one_that_never_reached_aeds() {
         let publisher = PublisherFixture::new();
         publisher.refusals.store(1, Ordering::SeqCst);
         let (server, _) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         post_signed_webhook(server.clone(), Some("delivery-4")).await;
@@ -2512,7 +2527,7 @@ mod mp11_delivery_http_tests {
         publisher.refusals.store(1, Ordering::SeqCst);
         let (server, store) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         post_signed_webhook_at(server.clone(), "/webhooks/github", Some("delivery-7")).await;
@@ -2558,7 +2573,7 @@ mod mp11_delivery_http_tests {
         let publisher = PublisherFixture::new();
         let (server, store) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         store
@@ -2617,7 +2632,7 @@ mod mp11_delivery_http_tests {
             .unwrap();
         reconcile_both(&store);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         (server, store)
@@ -2812,7 +2827,7 @@ mod mp11_delivery_http_tests {
         publisher.refusals.store(1, Ordering::SeqCst);
         let (server, _) = subscribed_server_reconciled_by(&publisher, "kernel-1");
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         post_signed_webhook_at(server.clone(), "/webhooks/github", Some("delivery-5")).await;
@@ -2856,9 +2871,9 @@ mod mp11_delivery_http_tests {
             .unwrap();
         let claim = subscription_claim();
         store
-            .reconcile_scoped(
+            .reconcile_for_owner(
                 "owner",
-                Some(&["owner".to_string()]),
+                "owner",
                 &claim.generator_id,
                 std::slice::from_ref(&claim),
             )
@@ -2938,15 +2953,11 @@ mod mp11_delivery_http_tests {
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: claim.generator_id.clone(),
-            management_token: None,
-            management_public_key: None,
-            management_issuer: "fixture".into(),
-            management_url: None,
-            manifest_digest: None,
+            management_auth: ManagementAuth::open_for_tests(),
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
 
         let publishing = tokio::spawn(signed_webhook(server));
@@ -3010,24 +3021,20 @@ mod mp11_delivery_http_tests {
         };
         let allowed_owners = ["owner".to_string()];
         store
-            .reconcile_scoped(
+            .reconcile_for_owner(
                 "kernel",
-                Some(&allowed_owners),
+                &allowed_owners[0],
                 &earlier.generator_id,
                 &[earlier.clone(), first, remaining.clone()],
             )
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: earlier.generator_id.clone(),
-            management_token: None,
-            management_public_key: None,
-            management_issuer: "fixture".into(),
-            management_url: None,
-            manifest_digest: None,
+            management_auth: ManagementAuth::open_for_tests(),
             publisher: AedsPublisher::new(&earlier.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         let publishing = tokio::spawn(signed_webhook(server));
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -3040,9 +3047,9 @@ mod mp11_delivery_http_tests {
         assert!(!publishing.is_finished());
         // All three bindings have been selected. Retire only the first shared
         // binding while the earlier interest is waiting for its HTTP response.
-        let reconciliation = store.reconcile_scoped(
+        let reconciliation = store.reconcile_for_owner(
             "kernel",
-            Some(&allowed_owners),
+            &allowed_owners[0],
             &earlier.generator_id,
             &[earlier.clone(), remaining.clone()],
         );
@@ -3088,15 +3095,11 @@ mod mp11_delivery_http_tests {
             .unwrap();
         let server = Arc::new(AegsServer {
             producer_id: claim.generator_id.clone(),
-            management_token: None,
-            management_public_key: None,
-            management_issuer: "fixture".into(),
-            management_url: None,
-            manifest_digest: None,
+            management_auth: ManagementAuth::open_for_tests(),
             publisher: AedsPublisher::new(&claim.generator_id, None, &publisher.url),
             store: store.clone(),
             provider: Arc::new(SignedProvider),
-            action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            scope_cache: Default::default(),
         });
         assert_eq!(
             signed_webhook(server.clone()).await["matched_interest_count"],
@@ -3172,7 +3175,7 @@ mod mp11_delivery_http_tests {
             .unwrap();
         let server = Arc::new(AegsServer {
             store: store.clone(),
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         (server, store)
@@ -3192,7 +3195,7 @@ mod mp11_delivery_http_tests {
         let publisher = PublisherFixture::new();
         let (server, store) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         let (status, body) = post_signed_webhook(server.clone(), Some("settled-1")).await;
@@ -3311,7 +3314,7 @@ mod mp11_delivery_http_tests {
         let publisher = PublisherFixture::new();
         let (server, store) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         let mut at = now_ms();
@@ -3504,7 +3507,7 @@ mod mp11_delivery_http_tests {
         publisher.refusals.store(1, Ordering::SeqCst);
         let (server, store) = subscribed_server(&publisher);
         let server = Arc::new(AegsServer {
-            management_token: Some("management-token".into()),
+            management_auth: ManagementAuth::open_for_tests(),
             ..(*server).clone()
         });
         let (_, body) = post_signed_webhook(server.clone(), Some("settled-6")).await;

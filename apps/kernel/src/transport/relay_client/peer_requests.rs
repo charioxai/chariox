@@ -4569,6 +4569,7 @@ mod tests {
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
+            event_connections: Default::default(),
             package_path: root.join("context.chariox"),
         })
         .expect("compose managed context package");
@@ -4886,6 +4887,7 @@ mod tests {
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
+            event_connections: Default::default(),
             package_path: root.join("terminal-context.chariox"),
         })
         .expect("compose terminal managed context package");
@@ -5178,6 +5180,7 @@ mod tests {
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
+            event_connections: Default::default(),
             package_path: root.join("recovery-context.chariox"),
         })
         .expect("compose recovery managed context package");
@@ -5300,6 +5303,7 @@ mod tests {
             context_import_target: None,
             provider_account_target: None,
             git_credential_target: None,
+            event_connection_target: None,
         })
         .expect("publish recovery context before simulated crash");
         recovery_store

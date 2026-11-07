@@ -81,7 +81,7 @@ Each check is a concrete provider test obligation:
 | `connection_lifecycle` | Authorization, inspection, refresh/reconnect, resource discovery, revocation, and expired/unavailable states are covered without exporting credentials. |
 | `test_events` | Supported test events use an active subscription's event type, scope, and filter and enter the ordinary AEDS publication path; unsupported behavior is explicit. |
 | `provider_actions` | Every declared action has bounded inputs/results, required scopes, target isolation, provider-error coverage, and durable idempotency for mutations; undeclared actions fail closed. |
-| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 3 and management protocol 4, including the public request/response validation used by the implementation. |
+| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 4 and management protocol 5, including the public request/response validation used by the implementation. |
 
 The public SDK tests prove the shared reference behavior for signatures,
 filters, durable lifecycle state, action receipts, and protocol validation.
@@ -177,16 +177,17 @@ socket address, and checks these unauthenticated release surfaces:
 - `/healthz` returns `{"status":"ok"}`;
 - `/readyz` returns `{"status":"ready"}`;
 - `/version` identifies `component=chariox-aegs`, the exact generator ID, and
-  management protocol version 4.
+  management protocol version 5.
 
 Redirects are not followed. Private or loopback targets are self-hosted
 administrator configuration and cannot enter the public Store.
 
-The event-delivery wire contract is version 3. AEDS and every producer that sends
+The event-delivery wire contract is version 4. AEDS and every producer that sends
 reply-capable events must use the same protocol revision so the opaque provider
-`reply_context` cannot be silently discarded by an older peer.
+`reply_context` cannot be silently discarded by an older peer; version 4 also makes the
+kernel prove its identity key in the connection handshake.
 
-Management protocol version 4 also requires the shared installed-connection
+Management protocol version 4 (kept in version 5) also requires the shared installed-connection
 lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROTOCOL.md):
 
 - inspect connection state, scopes, resources, health, and recovery guidance;
@@ -194,16 +195,10 @@ lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROT
 - reconnect and revoke/disconnect;
 - emit an authentic test occurrence through AEDS when supported.
 
-Mutation actions such as `notification.reply` are idempotent and are retained
-as durable action receipts so a retry cannot repeat the provider side effect.
-`event.context` (and the compatibility alias `notification.context`) is
-different: it is a bounded, read-only query. The SDK serializes requests with
-the same idempotency key while they are in flight within one AEGS process, but
-deliberately does not persist the response or conversation data in
-`action_receipts`; a retry after completion performs a fresh provider query.
-This in-memory coordination is not a cross-replica deduplication guarantee.
-AEGS implementations must keep context responses bounded and must not turn this
-path into a general provider API proxy.
+An AEGS only generates events. It has no `/v1/actions` route and no provider-action
+hook: a request to `/v1/actions` is answered `not_found`, the SDK keeps no action
+receipts (an older database drops its `action_receipts` table on open), and a
+provider never holds a way to act on a user's behalf through the gateway.
 
 Implement `AegsProvider::inspect_connection`, `refresh_connection`, and
 `test_event` for provider-specific behavior. The SDK supplies a conservative
@@ -245,14 +240,13 @@ the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
 this SDK, and run the same public conformance contracts. The only runnable AEGS
 kept here is `chariox-aegs-dummy` for deterministic local development.
 
-Reconciliation is authoritative only for the request's `owner_id`. A signed
-management capability may authorize the exact kernel owner and one or more
-kernel-user connection owners needed by the same kernel; the request header and
-body must still name one of those exact identities. An AEGS
-must not deactivate subscriptions owned by another kernel when one kernel
-reconciles an empty or partial set. A higher binding revision may transfer the
-same logical binding to a new owner; equal or older revisions from a different
-owner are fenced.
+Reconciliation is authoritative only for the calling kernel's bindings under the
+request's `owner_id`. Management requests are signed by the kernel's identity key and name the
+secret owner id; the header and the body's `owner_id` must be equal (see
+`AEGS_MANAGEMENT_BOOTSTRAP.md`). An AEGS must not deactivate subscriptions held by another kernel
+when one kernel reconciles an empty or partial set. A higher binding revision may transfer the
+same logical binding only to the kernel that holds it; equal or older revisions from a different
+kernel are fenced.
 
 Artifacts are optional. Their reference must be durable and retrievable by the
 workflow; adapter-local or synthetic references are not valid. Provider

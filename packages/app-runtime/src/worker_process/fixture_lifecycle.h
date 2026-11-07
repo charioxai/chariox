@@ -1,9 +1,8 @@
 /* Test-only inbox App: the fixture supplies a complete deterministic occurrence
  * in metadata. Route background attribution selects exactly one automation.
  * No package-selected code or production launch path uses this handler. */
-static int fixture_inbox_emit(char response[8193]) {
-  const char* field = strstr(response,"inbox:second") ? "\"emissionSecond\":" : "\"emissionFirst\":";
-  const char* start = strstr(response,field);
+static int fixture_inbox_emit_field(const char* delivery, const char* field, char reply[8193]) {
+  const char* start = strstr(delivery,field);
   if (!start) return 0;
   start += strlen(field);
   if (*start!='{') return 0;
@@ -25,8 +24,21 @@ static int fixture_inbox_emit(char response[8193]) {
   if (length>=sizeof(emission)) return 0;
   memcpy(emission,start,length); emission[length]=0;
   return fixture_sdk_request("inbox-emit","events.emit",emission)==1 &&
-      fixture_sdk_receive(response,cx_monotonic_ms()+5000)==1 &&
-      strstr(response,"\"id\":\"inbox-emit\",\"result\":");
+      fixture_sdk_receive(reply,cx_monotonic_ms()+5000)==1 &&
+      strstr(reply,"\"id\":\"inbox-emit\",\"result\":");
+}
+
+static int fixture_inbox_emit(char response[8193]) {
+  const char* field = strstr(response,"inbox:second") ? "\"emissionSecond\":" : "\"emissionFirst\":";
+  return fixture_inbox_emit_field(response,field,response);
+}
+
+/* A handler that forwards one delivery to every automation the fixture lists,
+ * like an App that emits to several named automations. */
+static int fixture_inbox_emit_all(const char* delivery) {
+  char reply[8193];
+  return fixture_inbox_emit_field(delivery,"\"emissionFirst\":",reply) &&
+      fixture_inbox_emit_field(delivery,"\"emissionSecond\":",reply);
 }
 
 /* Fixed lifecycle observer. Never linked into production or package-selected. */
@@ -52,7 +64,8 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
       if (fixture_health_parse(response,names[i],id)==1) { event=names[i]; break; }
     if (!event && strstr(response,"\"method\":\"schedule.wake\"") &&
         fixture_request_id(response,id)==1) event="wake";
-    if (!event && (!strcmp(mode,"sdk_lifecycle_inbox") || !strcmp(mode,"sdk_lifecycle_inbox_automation")) &&
+    if (!event && (!strcmp(mode,"sdk_lifecycle_inbox") || !strcmp(mode,"sdk_lifecycle_inbox_automation") ||
+        !strcmp(mode,"sdk_lifecycle_inbox_automations")) &&
         strstr(response,"\"method\":\"events.deliver\"") &&
         fixture_request_id(response,id)==1) event="incoming";
     if (!event) { close(file); return 143; }
@@ -73,6 +86,8 @@ static int fixture_lifecycle_run(const struct cx_launch_record* record, const ch
     }
     if (!strcmp(event,"incoming") && !strcmp(mode,"sdk_lifecycle_inbox_automation") &&
         !fixture_inbox_emit(response)) { close(file); return 148; }
+    if (!strcmp(event,"incoming") && !strcmp(mode,"sdk_lifecycle_inbox_automations") &&
+        !fixture_inbox_emit_all(response)) { close(file); return 148; }
     if (fixture_health_reply(id,(!strcmp(mode,"sdk_lifecycle_fail_prepare") && !strcmp(event,"prepare_update")) ||
         (!strcmp(mode,"sdk_lifecycle_fail_configuration_change") && !strcmp(event,"configuration_change")))!=1) {
       close(file); return 146;

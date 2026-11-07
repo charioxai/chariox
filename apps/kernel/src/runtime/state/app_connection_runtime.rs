@@ -36,11 +36,23 @@ impl KernelRuntimeState {
                 {
                     return Err(AppRequestErrorCode::InvalidRequest);
                 }
+                let event_owner_id = self
+                    .event_connection_registry()
+                    .connection_event_owner_id(
+                        &crate::event_connection::event_connection_user_id(
+                            &self.owned.config_projection.snapshot(),
+                            &owner,
+                        ),
+                        &request.connection_id,
+                    )
+                    .map_err(|_| AppRequestErrorCode::StorageUnavailable)?
+                    .ok_or(AppRequestErrorCode::NotFound)?;
                 Some(ConnectionGrantCommand::Grant {
                     owner: owner.clone(),
                     installation: installation.clone(),
                     generator_id: request.generator_id,
                     connection_id: request.connection_id,
+                    event_owner_id,
                     now_ms: crate::session::unix_epoch_ms(),
                 })
             }
