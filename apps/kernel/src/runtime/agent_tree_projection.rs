@@ -9,6 +9,8 @@
 //! A node is `running` while its turn lives (processing, or a task working or
 //! parked on a wait or on its children); its `outcome` is how its latest turn
 //! ended and is null while it runs or before it ever ran.
+//! `totals.live` counts the nodes that are starting, running, waiting or unreachable: an idle node (finished,
+//! or not started) is done to a client, which closes its Sub-agents view when none is live.
 use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
@@ -110,7 +112,12 @@ pub(crate) fn project_agent_tree(
     let totals = AgentTreeTotals {
         live: nodes
             .iter()
-            .filter(|node| !matches!(node.state, AgentTreeState::Ended | AgentTreeState::Error))
+            .filter(|node| {
+                !matches!(
+                    node.state,
+                    AgentTreeState::Idle | AgentTreeState::Ended | AgentTreeState::Error
+                )
+            })
             .count() as u32,
         running: nodes
             .iter()
@@ -180,7 +187,7 @@ mod tests {
             .map(|node| (node.agent_id.as_str(), node.depth))
             .collect::<Vec<_>>();
         assert_eq!(shape, vec![("c1", 1), ("c2", 1), ("g", 2)]);
-        assert_eq!(tree.totals.live, 3);
+        assert_eq!(tree.totals.live, 0, "idle nodes are not live");
         assert!(project_agent_tree(
             &session,
             session.agents(),
@@ -388,7 +395,7 @@ mod tests {
         assert_eq!(tree.nodes[0].state, AgentTreeState::Ended);
         assert_eq!(tree.nodes[1].state, AgentTreeState::Idle);
         assert_eq!(tree.nodes[1].deadline_ms, Some(99));
-        assert_eq!(tree.totals.live, 1);
+        assert_eq!(tree.totals.live, 0, "an ended and an idle node are not live");
     }
 
     // The client's live states are starting, running, waiting and unreachable: a child whose latest

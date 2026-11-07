@@ -86,7 +86,7 @@ async fn list_descendants() {
     assert_eq!(ids.len(), 3, "b, s and the grandchild d: {ids:?}");
     assert_eq!(ids, expected);
     assert_eq!(tree.root, world.ids["a"]);
-    assert_eq!(tree.totals.live, 3);
+    assert_eq!(tree.totals.live, 1, "only the running sub-agent is live");
     let depth = |name: &str| {
         tree.nodes
             .iter()
