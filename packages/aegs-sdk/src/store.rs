@@ -2657,7 +2657,7 @@ mod shared_connection_tests {
             .unwrap();
         let held = claim("binding-a", "chariox/repo");
         store
-            .reconcile_for_owner("kernel-a", "owner", generator, &[held.clone()])
+            .reconcile_for_owner("kernel-a", "owner", generator, std::slice::from_ref(&held))
             .unwrap();
         let generation = store.connection_generation("connection").unwrap();
         let in_flight = store.delivery_guard(&held, generation).await.unwrap();

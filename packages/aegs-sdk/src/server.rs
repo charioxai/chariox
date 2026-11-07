@@ -2416,7 +2416,12 @@ mod mp11_delivery_http_tests {
         );
         let held = claim_for("held", true);
         store
-            .reconcile_for_owner(&kernel_a_id, "owner", &held.generator_id, &[held.clone()])
+            .reconcile_for_owner(
+                &kernel_a_id,
+                "owner",
+                &held.generator_id,
+                std::slice::from_ref(&held),
+            )
             .unwrap();
         for kernel in ["kernel-a", "kernel-b"] {
             let (status, body) = management_send_as(
