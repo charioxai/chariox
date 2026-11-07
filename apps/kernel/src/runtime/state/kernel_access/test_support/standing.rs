@@ -300,4 +300,5 @@ async fn a_requester_without_a_grandparent_is_told_how_to_name_its_holder() {
         refused.to_string().contains("--holder-pid"),
         "the refusal names the way out, got: {refused}"
     );
+    assert_eq!(Refusal::exact(&refused), Some(Refusal::HolderUnavailable));
 }

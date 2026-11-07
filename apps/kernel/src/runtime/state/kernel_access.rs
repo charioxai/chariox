@@ -593,7 +593,7 @@ impl KernelRuntimeState {
         match holder_pid {
             Some(pid) => process::holder(peer, pid).map_err(|_| Refusal::NotCovered.error()),
             None => crate::runtime::kernel_access::requester::default_holder(peer)
-                .map_err(|error| crate::runtime::kernel_access::error(error.to_string())),
+                .map_err(|_| Refusal::HolderUnavailable.error()),
         }
     }
 
