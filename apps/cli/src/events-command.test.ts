@@ -103,6 +103,18 @@ test("unsubscribe --source ends one source; --source all ends the followed sourc
     { UnsubscribeEvents: { sources: ["wf_source_a", "owner_action_b"] } },
   ])
 })
+test("unsubscribe --source takes the name events sources prints, though a follow row carries only the display name", async () => {
+  const app = { ...SOURCES[0], kind: "app_event", source_id: "app_event_a", name: "pull_request_updated@owner/repo", display_name: "Pull request updated (owner/repo)" }
+  const followed = { EventSubscription: { subscription: { ...SUBSCRIPTION.EventSubscription.subscription, sources: [{ source_id: "app_event_a", display_name: "Pull request updated (owner/repo)" }] } } }
+  const sent: unknown[] = []
+  const send = async (request: unknown) => {
+    sent.push(request)
+    const name = Object.keys(request as object)[0]
+    return name === "ListNotificationSources" ? { NotificationSources: { sources: [app] } } : name === "GetEventSubscription" ? followed : SUBSCRIPTION
+  }
+  await runEventsVerb("unsubscribe", new Map<string, string | true>([["--source", "pull_request_updated@owner/repo"]]), [], send, () => {})
+  assert.deepEqual(sent.filter(request => "UnsubscribeEvents" in (request as object)), [{ UnsubscribeEvents: { sources: ["app_event_a"] } }])
+})
 test("a notification and a gap come out of wait whole: source, kind, name, occurrence, deadline", async () => {
   const notification = { cursor: 4, type: "notification", kernel: "k", machine: "m", session_id: "room", summary: "Review finished", at_ms: 1, refs: {}, value: { source_id: "wf_source_a", source_kind: "workflow_exit", display_name: "Review", occurrence_id: "run-1", output: { message: "approved" }, deadline_ms: 604800001 } }
   const gap = { cursor: 5, type: "gap", kernel: "k", machine: "m", session_id: "room", summary: "1 unread notification expired", at_ms: 2, refs: {}, value: { kernel: "k", dropped: 1, from: 4, to: 4 } }
