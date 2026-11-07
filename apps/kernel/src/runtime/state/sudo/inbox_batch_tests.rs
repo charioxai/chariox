@@ -436,6 +436,22 @@ async fn an_open_event_beyond_the_first_page_of_closed_rows_is_still_read() {
             serde_json::json!({"message": format!("payload {n}")}),
         );
     }
+    // The agent is shown every row before it acks them: a row never shown stays open.
+    let mut after = 0;
+    loop {
+        let read = f
+            .state
+            .read_agent_inbox(
+                &room,
+                &agent,
+                &serde_json::json!({"after": after, "limit": 64}),
+            )
+            .unwrap();
+        after = read["next_after"].as_u64().unwrap();
+        if read["more"] != serde_json::json!(true) {
+            break;
+        }
+    }
     f.state
         .ack_agent_inbox(
             &room,
