@@ -20,7 +20,7 @@ fn a_source_kernel_that_reconnects_drops_the_follow_a_detach_could_not_reach() {
         .unwrap();
 }
 
-async fn connect(
+pub(super) async fn connect(
     router: &Arc<CommandRouter>,
     runtime: &KernelRuntimeState,
     config: &DaemonConfig,
@@ -39,7 +39,7 @@ async fn connect(
     (stop, connector)
 }
 
-async fn both_connected(a: &KernelRuntimeState, b: &KernelRuntimeState) {
+pub(super) async fn both_connected(a: &KernelRuntimeState, b: &KernelRuntimeState) {
     for _ in 0..100 {
         if a.owned.relay_state.read().await.connected()
             && b.owned.relay_state.read().await.connected()

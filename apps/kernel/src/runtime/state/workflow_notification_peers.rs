@@ -682,6 +682,7 @@ impl KernelRuntimeState {
 #[cfg(test)]
 mod tests {
     mod local_access;
+    mod generation;
     mod reconnect;
 
     use super::*;
