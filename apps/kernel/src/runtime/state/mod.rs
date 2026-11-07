@@ -689,6 +689,7 @@ mod outside_agent_notification;
 mod room_workflow_control_runtime_state;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
+mod workflow_notification_remote;
 mod workflow_notification_router;
 mod workflow_prompt_failure_owned_state;
 pub(crate) mod workflow_publication_endpoint_runtime;

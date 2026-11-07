@@ -65,22 +65,13 @@ impl KernelRuntimeState {
             return;
         };
         // Best effort: the source kernel otherwise retries until the occurrence TTL.
-        for sub in retired
+        for (sub, generation) in retired
             .into_iter()
-            .filter(|sub| sub.source_kernel_id != sub.target_kernel_id)
+            .filter(|(sub, _)| sub.source_kernel_id != sub.target_kernel_id)
         {
             let runtime = self.clone();
             handle.spawn(async move {
-                let _ = runtime
-                    .notification_peer(
-                        &sub.owner_user_id,
-                        &sub.source_kernel_id,
-                        RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                            protocol_version: super::workflow_notification_peers::VERSION,
-                            subscription_id: sub.subscription_id,
-                        },
-                    )
-                    .await;
+                let _ = runtime.drop_from_source(&sub, generation).await;
             });
         }
     }

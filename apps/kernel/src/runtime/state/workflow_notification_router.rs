@@ -4,8 +4,8 @@ use super::{KernelRuntimeOwnedState, KernelRuntimeState};
 use crate::durable_state::{
     notification_target::WorkflowNotificationTarget,
     workflow_notifications::{
-        self as store, naming, NotificationOperation, NotificationOutcome, PreparedNotification,
-        SourceAdmission,
+        self as store, naming, remote_install::Generation, NotificationOperation,
+        NotificationOutcome, PreparedNotification, SourceAdmission,
     },
 };
 use crate::{error::DaemonError, local::*, session::SessionService};
@@ -99,6 +99,28 @@ impl KernelRuntimeState {
         &self,
         request: LocalDaemonRequest,
         owner: &str,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.execute_workflow_notification_request_installing(request, owner)
+            .map(|(response, _)| response)
+    }
+
+    /// Also answers the generation of the remote install an attach left to do.
+    pub(super) fn execute_workflow_notification_request_installing(
+        &self,
+        request: LocalDaemonRequest,
+        owner: &str,
+    ) -> Result<(LocalDaemonResponse, Option<Generation>), DaemonError> {
+        let installing = std::cell::Cell::new(None);
+        let response =
+            self.execute_workflow_notification_request_into(request, owner, &installing)?;
+        Ok((response, installing.get()))
+    }
+
+    fn execute_workflow_notification_request_into(
+        &self,
+        request: LocalDaemonRequest,
+        owner: &str,
+        installing: &std::cell::Cell<Option<Generation>>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let LocalDaemonRequest::ListWorkflowNotifications(list) = &request {
             let session = self.owned.session_store.get_session(&list.session_id)?;
@@ -244,6 +266,15 @@ impl KernelRuntimeState {
                         }
                         match self.owned.durable_state_store.notify(operation)? {
                             NotificationOutcome::Subscription(subscription) => {
+                                Ok(LocalDaemonResponse::WorkflowNotificationAttached {
+                                    subscription,
+                                })
+                            }
+                            NotificationOutcome::RemoteInstalling {
+                                subscription,
+                                generation,
+                            } => {
+                                installing.set(Some(generation));
                                 Ok(LocalDaemonResponse::WorkflowNotificationAttached {
                                     subscription,
                                 })

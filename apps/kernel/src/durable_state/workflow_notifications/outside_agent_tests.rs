@@ -274,7 +274,7 @@ fn a_restart_retires_every_follow_but_those_of_a_surviving_grant() {
     assert_eq!(
         retired
             .iter()
-            .map(|s| s.endpoint_id.as_str())
+            .map(|(s, _)| s.endpoint_id.as_str())
             .collect::<Vec<_>>(),
         ["grant-b"]
     );
