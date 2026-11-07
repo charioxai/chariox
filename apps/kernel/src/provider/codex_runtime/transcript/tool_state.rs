@@ -89,7 +89,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     let mut item = item.clone();
     if matches!(
         item.get("type").and_then(Value::as_str),
-        Some("webSearch" | "imageView")
+        Some("webSearch" | "imageView" | "imageGeneration")
     ) && item.get("status").is_none()
     {
         item["status"] = json!(match lifecycle {

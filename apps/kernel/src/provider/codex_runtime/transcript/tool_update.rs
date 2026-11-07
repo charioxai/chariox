@@ -26,6 +26,8 @@ struct CodexToolTranscriptUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     raw: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    images: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     placement: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     authority: Option<String>,
@@ -68,6 +70,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             ),
             error: command_execution_error(item),
             raw: command_execution_raw(item),
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -90,6 +93,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .get("changes")
                 .filter(|value| !is_empty_json_value(value))
                 .map(render_json_value),
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -129,6 +133,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .and_then(non_empty)
                 .map(str::to_string),
             raw: None,
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -159,6 +164,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .filter(|success| !success)
                 .map(|_| "Dynamic tool call failed".to_string()),
             raw: None,
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -187,6 +193,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
                 .map(render_json_value),
             error: None,
             raw: None,
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -208,6 +215,7 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             output: None,
             error: None,
             raw: None,
+            images: None,
             placement: None,
             authority: None,
             execution_location: None,
@@ -227,6 +235,38 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             output: None,
             error: None,
             raw: None,
+            images: None,
+            placement: None,
+            authority: None,
+            execution_location: None,
+        },
+        // Codex keeps the file under its own home and shows the picture itself; the item's own copy is what the pane draws.
+        "imageGeneration" => CodexToolTranscriptUpdate {
+            id,
+            tool: Some("image_generation".to_string()),
+            status: Some(status),
+            title: None,
+            description: None,
+            text: None,
+            input: item
+                .get("revisedPrompt")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(|prompt| json!({ "prompt": prompt })),
+            output: None,
+            error: None,
+            raw: None,
+            images: item
+                .get("result")
+                .and_then(Value::as_str)
+                .and_then(non_empty)
+                .map(|result| {
+                    vec![if result.starts_with("data:image/") {
+                        result.to_string()
+                    } else {
+                        format!("data:image/png;base64,{result}")
+                    }]
+                }),
             placement: None,
             authority: None,
             execution_location: None,
@@ -354,5 +394,34 @@ mod tests {
         assert!(super::super::item::is_codex_tool_item(
             &json!({"type": "webSearch"})
         ));
+    }
+    // MP-08: Codex shows a built-in generated image to the user itself and keeps the file under its own
+    // home, outside the workspace; the item's own picture is the only copy the pane can draw.
+    #[test]
+    fn generated_images_are_tool_calls_that_carry_their_picture() {
+        let item = json!({"type": "imageGeneration", "id": "ig-1", "status": "completed", "revisedPrompt": "A bar chart of three models", "result": "iVBORw0KGgo=", "savedPath": "/home/codex/generated_images/t/ig-1.png"});
+        assert!(super::super::item::is_codex_tool_item(&item));
+        let image = rendered(item);
+        assert_eq!(image["tool"], "image_generation");
+        assert_eq!(image["status"], "completed");
+        assert_eq!(
+            image["input"],
+            json!({"prompt": "A bar chart of three models"})
+        );
+        assert_eq!(
+            image["images"],
+            json!(["data:image/png;base64,iVBORw0KGgo="])
+        );
+        assert!(
+            image.get("output").is_none(),
+            "the saved path outside the workspace is not offered as a file"
+        );
+        let pending = rendered(
+            json!({"type": "imageGeneration", "id": "ig-2", "status": "in_progress", "result": ""}),
+        );
+        assert!(
+            pending.get("images").is_none(),
+            "no picture before the generator returns one"
+        );
     }
 }
