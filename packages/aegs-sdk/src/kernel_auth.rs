@@ -387,3 +387,170 @@ impl ManagementAuth {
         })
     }
 }
+
+#[cfg(test)]
+mod admission_order_tests {
+    use super::*;
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    fn kernel(name: &str) -> (String, String) {
+        let secret = p256::SecretKey::from_slice(&sha2::Sha256::digest(name.as_bytes())).unwrap();
+        let public = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(
+            &secret.public_key(),
+            false,
+        );
+        (
+            base64::engine::general_purpose::STANDARD.encode(secret.to_bytes()),
+            base64::engine::general_purpose::STANDARD.encode(public.as_bytes()),
+        )
+    }
+
+    fn headers(name: &str, owner: &str, nonce: &str, now_ms: u64) -> HeaderMap {
+        let (private, public) = kernel(name);
+        let signature = chariox_event_protocol::kernel_identity::sign(
+            &private,
+            &ManagementRequest {
+                method: "POST",
+                path: "/v1/subscriptions/reconcile",
+                generator_id: "dev.chariox.github",
+                owner_id: owner,
+                timestamp_ms: now_ms,
+                nonce,
+                body: b"{}",
+            }
+            .message(),
+        )
+        .unwrap();
+        let mut map = HeaderMap::new();
+        for (header, value) in [
+            (KERNEL_KEY_HEADER, public),
+            (KERNEL_TIMESTAMP_HEADER, now_ms.to_string()),
+            (KERNEL_NONCE_HEADER, nonce.to_string()),
+            (KERNEL_SIGNATURE_HEADER, signature),
+            (OWNER_ID_HEADER, owner.to_string()),
+        ] {
+            map.insert(header, value.parse().unwrap());
+        }
+        map
+    }
+
+    async fn authenticate(
+        auth: &ManagementAuth,
+        name: &str,
+        owner: &str,
+        nonce: &str,
+        now_ms: u64,
+    ) -> Result<AuthenticatedKernel, Refusal> {
+        auth.authenticate(
+            &headers(name, owner, nonce, now_ms),
+            "POST",
+            "/v1/subscriptions/reconcile",
+            "dev.chariox.github",
+            b"{}",
+            now_ms,
+        )
+        .await
+    }
+
+    fn allowlist_dir(tag: &str, listed: &[&str]) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("aegs-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("allowlist.json");
+        let entries = listed
+            .iter()
+            .map(|name| (kernel_id_for_public_key(&kernel(name).1), "listed".to_string()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        std::fs::write(&file, serde_json::to_string(&entries).unwrap()).unwrap();
+        (dir, file)
+    }
+
+    // Any key signs a request, so a request from a kernel the operator did not admit (or one
+    // that names no owner) must not use up the memory that protects the admitted kernels
+    // from replay: the nonce is remembered only for a request that is going to be served.
+    #[tokio::test]
+    async fn a_refused_request_does_not_take_a_nonce_slot() {
+        let (dir, file) = allowlist_dir("admission-order", &[]);
+        let auth = ManagementAuth::new(Admission::Allowlist { file });
+        let now = 1_700_000_000_000;
+        for index in 0..3 {
+            let refused =
+                authenticate(&auth, &format!("stranger-{index}"), "owner", &format!("n{index}"), now)
+                    .await;
+            assert_eq!(refused, Err(Refusal::NotAdmitted));
+        }
+        let too_long = "x".repeat(MAX_OWNER_ID_BYTES + 1);
+        for (index, owner) in ["", too_long.as_str()].into_iter().enumerate() {
+            let refused = authenticate(&auth, "stranger-0", owner, &format!("o{index}"), now).await;
+            assert!(refused.is_err());
+        }
+        let held = auth.seen_nonces.lock().unwrap().len();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            held == 0,
+            "{held} nonces of refused requests are held in the replay memory"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_admitted_request_is_served_once_and_a_replay_is_refused() {
+        let (dir, file) = allowlist_dir("admitted-replay", &["listed"]);
+        let auth = ManagementAuth::new(Admission::Allowlist { file });
+        let now = 1_700_000_000_000;
+        let first = authenticate(&auth, "listed", "owner", "n1", now).await;
+        let second = authenticate(&auth, "listed", "owner", "n1", now).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(first.is_ok(), "{first:?}");
+        assert_eq!(second, Err(Refusal::SignatureReplayed));
+    }
+
+    // A replay of a request the budget refused must not be served later either, and a replay
+    // of an admitted request must not spend the kernel's budget again.
+    #[tokio::test]
+    async fn a_replayed_request_does_not_spend_the_budget() {
+        let auth = ManagementAuth::new(Admission::Open {
+            max_owners_per_kernel: 8,
+            max_requests_per_minute: 2,
+            max_requests_per_minute_total: 1000,
+            max_memberships_total: 1000,
+        });
+        let now = 1_700_000_000_000;
+        assert!(authenticate(&auth, "busy", "owner", "n1", now).await.is_ok());
+        for _ in 0..5 {
+            assert_eq!(
+                authenticate(&auth, "busy", "owner", "n1", now).await,
+                Err(Refusal::SignatureReplayed)
+            );
+        }
+        assert!(authenticate(&auth, "busy", "owner", "n2", now).await.is_ok());
+        assert_eq!(
+            authenticate(&auth, "busy", "owner", "n3", now).await,
+            Err(Refusal::RateLimited)
+        );
+    }
+
+    // Anonymous keys must not make the AEGS read and parse the allowlist file per request:
+    // within a short interval the file is read once, and a change is still picked up later.
+    #[tokio::test]
+    async fn unadmitted_requests_do_not_reread_the_allowlist_each_time() {
+        let (dir, file) = allowlist_dir("allowlist-cache", &[]);
+        let auth = ManagementAuth::new(Admission::Allowlist { file: file.clone() });
+        let now = 1_700_000_000_000;
+        assert_eq!(
+            authenticate(&auth, "late", "owner", "n0", now).await,
+            Err(Refusal::NotAdmitted)
+        );
+        // The operator lists the kernel; requests inside the interval still see the cached list.
+        let listed = serde_json::json!({ kernel_id_for_public_key(&kernel("late").1): "late" });
+        std::fs::write(&file, listed.to_string()).unwrap();
+        assert_eq!(
+            authenticate(&auth, "late", "owner", "n1", now + 1_000).await,
+            Err(Refusal::NotAdmitted),
+            "the allowlist was read again inside the cache interval"
+        );
+        // After the interval the change takes effect without a restart.
+        let after = authenticate(&auth, "late", "owner", "n2", now + 60_000).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(after.is_ok(), "{after:?}");
+    }
+}
