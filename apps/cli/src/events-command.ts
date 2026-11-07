@@ -41,13 +41,15 @@ export async function listSources(send: SendRequest): Promise<WorkflowNotificati
   if (!wire?.NotificationSources) throw new CommandFailure("events_response_invalid", "kernel returned no source list; update Chariox")
   return wire.NotificationSources.sources
 }
-// A source is named by id or, when no id matches, by display name.
-function resolveSource(sources: readonly { source_id: string; display_name: string }[], reference: string, refused: string): string {
-  const named = sources.some(source => source.source_id === reference) ? [] : sources.filter(source => source.display_name.toLowerCase() === reference.toLowerCase())
+// A source is named by id or, when no id matches, by display name or by the name `events sources` prints.
+function resolveSource(sources: readonly { source_id: string; display_name: string; name?: string }[], reference: string, refused: string): string {
+  if (sources.some(source => source.source_id === reference)) return reference
+  const wanted = reference.toLowerCase()
+  const byDisplay = sources.filter(source => source.display_name.toLowerCase() === wanted)
+  const named = byDisplay.length ? byDisplay : sources.filter(source => source.name?.toLowerCase() === wanted)
   if (named.length > 1) throw new CommandFailure("usage", `several sources are named "${reference}"; name one by its source_id: ${named.map(source => source.source_id).join(", ")}`)
-  const found = named[0] ?? sources.find(source => source.source_id === reference)
-  if (!found) throw new CommandFailure("events_refused", `source not available: "${reference}" ${refused}`)
-  return found.source_id
+  if (!named[0]) throw new CommandFailure("events_refused", `source not available: "${reference}" ${refused}`)
+  return named[0].source_id
 }
 // What the kernel answers to a subscription request: `{ subscription }`, printed as it is.
 function subscriptionBody(response: unknown): { subscription: EventSubscription } {
