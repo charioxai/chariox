@@ -674,6 +674,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)
         | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListNotificationSources(_)
         | LocalDaemonRequest::ListEvents(_)
         | LocalDaemonRequest::WaitEvents(_)
         | LocalDaemonRequest::AckEvents(_)

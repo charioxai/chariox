@@ -2701,6 +2701,7 @@ mod tests {
                             session_id: session_id.clone(),
                             agent_id: Some(agent_id.clone()),
                         }],
+                        sources: Vec::new(),
                     },
                 ),
             )

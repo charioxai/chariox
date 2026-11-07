@@ -103,8 +103,8 @@ mod kernel_access;
 pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
-pub(crate) use outside_events::is_outside_event_request;
 use outside_events::InteractionPhase;
+pub(crate) use outside_events::{is_outside_event_request, source_not_available};
 mod environment_tools;
 mod sudo;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
@@ -500,6 +500,7 @@ mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 mod owner_action_notifications;
+mod run_finished_notifications;
 mod wake_driver;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
 mod browser_configuration_runtime_state;
@@ -680,6 +681,7 @@ mod workflow_prompt_queue_owned_state;
 mod workflow_queue_durable;
 mod workflow_source_request_runtime_state;
 use workflow_prompt_dispatches::*;
+mod outside_agent_notification;
 mod room_workflow_control_runtime_state;
 mod workflow_notification_grants;
 mod workflow_notification_peers;
@@ -1260,7 +1262,7 @@ impl KernelRuntimeState {
         runtime.owned.record_managed_activity_transition();
         runtime.recover_sudo_notices();
         // Access grants are process-bound and never survive a kernel restart.
-        runtime.retire_notification_grants(None);
+        runtime.retire_notification_grants_at_start();
         runtime.recover_app_grant_expiries();
         runtime
     }
@@ -1565,6 +1567,7 @@ mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_inbox_leased_steer;
+mod agent_inbox_wake_text;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
 mod agent_leased_process_worker;

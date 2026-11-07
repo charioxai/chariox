@@ -392,6 +392,7 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
             run: None,
             now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
             work: None,
+            through: 0,
         })
         .unwrap();
     store
@@ -3372,6 +3373,7 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
                 run: Some(run.id().into()),
                 now,
                 work: None,
+                through: 0,
             })
             .unwrap();
         store
@@ -3447,19 +3449,12 @@ async fn a02_r4_busy_message_survives_timeout(deferred: bool) {
         "accepted",
         "the refused message must wake when the existing turn ends"
     );
+    let inbox = store.agent_inbox(session.id(), agent.id(), 0).unwrap();
     assert_eq!(
-        store.agent_inbox(session.id(), agent.id(), 0).unwrap()[1].state,
-        "pending"
+        inbox[1].state, "accepted",
+        "the wake that ends the existing turn carries every pending row"
     );
-    runtime
-        .owned
-        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
-        .unwrap();
-    runtime.sweep_agent_lifecycle().await.unwrap();
-    assert_eq!(
-        store.agent_inbox(session.id(), agent.id(), 0).unwrap()[1].state,
-        "accepted"
-    );
+    assert_eq!(inbox[1].prompt_id, inbox[0].prompt_id);
 }
 
 // MP-08/MP-10/MP-11: closing a synthetic delivery task retracts its owner prompt.
@@ -3501,6 +3496,7 @@ async fn a02_r6_late_receipt_retracts_delivery_owner_interaction() {
             run: Some("old-run".into()),
             now: crate::session::unix_epoch_ms() - DELIVERY_TIMEOUT_MS,
             work: None,
+            through: 0,
         })
         .unwrap();
     runtime.sweep_agent_lifecycle().await.unwrap();

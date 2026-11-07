@@ -120,6 +120,7 @@ fn outside_router_collects_states_and_ends_a_running_wait_on_revoke() {
 fn outside_event_requests() -> Vec<serde_json::Value> {
     vec![
         serde_json::json!({"SubscribeEvents":{"targets":[{"kernel":"local","session_id":"any"}]}}),
+        serde_json::json!({"SubscribeEvents":{"targets":[],"sources":["wf_source_any"]}}),
         serde_json::json!({"WaitEvents":{"timeout_ms":1}}),
         serde_json::json!({"AckEvents":{"cursor":0}}),
         serde_json::json!({"ListEvents":{}}),

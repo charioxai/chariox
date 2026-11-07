@@ -1,6 +1,6 @@
 {
-  "local_protocol": 999,
-  "peer_protocol": 438,
+  "local_protocol": 1000,
+  "peer_protocol": 439,
   "state_keys": [
     "active_tab_id",
     "browser_lockdown",

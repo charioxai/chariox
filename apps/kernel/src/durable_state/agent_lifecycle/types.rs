@@ -373,6 +373,9 @@ pub(crate) enum Operation {
         now: u64,
         /// A04: an elevated task whose correlated wakes pass deferred events.
         work: Option<String>,
+        /// Last sequence the wake covers. Every other pending row up to it
+        /// that the wake may deliver joins the lead row's prompt and receipt.
+        through: u64,
     },
     Expire {
         room: String,

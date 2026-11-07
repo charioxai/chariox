@@ -1,6 +1,8 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: home-owned task/inbox transactions.
 //! No provider I/O occurs here. Intent commits precede every dispatch.
 #[cfg(test)]
+mod batch_tests;
+#[cfg(test)]
 mod catalog_continuation_tests;
 pub(crate) mod completion;
 mod continuations;
@@ -407,16 +409,64 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
+    /// The batch a prompt delivered, in sequence order.
+    pub(crate) fn agent_events_for_prompt(
+        &self,
+        room: &str,
+        agent: &str,
+        prompt: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.receipt")?;
+        let mut q=db.prepare("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 ELSE 0 END ORDER BY sequence").map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, prompt], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|row| {
+            let (seq, source, id, payload) = row.map_err(sql)?;
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+    /// The row that leads the batch of a prompt: its receipt is the batch's.
     pub(crate) fn agent_event_for_prompt(
         &self,
         room: &str,
         agent: &str,
         prompt: &str,
     ) -> Result<Option<InboxEvent>, DaemonError> {
-        let db = self.lock_connection("agent.lifecycle.receipt")?;
-        let row:Option<(i64,String,String,String)>=db.query_row("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id')=?3 ELSE 0 END",params![room,agent,prompt],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
-        row.map(|(seq, source, id, payload)| decode_inbox(seq, room, agent, &source, &id, &payload))
-            .transpose()
+        Ok(self
+            .agent_events_for_prompt(room, agent, prompt)?
+            .into_iter()
+            .next())
+    }
+    /// Pending rows after `lead` that one wake may carry with it, in order,
+    /// up to the first reply request (answered by a turn of its own).
+    pub(crate) fn agent_delivery_batch(
+        &self,
+        lead: &InboxEvent,
+        steer: bool,
+        work: Option<&str>,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        if lead.reply_requested {
+            return Ok(Vec::new());
+        }
+        let mut batch = Vec::new();
+        for event in self.agent_work_inbox(&lead.room_id, &lead.agent_id, lead.sequence, None)? {
+            if event.reply_requested {
+                break;
+            }
+            if delivery::batch_member(&event, steer, work) {
+                batch.push(event);
+            }
+        }
+        Ok(batch)
     }
     #[cfg(test)]
     pub(crate) fn agent_inbox(
@@ -437,7 +487,7 @@ impl DurableKernelStateStore {
     ) -> Result<Vec<InboxEvent>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.inbox")?;
         let correlated = WORK_CORRELATED.replace("?3", "?4");
-        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND (?4 IS NULL OR {correlated}) ORDER BY sequence LIMIT 128")).map_err(sql)?;
+        let mut q=db.prepare(&format!("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND (?4 IS NULL OR {correlated}) ORDER BY sequence LIMIT {INBOX_PAGE}")).map_err(sql)?;
         let rows = q
             .query_map(params![room, agent, sql_integer(after)?, work], |r| {
                 Ok((
@@ -1050,6 +1100,14 @@ fn get_event(
 }
 /// SQL predicate: the event is a kernel-correlated wake of task `?3`.
 pub(super) const WORK_CORRELATED: &str = "(json_extract(payload,'$.kind')<>'message' AND (json_extract(payload,'$.payload.task_id')=?3 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?3)))";
+
+/// Rows one inbox read returns at most.
+pub(crate) const INBOX_PAGE: usize = 128;
+
+/// A decision an agent must answer or pass before its event can be acknowledged.
+pub(crate) fn needs_answer(event: &InboxEvent) -> bool {
+    event.kind == "child_decision" && event.payload["answered"].as_bool() != Some(true)
+}
 
 pub(crate) fn work_correlated(event: &InboxEvent, work: &str) -> bool {
     event.kind != "message"

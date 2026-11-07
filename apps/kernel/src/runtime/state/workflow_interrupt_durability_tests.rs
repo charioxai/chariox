@@ -602,6 +602,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
             run: None,
             now: now + 60_001,
             work: None,
+            through: 0,
         })
         .unwrap();
     let Outcome::Task(promoted) = owned
@@ -2948,6 +2949,7 @@ async fn a01_cancelled_workflow_run_releases_its_queued_inbox_delivery() {
             run: None,
             now: crate::session::unix_epoch_ms(),
             work: None,
+            through: 0,
         })
         .unwrap();
     let (cancelled, _) = fixture

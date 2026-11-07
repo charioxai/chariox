@@ -197,6 +197,7 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         work: Some("goal-work".into()),
         run: Some("run".into()),
         now: 2,
+        through: 0,
     });
     apply(Operation::Receipt {
         room: room.clone(),

@@ -182,6 +182,39 @@ notification whose target is already in its ancestry with `workflow_notification
 (A→B→A, A→B→C→A); a 256-entry bound drops with its own diagnostic. Every other occurrence is
 delivered: there is no coalescing.
 
+**Outside agent grants (local 1000).** The owner's own outside agent, holding a local access
+grant, is a third subscriber type, `outside_agent`: `SubscribeEvents {targets, sources}` names
+source ids of this kernel, `UnsubscribeEvents {targets, sources, all}` ends them, and
+`GetEventSubscription` lists them (`sources`). The subscriber is the grant itself: its "queue"
+is its own event stream, there is no URL, webhook, filter, queue or retention field, and a Room
+agent's reach identity, a `/sudo` window or another owner's grant cannot follow a source. A
+source the owner cannot see, one that is not on this kernel and an unknown id are all refused
+with `source not available`. An accepted occurrence (deduplicated, dated and loop-checked as
+for any subscriber, with `grant:<grant_id>` as its ancestry identity) becomes one `notification`
+event in the grant's stream in the same commit that settles its receipt, so a repeated attempt
+adds nothing. The event carries the source, `occurrence_id`, the redacted output, `deadline_ms`
+and, for an owner action, the task and interaction ids the holder can answer with
+`RespondToInteraction`. Delivery is at least once until `AckEvents`. An unread notification
+expires at its deadline (7 days); the holder then reads one `gap` event. The follow belongs to
+its grant: revoke, expiry and holder exit end it, and a restart keeps it only for a grant that
+lasts until its holder exits and whose holder lives. A new grant follows again. At most 64
+sources per grant. Paired kernels do not inherit grants: a source of another kernel is refused.
+`ListNotificationSources {}` answers `NotificationSources {sources}` (the picker's summaries, no
+outputs): the enabled, available sources of this kernel that the grant's owner may follow, and
+every one of them is accepted by `SubscribeEvents`. Listing creates the owner-action source
+("Agent needs your action") of each of the owner's Rooms, so it can be followed before any task has
+blocked, and the "run finished" source of each of their workflows (kind `workflow_run`, named
+`<workflow> run finished`). A "run finished" source emits one occurrence for every run of its
+workflow that completed or failed, whether or not it reached an exit, with the run id as the
+occurrence id. Its output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`,
+`prompt` (the run's invocation prompt, at most 2,000 characters) and, for a failed run,
+`failure` (the first failure message, at most 2,000 characters). A stopped run emits nothing. Only
+a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
+refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
+--source ID|NAME` follows, `chariox events unsubscribe --source ID|all` unfollows, and `chariox
+events mcp` offers the same as tools next to `chariox_next_notification`, which returns each
+`notification` or `gap` record once.
+
 **Transport.** Local delivery is direct; remote delivery uses the existing E2EE relay peer
 channel. Peer 437 carries the per-exit source fields in `ListWorkflowNotificationSources`,
 renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{source_id,

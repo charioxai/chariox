@@ -280,13 +280,16 @@ impl KernelRuntimeState {
                         .notify_one();
                     restored += 1;
                 }
-                None => self.end_grant(OwedEnd {
-                    grant: summary,
-                    covered,
-                    outcome: "revoked".into(),
-                    reason: "process_exit".into(),
-                    recorded: false,
-                })?,
+                None => {
+                    self.retire_notification_grants(Some(&summary.grant_id));
+                    self.end_grant(OwedEnd {
+                        grant: summary,
+                        covered,
+                        outcome: "revoked".into(),
+                        reason: "process_exit".into(),
+                        recorded: false,
+                    })?
+                }
             }
         }
         Ok(restored)

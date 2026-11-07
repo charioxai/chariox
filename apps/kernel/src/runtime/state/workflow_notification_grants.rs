@@ -29,10 +29,24 @@ impl KernelRuntimeState {
         Ok(sub)
     }
 
-    /// `None` retires every grant-bound subscription (kernel start).
+    /// The grant ended: what it attached ends with it.
     pub(super) fn retire_notification_grants(&self, grant: Option<&str>) {
+        self.retire_grant_subscriptions(grant, Vec::new());
+    }
+
+    /// Kernel start retires every grant-bound subscription but the sources followed by a
+    /// grant that outlives the restart (it lasts until its holder exits, and the holder
+    /// lives): its event stream is kept, so what feeds it is kept.
+    pub(super) fn retire_notification_grants_at_start(&self) {
+        let keep = super::kernel_access::grant_inboxes_to_keep(&self.owned.durable_state_store)
+            .unwrap_or_default();
+        self.retire_grant_subscriptions(None, keep);
+    }
+
+    fn retire_grant_subscriptions(&self, grant: Option<&str>, keep_outside_agent_of: Vec<String>) {
         let retire = NotificationOperation::RetireGrants {
             grant: grant.map(str::to_owned),
+            keep_outside_agent_of,
         };
         let retired = match self.owned.durable_state_store.notify(retire) {
             Ok(NotificationOutcome::Retired(retired)) => retired,

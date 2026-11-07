@@ -277,7 +277,10 @@ async fn async_popup_returns_while_pending_and_uses_the_existing_wake_registry()
         .await
         .unwrap()
         .payload;
-    assert!(inbox.is_array(), "the same turn can keep using tools");
+    assert!(
+        inbox["events"].is_array(),
+        "the same turn can keep using tools"
+    );
 }
 
 fn answers(f: &Fixture, id: &str) -> Vec<serde_json::Value> {

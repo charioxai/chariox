@@ -130,15 +130,7 @@ impl KernelRuntimeState {
         }
         let now = crate::session::unix_epoch_ms();
         let payload = match name {
-            "chariox.events.inbox" => {
-                serde_json::to_value(self.owned.durable_state_store.agent_work_inbox(
-                    room,
-                    actor,
-                    args["after"].as_u64().unwrap_or(0),
-                    self.owned.sudo_work_task(room, actor).as_deref(),
-                )?)
-                .map_err(|_| ledger::error("inbox encoding failed"))?
-            }
+            "chariox.events.inbox" => self.read_agent_inbox(room, actor, &args)?,
             "chariox.events.subscriptions" => {
                 serde_json::json!({"task":task,"registrations":self.owned.durable_state_store.agent_registrations(task_id)?})
             }
@@ -202,32 +194,7 @@ impl KernelRuntimeState {
                     })?;
                 serde_json::json!({"registration_id":id})
             }
-            "chariox.events.ack" => {
-                let seq = args["sequence"]
-                    .as_u64()
-                    .ok_or_else(|| ledger::error("sequence required"))?;
-                if let Some(work) = self.owned.sudo_work_task(room, actor) {
-                    if !self
-                        .owned
-                        .durable_state_store
-                        .agent_work_inbox(room, actor, seq.saturating_sub(1), Some(&work))?
-                        .iter()
-                        .any(|event| event.sequence == seq)
-                    {
-                        return Err(ledger::error("event is deferred outside this sudo work"));
-                    }
-                }
-                self.owned
-                    .durable_state_store
-                    .agent_lifecycle(Operation::Ack {
-                        room: room.into(),
-                        agent: actor.into(),
-                        sequence: seq,
-                        handled: args["handled"].as_bool().unwrap_or(false),
-                        now,
-                    })?;
-                serde_json::json!({"acknowledged":seq})
-            }
+            "chariox.events.ack" => self.ack_agent_inbox(room, actor, &args, now)?,
             "chariox.events.yield" => {
                 let ids: Vec<String> = serde_json::from_value(args["registration_ids"].clone())
                     .map_err(|_| ledger::error("registration_ids required"))?;

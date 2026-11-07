@@ -292,20 +292,23 @@ impl KernelRuntimeState {
     }
 
     /// Saves the subscription here, and on the source's kernel when it is another one.
-    async fn subscribe_agent_notification(
+    pub(super) async fn subscribe_agent_notification(
         &self,
         owner: &str,
         home: &str,
         subscription: WorkflowNotificationSubscription,
     ) -> Result<(), DaemonError> {
-        let NotificationOutcome::Subscription(subscription) = self
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::RemoteAttach { subscription })?
+        let remote = subscription.source_kernel_id != home;
+        let NotificationOutcome::Subscription(subscription) =
+            self.owned.durable_state_store.notify(if remote {
+                NotificationOperation::AttachToRemoteSource { subscription }
+            } else {
+                NotificationOperation::RemoteAttach { subscription }
+            })?
         else {
             return Err(store::error("unexpected notification response"));
         };
-        if subscription.source_kernel_id == home {
+        if !remote {
             return Ok(());
         }
         let response = self
@@ -321,14 +324,21 @@ impl KernelRuntimeState {
             .await;
         if matches!(&response, Ok(RelayPeerResponse::WorkflowNotificationSubscribed { subscription: s }) if *s == subscription)
         {
+            self.owned.durable_state_store.notify(
+                NotificationOperation::RemoteInstallConfirmed {
+                    owner: owner.into(),
+                    subscription_id: subscription.subscription_id,
+                },
+            )?;
             return Ok(());
         }
+        // The source may or may not have installed it: the row goes back to what it was and
+        // the source is reconciled, never assumed empty.
         self.owned
             .durable_state_store
-            .notify(NotificationOperation::Detach {
-                subscription_id: subscription.subscription_id,
+            .notify(NotificationOperation::RemoteInstallFailed {
                 owner: owner.into(),
-                kernel: subscription.target_kernel_id,
+                subscription_id: subscription.subscription_id,
             })?;
         Err(store::error(
             "source not available; refresh sources and retry",
