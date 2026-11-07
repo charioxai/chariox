@@ -19,6 +19,7 @@ struct Pair {
     server_tx: oneshot::Sender<()>,
     server_task: tokio::task::JoinHandle<()>,
     source_id: String,
+    source_workflow: String,
     publication: String,
 }
 
@@ -116,6 +117,7 @@ async fn pair(name: &str) -> Pair {
         server_tx,
         server_task,
         source_id: source_record.source_id,
+        source_workflow: a,
         publication,
     }
 }
@@ -167,6 +169,17 @@ impl Pair {
             .1
             .iter()
             .any(|s| s.source_id == self.source_id)
+    }
+    /// A run of the followed workflow ends on the source kernel.
+    fn complete_run(&mut self, run: &str) {
+        let workflow = self.source_workflow.clone();
+        self.source.complete(
+            &workflow,
+            run,
+            None,
+            crate::session::WorkflowRunStatus::Completed,
+            "done",
+        );
     }
     async fn stop_source(&mut self) {
         let (stop, connector) = self.source_connection.take().unwrap();
@@ -315,7 +328,10 @@ async fn land_late(pair: &Pair, request: RelayPeerRequest) {
         .await;
 }
 
-fn unsubscribe(subscription: &WorkflowNotificationSubscription) -> RelayPeerRequest {
+fn unsubscribe(
+    subscription: &WorkflowNotificationSubscription,
+    _generation: Generation,
+) -> RelayPeerRequest {
     RelayPeerRequest::UnsubscribeWorkflowNotifications {
         protocol_version: VERSION,
         subscription_id: subscription.subscription_id.clone(),
@@ -385,7 +401,7 @@ fn a_stale_cleanup_that_lands_after_a_newer_attach_is_repaired() {
         let item = due.remove(0);
         let subscription = pair.attach_now().await.unwrap();
         // The cleanup was already sent: it lands after the newer attach and drops its row.
-        land_late(&pair, unsubscribe(&subscription)).await;
+        land_late(&pair, unsubscribe(&subscription, item.generation)).await;
         assert!(!pair.source_holds());
         pair.target
             .store
@@ -552,6 +568,81 @@ fn a_detach_the_source_did_not_confirm_does_not_replace_a_newer_attach() {
             Some(&subscription),
             "the source is asked to hold the current follow, not to drop it"
         );
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_cleanup_in_transit_that_lands_after_a_newer_attach_is_ignored_at_the_source() {
+    on_a_big_stack(async {
+        let mut pair = pair("wfgen-transit").await;
+        pair.stop_source().await;
+        assert!(pair.attach_now().await.is_err());
+        pair.start_source().await;
+        pair.target_runtime
+            .refresh_notification_sources_from_inventory("local", true)
+            .await
+            .unwrap();
+        let item = claim(&pair, later()).remove(0);
+        let subscription = pair.attach_now().await.unwrap();
+        // The cleanup was sent before the newer attach and lands after it.
+        land_late(&pair, unsubscribe(&subscription, item.generation)).await;
+        assert!(
+            pair.source_holds(),
+            "the source disabled the follow the newer attach installed"
+        );
+        assert!(pair.destination_holds());
+        // A run ends inside the interval the stale cleanup would have left the follow disabled.
+        pair.complete_run("inside-the-window");
+        assert_eq!(
+            pair.source.store.receipts(),
+            1,
+            "the occurrence completed after the late cleanup has no receipt"
+        );
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_repeat_attach_that_fails_keeps_the_reinstall_the_source_still_owes() {
+    on_a_big_stack(async {
+        let mut pair = pair("wfgen-repeat").await;
+        pair.stop_source().await;
+        assert!(pair.attach_now().await.is_err());
+        pair.start_source().await;
+        pair.target_runtime
+            .refresh_notification_sources_from_inventory("local", true)
+            .await
+            .unwrap();
+        let item = claim(&pair, later()).remove(0);
+        let subscription = pair.attach_now().await.unwrap();
+        // The old cleanup's answer arrives late: the current follow is owed to the source again.
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteReconcileSettled {
+                owner: item.owner,
+                subscription_id: item.subscription_id,
+                generation: item.generation,
+                matched: true,
+            })
+            .unwrap();
+        assert_eq!(pair.target.store.unconfirmed_installs(), 1);
+        // The same attach is repeated and its request goes unanswered.
+        pair.stop_source().await;
+        assert!(pair.attach_now().await.is_err());
+        assert_eq!(
+            pair.target.store.unconfirmed_installs(),
+            1,
+            "the failed repeat deleted the reinstall nobody had confirmed"
+        );
+        // The entry survives a reconnect and reaches the source.
+        pair.start_source().await;
+        pair.target_runtime
+            .reconcile_remote_notification_installs(later())
+            .await;
+        assert!(pair.source_holds() && pair.destination_holds());
+        assert_eq!(pair.target.store.unconfirmed_installs(), 0);
+        let _ = subscription;
         pair.finish().await;
     });
 }

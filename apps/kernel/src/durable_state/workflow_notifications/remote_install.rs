@@ -371,6 +371,13 @@ impl DurableKernelStateStore {
             .query_row("SELECT count(*) FROM workflow_notification_remote_installs WHERE state='reconcile'",[],|r|r.get(0))
             .unwrap()
     }
+    /// The receipts of workflow notifications this kernel holds as a source.
+    pub(crate) fn receipts(&self) -> i64 {
+        self.lock_connection("test")
+            .unwrap()
+            .query_row("SELECT count(*) FROM app_outbox WHERE source_kind='workflow_completion'",[],|r|r.get(0))
+            .unwrap()
+    }
     /// Detaches no source kernel has confirmed yet, read without claiming them.
     pub(crate) fn unconfirmed_detaches(&self) -> i64 {
         self.lock_connection("test")
