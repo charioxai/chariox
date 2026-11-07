@@ -72,6 +72,15 @@ test("subscribe --source follows one source by id with no targets, and by displa
     { SubscribeEvents: { targets: [], sources: ["owner_action_b"] } },
   ])
 })
+test("subscribe --source also resolves the name that events sources prints, unless two sources share it", async () => {
+  const run = { ...SOURCES[0], kind: "workflow_run", source_id: "run_finished_a", name: "flow", display_name: "flow run finished" }
+  const sent: unknown[] = []
+  const send = (sources: unknown[]) => async (request: unknown) => { sent.push(request); return "ListNotificationSources" in (request as object) ? { NotificationSources: { sources } } : SUBSCRIPTION }
+  await runEventsVerb("subscribe", new Map<string, string | true>([["--source", "flow"]]), [], send([...SOURCES, run]), () => {})
+  assert.deepEqual(sent.filter(request => "SubscribeEvents" in (request as object)), [{ SubscribeEvents: { targets: [], sources: ["run_finished_a"] } }])
+  const twin = { ...run, source_id: "run_finished_b" }
+  await assert.rejects(runEventsVerb("subscribe", new Map<string, string | true>([["--source", "flow"]]), [], send([...SOURCES, run, twin]), () => {}), /several sources are named "flow".*run_finished_a.*run_finished_b/)
+})
 test("a source the grant cannot follow is refused before anything is subscribed, and --source takes no other target flag", async () => {
   const sent: unknown[] = []
   const send = async (request: unknown) => { sent.push(request); return { NotificationSources: { sources: SOURCES } } }
