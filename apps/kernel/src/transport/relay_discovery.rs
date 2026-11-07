@@ -814,6 +814,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unreachable_relay_is_not_dialed_again_on_every_poll() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = std::sync::Arc::new(AtomicU64::new(0));
+        let counter = std::sync::Arc::clone(&accepted);
+        let server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::Relaxed);
+                drop(stream);
+            }
+        });
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some(format!("ws://{addr}"));
+        config.relay_token = Some("metadata-fixture-token".to_string());
+        config.relay_request_timeout_ms = 1_000;
+        for _ in 0..5 {
+            let _ = list_live_machines(&config).await;
+        }
+        server.abort();
+        let dials = accepted.load(Ordering::Relaxed);
+        assert!(
+            dials <= RELAY_METADATA_ATTEMPTS as u64,
+            "five polls of a relay that drops every connection dialed it {dials} times"
+        );
+    }
+
+    #[tokio::test]
     async fn metadata_query_rejects_response_for_another_request() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
