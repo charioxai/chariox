@@ -495,6 +495,7 @@ mod agent_trigger_notification;
 mod agent_trigger_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
+mod app_event_notifications;
 mod attachment_owned_state;
 mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;

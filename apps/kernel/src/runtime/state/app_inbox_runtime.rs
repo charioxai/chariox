@@ -133,6 +133,7 @@ impl KernelRuntimeState {
             })
             .await?;
         self.request_app_wake_pump();
+        self.schedule_app_event_pump();
         Ok(matches!(
             accepted,
             AppInboxOutcome::Accepted(Accepted::Duplicate(_))

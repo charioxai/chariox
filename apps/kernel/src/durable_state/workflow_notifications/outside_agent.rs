@@ -48,7 +48,7 @@ pub(super) fn append_in(
             EventRefs::default(),
             format!("{} finished", env.display_name),
         ),
-        NotificationSourceKind::WorkflowRun => {
+        NotificationSourceKind::WorkflowRun | NotificationSourceKind::AppEvent => {
             (None, EventRefs::default(), env.display_name.clone())
         }
         NotificationSourceKind::OwnerAction => {

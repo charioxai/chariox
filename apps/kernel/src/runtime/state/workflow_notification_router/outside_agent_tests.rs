@@ -54,7 +54,7 @@ pub(super) fn restore(kernel: &KernelRuntimeState, f: &Fixture) {
         .write()
         .restore_session(f.sessions.get_session(&f.session).unwrap());
 }
-async fn wait(router: &CommandRouter, grant: &str, since: u64) -> Vec<OutsideEvent> {
+pub(super) async fn wait(router: &CommandRouter, grant: &str, since: u64) -> Vec<OutsideEvent> {
     match dispatch(
         router,
         grant,

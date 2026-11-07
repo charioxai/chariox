@@ -4,7 +4,7 @@ use chariox_app_runtime::{
     app_inbox::{self, Accepted, InboxCounts, InboxError, InboxItem, InboxRoute, InboxState},
     installation::InstallationRegistry,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, Transaction};
 use serde_json::Value;
 use std::sync::mpsc;
 
@@ -192,6 +192,9 @@ fn apply(
             let tx = connection.transaction()?;
             let accepted =
                 app_inbox::accept_in(&tx, &route, &occurrence_id, &payload, generation, now_ms)?;
+            if matches!(accepted, Accepted::New(_)) {
+                publish_to_followers_in(&tx, &route, &occurrence_id, &payload, now_ms);
+            }
             tx.commit()?;
             Ok(AppInboxOutcome::Accepted(accepted))
         }
@@ -233,6 +236,38 @@ fn apply(
     }
 }
 
+/// The grants that follow the route's source receive the accepted event in the commit that
+/// accepted it. A failure here never costs the App its event: the followers' part rolls back.
+fn publish_to_followers_in(
+    tx: &Transaction<'_>,
+    route: &InboxRoute,
+    occurrence_id: &str,
+    payload: &Value,
+    now_ms: u64,
+) {
+    if tx.execute_batch("SAVEPOINT app_event_followers").is_err() {
+        return;
+    }
+    let published = super::workflow_notifications::app_event::emit_in(
+        tx,
+        &route.owner_id,
+        &route.installation_id,
+        &route.route_id,
+        &route.event_name,
+        occurrence_id,
+        payload,
+        now_ms,
+    );
+    if let Err(error) = published {
+        eprintln!(
+            "chariox: an App event reached no follower of route {}: {error}",
+            route.route_id
+        );
+        let _ = tx.execute_batch("ROLLBACK TO app_event_followers");
+    }
+    let _ = tx.execute_batch("RELEASE app_event_followers");
+}
+
 /// The owner's App log notice for an occurrence that settled as failed, in
 /// the transaction that settled it. `reason` is the last attempt's error
 /// (bounded; the handler's own error may be App text), or `None` when the
@@ -271,6 +306,32 @@ fn failed_notice_in(
 }
 
 impl DurableKernelStateStore {
+    /// The active routes of the owner's active installations: the Apps' incoming events an
+    /// outside agent may follow. Read on the query connection; a route changes only on the writer.
+    pub(crate) fn owner_app_event_routes(
+        &self,
+        owner: &str,
+    ) -> Result<Vec<InboxRoute>, InboxError> {
+        let connection = self
+            .lock_connection("durable_state.owner_app_event_routes")
+            .map_err(|_| InboxError::Corrupt)?;
+        let mut installations = connection.prepare(
+            "SELECT installation_id FROM app_installations WHERE owner_id=?1 AND active_json IS NOT NULL ORDER BY installation_id",
+        )?;
+        let installations = installations
+            .query_map([owner], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut routes = Vec::new();
+        for installation in installations {
+            routes.extend(
+                app_inbox::routes(&connection, owner, &installation)?
+                    .into_iter()
+                    .filter(|route| route.active),
+            );
+        }
+        Ok(routes)
+    }
+
     /// Every inbox route an event generator feeds for an active installation,
     /// for the kernel's claims. Read on the query connection; a route changes
     /// only on the writer.

@@ -29,7 +29,7 @@ export * from "./notes.js"
 /** MP-08 / MP-09 / MP-10 / MP-11: state changes pulled by an outside grant. */
 export type EventTarget = { kernel: string; session_id: string; agent_id?: string }
 /** A notification source the grant follows (protocol 1000). `available` is false once the source cannot emit. */
-export type EventSourceFollow = { source_id: string; display_name: string; kind: "workflow_exit" | "owner_action" | "workflow_run"; session_id: string; subscription_id: string; available: boolean }
+export type EventSourceFollow = { source_id: string; display_name: string; kind: "workflow_exit" | "owner_action" | "workflow_run" | "app_event"; session_id: string; subscription_id: string; available: boolean }
 export type EventSubscription = { subscription_id: string; targets: EventTarget[]; sources?: EventSourceFollow[]; kernels: { kernel: string; online: boolean; error?: { code: string; message: string } }[]; acknowledged_cursor: number; ended: string | null }
 /** A pending decision the holder may answer, as the person sees it (protocol 928). */
 export type EventQuestion = {
@@ -53,6 +53,6 @@ export type OutsideEvent = {
   | { type: "gap"; value: { kernel: string; dropped: number; from: number; to: number } }
   | { type: "kernel_health"; value: { online: boolean; reason: string } }
   | { type: "subscription_ended"; value: { reason: string } }
-  | { type: "notification"; value: { source_id: string; source_kind: "workflow_exit" | "owner_action" | "workflow_run"; display_name: string; occurrence_id: string; output: { message: string; artifacts?: unknown[] }; deadline_ms: number } }
+  | { type: "notification"; value: { source_id: string; source_kind: "workflow_exit" | "owner_action" | "workflow_run" | "app_event"; display_name: string; occurrence_id: string; output: { message: string; artifacts?: unknown[] }; deadline_ms: number } }
 )
 export type EventsBatch = { events: OutsideEvent[]; next_cursor: number; oldest_cursor: number; timed_out: boolean }

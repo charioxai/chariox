@@ -128,6 +128,7 @@ impl KernelRuntimeState {
                 }
             }
         }
+        self.owned.sync_app_event_notification_sources(owner)?;
         let home = self.owned.config_projection.snapshot().daemon_id;
         let (mut sources, _, _) = self
             .owned

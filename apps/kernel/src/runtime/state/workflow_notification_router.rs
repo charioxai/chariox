@@ -26,22 +26,34 @@ pub(super) fn source_available(
     sessions: &SessionService,
     source: &WorkflowNotificationSource,
 ) -> bool {
-    sessions.get_session(&source.session_id).is_ok_and(|s| {
-        s.owner_user_id() == source.owner_user_id
-            && s.host_daemon_id() == source.kernel_id
-            && s.status() != crate::session::SessionStatus::Ended
-    }) && match source.kind {
-        crate::local::NotificationSourceKind::OwnerAction => true,
-        crate::local::NotificationSourceKind::WorkflowRun => sessions
-            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
-            .is_ok(),
-        crate::local::NotificationSourceKind::WorkflowExit => sessions
-            .resolve_workflow_ref(&source.session_id, &source.workflow_id)
-            .is_ok_and(|workflow| {
-                workflow
-                    .node(&source.exit_node_id)
-                    .is_some_and(|node| node.can_complete_workflow_run())
-            }),
+    let in_live_room = || {
+        sessions.get_session(&source.session_id).is_ok_and(|s| {
+            s.owner_user_id() == source.owner_user_id
+                && s.host_daemon_id() == source.kernel_id
+                && s.status() != crate::session::SessionStatus::Ended
+        })
+    };
+    match source.kind {
+        // An App's event source belongs to the owner's installation, not to a Room: listing
+        // keeps it enabled exactly while the installation and the route exist.
+        crate::local::NotificationSourceKind::AppEvent => true,
+        crate::local::NotificationSourceKind::OwnerAction => in_live_room(),
+        crate::local::NotificationSourceKind::WorkflowRun => {
+            in_live_room()
+                && sessions
+                    .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+                    .is_ok()
+        }
+        crate::local::NotificationSourceKind::WorkflowExit => {
+            in_live_room()
+                && sessions
+                    .resolve_workflow_ref(&source.session_id, &source.workflow_id)
+                    .is_ok_and(|workflow| {
+                        workflow
+                            .node(&source.exit_node_id)
+                            .is_some_and(|node| node.can_complete_workflow_run())
+                    })
+        }
     }
 }
 /// Summaries name each source from its workflow's current definition: the
@@ -55,6 +67,20 @@ pub(super) fn summaries(
         .iter()
         .filter(|source| source.enabled)
         .map(|source| {
+            if source.kind == NotificationSourceKind::AppEvent {
+                return WorkflowNotificationSourceSummary {
+                    kind: source.kind,
+                    source_id: source.source_id.clone(),
+                    kernel_id: source.kernel_id.clone(),
+                    session_id: source.session_id.clone(),
+                    workflow_id: source.workflow_id.clone(),
+                    exit_node_id: source.exit_node_id.clone(),
+                    exit_ordinal: 0,
+                    name: source.name.clone(),
+                    display_name: source.display_name.clone(),
+                    available: source.available,
+                };
+            }
             let notifying = sources
                 .iter()
                 .filter(|other| {
@@ -602,6 +628,8 @@ impl KernelRuntimeOwnedState {
 
 #[cfg(test)]
 mod outside_agent_admission_tests;
+#[cfg(test)]
+mod outside_agent_app_event_tests;
 #[cfg(test)]
 mod outside_agent_follow_tests;
 #[cfg(test)]

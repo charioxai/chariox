@@ -1,12 +1,12 @@
 /** MP-08 / MP-10: local 998 and encrypted peer 437 completion notifications. */
 export interface WorkflowNotificationSource {
-  kind: "workflow_exit" | "owner_action" | "workflow_run";
+  kind: "workflow_exit" | "owner_action" | "workflow_run" | "app_event";
   source_id: string; owner_user_id: string; kernel_id: string;
   session_id: string; workflow_id: string; exit_node_id: string; enabled: boolean; available: boolean;
   name: string; exit_ordinal: number; display_name: string
 }
 export interface WorkflowNotificationSourceSummary {
-  kind: "workflow_exit" | "owner_action" | "workflow_run";
+  kind: "workflow_exit" | "owner_action" | "workflow_run" | "app_event";
   source_id: string; kernel_id: string; session_id: string; workflow_id: string;
   exit_node_id: string; exit_ordinal: number; name: string; display_name: string; available: boolean
 }

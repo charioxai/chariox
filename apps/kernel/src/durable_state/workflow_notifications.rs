@@ -2,6 +2,9 @@
 //! Completion/outbox, ACK/inbox and queue/receipt each commit atomically.
 pub(crate) mod agent_lineage;
 pub(super) mod agent_steer;
+pub(crate) mod app_event;
+#[cfg(test)]
+mod app_event_tests;
 mod completion;
 pub(crate) mod naming;
 pub(crate) mod outside_agent;
@@ -117,6 +120,7 @@ pub(super) fn exit_key(kind: crate::local::NotificationSourceKind, exit_node_id:
     const RESERVED: char = '\u{1}';
     match kind {
         crate::local::NotificationSourceKind::WorkflowRun => format!("{RESERVED}run"),
+        crate::local::NotificationSourceKind::AppEvent => format!("{RESERVED}app{exit_node_id}"),
         _ if exit_node_id.starts_with(RESERVED) => format!("{RESERVED}exit{exit_node_id}"),
         _ => exit_node_id.to_owned(),
     }
@@ -883,7 +887,11 @@ fn require_source_workflow(
     source: &WorkflowNotificationSource,
     expected: Option<&str>,
 ) -> Result<(), DaemonError> {
-    if source.kind == crate::local::NotificationSourceKind::OwnerAction {
+    if matches!(
+        source.kind,
+        crate::local::NotificationSourceKind::OwnerAction
+            | crate::local::NotificationSourceKind::AppEvent
+    ) {
         return Ok(());
     }
     // A run source follows the workflow's runs, whatever its definition is now.

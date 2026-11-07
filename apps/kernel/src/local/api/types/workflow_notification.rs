@@ -142,4 +142,6 @@ pub enum NotificationSourceKind {
     OwnerAction,
     /// Any run of a workflow that ended, completed or failed.
     WorkflowRun,
+    /// An event an installed App's route accepted.
+    AppEvent,
 }
