@@ -211,7 +211,7 @@ test("a burst of backspaces and Enter keeps every key and its order", async () =
     await kernel.controller.idle()
     assert.ok(kernel.field() === "helloagain", `field ${kernel.field()}`)
     assert.deepEqual(kernel.log.filter(entry => entry.startsWith("k:") && entry !== "k:Backspace"), ["k:Enter"])
-    assert.ok(kernel.log.indexOf("k:Enter") < kernel.log.findIndex(entry => entry === "t:a"), "Enter stays before the later text")
+    assert.ok(kernel.log.indexOf("k:Enter") < kernel.log.findIndex(entry => entry === "t:again"), "Enter stays before the later text")
     assert.deepEqual(kernel.notices, [])
   } finally { await kernel.controller.dispose() }
 })

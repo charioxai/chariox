@@ -9,6 +9,10 @@ import { appHostOperationId } from "./kernel-approval-controller.js"
 export type UserAppViewClient = { send(request: any): Promise<any> }
 export type UserAppViewPanel = { open: boolean; text: string }
 type BoundView = { client: UserAppViewClient; view: UserAppView }
+// A person types faster than the kernel answers, so keys wait here in order. Text keys merge into one
+// input, so only a stuck kernel can reach the bound, and then the person is told instead of losing keys silently.
+const MAX_PENDING_INPUTS = 4096
+const MAX_INPUT_TEXT = 16384
 const usage = "/app views | /app view open INSTALLATION | show VIEW | close [VIEW] | call METHOD 'JSON' | approvals | answer INTERACTION CHOICE"
 function field(response: any, name: string): any {
   if (!response || !(name in response)) throw new Error("The kernel did not confirm the App request")
@@ -34,13 +38,15 @@ export function createUserAppViewController(deps: {
   let open = false, disposed = false, text = "", active: BoundView | undefined
   const created = new Set<BoundView>()
   let work: Promise<void> = Promise.resolve(), queued = 0
+  const pendingInputs: { bound: BoundView; input: KernelBrowserInput }[] = []
+  let draining = false
   let refreshPending = false
   const emit = () => deps.onView({ open, text })
   const current = (client: UserAppViewClient) => {
     if (disposed || deps.client() !== client) throw new Error("This App view belongs to the previous kernel; select a view on the current kernel")
   }
   const show = (value: string) => { text = value; if (!open) { open = true; deps.onOpen() }; emit() }
-  const hide = () => { if (open) { open = false; deps.onClose(); emit() } }
+  const hide = () => { if (open) { open = false; pendingInputs.length = 0; deps.onClose(); emit() } }
   async function list(client: UserAppViewClient): Promise<UserAppView[]> {
     current(client)
     const result = field(await client.send(listUserAppViewsRequest()), "UserAppViewsListed")
@@ -55,26 +61,51 @@ export function createUserAppViewController(deps: {
       throw new Error("This App view has ended; open a new view")
     return found
   }
-  async function refresh(bound: BoundView) {
-    const view = await owned(bound)
+  async function refresh(bound: BoundView, known?: UserAppView) {
+    const view = known ?? await owned(bound)
     if (!view.browser) throw new Error("This view uses native rendering. Open a new TUI view with /app view open INSTALLATION")
     const result = field(await bound.client.send(kernelBrowserRequest({ op: "snapshot", ...view.browser })), "KernelBrowser").result
     current(bound.client)
     if (result?.generation !== view.browser.generation) throw new Error("The App browser generation has ended")
     if (active === bound && open) { text = formatUserAppViewOutline(view, result.snapshot); emit() }
   }
-  function enqueue(task: () => Promise<void>) {
-    if (queued >= 32) { deps.notify("App input is busy; wait for the view to catch up"); return }
+  function run(task: () => Promise<void>) {
     queued++
     work = work.then(task).catch(() => deps.notify("App action failed; check the current view with /app views")).finally(() => { queued-- })
   }
-  async function input(bound: BoundView, value: KernelBrowserInput) {
-    if (!open || active !== bound || disposed) return
-    const view = await owned(bound)
-    if (!open || active !== bound || !view.browser) return
-    field(await bound.client.send(kernelBrowserRequest({ op: "input", ...view.browser, input: value })), "KernelBrowser")
-    current(bound.client)
-    await refresh(bound)
+  function enqueue(task: () => Promise<void>) {
+    if (queued >= 32) { deps.notify("App input is busy; wait for the view to catch up"); return }
+    run(task)
+  }
+  /** Sends every waiting input in order, then reads the view once; keys typed meanwhile form the next batch. */
+  async function drainInputs() {
+    try {
+      while (pendingInputs.length) {
+        const bound = pendingInputs[0]!.bound
+        const view = open && active === bound && !disposed ? await owned(bound) : undefined
+        if (view?.browser && open && active === bound) {
+          while (pendingInputs[0]?.bound === bound && open && active === bound) {
+            const { input } = pendingInputs.shift()!
+            field(await bound.client.send(kernelBrowserRequest({ op: "input", ...view.browser, input })), "KernelBrowser")
+            current(bound.client)
+          }
+          if (!pendingInputs.length) await refresh(bound, view)
+        } else while (pendingInputs[0]?.bound === bound) pendingInputs.shift()
+      }
+    } catch (error) {
+      pendingInputs.length = 0
+      throw error
+    } finally { draining = false }
+  }
+  function sendInput(bound: BoundView, input: KernelBrowserInput) {
+    const tail = pendingInputs.at(-1)
+    if (input.kind === "text" && tail?.bound === bound && tail.input.kind === "text" && tail.input.text.length + input.text.length <= MAX_INPUT_TEXT) {
+      tail.input = { kind: "text", text: tail.input.text + input.text }
+      return
+    }
+    if (pendingInputs.length >= MAX_PENDING_INPUTS) { deps.notify("App input is busy; wait for the view to catch up"); return }
+    pendingInputs.push({ bound, input })
+    if (!draining) { draining = true; run(drainInputs) }
   }
   async function close(id?: string) {
     const bound = id ? { client: deps.client(), view: (await list(deps.client())).find(v => v.view_id === id)! } : active
@@ -159,10 +190,10 @@ export function createUserAppViewController(deps: {
     else if (!event.ctrl && !event.meta && !event.alt && active) {
       const bound = active, key = keys[event.name]
       if (event.shift && key) { deps.notify("Use unmodified navigation keys in this prototype"); return true }
-      if (key) enqueue(() => input(bound, { kind: "key", key }))
+      if (key) sendInput(bound, { kind: "key", key })
       else {
         const value = event.sequence || (event.name === "space" ? " " : Array.from(event.name).length === 1 ? (event.shift ? event.name.toUpperCase() : event.name) : "")
-        if (value && value.length <= 16384 && !/[\u0000-\u001f\u007f-\u009f]/.test(value)) enqueue(() => input(bound, { kind: "text", text: value }))
+        if (value && value.length <= 16384 && !/[\u0000-\u001f\u007f-\u009f]/.test(value)) sendInput(bound, { kind: "text", text: value })
       }
     }
     return true
@@ -171,13 +202,13 @@ export function createUserAppViewController(deps: {
     if (!open) return false
     event.preventDefault(); event.stopPropagation()
     const value = event.rawText ?? event.text, bound = active
-    if (bound && value.length <= 16384 && !/[\u0000-\u001f\u007f-\u009f]/.test(value)) enqueue(() => input(bound, { kind: "text", text: value }))
+    if (bound && value.length <= 16384 && !/[\u0000-\u001f\u007f-\u009f]/.test(value)) sendInput(bound, { kind: "text", text: value })
     else deps.notify("App paste refused: use one line without terminal control characters")
     return true
   }
   // Read-only accessibility updates while visible; no restore after disconnect/restart.
   const timer = setInterval(() => {
-    if (!open || !active || refreshPending || queued) return
+    if (!open || !active || refreshPending || queued || draining) return
     refreshPending = true
     void refresh(active).catch(() => { hide(); deps.notify("App view unavailable; select a view on the current kernel") }).finally(() => { refreshPending = false })
   }, 750)
