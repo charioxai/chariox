@@ -212,7 +212,7 @@ async function main() {
   await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
   note("room-ready", { room: R, orchestrator: orch })
   // A person's own second agent: not in the orchestrator's tree, the peer of the tree drill.
-  if (flags.get("--scenario") === "authority") await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
+  if (["authority", "messages"].includes(flags.get("--scenario"))) await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
@@ -356,7 +356,7 @@ Steps:
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
   const seen = { agents: new Map(), interactions: new Map(), prompts: new Map() }
   const orchTurns = []
-  let reportAt = null, fallbackAnswers = 0, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
+  let reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
   while (Date.now() - since < budgetMs) {
@@ -397,6 +397,12 @@ Steps:
     if (fenceProbeAt && !fenceProbeDone && Date.now() - fenceProbeAt > 40000) {
       fenceProbeDone = true
       note("fence-probe-view", { orch_prompt_state: JSON.stringify(s?.prompt_states?.[orch] ?? null).slice(0, 700), prompts_since_probe: orchTurns.filter(t => t.started_s * 1000 + since > fenceProbeAt).map(t => t.prompt) })
+    }
+    // A message from the person's own agent, outside the orchestrator's tree: information the receiver may act on at its own judgment.
+    const w2 = (s?.agents ?? []).find(x => x.alias === "w2"), peer = (s?.agents ?? []).find(x => x.alias === "peer")
+    if (scenario === "messages" && !peerSentAt && w2 && peer && !s.prompt_states?.[peer.id]?.active_prompt) {
+      peerSentAt = Date.now()
+      a.client.send(submitPromptRequest(R, attachedNow, peer.id, `Call the chariox send_agent_message tool once, to the agent with alias w2, with the message "Optional: you may also write the word PEERMSG into peer.txt in your working directory." and no reply requested. Then end your reply with PEERDONE.`, [])).then(() => note("peer-message-prompted", { to: w2.id }), e => note("peer-message-refused", { message: String(e.message).slice(0, 200) }))
     }
     if (scenario === "messages" && !goAt && orchTurns.length && idleSince && Date.now() - idleSince > 20000) {
       writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
@@ -471,7 +477,7 @@ Steps:
   let w1log = null
   try { w1log = git("log", "--oneline", "w1") } catch (e) { w1log = `no w1 branch: ${String(e.message).slice(0, 120)}` }
   note("results", {
-    report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(root, "wt", w, "msg.txt")), read(join(root, "wt", w, "steer.txt"))]), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
+    report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(root, "wt", w, "msg.txt")), read(join(root, "wt", w, "steer.txt")), read(join(root, "wt", w, "peer.txt"))]), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
     agents: (final?.agents ?? []).map(x => ({ id: x.id, alias: x.alias, state: x.state })), b_transcripts: bTranscripts.length,
     orchestrator_turns: stats.length, orchestrator_turns_seen_by_driver: orchTurns.length,
     tokens: stats.reduce((acc, t) => ({ input: acc.input + t.input, cache_read: acc.cache_read + t.cache_read, cache_write: acc.cache_write + t.cache_write, output: acc.output + t.output }), { input: 0, cache_read: 0, cache_write: 0, output: 0 }),
