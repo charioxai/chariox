@@ -4,10 +4,17 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+/// What one tree last read as, and what followers were last told of it.
+struct Tree {
+    rev: u64,
+    fingerprint: u64,
+    published: Option<u64>,
+}
+
 #[derive(Default)]
 struct Revs {
     counter: u64,
-    trees: HashMap<(String, String), (u64, u64)>,
+    trees: HashMap<(String, String), Tree>,
 }
 
 fn revs() -> &'static Mutex<Revs> {
@@ -15,34 +22,51 @@ fn revs() -> &'static Mutex<Revs> {
     REVS.get_or_init(Mutex::default)
 }
 
-/// What `observe` found for one tree.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Observed {
-    pub(crate) rev: u64,
-    /// The tree differs from the last one seen, or was never seen.
-    pub(crate) changed: bool,
-}
-
 /// Records the fingerprint of the tree below `root` and returns its revision.
-pub(crate) fn observe(session: &str, root: &str, fingerprint: u64) -> Observed {
+/// A read says nothing about what followers were told: see `claim_publication`.
+pub(crate) fn observe(session: &str, root: &str, fingerprint: u64) -> u64 {
     let mut revs = revs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let key = (session.to_owned(), root.to_owned());
-    let seen = revs.trees.get(&key).copied();
-    if let Some((rev, _)) = seen.filter(|(_, last)| *last == fingerprint) {
-        return Observed {
-            rev,
-            changed: false,
-        };
+    if let Some(tree) = revs
+        .trees
+        .get(&key)
+        .filter(|tree| tree.fingerprint == fingerprint)
+    {
+        return tree.rev;
     }
     revs.counter = revs
         .counter
         .max(crate::session::unix_epoch_ms())
         .saturating_add(1);
     let rev = revs.counter;
-    revs.trees.insert(key, (rev, fingerprint));
-    Observed { rev, changed: true }
+    let published = revs.trees.get(&key).and_then(|tree| tree.published);
+    revs.trees.insert(
+        key,
+        Tree {
+            rev,
+            fingerprint,
+            published,
+        },
+    );
+    rev
+}
+
+/// Whether followers are still owed an event for this fingerprint of the tree;
+/// true once, until the tree changes again.
+pub(crate) fn claim_publication(session: &str, root: &str, fingerprint: u64) -> bool {
+    let mut revs = revs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(tree) = revs.trees.get_mut(&(session.to_owned(), root.to_owned())) else {
+        return false;
+    };
+    if tree.published == Some(fingerprint) {
+        return false;
+    }
+    tree.published = Some(fingerprint);
+    true
 }
 
 /// The roots of one session whose trees were seen.

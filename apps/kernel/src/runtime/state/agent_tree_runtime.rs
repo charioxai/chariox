@@ -35,13 +35,13 @@ impl KernelRuntimeState {
         Ok(LocalDaemonResponse::AgentTree { tree })
     }
 
-    /// The tree below `root` with its revision, and whether it is new or differs from the last one read.
+    /// The tree below `root` with its revision, and the fingerprint that revision stands for.
     fn read_agent_tree(
         &self,
         session: &crate::session::RuntimeSession,
         root: &str,
         tasks: &[crate::durable_state::agent_lifecycle::AgentTaskExecution],
-    ) -> Option<(AgentTree, bool)> {
+    ) -> Option<(AgentTree, u64)> {
         let store = &self.owned.durable_state_store;
         let held_by_agent = self.owned.decisions_held_by_agents(session.id());
         let mut tree = project_agent_tree(
@@ -71,9 +71,9 @@ impl KernelRuntimeState {
         serde_json::to_string(&(&tree.totals, &tree.nodes))
             .unwrap_or_default()
             .hash(&mut hasher);
-        let observed = tree_rev::observe(session.id(), root, hasher.finish());
-        tree.rev = observed.rev;
-        Some((tree, observed.changed))
+        let fingerprint = hasher.finish();
+        tree.rev = tree_rev::observe(session.id(), root, fingerprint);
+        Some((tree, fingerprint))
     }
 
     /// Tells followers of every tree that changed since the last pass to read it again.
@@ -112,9 +112,13 @@ impl KernelRuntimeState {
                 continue;
             };
             for root in roots {
-                let Some((tree, true)) = self.read_agent_tree(&session, &root, &tasks) else {
+                let Some((tree, fingerprint)) = self.read_agent_tree(&session, &root, &tasks)
+                else {
                     continue;
                 };
+                if !tree_rev::claim_publication(&session_id, &root, fingerprint) {
+                    continue;
+                }
                 if let Err(error) = self.owned.durable_state_store.outside_publish(
                     &session_id,
                     Some(&root),
