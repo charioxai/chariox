@@ -132,6 +132,13 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         continue;
                     }
                 };
+                // The owner was asked only because the turn ended with this work still open; its
+                // success answers that, and no model is left to acknowledge it.
+                let turn_end_block = success
+                    && t.state == ExecutionState::Blocked
+                    && t.reason == super::transitions::INVALID_TURN_END_REASON
+                    && t.goal.is_none()
+                    && t.wait.is_none();
                 let mut changed = false;
                 for o in &mut t.obligations {
                     if o.completion_source() == Some(&source)
@@ -143,6 +150,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     {
                         o.status = if t.state == ExecutionState::Cancelled {
                             "cancelled"
+                        } else if turn_end_block {
+                            "satisfied"
                         } else if success {
                             "settling"
                         } else {
@@ -165,6 +174,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         .map_err(sql)?;
                         changed = true;
                     }
+                }
+                if turn_end_block && !t.obligations.iter().any(AgentObligation::requires_resolution) {
+                    t.state = ExecutionState::Done;
+                    t.reason.clear();
                 }
                 if changed {
                     let e = occurrence(

@@ -193,6 +193,35 @@ fn a02_done_with_obligation_corrects_once_across_restart() {
     );
 }
 #[test]
+fn a02_turn_end_block_clears_when_its_delegate_finishes() {
+    let f = Fixture::new();
+    f.begin("p");
+    f.register();
+    let Outcome::Settled { task, .. } = f.settle("p", true) else {
+        panic!()
+    };
+    let id = task.pending_prompt_id.unwrap();
+    f.begin(&id);
+    let Outcome::Settled { task, .. } = f.settle(&id, true) else {
+        panic!()
+    };
+    assert_eq!(task.state, ExecutionState::Blocked);
+    f.apply(Operation::SourceOutcome {
+        now: 6,
+        public_answer: None,
+        room: "room".into(),
+        source: "child".into(),
+        occurrence: "terminal".into(),
+        success: true,
+    });
+    let task = f.task();
+    assert!(
+        task.state == ExecutionState::Done,
+        "a task blocked only because its turn ended with a delegate open must end when the delegate finishes, was {:?}",
+        task.state
+    );
+}
+#[test]
 fn a02_yield_commits_at_native_settlement_and_recovers_racing_result() {
     let f = Fixture::new();
     f.begin("p");
