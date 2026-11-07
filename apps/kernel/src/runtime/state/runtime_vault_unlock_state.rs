@@ -606,7 +606,7 @@ impl KernelRuntimeState {
                 seconds.max(1),
             );
             if let Some(problem) = problem.as_deref() {
-                interaction = interaction.noting_problem(problem);
+                interaction = interaction.showing_problem(problem);
             }
             let Some(resolution) = self
                 .await_vault_unlock_interaction(

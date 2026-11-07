@@ -435,9 +435,10 @@ impl RuntimeInteraction {
         self
     }
 
-    /// Asking again after an answer that did not work: the card leads with what went wrong.
-    pub(crate) fn noting_problem(mut self, problem: &str) -> Self {
-        self.message = format!("{problem}\n{}", self.message);
+    /// Asking again after an answer that did not work: the refusal takes the place of the
+    /// prompt sentence, so the card keeps its height.
+    pub(crate) fn showing_problem(mut self, problem: &str) -> Self {
+        self.message = problem.to_owned();
         self
     }
 
