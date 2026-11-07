@@ -516,8 +516,9 @@ async fn capability_deleting_an_app_grant_source_revokes_its_child() {
         .destroy_agent(&parent, "alice")
         .await
         .unwrap();
+    // A sub-agent ends with its parent, so the grant it got from the parent goes with it.
     assert!(
-        !bound(&room, &child).await,
+        room.app.lock().await.agents().get_agent(&child).is_err(),
         "MP-11: source deletion revokes delegated authority"
     );
     assert!(
