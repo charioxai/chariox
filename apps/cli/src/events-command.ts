@@ -42,7 +42,7 @@ export async function listSources(send: SendRequest): Promise<WorkflowNotificati
   return wire.NotificationSources.sources
 }
 // A source is named by id or, when no id matches, by display name or by the name `events sources` prints.
-function resolveSource(sources: readonly { source_id: string; display_name: string; name?: string }[], reference: string, refused: string): string {
+function resolveSource(sources: readonly { source_id: string; display_name: string; name?: string | undefined }[], reference: string, refused: string): string {
   if (sources.some(source => source.source_id === reference)) return reference
   const wanted = reference.toLowerCase()
   const byDisplay = sources.filter(source => source.display_name.toLowerCase() === wanted)
@@ -67,7 +67,9 @@ export async function unfollowSource(send: SendRequest, reference: string): Prom
   const current = subscriptionBody(await send({ GetEventSubscription: {} }))
   const followed = current.subscription.sources ?? []
   if (reference === "all") return followed.length ? subscriptionBody(await send({ UnsubscribeEvents: { sources: followed.map(source => source.source_id) } })) : current
-  const source = resolveSource(followed, reference, "is not followed; run chariox events subscription")
+  // A follow row carries the display name only; the offer knows the name `events sources` prints.
+  const names = new Map((await listSources(send)).map(source => [source.source_id, source.name]))
+  const source = resolveSource(followed.map(follow => ({ ...follow, name: names.get(follow.source_id) })), reference, "is not followed; run chariox events subscription")
   return subscriptionBody(await send({ UnsubscribeEvents: { sources: [source] } }))
 }
 
