@@ -979,3 +979,52 @@ async fn only_the_nodes_the_user_holds_a_decision_of_need_the_user() {
     assert!(nodes.contains(&("p".into(), Waiting, false)), "{nodes:?}");
     assert_eq!(users, 1);
 }
+
+// An orchestrating parent's inbox outgrows one page of rows; its settled decision events still close.
+#[tokio::test]
+async fn a_settled_decision_event_beyond_the_first_inbox_page_is_still_closed() {
+    use crate::durable_state::agent_lifecycle as ledger;
+    let t = tree(
+        "decision-long-inbox",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    for n in 0..ledger::INBOX_PAGE + 2 {
+        t.runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Occur(ledger::occurrence(
+                &t.room,
+                &t.p,
+                &t.g,
+                &format!("earlier-{n}"),
+                "message",
+                serde_json::json!({"message": format!("earlier {n}")}),
+            )))
+            .unwrap();
+    }
+    t.raise(permission("perm-long", &t.c)).await;
+    let open_decisions = |t: &Tree| {
+        t.runtime
+            .owned
+            .durable_state_store
+            .agent_work_inbox(&t.room, &t.p, ledger::INBOX_PAGE as u64, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "child_decision")
+            .filter(|event| !matches!(event.state.as_str(), "expired" | "handled"))
+            .count()
+    };
+    assert_eq!(open_decisions(&t), 1, "p was told");
+    let done = t
+        .runtime
+        .answer_child_decision(&t.room, &t.p, "perm-long", "allow")
+        .unwrap();
+    assert_eq!(done, ChildDecisionStatus::Answered);
+    assert_eq!(
+        open_decisions(&t),
+        0,
+        "the settled decision is still an open event in the holder's inbox"
+    );
+}

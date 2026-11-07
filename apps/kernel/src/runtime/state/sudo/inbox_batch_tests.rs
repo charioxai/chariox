@@ -421,3 +421,73 @@ async fn a_correlated_wake_inside_an_open_window_runs_and_an_unrelated_message_w
         .unwrap();
     assert_eq!(waiting.state, "pending", "{all:?}");
 }
+
+// An inbox keeps its closed rows, so the open rows of a long-lived agent lie beyond the first page.
+#[tokio::test]
+async fn an_open_event_beyond_the_first_page_of_closed_rows_is_still_read() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let pages = ledger::INBOX_PAGE as u64;
+    for n in 0..pages + 2 {
+        occur(
+            &f,
+            &format!("m{n}"),
+            "message",
+            serde_json::json!({"message": format!("payload {n}")}),
+        );
+    }
+    f.state
+        .ack_agent_inbox(
+            &room,
+            &agent,
+            &serde_json::json!({"through": pages, "handled": true}),
+            1,
+        )
+        .unwrap();
+    let read = f
+        .state
+        .read_agent_inbox(&room, &agent, &serde_json::json!({}))
+        .unwrap();
+    let events = read["events"].as_array().unwrap();
+    assert!(
+        events.len() == 2,
+        "the two open events were not returned: {} events, next_after {}, more {}",
+        events.len(),
+        read["next_after"],
+        read["more"]
+    );
+}
+
+// The read cursor of a wake starts before the oldest row still pending, so an ack through the
+// lead cannot settle an unread one; that holds when the pending row lies beyond the first page.
+#[tokio::test]
+async fn the_wake_cursor_starts_before_a_held_message_beyond_the_first_page() {
+    let f = fixture_with_options(None, true);
+    let (room, agent) = ids(&f);
+    let pages = ledger::INBOX_PAGE as u64;
+    for n in 0..pages {
+        occur(&f, &format!("old{n}"), "message", serde_json::json!({"message": "old"}));
+    }
+    f.state
+        .ack_agent_inbox(
+            &room,
+            &agent,
+            &serde_json::json!({"through": pages, "handled": true}),
+            1,
+        )
+        .unwrap();
+    let held = occur(&f, "held", "message", serde_json::json!({"message": "held"}));
+    let mut lead = occur(&f, "lead", "deadline_reached", serde_json::json!({}));
+    lead.urgent = true;
+    let cursor = f
+        .state
+        .owned
+        .durable_state_store
+        .agent_read_cursor(&lead, None)
+        .unwrap();
+    assert!(
+        cursor < held.sequence,
+        "the wake would have the agent read after {cursor}, past the held message {}",
+        held.sequence
+    );
+}
