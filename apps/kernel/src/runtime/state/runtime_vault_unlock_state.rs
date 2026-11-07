@@ -392,8 +392,7 @@ impl KernelRuntimeState {
         deadline: Option<tokio::time::Instant>,
     ) -> Result<super::PendingInteractionResolution, DaemonError> {
         let interaction_id = interaction.id().to_string();
-        let mut resolution_rx =
-            self.create_terminal_credential_interaction(session_id, interaction)?;
+        let resolution_rx = self.create_terminal_credential_interaction(session_id, interaction)?;
         // A cancelled waiter closes its popup instead of leaving it open to
         // silently discard a passphrase.
         let _close = CloseInteractionOnDrop {
@@ -401,11 +400,33 @@ impl KernelRuntimeState {
             session_id: session_id.to_string(),
             interaction_id: interaction_id.clone(),
         };
+        self.wait_for_vault_resolution(
+            session_id,
+            &interaction_id,
+            resolution_rx,
+            operation,
+            interaction_name,
+            deadline,
+        )
+        .await
+    }
+
+    /// Waits for the answer to a registered Vault question until its deadline;
+    /// an expired wait closes the card and ignores a queued late answer.
+    pub(super) async fn wait_for_vault_resolution(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        mut resolution_rx: tokio::sync::oneshot::Receiver<super::PendingInteractionResolution>,
+        operation: &'static str,
+        interaction_name: &'static str,
+        deadline: Option<tokio::time::Instant>,
+    ) -> Result<super::PendingInteractionResolution, DaemonError> {
         let resolution = match deadline {
             Some(deadline) => tokio::select! {
                 biased;
                 _ = tokio::time::sleep_until(deadline) => {
-                    self.timeout_runtime_interaction(session_id, &interaction_id).await?;
+                    self.timeout_runtime_interaction(session_id, interaction_id).await?;
                     // A queued late answer cannot extend an expired operation.
                     Ok(super::PendingInteractionResolution {
                         status: "timed_out", choice_id: None, reply: None,
@@ -561,12 +582,16 @@ impl KernelRuntimeState {
         }
 
         let mut problem: Option<String> = None;
+        // One card serves every attempt; it closes with this call, whichever way it ends.
+        let card_id = format!("vault-unlock-{}-{}", agent_id, rand::random::<u64>());
+        let mut card: Option<CloseInteractionOnDrop> = None;
         let (status, lock_after_operation) = loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let seconds = remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0);
             let mut interaction = vault_passphrase_interaction(
                 &self.vault_requester(session_id, agent_id),
                 agent_id,
+                &card_id,
                 &vault_config,
                 seconds.max(1),
             );
@@ -581,6 +606,7 @@ impl KernelRuntimeState {
                     &vault_path,
                     &mut unlocks,
                     deadline,
+                    &mut card,
                 )
                 .await?
             else {
@@ -593,6 +619,11 @@ impl KernelRuntimeState {
             let unlock_request_lock = vault_unlock_request_lock(&vault_path);
             let _mutation = unlock_request_lock.lock().await;
             if crate::secret::chariox_encrypted_vault_status(&vault_path)?.unlocked {
+                self.owned.settle_vault_unlocked(
+                    session_id,
+                    &card_id,
+                    crate::local::VaultUnlockSurface::Card,
+                )?;
                 return VaultUnlockGuard::for_existing_unlock(vault_path.clone());
             }
             let owner = self
@@ -616,6 +647,11 @@ impl KernelRuntimeState {
                 }
                 Err(error) => return Err(error),
             };
+            self.owned.settle_vault_unlocked(
+                session_id,
+                &card_id,
+                crate::local::VaultUnlockSurface::Card,
+            )?;
             break (status, lock_after_operation);
         };
         crate::logging::info_with_fields(
@@ -902,6 +938,7 @@ fn vault_unlock_choice_id(duration: crate::local::VaultUnlockDuration) -> String
 fn vault_passphrase_interaction(
     requester: &VaultRequester,
     agent_id: &str,
+    id: &str,
     config: &crate::config::UserCredentialVaultConfig,
     seconds: u64,
 ) -> crate::session::RuntimeInteraction {
@@ -931,7 +968,7 @@ fn vault_passphrase_interaction(
         Some(crate::session::RuntimeInteractionChoiceStyle::Danger),
     ));
     crate::session::RuntimeInteraction::new(
-        format!("vault-unlock-{}-{}", agent_id, rand::random::<u64>()),
+        id,
         agent_id,
         crate::session::RuntimeInteractionKind::Choice,
         crate::session::RuntimeInteractionLevel::Critical,
@@ -1250,6 +1287,7 @@ mod tests {
         let card = vault_passphrase_interaction(
             &requester(None, None),
             agent.id(),
+            "vault-unlock-test",
             &config.user_config.credential_vault,
             60,
         );
@@ -1360,7 +1398,8 @@ mod tests {
                         .map(|card| {
                             (
                                 card.id().to_owned(),
-                                card.message().starts_with("That is not the Vault passphrase"),
+                                card.message()
+                                    .starts_with("That is not the Vault passphrase"),
                             )
                         })
                         .collect::<Vec<_>>();
@@ -1373,7 +1412,8 @@ mod tests {
             })
         };
         let answer = |passphrase: &'static str| {
-            let (state, session_id, id) = (state.clone(), session_id.clone(), first.id().to_owned());
+            let (state, session_id, id) =
+                (state.clone(), session_id.clone(), first.id().to_owned());
             async move {
                 state
                     .resolve_terminal_runtime_interaction(
@@ -1388,10 +1428,10 @@ mod tests {
         };
         answer("not the passphrase").await.unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
-            while !visible()
-                .pop()
-                .is_some_and(|card| card.message().starts_with("That is not the Vault passphrase"))
-            {
+            while !visible().pop().is_some_and(|card| {
+                card.message()
+                    .starts_with("That is not the Vault passphrase")
+            }) {
                 tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             }
         })
@@ -1443,6 +1483,7 @@ mod tests {
         let interaction = vault_passphrase_interaction(
             &state.vault_requester(session.id(), agent.id()),
             agent.id(),
+            "vault-unlock-test",
             &config,
             60,
         );
@@ -1681,7 +1722,7 @@ mod tests {
                     .map(|_| ())
             })
         };
-        let next_card = |after: Option<String>| {
+        let next_card = |refused: bool| {
             let (state, session_id, agent_id) =
                 (state.clone(), session_id.clone(), agent_id.clone());
             async move {
@@ -1694,7 +1735,12 @@ mod tests {
                             .unwrap()
                             .active_interaction_for_agent(&agent_id)
                             .cloned()
-                            .filter(|card| Some(card.id().to_owned()) != after)
+                            .filter(|card| {
+                                !refused
+                                    || card
+                                        .message()
+                                        .starts_with("That is not the Vault passphrase")
+                            })
                         {
                             return card;
                         }
@@ -1730,10 +1776,11 @@ mod tests {
                     .unwrap()
             }
         };
-        let first = next_card(None).await;
+        let first = next_card(false).await;
         tokio::time::advance(std::time::Duration::from_secs(200)).await;
         answer(&first, "not the passphrase").await;
-        let again = next_card(Some(first.id().to_owned())).await;
+        let again = next_card(true).await;
+        assert_eq!(again.id(), first.id(), "the refusal shows in the same card");
         assert!(
             again
                 .message()
@@ -1867,7 +1914,13 @@ mod tests {
             unlock_policy: policy,
             ..Default::default()
         };
-        vault_passphrase_interaction(&requester(None, None), "agent-1", &config, 60)
+        vault_passphrase_interaction(
+            &requester(None, None),
+            "agent-1",
+            "vault-unlock-test",
+            &config,
+            60,
+        )
     }
 
     #[test]
@@ -2029,6 +2082,7 @@ mod tests {
                 vault_passphrase_interaction(
                     &requester,
                     agent_id,
+                    "vault-unlock-test",
                     &crate::config::UserCredentialVaultConfig::default(),
                     60,
                 ),
