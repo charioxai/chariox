@@ -288,3 +288,26 @@ fn a_restart_retires_every_follow_but_those_of_a_surviving_grant() {
     );
     cleanup(f);
 }
+
+/// A grant that follows a source it already follows keeps its one grant row.
+#[test]
+fn a_grant_following_a_source_again_keeps_one_subscription_and_grant_row() {
+    let mut f = Fixture::new();
+    let (a, _, _) = f.workflow("reviewer");
+    let source = f.source(&a);
+    let first = follow(&f, &source);
+    let again = follow(&f, &source);
+    assert_eq!(first.subscription_id, again.subscription_id);
+    let rows: i64 = f
+        .store
+        .lock_connection("test")
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM workflow_notification_grants WHERE subscription_id=?1",
+            [&first.subscription_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
+    cleanup(f);
+}
