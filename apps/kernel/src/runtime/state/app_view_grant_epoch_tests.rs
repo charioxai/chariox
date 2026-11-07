@@ -651,8 +651,7 @@ async fn an_unclaimed_view_is_refused_with_the_missing_claim_not_the_missing_app
     };
     let error = state
         .user_app_view_agent("alice", &view, &actor)
-        .err()
-        .expect("an unclaimed view refuses the agent's page call");
+        .expect_err("an unclaimed view refuses the agent's page call");
     assert_eq!(error.code, "AGENT_APP_NOT_GRANTED");
     assert!(
         error.message.contains("claim"),
