@@ -477,7 +477,9 @@ async fn detach_after_an_interrupted_repeat_attach(attempt_differs: bool) {
         "the settlement of the interrupted install restored a follow the user detached"
     );
     assert!(
-        due_reconciles(&f, u64::MAX / 2).is_empty(),
+        due_reconciles(&f, u64::MAX / 2)
+            .iter()
+            .all(|owed| owed.desired.is_none()),
         "the detach left install work that would subscribe the source again"
     );
     drop(runtime);

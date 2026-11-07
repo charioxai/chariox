@@ -232,8 +232,10 @@ fn undo_in(tx: &Transaction<'_>, owner: &str, subscription_id: &str) -> Result<(
 }
 
 /// A detach ends whatever install or reconciliation was still pending for the subscription, so
-/// neither a late settlement nor a retry can bring the follow back. Answers the generation the
-/// detach's own request to the source carries.
+/// neither a late settlement nor a retry can bring the follow back. A source kernel that is
+/// another one is owed the drop until it confirms it, so a stop between this commit and the
+/// request leaves the entry to ask later. Answers the generation the detach's own request to
+/// the source carries.
 pub(super) fn supersede_in(
     tx: &Transaction<'_>,
     owner: &str,
@@ -241,10 +243,19 @@ pub(super) fn supersede_in(
 ) -> Result<Generation, DaemonError> {
     let generation = bump_in(tx, owner, subscription_id)?;
     tx.execute("DELETE FROM workflow_notification_remote_installs WHERE owner_id=?1 AND subscription_id=?2",params![owner,subscription_id]).map_err(sql)?;
+    let held:Option<String>=tx.query_row("SELECT notification_json FROM app_automations WHERE source_kind='workflow_completion' AND owner_id=?1 AND automation_id=?2",params![owner,subscription_id],|r|r.get(0)).optional().map_err(sql)?;
+    if let Some(json) = held {
+        let sub: WorkflowNotificationSubscription = decode(&json)?;
+        if sub.source_kernel_id != sub.target_kernel_id {
+            // The request that follows this commit settles it; the entry is asked only if it does not.
+            tx.execute("INSERT INTO workflow_notification_remote_installs(owner_id,subscription_id,source_kernel_id,state,desired_json,next_attempt_at_ms,attempts,generation,dirty,established) VALUES (?1,?2,?3,'reconcile',NULL,CAST(strftime('%s','now') AS INTEGER)*1000+?4,0,?5,0,0)",params![owner,subscription_id,sub.source_kernel_id,RECONCILE_RETRY_MS,generation]).map_err(sql)?;
+        }
+    }
     Ok(generation)
 }
 
-/// A detach the source kernel did not confirm leaves a row there that must still go.
+/// The source kernel answered a detach. A confirmed one ends what was owed; one it did not
+/// confirm leaves a row there that must still go.
 pub(super) fn detach_settled_in(
     tx: &Transaction<'_>,
     owner: &str,
@@ -253,8 +264,13 @@ pub(super) fn detach_settled_in(
     generation: Generation,
     confirmed: bool,
 ) -> Result<(), DaemonError> {
-    if owns_in(tx, owner, subscription_id, generation)? && !confirmed {
-        tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs(owner_id,subscription_id,source_kernel_id,state,desired_json,next_attempt_at_ms,attempts,generation,dirty) VALUES (?1,?2,?3,'reconcile',NULL,0,0,?4,0)",params![owner,subscription_id,source_kernel,generation]).map_err(sql)?;
+    if !owns_in(tx, owner, subscription_id, generation)? {
+        return Ok(());
+    }
+    if confirmed {
+        finish_in(tx, owner, subscription_id, "reconcile")?;
+    } else {
+        tx.execute("INSERT OR REPLACE INTO workflow_notification_remote_installs(owner_id,subscription_id,source_kernel_id,state,desired_json,next_attempt_at_ms,attempts,generation,dirty,established) VALUES (?1,?2,?3,'reconcile',NULL,0,0,?4,0,0)",params![owner,subscription_id,source_kernel,generation]).map_err(sql)?;
     }
     Ok(())
 }
