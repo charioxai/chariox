@@ -3,6 +3,10 @@
 //! writes it into its own Vault under the same deterministic handle and publishes the
 //! profile authenticated only afterwards.
 use super::*;
+use std::collections::BTreeSet;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use crate::config::DaemonConfig;
 use crate::provider_vault_login::{self, VaultLoginBinding, VaultLoginMaterialization};
 
@@ -21,6 +25,61 @@ pub(crate) struct VaultLoginOpen<'a> {
     pub source_key_thumbprint: &'a str,
     pub source_kernel_id: &'a str,
     pub target_kernel_id: &'a str,
+}
+
+/// How long an undo waits for an import that is writing the same profile's login.
+const SLOT_ROLLBACK_WAIT: Duration = Duration::from_secs(5);
+
+/// The profiles whose Vault login an import or its undo is writing. The Vault handle of a
+/// login is the same for every context, so only one writer may hold a profile at a time.
+#[derive(Clone, Default)]
+pub(super) struct VaultLoginSlots(Arc<Mutex<BTreeSet<(String, String, String)>>>);
+
+struct VaultLoginSlot<'a> {
+    slots: &'a VaultLoginSlots,
+    key: (String, String, String),
+}
+
+impl VaultLoginSlots {
+    /// Takes the profile's slot, waiting at most `wait`; `None` while another writer holds it.
+    fn reserve(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        wait: Duration,
+    ) -> Option<VaultLoginSlot<'_>> {
+        let key = (
+            owner_user_id.to_string(),
+            provider.to_string(),
+            profile_id.to_string(),
+        );
+        let deadline = Instant::now() + wait;
+        loop {
+            let taken = self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key.clone());
+            if taken {
+                return Some(VaultLoginSlot { slots: self, key });
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for VaultLoginSlot<'_> {
+    fn drop(&mut self) {
+        self.slots
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.key);
+    }
 }
 
 impl ProviderAccountProfileRegistry {
@@ -137,15 +196,17 @@ impl ProviderAccountProfileRegistry {
                     .is_some_and(|binding| binding.vault_login && binding.matches(intent))
             })
         };
-        match existing(&*self.read_document()?) {
-            Some(true) => return Ok(receipt),
-            Some(false) => {
-                return Err(registry_error(
-                    operation,
-                    "refusing to replace an existing provider account profile",
-                ))
-            }
-            None => {}
+        // `Some(receipt)` when this same import already installed the login.
+        let check_slot_free = || match existing(&*self.read_document()?) {
+            Some(true) => Ok(Some(receipt.clone())),
+            Some(false) => Err(registry_error(
+                operation,
+                "refusing to replace an existing provider account profile",
+            )),
+            None => Ok(None),
+        };
+        if let Some(receipt) = check_slot_free()? {
+            return Ok(receipt);
         }
         let secret = provider_vault_login::open(
             open.target_private_key,
@@ -170,6 +231,20 @@ impl ProviderAccountProfileRegistry {
         let locator = ProviderAccountLocator::managed(provider, &managed_root)?;
         create_private_roots(&locator)?;
         crate::provider::verify_account_login(provider, &locator.environment(), &secret)?;
+        // The slot is taken only after the provider check, which can take long, and is never
+        // waited for: a second import of the same profile is told to retry.
+        let Some(_slot) =
+            self.vault_login_slots
+                .reserve(owner_user_id, provider, profile_id, Duration::ZERO)
+        else {
+            return Err(registry_error(
+                operation,
+                "another import of this provider account is in progress; try again",
+            ));
+        };
+        if let Some(receipt) = check_slot_free()? {
+            return Ok(receipt);
+        }
         // A login that fails the official check is never written. An orphan value left by a
         // crash after this point has no registered profile, so nothing can select it, and a
         // retry replaces it.
@@ -224,12 +299,19 @@ impl ProviderAccountProfileRegistry {
             Ok(())
         })();
         if let Err(error) = published {
-            let _ = crate::provider::remove_provider_account_credential(
-                config,
-                owner_user_id,
-                provider,
-                profile_id,
-            );
+            // The value written above is this attempt's own only while no profile holds the
+            // slot; a profile that appeared meanwhile owns the value now.
+            if self
+                .read_document()
+                .is_ok_and(|document| existing(&document).is_none())
+            {
+                let _ = crate::provider::remove_provider_account_credential(
+                    config,
+                    owner_user_id,
+                    provider,
+                    profile_id,
+                );
+            }
             return Err(error);
         }
         Ok(receipt)
@@ -245,6 +327,15 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<(), DaemonError> {
         let provider = normalize_provider(&receipt.provider)?;
         let profile_id = validate_profile_id(&receipt.profile_id)?;
+        let Some(_slot) =
+            self.vault_login_slots
+                .reserve(owner_user_id, provider, profile_id, SLOT_ROLLBACK_WAIT)
+        else {
+            return Err(registry_error(
+                "roll back account Vault login",
+                "another import of this provider account is in progress; try again",
+            ));
+        };
         let mut document = self.write_document()?;
         let Some(index) = document.profiles.iter().position(|stored| {
             stored.public.owner_user_id == owner_user_id

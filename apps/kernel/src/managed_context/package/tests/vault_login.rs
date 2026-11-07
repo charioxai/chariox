@@ -2,8 +2,8 @@
 //! managed-context package, sealed, and lands in the new machine's own Vault.
 use super::*;
 use crate::account_profile::{ProviderAccountAuthState, VaultLoginOpen, VaultLoginSeal};
-use crate::provider_vault_login::VaultLoginMaterialization;
 use crate::config::{CredentialVaultBackend, DaemonConfig};
+use crate::provider_vault_login::VaultLoginMaterialization;
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 
 const OWNER: &str = "owner-a";
@@ -509,7 +509,11 @@ fn two_imports_of_one_login_never_delete_the_winning_credential() {
         .iter()
         .filter(|(_, _, result)| result.is_ok())
         .collect();
-    assert_eq!(winners.len(), 1, "one import wins the profile: {outcomes:?}");
+    assert_eq!(
+        winners.len(),
+        1,
+        "one import wins the profile: {outcomes:?}"
+    );
     for (context_id, _, result) in &outcomes {
         if let Err(error) = result {
             let message = error.to_string();

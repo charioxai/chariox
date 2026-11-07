@@ -1038,6 +1038,8 @@ pub struct ProviderAccountProfileRegistry {
     /// Counts saved changes, so the relay connector republishes the logins it
     /// advertises when one is added, renamed or signed out after it connected.
     generation: Arc<AtomicU64>,
+    /// Profiles whose Vault login an import or its rollback is writing right now.
+    vault_login_slots: vault_login::VaultLoginSlots,
 }
 
 type ProviderAccountUsageRefreshKey = (String, String, String);
@@ -1124,6 +1126,7 @@ impl ProviderAccountProfileRegistry {
             document: Arc::new(RwLock::new(document)),
             usage_refresh_attempts: Arc::new(ProviderAccountUsageRefreshCoordinator::default()),
             generation: Arc::new(AtomicU64::new(0)),
+            vault_login_slots: vault_login::VaultLoginSlots::default(),
         };
         if changed {
             let document = registry.read_document()?;
