@@ -151,6 +151,7 @@ chariox events sources                                       # lists one source 
 chariox events subscribe --source "pull_request_updated@<owner>/<repository>"
 chariox events wait                                          # returns when an event arrives
 chariox events ack <cursor>
+chariox events unsubscribe --source "pull_request_updated@<owner>/<repository>"   # or --source all
 ```
 
 The notification arrives when the kernel accepts the event, before the App's handler runs, and its

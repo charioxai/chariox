@@ -218,7 +218,7 @@ output message; a repeated occurrence adds nothing, and an event nobody follows 
 A route that is removed or whose installation is no longer active leaves the listing. Only
 a local access grant sends it; a terminal, a reach caller and a `/sudo` window are
 refused as for the other event requests. `chariox events sources` lists, `chariox events subscribe
---source ID|NAME` follows, `chariox events unsubscribe --source ID|all` unfollows, and `chariox
+--source ID|NAME` follows, `chariox events unsubscribe --source ID|NAME|all` unfollows, and `chariox
 events mcp` offers the same as tools next to `chariox_next_notification`, which returns each
 `notification` or `gap` record once.
 
