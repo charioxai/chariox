@@ -120,6 +120,7 @@ impl Tree {
     fn settle_turn(
         &self,
         agent: &str,
+        has_answer: bool,
         cancelled: bool,
     ) -> (
         (
@@ -153,7 +154,7 @@ impl Tree {
                 agent: agent.into(),
                 prompt: prompt.id().into(),
                 run: run.id().into(),
-                has_answer: !cancelled,
+                has_answer,
                 cancelled,
                 now: 2,
             })
@@ -166,7 +167,7 @@ impl Tree {
 
     /// Settles `agent`'s admitted turn through the real settlement path.
     async fn end_turn_as(&self, agent: &str, cancelled: bool) {
-        let (settlement, prompt) = self.settle_turn(agent, cancelled);
+        let (settlement, prompt) = self.settle_turn(agent, !cancelled, cancelled);
         self.runtime
             .finish_agent_task_settlement(Some(settlement), &prompt)
             .await
@@ -830,4 +831,44 @@ async fn a_decision_nobody_waits_for_is_withdrawn_with_its_holder_event() {
         t.all_closed(&t.p),
         "the holder's event is withdrawn with it"
     );
+}
+
+/// A turn that ends without finishing leaves its task waiting on the owner: that agent cannot act,
+/// so the decision it held moves up as for any other ended turn (drill: a parent with a live child).
+#[tokio::test]
+async fn a_holder_whose_task_is_blocked_hands_the_decision_up() {
+    let t = tree(
+        "decision-blocked",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let _answer = t.raise(permission("perm-b1", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1);
+    let ((task, _), prompt) = t.settle_turn(&t.p, false, false);
+    let Outcome::Task(blocked) = t
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Block {
+            task: task.task_id,
+            prompt: prompt.id().into(),
+            reason: "unfinished child".into(),
+        })
+        .unwrap()
+    else {
+        panic!("blocked")
+    };
+    assert_eq!(
+        blocked.state,
+        crate::durable_state::agent_lifecycle::ExecutionState::Blocked
+    );
+    let settlement = (blocked, false);
+    t.runtime
+        .finish_agent_task_settlement(Some(settlement), &prompt)
+        .await
+        .unwrap();
+    assert!(t.all_closed(&t.p), "the former holder's event is withdrawn");
+    assert_eq!(t.decision_events(&t.g).len(), 1, "g holds it now");
+    assert_eq!(t.present("perm-b1"), (true, true));
 }
