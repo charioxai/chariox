@@ -78,10 +78,14 @@ impl CommandRouter {
                 .redact_result_for_user(response, view_user_id, caller_user_id)
                 .map(Some);
         }
+        let event_user_id = crate::event_connection::event_connection_user_id(
+            &self.config_projection.snapshot(),
+            caller_user_id,
+        );
         if let LocalDaemonRequest::RemoveEventConnection(removal) = request {
             let _connection_guard = self
                 .event_connection_lanes
-                .lock(caller_user_id, &removal.connection_id)
+                .lock(&event_user_id, &removal.connection_id)
                 .await;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
@@ -110,14 +114,14 @@ impl CommandRouter {
             LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => self
                 .runtime_state
                 .event_connection_registry()
-                .authorization(caller_user_id, &request.authorization_id)?
+                .authorization(&event_user_id, &request.authorization_id)?
                 .and_then(|authorization| authorization.connection_id),
             _ => None,
         };
         if let Some(connection_id) = managed_connection_id {
             let _connection_guard = self
                 .event_connection_lanes
-                .lock(caller_user_id, &connection_id)
+                .lock(&event_user_id, &connection_id)
                 .await;
             return execute_event_catalog_request_with_client(
                 &self.runtime_state,
@@ -131,11 +135,13 @@ impl CommandRouter {
         }
         if let LocalDaemonRequest::PreflightProviderAccountPortability(request) = request {
             return crate::runtime::provider_account_portability::execute_preflight(
+                &self.runtime_state,
                 &self.config_projection.snapshot(),
                 &self.provider_account_profiles,
                 command,
                 request,
             )
+            .await
             .map(Some);
         }
         if let LocalDaemonRequest::IssueOwnMachineEnrollment(request) = request {

@@ -4,7 +4,7 @@ use super::kernel_browser_runtime::host_error;
 use super::*;
 use crate::error::UserDomainRefusalReason;
 use crate::local::UserDomainResource;
-use crate::runtime::room_tool_admission::{denied, direct_child, resolve_agent};
+use crate::runtime::room_tool_admission::{denied, in_subtree, resolve_agent};
 use crate::transport::runtime_tools::RuntimeToolResult;
 
 /// MP-08/MP-11: the typed refusal clients and providers classify by code.
@@ -83,7 +83,7 @@ mod tests {
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
                     .with_owner_user_id("alice")
-                    .with_spawned_by_agent_id(parent.id()),
+                    .with_parent_agent_id(parent.id()),
             )
             .unwrap();
         let peer = crate::app::KernelSessionService::new(&mut app)
@@ -660,10 +660,10 @@ impl KernelRuntimeState {
             .agent_store
             .get_session_agents(actor.session_id());
         let child = resolve_agent(&agents, actor.session_id(), &request.agent)?;
-        direct_child(actor, child)?;
+        in_subtree(actor, child, &agents)?;
         if child.remote_execution().is_some() || child.owner_user_id() != actor.owner_user_id() {
             return Err(denied(
-                "grant transfer requires a direct child executing on this kernel; leased agents use their Room Browser/Computer route",
+                "grant transfer requires a descendant executing on this kernel; leased agents use their Room Browser/Computer route",
             ));
         }
         self.owned

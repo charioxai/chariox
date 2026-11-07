@@ -20,6 +20,7 @@ pub(crate) use detached_job::{detached_job, process_alive, session_job};
 mod pre_exec_child;
 mod room_turn;
 mod runtime_mcp;
+pub(crate) mod secret_scan;
 pub(crate) mod task_delta;
 mod task_subscription;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};

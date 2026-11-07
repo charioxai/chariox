@@ -22,6 +22,11 @@ pub(super) fn publish_membership(
     agent: &AgentInstance,
     state: EventSessionState,
 ) -> Result<(), crate::error::DaemonError> {
+    if agent.is_sub_agent() {
+        // A sub-agent is no member of the room: followers hear of it through the
+        // tree change event the kernel publishes when the tree it belongs to differs.
+        return Ok(());
+    }
     if let Some(store) = store {
         store.outside_publish(
             agent.session_id(),

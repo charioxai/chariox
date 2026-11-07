@@ -223,6 +223,10 @@ pub(crate) struct DurablePromptPrivateState {
     /// firing is never replayed.
     #[serde(default, skip_serializing_if = "is_false_bool")]
     local_steer_submitted: bool,
+    /// The kernel stopped while this turn waited on a question, so nothing can
+    /// answer it after the restart.
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    question_wait_stopped: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -245,6 +249,7 @@ struct PromptPrivateMetadata {
     recovery_operation_id: Option<String>,
     recovery_phase: Option<DurablePromptDeliveryPhase>,
     local_steer_submitted: bool,
+    question_wait_stopped: bool,
 }
 
 fn is_zero_u32(value: &u32) -> bool {
@@ -290,6 +295,7 @@ impl DurablePromptPrivateState {
             recovery_phase: metadata.recovery_phase,
             remote_steer_uncertainty,
             local_steer_submitted: metadata.local_steer_submitted,
+            question_wait_stopped: metadata.question_wait_stopped,
         })
     }
 }
@@ -874,6 +880,18 @@ impl PromptQueueItem {
             .delivery_failure_pending = pending;
     }
 
+    pub(crate) fn question_wait_stopped(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.question_wait_stopped)
+    }
+
+    pub(crate) fn set_question_wait_stopped(&mut self) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .question_wait_stopped = true;
+    }
+
     pub(crate) fn durable_delivery_reconciliation_pending(&self) -> bool {
         self.private_metadata
             .as_ref()
@@ -977,6 +995,7 @@ impl PromptQueueItem {
             && private.source_user_id.is_none()
             && private.remote_steer_uncertainty.is_none()
             && !private.local_steer_submitted
+            && !private.question_wait_stopped
         {
             self.private_metadata = None;
             self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
@@ -1001,6 +1020,7 @@ impl PromptQueueItem {
             recovery_operation_id: private.recovery_operation_id.clone(),
             recovery_phase: private.recovery_phase,
             local_steer_submitted: private.local_steer_submitted,
+            question_wait_stopped: private.question_wait_stopped,
         }));
         self.restore_remote_steer_outcome_uncertainty(private.remote_steer_uncertainty.clone());
     }

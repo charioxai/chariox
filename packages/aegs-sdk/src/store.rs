@@ -2,11 +2,11 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use chariox_event_protocol::AegsProviderActionResponse;
+use chariox_event_protocol::{AegsProviderActionResponse, EventRouteAudience};
 
 mod inbox;
 pub use inbox::{
@@ -84,10 +84,62 @@ pub struct AegsStoreMetrics {
     pub provider_hooks: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OwnerMembership {
+    Member,
+    Revoked,
+    OwnerLimit,
+    GatewayLimit,
+}
+
 #[derive(Clone)]
 pub struct AegsStore {
     connection: Arc<Mutex<Connection>>,
     delivery_gate: Arc<tokio::sync::RwLock<()>>,
+}
+
+/// A subscription may receive events only while its kernel has not been removed from the
+/// owner's kernels.
+const KERNEL_IS_MEMBER: &str =
+    "NOT EXISTS (SELECT 1 FROM owner_kernels m WHERE m.owner_id = subscriptions.owner_id
+        AND m.kernel_id = subscriptions.kernel_id AND m.state <> 'member')";
+
+/// A subscription may receive events only while its connection is ready and its authority
+/// (connection owner, provider and generation) is the one recorded when it was reconciled.
+const SUBSCRIPTION_AUTHORIZED: &str =
+    "(NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
+    OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
+      AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
+      AND EXISTS (SELECT 1 FROM subscription_authorities a
+        JOIN connection_generations g ON g.connection_id = c.connection_id
+        WHERE a.binding_id = subscriptions.binding_id
+          AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
+          AND a.generation = g.generation)))";
+
+/// Why a reconciliation was not stored.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReconcileError {
+    /// The kernel was removed from the owner's kernels, possibly while the caller was
+    /// checking its claims.
+    KernelRevoked,
+    Invalid(String),
+}
+
+impl From<String> for ReconcileError {
+    fn from(message: String) -> Self {
+        Self::Invalid(message)
+    }
+}
+
+impl From<ReconcileError> for String {
+    fn from(error: ReconcileError) -> Self {
+        match error {
+            ReconcileError::KernelRevoked => {
+                "this kernel was removed from the owner's kernels".to_string()
+            }
+            ReconcileError::Invalid(message) => message,
+        }
+    }
 }
 
 impl AegsStore {
@@ -106,6 +158,7 @@ impl AegsStore {
             CREATE TABLE IF NOT EXISTS subscriptions (
                 binding_id TEXT PRIMARY KEY NOT NULL,
                 owner_id TEXT NOT NULL,
+                kernel_id TEXT NOT NULL DEFAULT '',
                 generator_id TEXT NOT NULL,
                 connection_id TEXT NOT NULL,
                 connection_scope TEXT NOT NULL,
@@ -118,6 +171,14 @@ impl AegsStore {
             );
             CREATE INDEX IF NOT EXISTS subscriptions_matching
                 ON subscriptions(generator_id, event_type, connection_scope, active);
+            CREATE TABLE IF NOT EXISTS owner_kernels (
+                owner_id TEXT NOT NULL,
+                kernel_id TEXT NOT NULL,
+                state TEXT NOT NULL,
+                added_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(owner_id, kernel_id)
+            );
+            CREATE INDEX IF NOT EXISTS owner_kernels_by_kernel ON owner_kernels(kernel_id);
             CREATE TABLE IF NOT EXISTS connections (
                 connection_id TEXT PRIMARY KEY NOT NULL,
                 owner_id TEXT NOT NULL DEFAULT 'legacy',
@@ -206,6 +267,7 @@ impl AegsStore {
             ",
         )?;
         migrate_subscription_owner(&connection)?;
+        migrate_subscription_kernel(&connection)?;
         migrate_connection_owner(&connection)?;
         migrate_connection_lifecycle_timestamps(&connection)?;
         migrate_action_receipt_fingerprint(&connection)?;
@@ -272,32 +334,36 @@ impl AegsStore {
 
     pub fn reconcile(
         &self,
-        owner_id: &str,
+        kernel_id: &str,
         generator_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<Vec<String>, String> {
-        self.reconcile_scoped(owner_id, None, generator_id, claims)
+        Ok(self.reconcile_for_owner(kernel_id, kernel_id, generator_id, claims)?)
     }
 
-    /// Reconcile one owner's desired bindings while enforcing the owner scope
-    /// carried by a signed management capability. Static operator tokens pass
-    /// `None` and retain their intentionally global administrative behavior.
-    pub fn reconcile_scoped(
+    /// Reconcile the bindings one kernel holds for `owner_id`. The kernel is the subscriber
+    /// (the audience of every publication names it); the owner groups the kernels that share
+    /// the connections. The caller has already checked the claims against the owner's
+    /// connections, which can take long enough for the kernel to be removed from the owner's
+    /// kernels, so the transaction checks the membership again.
+    pub fn reconcile_for_owner(
         &self,
+        kernel_id: &str,
         owner_id: &str,
-        allowed_connection_owners: Option<&[String]>,
         generator_id: &str,
         claims: &[SubscriptionClaim],
-    ) -> Result<Vec<String>, String> {
-        if owner_id.trim().is_empty() {
-            return Err("subscription reconciliation owner_id is required".to_string());
+    ) -> Result<Vec<String>, ReconcileError> {
+        if kernel_id.trim().is_empty() || owner_id.trim().is_empty() {
+            return Err(ReconcileError::Invalid(
+                "subscription reconciliation needs a kernel id and an owner id".to_string(),
+            ));
         }
         for claim in claims {
             if claim.generator_id != generator_id {
-                return Err(format!(
+                return Err(ReconcileError::Invalid(format!(
                     "binding {} belongs to generator {}, not {}",
                     claim.binding_id, claim.generator_id, generator_id
-                ));
+                )));
             }
             claim.validate()?;
         }
@@ -306,34 +372,18 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let transaction = connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
-        if let Some(allowed_connection_owners) = allowed_connection_owners {
-            for claim in claims {
-                let connection_owner = transaction
-                    .query_row(
-                        "SELECT owner_id FROM connections WHERE connection_id = ?1",
-                        params![claim.connection_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                    .map_err(|error| error.to_string())?
-                    .ok_or_else(|| {
-                        format!(
-                            "connection {} is not owned by an allowed management principal",
-                            claim.connection_id
-                        )
-                    })?;
-                if !allowed_connection_owners
-                    .iter()
-                    .any(|allowed| allowed == &connection_owner)
-                {
-                    return Err(format!(
-                        "connection {} belongs to an owner outside the management capability",
-                        claim.connection_id
-                    ));
-                }
-            }
+        let membership: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM owner_kernels WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if membership.is_some_and(|state| state != "member") {
+            return Err(ReconcileError::KernelRevoked);
         }
         let claimed_binding_ids = claims
             .iter()
@@ -343,11 +393,11 @@ impl AegsStore {
             let mut statement = transaction
                 .prepare(
                     "SELECT binding_id FROM subscriptions
-                     WHERE generator_id = ?1 AND owner_id = ?2",
+                     WHERE generator_id = ?1 AND kernel_id = ?2 AND owner_id = ?3",
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map(params![generator_id, owner_id], |row| {
+                .query_map(params![generator_id, kernel_id, owner_id], |row| {
                     row.get::<_, String>(0)
                 })
                 .map_err(|error| error.to_string())?
@@ -360,8 +410,8 @@ impl AegsStore {
                 transaction
                     .execute(
                         "UPDATE subscriptions SET active = 0
-                         WHERE binding_id = ?1 AND owner_id = ?2",
-                        params![binding_id, owner_id],
+                         WHERE binding_id = ?1 AND kernel_id = ?2",
+                        params![binding_id, kernel_id],
                     )
                     .map_err(|error| error.to_string())?;
             }
@@ -376,9 +426,10 @@ impl AegsStore {
                     INSERT INTO subscriptions (
                         binding_id, owner_id, generator_id, connection_id, connection_scope,
                         event_interest_key, event_type, event_type_version, filter_json,
-                        revision, active
-                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                        revision, active, kernel_id
+                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                     ON CONFLICT(binding_id) DO UPDATE SET
+                        owner_id = excluded.owner_id,
                         generator_id = excluded.generator_id,
                         connection_id = excluded.connection_id,
                         connection_scope = excluded.connection_scope,
@@ -389,7 +440,7 @@ impl AegsStore {
                         revision = excluded.revision,
                         active = excluded.active
                     WHERE
-                        excluded.owner_id = subscriptions.owner_id
+                        excluded.kernel_id = subscriptions.kernel_id
                         AND excluded.revision >= subscriptions.revision
                     ",
                     params![
@@ -404,6 +455,7 @@ impl AegsStore {
                         filter_json,
                         claim.revision as i64,
                         claim.active,
+                        kernel_id,
                     ],
                 )
                 .map_err(|error| error.to_string())?;
@@ -439,7 +491,7 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "
                 SELECT binding_id, generator_id, connection_id, connection_scope,
                        event_interest_key, event_type, event_type_version, filter_json,
@@ -447,17 +499,10 @@ impl AegsStore {
                 FROM subscriptions
                 WHERE generator_id = ?1 AND event_type = ?2
                   AND connection_scope = ?3 AND active = 1
-                  AND (NOT EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id)
-                    OR EXISTS (SELECT 1 FROM connections c WHERE c.connection_id = subscriptions.connection_id
-                      AND c.status = 'ready' AND subscriptions.generator_id = 'dev.chariox.' || c.provider
-                      AND EXISTS (SELECT 1 FROM subscription_authorities a
-                        JOIN connection_generations g ON g.connection_id = c.connection_id
-                        WHERE a.binding_id = subscriptions.binding_id
-                          AND a.connection_owner_id = c.owner_id AND a.provider = c.provider
-                          AND a.generation = g.generation)))
+                  AND {KERNEL_IS_MEMBER} AND {SUBSCRIPTION_AUTHORIZED}
                 ORDER BY binding_id
-                ",
-            )
+                "
+            ))
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(params![generator_id, event_type, connection_scope], |row| {
@@ -475,6 +520,156 @@ impl AegsStore {
                     active: row.get(9)?,
                 })
             })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Every kernel that holds an authorized, active subscription for `event_interest_key`
+    /// (through `connection_id`, when given): the routes AEDS may deliver an occurrence of that
+    /// interest to.
+    pub fn audience_for_interest(
+        &self,
+        generator_id: &str,
+        event_interest_key: &str,
+        connection_id: Option<&str>,
+    ) -> Result<Vec<EventRouteAudience>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(&format!(
+                "SELECT kernel_id, binding_id FROM subscriptions
+                 WHERE generator_id = ?1 AND event_interest_key = ?2 AND active = 1
+                   AND (?3 IS NULL OR connection_id = ?3)
+                   AND {KERNEL_IS_MEMBER} AND {SUBSCRIPTION_AUTHORIZED}
+                 ORDER BY binding_id"
+            ))
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(
+                params![generator_id, event_interest_key, connection_id],
+                |row| {
+                    Ok(EventRouteAudience {
+                        kernel_id: row.get(0)?,
+                        binding_id: row.get(1)?,
+                    })
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
+    /// Adds `kernel_id` to the kernels that share `owner_id` the first time it presents the
+    /// owner id. The owner id is the secret that proves the kernel's user holds the connection;
+    /// a kernel removed from the set stays removed even if it still knows the secret.
+    pub(crate) fn admit_kernel_to_owner(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+        max_owners_per_kernel: Option<usize>,
+        max_memberships_total: Option<usize>,
+    ) -> Result<OwnerMembership, String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let state: Option<String> = transaction
+            .query_row(
+                "SELECT state FROM owner_kernels WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let membership = match state.as_deref() {
+            Some("member") => OwnerMembership::Member,
+            Some(_) => OwnerMembership::Revoked,
+            None => {
+                let owners: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM owner_kernels WHERE kernel_id = ?1 AND state = 'member'",
+                        params![kernel_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                let memberships: i64 = transaction
+                    .query_row(
+                        "SELECT COUNT(*) FROM owner_kernels WHERE state = 'member'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
+                if max_owners_per_kernel.is_some_and(|cap| owners as usize >= cap) {
+                    OwnerMembership::OwnerLimit
+                } else if max_memberships_total.is_some_and(|cap| memberships as usize >= cap) {
+                    OwnerMembership::GatewayLimit
+                } else {
+                    transaction
+                        .execute(
+                            "INSERT INTO owner_kernels (owner_id, kernel_id, state, added_at_ms)
+                             VALUES (?1, ?2, 'member', ?3)",
+                            params![owner_id, kernel_id, now_ms as i64],
+                        )
+                        .map_err(|error| error.to_string())?;
+                    OwnerMembership::Member
+                }
+            }
+        };
+        transaction.commit().map_err(|error| error.to_string())?;
+        Ok(membership)
+    }
+
+    /// Like `revoke_owner_kernel`, once no publication that already named the kernel is in
+    /// flight: after it returns, no event reaches the kernel.
+    pub(crate) async fn revoke_owner_kernel_wait(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let _guard = self.delivery_gate.write().await;
+        self.revoke_owner_kernel(owner_id, kernel_id, now_ms)
+    }
+
+    /// Removes a kernel from an owner's set for good and stops its subscriptions at once.
+    fn revoke_owner_kernel(
+        &self,
+        owner_id: &str,
+        kernel_id: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let mut connection = self.lock()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO owner_kernels (owner_id, kernel_id, state, added_at_ms)
+                 VALUES (?1, ?2, 'revoked', ?3)
+                 ON CONFLICT(owner_id, kernel_id) DO UPDATE SET state = 'revoked'",
+                params![owner_id, kernel_id, now_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "UPDATE subscriptions SET active = 0 WHERE owner_id = ?1 AND kernel_id = ?2",
+                params![owner_id, kernel_id],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    pub(crate) fn owner_kernels(&self, owner_id: &str) -> Result<Vec<(String, String)>, String> {
+        let connection = self.lock()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT kernel_id, state FROM owner_kernels WHERE owner_id = ?1
+                 ORDER BY added_at_ms, kernel_id",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![owner_id], |row| Ok((row.get(0)?, row.get(1)?)))
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
@@ -498,7 +693,7 @@ impl AegsStore {
             .collect()
     }
 
-    fn connection_generation(&self, connection_id: &str) -> Result<Option<i64>, String> {
+    pub(crate) fn connection_generation(&self, connection_id: &str) -> Result<Option<i64>, String> {
         self.connection
             .lock()
             .map_err(|_| "AEGS store lock was poisoned".to_string())?
@@ -630,16 +825,16 @@ impl AegsStore {
             .lock()
             .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
         let mut statement = connection
-            .prepare(
+            .prepare(&format!(
                 "
                 SELECT binding_id, generator_id, connection_id, connection_scope,
                        event_interest_key, event_type, event_type_version, filter_json,
                        revision, active
                 FROM subscriptions
-                WHERE connection_id = ?1 AND active = 1
+                WHERE connection_id = ?1 AND active = 1 AND {KERNEL_IS_MEMBER}
                 ORDER BY binding_id
-                ",
-            )
+                "
+            ))
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map(params![connection_id], |row| {
@@ -1381,6 +1576,29 @@ fn migrate_subscription_owner(connection: &Connection) -> Result<(), rusqlite::E
     Ok(())
 }
 
+/// Subscriptions used to name only an owner that doubled as the kernel. Those rows cannot say
+/// which kernel holds them; kernels claim their subscriptions again on every reconcile.
+fn migrate_subscription_kernel(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(subscriptions)")?;
+    let has_kernel = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?
+        .iter()
+        .any(|column| column == "kernel_id");
+    drop(columns);
+    if !has_kernel {
+        connection.execute(
+            "ALTER TABLE subscriptions ADD COLUMN kernel_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+    connection.execute_batch(
+        "DELETE FROM subscription_authorities WHERE binding_id IN
+             (SELECT binding_id FROM subscriptions WHERE kernel_id = '');
+         DELETE FROM subscriptions WHERE kernel_id = '';",
+    )
+}
+
 fn migrate_connection_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
     let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
     let has_owner = columns
@@ -1625,6 +1843,32 @@ mod tests {
             }));
     }
 
+    /// One kernel may act for several owners; reconciling the empty set of one owner must not
+    /// switch off the bindings it holds for another.
+    #[test]
+    fn reconciling_one_owner_keeps_the_kernels_bindings_for_another_owner() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let (first, second) = (claim("binding-1", 1, true), claim("binding-2", 1, true));
+        store
+            .reconcile_for_owner("kernel", "owner-1", "dev.chariox.github", &[first])
+            .unwrap();
+        store
+            .reconcile_for_owner("kernel", "owner-2", "dev.chariox.github", &[second])
+            .unwrap();
+        store
+            .reconcile_for_owner("kernel", "owner-2", "dev.chariox.github", &[])
+            .unwrap();
+        let active = |owner: &str| {
+            store
+                .all_for_owner("dev.chariox.github", owner)
+                .unwrap()
+                .iter()
+                .filter(|claim| claim.active)
+                .count()
+        };
+        assert_eq!((active("owner-1"), active("owner-2")), (1, 0));
+    }
+
     #[test]
     fn scoped_reconciliation_rejects_foreign_connections_and_binding_takeover() {
         let store = AegsStore::open(":memory:").unwrap();
@@ -1650,9 +1894,9 @@ mod tests {
         owned.connection_id = "connection-a".to_string();
         assert_eq!(
             store
-                .reconcile_scoped(
+                .reconcile_for_owner(
                     "kernel-a",
-                    Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                    "owner-a",
                     "dev.chariox.github",
                     &[owned.clone()],
                 )
@@ -1671,35 +1915,28 @@ mod tests {
             vec![owned.clone()]
         );
 
-        let mut foreign = owned.clone();
-        foreign.connection_id = "connection-b".to_string();
-        assert!(store
-            .reconcile_scoped(
-                "kernel-a",
-                Some(&["owner-a".to_string(), "kernel-a".to_string()]),
-                "dev.chariox.github",
-                &[foreign],
-            )
-            .unwrap_err()
-            .contains("outside the management capability"));
-
-        let mut takeover = owned;
+        let mut takeover = owned.clone();
         takeover.connection_id = "connection-b".to_string();
         takeover.revision = 2;
         assert!(store
-            .reconcile_scoped(
-                "kernel-b",
-                Some(&["owner-b".to_string(), "kernel-b".to_string()]),
-                "dev.chariox.github",
-                &[takeover],
-            )
+            .reconcile_for_owner("kernel-b", "owner-b", "dev.chariox.github", &[takeover],)
             .unwrap()
             .is_empty());
         let stored = store
-            .all_for_owner("dev.chariox.github", "kernel-a")
+            .all_for_owner("dev.chariox.github", "owner-a")
             .unwrap();
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].connection_id, "connection-a");
+        assert_eq!(
+            store
+                .audience_for_interest("dev.chariox.github", &owned.event_interest_key, None)
+                .unwrap()
+                .iter()
+                .map(|route| route.kernel_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["kernel-a"],
+            "only the kernel that holds the binding is in the audience"
+        );
     }
 
     #[test]
@@ -2148,11 +2385,11 @@ mod mp11_delivery_gate_tests {
             active: true,
         };
         store
-            .reconcile_scoped(
+            .reconcile_for_owner(
                 "kernel",
-                Some(&["user".into()]),
+                "user",
                 &claim.generator_id,
-                &[claim.clone()],
+                std::slice::from_ref(&claim),
             )
             .unwrap();
         let selected = store
@@ -2176,11 +2413,11 @@ mod mp11_delivery_gate_tests {
             .unwrap()
             .is_empty());
         store
-            .reconcile_scoped(
+            .reconcile_for_owner(
                 "kernel",
-                Some(&["user".into()]),
+                "user",
                 &claim.generator_id,
-                &[claim.clone()],
+                std::slice::from_ref(&claim),
             )
             .unwrap();
         assert!(store
@@ -2220,7 +2457,7 @@ mod mp11_delivery_gate_tests {
             active: true,
         };
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         assert_eq!(
             store
@@ -2245,7 +2482,7 @@ mod mp11_delivery_gate_tests {
             .unwrap()
             .is_empty());
         store
-            .reconcile("owner", &claim.generator_id, &[claim.clone()])
+            .reconcile("owner", &claim.generator_id, std::slice::from_ref(&claim))
             .unwrap();
         assert_eq!(
             store
@@ -2258,5 +2495,181 @@ mod mp11_delivery_gate_tests {
                 .len(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod shared_connection_tests {
+    use super::*;
+
+    fn claim(binding: &str, scope: &str) -> SubscriptionClaim {
+        SubscriptionClaim {
+            binding_id: binding.into(),
+            generator_id: "dev.chariox.github".into(),
+            connection_id: "connection".into(),
+            connection_scope: scope.into(),
+            event_interest_key: format!("interest-{scope}"),
+            event_type: "event".into(),
+            event_type_version: 1,
+            filter: Value::Null,
+            revision: 1,
+            active: true,
+        }
+    }
+
+    fn connected() -> AegsStore {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection("connection", "owner", "github", &Value::Null, 1)
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn one_kernel_dropping_its_subscription_keeps_the_other_kernels() {
+        let store = connected();
+        // Two kernels share one connection; each reconciles under its own kernel id
+        // with a binding id of its own.
+        store
+            .reconcile(
+                "kernel-a",
+                "dev.chariox.github",
+                &[claim("binding-a", "chariox/repo")],
+            )
+            .unwrap();
+        store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-b", "chariox/repo")],
+            )
+            .unwrap();
+        let bindings = |store: &AegsStore| {
+            store
+                .matching("dev.chariox.github", "event", "chariox/repo")
+                .unwrap()
+                .into_iter()
+                .map(|claim| claim.binding_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bindings(&store), ["binding-a", "binding-b"]);
+        // Kernel A removes its route: its reconcile no longer lists the binding.
+        store
+            .reconcile("kernel-a", "dev.chariox.github", &[])
+            .unwrap();
+        assert_eq!(bindings(&store), ["binding-b"]);
+        // Reconciling the same claim again is idempotent.
+        store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-b", "chariox/repo")],
+            )
+            .unwrap();
+        assert_eq!(bindings(&store), ["binding-b"]);
+        // Revoking the connection stops every kernel's subscription at the source.
+        store.revoke_connection("connection", "owner", 5).unwrap();
+        assert!(bindings(&store).is_empty());
+    }
+    #[test]
+    fn a_revoked_kernel_cannot_reconcile_and_is_not_in_any_audience() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        let audience_kernels = |store: &AegsStore| {
+            store
+                .audience_for_interest(generator, "interest-chariox/repo", None)
+                .unwrap()
+                .into_iter()
+                .map(|route| route.kernel_id)
+                .collect::<Vec<_>>()
+        };
+        for kernel in ["kernel-a", "kernel-b"] {
+            store
+                .admit_kernel_to_owner("owner", kernel, 1, None, None)
+                .unwrap();
+            store
+                .reconcile_for_owner(
+                    kernel,
+                    "owner",
+                    generator,
+                    &[claim(&format!("binding-{kernel}"), "chariox/repo")],
+                )
+                .unwrap();
+        }
+        assert_eq!(audience_kernels(&store), ["kernel-a", "kernel-b"]);
+        store.revoke_owner_kernel("owner", "kernel-a", 2).unwrap();
+        assert_eq!(audience_kernels(&store), ["kernel-b"]);
+        let refused = store.reconcile_for_owner(
+            "kernel-a",
+            "owner",
+            generator,
+            &[claim("binding-kernel-a", "chariox/repo")],
+        );
+        assert_eq!(refused, Err(ReconcileError::KernelRevoked));
+        assert_eq!(audience_kernels(&store), ["kernel-b"]);
+    }
+
+    /// Delivery re-checks the membership itself: a subscription that is still active under a
+    /// revoked kernel (whatever left it so) is never selected.
+    #[test]
+    fn membership_revoked_under_an_active_subscription_stops_delivery() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        store
+            .admit_kernel_to_owner("owner", "kernel-a", 1, None, None)
+            .unwrap();
+        store
+            .reconcile_for_owner(
+                "kernel-a",
+                "owner",
+                generator,
+                &[claim("binding-a", "chariox/repo")],
+            )
+            .unwrap();
+        store
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE owner_kernels SET state = 'revoked' WHERE kernel_id = 'kernel-a'",
+                [],
+            )
+            .unwrap();
+        assert!(store
+            .matching(generator, "event", "chariox/repo")
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .audience_for_interest(generator, "interest-chariox/repo", None)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .active_subscriptions_for_connection("connection")
+            .unwrap()
+            .is_empty());
+    }
+    #[tokio::test]
+    async fn revoking_a_kernel_waits_for_the_publication_that_names_it() {
+        let store = connected();
+        let generator = "dev.chariox.github";
+        store
+            .admit_kernel_to_owner("owner", "kernel-a", 1, None, None)
+            .unwrap();
+        let held = claim("binding-a", "chariox/repo");
+        store
+            .reconcile_for_owner("kernel-a", "owner", generator, std::slice::from_ref(&held))
+            .unwrap();
+        let generation = store.connection_generation("connection").unwrap();
+        let in_flight = store.delivery_guard(&held, generation).await.unwrap();
+        let other = store.clone();
+        let revoke =
+            tokio::spawn(
+                async move { other.revoke_owner_kernel_wait("owner", "kernel-a", 2).await },
+            );
+        tokio::task::yield_now().await;
+        assert!(!revoke.is_finished());
+        drop(in_flight);
+        revoke.await.unwrap().unwrap();
+        assert!(store.delivery_guard(&held, generation).await.is_err());
     }
 }

@@ -50,35 +50,45 @@ pub(super) fn spawn_remote_inventory_projection_refresh(
     router: Arc<CommandRouter>,
 ) -> JoinHandle<bool> {
     tokio::spawn(async move {
-        match bounded_remote_inventory_refresh(
-            router.refresh_remote_relay_inventory_projection(),
-            REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT,
-        )
-        .await
-        {
-            RemoteInventoryRefreshResult::Refreshed => true,
-            RemoteInventoryRefreshResult::Failed(error) => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "remote relay inventory refresh failed",
-                    serde_json::json!({
-                        "error": error,
-                    }),
-                );
-                false
-            }
-            RemoteInventoryRefreshResult::TimedOut => {
-                crate::logging::warn_with_fields(
-                    "daemon.relay_client",
-                    "remote relay inventory refresh timed out",
-                    serde_json::json!({
-                        "timeout_ms": REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT.as_millis(),
-                    }),
-                );
-                false
-            }
-        }
+        run_remote_inventory_refresh(router.refresh_remote_relay_inventory_projection()).await
     })
+}
+
+async fn run_remote_inventory_refresh<F, E>(refresh: F) -> bool
+where
+    F: Future<Output = Result<(), E>>,
+    E: ToString,
+{
+    match bounded_remote_inventory_refresh(refresh, REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT)
+        .await
+    {
+        RemoteInventoryRefreshResult::Refreshed => true,
+        RemoteInventoryRefreshResult::Failed(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "remote relay inventory refresh failed",
+                serde_json::json!({
+                    "error": error,
+                }),
+            );
+            // Cloud refused with "retry in N seconds": the next heartbeat would only be
+            // refused again, so this refresh keeps its slot until then.
+            if let Some(wait) = cloud_retry_hint(&error) {
+                tokio::time::sleep(wait).await;
+            }
+            false
+        }
+        RemoteInventoryRefreshResult::TimedOut => {
+            crate::logging::warn_with_fields(
+                "daemon.relay_client",
+                "remote relay inventory refresh timed out",
+                serde_json::json!({
+                    "timeout_ms": REMOTE_INVENTORY_PROJECTION_REFRESH_TIMEOUT.as_millis(),
+                }),
+            );
+            false
+        }
+    }
 }
 
 async fn bounded_remote_inventory_refresh<F, E>(
@@ -240,6 +250,23 @@ mod tests {
             cloud.accept().is_err(),
             "private inventory refresh must not reach the Cloud API"
         );
+    }
+
+    // Cloud refused the inventory read with "retry in 20 seconds": the refresh holds its
+    // slot until then, so the 5-second heartbeat does not ask again inside that window.
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limited_inventory_refresh_waits_out_the_cloud_retry_hint() {
+        let mut task = Some(tokio::spawn(run_remote_inventory_refresh(async {
+            Err::<(), _>("cloud relay request failed with 429: cloud_api_code=rate_limited: Rate limit exceeded, retry in 20 seconds")
+        })));
+        tokio::time::sleep(Duration::from_secs(19)).await;
+        assert!(
+            !remote_inventory_refresh_due(1, &mut task),
+            "the next heartbeat asked Cloud again inside its retry window"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert!(remote_inventory_refresh_due(1, &mut task));
     }
 
     #[tokio::test]

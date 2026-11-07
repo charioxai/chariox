@@ -468,7 +468,7 @@ fn a_reinstall_updates_the_kept_installation_and_restores_no_configuration() {
             source_event_type,source_event_version,active,created_at_ms)
          VALUES('alice','installed','mail','received','mail.received',1,1,1);
          INSERT INTO app_connection_grants(owner_id,installation_id,connection_id,generator_id,
-            granted_at_ms) VALUES('alice','installed','c1','g1',1);",
+            event_owner_id,granted_at_ms) VALUES('alice','installed','c1','g1','event-owner-1',1);",
     )
     .unwrap();
     f.store

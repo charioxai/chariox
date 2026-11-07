@@ -1,50 +1,64 @@
-# Hosted AEGS management bootstrap
+# AEGS management by the kernel identity key
 
-Hosted kernels do not receive provider credentials or a long-lived AEGS token.
-After reading a published catalog detail, the kernel sends the generator ID,
-manifest digest, and registry management URL to Chariox Cloud using its existing
-Cloud session or machine credential. Cloud verifies the kernel identity and
-published metadata, derives the exact kernel and authenticated-user owner IDs,
-and returns a short-lived Ed25519-signed capability scoped to that generator,
-digest, kernel, owner set, user, URL, and `aegs-management` audience. The AEGS
-compares the signed owner claim with the owner ID in every management request and
-filters subscription listings to that owner, preventing a valid capability from
-crossing tenants.
+A kernel needs nothing from Chariox Cloud, and no operator-issued token, to manage a
+connection at an AEGS or to receive its events. The same path serves a Chariox-operated
+gateway and a self-hosted one.
 
-An SDK-based AEGS accepts either the existing static operator token (self-hosted
-mode) or the capability. To enable hosted bootstrap, configure the AEGS with the
-Cloud signing public key:
+## Who the kernel is
 
-```text
-CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY=<raw 32-byte Ed25519 key, base64url or hex>
-CHARIOX_AEGS_MANAGEMENT_ISSUER=chariox-cloud
-CHARIOX_AEGS_MANAGEMENT_URL=https://<the exact published AEGS management origin>
-CHARIOX_AEGS_MANIFEST_DIGEST=sha256:<the exact published manifest digest>
-```
+The credential is the kernel's relay identity key (the P-256 key that already backs its
+`kernel_public_key_thumbprint`). The kernel id at both gateways is the fingerprint of the
+public key: the lowercase hex SHA-256 of the base64 public key. One id therefore names one key.
+Signatures are ECDSA P-256 over SHA-256; every signed message starts with a domain tag so the
+signature can never be mistaken for relay traffic, which uses the same key for key agreement.
 
-Cloud operators configure the corresponding private key only in the Cloud API:
+## What the kernel sends
+
+Every management request (`management protocol 5`) carries:
 
 ```text
-CHARIOX_EVENT_GENERATOR_MANAGEMENT_SIGNING_KEY=<raw 32-byte Ed25519 key, base64 or hex>
-CHARIOX_EVENT_GENERATOR_MANAGEMENT_KEY_ID=chariox-cloud-management-2026
-CHARIOX_EVENT_GENERATOR_MANAGEMENT_ISSUER=chariox-cloud
+x-chariox-kernel-key:        base64 SEC1 public key
+x-chariox-kernel-timestamp:  unix milliseconds
+x-chariox-kernel-nonce:      single-use random string (at most 128 bytes)
+x-chariox-kernel-signature:  base64 r||s over the message below
+x-chariox-owner-id:          the secret owner id the request acts for
 ```
 
-The private key must never be submitted in a manifest, stored in the catalog,
-placed in AEDS, or copied to a kernel. Capabilities expire after at most five
-minutes and are not a replacement for provider authorization. A deployment can
-continue to use `CHARIOX_AEGS_MANAGEMENT_TOKEN(_FILE)` for a self-hosted AEGS.
+The signed message is `chariox-aegs-request-v5`, method, path, generator id, owner id,
+timestamp, nonce and the SHA-256 of the body, joined by NUL bytes. The AEGS accepts a request
+only within five minutes of its clock, remembers the nonce of each request it serves for that window (a replay is refused),
+and requires the body's `owner_id` to equal the signed header.
 
-Registry-issued targets are public-network only. Cloud rejects non-public
-literal management hosts during submission and capability issuance. The kernel
-also resolves every registry-issued target through a restricted resolver and
-rejects the entire DNS answer set if any address is loopback, private,
-link-local, multicast, documentation-only, or reserved. The restricted
-resolver is used for authorization, resource discovery, connection lifecycle,
-subscription reconciliation, context reads, and provider actions, including
-redirect destinations. This runtime check is authoritative and prevents DNS
-rebinding between a separate validation lookup and the actual connection.
+## The owner id
 
-Static `CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON` or file targets are an explicit
-administrator action and retain HTTPS or loopback HTTP support for local and
-self-hosted deployments. Store metadata never enables that exception.
+A connection belongs to an owner id: a secret random value the connection record carries and
+that is never derived from public names. The first kernel that presents an owner id creates the
+owner and is its first member. Another kernel of the same user that presents the same owner id
+with its own signature joins the set and manages the same connection and receives the same
+events, with no second provider login. A kernel holding a different owner id sees nothing of it:
+a claim on a connection of another owner is answered like one on a connection that does not exist.
+`POST /v1/owners/kernels/revoke` removes a kernel id from the set for good: its subscriptions
+stop at once and presenting the owner id again does not bring it back. `GET /v1/owners/kernels`
+lists the set (kernel ids are not secret).
+
+## Admission
+
+The operator chooses who may use the AEGS at all, with the same code for everyone
+(`CHARIOX_AEGS_ADMISSION`): `open` (any kernel that signs, with per-kernel caps:
+`CHARIOX_AEGS_OPEN_MAX_OWNERS_PER_KERNEL`, `CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE`) or
+`allowlist` (`CHARIOX_AEGS_ALLOWLIST_FILE`, a JSON object keyed by kernel id, read again every five seconds).
+`open` also caps the gateway as a whole (`CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL`,
+`CHARIOX_AEGS_OPEN_MAX_MEMBERSHIPS_TOTAL`, the kernel and owner pairs): the refusals are the typed
+codes `gateway_rate_limited` (429) and `gateway_capacity` (503). A non-loopback AEGS must choose explicitly. Admission never decides who sees which
+events: that is the owner id and the per-connection audience.
+
+## What is gone
+
+The Cloud-signed five-minute capability and its verification keys, `CHARIOX_AEGS_MANAGEMENT_TOKEN`
+and the static management targets' `token` field no longer exist. A management target is only a
+URL (`CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE`); a URL discovered through the generator registry is
+still limited to public addresses, which the kernel re-checks on every connection.
+
+A static target (`CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE`) is an explicit administrator action and keeps HTTPS or loopback HTTP
+support for local and self-hosted deployments; Store metadata never enables that exception. The owner id is part of the
+route binding ids that AEDS and the AEGS key subscriptions by.

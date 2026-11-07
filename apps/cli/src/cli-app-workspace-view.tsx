@@ -35,6 +35,8 @@ type PromptTextController = {
 
 export type CliAppWorkspaceViewProps = {
   roomWorkflowsPane?: WorkspaceLayoutProps["roomWorkflowsPane"]
+  subAgentsPane?: WorkspaceLayoutProps["subAgentsPane"]
+  subAgentsVisible?: WorkspaceLayoutProps["subAgentsVisible"]
   roomWorkflowsVisible?: WorkspaceLayoutProps["roomWorkflowsVisible"]
   roomWorkflowsAvailable?: WorkspaceLayoutProps["roomWorkflowsAvailable"]
   roomWorkflowsOpen?: WorkspaceLayoutProps["roomWorkflowsOpen"]
@@ -105,6 +107,8 @@ export function CliAppWorkspaceView(props: CliAppWorkspaceViewProps) {
   return (
     <WorkspaceLayout
       roomWorkflowsPane={props.roomWorkflowsPane}
+      subAgentsPane={props.subAgentsPane}
+      subAgentsVisible={props.subAgentsVisible}
       roomWorkflowsVisible={props.roomWorkflowsVisible}
       roomWorkflowsAvailable={props.roomWorkflowsAvailable}
       roomWorkflowsOpen={props.roomWorkflowsOpen}

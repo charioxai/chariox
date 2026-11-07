@@ -1051,7 +1051,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f47e346ad1148080babf36dcab538325e16521357594585f36ac7d9128b43acf"
+        "57cf6ac5dce016069806fcf4d6b27b7803a5c71c47c8e4e8d3a55160535a5edc"
     );
 }
 
@@ -1157,14 +1157,14 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "c6e98271507ef722a9bb56e0e697a4dbb139cb2978762bbcd8d15a1f0abf7120"
+        "f7c24823b20280b021fe23114cd281d41bbe5c4a010d9fa6b19e81afb1840588"
     );
     // MP-11: historical bindings predate creator lineage and archive state. Compare their frozen
     // projection; the protocol-450 full-agent hash above guards the added field.
     snapshot["AgentMovedToRemote"]["agent"]
         .as_object_mut()
         .unwrap()
-        .remove("spawned_by_agent_id");
+        .remove("parent_agent_id");
     snapshot["AgentMovedToRemote"]["agent"]
         .as_object_mut()
         .unwrap()

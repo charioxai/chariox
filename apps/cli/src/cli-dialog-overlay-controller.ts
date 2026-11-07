@@ -15,6 +15,7 @@ import type { TerminalPairingLinkView } from "./relay-api.js"
 
 type CliDialogOverlayControllerDeps<TFocus extends CliDialogFocusTarget, TBox = unknown> = {
   closeProcesses?: () => void
+  closeSubAgents?: () => void
   closeEnvironment?: () => void
   getOpenState: () => CliDialogOverlayOpenState
   getCurrentFocus: () => TFocus | null
@@ -84,6 +85,8 @@ export function createCliDialogOverlayController<TFocus extends CliDialogFocusTa
       const activeMode = mode()
       if (activeMode === "processes") {
         deps.closeProcesses?.()
+      } else if (activeMode === "sub-agents") {
+        deps.closeSubAgents?.()
       } else if (activeMode === "environment") {
         deps.closeEnvironment?.()
       } else if (activeMode === "session-browser") {

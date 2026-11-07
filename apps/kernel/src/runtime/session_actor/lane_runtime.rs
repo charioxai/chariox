@@ -38,6 +38,8 @@ struct SessionCommandEnvelope {
     external_grant_id: Option<String>,
     /// MP-08/MP-10/MP-11: the submitting turn a queued sudo command keeps.
     sudo_binding: Option<(String, String)>,
+    /// The caller's retry key: one effect however often the command repeats.
+    idempotency_key: Option<String>,
     request: LocalDaemonRequest,
     result_tx: oneshot::Sender<Result<LocalDaemonResponse, DaemonError>>,
 }
@@ -114,6 +116,7 @@ impl SessionRuntime {
         let connection_class = command.caller.connection_class;
         let external_grant_id = command.external_grant_id();
         let provider_run_id = command.provider_run_id.clone();
+        let idempotency_key = command.idempotency_key.clone();
         let command_id = command.command_id;
         let command_type = command.command_type;
         match lane.try_send(Box::new(SessionCommandEnvelope {
@@ -128,6 +131,7 @@ impl SessionRuntime {
             connection_class,
             external_grant_id,
             sudo_binding,
+            idempotency_key,
             request,
             result_tx,
         })) {
@@ -271,6 +275,7 @@ impl SessionRuntime {
             connection_class: None,
             external_grant_id: None,
             sudo_binding: None,
+            idempotency_key: None,
             request,
             result_tx,
         }))
@@ -363,6 +368,7 @@ async fn run_session_command_lane(
                             envelope.caller_metaagent_id,
                             envelope.terminal_caller,
                             envelope.connection_class,
+                            envelope.idempotency_key,
                         )
                         .await
                 }

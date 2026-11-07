@@ -18,8 +18,8 @@ pub(crate) use device_poll::post_cloud_device_poll;
 pub(crate) use http::{
     cloud_error_code, cloud_error_is_retryable, cloud_url_component, get_cloud_kernel_directory,
     is_stale_cloud_link_error, normalize_cloud_api_url, post_cloud_acknowledged, post_cloud_json,
-    post_cloud_json_authenticated, post_cloud_json_dynamic, post_cloud_json_with_timeout,
-    post_cloud_to_file, CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
+    post_cloud_json_authenticated, post_cloud_json_with_timeout, post_cloud_to_file,
+    CLOUD_PRESENCE_REQUEST_TIMEOUT, CLOUD_RELAY_TOKEN_REQUEST_TIMEOUT,
 };
 mod pairing;
 pub(crate) use pairing::request_account_pairing_token;
@@ -100,72 +100,6 @@ pub(crate) struct CloudRuntimeTokenRequestOptions {
     pub(crate) machine_id: Option<String>,
     pub(crate) session_id: Option<String>,
     pub(crate) public_key_thumbprint: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CloudEventGeneratorManagementCapabilityResponse {
-    pub(crate) token: String,
-    pub(crate) expires_at: String,
-}
-
-pub(crate) async fn issue_event_generator_management_capability(
-    profile: &PersistedCloudRelayProfile,
-    kernel_id: &str,
-    generator_id: &str,
-    version: &str,
-    manifest_digest: &str,
-    management_url: &str,
-) -> Result<CloudEventGeneratorManagementCapabilityResponse, DaemonError> {
-    let mut body = serde_json::Map::new();
-    if let Some(kernel_credential) = profile.kernel_credential.clone() {
-        body.insert(
-            "kernelCredential".to_string(),
-            serde_json::Value::String(kernel_credential),
-        );
-    } else if let Some(machine_credential) = profile.machine_credential.clone() {
-        body.insert(
-            "machineCredential".to_string(),
-            serde_json::Value::String(machine_credential),
-        );
-    } else if let Some(session_token) = profile.cloud_session_token.clone() {
-        body.insert(
-            "sessionToken".to_string(),
-            serde_json::Value::String(session_token),
-        );
-    }
-    for (key, value) in [
-        ("accountId", profile.account_id.as_str()),
-        ("realmId", profile.realm_id.as_str()),
-        ("kernelId", kernel_id),
-        ("version", version),
-        ("manifestDigest", manifest_digest),
-        ("managementUrl", management_url),
-    ] {
-        body.insert(
-            key.to_string(),
-            serde_json::Value::String(value.to_string()),
-        );
-    }
-    if let Some(machine_id) = profile.machine_id.as_deref() {
-        body.insert(
-            "machineId".to_string(),
-            serde_json::Value::String(machine_id.to_string()),
-        );
-    }
-    body.insert(
-        "userId".to_string(),
-        serde_json::Value::String(profile.user_id.clone()),
-    );
-    post_cloud_json_dynamic(
-        profile.api_url.clone(),
-        format!(
-            "/v1/event-generators/{}/management-capability",
-            cloud_url_component(generator_id)
-        ),
-        serde_json::Value::Object(body),
-    )
-    .await
 }
 
 pub(crate) async fn issue_cloud_runtime_token(

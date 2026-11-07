@@ -154,6 +154,68 @@ pub(in crate::durable_state::agent_lifecycle) fn bound(
     Ok(())
 }
 
+/// Unread notifications are dropped 7 days after their occurrence (their deadline), and the
+/// holder is told once, with a gap, how many it lost. Decision cards and the rest of the
+/// stream keep the count bound alone.
+pub(crate) fn expire_notifications(tx: &Transaction<'_>, now_ms: u64) -> Result<(), DaemonError> {
+    let expired: Vec<(String, u64)> = tx
+        .prepare("SELECT agent_id,sequence FROM agent_inbox INDEXED BY agent_inbox_notification_deadline WHERE room_id='' AND json_extract(payload,'$.type')='notification' AND json_extract(payload,'$.value.deadline_ms')<=?1 ORDER BY agent_id,sequence")
+        .map_err(sql)?
+        .query_map([sql_integer(now_ms)?], |row| {
+            let sequence: i64 = row.get(1)?;
+            let sequence = u64::try_from(sequence)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, sequence))?;
+            Ok((row.get::<_, String>(0)?, sequence))
+        })
+        .map_err(sql)?
+        .collect::<Result<_, _>>()
+        .map_err(sql)?;
+    let mut rest = expired.as_slice();
+    while let Some((id, _)) = rest.first() {
+        let count = rest.iter().take_while(|(other, _)| other == id).count();
+        let (group, tail) = rest.split_at(count);
+        rest = tail;
+        let Some(mut part) = read(tx, id)? else {
+            continue;
+        };
+        // An ended part keeps its rows for the day it has left and then drops them.
+        if part.ended.is_some() {
+            continue;
+        }
+        for (_, sequence) in group {
+            tx.execute(
+                "DELETE FROM agent_inbox WHERE room_id='' AND agent_id=?1 AND sequence=?2",
+                params![id, sql_integer(*sequence)?],
+            )
+            .map_err(sql)?;
+        }
+        let (kernel, machine) = identity(tx)?.unwrap_or_else(|| ("local".into(), String::new()));
+        let dropped = group.len() as u64;
+        let event = OutsideEvent {
+            cursor: 0,
+            kernel: kernel.clone(),
+            machine,
+            session_id: String::new(),
+            agent_id: None,
+            value: OutsideEventValue::Gap {
+                kernel,
+                dropped,
+                from: group[0].1,
+                to: group[group.len() - 1].1,
+            },
+            summary: format!(
+                "{dropped} notifications expired unread after 7 days; read their sources again"
+            ),
+            at_ms: now_ms,
+            refs: Default::default(),
+        };
+        let occurrence = format!("expired-{}", part.latest + 1);
+        append(tx, &mut part, &occurrence, &event)?;
+        put(tx, &part)?;
+    }
+    Ok(())
+}
+
 /// Deletes the parts that ended more than a day ago, with their unread rows. A home part
 /// whose remote cleanup is still owed stays until its pump has finished it.
 pub(in crate::durable_state::agent_lifecycle) fn prune_ended(

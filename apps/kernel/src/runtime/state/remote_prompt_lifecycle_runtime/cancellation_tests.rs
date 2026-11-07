@@ -348,7 +348,7 @@ async fn cancel_response_wait_keeps_home_app_lock_available(cancel_parent: Optio
     let agent = crate::app::KernelSessionService::new(&mut app)
         .spawn_agent(
             crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
-                .with_spawned_by_agent_id(parent.id()),
+                .with_parent_agent_id(parent.id()),
         )
         .unwrap();
     let attachment = crate::app::KernelSessionService::new(&mut app)

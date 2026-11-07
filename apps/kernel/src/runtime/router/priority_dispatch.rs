@@ -103,12 +103,21 @@ impl CommandRouter {
                     .await?;
                 Ok(LocalDaemonResponse::Dictation { result })
             }),
+            LocalDaemonRequest::SetAgentParent(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .set_agent_parent(&command_caller_user_id(&command), request)
+                    .await
+            }),
             LocalDaemonRequest::SetAgentDeadline(request) => {
                 boxed_handler(|| async move { self.runtime_state.set_agent_deadline(request) })
             }
             LocalDaemonRequest::GetAgentDeadline(request) => {
                 boxed_handler(|| async move { self.runtime_state.get_agent_deadline(request) })
             }
+            LocalDaemonRequest::ListDescendants(request) => boxed_handler(|| async move {
+                self.runtime_state
+                    .list_descendants(&command_caller_user_id(&command), request)
+            }),
             LocalDaemonRequest::Notes(request) => boxed_handler(|| async move {
                 let result = self
                     .runtime_state

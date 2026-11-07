@@ -102,6 +102,7 @@ impl TokenRefusal {
             "token_subject_hash": self.subject.subject_hash,
             "token_expired_for_s": self.subject.expired_for_s,
             "user_agent": hello.user_agent,
+            "forwarded_for": hello.forwarded_for,
             "transport": hello.transport,
             "refusals_in_previous_window": counted,
             "window_s": REFUSAL_LOG_WINDOW.as_secs(),
@@ -122,6 +123,19 @@ impl std::error::Error for TokenRefusal {}
 pub(crate) struct ConnectionHello {
     pub user_agent: Option<String>,
     pub transport: String,
+    /// The client's address as the local proxy (Caddy) saw it.
+    pub forwarded_for: Option<String>,
+}
+
+/// Behind a proxy every peer address is the proxy's own loopback one, so a refused
+/// client is found by the address the proxy forwarded. Only a loopback peer is a proxy
+/// this relay trusts to say it.
+pub(crate) fn forwarded_client(peer: std::net::SocketAddr, header: Option<&str>) -> Option<String> {
+    if !peer.ip().is_loopback() {
+        return None;
+    }
+    let client = header?.split(',').next()?.trim();
+    (!client.is_empty()).then(|| printable(client, 64))
 }
 
 pub(crate) fn printable(text: &str, limit: usize) -> String {
@@ -236,6 +250,29 @@ mod tests {
                 subject_hash: None,
                 expired_for_s: None,
             }
+        );
+    }
+
+    // 11-06: a kernel retried an expired token ~48 times a minute and every line named
+    // only Caddy's 127.0.0.1, so nobody could tell which machine it was.
+    #[test]
+    fn a_refusal_behind_the_local_proxy_names_the_forwarded_client() {
+        let proxy: std::net::SocketAddr = "127.0.0.1:59804".parse().unwrap();
+        let direct: std::net::SocketAddr = "203.0.113.9:443".parse().unwrap();
+        assert_eq!(
+            forwarded_client(proxy, Some("198.51.100.7, 127.0.0.1")).as_deref(),
+            Some("198.51.100.7")
+        );
+        assert_eq!(forwarded_client(direct, Some("198.51.100.7")), None);
+        assert_eq!(forwarded_client(proxy, None), None);
+        let hello = ConnectionHello {
+            forwarded_for: forwarded_client(proxy, Some("198.51.100.7")),
+            ..Default::default()
+        };
+        let refusal = TokenRefusal::expired(RelayAction::DaemonRegister, "x", 0);
+        assert_eq!(
+            refusal.log_fields(&hello, 3)["forwarded_for"],
+            "198.51.100.7"
         );
     }
 

@@ -197,6 +197,7 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         work: Some("goal-work".into()),
         run: Some("run".into()),
         now: 2,
+        through: 0,
     });
     apply(Operation::Receipt {
         room: room.clone(),
@@ -229,7 +230,8 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
         context.contains("\"unhandled_receipts\""),
         "native assessment needs pending public receipt refs after sources become non-live"
     );
-    assert!(context.contains("\"state\":\"accepted\""));
+    // The steered row was never read, so settling its turn gave it back to pending; the receipt stays visible.
+    assert!(context.contains("\"state\":\"pending\""));
     assert!(context.contains("\"sequence\":"));
     assert!(
         !context.contains("DO_NOT_INCLUDE_RAW_RECEIPT_BODY"),

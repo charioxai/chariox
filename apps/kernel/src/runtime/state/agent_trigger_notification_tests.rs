@@ -1,4 +1,5 @@
 use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
+use super::workflow_notification_peers::VERSION;
 use super::*;
 use crate::local::{
     AgentTriggerSourceRequest, DeleteAgentTriggerRequest, ListWorkflowNotificationsRequest,
@@ -248,6 +249,91 @@ async fn an_agent_notification_trigger_queues_every_occurrence() {
     // Settled receipts are not delivered twice.
     rig.pass().await;
     assert_eq!(rig.queued_prompts().len(), 3);
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: subscribing one agent to one source again is the same listener.
+#[tokio::test]
+async fn subscribing_the_same_agent_to_a_source_twice_keeps_one_listener() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+
+    let LocalDaemonResponse::AgentTriggerCreated { trigger: first, .. } = rig
+        .runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    let mut again = rig.request(&source);
+    again.prompt = Some("Summarise the pipeline result".into());
+    let LocalDaemonResponse::AgentTriggerCreated {
+        trigger: second, ..
+    } = rig
+        .runtime
+        .create_agent_trigger(again, "local")
+        .await
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(second.id(), first.id());
+    assert_eq!(second.prompt(), "Summarise the pipeline result");
+    let session = rig.runtime.owned.session_snapshot(&rig.session_id).unwrap();
+    assert_eq!(session.agent_triggers().len(), 1);
+    assert_eq!(rig.subscriptions().len(), 1);
+
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
+    assert!(queued[0].starts_with("Summarise the pipeline result"));
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a store that already holds two listeners of one agent and
+// source delivers each occurrence once.
+#[tokio::test]
+async fn listeners_already_duplicated_in_a_store_deliver_each_occurrence_once() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
+    let mut copy = rig.subscriptions().remove(0);
+    copy.subscription_id = "wf_subscription_00000000000000000000000000000001".into();
+    let trigger = rig
+        .runtime
+        .owned
+        .session_store
+        .write()
+        .create_agent_notification_trigger(
+            &rig.session_id,
+            &rig.agent_id,
+            "local",
+            AgentTriggerNotificationSource::Workflow {
+                source_id: source.clone(),
+            },
+            copy.subscription_id.clone(),
+            "pipeline".into(),
+            Some("Triage what the pipeline reports".into()),
+        )
+        .unwrap();
+    copy.publication_id = trigger.id().into();
+    copy.trigger_id = Some(trigger.id().into());
+    rig.runtime
+        .subscribe_agent_notification(&home, copy)
+        .await
+        .unwrap();
+    assert_eq!(rig.subscriptions().len(), 2);
+
+    rig.complete(&workflow, "run-0", "release 0 approved");
+    rig.pass().await;
+    let queued = rig.queued_prompts();
+    assert_eq!(queued.len(), 1, "{queued:?}");
 }
 
 // MP-08 / MP-10 (VS-S2-5): a subscription lasts as long as its trigger and agent.
@@ -2541,4 +2627,59 @@ async fn a_persisted_steer_rejection_survives_recovery_without_its_provisional_l
         2,
         "a workflow the original turn invoked still notifies"
     );
+}
+
+#[tokio::test]
+async fn a_remote_agent_follow_the_source_does_not_confirm_is_reconciled_as_absent() {
+    let rig = rig().await;
+    let owner = "local";
+    let home = rig.runtime.owned.config_projection.snapshot().daemon_id;
+    let subscription = WorkflowNotificationSubscription {
+        subscription_id: "sub-unconfirmed".into(),
+        source_id: "wf_source_remote".into(),
+        owner_user_id: owner.into(),
+        created_by_user_id: owner.into(),
+        target_kernel_id: home.clone(),
+        target_kind: WorkflowNotificationTargetKind::Agent,
+        session_id: rig.session_id.clone(),
+        workflow_id: String::new(),
+        publication_id: "trigger-unconfirmed".into(),
+        endpoint_id: rig.agent_id.clone(),
+        queue_id: AGENT_QUEUE_ID.into(),
+        source_available: true,
+        source_kernel_id: "remote-kernel".into(),
+        agent_id: Some(rig.agent_id.clone()),
+        trigger_id: Some("trigger-unconfirmed".into()),
+    };
+    assert!(rig
+        .runtime
+        .subscribe_agent_notification(&home, subscription)
+        .await
+        .is_err());
+    let (_, active, _) = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .notification_inventory(owner)
+        .unwrap();
+    assert!(active.is_empty(), "the refused follow stays active");
+    let crate::durable_state::workflow_notifications::NotificationOutcome::Reconciles(due) = rig
+        .runtime
+        .owned
+        .durable_state_store
+        .notify(NotificationOperation::ClaimRemoteReconciles {
+            now: 1_000,
+            limit: 8,
+        })
+        .unwrap()
+    else {
+        panic!("a claim answers with the due reconciliations");
+    };
+    assert_eq!(
+        due.len(),
+        1,
+        "the source may hold a row nothing here knows of"
+    );
+    assert!(due[0].desired.is_none());
+    assert_eq!(due[0].source_kernel_id, "remote-kernel");
 }

@@ -36,18 +36,10 @@ impl KernelRuntimeOwnedState {
         }
         self.ensure_agent_owner(agent_id, caller_user_id, "update agent config")?;
         let session = self.session_store.get_session(session_id)?;
-        if self
+        let active_turn = self
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent_id)
-            .is_some()
-        {
-            return Err(DaemonError::LocalTransport {
-                operation: "update agent config",
-                message: format!(
-                    "agent `{agent_id}` has an active turn; update the config after it finishes"
-                ),
-            });
-        }
+            .is_some();
         self.ensure_agent_config_not_provider_native_tui(
             session_id,
             agent_id,
@@ -74,6 +66,20 @@ impl KernelRuntimeOwnedState {
             || previous_config.permission_level != next_config.permission_level;
         let working_directory_changed = next_agent.workspace_id() != agent.workspace_id()
             || next_agent.worktree_id() != agent.worktree_id();
+        // The person can lower a running agent: every permission lookup reads the new
+        // level and mode at use. Raising it or moving it needs the turn to end.
+        let lowers_only = previous_config.mode.permits(next_config.mode)
+            && previous_config
+                .permission_level
+                .permits(next_config.permission_level);
+        if active_turn && (working_directory_changed || !lowers_only) {
+            return Err(DaemonError::LocalTransport {
+                operation: "update agent config",
+                message: format!(
+                    "agent `{agent_id}` has an active turn; lower its level or mode now, or update the rest of the config after it finishes"
+                ),
+            });
+        }
         let scope_changed = effective_config_changed || working_directory_changed;
         let remote_update = effective_config_changed
             .then(|| {
@@ -96,6 +102,7 @@ impl KernelRuntimeOwnedState {
                 agent_id,
                 next_config,
                 working_directory_changed,
+                active_turn,
             )?
         } else {
             Vec::new()
@@ -129,6 +136,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         next_config: crate::session::EffectiveAgentExecutionConfig,
         working_directory_changed: bool,
+        active_turn: bool,
     ) -> Result<Vec<String>, DaemonError> {
         let mut terminated_run_ids = Vec::new();
         if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
@@ -149,7 +157,7 @@ impl KernelRuntimeOwnedState {
                             next_config.permission_level,
                         )?;
                         self.provider_run_projection.update(updated);
-                    } else {
+                    } else if !active_turn {
                         let outcome = self
                             .provider_store
                             .terminate_run_provider_only(session_id, run.id())?;

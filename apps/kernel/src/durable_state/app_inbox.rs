@@ -292,17 +292,6 @@ impl DurableKernelStateStore {
         });
         Ok(routes)
     }
-
-    /// The route an event service delivers under `binding_id`.
-    pub(crate) fn app_route_by_binding(
-        &self,
-        binding_id: &str,
-    ) -> Result<Option<InboxRoute>, InboxError> {
-        let connection = self
-            .lock_connection("durable_state.app_route_by_binding")
-            .map_err(|_| InboxError::Corrupt)?;
-        app_inbox::route_by_binding(&connection, binding_id)
-    }
 }
 
 #[cfg(test)]

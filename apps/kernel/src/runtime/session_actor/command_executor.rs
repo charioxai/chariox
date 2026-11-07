@@ -99,6 +99,7 @@ impl SessionRuntimeCommandExecutor {
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
+        idempotency_key: Option<String>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let Some(actor) = caller_metaagent_id.as_deref() {
             self.store.authorize_room_agent_request(actor, &request)?;
@@ -161,6 +162,7 @@ impl SessionRuntimeCommandExecutor {
                 caller_metaagent_id,
                 terminal_caller,
                 connection_class,
+                idempotency_key,
             )
             .await
         };
@@ -207,6 +209,7 @@ impl SessionRuntimeCommandExecutor {
         caller_metaagent_id: Option<String>,
         terminal_caller: bool,
         connection_class: Option<KernelConnectionClass>,
+        idempotency_key: Option<String>,
     ) -> StoreRequestFuture<'_> {
         match request {
             LocalDaemonRequest::CreateSession(request) => {
@@ -407,7 +410,12 @@ impl SessionRuntimeCommandExecutor {
             }
             LocalDaemonRequest::SpawnAgent(request) => Box::pin(async move {
                 self.store
-                    .spawn_agent(request, caller_user_id, caller_metaagent_id)
+                    .spawn_agent(
+                        request,
+                        caller_user_id,
+                        caller_metaagent_id,
+                        idempotency_key,
+                    )
                     .await
             }),
             LocalDaemonRequest::SpawnAgents(request) => Box::pin(async move {

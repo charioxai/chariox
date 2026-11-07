@@ -424,6 +424,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
+        LocalDaemonRequest::ListDescendants(request) => {
+            LocalRequestMetadata::new("agent.descendants.list", Normal)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
         LocalDaemonRequest::AliasAgent(request) => {
             LocalRequestMetadata::new("agent.alias", Interactive)
                 .session(&request.session_id)
@@ -487,6 +492,11 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         }
         LocalDaemonRequest::ArchiveAgent(request) => {
             LocalRequestMetadata::new("agent.archive", Interactive)
+                .session(&request.session_id)
+                .agent(&request.agent_id)
+        }
+        LocalDaemonRequest::SetAgentParent(request) => {
+            LocalRequestMetadata::new("agent.parent.set", Normal)
                 .session(&request.session_id)
                 .agent(&request.agent_id)
         }
@@ -638,6 +648,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::SubscribeEvents(_) => "events.subscribe",
         LocalDaemonRequest::UnsubscribeEvents(_) => "events.unsubscribe",
         LocalDaemonRequest::GetEventSubscription(_) => "events.subscription",
+        LocalDaemonRequest::ListNotificationSources(_) => "events.sources",
         LocalDaemonRequest::ListEvents(_) => "events.list",
         LocalDaemonRequest::WaitEvents(_) => "events.wait",
         LocalDaemonRequest::AckEvents(_) => "events.ack",
@@ -987,6 +998,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::AliasSession(_) => "session.alias",
         LocalDaemonRequest::SetAgentDeadline(_) => "agent.deadline.set",
         LocalDaemonRequest::GetAgentDeadline(_) => "agent.deadline.get",
+        LocalDaemonRequest::ListDescendants(_) => "agent.descendants.list",
         LocalDaemonRequest::AliasAgent(_) => "agent.alias",
         LocalDaemonRequest::UpdateAgentProfile(_) => "agent.profile.update",
         LocalDaemonRequest::SpawnAgent(_) => "agent.spawn",
@@ -996,6 +1008,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::MoveAgentToRemote(_) => "agent.move_remote",
         LocalDaemonRequest::MoveAgentToLocal(_) => "agent.move_local",
         LocalDaemonRequest::ArchiveAgent(_) => "agent.archive",
+        LocalDaemonRequest::SetAgentParent(_) => "agent.parent.set",
         LocalDaemonRequest::DestroyAgent(_) => "agent.destroy",
         LocalDaemonRequest::GrantAgentExtension(_) => "agent.extension.grant",
         LocalDaemonRequest::RevokeAgentExtension(_) => "agent.extension.revoke",

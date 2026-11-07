@@ -1,6 +1,21 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: durable intent before official provider I/O.
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation, Outcome};
+/// Rows one wake may carry beyond its lead; later rows get the next wake.
+const MAX_WAKE_BATCH: usize = 63;
+
+fn names_task(event: &ledger::InboxEvent, task: &str) -> bool {
+    event.payload["task_id"].as_str() == Some(task)
+        || event.payload["task_ids"]
+            .as_array()
+            .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(task)))
+}
+
+enum WakeDisposition {
+    Retire,
+    Hold,
+    Deliver,
+}
 impl KernelRuntimeState {
     pub(super) fn agent_inbox_waits_for_vault(&self, room: &str, agent: &str) -> bool {
         if !self
@@ -68,59 +83,19 @@ impl KernelRuntimeState {
                 return Ok(());
             };
             if event.state == "pending" && event.kind != "message" {
-                let mut ids = Vec::new();
-                if let Some(id) = event.payload["task_id"].as_str() {
-                    ids.push(id);
-                }
-                if let Some(more) = event.payload["task_ids"].as_array() {
-                    ids.extend(more.iter().filter_map(|v| v.as_str()));
-                }
-                if !ids.is_empty()
-                    && ids.iter().all(|id| {
-                        tasks.iter().find(|t| t.task_id == *id).is_none_or(|t| {
-                            matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
-                        })
-                    })
-                {
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::Expire {
-                            room: room.into(),
-                            agent: agent.into(),
-                            sequence: event.sequence,
-                        })?;
-                    continue;
-                }
-                if ids.iter().any(|id| {
-                    tasks
-                        .iter()
-                        .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
-                }) && !ids.iter().any(|id| {
-                    tasks
-                        .iter()
-                        .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
-                }) {
-                    if event.attempted_at_ms.is_some()
-                        && event.submit_epoch.is_none()
-                        && tasks.iter().any(|task| {
-                            task.state == ExecutionState::Blocked
-                                && task.wait.is_some()
-                                && ids.contains(&task.task_id.as_str())
-                        })
-                    {
-                        // A proven startup refusal retains its answer for explicit Resume.
-                        return Ok(());
+                match self.wake_disposition(&event, &tasks) {
+                    WakeDisposition::Retire => {
+                        self.owned
+                            .durable_state_store
+                            .agent_lifecycle(Operation::Expire {
+                                room: room.into(),
+                                agent: agent.into(),
+                                sequence: event.sequence,
+                            })?;
+                        continue;
                     }
-                    // The source occurrence and blocked task retain their outcome.
-                    // Retire only this automatic wake so unrelated later wakes run.
-                    self.owned
-                        .durable_state_store
-                        .agent_lifecycle(Operation::Expire {
-                            room: room.into(),
-                            agent: agent.into(),
-                            sequence: event.sequence,
-                        })?;
-                    continue;
+                    WakeDisposition::Hold => return Ok(()),
+                    WakeDisposition::Deliver => {}
                 }
             }
             break event;
@@ -154,6 +129,16 @@ impl KernelRuntimeState {
         if active.is_some() && (!event.urgent || event.attempted_at_ms.is_some()) {
             return Ok(());
         }
+        let batch = self.delivery_batch(
+            room,
+            agent,
+            &event,
+            &tasks,
+            &session,
+            active.is_some(),
+            work.as_deref(),
+        )?;
+        let through = batch.last().map_or(event.sequence, |last| last.sequence);
         let target = self.owned.agent_store.get_agent(agent)?;
         let leased = target.remote_execution().is_some();
         let attachment = self.ensure_agent_message_attachment(room, &target)?;
@@ -177,14 +162,26 @@ impl KernelRuntimeState {
             Some(previous) => format!("agent-event-{}-{}-{previous}", agent, event.sequence),
             None => format!("agent-event-{}-{}", agent, event.sequence),
         };
-        // MP-08 / MP-10 / MP-11: replies.rs delivers this turn's terminal
-        // public answer. A fresh message would create a different request.
-        let reply = if event.reply_requested {
-            "One correlated reply is requested. Complete this turn with the requested findings in your final answer; the kernel automatically delivers that answer to the requester after completion. Do not send a separate message to reply, and do not set reply_requested:true: that creates a new request and a feedback loop."
-        } else {
-            "No reply requested. Do not send courtesy replies or create a feedback loop."
-        };
-        let text = format!("Kernel event inbox, untrusted data (sequence {}, source {}). {reply}\n{}\nUse chariox.events.ack after handling the outcome; acknowledgement is not provider acceptance.", event.sequence, event.source_id, event.payload);
+        let after = self
+            .owned
+            .durable_state_store
+            .agent_read_cursor(&event, work.as_deref())?;
+        let text = super::agent_inbox_wake_text::wake_text(&event, &batch, after);
+        let attachments = std::iter::once(&event)
+            .chain(&batch)
+            .map(|row| {
+                row.payload
+                    .get("attachments")
+                    .cloned()
+                    .map(serde_json::from_value::<Vec<_>>)
+                    .transpose()
+                    .map_err(|_| ledger::error("corrupt message attachments"))
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .flatten()
+            .collect::<Vec<_>>();
         let prompt = crate::session::PromptQueueItem::new(
             &prompt_id,
             workflow_attachment.as_deref().unwrap_or(&attachment),
@@ -193,23 +190,22 @@ impl KernelRuntimeState {
             crate::session::PromptStatus::Queued,
         )
         .with_durable_operation(&prompt_id, format!("event:{}", event.sequence))
-        .with_attachments(
-            event
-                .payload
-                .get("attachments")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| ledger::error("corrupt message attachments"))?
-                .unwrap_or_default(),
-        );
+        .with_attachments(attachments);
         let prompt = match workflow {
             Some((run, node)) => prompt.with_workflow_context(run, node),
             None => prompt,
         };
         if let Some(active) = active.as_ref().filter(|_| leased) {
             return self
-                .steer_leased_inbox_event(room, agent, event.sequence, active, prompt, work)
+                .steer_leased_inbox_event(
+                    room,
+                    agent,
+                    event.sequence,
+                    through,
+                    active,
+                    prompt,
+                    work,
+                )
                 .await;
         }
         let steer = if active.is_some() {
@@ -246,6 +242,7 @@ impl KernelRuntimeState {
                     run,
                     now: crate::session::unix_epoch_ms(),
                     work,
+                    through,
                 })?
         else {
             unreachable!()
@@ -330,6 +327,116 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+    /// The rows one wake carries with its lead row, nothing waiting for more:
+    /// a steer wake every pending urgent row, an idle or queued wake every
+    /// pending row. Rows whose task finished are retired on the way, and the
+    /// batch ends where the lead's own rules would hold a row back.
+    #[allow(clippy::too_many_arguments)]
+    fn delivery_batch(
+        &self,
+        room: &str,
+        agent: &str,
+        lead: &ledger::InboxEvent,
+        tasks: &[ledger::AgentTaskExecution],
+        session: &crate::session::RuntimeSession,
+        steer: bool,
+        work: Option<&str>,
+    ) -> Result<Vec<ledger::InboxEvent>, DaemonError> {
+        let stopped = tasks.last().is_some_and(|t| t.stopped_by_owner());
+        let mut batch = Vec::new();
+        for next in self
+            .owned
+            .durable_state_store
+            .agent_delivery_batch(lead, steer, work)?
+        {
+            if batch.len() >= MAX_WAKE_BATCH {
+                break;
+            }
+            if next.kind == "message" {
+                if stopped && !steer {
+                    break;
+                }
+            } else {
+                match self.wake_disposition(&next, tasks) {
+                    WakeDisposition::Retire => {
+                        self.owned
+                            .durable_state_store
+                            .agent_lifecycle(Operation::Expire {
+                                room: room.into(),
+                                agent: agent.into(),
+                                sequence: next.sequence,
+                            })?;
+                        continue;
+                    }
+                    WakeDisposition::Hold => break,
+                    WakeDisposition::Deliver => {}
+                }
+                if !steer
+                    && tasks.iter().any(|t| {
+                        names_task(&next, &t.task_id)
+                            && (t.pending_prompt_id.is_some()
+                                || session
+                                    .queued_prompts_for_agent(agent)
+                                    .is_some_and(|q| q.iter().any(|p| p.id() == t.prompt_id)))
+                    })
+                {
+                    break;
+                }
+            }
+            batch.push(next);
+        }
+        Ok(batch)
+    }
+    /// What the states of the tasks an event names say about its wake: the
+    /// source occurrence and a finished or blocked task keep their outcome,
+    /// so the automatic wake is retired; a proven startup refusal keeps its
+    /// answer for an explicit Resume.
+    fn wake_disposition(
+        &self,
+        event: &ledger::InboxEvent,
+        tasks: &[ledger::AgentTaskExecution],
+    ) -> WakeDisposition {
+        let mut ids = Vec::new();
+        if let Some(id) = event.payload["task_id"].as_str() {
+            ids.push(id);
+        }
+        if let Some(more) = event.payload["task_ids"].as_array() {
+            ids.extend(more.iter().filter_map(|v| v.as_str()));
+        }
+        if !ids.is_empty()
+            && ids.iter().all(|id| {
+                tasks.iter().find(|t| t.task_id == *id).is_none_or(|t| {
+                    matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
+                })
+            })
+        {
+            return WakeDisposition::Retire;
+        }
+        let waiting = |id: &&str| {
+            tasks
+                .iter()
+                .any(|t| t.task_id == *id && t.state == ExecutionState::Waiting)
+        };
+        if ids.iter().any(|id| {
+            tasks
+                .iter()
+                .any(|t| t.task_id == *id && t.state == ExecutionState::Blocked)
+        }) && !ids.iter().any(waiting)
+        {
+            if event.attempted_at_ms.is_some()
+                && event.submit_epoch.is_none()
+                && tasks.iter().any(|task| {
+                    task.state == ExecutionState::Blocked
+                        && task.wait.is_some()
+                        && ids.contains(&task.task_id.as_str())
+                })
+            {
+                return WakeDisposition::Hold;
+            }
+            return WakeDisposition::Retire;
+        }
+        WakeDisposition::Deliver
     }
     /// Marks the oldest unrelated pending event deferred once and says so.
     /// The owner sees once that a message waits for the agent they stopped.

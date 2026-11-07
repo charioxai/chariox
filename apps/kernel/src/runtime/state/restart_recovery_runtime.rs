@@ -32,6 +32,8 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) handed_off_local_prompts_ended: usize,
     failed_local_prompts: Vec<DurableRestartRecoveryTarget>,
     unidentified_local_prompts: Vec<DurableRestartRecoveryTarget>,
+    /// Turns that waited on a question when the kernel stopped; nothing can answer them now.
+    unanswerable_local_prompts: Vec<DurableRestartRecoveryTarget>,
     agents_awaiting_vault: BTreeSet<(String, String)>,
 }
 
@@ -62,6 +64,7 @@ type DurableRestartRecoveryTarget = (String, String, String);
 const RESTART_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
 const UNRECOVERABLE_PROMPT_REASON: &str = "The prompt could not be restored after the restart (the provider could not start, for example because the Chariox Vault stayed locked)";
 const UNIDENTIFIED_PROMPT_REASON: &str = "The prompt could not be resumed after the restart (no provider session or transcript identified the interrupted turn)";
+const UNANSWERABLE_PROMPT_REASON: &str = "The kernel restarted while this turn waited for an answer to a question, and that answer can no longer reach it. Send the request again to continue the conversation";
 const RESTART_RECOVERY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
@@ -209,6 +212,12 @@ impl KernelRuntimeState {
                     queued_recovery_targets,
                 )
                 .await;
+            // Nothing can answer a question the old process asked, so those turns end now.
+            let unanswerable = std::mem::take(&mut summary.unanswerable_local_prompts)
+                .into_iter()
+                .map(|target| (target, UNANSWERABLE_PROMPT_REASON));
+            self.end_prompts_interrupted_by_restart(&mut summary, unanswerable)
+                .await;
             if summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0 {
                 return summary;
             }
@@ -333,7 +342,17 @@ impl KernelRuntimeState {
         let unidentified = std::mem::take(&mut summary.unidentified_local_prompts)
             .into_iter()
             .map(|target| (target, UNIDENTIFIED_PROMPT_REASON));
-        for ((session_id, agent_id, prompt_id), reason) in unrecoverable.chain(unidentified) {
+        self.end_prompts_interrupted_by_restart(summary, unrecoverable.chain(unidentified))
+            .await;
+    }
+
+    /// Settles each prompt as interrupted by the restart, with the reason it was given.
+    async fn end_prompts_interrupted_by_restart(
+        &self,
+        summary: &mut DurableRestartRecoverySummary,
+        prompts: impl Iterator<Item = (DurableRestartRecoveryTarget, &'static str)>,
+    ) {
+        for ((session_id, agent_id, prompt_id), reason) in prompts {
             let cancelled = async {
                 let session = self.owned.session_store.get_session(&session_id)?;
                 let Some(prompt) = self
@@ -373,6 +392,12 @@ impl KernelRuntimeState {
                         None,
                         reason,
                     ) {
+                        log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
+                    }
+                    if let Err(error) = self
+                        .announce_child_interrupted(&session_id, &agent_id, &prompt_id, reason)
+                        .await
+                    {
                         log_restart_recovery_failure(&session_id, &agent_id, &prompt_id, &error);
                     }
                     let recipients = self
@@ -636,6 +661,25 @@ impl KernelRuntimeState {
                             );
                         }
                     }
+                    continue;
+                }
+                // A question the turn blocked on died with the old process. Resuming the
+                // provider would hand the model a refusal nobody gave; end the turn as
+                // interrupted by the restart instead. A graceful stop withdrew the card
+                // and left the mark on the prompt; a crash left the card.
+                if prompt.question_wait_stopped()
+                    || session
+                        .active_interaction_for_agent(agent_id)
+                        .is_some_and(|interaction| {
+                            interaction.kind() == crate::session::RuntimeInteractionKind::Choice
+                                && interaction.native_origin().is_some()
+                        })
+                {
+                    summary.unanswerable_local_prompts.push((
+                        session.id().to_string(),
+                        agent_id.to_string(),
+                        prompt.id().to_string(),
+                    ));
                     continue;
                 }
                 if prompt.status() == crate::session::PromptStatus::Cancelling {
@@ -2662,6 +2706,129 @@ mod tests {
         }
     }
 
+    /// A runtime whose active turn waits on a pending popup (ORCH-15).
+    async fn runtime_blocked_on_a_popup() -> (KernelRuntimeState, String, String, String) {
+        let mut config = DaemonConfig::for_tests();
+        config.room_agent_tools = true;
+        let (runtime, session_id, agent_id, prompt_id) = runtime_with_active_prompt_config(
+            crate::session::DurablePromptDeliveryPhase::Accepted,
+            std::env::current_dir()
+                .expect("test workspace should resolve")
+                .to_string_lossy()
+                .as_ref(),
+            config,
+        );
+        let run_id = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("the agent has a run")
+            .id()
+            .to_owned();
+        let popup = crate::session::RuntimeInteraction::new(
+            "popup-before-restart",
+            agent_id.clone(),
+            crate::session::RuntimeInteractionKind::Choice,
+            crate::session::RuntimeInteractionLevel::Info,
+            Some("Which one?".into()),
+            "Pick a branch",
+            vec![crate::session::RuntimeInteractionChoice::new(
+                "a", "A", "a", None,
+            )],
+            None,
+            Some(280),
+            None,
+        )
+        .with_native_origin(Some(crate::session::NativeInteractionOrigin::Prompt {
+            provider_run_id: run_id,
+            prompt_id: prompt_id.clone(),
+        }));
+        let _pending = runtime
+            .create_runtime_interaction(&session_id, popup)
+            .await
+            .expect("the popup is pending when the kernel stops");
+        runtime
+            .owned
+            .durable_state_store
+            .agent_lifecycle(crate::durable_state::agent_lifecycle::Operation::Begin {
+                owner: crate::session::DEFAULT_LOCAL_USER_ID.into(),
+                room: session_id.clone(),
+                agent: agent_id.clone(),
+                prompt: prompt_id.clone(),
+                run: None,
+                now: crate::session::unix_epoch_ms(),
+            })
+            .expect("the real admission creates its task before dispatch");
+        (runtime, session_id, agent_id, prompt_id)
+    }
+
+    async fn assert_recovery_ends_the_turn_as_interrupted(
+        runtime: &KernelRuntimeState,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+    ) {
+        let targets = runtime.durable_restart_recovery_targets();
+        runtime
+            .drive_durable_restart_recovery(
+                &targets,
+                &BTreeSet::new(),
+                std::time::Duration::from_millis(20),
+                std::time::Duration::from_millis(1),
+            )
+            .await;
+        let settlement = runtime
+            .owned
+            .operational_history_store
+            .load_prompt_settlement_event(session_id, agent_id, prompt_id)
+            .expect("history loads")
+            .expect("the turn has settlement history");
+        assert_eq!(
+            settlement.metadata["turn_outcome"]["kind"], "interrupted_by_restart",
+            "{:?}",
+            settlement.metadata
+        );
+        assert!(
+            settlement.metadata["turn_outcome"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("waited for an answer")),
+            "{:?}",
+            settlement.metadata
+        );
+    }
+
+    /// ORCH-15: a turn blocked on a question when the kernel crashed is ended as
+    /// interrupted by the restart; the model is not resumed into a refusal nobody gave.
+    #[tokio::test]
+    async fn a_restart_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
+    /// ORCH-15 live: the graceful stop withdraws the popup before recovery runs, so the
+    /// withdrawal itself leaves the mark that ends the turn as interrupted by the restart.
+    #[tokio::test]
+    async fn a_graceful_stop_with_a_pending_popup_ends_the_turn_as_interrupted_by_restart() {
+        let (runtime, session_id, agent_id, prompt_id) = runtime_blocked_on_a_popup().await;
+        runtime
+            .owned
+            .withdraw_agent_interactions_for_shutdown(&session_id)
+            .expect("the stop withdraws the turn's popup");
+        assert!(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session")
+                .active_interaction_for_agent(&agent_id)
+                .is_none(),
+            "the withdrawn popup is no card after the stop"
+        );
+        assert_recovery_ends_the_turn_as_interrupted(&runtime, &session_id, &agent_id, &prompt_id)
+            .await;
+    }
+
     #[tokio::test]
     async fn a_turn_recovery_gives_up_on_ends_failed_as_interrupted_by_restart() {
         assert_restart_owner_prompt_retires_failure(false).await;
@@ -2701,6 +2868,7 @@ mod tests {
                             session_id: session_id.clone(),
                             agent_id: Some(agent_id.clone()),
                         }],
+                        sources: Vec::new(),
                     },
                 ),
             )

@@ -33,6 +33,7 @@ impl PublishEventBuilder {
                 metadata: Value::Null,
                 reply_context: None,
                 ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                audience: Vec::new(),
             },
         }
     }

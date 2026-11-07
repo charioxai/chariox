@@ -7,10 +7,11 @@ services:
       CHARIOX_AEGS_ADDR: 0.0.0.0:43132
       CHARIOX_AEGS_PRODUCER_ID: dev.chariox.dummy
       CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/producer_token
-      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/management_token
+      CHARIOX_AEGS_ADMISSION: ${CHARIOX_AEGS_ADMISSION:?set open or allowlist}
+      CHARIOX_AEGS_ALLOWLIST_FILE: ${CHARIOX_AEGS_ALLOWLIST_FILE:-}
       CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
       CHARIOX_AEDS_EVENTS_URL: ${CHARIOX_AEDS_EVENTS_URL:?set the HTTPS AEDS events URL}
-    secrets: [producer_token, management_token]
+    secrets: [producer_token]
     volumes: [aegs-data:/var/lib/chariox/aegs]
     ports: ["127.0.0.1:${CHARIOX_AEGS_LOOPBACK_PORT:-43132}:43132"]
     read_only: true
@@ -32,8 +33,6 @@ services:
 secrets:
   producer_token:
     file: ${CHARIOX_AEGS_PRODUCER_TOKEN_FILE:?set the producer token file}
-  management_token:
-    file: ${CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE:?set the management token file}
 
 volumes:
   aegs-data:

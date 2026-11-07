@@ -36,18 +36,18 @@ compose `.env` file. Set `CHARIOX_AEDS_KERNEL_PORT`,
 the defaults are occupied.
 Subsequent compose rebuilds and restarts continue using those same ports.
 
-Configure a local kernel after replacing `<stable-kernel-id>` in
-`secrets/aeds-kernel-tokens.json` with that kernel's persisted daemon identity:
+Configure a local kernel. It needs no token: it proves its identity key to AEDS and signs its
+AEGS requests (the rehearsal services run with `open` admission):
 
 ```sh
 export CHARIOX_AEDS_URL=ws://127.0.0.1:43130
-export CHARIOX_AEDS_TOKEN="$(<secrets/local-kernel-token)"
 export CHARIOX_EVENT_ENVIRONMENT_ID=local-container
 export CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE="$PWD/secrets/kernel-aegs-management-targets.json"
 ```
 
-The synthetic deployment drill uses `local-container-kernel`; a real kernel always
-uses its stable persisted identity and AEDS must authorize that exact identity.
+The synthetic deployment drill generates a throwaway identity key (or uses the key in
+`CHARIOX_DRILL_KERNEL_PRIVATE_KEY`); a real kernel always uses its persisted relay identity key,
+and a gateway running `allowlist` admission lists that kernel's id.
 
 Use `docker compose down` to stop the rehearsal. Do not add `--volumes` when
 testing restart or upgrade continuity. Use it only for explicit final cleanup.

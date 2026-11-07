@@ -25,6 +25,7 @@ import {
   managedEnvironmentIsLaunchReady,
   managedKernelContextLabel,
   managedProviderAccountIsTransferable,
+  managedProviderAccountUnavailableLabel,
   managedProviderAccountSelections,
   selectedManagedEnvironment,
   waitingRoomConfiguresNewManagedMachine,
@@ -399,8 +400,8 @@ export function waitingRoomManagedMachineDialogRows(
         id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
         title: profile.label,
         value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
-          ? transferable ? "Included" : `Included, ${profile.auth_state}`
-          : transferable ? "Excluded" : `Unavailable, ${profile.auth_state}`}`,
+          ? transferable ? "Included" : `Included, ${managedProviderAccountUnavailableLabel(profile)}`
+          : transferable ? "Excluded" : `Unavailable, ${managedProviderAccountUnavailableLabel(profile)}`}`,
         titleWidth,
         indent: 2,
         focused: state.focus === "managed-provider-account"

@@ -818,6 +818,7 @@ fn provider_account_profile() -> crate::account_profile::ProviderAccountProfile 
             "provider did not report credential type".to_string(),
         ),
         materializations: Vec::new(),
+        context_transfer: crate::account_profile::ProviderAccountContextTransfer::Available,
     }
 }
 

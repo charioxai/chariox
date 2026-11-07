@@ -12,6 +12,7 @@ use chariox_relay::protocol::RelayKernelPresence;
 
 mod agent_deadline;
 mod agent_lifecycle;
+mod agent_tree;
 mod agent_triggers;
 mod agent_utility;
 mod apps;
@@ -62,6 +63,7 @@ mod workspace;
 
 pub use agent_deadline::*;
 pub use agent_lifecycle::*;
+pub use agent_tree::*;
 pub use agent_triggers::*;
 pub use agent_utility::*;
 pub use apps::*;
@@ -486,4 +488,8 @@ pub use workspace::*;
 /// Environments 982 hold an operation read until it changes, add MCPs and Skills that project files declare, and Check without a model (peer423 carries them in the record).
 /// MP-08/MP-09/MP-10/MP-11: 994 adds per-exit workflow notification sources, agent notification triggers and drops subscription options (peer422).
 /// MP-08/MP-09/MP-10/MP-11: 998 adds source-side listeners and durable queued notification expiry (peer 437).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 999;
+/// MP-08/MP-09/MP-10/MP-11: 1000 lets an outside agent's grant follow notification sources and read their occurrences as events,
+/// lets an owner-managed copy select event connection records, adds the parent edge with SetAgentParent, the spawn key,
+/// child_finished and the inbox sender relation, the sub-agent tree read and its change event, and carries Vault
+/// provider logins to a new managed machine (peer 439).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1000;

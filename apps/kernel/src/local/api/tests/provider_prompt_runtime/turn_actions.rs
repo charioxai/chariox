@@ -100,6 +100,7 @@ fn mp08_mp10_active_steering_is_bound_to_an_exact_home_prompt() {
                     session_id: session.id().into(),
                     agent_id: Some(agent.id().into()),
                 }],
+                sources: Vec::new(),
             }),
         )
         .unwrap();
@@ -230,6 +231,7 @@ fn outside_caller_learns_a_delivered_steer_whose_event_was_not_recorded() {
             session_id: session.id().into(),
             agent_id: Some(agent.id().into()),
         }],
+        sources: Vec::new(),
     });
     let runtime = harness.runtime_state();
     let mut subscribed = false;

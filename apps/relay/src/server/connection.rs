@@ -140,6 +140,13 @@ pub(crate) async fn handle_connection(
                 .get("user-agent")
                 .and_then(|value| value.to_str().ok())
                 .map(|agent| token_refusal::printable(agent, 120));
+            hello.forwarded_for = token_refusal::forwarded_client(
+                peer_addr,
+                request
+                    .headers()
+                    .get("x-forwarded-for")
+                    .and_then(|value| value.to_str().ok()),
+            );
             let protocols = request
                 .headers()
                 .get("sec-websocket-protocol")

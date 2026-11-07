@@ -31,6 +31,7 @@ impl Fixture {
                         session_id: self.session.clone(),
                         agent_id: None,
                     }],
+                    sources: Vec::new(),
                 }),
             )
             .unwrap();
@@ -261,6 +262,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
         pending.write().insert(
             id.into(),
             super::super::PendingInteraction {
+                checking_answer: Default::default(),
                 goal_approval: None,
                 async_task_id: None,
                 kernel_wide_interaction: None,
@@ -272,6 +274,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 terminal_credential_owner: None,
                 kernel_operation_deadline: None,
                 passkey_prompt: None,
+                holder: super::super::DecisionHolder::User,
                 responder: Arc::new(std::sync::Mutex::new(Some(sender))),
             },
         );

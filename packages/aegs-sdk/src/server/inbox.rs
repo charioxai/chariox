@@ -14,7 +14,7 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 
-use super::{enforce_management_owner, error, json, read_body, AegsServer};
+use super::{enforce_management_owner, error, json, AegsServer};
 use crate::store::{Requeue, SelectedInterest};
 use crate::{metadata_matches_filter, now_ms, InboxEntry, InboxStatus, NormalizedEvent};
 
@@ -92,8 +92,8 @@ impl AegsServer {
         Ok(selected)
     }
 
-    /// Publishes `selected` once per interest key; an interest whose authorization changed since
-    /// it was selected is skipped.
+    /// Publishes `selected` once per connection and interest key; an interest whose
+    /// authorization changed since it was selected is skipped.
     async fn publish_selected(
         &self,
         normalized: &NormalizedEvent,
@@ -102,7 +102,10 @@ impl AegsServer {
         let mut interest_keys = HashSet::new();
         let mut responses = Vec::new();
         for interest in selected {
-            let key = interest.0.event_interest_key.clone();
+            let key = (
+                interest.0.connection_id.clone(),
+                interest.0.event_interest_key.clone(),
+            );
             if !interest_keys.insert(key.clone()) {
                 continue;
             }
@@ -128,6 +131,14 @@ impl AegsServer {
             return Ok(None);
         };
         let accepted_connection_id = subscription.connection_id.clone();
+        // Read under the delivery guard: a subscription revoked since the selection is not in it.
+        // One connection's publication names only that connection's kernels, so another
+        // connection watching the same scope is published to on its own.
+        let audience = self.store.audience_for_interest(
+            &self.producer_id,
+            &subscription.event_interest_key,
+            Some(&subscription.connection_id),
+        )?;
         let response = self
             .publisher
             .publish(PublishEventRequest {
@@ -142,6 +153,7 @@ impl AegsServer {
                 metadata: normalized.metadata.clone(),
                 reply_context: normalized.reply_context.clone(),
                 ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                audience,
             })
             .await?;
         // AEDS has the event, so a failed health stamp must not turn it into a retry.
@@ -314,17 +326,29 @@ impl AegsServer {
     }
 }
 
+fn parse_management_json<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+) -> Result<T, Box<Response<Full<Bytes>>>> {
+    serde_json::from_slice(body).map_err(|message| {
+        Box::new(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_json",
+            message.to_string(),
+        ))
+    })
+}
+
 impl AegsServer {
     /// `POST /v1/events/query`: the owner's stored webhooks, newest first.
     pub(super) async fn query_received_events(
         &self,
         request: Request<Incoming>,
     ) -> Response<Full<Bytes>> {
-        let authorization = match self.authorize_management(&request) {
-            Ok(authorization) => authorization,
+        let (authorization, body) = match self.authenticate_management(request).await {
+            Ok(authenticated) => authenticated,
             Err(response) => return *response,
         };
-        let query: AegsReceivedEventQuery = match self.read_management_json(request).await {
+        let query: AegsReceivedEventQuery = match parse_management_json(&body) {
             Ok(value) => value,
             Err(response) => return *response,
         };
@@ -359,12 +383,11 @@ impl AegsServer {
         &self,
         request: Request<Incoming>,
     ) -> Response<Full<Bytes>> {
-        let authorization = match self.authorize_management(&request) {
-            Ok(authorization) => authorization,
+        let (authorization, body) = match self.authenticate_management(request).await {
+            Ok(authenticated) => authenticated,
             Err(response) => return *response,
         };
-        let replay: AegsReceivedEventReplayRequest = match self.read_management_json(request).await
-        {
+        let replay: AegsReceivedEventReplayRequest = match parse_management_json(&body) {
             Ok(value) => value,
             Err(response) => return *response,
         };
@@ -436,23 +459,9 @@ impl AegsServer {
         }
     }
 
-    async fn read_management_json<T: serde::de::DeserializeOwned>(
-        &self,
-        request: Request<Incoming>,
-    ) -> Result<T, Box<Response<Full<Bytes>>>> {
-        let body = read_body(request).await.map_err(Box::new)?;
-        serde_json::from_slice(&body).map_err(|message| {
-            Box::new(error(
-                StatusCode::BAD_REQUEST,
-                "invalid_json",
-                message.to_string(),
-            ))
-        })
-    }
-
     fn check_management_target(
         &self,
-        authorization: &super::ManagementAuthorization,
+        authorization: &crate::kernel_auth::AuthenticatedKernel,
         owner_id: &str,
         generator_id: &str,
         validation: Result<(), String>,

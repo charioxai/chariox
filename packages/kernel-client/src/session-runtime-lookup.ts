@@ -5,6 +5,11 @@ import type {
 } from "./kernel-types.js"
 import { sessionFocusedAgentId } from "./session-runtime-transition.js"
 
+/** The agent whose panel shows a card: the top parent for a sub-agent's decision, else the asking agent. */
+export function interactionShownInAgentId(interaction: RuntimeInteraction): string | null {
+  return interaction.shown_in_agent_id ?? interaction.agent_id ?? null
+}
+
 export function sessionActiveInteractionForAgent(
   session: Pick<RuntimeSession, "active_interactions">,
   agentId: string | null | undefined,
@@ -12,7 +17,7 @@ export function sessionActiveInteractionForAgent(
   if (!agentId) {
     return null
   }
-  return session.active_interactions?.find((interaction) => interaction.agent_id === agentId) ?? null
+  return session.active_interactions?.find((interaction) => interactionShownInAgentId(interaction) === agentId) ?? null
 }
 
 export function sessionFocusedInteraction(

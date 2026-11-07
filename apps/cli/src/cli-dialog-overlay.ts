@@ -24,7 +24,7 @@ import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
-export type CliDialogOverlayMode = "closed" | "processes" | "environment" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
+export type CliDialogOverlayMode = "closed" | "processes" | "environment" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys" | "sub-agents"
 
 type CliDialogOverlayOptions = {
   overlayBox: BoxRenderable | undefined
@@ -41,6 +41,8 @@ type CliDialogOverlayOptions = {
   processConfirmation?: boolean
   processLines?: string[]
   environmentView?: EnvironmentDialogView
+  /** The sub-agents list card: the hierarchy as rows, no title. */
+  subAgentsRows?: readonly EnvironmentDialogRow[]
   managedMachineRows?: WaitingRoomRow[]
 }
 
@@ -75,6 +77,10 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
     if (!options.processConfirmation) panel.add(dialogHeader(renderer, "Processes", "↑/↓ scroll • Esc close"))
     panel.add(new TextRenderable(renderer, { content: (options.processLines ?? []).join("\n"), fg: theme.text, wrapMode: "none" }))
     scrim.add(panel)
+  } else if (options.mode === "sub-agents") {
+    const panel = dialogPanel(renderer, dialogPanelWidth(dimensions.width), dimensions.width)
+    panel.add(renderRowList(renderer, options.subAgentsRows ?? []))
+    scrim.add(panel)
   } else if (options.mode === "environment") {
     scrim.add(renderEnvironmentPanel(options))
   } else if (options.mode === "managed-machine") {
@@ -100,14 +106,10 @@ function environmentRowColor(row: EnvironmentDialogRow) {
   }
 }
 
-function renderEnvironmentPanel(options: CliDialogOverlayOptions): BoxRenderable {
-  const { renderer, dimensions } = options
-  const view = options.environmentView ?? { hint: "Esc close", rows: [], message: null }
-  const panel = dialogPanel(renderer, dialogPanelWidth(dimensions.width), dimensions.width)
-  panel.add(dialogHeader(renderer, "Environment", view.hint))
-  // Rows sit directly under each other; the panel gap would double-space them.
+// Rows sit directly under each other; the panel gap would double-space them.
+function renderRowList(renderer: ConstructorParameters<typeof BoxRenderable>[0], rows: readonly EnvironmentDialogRow[]): BoxRenderable {
   const list = new BoxRenderable(renderer, { flexDirection: "column" })
-  for (const row of view.rows) {
+  for (const row of rows) {
     list.add(new TextRenderable(renderer, {
       content: row.text,
       fg: environmentRowColor(row),
@@ -115,7 +117,15 @@ function renderEnvironmentPanel(options: CliDialogOverlayOptions): BoxRenderable
       wrapMode: "none",
     }))
   }
-  panel.add(list)
+  return list
+}
+
+function renderEnvironmentPanel(options: CliDialogOverlayOptions): BoxRenderable {
+  const { renderer, dimensions } = options
+  const view = options.environmentView ?? { hint: "Esc close", rows: [], message: null }
+  const panel = dialogPanel(renderer, dialogPanelWidth(dimensions.width), dimensions.width)
+  panel.add(dialogHeader(renderer, "Environment", view.hint))
+  panel.add(renderRowList(renderer, view.rows))
   if (view.message) {
     panel.add(new TextRenderable(renderer, { content: view.message, fg: theme.error, wrapMode: "none" }))
   }

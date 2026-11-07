@@ -311,6 +311,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
             key_thumbprint: public_key_thumbprint(&target.relay_public_key),
         },
         context_selection: OwnerManagedContextSelection {
+            event_connections: Default::default(),
             kernel_context: OwnerManagedKernelSelection::SourceKernelWithoutCredentials,
             development_setup: OwnerManagedDevelopmentSelection::SourceProject {
                 project_id: "owner-project".into(),
@@ -446,6 +447,7 @@ async fn owner_managed_context_encrypted_peer_drill_inner() {
         kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(snapshot)),
         provider_accounts: ManagedContextPackageProviderAccounts::None,
         git_credentials: ManagedContextPackageGitCredentials::None,
+        event_connections: Default::default(),
         package_path: root.join("package.ctx"),
     })
     .unwrap();

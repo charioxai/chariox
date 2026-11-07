@@ -1,4 +1,5 @@
 import type { ShellContext } from "@chariox/kernel-client/shell-core"
+import { interactionShownInAgentId } from "@chariox/kernel-client/session-runtime-lookup"
 import {
   sessionHistoryEntryIsExternalProviderObserved,
 } from "@chariox/kernel-client/external-provider-observation"
@@ -143,7 +144,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
       message: interaction.message,
       timeoutSec: interaction.timeout_sec,
       defaultOnTimeout: interaction.default_on_timeout,
-      focused: deps.focusedAgentId() === interaction.agent_id,
+      focused: deps.focusedAgentId() === interactionShownInAgentId(interaction),
       selectedChoiceIndex: deps.interactionChoiceSelection(interaction.id),
       customChoice: interaction.custom_choice ?? null,
       customReply: deps.interactionCustomReply(interaction.id),

@@ -147,19 +147,24 @@ fn assert_external_active_prompt_and_queued_chariox_prompt(
     );
 }
 
+mod agent_tree_state;
 mod agent_wake_sources;
 mod app_quiet_tool_guard;
 mod approval_lifetime;
 mod browser_import_execution_gate;
+mod child_finished;
+mod child_receipts;
 mod claude_plan;
 mod cleanup_liveness;
 mod completion_settlement;
+mod decisions;
 mod detached_jobs_teardown;
 mod detached_provider_run;
 mod diagnostics_timeouts;
 mod external_queue;
 mod focus_recovery_tests;
 mod history_projection;
+mod inbox_sender;
 mod large_codex_resume;
 mod leased_output;
 mod mcp_catalog_reload;
@@ -174,6 +179,7 @@ mod pump_selection;
 mod quiet_drain_workflow;
 mod structured_exit_diagnostic;
 mod structured_output;
+mod subtree_cascade;
 
 #[test]
 fn claude_native_runs_never_use_quiet_pty_settlement() {

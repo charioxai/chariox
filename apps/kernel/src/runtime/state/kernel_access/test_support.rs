@@ -12,6 +12,7 @@ mod inner_authority;
 mod input_control_authority;
 mod meta_authority;
 mod native_launch_authority;
+mod notification_follows;
 mod pressure;
 mod session_authority;
 mod standing;

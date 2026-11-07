@@ -989,7 +989,7 @@ mod tests {
         let child = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(room.id(), "dev-stub")
-                    .with_spawned_by_agent_id(parent.id()),
+                    .with_parent_agent_id(parent.id()),
             )
             .unwrap();
         let store = app.durable_state_store();

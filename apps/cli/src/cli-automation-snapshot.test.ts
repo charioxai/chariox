@@ -53,6 +53,18 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
       default_on_timeout: null,
       requested_at_ms: 1,
       choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" }],
+    }, {
+      id: "interaction-child",
+      agent_id: "child-agent",
+      shown_in_agent_id: "agent-1",
+      kind: "choice",
+      level: "info",
+      title: "Approve",
+      message: "Continue?",
+      timeout_sec: null,
+      default_on_timeout: null,
+      requested_at_ms: 2,
+      choices: [{ id: "yes", label: "Yes", reply: "yes", style: "primary" }],
     }],
     agent_activity_revision: 7,
     workflows: [{
@@ -230,6 +242,9 @@ test("buildCliAutomationSnapshot projects session and interaction state for auto
     customEditing: true,
     choices: [{ id: "yes", label: "Yes", style: "primary" }],
   })
+  const shownChild = (snapshot.interactions as Array<Record<string, unknown>>)[1]
+  assert.equal(shownChild?.agentId, "child-agent", "the card keeps the asking agent's identity")
+  assert.equal(shownChild?.focused, true, "a card the focused agent shows is the focused card")
 })
 
 test("buildCliAutomationSnapshot exposes external transcript and queued prompt metadata", () => {

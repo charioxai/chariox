@@ -53,6 +53,7 @@ async fn mp08_mp10_mp11_terminal_owner_attempt_allows_fresh_peer_binding() {
             key_thumbprint: public_key_thumbprint(&config.relay_public_key),
         },
         context_selection: OwnerManagedContextSelection {
+            event_connections: Default::default(),
             kernel_context: OwnerManagedKernelSelection::Empty,
             development_setup: OwnerManagedDevelopmentSelection::Empty,
         },

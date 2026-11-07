@@ -8,8 +8,10 @@ mod health;
 mod retention;
 mod validation;
 pub(super) use retention::bound;
+pub(crate) use retention::expire_notifications;
 use retention::prune_ended;
-use validation::{limit as inbox_limit, now as outside_now_ms};
+use validation::limit as inbox_limit;
+pub(crate) use validation::now as outside_now_ms;
 
 pub(crate) const PENDING_LIMIT: usize = 100_000;
 
@@ -35,7 +37,7 @@ pub(super) use producers::{publish_deadline, publish_task};
 pub(super) fn initialize(db: &Connection) -> Result<(), DaemonError> {
     inbox_limit()?;
     outside_now_ms()?;
-    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_outside_subscriptions(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS agent_outside_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),kernel TEXT NOT NULL,machine TEXT NOT NULL);").map_err(sql)
+    db.execute_batch("CREATE TABLE IF NOT EXISTS agent_outside_subscriptions(id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS agent_outside_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),kernel TEXT NOT NULL,machine TEXT NOT NULL); CREATE INDEX IF NOT EXISTS agent_inbox_notification_deadline ON agent_inbox(json_extract(payload,'$.value.deadline_ms')) WHERE room_id='' AND json_extract(payload,'$.type')='notification';").map_err(sql)
 }
 pub(super) fn read(db: &Connection, id: &str) -> Result<Option<Part>, DaemonError> {
     db.query_row(
@@ -545,6 +547,37 @@ fn project(event: OutsideEvent) -> Result<OutsideEvent, DaemonError> {
         serde_json::to_value(event).map_err(|_| error("outside event encoding failed"))?;
     crate::secret_redaction::redact_json_secrets(&mut projected);
     serde_json::from_value(projected).map_err(|_| error("outside event projection failed"))
+}
+/// A grant follows into a live inbox only. Checked in the follow's own commit, so a follow
+/// cannot land after the inbox ended: it could never deliver and would hold the grant's limits.
+pub(crate) fn require_open_inbox(tx: &Transaction<'_>, grant: &str) -> Result<(), DaemonError> {
+    if read(tx, grant)?.is_some_and(|part| part.ended.is_some()) {
+        return Err(refused("subscription ended; request a new access grant"));
+    }
+    Ok(())
+}
+/// Appends one event to the part of a grant that follows a notification source, in the
+/// caller's transaction. `occurrence` makes a repeated append a no-op. The part must live:
+/// an ended one has told its holder it is over.
+pub(crate) fn append_notification(
+    tx: &Transaction<'_>,
+    grant: &str,
+    occurrence: &str,
+    mut event: OutsideEvent,
+) -> Result<u64, DaemonError> {
+    let (kernel, machine) =
+        identity(tx)?.ok_or_else(|| error("outside source identity is missing"))?;
+    event.kernel = kernel;
+    event.machine = machine;
+    let mut part = require(tx, grant)?;
+    if part.ended.is_some() {
+        return Err(refused("subscription ended; request a new access grant"));
+    }
+    let event = project(event)?;
+    append(tx, &mut part, occurrence, &event)?;
+    bound(tx, &mut part, inbox_limit()?)?;
+    put(tx, &part)?;
+    Ok(part.latest)
 }
 pub(super) fn publish(
     tx: &Transaction<'_>,

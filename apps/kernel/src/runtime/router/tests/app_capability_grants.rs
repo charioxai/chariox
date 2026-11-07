@@ -42,7 +42,7 @@ fn room() -> Room {
             .with_owner_user_id("alice")
             .with_permission_level_override(crate::provider::AgentPermissionLevel::Yolo);
         if let Some(creator) = creator {
-            request = request.with_spawned_by_agent_id(creator);
+            request = request.with_parent_agent_id(creator);
         }
         let agent = crate::app::KernelSessionService::new(app)
             .spawn_agent(request)
@@ -516,8 +516,9 @@ async fn capability_deleting_an_app_grant_source_revokes_its_child() {
         .destroy_agent(&parent, "alice")
         .await
         .unwrap();
+    // A sub-agent ends with its parent, so the grant it got from the parent goes with it.
     assert!(
-        !bound(&room, &child).await,
+        room.app.lock().await.agents().get_agent(&child).is_err(),
         "MP-11: source deletion revokes delegated authority"
     );
     assert!(

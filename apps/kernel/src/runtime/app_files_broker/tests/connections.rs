@@ -94,13 +94,9 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
         "dev.chariox.slack".to_string(),
         crate::config::EventGeneratorManagementTarget {
             url,
-            token: "token".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         },
     )]);
-    let daemon_id = config.daemon_id.clone();
     let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();
     assert!(event_config
         .set(crate::runtime::projection::DaemonConfigProjectionStore::new(config))
@@ -136,6 +132,7 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
                 installation: owner_installation,
                 generator_id: "dev.chariox.slack".into(),
                 connection_id: "connection-1".into(),
+                event_owner_id: "event-owner-1".into(),
                 now_ms: 1,
             })
         })
@@ -204,10 +201,7 @@ fn an_app_acts_only_through_granted_connections_with_declared_actions() {
         4,
         "only granted, declared actions reach the generator"
     );
-    assert_eq!(
-        received[0]["owner_id"],
-        crate::runtime::event_catalog_control::event_connection_owner_id(&daemon_id, "alice")
-    );
+    assert_eq!(received[0]["owner_id"], "event-owner-1");
     assert_eq!(received[0]["action_id"], "notification.reply");
     assert_eq!(received[0]["context"]["channel_id"], "C1");
     assert!(received[0]["idempotency_key"]
@@ -251,10 +245,7 @@ fn lost_reply_is_uncertain(reply: Option<u16>) {
         "dev.chariox.slack".to_string(),
         crate::config::EventGeneratorManagementTarget {
             url,
-            token: "token".into(),
-            expires_at_ms: None,
-            owner_ids: None,
-            owner_scoped: None,
+            registry_discovered: false,
         },
     )]);
     let event_config: crate::runtime::app_lifecycle::EventConfig = Default::default();
@@ -269,6 +260,7 @@ fn lost_reply_is_uncertain(reply: Option<u16>) {
             installation: installation.clone(),
             generator_id: "dev.chariox.slack".into(),
             connection_id: "connection-1".into(),
+            event_owner_id: "event-owner-1".into(),
             now_ms: 1,
         })
         .unwrap();

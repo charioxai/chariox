@@ -59,7 +59,7 @@ static cx_poll resume(cx_task *task) {
     s->check = (chariox_app_state_check_t){.key=cx_string("count"), .version={.is_some=s->got.val.ok.is_some, .val=s->got.val.ok.val.version}};
     s->write.tag = CHARIOX_APP_STATE_WRITE_PUT;
     s->write.val.put.f0 = cx_string("count"); s->write.val.put.f1 = cx_string(s->value);
-    s->tx = (chariox_app_state_transaction_t){.schema_version=1, .checks={&s->check,1}, .writes={&s->write,1}};
+    s->tx = (chariox_app_state_transaction_t){.schema_version=0, .checks={&s->check,1}, .writes={&s->write,1}};
     /* A conflict is returned to the caller; this SDK never replays a write. */
     CX_AWAIT(task, chariox_app_state_transact(&s->tx, &s->committed), 2);
   }

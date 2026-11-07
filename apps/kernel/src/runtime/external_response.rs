@@ -184,6 +184,7 @@ response_policies! {
     Public => [
         ControlPlane,
         EventSubscription,
+        NotificationSources,
         EventsListed,
         EventsAcknowledged,
         EventsCursorExpired,
@@ -451,6 +452,7 @@ response_policies! {
         AgentAliased,
         AgentProfileUpdated,
         AgentDeadline,
+        AgentTree,
         AgentSpawned,
         AgentsSpawned,
         TurnUndone,
@@ -462,6 +464,7 @@ response_policies! {
         HomeExtensionAuditListed,
         SliceAuditListed,
         AgentArchived,
+        AgentParentChanged,
         AgentDestroyed,
         AgentFocused,
         AgentOutputSeenAcknowledged,

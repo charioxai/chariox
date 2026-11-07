@@ -23,6 +23,11 @@ impl CommandRouter {
                 + 'a,
         >,
     > {
+        // Connection records and their lanes are kept under the mapped owner, whoever connected.
+        let event_user_id = crate::event_connection::event_connection_user_id(
+            &self.config_projection.snapshot(),
+            caller_user_id,
+        );
         match request {
             LocalDaemonRequest::CreateAppInboxRoute(route) => Box::pin(async move {
                 let Some(connection) = &route.connection else {
@@ -30,9 +35,9 @@ impl CommandRouter {
                 };
                 let _connection_guard = self
                     .event_connection_lanes
-                    .lock(caller_user_id, &connection.connection_id)
+                    .lock(&event_user_id, &connection.connection_id)
                     .await;
-                Box::pin(self.check_app_route(caller_user_id, route, connection)).await?;
+                Box::pin(self.check_app_route(&event_user_id, route, connection)).await?;
                 Ok(self
                     .runtime_state
                     .execute_app_control_request(command, request)
@@ -41,14 +46,14 @@ impl CommandRouter {
             LocalDaemonRequest::GrantAppConnection(grant) => Box::pin(async move {
                 let _connection_guard = self
                     .event_connection_lanes
-                    .lock(caller_user_id, &grant.connection_id)
+                    .lock(&event_user_id, &grant.connection_id)
                     .await;
                 Box::pin(
                     crate::runtime::event_catalog_control::validate_event_connection(
                         &self.runtime_state,
                         &self.config_projection,
                         &self.aegs_management_http_client,
-                        caller_user_id,
+                        &event_user_id,
                         &grant.generator_id,
                         &grant.connection_id,
                     ),

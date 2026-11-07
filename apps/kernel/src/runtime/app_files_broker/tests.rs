@@ -10,6 +10,7 @@ mod connections;
 mod file_grants;
 mod host_actions;
 mod outcomes;
+mod real_generator;
 mod snapshot_restore;
 mod snapshots;
 mod support;

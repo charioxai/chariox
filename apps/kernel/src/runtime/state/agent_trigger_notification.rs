@@ -2,7 +2,6 @@
 //! as a prompt of the agent; the subscription is the same row a workflow entry point uses,
 //! with an agent target, so delivery, retention and loop prevention are shared.
 use super::agent_trigger_runtime_state::AgentTriggerFiring;
-use super::workflow_notification_peers::VERSION;
 use super::workflow_notification_router::{source_available, summaries};
 use super::*;
 use crate::durable_state::workflow_notifications::{
@@ -13,7 +12,6 @@ use crate::local::{
     WorkflowNotificationTargetKind,
 };
 use crate::session::{AgentTrigger, AgentTriggerNotificationSource, AgentTriggerSource};
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
 
 /// An agent target has no queue of its own; the column keeps the shared row shape valid.
 const AGENT_QUEUE_ID: &str = "agent";
@@ -80,6 +78,35 @@ impl KernelRuntimeState {
                 .await?
             }
         };
+        // The agent already listens to this workflow: subscribing again keeps the one listener
+        // and takes the new prompt, so each completion reaches the agent once.
+        let listener = match source {
+            AgentTriggerNotificationSource::Workflow { .. } => self
+                .owned
+                .session_store
+                .get_session(&request.session_id)?
+                .agent_triggers()
+                .iter()
+                .find(|t| {
+                    t.agent_id() == request.agent_id
+                        && matches!(t.source(), AgentTriggerSource::Notification { source: s, .. } if s == source)
+                })
+                .map(|t| t.id().to_owned()),
+            AgentTriggerNotificationSource::App { .. } => None,
+        };
+        if let Some(trigger_id) = listener {
+            let trigger = self.owned.session_store.write().update_agent_trigger(
+                &request.session_id,
+                &trigger_id,
+                None,
+                request.prompt.filter(|p| !p.trim().is_empty()),
+                Some(true),
+            )?;
+            let session = self
+                .owned
+                .persist_agent_trigger_session(&request.session_id, "agent_trigger_updated")?;
+            return Ok(LocalDaemonResponse::AgentTriggerCreated { trigger, session });
+        }
         self.authorize_current_external_command()?;
         let subscription_id = format!("wf_subscription_{:032x}", rand::random::<u128>());
         let trigger = self
@@ -118,7 +145,7 @@ impl KernelRuntimeState {
         };
         let subscribed = match &subscription {
             Some(subscription) => {
-                self.subscribe_agent_notification(&owner, &home, subscription.clone())
+                self.subscribe_agent_notification(&home, subscription.clone())
                     .await
             }
             None => {
@@ -292,44 +319,27 @@ impl KernelRuntimeState {
     }
 
     /// Saves the subscription here, and on the source's kernel when it is another one.
-    async fn subscribe_agent_notification(
+    pub(super) async fn subscribe_agent_notification(
         &self,
-        owner: &str,
         home: &str,
         subscription: WorkflowNotificationSubscription,
     ) -> Result<(), DaemonError> {
-        let NotificationOutcome::Subscription(subscription) = self
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::RemoteAttach { subscription })?
-        else {
-            return Err(store::error("unexpected notification response"));
+        let remote = subscription.source_kernel_id != home;
+        let (subscription, generation) = match self.owned.durable_state_store.notify(if remote {
+            NotificationOperation::AttachToRemoteSource { subscription }
+        } else {
+            NotificationOperation::RemoteAttach { subscription }
+        })? {
+            NotificationOutcome::RemoteInstalling {
+                subscription,
+                generation,
+            } => (subscription, generation),
+            NotificationOutcome::Subscription(_) if !remote => return Ok(()),
+            _ => return Err(store::error("unexpected notification response")),
         };
-        if subscription.source_kernel_id == home {
+        if self.install_on_source(&subscription, generation).await? {
             return Ok(());
         }
-        let response = self
-            .notification_peer(
-                owner,
-                &subscription.source_kernel_id,
-                RelayPeerRequest::SubscribeWorkflowNotifications {
-                    protocol_version: VERSION,
-                    source_id: subscription.source_id.clone(),
-                    target_ref: subscription.clone(),
-                },
-            )
-            .await;
-        if matches!(&response, Ok(RelayPeerResponse::WorkflowNotificationSubscribed { subscription: s }) if *s == subscription)
-        {
-            return Ok(());
-        }
-        self.owned
-            .durable_state_store
-            .notify(NotificationOperation::Detach {
-                subscription_id: subscription.subscription_id,
-                owner: owner.into(),
-                kernel: subscription.target_kernel_id,
-            })?;
         Err(store::error(
             "source not available; refresh sources and retry",
         ))
@@ -340,26 +350,7 @@ impl KernelRuntimeState {
         &self,
         subscription: &WorkflowNotificationSubscription,
     ) {
-        let _ = self
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::Detach {
-                subscription_id: subscription.subscription_id.clone(),
-                owner: subscription.owner_user_id.clone(),
-                kernel: subscription.target_kernel_id.clone(),
-            });
-        if subscription.source_kernel_id != subscription.target_kernel_id {
-            let _ = self
-                .notification_peer(
-                    &subscription.owner_user_id,
-                    &subscription.source_kernel_id,
-                    RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                        protocol_version: VERSION,
-                        subscription_id: subscription.subscription_id.clone(),
-                    },
-                )
-                .await;
-        }
+        let _ = self.detach_notification_subscription(subscription).await;
     }
 
     /// A deleted notification trigger stops receiving at once; other ways a trigger can
@@ -445,11 +436,15 @@ impl KernelRuntimeState {
         if subscriptions.is_empty() {
             return;
         }
-        for subscription in &subscriptions {
-            if !self.owned.agent_notification_target_live(subscription) {
-                self.detach_agent_notification(subscription).await;
+        let mut live = Vec::new();
+        for subscription in subscriptions {
+            if self.owned.agent_notification_target_live(&subscription) {
+                live.push(subscription);
+            } else {
+                self.detach_agent_notification(&subscription).await;
             }
         }
+        let subscriptions = one_listener_per_agent_and_source(live);
         let now = crate::session::unix_epoch_ms();
         let Ok(candidates) = self
             .owned
@@ -661,6 +656,17 @@ impl KernelRuntimeOwnedState {
                     )
             })
     }
+}
+
+/// A store written before subscribing twice was idempotent may hold several listeners of one
+/// agent on one source; only the first (by id) delivers, so an occurrence reaches the agent once.
+fn one_listener_per_agent_and_source(
+    mut subscriptions: Vec<WorkflowNotificationSubscription>,
+) -> Vec<WorkflowNotificationSubscription> {
+    subscriptions.sort_by(|a, b| a.subscription_id.cmp(&b.subscription_id));
+    let mut seen = BTreeSet::new();
+    subscriptions.retain(|s| seen.insert((s.endpoint_id.clone(), s.source_id.clone())));
+    subscriptions
 }
 
 /// The notification subscription of a trigger, if it is one.

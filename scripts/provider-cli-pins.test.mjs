@@ -44,3 +44,13 @@ for (const [name, directory, dockerfilePath] of [
     }
   })
 }
+
+test('Claude Code pin satisfies the version the kernel credential check requires', async () => {
+  const probe = await readFile(new URL('apps/kernel/src/provider/claude/usage_probe.rs', root), 'utf8')
+  const required = probe.match(/CLAUDE_CREDENTIAL_CHECK_MIN_CODE_VERSION: &str = "(\d+\.\d+\.\d+)"/)?.[1]
+  assert.ok(required, 'usage_probe.rs declares the minimum Claude Code version')
+  const parts = version => version.split('.').map(Number)
+  const [pinned, minimum] = [parts(policy.CHARIOX_CLAUDE_VERSION), parts(required)]
+  const older = pinned.some((part, i) => pinned.slice(0, i).every((p, j) => p === minimum[j]) && part < minimum[i])
+  assert.ok(!older, `managed image pins Claude Code ${policy.CHARIOX_CLAUDE_VERSION}; the credential check needs ${required}`)
+})

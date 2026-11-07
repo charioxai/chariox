@@ -112,6 +112,7 @@ fn lease_worker_bootstrap_rejects_incomplete_managed_context_import() {
                         crate::managed_context::package::ManagedContextProviderAccountSelection::None,
                     git_credentials:
                         crate::managed_context::package::ManagedContextGitCredentialSelection::None,
+                    event_connections: Default::default(),
                 },
                 target_environment_id: "environment-1".to_string(),
                 target_kernel_id: config.daemon_id.clone(),

@@ -671,6 +671,7 @@ fn a12_blocked_fifo_delivery_cannot_hide_a_goal_check_in() {
             run: Some("run".into()),
             now: 60_006,
             work: None,
+            through: 0,
         });
         sweep(180_006);
         let task = f.task();
@@ -957,6 +958,7 @@ fn a12_unadmitted_checkin_ack_cannot_consume_a_waiting_goal_deadline() {
         work: Some("p".into()),
         run: None,
         now: 60007,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1016,6 +1018,7 @@ fn a12_handled_paused_goal_outcome_preserves_nonzero_guard() {
         work: Some("p".into()),
         run: None,
         now: 60006,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),

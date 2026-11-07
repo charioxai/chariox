@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 use super::outbound_service::{ManagedContextTransferTarget, ManagedContextTransferTicket};
 use super::package::{
-    ManagedContextGitCredentialSelection, ManagedContextKernelSelection, ManagedContextPlanBinding,
+    ManagedContextEventConnectionSelection, ManagedContextGitCredentialSelection,
+    ManagedContextKernelSelection, ManagedContextPlanBinding,
     ManagedContextProviderAccountSelection,
 };
 use crate::config::DaemonConfig;
@@ -48,6 +49,13 @@ pub struct OwnerManagedTransfer {
 pub struct OwnerManagedContextSelection {
     pub kernel_context: OwnerManagedKernelSelection,
     pub development_setup: OwnerManagedDevelopmentSelection,
+    /// Event connection records carry no credential, so unlike provider
+    /// accounts and Git credentials they may move between a user's kernels.
+    #[serde(
+        default,
+        skip_serializing_if = "ManagedContextEventConnectionSelection::is_none"
+    )]
+    pub event_connections: ManagedContextEventConnectionSelection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -483,6 +491,7 @@ mod tests {
             development: super::super::package::ManagedContextDevelopmentSelection::Empty,
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         };
         let source = chariox_relay::protocol::RelayCallerIdentity {
             realm_id: "realm".into(),
@@ -521,9 +530,110 @@ mod tests {
             development: super::super::package::ManagedContextDevelopmentSelection::Empty,
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         };
         assert!(validate_credential_free_plan(&plan).is_err());
     }
+    #[test]
+    fn owner_managed_copy_allows_event_connections_and_still_refuses_credentials() {
+        let destination = OwnerManagedDestination::OwnerManagedMachine {
+            machine_id: "machine".into(),
+            kernel_id: "kernel".into(),
+        };
+        let plan = ManagedContextPlanBinding {
+            context_id: "context".into(),
+            plan_digest: "digest".into(),
+            destination: Some(destination),
+            kernel_context: ManagedContextKernelSelection::Empty,
+            development: super::super::package::ManagedContextDevelopmentSelection::Empty,
+            provider_accounts: ManagedContextProviderAccountSelection::None,
+            git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: ManagedContextEventConnectionSelection::Selected {
+                connection_ids: vec!["connection-a".into()],
+            },
+        };
+        validate_credential_free_plan(&plan).expect("event connections carry no credential");
+        let mut with_accounts = plan.clone();
+        with_accounts.provider_accounts = ManagedContextProviderAccountSelection::Selected {
+            accounts: vec![super::super::package::ManagedContextProviderAccount {
+                provider: "codex".into(),
+                account_profile: "default".into(),
+            }],
+        };
+        let mut with_git = plan;
+        with_git.git_credentials = ManagedContextGitCredentialSelection::Selected {
+            credential_ids: vec!["github".into()],
+        };
+        for refused in [with_accounts, with_git] {
+            let error = validate_credential_free_plan(&refused).unwrap_err();
+            assert!(matches!(
+                error,
+                DaemonError::ManagedContext {
+                    code: "owner_managed_context_unauthorized",
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn owner_managed_plan_binds_the_event_connection_selection_in_its_digest() {
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            account_id: "account".into(),
+            user_id: "owner".into(),
+            realm_id: "realm".into(),
+            machine_id: Some(config.host_machine_id.clone()),
+            kernel_id: Some(config.daemon_id.clone()),
+            ..Default::default()
+        });
+        let selection = |event_connections| OwnerManagedTransfer {
+            target: ManagedContextTransferTarget {
+                relay_realm_id: "realm".into(),
+                machine_id: "target-machine".into(),
+                kernel_id: "target-kernel".into(),
+                relay_public_key: config.relay_public_key.clone(),
+                key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                    &config.relay_public_key,
+                ),
+            },
+            context_selection: OwnerManagedContextSelection {
+                event_connections,
+                kernel_context: OwnerManagedKernelSelection::Empty,
+                development_setup: OwnerManagedDevelopmentSelection::Empty,
+            },
+        };
+        let selected = ManagedContextEventConnectionSelection::Selected {
+            connection_ids: vec!["connection-a".into()],
+        };
+        let plan = crate::managed_bootstrap::ManagedKernelContextPlan::for_owner_managed(
+            &config,
+            &selection(selected.clone()),
+        )
+        .expect("owner plan with an event connection");
+        assert_eq!(plan.package_binding().event_connections, selected);
+        // A plan without the item serializes exactly as before the item existed.
+        let none = crate::managed_bootstrap::ManagedKernelContextPlan::for_owner_managed(
+            &config,
+            &selection(ManagedContextEventConnectionSelection::None),
+        )
+        .expect("owner plan without event connections");
+        assert!(serde_json::to_value(&none)
+            .unwrap()
+            .get("eventConnections")
+            .is_none());
+        assert_eq!(
+            serde_json::to_value(&plan).unwrap()["eventConnections"],
+            serde_json::json!({"kind": "selected", "connectionIds": ["connection-a"]})
+        );
+        // Changing the selection changes the digest that Cloud and the target bind.
+        let mut other = plan.clone();
+        let mut value = serde_json::to_value(&other).unwrap();
+        value["eventConnections"]["connectionIds"] = serde_json::json!(["connection-b"]);
+        other = serde_json::from_value(value).unwrap();
+        assert!(other.validate().is_err());
+    }
+
     #[test]
     fn mp08_mp11_cloud_refusals_preserve_safe_reasons_and_retryability() {
         for (cloud_code, expected, retryable) in [

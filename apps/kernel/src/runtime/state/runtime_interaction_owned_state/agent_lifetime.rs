@@ -263,6 +263,9 @@ impl KernelRuntimeOwnedState {
             .collect::<Vec<_>>();
         for (id, pending) in candidates {
             let abandoned = pending.async_task_id.is_none()
+                && !pending
+                    .checking_answer
+                    .load(std::sync::atomic::Ordering::SeqCst)
                 && pending.responder.lock().map_or(true, |sender| {
                     sender.as_ref().is_none_or(|sender| sender.is_closed())
                 });
@@ -290,11 +293,58 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<(), DaemonError> {
+        self.mark_turns_waiting_on_a_question(session_id)?;
         self.withdraw_agent_interactions_for(
             session_id,
             None,
             InteractionWithdrawal::KernelShutdown,
         )
+    }
+
+    /// The card is withdrawn with the process, so the turn that waited on it keeps a durable
+    /// mark: restart recovery must not resume it into an answer nobody gave. Runs before the
+    /// withdrawal, which holds the interaction store.
+    fn mark_turns_waiting_on_a_question(&self, session_id: &str) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let waiting = session
+            .active_interactions()
+            .iter()
+            .filter(|interaction| {
+                interaction.kind() == crate::session::RuntimeInteractionKind::Choice
+            })
+            .filter(|interaction| {
+                self.pending_interactions
+                    .write()
+                    .get(interaction.id())
+                    .is_some_and(|pending| pending.async_task_id.is_none())
+            })
+            .filter_map(
+                |interaction| match (interaction.agent_id(), interaction.native_origin()) {
+                    (
+                        Some(agent_id),
+                        Some(crate::session::NativeInteractionOrigin::Prompt { prompt_id, .. }),
+                    ) => Some((agent_id.to_string(), prompt_id.clone())),
+                    _ => None,
+                },
+            )
+            .collect::<Vec<_>>();
+        for (agent_id, prompt_id) in waiting {
+            if !self
+                .prompt_state_owner
+                .mark_active_prompt_question_wait_stopped(&session, &agent_id, &prompt_id)
+            {
+                continue;
+            }
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, &agent_id);
+            self.mirror_prompt_owner_agent_state(
+                session_id,
+                &agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+        }
+        Ok(())
     }
 
     fn withdraw_agent_interactions_for(
@@ -366,6 +416,7 @@ impl KernelRuntimeOwnedState {
             sessions.restore_session(session);
         }
         self.pending_interactions.write().remove(id);
+        self.withdraw_settled_child_decision(&pending.session_id, id, pending);
         drop(sessions);
         activity_mutation.record();
         if let Some(sender) = pending

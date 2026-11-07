@@ -14,6 +14,12 @@ use super::mcp_config::create_claude_runtime_files_root;
 
 const CLAUDE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 const CLAUDE_CREDENTIAL_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
+/// Oldest Claude Code whose `haiku` alias answers the credential check with
+/// the marker: 2.1.212 resolves it to Haiku 4.5, which replies with prose and
+/// leaves every Vault-backed login "inconclusive". The managed image pin
+/// (`deploy/managed-kernel/provider-versions.env`) must not go below it.
+#[cfg(test)]
+const CLAUDE_CREDENTIAL_CHECK_MIN_CODE_VERSION: &str = "2.1.296";
 
 /// Why Claude did not accept an account credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -426,6 +432,26 @@ fn probe_error(message: String) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn version_parts(version: &str) -> Vec<u64> {
+        version
+            .split('.')
+            .map(|part| part.parse().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn managed_image_pin_is_not_older_than_the_credential_check_requires() {
+        let pins = include_str!("../../../../../deploy/managed-kernel/provider-versions.env");
+        let pinned = pins
+            .lines()
+            .find_map(|line| line.strip_prefix("CHARIOX_CLAUDE_VERSION="))
+            .expect("provider-versions.env pins Claude Code");
+        assert!(
+            version_parts(pinned) >= version_parts(CLAUDE_CREDENTIAL_CHECK_MIN_CODE_VERSION),
+            "managed image pins Claude Code {pinned}; the credential check needs {CLAUDE_CREDENTIAL_CHECK_MIN_CODE_VERSION}"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

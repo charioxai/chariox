@@ -382,6 +382,16 @@ impl Link {
     }
 }
 
+/// The link a request runs on once `previous` is due for replacement. `MAX_LINK_AGE` only
+/// replaces a link early: until the relay ends its token it still carries requests, so a few
+/// seconds of Cloud refusing new tokens do not cut a kernel that is connected.
+pub(super) fn replacement_or_previous<E>(
+    opened: Result<Arc<Link>, E>,
+    previous: Option<Arc<Link>>,
+) -> Result<Arc<Link>, E> {
+    opened.or_else(|error| previous.filter(|link| link.is_alive()).ok_or(error))
+}
+
 /// Undoes a subscription that did not complete; see `Link::subscribe`.
 struct Abandon<'a> {
     link: &'a Link,
@@ -681,6 +691,29 @@ mod tests {
         let private = relay_crypto::generate_private_key_base64();
         let public = relay_crypto::public_key_from_private_key_base64(&private).unwrap();
         (private, public)
+    }
+
+    // 11-06 12:09-12:12Z: Cloud refused new client tokens for ~25 s, and every request
+    // whose cached link had reached its age failed although that link was still connected.
+    #[tokio::test]
+    async fn an_aged_link_keeps_carrying_requests_while_its_replacement_cannot_open() {
+        let (private, public) = keys();
+        let url = fake_relay(private.clone(), public, Behaviour::Echo).await;
+        let mut link = open(url, &private).await.ok().expect("link opens");
+        link.opened_at = Instant::now()
+            .checked_sub(MAX_LINK_AGE)
+            .expect("host up longer than a link's age");
+        assert!(!link.usable(), "the link is due for replacement");
+        let link = Arc::new(link);
+        let kept = replacement_or_previous(Err("cloud rate limited"), Some(Arc::clone(&link)))
+            .expect("the connected link carries the request");
+        let answer = kept
+            .request("one".into(), b"first", Duration::from_secs(5))
+            .await;
+        assert_eq!(answer.ok().unwrap(), b"first");
+        // A link the relay already closed is no fallback.
+        link.alive.store(false, Ordering::SeqCst);
+        assert!(replacement_or_previous(Err("cloud rate limited"), Some(link)).is_err());
     }
 
     #[tokio::test]

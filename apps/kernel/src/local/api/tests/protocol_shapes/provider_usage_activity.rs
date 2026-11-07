@@ -224,6 +224,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
                     last_error: None,
                 },
             ],
+            context_transfer: crate::account_profile::ProviderAccountContextTransfer::Available,
         },
     };
 

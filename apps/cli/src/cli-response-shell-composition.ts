@@ -88,6 +88,8 @@ export type CliResponseShellCompositionDeps = {
   workingAnimationFrame: AnyFn
   activeInteractionForAgent: AnyFn
   queuedPromptStripItemsForAgent: AnyFn
+  subAgentStripeForAgent: AnyFn
+  askingAgentLabel: AnyFn
   selectedQueuedPromptIndexForAgent: AnyFn
   onQueuedPromptAction: AnyFn
   interactionChoiceStore: any
@@ -190,6 +192,8 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     customReply: deps.interactionChoiceStore.customReply,
     customEditing: deps.interactionChoiceStore.isCustomEditing,
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
+    subAgentStripeForAgent: deps.subAgentStripeForAgent,
+    askingAgentLabel: deps.askingAgentLabel,
     queuedJobsForAgent: (agentId: string | null | undefined) => queuedJobsForAgent(deps.isAttached() ? deps.sessionState()?.processes : [], agentId),
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,

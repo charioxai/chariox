@@ -532,7 +532,7 @@ fn refused_message_to_unstartable_delegate_closes_its_obligation_and_the_turn_en
                 CreateAgentRequest::new(session.id(), "codex")
                     .with_alias("delegate")
                     .with_account_profile(profile.profile_id.clone())
-                    .with_spawned_by_agent_id(sender.id()),
+                    .with_parent_agent_id(sender.id()),
             )
             .expect("delegate should spawn");
         let sender_token = sender_run

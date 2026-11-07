@@ -205,6 +205,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetAgentDeadline(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
+        LocalDaemonRequest::ListDescendants(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
         LocalDaemonRequest::AliasAgent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
@@ -398,6 +401,9 @@ pub(crate) fn request_session_scope(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::ArchiveAgent(request) => Some(SessionMembershipScope::SessionId(
+            request.session_id.clone(),
+        )),
+        LocalDaemonRequest::SetAgentParent(request) => Some(SessionMembershipScope::SessionId(
             request.session_id.clone(),
         )),
         LocalDaemonRequest::DestroyAgent(request) => Some(SessionMembershipScope::SessionId(
@@ -674,6 +680,7 @@ pub(crate) fn request_session_scope(
         | LocalDaemonRequest::SubscribeEvents(_)
         | LocalDaemonRequest::UnsubscribeEvents(_)
         | LocalDaemonRequest::GetEventSubscription(_)
+        | LocalDaemonRequest::ListNotificationSources(_)
         | LocalDaemonRequest::ListEvents(_)
         | LocalDaemonRequest::WaitEvents(_)
         | LocalDaemonRequest::AckEvents(_)

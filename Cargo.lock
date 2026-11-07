@@ -496,11 +496,14 @@ dependencies = [
 name = "chariox-aegs-dummy"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chariox-aegs-sdk",
  "chariox-event-protocol",
  "chrono",
+ "p256",
  "serde_json",
  "tokio",
+ "ureq",
 ]
 
 [[package]]
@@ -516,6 +519,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "p256",
  "rand 0.8.6",
  "rusqlite",
  "serde",
@@ -646,7 +650,9 @@ dependencies = [
 name = "chariox-event-protocol"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
+ "p256",
  "serde",
  "serde_json",
  "sha2 0.10.9",

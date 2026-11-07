@@ -154,6 +154,8 @@ export type NativeInteractionOrigin =
 export type RuntimeInteraction = RuntimeInteractionSubject & {
   asking_task_id?: string | null
   related_agent_id?: string | null
+  /** A sub-agent's decision the user holds is listed with the room agent, whose panel shows it. */
+  shown_in_agent_id?: string | null
   /** Person cards: the wake source whose occurrence closes this card by itself. */
   closes_with_wake?: string | null
   requester?: KernelAccessRequester | null
@@ -436,8 +438,10 @@ export type AgentMoveStatus = { target_ref?: string | null } & (
 )
 
 export type AgentInstance = {
-  /** Unknown legacy lineage is never inferred from controller links. */
-  spawned_by_agent_id?: string | null
+  /** The agent that controls this one and everything below it; only the user changes it. */
+  parent_agent_id?: { agent_id: string } | null
+  /** The parent's command id of the spawn that created this agent. */
+  spawn_key?: string | null
   id: string
   agent_ref: string
   session_id: string
@@ -569,3 +573,31 @@ export type KernelSudoRequestedResponse = { KernelSudoRequested: { agent_id: str
 export type VaultSecretStatus = "pending" | "stored" | "cancelled" | "timed_out"
 export type VaultSecretRequestedResponse = { VaultSecretRequested: { interaction_id: string; link: string; expires_at: number; credential_id: string } }
 export type VaultSecretStatusResponse = { VaultSecretStatusReported: { interaction_id: string; credential_id: string; status: VaultSecretStatus } }
+
+export type AgentTreeState = 'starting' | 'running' | 'waiting' | 'idle' | 'ended' | 'error' | 'unreachable'
+
+export interface AgentTreeNode {
+  agent_id: string
+  parent_agent_id: string | null
+  kernel_id: string | null
+  alias: string | null
+  provider: string
+  model: string | null
+  depth: number
+  state: AgentTreeState
+  outcome: TurnOutcomeKind | null
+  /** The user holds a pending decision of this node (no holder, path or card). */
+  needs_user: boolean
+  deadline_ms: number | null
+  created_at_ms: number
+}
+
+/** `ListDescendants`: no holder, path or card; read again when an `agent_tree` event arrives. */
+export interface AgentTree {
+  root: string
+  rev: number
+  totals: { live: number; running: number; needs_user: number }
+  nodes: AgentTreeNode[]
+}
+
+export type AgentTreeResponse = { AgentTree: { tree: AgentTree } }

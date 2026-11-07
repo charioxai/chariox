@@ -38,6 +38,36 @@ pub fn effective_agent_execution_config(
     }
 }
 
+/// Bounds the walk up the parent edges so a corrupt cycle cannot loop.
+const PARENT_WALK_LIMIT: usize = 16;
+
+/// `effective(agent) = min(own, effective(parent))` for permission level and mode, read at the
+/// moment of use: lowering a parent lowers every agent below it, and an agent the user raised
+/// above its parent still runs at the parent's limit. `agents` are the agents of the room.
+pub fn effective_agent_execution_config_in_tree(
+    session: &RuntimeSession,
+    agent: &AgentInstance,
+    agents: &[AgentInstance],
+) -> EffectiveAgentExecutionConfig {
+    let mut config = effective_agent_execution_config(session, Some(agent));
+    let mut current = agent;
+    for _ in 0..PARENT_WALK_LIMIT {
+        let Some(parent) = current
+            .parent_agent_id()
+            .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
+        else {
+            break;
+        };
+        let parent_config = effective_agent_execution_config(session, Some(parent));
+        config.mode = config.mode.lower(parent_config.mode);
+        config.permission_level = config
+            .permission_level
+            .lower(parent_config.permission_level);
+        current = parent;
+    }
+    config
+}
+
 pub fn effective_agent_execution_mode(
     session: &RuntimeSession,
     agent: Option<&AgentInstance>,
@@ -191,5 +221,83 @@ mod tests {
             effective_agent_user_authority(&session, Some(&agent)),
             EffectiveAgentUserAuthority::Full
         );
+    }
+
+    fn tree_agent(
+        id: &str,
+        session_id: &str,
+        parent: Option<&str>,
+        mode: AgentExecutionMode,
+        level: AgentPermissionLevel,
+    ) -> AgentInstance {
+        let mut agent = AgentInstance::new(
+            id,
+            format!("ref-{id}"),
+            session_id,
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_parent_agent(parent.map(crate::agent::AgentRef::local));
+        agent.set_execution_mode_override(Some(mode));
+        agent.set_permission_level_override(Some(level));
+        agent
+    }
+
+    /// A5: effective(agent) = min(own, effective(parent)) for every parent level x child
+    /// level x parent mode x child mode, and down a grandchild.
+    #[test]
+    fn an_agent_never_runs_above_its_parent_at_the_moment_of_use() {
+        use AgentExecutionMode::{Build, Plan};
+        use AgentPermissionLevel::{Required, Yolo};
+        let mut sessions = SessionService::new(&DaemonConfig::for_tests());
+        let session = sessions
+            .create_session(CreateSessionRequest::new("workspace", "worktree"))
+            .expect("session should be created");
+        for parent_level in [Required, Yolo] {
+            for child_level in [Required, Yolo] {
+                for parent_mode in [Plan, Build] {
+                    for child_mode in [Plan, Build] {
+                        let agents = vec![
+                            tree_agent("p", session.id(), None, parent_mode, parent_level),
+                            tree_agent("c", session.id(), Some("p"), child_mode, child_level),
+                            tree_agent("g", session.id(), Some("c"), Build, Yolo),
+                        ];
+                        let child =
+                            effective_agent_execution_config_in_tree(&session, &agents[1], &agents);
+                        let lower_level = if parent_level == Required || child_level == Required {
+                            Required
+                        } else {
+                            Yolo
+                        };
+                        let lower_mode = if parent_mode == Plan || child_mode == Plan {
+                            Plan
+                        } else {
+                            Build
+                        };
+                        assert_eq!(
+                            (child.permission_level, child.mode),
+                            (lower_level, lower_mode),
+                            "{parent_level:?}/{child_level:?} {parent_mode}/{child_mode}"
+                        );
+                        let grandchild =
+                            effective_agent_execution_config_in_tree(&session, &agents[2], &agents);
+                        assert_eq!(
+                            (grandchild.permission_level, grandchild.mode),
+                            (lower_level, lower_mode),
+                            "a grandchild follows the whole chain"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

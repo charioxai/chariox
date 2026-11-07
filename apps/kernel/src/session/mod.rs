@@ -41,9 +41,10 @@ mod workflow_turns;
 mod workspace_links;
 
 pub use agent_config::{
-    effective_agent_execution_config, effective_agent_execution_mode,
-    effective_agent_extension_registration_authority, effective_agent_permission_level,
-    effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
+    effective_agent_execution_config, effective_agent_execution_config_in_tree,
+    effective_agent_execution_mode, effective_agent_extension_registration_authority,
+    effective_agent_permission_level, effective_agent_user_authority,
+    EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use room_environment::{

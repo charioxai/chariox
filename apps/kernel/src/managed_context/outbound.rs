@@ -1075,6 +1075,7 @@ mod tests {
             development: ManagedContextDevelopmentSelection::Empty,
             provider_accounts: ManagedContextProviderAccountSelection::None,
             git_credentials: ManagedContextGitCredentialSelection::None,
+            event_connections: Default::default(),
         };
         OutboundFixture {
             root,

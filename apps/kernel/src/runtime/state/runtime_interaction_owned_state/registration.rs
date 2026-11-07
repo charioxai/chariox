@@ -365,6 +365,7 @@ impl KernelRuntimeOwnedState {
             crate::session::unix_epoch_ms(),
         )?;
         let mut pending = super::super::PendingInteraction {
+            checking_answer: Default::default(),
             goal_approval: None,
             async_task_id: interaction.asking_task_id().map(str::to_owned),
             kernel_wide_interaction: None,
@@ -378,7 +379,16 @@ impl KernelRuntimeOwnedState {
                 .and_then(|_| interaction.timeout_sec())
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
+            holder: super::super::DecisionHolder::User,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
+        };
+        pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+        // The user sees a sub-agent's decision in its top parent's panel, not in its own.
+        let interaction = if pending.holder == super::super::DecisionHolder::User {
+            let shown_in = self.decision_shown_in(session_id, &interaction);
+            interaction.shown_in(shown_in)
+        } else {
+            interaction
         };
         let worker_live = pending.agent_lifetime.as_ref().is_none_or(|lifetime| {
             self.worker_interaction_binding_is_live(lifetime, remote_binding.as_ref(), &session)

@@ -70,6 +70,7 @@ async fn assert_owner_authorization_recovery(consumed: bool, legacy: bool) {
             key_thumbprint: public_key_thumbprint(&config.relay_public_key),
         },
         context_selection: OwnerManagedContextSelection {
+            event_connections: Default::default(),
             kernel_context: OwnerManagedKernelSelection::Empty,
             development_setup: OwnerManagedDevelopmentSelection::Empty,
         },

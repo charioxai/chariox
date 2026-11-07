@@ -438,7 +438,7 @@ fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
     }
 }
 /// The environment comes from the process arguments the kernel keeps; another user's process
-/// and a process that is gone read as unreadable and as empty, like the Linux file.
+/// reads as unreadable and a process that is gone as empty, like the Linux file.
 #[cfg(target_os = "macos")]
 fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
@@ -463,16 +463,39 @@ fn read_environment(pid: u32) -> io::Result<Option<Vec<u8>>> {
             )
         };
         if result != 0 {
-            let error = io::Error::last_os_error();
-            return match error.raw_os_error() {
-                Some(libc::ESRCH) => Ok(Some(Vec::new())),
-                Some(libc::EPERM | libc::EACCES | libc::EINVAL) => Ok(None),
-                _ => Err(error),
-            };
+            return procargs2_failure(io::Error::last_os_error(), || process_exists(pid));
         }
     }
     buffer.truncate(size);
     procargs2_environment(&buffer).map(Some)
+}
+/// Signal 0 delivers nothing: it only reports whether the process still exists.
+#[cfg(target_os = "macos")]
+fn process_exists(pid: u32) -> bool {
+    let Ok(pid) = i32::try_from(pid) else {
+        return true;
+    };
+    if pid <= 1 {
+        return true;
+    }
+    // SAFETY: signal 0 is never delivered; `pid` is a real process id (above 1).
+    let delivered = unsafe { libc::kill(pid, 0) } == 0;
+    delivered || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+/// What a failed `KERN_PROCARGS2` read says about the process. macOS answers EINVAL both for a
+/// process that has just exited and for one it will not describe, so EINVAL means gone only when
+/// the process no longer exists; a zombie still exists and stays unreadable.
+#[cfg(any(target_os = "macos", test))]
+fn procargs2_failure(
+    error: io::Error,
+    process_exists: impl FnOnce() -> bool,
+) -> io::Result<Option<Vec<u8>>> {
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(Some(Vec::new())),
+        Some(libc::EINVAL) if !process_exists() => Ok(Some(Vec::new())),
+        Some(libc::EPERM | libc::EACCES | libc::EINVAL) => Ok(None),
+        _ => Err(error),
+    }
 }
 /// No environment is readable here: only the launch witnesses can show the tree is gone.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1063,6 +1086,33 @@ mod tests {
         assert!(sent.iter().all(|(pid, _)| *pid != 45));
         // Asked again, nothing of it is left.
         assert!(end("leader").unwrap());
+    }
+
+    #[test]
+    fn procargs2_failure_reads_a_vanished_process_as_gone() {
+        let gone = || false;
+        let errno = |code| io::Error::from_raw_os_error(code);
+        assert_eq!(
+            procargs2_failure(errno(libc::ESRCH), || unreachable!()).unwrap(),
+            Some(Vec::new())
+        );
+        // EINVAL with no process behind it is a process that vanished.
+        assert_eq!(
+            procargs2_failure(errno(libc::EINVAL), gone).unwrap(),
+            Some(Vec::new())
+        );
+        // EINVAL for a process that still exists proves nothing.
+        assert_eq!(
+            procargs2_failure(errno(libc::EINVAL), || true).unwrap(),
+            None
+        );
+        for code in [libc::EPERM, libc::EACCES] {
+            assert_eq!(
+                procargs2_failure(errno(code), || unreachable!()).unwrap(),
+                None
+            );
+        }
+        assert!(procargs2_failure(errno(libc::EIO), || unreachable!()).is_err());
     }
 
     #[test]

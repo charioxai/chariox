@@ -464,3 +464,14 @@ test("focused interaction answer keeps the next question the kernel asked before
   await h.controller.submitChoice(0)
   assert.deepEqual(h.appliedSessions().at(-1)?.active_interactions?.map(item => item.id), ["vault-unlock-lease-1"])
 })
+
+test("MP-08 / MP-10 A3/A4 a sub-agent's decision shown in the room agent is answered by its own interaction id", async () => {
+  const projected = {
+    ...interactionFixture(), id: "card-c", agent_id: "agent-c", shown_in_agent_id: "agent-r",
+  } as RuntimeInteraction
+  const harness = createHarness({ interaction: projected })
+
+  assert.equal(await harness.controller.submitChoice(0), true)
+
+  assert.deepEqual(harness.responses(), [{ sessionId: "session-1", interactionId: "card-c", choiceId: "allow", customReply: null }])
+})

@@ -249,6 +249,9 @@ pub struct RuntimeInteraction {
     /// Person cards: the existing wake source whose occurrence closes this card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     closes_with_wake: Option<String>,
+    /// A sub-agent's decision the user holds is listed with the top parent, whose panel shows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shown_in_agent_id: Option<String>,
     /// MP-08 / MP-11 protocol 538: kernel-established sudo presentation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     sudo_request: Option<crate::local::SudoRequestPresentation>,
@@ -388,6 +391,7 @@ impl RuntimeInteraction {
             asking_task_id: None,
             related_agent_id: None,
             closes_with_wake: None,
+            shown_in_agent_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::Agent {
                 agent_id: agent_id.into(),
@@ -431,9 +435,19 @@ impl RuntimeInteraction {
         self
     }
 
-    /// Asking again after an answer that did not work: the card leads with what went wrong.
-    pub(crate) fn noting_problem(mut self, problem: &str) -> Self {
-        self.message = format!("{problem}\n{}", self.message);
+    /// Asking again after an answer that did not work: the refusal takes the place of the
+    /// prompt sentence, so the card keeps its height.
+    pub(crate) fn showing_problem(mut self, problem: &str) -> Self {
+        self.message = problem.to_owned();
+        self
+    }
+
+    pub fn shown_in_agent_id(&self) -> Option<&str> {
+        self.shown_in_agent_id.as_deref()
+    }
+
+    pub(crate) fn shown_in(mut self, agent: Option<String>) -> Self {
+        self.shown_in_agent_id = agent;
         self
     }
 
@@ -561,6 +575,7 @@ impl RuntimeInteraction {
             asking_task_id: None,
             related_agent_id: None,
             closes_with_wake: None,
+            shown_in_agent_id: None,
             id: id.into(),
             subject: RuntimeInteractionSubject::KernelOperation {
                 kernel_operation_id: operation_id.into(),

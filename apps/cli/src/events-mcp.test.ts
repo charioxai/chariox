@@ -15,6 +15,12 @@ const decision = (cursor: number, value: Json, at: { kernel?: string; id?: strin
 const pending = (cursor: number, at: { kernel?: string; id?: string } = {}, extra: Json = {}) => decision(cursor, { state: "pending", question: { ...question, ...extra } }, at)
 const resolved = (cursor: number, at: { kernel?: string; id?: string } = {}) => decision(cursor, { state: "resolved", resolution: { via: "terminal" } }, at)
 
+const SOURCES = [
+  { kind: "workflow_exit", source_id: "wf_source_a", kernel_id: "k", session_id: "room", workflow_id: "w", exit_node_id: "exit-1", exit_ordinal: 0, name: "Review", display_name: "Review", available: true },
+]
+const notification = (cursor: number, occurrence = `run-${cursor}`) => ({ cursor, type: "notification", kernel: "k", machine: "m", session_id: "room", at_ms: 1, summary: "Review finished", refs: {}, value: { source_id: "wf_source_a", source_kind: "workflow_exit", display_name: "Review", occurrence_id: occurrence, output: { message: "approved" }, deadline_ms: 604800001 } })
+const gap = (cursor: number) => ({ cursor, type: "gap", kernel: "k", machine: "m", session_id: "room", at_ms: 2, summary: "1 unread notification expired", refs: {}, value: { kernel: "k", dropped: 1, from: 4, to: 4 } })
+
 // The kernel's durable inbox: a wait replays what is not acknowledged yet, an ack removes the records up to its cursor.
 class Inbox {
   acknowledged = 0
@@ -24,7 +30,7 @@ class Inbox {
 
 // A stub harness: it talks JSON-RPC over the same pipes a real one uses, and answers elicitation as scripted.
 // `onElicit` returning undefined leaves the dialog open (the person has not answered). "k" is this computer's kernel.
-async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0, version = "2025-06-18") {
+async function harness(events: Json[] | Inbox, elicitation: Json | null, onElicit: (params: Json) => Json | undefined, failAnswers: string[] = [], failRoutes = 0, version = "2025-06-18", followed: Json[] = []) {
   const inbox = events instanceof Inbox ? events : new Inbox(events)
   const sent: Json[] = []
   const routed: { kernel: string; request: Json }[] = []
@@ -58,6 +64,8 @@ async function harness(events: Json[] | Inbox, elicitation: Json | null, onElici
     }
     if ("AckEvents" in request) inbox.acknowledged = Math.max(inbox.acknowledged, (request.AckEvents as Json).cursor as number)
     if ("RespondToInteraction" in request) fail(request)
+    if ("ListNotificationSources" in request) return { NotificationSources: { sources: SOURCES } }
+    if ("SubscribeEvents" in request || "UnsubscribeEvents" in request || "GetEventSubscription" in request) return { EventSubscription: { subscription: { subscription_id: "s", targets: [], sources: "GetEventSubscription" in request ? followed : [], kernels: [], acknowledged_cursor: 0, ended: null } } }
     return { ack: true }
   }
   const routes = {
@@ -440,7 +448,7 @@ test("a bad timeout_s is a tool execution error and an unknown tool a protocol e
   const h = await harness([], { form: {} }, () => undefined)
   // server/tools#listing-tools: name, description and an object inputSchema; no nextCursor, so the list is complete.
   const tool = (await h.call("tools/list", {})).result
-  assert.deepEqual([Object.keys(tool).sort(), tool.tools.length, tool.tools[0].inputSchema.type, typeof tool.tools[0].description], [["tools"], 1, "object", "string"])
+  assert.deepEqual([Object.keys(tool).sort(), tool.tools.length, tool.tools[0].inputSchema.type, typeof tool.tools[0].description], [["tools"], 5, "object", "string"])
   const bad = await h.call("tools/call", { name: "chariox_next_choice", arguments: { timeout_s: "soon" } })
   assert.equal(bad.result.isError, true)
   assert.equal(h.sent.length, 0)
@@ -466,3 +474,58 @@ async function until(done: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 200 && !done(); attempt++) await new Promise(resolve => setTimeout(resolve, 10))
   assert.ok(done(), "the condition did not become true")
 }
+
+const nextNotice = (h: Awaited<ReturnType<typeof harness>>, timeout_s = 5) => h.call("tools/call", { name: "chariox_next_notification", arguments: { timeout_s } })
+const body = (reply: Json): Json => JSON.parse(reply.result.content[0].text)
+
+const FOLLOW = (source_id: string, display_name: string, available = true) => ({ source_id, display_name, kind: "workflow_exit", session_id: "room", subscription_id: "s", available })
+
+test("the source tools list, follow by name and unfollow, and are announced", async () => {
+  const h = await harness([], null, () => undefined, [], 0, "2025-06-18", [FOLLOW("wf_source_a", "Review")])
+  const tools = (await h.call("tools/list", {})).result.tools.map((tool: Json) => tool.name)
+  assert.deepEqual(tools, ["chariox_next_choice", "chariox_next_notification", "chariox_notification_sources", "chariox_follow_notification_source", "chariox_unfollow_notification_source"])
+  assert.deepEqual(body(await h.call("tools/call", { name: "chariox_notification_sources", arguments: {} })), { sources: SOURCES })
+  await h.call("tools/call", { name: "chariox_follow_notification_source", arguments: { source: "review" } })
+  await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "wf_source_a" } })
+  assert.deepEqual(h.sent.filter(request => "SubscribeEvents" in request || "UnsubscribeEvents" in request), [
+    { SubscribeEvents: { targets: [], sources: ["wf_source_a"] } },
+    { UnsubscribeEvents: { sources: ["wf_source_a"] } },
+  ])
+  const refused = await h.call("tools/call", { name: "chariox_follow_notification_source", arguments: { source: "nope" } })
+  assert.equal(refused.result.isError, true)
+  assert.equal(body(refused).error, "events_refused")
+  assert.equal((await h.call("tools/call", { name: "chariox_follow_notification_source", arguments: {} })).result.isError, true)
+  await h.close()
+})
+test("the unfollow tool detaches a followed source that is disabled and no longer listed, by id and by name", async () => {
+  const h = await harness([], null, () => undefined, [], 0, "2025-06-18", [FOLLOW("wf_disabled", "Old review", false)])
+  assert.deepEqual(body(await h.call("tools/call", { name: "chariox_notification_sources", arguments: {} })), { sources: SOURCES })
+  await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "wf_disabled" } })
+  await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "old review" } })
+  assert.deepEqual(h.sent.filter(request => "UnsubscribeEvents" in request), [{ UnsubscribeEvents: { sources: ["wf_disabled"] } }, { UnsubscribeEvents: { sources: ["wf_disabled"] } }])
+  const refused = await h.call("tools/call", { name: "chariox_unfollow_notification_source", arguments: { source: "never followed" } })
+  assert.equal(refused.result.isError, true)
+  assert.equal(body(refused).error, "events_refused")
+  assert.equal(h.sent.filter(request => "UnsubscribeEvents" in request).length, 2)
+  await h.close()
+})
+test("a notification is served once and then acknowledged; a gap is served like it", async () => {
+  const h = await harness([notification(3), gap(4)], null, () => undefined)
+  const first = body(await nextNotice(h))
+  assert.deepEqual(first, { type: "notification", kernel: "k", session_id: "room", source_id: "wf_source_a", source_kind: "workflow_exit", display_name: "Review", occurrence_id: "run-3", message: "approved", artifacts: [], deadline_ms: 604800001, refs: {}, summary: "Review finished" })
+  const second = body(await nextNotice(h))
+  assert.deepEqual([second.type, second.dropped, second.from, second.to], ["gap", 1, 4, 4])
+  assert.deepEqual(body(await nextNotice(h, 1)), { timed_out: true })
+  assert.equal(h.inbox.acknowledged, 4)
+  await h.close()
+})
+test("waiting for a decision never acknowledges past a notification nobody has read", async () => {
+  const h = await harness([notification(1), pending(2)], null, () => undefined)
+  // Without a form dialog the question comes back as text; the notification stays unread before it.
+  const choice = body(await next(h))
+  assert.equal(choice.interaction_id, "int-1")
+  assert.equal(h.inbox.acknowledged, 0)
+  assert.equal(body(await nextNotice(h)).occurrence_id, "run-1")
+  assert.equal(h.inbox.acknowledged, 2)
+  await h.close()
+})

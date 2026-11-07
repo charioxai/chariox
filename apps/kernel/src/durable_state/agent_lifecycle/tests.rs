@@ -321,6 +321,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
         run: Some("run".into()),
         now: 10,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -350,6 +351,7 @@ fn a02_uncertain_attempt_blocks_fifo_and_ack_never_repairs_it() {
             run: None,
             now: 12,
             work: None,
+            through: 0,
         })
         .is_err());
     f.apply(Operation::Sweep {
@@ -443,6 +445,7 @@ fn a02_no_progress_blocks_on_third_wake_and_durable_counter_survives_reopen() {
             run: None,
             now: 10 + n,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -574,6 +577,7 @@ fn a02_cancel_independent_task_preserves_uncertain_recipient_delivery() {
             run: Some("run".into()),
             now: 1,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
@@ -647,6 +651,7 @@ fn a02_exact_late_receipt_unlocks_owner_resume_and_cancel_abandons_without_repla
             run: Some("run".into()),
             now: 1,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Sweep {
             now: DELIVERY_TIMEOUT_MS + 1,
@@ -741,6 +746,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
         run: None,
         now: 3,
         work: None,
+        through: 0,
     });
     let tasks = f.store.agent_tasks(Some("room"), Some("parent")).unwrap();
     assert_eq!(tasks[0].state, ExecutionState::Waiting);
@@ -971,6 +977,7 @@ fn a02_default_message_does_not_replace_an_independent_wait() {
         run: None,
         now: 4,
         work: None,
+        through: 0,
     });
     assert_eq!(f.task().state, ExecutionState::Waiting);
     assert_eq!(f.task().no_progress_wakes, 0);
@@ -1046,6 +1053,7 @@ fn a02_artifact_receipt_resets_guard_once_and_survives_restart() {
         run: None,
         now: 10,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1226,6 +1234,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
         run: Some("run".into()),
         now: 1,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -1265,6 +1274,7 @@ fn a02_urgent_steers_past_nonurgent_queue_but_never_uncertain_receipts() {
             run: Some("run".into()),
             now: 2,
             work: None,
+            through: 0,
         })
         .is_err());
     f.apply(Operation::Receipt {
@@ -1330,6 +1340,7 @@ fn a02_urgent_reply_tracks_corrected_task_and_late_exact_acceptance() {
         run: Some("child-run".into()),
         now: 2,
         work: None,
+        through: 0,
     });
     let Outcome::Settled { task, correction } = f.apply(Operation::Settle {
         room: "room".into(),
@@ -1439,6 +1450,7 @@ fn a02_every_delivery_receipt_has_client_visible_text() {
             run: Some("run".into()),
             now: 1,
             work: None,
+            through: 0,
         });
     };
     let mut steer = occurrence(
@@ -1534,6 +1546,7 @@ fn waiting_with_deadline_wake(f: &Fixture) -> InboxEvent {
         run: None,
         now: 4,
         work: None,
+        through: 0,
     });
     assert_eq!(f.task().state, ExecutionState::Working);
     e
@@ -1804,6 +1817,7 @@ fn a02_r3_rejected_first_message_escalates_without_task_rows() {
             run: None,
             now,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Receipt {
             room: "room".into(),
@@ -1887,6 +1901,7 @@ fn a02_review_timed_out_delivery_blocks_only_its_own_task() {
         run: Some("run".into()),
         now: 10,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Sweep {
         now: 10 + DELIVERY_TIMEOUT_MS,
@@ -1957,6 +1972,7 @@ fn a02_r4_admission_after_refusal_gets_full_delivery_timeout(receipt: &str) {
             run: None,
             now,
             work: None,
+            through: 0,
         });
         if now == 10 || receipt == "uncertain" {
             f.apply(Operation::Receipt {
@@ -2048,6 +2064,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         run: Some("run".into()),
         now: attempted_at,
         work: None,
+        through: 0,
     });
     f.apply(Operation::BindSubmission {
         room: "room".into(),
@@ -2132,6 +2149,7 @@ fn late_steer_rejection_retries_idle(timed_out: bool) {
         run: Some("next-run".into()),
         now: idle_at,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -2169,6 +2187,7 @@ fn a02_r5_idle_refusal_clock_starts_at_receipt() {
         run: None,
         now: now - 100_000,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Receipt {
         room: "room".into(),
@@ -2254,6 +2273,7 @@ fn damaged_refusal_clock_is_quarantined(clock: rusqlite::types::Value) {
             run: None,
             now: 10,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Receipt {
             room: room.into(),
@@ -2362,6 +2382,7 @@ fn a02_r6_delivery_clocks_tolerate_sweep_receipt_race() {
                 run: None,
                 now: if receipt == "rejected" { now } else { at },
                 work: None,
+                through: 0,
             });
             if receipt != "submitting" {
                 f.apply(Operation::Receipt {
@@ -2452,6 +2473,7 @@ fn a02_r6_late_receipts_close_only_synthetic_delivery_tasks() {
             run: None,
             now: 10,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Sweep {
             now: 10 + DELIVERY_TIMEOUT_MS,
@@ -2760,6 +2782,7 @@ fn a02_security_f4_accepted_parent_message_binds_exact_task() {
         run: None,
         now: 2,
         work: None,
+        through: 0,
     });
     f.apply(Operation::Begin {
         owner: "owner".into(),
@@ -2968,6 +2991,7 @@ fn a02_requested_reply_survives_deferred_and_rejected_idle_delivery() {
                 run: None,
                 now: 2,
                 work: None,
+                through: 0,
             });
             f.apply(Operation::Receipt {
                 room: "room".into(),
@@ -2995,6 +3019,7 @@ fn a02_requested_reply_survives_deferred_and_rejected_idle_delivery() {
             run: None,
             now: 4,
             work: None,
+            through: 0,
         });
         f.apply(Operation::Begin {
             owner: "owner".into(),
@@ -3611,6 +3636,7 @@ fn requested_reply_fails_when_recipient_is_removed_before_or_after_admission() {
                 run: None,
                 now: 2,
                 work: None,
+                through: 0,
             });
             f.apply(Operation::Receipt {
                 room: "room".into(),
