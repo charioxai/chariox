@@ -330,19 +330,24 @@ async fn land_late(pair: &Pair, request: RelayPeerRequest) {
 
 fn unsubscribe(
     subscription: &WorkflowNotificationSubscription,
-    _generation: Generation,
+    generation: Generation,
 ) -> RelayPeerRequest {
     RelayPeerRequest::UnsubscribeWorkflowNotifications {
         protocol_version: VERSION,
         subscription_id: subscription.subscription_id.clone(),
+        generation: generation as u64,
     }
 }
 
-fn subscribe(subscription: &WorkflowNotificationSubscription) -> RelayPeerRequest {
+fn subscribe(
+    subscription: &WorkflowNotificationSubscription,
+    generation: Generation,
+) -> RelayPeerRequest {
     RelayPeerRequest::SubscribeWorkflowNotifications {
         protocol_version: VERSION,
         source_id: subscription.source_id.clone(),
         target_ref: subscription.clone(),
+        generation: generation as u64,
     }
 }
 
@@ -351,15 +356,18 @@ fn later() -> u64 {
 }
 
 #[test]
-fn a_stale_install_that_lands_after_a_detach_is_dropped_and_the_source_asked_to_drop_it() {
+fn a_stale_install_that_lands_after_a_detach_is_ignored_at_the_source() {
     on_a_big_stack(async {
         let pair = pair("wfgen-lateinstall").await;
         let subscription = pair.attach_now().await.unwrap();
         let generation = begin_install(&pair, &subscription);
         pair.detach_now(&subscription).await;
-        // The install was already sent: it lands after the detach and installs the source row.
-        land_late(&pair, subscribe(&subscription)).await;
-        assert!(pair.source_holds());
+        // The install was already sent: it lands after the detach, and the source ignores it.
+        land_late(&pair, subscribe(&subscription, generation)).await;
+        assert!(
+            !pair.source_holds(),
+            "the source installed a follow the detach had already ended"
+        );
         pair.target
             .store
             .notify(NotificationOperation::RemoteInstallConfirmed {
@@ -387,7 +395,7 @@ fn a_stale_install_that_lands_after_a_detach_is_dropped_and_the_source_asked_to_
 }
 
 #[test]
-fn a_stale_cleanup_that_lands_after_a_newer_attach_is_repaired() {
+fn a_stale_cleanup_answer_after_a_newer_attach_leaves_the_follow_on_both_kernels() {
     on_a_big_stack(async {
         let mut pair = pair("wfgen-latecleanup").await;
         pair.stop_source().await;
@@ -400,9 +408,9 @@ fn a_stale_cleanup_that_lands_after_a_newer_attach_is_repaired() {
         let mut due = claim(&pair, later());
         let item = due.remove(0);
         let subscription = pair.attach_now().await.unwrap();
-        // The cleanup was already sent: it lands after the newer attach and drops its row.
+        // The cleanup was already sent: it lands after the newer attach, and the source ignores it.
         land_late(&pair, unsubscribe(&subscription, item.generation)).await;
-        assert!(!pair.source_holds());
+        assert!(pair.source_holds());
         pair.target
             .store
             .notify(NotificationOperation::RemoteReconcileSettled {

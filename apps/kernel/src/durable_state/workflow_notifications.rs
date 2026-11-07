@@ -9,6 +9,7 @@ pub(crate) mod outside_agent;
 mod outside_agent_tests;
 pub(crate) mod remote_install;
 pub(crate) mod run_finished;
+mod source_fence;
 #[cfg(test)]
 mod run_finished_tests;
 #[cfg(test)]
@@ -148,6 +149,9 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       PRIMARY KEY(owner_id,subscription_id));
     CREATE TABLE IF NOT EXISTS workflow_notification_generations (
       owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, generation INTEGER NOT NULL,
+      PRIMARY KEY(owner_id,subscription_id));
+    CREATE TABLE IF NOT EXISTS workflow_notification_source_fence (
+      owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, generation INTEGER NOT NULL,
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
@@ -190,6 +194,19 @@ pub(crate) enum NotificationOperation {
     /// entry point of another kernel.
     RemoteAttach {
         subscription: WorkflowNotificationSubscription,
+    },
+    /// An attach another kernel asks of this source kernel, under the generation it started
+    /// under. Applied unless this kernel has already seen a newer generation of the subscription.
+    SourceAttach {
+        subscription: WorkflowNotificationSubscription,
+        generation: u64,
+    },
+    /// A detach another kernel asks of this source kernel, fenced like `SourceAttach`.
+    SourceDetach {
+        subscription_id: String,
+        owner: String,
+        kernel: String,
+        generation: u64,
     },
     /// The agent's prompt for an accepted occurrence is queued: the receipt is settled.
     AgentQueued {
@@ -323,6 +340,8 @@ pub(crate) enum NotificationOutcome {
     Detached {
         generation: Option<remote_install::Generation>,
     },
+    /// The source kernel ignored a peer's attach or detach: it has seen this newer generation.
+    Superseded { generation: u64 },
     Swept,
 }
 pub(super) struct NotificationRequest {
@@ -655,6 +674,32 @@ fn apply(
             }
             save_subscription(tx, &mut subscription)?;
             Ok(NotificationOutcome::Subscription(subscription))
+        }
+        NotificationOperation::SourceAttach {
+            subscription,
+            generation,
+        } => {
+            if let Some(seen) = source_fence::refuse_in(
+                tx,
+                &subscription.owner_user_id,
+                &subscription.subscription_id,
+                generation,
+            )? {
+                return Ok(NotificationOutcome::Superseded { generation: seen });
+            }
+            apply(tx, NotificationOperation::RemoteAttach { subscription })
+        }
+        NotificationOperation::SourceDetach {
+            subscription_id,
+            owner,
+            kernel,
+            generation,
+        } => {
+            if let Some(seen) = source_fence::refuse_in(tx, &owner, &subscription_id, generation)? {
+                return Ok(NotificationOutcome::Superseded { generation: seen });
+            }
+            tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
+            Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::AgentQueued {
             subscription_id,

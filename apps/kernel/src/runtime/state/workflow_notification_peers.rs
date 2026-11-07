@@ -374,6 +374,7 @@ impl KernelRuntimeState {
                         protocol_version: VERSION,
                         source_id,
                         target_ref,
+                        generation,
                     } => {
                         let (sources, _, _) = self
                             .owned
@@ -395,13 +396,19 @@ impl KernelRuntimeState {
                             return Err(store::error("notification owner mismatch"));
                         }
                         match self.owned.durable_state_store.notify(
-                            NotificationOperation::RemoteAttach {
+                            NotificationOperation::SourceAttach {
                                 subscription: target_ref,
+                                generation,
                             },
                         )? {
                             NotificationOutcome::Subscription(subscription) => {
                                 Ok(RelayPeerResponse::WorkflowNotificationSubscribed {
                                     subscription,
+                                })
+                            }
+                            NotificationOutcome::Superseded { generation } => {
+                                Ok(RelayPeerResponse::WorkflowNotificationSuperseded {
+                                    generation,
                                 })
                             }
                             _ => Err(store::error("notification subscription failed")),
@@ -410,16 +417,20 @@ impl KernelRuntimeState {
                     RelayPeerRequest::UnsubscribeWorkflowNotifications {
                         protocol_version: VERSION,
                         subscription_id,
-                    } => {
-                        self.owned
-                            .durable_state_store
-                            .notify(NotificationOperation::Detach {
-                                subscription_id,
-                                owner: owner.into(),
-                                kernel: kernel.into(),
-                            })?;
-                        Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed)
-                    }
+                        generation,
+                    } => match self.owned.durable_state_store.notify(
+                        NotificationOperation::SourceDetach {
+                            subscription_id,
+                            owner: owner.into(),
+                            kernel: kernel.into(),
+                            generation,
+                        },
+                    )? {
+                        NotificationOutcome::Superseded { generation } => {
+                            Ok(RelayPeerResponse::WorkflowNotificationSuperseded { generation })
+                        }
+                        _ => Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed),
+                    },
                     RelayPeerRequest::DeliverWorkflowNotification {
                         protocol_version: VERSION,
                         subscription_id,
@@ -1081,6 +1092,7 @@ mod tests {
                     protocol_version: VERSION,
                     source_id: source_record.source_id.clone(),
                     target_ref: bad,
+                    generation: 1,
                 }
             )
             .await
@@ -1306,10 +1318,12 @@ mod tests {
                 protocol_version: VERSION,
                 source_id: source_record.source_id.clone(),
                 target_ref: subscription.clone(),
+                generation: 1,
             },
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
                 protocol_version: VERSION,
                 subscription_id: subscription.subscription_id.clone(),
+                generation: 2,
             },
             RelayPeerRequest::DeliverWorkflowNotification {
                 protocol_version: VERSION,

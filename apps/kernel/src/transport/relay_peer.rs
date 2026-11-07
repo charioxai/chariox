@@ -833,10 +833,15 @@ pub enum RelayPeerRequest {
         protocol_version: u32,
         source_id: String,
         target_ref: crate::local::WorkflowNotificationSubscription,
+        /// The version of the follow the destination asks for; the source ignores it when it has
+        /// already seen a newer one of this subscription.
+        generation: u64,
     },
     UnsubscribeWorkflowNotifications {
         protocol_version: u32,
         subscription_id: String,
+        /// As `SubscribeWorkflowNotifications::generation`.
+        generation: u64,
     },
     DeliverWorkflowNotification {
         protocol_version: u32,
@@ -1307,6 +1312,11 @@ pub enum RelayPeerResponse {
         subscription: crate::local::WorkflowNotificationSubscription,
     },
     WorkflowNotificationUnsubscribed,
+    /// The source ignored a subscribe or unsubscribe: it has already seen this newer generation
+    /// of the subscription.
+    WorkflowNotificationSuperseded {
+        generation: u64,
+    },
     WorkflowNotificationAccepted {
         ack: crate::local::WorkflowNotificationAck,
     },
@@ -2163,6 +2173,7 @@ mod workflow_notification_shapes {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 source_id: "source".into(),
                 target_ref: sub.clone(),
+                generation: 3,
             },
             RelayPeerRequest::DeliverWorkflowNotification {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
@@ -2172,6 +2183,7 @@ mod workflow_notification_shapes {
             RelayPeerRequest::UnsubscribeWorkflowNotifications {
                 protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                 subscription_id: "sub".into(),
+                generation: 4,
             },
         ];
         let responses = vec![
@@ -2195,6 +2207,7 @@ mod workflow_notification_shapes {
                 ack: WorkflowNotificationAck::Accepted,
             },
             RelayPeerResponse::WorkflowNotificationUnsubscribed,
+            RelayPeerResponse::WorkflowNotificationSuperseded { generation: 5 },
         ];
         let mut wire = serde_json::json!({"requests":requests,"responses":responses});
         // Pin the wire shape independently of the generated current peer number.

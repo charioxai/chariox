@@ -10,6 +10,11 @@ use crate::durable_state::workflow_notifications::{
 };
 use crate::local::WorkflowNotificationSubscription;
 
+/// The generation as the source kernel receives it. Generations start at one.
+fn wire(generation: Generation) -> u64 {
+    u64::try_from(generation).unwrap_or_default()
+}
+
 impl KernelRuntimeState {
     /// Detaches here, then on the source kernel when it is another one.
     pub(super) async fn detach_notification_subscription(
@@ -60,6 +65,7 @@ impl KernelRuntimeState {
                 RelayPeerRequest::UnsubscribeWorkflowNotifications {
                     protocol_version: VERSION,
                     subscription_id: id.clone(),
+                    generation: wire(generation),
                 },
             )
             .await;
@@ -103,6 +109,7 @@ impl KernelRuntimeState {
                     protocol_version: VERSION,
                     source_id: subscription.source_id.clone(),
                     target_ref: subscription.clone(),
+                    generation: wire(generation),
                 },
             )
             .await;
@@ -184,10 +191,12 @@ impl KernelRuntimeState {
                 protocol_version: VERSION,
                 source_id: subscription.source_id.clone(),
                 target_ref: subscription.clone(),
+                generation: wire(item.generation),
             },
             None => RelayPeerRequest::UnsubscribeWorkflowNotifications {
                 protocol_version: VERSION,
                 subscription_id: item.subscription_id.clone(),
+                generation: wire(item.generation),
             },
         };
         let response = self
