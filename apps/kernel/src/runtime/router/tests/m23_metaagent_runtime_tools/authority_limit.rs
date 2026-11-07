@@ -309,7 +309,17 @@ async fn folders_by_worktree() {
     std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
     for args in [
         &["init", "-q"][..],
-        &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ][..],
     ] {
         let status = std::process::Command::new("git")
             .args(args)
@@ -333,6 +343,74 @@ async fn folders_by_worktree() {
         refused.ok,
         outside.exists()
     );
+}
+
+#[test]
+fn a_parent_cannot_move_a_sub_agent_out_of_its_own_folders_by_config() {
+    run_large_stack_async_test("authority-folders-config", folders_by_config);
+}
+
+async fn folders_by_config() {
+    let world = world("authority-folders-config").await;
+    let inside = world._env.root.join("workspace").join("inside");
+    let outside = world._env.root.join("outside");
+    std::fs::create_dir_all(&inside).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let a = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_agent(&world.ids["a"])
+        .unwrap();
+    let configure = |workspace: Option<&std::path::Path>, worktree: Option<&std::path::Path>| {
+        let request =
+            LocalDaemonRequest::UpdateAgentConfig(crate::local::UpdateAgentConfigRequest {
+                session_id: world.room.clone(),
+                agent_id: world.ids["s"].clone(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: workspace.map(|path| path.display().to_string()),
+                clear_workspace_id: false,
+                worktree_id: worktree.map(|path| path.display().to_string()),
+                clear_worktree_id: false,
+            });
+        let command = KernelCommand::from_local_request_with_caller(
+            "authority-folders-config",
+            KernelCommandSource::DaemonBackground,
+            KernelCaller {
+                caller_id: format!("metaagent:{}", a.id()),
+                caller_kind: KernelCallerKind::Metaagent,
+                user_id: Some(a.owner_user_id().to_string()),
+                client_id: None,
+                machine_id: None,
+                realm_id: None,
+                public_key_thumbprint: None,
+                metaagent_id: Some(a.id().to_string()),
+                connection_class: Some(crate::local::KernelConnectionClass::KernelAgent),
+            },
+            None,
+            None,
+            &request,
+        );
+        world.router.dispatch(command, request)
+    };
+    assert!(
+        configure(None, Some(&inside)).await.is_ok(),
+        "a folder under the parent's workspace is allowed"
+    );
+    for (workspace, worktree) in [
+        (Some(outside.as_path()), None),
+        (None, Some(outside.as_path())),
+    ] {
+        let moved = configure(workspace, worktree).await;
+        assert!(
+            moved.is_err(),
+            "a sub-agent was configured outside its parent's folders: {moved:?}"
+        );
+    }
 }
 
 #[test]
