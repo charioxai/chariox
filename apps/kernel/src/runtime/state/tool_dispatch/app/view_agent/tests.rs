@@ -196,7 +196,9 @@ impl Rig {
             .unwrap();
     }
 
-    fn start_signed_v2_fixture_worker(&self) {
+    /// Starts the worker and waits until it can be leased: the start returns
+    /// while the worker still comes up on its own thread.
+    async fn start_signed_v2_fixture_worker(&self) {
         self.runtime
             .app_control()
             .lifecycle()
@@ -208,6 +210,18 @@ impl Rig {
             .lifecycle()
             .start_active_blocking("alice", APP, tokio::runtime::Handle::current())
             .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while self
+                .runtime
+                .app_control()
+                .active_app_lease("alice", APP)
+                .is_none()
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the fixture worker became leasable");
     }
 }
 
@@ -237,7 +251,7 @@ async fn native_user_app_view_uses_its_owner_bound_target_and_kernel_browser_hos
     rig.grant().await;
     rig.stage_signed_v2_fixture();
     let view_id = rig.open_user_view(None);
-    rig.start_signed_v2_fixture_worker();
+    rig.start_signed_v2_fixture_worker().await;
 
     let controller = rig.root.join("native-app-view-controller.sh");
     let observed = rig.root.join("native-app-view-request.json");
@@ -347,7 +361,7 @@ async fn a_user_view_reloaded_after_uninstall_and_reinstall_is_usable_by_the_age
     rig.stage_signed_v2_fixture();
     let generation = rig.installation_generation();
     let view_id = rig.open_user_view_built_for(generation - 1, None);
-    rig.start_signed_v2_fixture_worker();
+    rig.start_signed_v2_fixture_worker().await;
     let controller = rig.root.join("reinstall-view-controller.sh");
     std::fs::write(
         &controller,
@@ -418,7 +432,7 @@ async fn native_user_app_view_refuses_actions_absent_from_the_signed_declaration
     rig.grant().await;
     rig.stage_signed_v2_fixture();
     rig.open_user_view(None);
-    rig.start_signed_v2_fixture_worker();
+    rig.start_signed_v2_fixture_worker().await;
     let context = rig
         .runtime
         .view_context(&rig.agent, "host-tab-native-test")
