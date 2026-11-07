@@ -338,20 +338,6 @@ async fn a_first_remote_attach_the_peer_does_not_answer_is_reconciled_as_absent(
     );
     assert!(due[0].desired.is_none());
     assert_eq!(due[0].source_kernel_id, "other-home");
-    // A later attach that the source confirms owns the state: nothing is left to reconcile.
-    f.store
-        .notify(NotificationOperation::RemoteInstallConfirmed {
-            owner: "local".into(),
-            subscription_id: due[0].subscription_id.clone(),
-        })
-        .unwrap();
-    f.store
-        .notify(NotificationOperation::RemoteReconciled {
-            owner: "local".into(),
-            subscription_id: due[0].subscription_id.clone(),
-        })
-        .unwrap();
-    assert!(due_reconciles(&f, u64::MAX).is_empty());
     drop(runtime);
     cleanup(f);
 }

@@ -2,6 +2,7 @@
 //! The source kernel is a real kernel behind a real relay.
 use super::reconnect::{both_connected, connect};
 use super::*;
+use crate::durable_state::workflow_notifications::remote_install::Generation;
 
 struct Pair {
     source: Fixture,
@@ -184,7 +185,12 @@ impl Pair {
         );
         registered(&self.registry, &self.source_config.daemon_id).await;
         both_connected(&self.source_runtime, &self.target_runtime).await;
-        seed_presence(&self.target_runtime, &self.target_config, &self.source_config.daemon_id).await;
+        seed_presence(
+            &self.target_runtime,
+            &self.target_config,
+            &self.source_config.daemon_id,
+        )
+        .await;
     }
     async fn finish(mut self) {
         if let Some((stop, connector)) = self.source_connection.take() {
@@ -201,7 +207,10 @@ impl Pair {
     }
 }
 
-fn claim(pair: &Pair, now: u64) -> Vec<crate::durable_state::workflow_notifications::remote_install::RemoteReconcile> {
+fn claim(
+    pair: &Pair,
+    now: u64,
+) -> Vec<crate::durable_state::workflow_notifications::remote_install::RemoteReconcile> {
     match pair
         .target
         .store
@@ -231,7 +240,7 @@ fn a_claimed_cleanup_does_not_undo_a_newer_attach() {
             .unwrap();
         let subscription = pair.attach_now().await.unwrap();
         assert!(pair.source_holds() && pair.destination_holds());
-        resume_cleanup(&pair, &due[0]).await;
+        resume_cleanup(&pair, due[0].clone()).await;
         assert!(
             pair.destination_holds(),
             "the destination lost the follow it was just given"
@@ -265,62 +274,284 @@ fn a_claimed_install_does_not_reinstall_a_detached_follow() {
     });
 }
 
-/// What a claimed cleanup does when it finally runs: it asks the source, then reports.
+/// What a claimed cleanup does when it finally runs.
 async fn resume_cleanup(
     pair: &Pair,
-    item: &crate::durable_state::workflow_notifications::remote_install::RemoteReconcile,
+    item: crate::durable_state::workflow_notifications::remote_install::RemoteReconcile,
 ) {
-    let _ = pair
-        .target_runtime
-        .notification_peer(
-            &item.owner,
-            &item.source_kernel_id,
-            RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                protocol_version: VERSION,
-                subscription_id: item.subscription_id.clone(),
-            },
-        )
-        .await;
-    pair.target
-        .store
-        .notify(NotificationOperation::RemoteReconciled {
-            owner: item.owner.clone(),
-            subscription_id: item.subscription_id.clone(),
-        })
-        .unwrap();
+    pair.target_runtime.ask_remote_reconcile(item).await;
 }
 
-fn begin_install(pair: &Pair, subscription: &WorkflowNotificationSubscription) {
-    pair.target
+fn begin_install(pair: &Pair, subscription: &WorkflowNotificationSubscription) -> Generation {
+    match pair
+        .target
         .store
         .notify(NotificationOperation::AttachToRemoteSource {
             subscription: subscription.clone(),
         })
+        .unwrap()
+    {
+        NotificationOutcome::RemoteInstalling { generation, .. } => generation,
+        _ => panic!("a remote attach answers with the install it left to do"),
+    }
+}
+
+async fn resume_install(
+    pair: &Pair,
+    subscription: &WorkflowNotificationSubscription,
+    generation: Generation,
+) {
+    pair.target_runtime
+        .install_on_source(subscription, generation)
+        .await
         .unwrap();
 }
 
-async fn resume_install(pair: &Pair, subscription: &WorkflowNotificationSubscription, _token: ()) {
-    let response = pair
+/// A request that was already on its way when the state moved on, and lands afterwards.
+async fn land_late(pair: &Pair, request: RelayPeerRequest) {
+    let _ = pair
         .target_runtime
-        .notification_peer(
-            &subscription.owner_user_id,
-            &subscription.source_kernel_id,
-            RelayPeerRequest::SubscribeWorkflowNotifications {
-                protocol_version: VERSION,
-                source_id: subscription.source_id.clone(),
-                target_ref: subscription.clone(),
-            },
-        )
+        .notification_peer("local", &pair.source_config.daemon_id, request)
         .await;
-    assert!(matches!(
-        response,
-        Ok(RelayPeerResponse::WorkflowNotificationSubscribed { .. })
-    ));
-    pair.target
-        .store
-        .notify(NotificationOperation::RemoteInstallConfirmed {
-            owner: subscription.owner_user_id.clone(),
-            subscription_id: subscription.subscription_id.clone(),
-        })
-        .unwrap();
+}
+
+fn unsubscribe(subscription: &WorkflowNotificationSubscription) -> RelayPeerRequest {
+    RelayPeerRequest::UnsubscribeWorkflowNotifications {
+        protocol_version: VERSION,
+        subscription_id: subscription.subscription_id.clone(),
+    }
+}
+
+fn subscribe(subscription: &WorkflowNotificationSubscription) -> RelayPeerRequest {
+    RelayPeerRequest::SubscribeWorkflowNotifications {
+        protocol_version: VERSION,
+        source_id: subscription.source_id.clone(),
+        target_ref: subscription.clone(),
+    }
+}
+
+fn later() -> u64 {
+    crate::session::unix_epoch_ms() + 3_600_000
+}
+
+#[test]
+fn a_stale_install_that_lands_after_a_detach_is_dropped_and_the_source_asked_to_drop_it() {
+    on_a_big_stack(async {
+        let pair = pair("wfgen-lateinstall").await;
+        let subscription = pair.attach_now().await.unwrap();
+        let generation = begin_install(&pair, &subscription);
+        pair.detach_now(&subscription).await;
+        // The install was already sent: it lands after the detach and installs the source row.
+        land_late(&pair, subscribe(&subscription)).await;
+        assert!(pair.source_holds());
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteInstallConfirmed {
+                owner: "local".into(),
+                subscription_id: subscription.subscription_id.clone(),
+                generation,
+            })
+            .unwrap();
+        assert!(
+            !pair.destination_holds(),
+            "the stale answer restored the follow"
+        );
+        assert_eq!(
+            pair.target.store.unconfirmed_detaches(),
+            1,
+            "the source may hold a follow nobody wants: it is asked to drop it"
+        );
+        pair.target_runtime
+            .reconcile_remote_notification_installs(later())
+            .await;
+        assert!(!pair.source_holds());
+        assert_eq!(pair.target.store.unconfirmed_installs(), 0);
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_stale_cleanup_that_lands_after_a_newer_attach_is_repaired() {
+    on_a_big_stack(async {
+        let mut pair = pair("wfgen-latecleanup").await;
+        pair.stop_source().await;
+        assert!(pair.attach_now().await.is_err());
+        pair.start_source().await;
+        pair.target_runtime
+            .refresh_notification_sources_from_inventory("local", true)
+            .await
+            .unwrap();
+        let mut due = claim(&pair, later());
+        let item = due.remove(0);
+        let subscription = pair.attach_now().await.unwrap();
+        // The cleanup was already sent: it lands after the newer attach and drops its row.
+        land_late(&pair, unsubscribe(&subscription)).await;
+        assert!(!pair.source_holds());
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteReconcileSettled {
+                owner: item.owner.clone(),
+                subscription_id: item.subscription_id.clone(),
+                generation: item.generation,
+                matched: true,
+            })
+            .unwrap();
+        assert!(pair.destination_holds());
+        pair.target_runtime
+            .reconcile_remote_notification_installs(later())
+            .await;
+        assert!(
+            pair.source_holds(),
+            "the source was left without the follow"
+        );
+        assert!(pair.destination_holds());
+        assert_eq!(pair.target.store.unconfirmed_installs(), 0);
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_second_attach_keeps_the_state_the_first_one_replaced() {
+    on_a_big_stack(async {
+        let pair = pair("wfgen-twoattaches").await;
+        let subscription = pair.attach_now().await.unwrap();
+        pair.detach_now(&subscription).await;
+        // Two attaches are in flight together; the later one is refused.
+        let first = begin_install(&pair, &subscription);
+        let second = begin_install(&pair, &subscription);
+        assert!(second > first);
+        let ids = ("local".to_string(), subscription.subscription_id.clone());
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteInstallConfirmed {
+                owner: ids.0.clone(),
+                subscription_id: ids.1.clone(),
+                generation: first,
+            })
+            .unwrap();
+        assert!(
+            pair.destination_holds(),
+            "the later attach is still in flight"
+        );
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteInstallFailed {
+                owner: ids.0.clone(),
+                subscription_id: ids.1.clone(),
+                generation: second,
+            })
+            .unwrap();
+        assert!(
+            !pair.destination_holds(),
+            "the refused attach restored the first attach's attempt instead of the detached state"
+        );
+        let due = claim(&pair, later());
+        assert_eq!(due.len(), 1);
+        assert!(
+            due[0].desired.is_none(),
+            "the source is asked to hold nothing"
+        );
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_claimed_ask_survives_a_restart_and_a_reconnect_reset_without_double_effect() {
+    on_a_big_stack(async {
+        let mut pair = pair("wfgen-restart").await;
+        pair.stop_source().await;
+        assert!(pair.attach_now().await.is_err());
+        let now = later();
+        let first = claim(&pair, now).remove(0);
+        assert!(
+            claim(&pair, now + 1_000).is_empty(),
+            "claimed work waits for its window"
+        );
+        // The kernel restarted before the claimed ask was sent: nothing is in memory, and the
+        // entry is asked again with the generation it was claimed under.
+        let again = claim(&pair, now + 31_000).remove(0);
+        assert_eq!(again.generation, first.generation);
+        // The source reconnects while that ask is in flight: the reset makes it due again.
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteKernelsConnected {
+                kernels: vec![again.source_kernel_id.clone()],
+            })
+            .unwrap();
+        let twice = claim(&pair, now + 32_000).remove(0);
+        assert_eq!(twice.generation, again.generation);
+        for item in [again, twice] {
+            pair.target
+                .store
+                .notify(NotificationOperation::RemoteReconcileSettled {
+                    owner: item.owner,
+                    subscription_id: item.subscription_id,
+                    generation: item.generation,
+                    matched: true,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            pair.target.store.unconfirmed_installs(),
+            0,
+            "the same ask answered twice left work behind"
+        );
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_detach_the_source_did_not_confirm_does_not_replace_a_newer_attach() {
+    on_a_big_stack(async {
+        let mut pair = pair("wfgen-detachrace").await;
+        let subscription = pair.attach_now().await.unwrap();
+        pair.stop_source().await;
+        // The detach committed here and waits for the source; a newer attach follows it.
+        let detached = match pair
+            .target
+            .store
+            .notify(NotificationOperation::Detach {
+                subscription_id: subscription.subscription_id.clone(),
+                owner: "local".into(),
+                kernel: subscription.target_kernel_id.clone(),
+            })
+            .unwrap()
+        {
+            NotificationOutcome::Detached {
+                generation: Some(generation),
+            } => generation,
+            _ => panic!("a detach answers with its generation"),
+        };
+        let generation = begin_install(&pair, &subscription);
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteInstallConfirmed {
+                owner: "local".into(),
+                subscription_id: subscription.subscription_id.clone(),
+                generation,
+            })
+            .unwrap();
+        pair.target
+            .store
+            .notify(NotificationOperation::RemoteDetachSettled {
+                owner: "local".into(),
+                subscription_id: subscription.subscription_id.clone(),
+                source_kernel: subscription.source_kernel_id.clone(),
+                generation: detached,
+                confirmed: false,
+            })
+            .unwrap();
+        assert!(
+            pair.destination_holds(),
+            "the late detach answer ended the newer attach"
+        );
+        let due = claim(&pair, later());
+        assert_eq!(due.len(), 1);
+        assert_eq!(
+            due[0].desired.as_ref(),
+            Some(&subscription),
+            "the source is asked to hold the current follow, not to drop it"
+        );
+        pair.finish().await;
+    });
 }

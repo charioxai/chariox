@@ -1,4 +1,5 @@
 use super::super::local_prompt_dispatch_runtime::tests::runtime_with_active_prompt;
+use super::workflow_notification_peers::VERSION;
 use super::*;
 use crate::local::{
     AgentTriggerSourceRequest, DeleteAgentTriggerRequest, ListWorkflowNotificationsRequest,
@@ -2567,7 +2568,7 @@ async fn a_remote_agent_follow_the_source_does_not_confirm_is_reconciled_as_abse
     };
     assert!(rig
         .runtime
-        .subscribe_agent_notification(owner, &home, subscription)
+        .subscribe_agent_notification(&home, subscription)
         .await
         .is_err());
     let (_, active, _) = rig

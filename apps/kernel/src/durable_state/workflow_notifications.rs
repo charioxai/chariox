@@ -143,6 +143,10 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
       owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, source_kernel_id TEXT NOT NULL,
       state TEXT NOT NULL, prior_status TEXT, prior_json TEXT, prior_grant TEXT,
       desired_json TEXT, next_attempt_at_ms INTEGER NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+      generation INTEGER NOT NULL, dirty INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(owner_id,subscription_id));
+    CREATE TABLE IF NOT EXISTS workflow_notification_generations (
+      owner_id TEXT NOT NULL, subscription_id TEXT NOT NULL, generation INTEGER NOT NULL,
       PRIMARY KEY(owner_id,subscription_id));",
     )
     .map_err(sql)?;
@@ -214,22 +218,27 @@ pub(crate) enum NotificationOperation {
         grant: String,
         subscriptions: Vec<WorkflowNotificationSubscription>,
     },
-    /// The source kernel answered an attach with the exact subscription.
+    /// The source kernel answered an attach with the exact subscription. Every remote operation
+    /// below carries the generation it started under and counts only while it is current.
     RemoteInstallConfirmed {
         owner: String,
         subscription_id: String,
+        generation: remote_install::Generation,
     },
     /// The source kernel refused an attach or did not answer it: the subscription it replaced
     /// comes back and the source is reconciled.
     RemoteInstallFailed {
         owner: String,
         subscription_id: String,
+        generation: remote_install::Generation,
     },
-    /// A detach the source kernel did not confirm.
-    RemoteDetachUnconfirmed {
+    /// A detach request to the source kernel finished; an unconfirmed one is reconciled.
+    RemoteDetachSettled {
         owner: String,
         subscription_id: String,
         source_kernel: String,
+        generation: remote_install::Generation,
+        confirmed: bool,
     },
     ClaimRemoteReconciles {
         now: u64,
@@ -239,9 +248,12 @@ pub(crate) enum NotificationOperation {
     SettleInterruptedRemoteInstalls {
         now: u64,
     },
-    RemoteReconciled {
+    /// A claimed reconciliation ask finished.
+    RemoteReconcileSettled {
         owner: String,
         subscription_id: String,
+        generation: remote_install::Generation,
+        matched: bool,
     },
     /// These source kernels connected again: what is still unreconciled on them is asked at once,
     /// with a fresh set of attempts.
@@ -299,8 +311,17 @@ pub(crate) enum NotificationOutcome {
     LineageReserved,
     SteerBound,
     Protected(Option<WorkflowNotificationEnvelope>),
-    Retired(Vec<WorkflowNotificationSubscription>),
+    Retired(Vec<(WorkflowNotificationSubscription, remote_install::Generation)>),
     Reconciles(Vec<remote_install::RemoteReconcile>),
+    /// The attach was committed here and must be installed on the source under this generation.
+    RemoteInstalling {
+        subscription: WorkflowNotificationSubscription,
+        generation: remote_install::Generation,
+    },
+    /// What a detach ended here: the generation its request to the source carries.
+    Detached {
+        generation: Option<remote_install::Generation>,
+    },
     Swept,
 }
 pub(super) struct NotificationRequest {
@@ -542,29 +563,48 @@ fn apply(
             Ok(NotificationOutcome::Subscription(subscription))
         }
         NotificationOperation::AttachToRemoteSource { subscription } => {
-            remote_install::begin_in(tx, &subscription)?;
-            apply(tx, NotificationOperation::RemoteAttach { subscription })
+            let generation = remote_install::begin_in(tx, &subscription)?;
+            match apply(tx, NotificationOperation::RemoteAttach { subscription })? {
+                NotificationOutcome::Subscription(subscription) => {
+                    Ok(NotificationOutcome::RemoteInstalling {
+                        subscription,
+                        generation,
+                    })
+                }
+                other => Ok(other),
+            }
         }
         NotificationOperation::RemoteInstallConfirmed {
             owner,
             subscription_id,
+            generation,
         } => {
-            remote_install::confirm_in(tx, &owner, &subscription_id)?;
+            remote_install::install_confirmed_in(tx, &owner, &subscription_id, generation)?;
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::RemoteInstallFailed {
             owner,
             subscription_id,
+            generation,
         } => {
-            remote_install::undo_in(tx, &owner, &subscription_id)?;
+            remote_install::install_failed_in(tx, &owner, &subscription_id, generation)?;
             Ok(NotificationOutcome::Swept)
         }
-        NotificationOperation::RemoteDetachUnconfirmed {
+        NotificationOperation::RemoteDetachSettled {
             owner,
             subscription_id,
             source_kernel,
+            generation,
+            confirmed,
         } => {
-            remote_install::mark_detach_in(tx, &owner, &subscription_id, &source_kernel)?;
+            remote_install::detach_settled_in(
+                tx,
+                &owner,
+                &subscription_id,
+                &source_kernel,
+                generation,
+                confirmed,
+            )?;
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::ClaimRemoteReconciles { now, limit } => Ok(
@@ -574,11 +614,19 @@ fn apply(
             remote_install::settle_interrupted_in(tx, now)?;
             Ok(NotificationOutcome::Swept)
         }
-        NotificationOperation::RemoteReconciled {
+        NotificationOperation::RemoteReconcileSettled {
             owner,
             subscription_id,
+            generation,
+            matched,
         } => {
-            remote_install::reconciled_in(tx, &owner, &subscription_id)?;
+            remote_install::reconcile_settled_in(
+                tx,
+                &owner,
+                &subscription_id,
+                generation,
+                matched,
+            )?;
             Ok(NotificationOutcome::Swept)
         }
         NotificationOperation::RemoteKernelsConnected { kernels } => {
@@ -639,7 +687,11 @@ fn apply(
         } => outside_agent::append_in(tx, &subscription, &envelope),
         NotificationOperation::Granted { grant, attach } => {
             let outcome = apply(tx, *attach)?;
-            if let NotificationOutcome::Subscription(sub) = &outcome {
+            if let NotificationOutcome::Subscription(sub)
+            | NotificationOutcome::RemoteInstalling {
+                subscription: sub, ..
+            } = &outcome
+            {
                 outside_agent::require_follow_room(tx, &grant, sub)?;
                 tx.execute(
                     "INSERT INTO workflow_notification_grants VALUES (?1,?2,?3)",
@@ -675,11 +727,17 @@ fn apply(
                     .query_map(params![grant, keep], |r| r.get::<_, String>(0))
                     .map_err(sql)?;
                 rows.map(|r| decode(&r.map_err(sql)?))
-                    .collect::<Result<Vec<_>, _>>()?
+                    .collect::<Result<Vec<WorkflowNotificationSubscription>, _>>()?
             };
             // The binding stays: a stale candidate of a retired grant never reads as owner-attached.
             tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND (?1 IS NULL OR g.grant_id=?1)) AND NOT (json_extract(app_automations.notification_json,'$.target_kind')='outside_agent' AND EXISTS(SELECT 1 FROM workflow_notification_grants g WHERE g.owner_id=app_automations.owner_id AND g.subscription_id=app_automations.automation_id AND g.grant_id IN (SELECT value FROM json_each(?2))))",params![grant, keep]).map_err(sql)?;
-            Ok(NotificationOutcome::Retired(retired))
+            let mut ended = Vec::with_capacity(retired.len());
+            for sub in retired {
+                let generation =
+                    remote_install::supersede_in(tx, &sub.owner_user_id, &sub.subscription_id)?;
+                ended.push((sub, generation));
+            }
+            Ok(NotificationOutcome::Retired(ended))
         }
         NotificationOperation::Detach {
             subscription_id,
@@ -687,10 +745,12 @@ fn apply(
             kernel,
         } => {
             let detached = tx.execute("UPDATE app_automations SET status='disabled' WHERE source_kind='workflow_completion' AND automation_id=?1 AND owner_id=?2 AND json_extract(notification_json,'$.target_kernel_id')=?3",params![subscription_id,owner,kernel]).map_err(sql)?;
-            if detached != 0 {
-                remote_install::supersede_in(tx, &owner, &subscription_id)?;
-            }
-            Ok(NotificationOutcome::Swept)
+            let generation = if detached != 0 {
+                Some(remote_install::supersede_in(tx, &owner, &subscription_id)?)
+            } else {
+                None
+            };
+            Ok(NotificationOutcome::Detached { generation })
         }
         NotificationOperation::Acknowledge {
             subscription_id,

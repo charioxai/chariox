@@ -293,72 +293,16 @@ impl KernelRuntimeState {
                     "shared access cannot detach remote workflow notifications",
                 ));
             }
-            self.owned
-                .durable_state_store
-                .notify(NotificationOperation::Detach {
-                    subscription_id: sub.subscription_id.clone(),
-                    owner: owner.into(),
-                    kernel: sub.target_kernel_id.clone(),
-                })?;
-            if sub.source_kernel_id != sub.target_kernel_id {
-                let response = self
-                    .notification_peer(
-                        owner,
-                        &sub.source_kernel_id,
-                        RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                            protocol_version: VERSION,
-                            subscription_id: sub.subscription_id.clone(),
-                        },
-                    )
-                    .await;
-                if !matches!(
-                    response,
-                    Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed)
-                ) {
-                    self.owned.durable_state_store.notify(
-                        NotificationOperation::RemoteDetachUnconfirmed {
-                            owner: owner.into(),
-                            subscription_id: sub.subscription_id.clone(),
-                            source_kernel: sub.source_kernel_id.clone(),
-                        },
-                    )?;
-                }
-            }
+            self.detach_notification_subscription(&sub).await?;
             return Ok(LocalDaemonResponse::WorkflowNotificationDetached {
                 subscription_id: sub.subscription_id,
             });
         }
-        let result = self.execute_workflow_notification_request(request, owner)?;
+        let (result, installing) =
+            self.execute_workflow_notification_request_installing(request, owner)?;
         if let LocalDaemonResponse::WorkflowNotificationAttached { subscription } = result {
-            if subscription.source_kernel_id != subscription.target_kernel_id {
-                let response = self
-                    .notification_peer(
-                        owner,
-                        &subscription.source_kernel_id,
-                        RelayPeerRequest::SubscribeWorkflowNotifications {
-                            protocol_version: VERSION,
-                            source_id: subscription.source_id.clone(),
-                            target_ref: subscription.clone(),
-                        },
-                    )
-                    .await;
-                if matches!(&response,Ok(RelayPeerResponse::WorkflowNotificationSubscribed {subscription:s}) if *s==subscription)
-                {
-                    self.owned.durable_state_store.notify(
-                        NotificationOperation::RemoteInstallConfirmed {
-                            owner: owner.into(),
-                            subscription_id: subscription.subscription_id.clone(),
-                        },
-                    )?;
-                } else {
-                    // Put back the subscription this attach replaced; the source may or may
-                    // not have installed it, so it is reconciled, never assumed absent.
-                    self.owned.durable_state_store.notify(
-                        NotificationOperation::RemoteInstallFailed {
-                            owner: owner.into(),
-                            subscription_id: subscription.subscription_id.clone(),
-                        },
-                    )?;
+            if let Some(generation) = installing {
+                if !self.install_on_source(&subscription, generation).await? {
                     let mut sources = self
                         .owned
                         .durable_state_store
@@ -533,70 +477,6 @@ impl KernelRuntimeState {
             })
     }
 
-    /// Brings a source kernel in line with the state an unconfirmed attach or detach left
-    /// here: it re-installs the subscription this kernel kept, or drops the one it should not
-    /// hold. Each source is asked once per retry window, with the request timeout.
-    async fn reconcile_remote_notification_installs(&self, now: u64) {
-        let connected = self
-            .owned
-            .notification_inventory_projection
-            .take_appeared_kernels();
-        if !connected.is_empty() {
-            let _ = self
-                .owned
-                .durable_state_store
-                .notify(NotificationOperation::RemoteKernelsConnected { kernels: connected });
-        }
-        let _ = self
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::SettleInterruptedRemoteInstalls { now });
-        let Ok(NotificationOutcome::Reconciles(due)) = self
-            .owned
-            .durable_state_store
-            .notify(NotificationOperation::ClaimRemoteReconciles { now, limit: 8 })
-        else {
-            return;
-        };
-        let mut asks = tokio::task::JoinSet::new();
-        for item in due {
-            let runtime = self.clone();
-            asks.spawn(async move {
-                let request = match &item.desired {
-                    Some(subscription) => RelayPeerRequest::SubscribeWorkflowNotifications {
-                        protocol_version: VERSION,
-                        source_id: subscription.source_id.clone(),
-                        target_ref: subscription.clone(),
-                    },
-                    None => RelayPeerRequest::UnsubscribeWorkflowNotifications {
-                        protocol_version: VERSION,
-                        subscription_id: item.subscription_id.clone(),
-                    },
-                };
-                let response = runtime
-                    .notification_peer(&item.owner, &item.source_kernel_id, request)
-                    .await;
-                let matched = match (&item.desired, response) {
-                    (
-                        Some(want),
-                        Ok(RelayPeerResponse::WorkflowNotificationSubscribed { subscription }),
-                    ) => subscription == *want,
-                    (None, Ok(RelayPeerResponse::WorkflowNotificationUnsubscribed)) => true,
-                    _ => false,
-                };
-                if matched {
-                    let _ = runtime.owned.durable_state_store.notify(
-                        NotificationOperation::RemoteReconciled {
-                            owner: item.owner,
-                            subscription_id: item.subscription_id,
-                        },
-                    );
-                }
-            });
-        }
-        while asks.join_next().await.is_some() {}
-    }
-
     /// Runs within the existing App pump reservation, never a second timer.
     pub(super) async fn route_remote_workflow_notifications(&self) {
         if !self.owned.publication_activation.is_active()
@@ -681,8 +561,8 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
-    mod local_access;
     mod generation;
+    mod local_access;
     mod reconnect;
 
     use super::*;
