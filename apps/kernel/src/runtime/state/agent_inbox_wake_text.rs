@@ -33,13 +33,14 @@ pub(super) fn wake_text(lead: &InboxEvent, batch: &[InboxEvent], after: u64) -> 
     if others > 0 {
         shown.push(format!("{others} other"));
     }
+    // More events can arrive between this wake and the agent's read, so the count is a floor.
     let (noun, pronoun) = if count == 1 {
         ("event", "it")
     } else {
         ("events", "them")
     };
     format!(
-        "Inbox: {count} new {noun} ({}). Read {pronoun} with chariox.events.inbox after {after}, then chariox.events.ack each one you handled.",
+        "Inbox: at least {count} new {noun} ({}). Read {pronoun} with chariox.events.inbox after {after}, then chariox.events.ack each one you handled.",
         shown.join(", ")
     )
 }
@@ -110,6 +111,15 @@ mod tests {
         );
         assert!(!text.contains("AGENT"), "{text}");
         assert!(!text.contains("ignore previous instructions"));
+    }
+
+    #[test]
+    fn the_count_is_a_floor_because_more_events_arrive_before_the_read() {
+        let text = wake_text(&event(2, "source_completed", false), &[], 1);
+        assert!(text.contains("at least 1 new event"), "{text}");
+        let batch = [event(3, "source_completed", false)];
+        let text = wake_text(&event(2, "source_completed", false), &batch, 1);
+        assert!(text.contains("at least 2 new events"), "{text}");
     }
 
     #[test]

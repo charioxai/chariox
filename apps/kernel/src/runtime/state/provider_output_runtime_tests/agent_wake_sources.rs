@@ -1958,7 +1958,7 @@ async fn a_rejected_terminal_occurrence_is_retried_until_the_ledger_commits() {
         loop {
             let input = std::fs::read_to_string(&received).unwrap();
             let events = f.store().agent_inbox(&f.room, &f.agent, 0).unwrap();
-            if input.contains("Inbox: 1 new event") && events[0].state == "accepted" {
+            if input.contains("Inbox: at least 1 new event") && events[0].state == "accepted" {
                 assert_eq!(events.len(), 1, "exactly one delivered occurrence");
                 let woken = f.task(&task.task_id);
                 assert_eq!(woken.state, ExecutionState::Working);
