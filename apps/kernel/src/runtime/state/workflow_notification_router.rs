@@ -95,6 +95,7 @@ pub(super) fn summaries(
         .collect()
 }
 impl KernelRuntimeState {
+    #[cfg(test)]
     pub(crate) fn execute_workflow_notification_request(
         &self,
         request: LocalDaemonRequest,
