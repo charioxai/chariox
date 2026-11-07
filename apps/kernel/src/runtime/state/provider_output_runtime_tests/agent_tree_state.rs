@@ -228,3 +228,32 @@ async fn an_older_agent_placed_under_a_newer_sibling_is_listed_once_below_it() {
         .count();
     assert_eq!(room_agents, 1, "only the parent is a room agent");
 }
+
+// A client that reads the tree after a change must not use up the change for the followers:
+// they hear of every change, whoever read it first.
+#[tokio::test]
+async fn a_client_read_does_not_swallow_the_event_followers_are_owed() {
+    let team = team_with("tree-event-read", None, true).await;
+    follow(&team);
+    team.runtime.publish_changed_agent_trees();
+    assert_eq!(tree_events(&team).len(), 1);
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: team.child_prompt.id().into(),
+            run: team.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 4,
+        })
+        .unwrap();
+    // Another client refreshes its view before the scheduler's pass.
+    let read_rev = read(&team).rev;
+    team.runtime.publish_changed_agent_trees();
+    let events = tree_events(&team);
+    assert_eq!(events.len(), 2, "the follower was never told: {events:?}");
+    assert_eq!(events[1].1, read_rev);
+}
