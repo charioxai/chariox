@@ -617,3 +617,150 @@ mod tests {
         assert_eq!(accepted, (Ok(()), Ok(()), Ok(())));
     }
 }
+
+#[cfg(test)]
+mod owner_mapping_tests {
+    use super::super::workflow_prompt_queue_owned_state::tests::runtime_state_from_app;
+    use super::*;
+
+    // The connection record of the person operating the kernel is kept under `local`, whoever
+    // connected (a Cloud client or the CLI); the App routes and grants keep the owner that
+    // created them. Counting a connection's dependencies must see them all.
+    fn cloud_owner_runtime() -> (KernelRuntimeState, String) {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
+            user_id: "cloud-owner".to_string(),
+            ..Default::default()
+        });
+        let app = crate::app::DaemonApp::bootstrap(config.clone()).unwrap();
+        let store = app.durable_state_store();
+        let state = runtime_state_from_app(app);
+        let record_owner =
+            crate::event_connection::event_connection_user_id(&config, "cloud-owner");
+        for (installation, owner) in [
+            ("app", "cloud-owner"),
+            ("local-app", "local"),
+            ("other-app", "someone-else"),
+        ] {
+            rusqlite::Connection::open(store.path())
+                .unwrap()
+                .execute(
+                    "INSERT INTO app_installations(installation_id,app_id,owner_id,generation,allocated_generation,active_json)
+                     VALUES(?1,'dev.chariox.app',?2,1,1,'{}')",
+                    rusqlite::params![installation, owner],
+                )
+                .unwrap();
+        }
+        state
+            .event_connection_registry()
+            .upsert(
+                &record_owner,
+                "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.up".into(),
+                    connection_id: "connection-1".into(),
+                    status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                    metadata: serde_json::json!({}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
+        (state, record_owner)
+    }
+
+    fn create_route(state: &KernelRuntimeState, route_id: &str, owner: &str, installation: &str) {
+        state
+            .owned
+            .durable_state_store
+            .app_inbox(
+                crate::durable_state::app_inbox::AppInboxOperation::CreateRoute {
+                    route: chariox_app_runtime::app_inbox::InboxRoute {
+                        route_id: route_id.into(),
+                        owner_id: owner.into(),
+                        installation_id: installation.into(),
+                        event_name: "received".into(),
+                        source_event_type: "thing.happened".into(),
+                        source_event_version: 1,
+                        active: true,
+                        source: Some(chariox_app_runtime::app_inbox::InboxSource {
+                            generator_id: "dev.chariox.up".into(),
+                            connection_id: "connection-1".into(),
+                            connection_scope: "scope".into(),
+                            filter_json: "null".into(),
+                        }),
+                    },
+                    now_ms: 1,
+                },
+            )
+            .unwrap();
+    }
+
+    fn grant(state: &KernelRuntimeState, owner: &str, installation: &str) {
+        state
+            .owned
+            .durable_state_store
+            .app_connection_grant(
+                crate::durable_state::app_connections::ConnectionGrantCommand::Grant {
+                    owner: owner.into(),
+                    installation: installation.into(),
+                    generator_id: "dev.chariox.up".into(),
+                    connection_id: "connection-1".into(),
+                    event_owner_id: "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f".into(),
+                    now_ms: 1,
+                },
+            )
+            .unwrap();
+    }
+
+    fn dependency_installations(state: &KernelRuntimeState, record_owner: &str) -> Vec<String> {
+        let mut installations = state
+            .event_connection_dependencies(record_owner, "connection-1")
+            .unwrap()
+            .into_iter()
+            .map(|dependency| dependency.installation_id)
+            .collect::<Vec<_>>();
+        installations.sort();
+        installations
+    }
+
+    #[tokio::test]
+    async fn a_route_of_the_cloud_owner_is_a_dependency_of_the_connection_the_cli_sees() {
+        let (state, record_owner) = cloud_owner_runtime();
+        create_route(&state, "route-1", "cloud-owner", "app");
+        // The claim set sees the route under the record's owner ...
+        assert_eq!(state.bound_app_event_routes().unwrap().len(), 1);
+        // ... and removing the connection must see it too.
+        let dependencies = dependency_installations(&state, &record_owner);
+        assert!(
+            dependencies.len() == 1,
+            "the connection is claimed for the route but reports {} dependencies",
+            dependencies.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_grant_of_the_cloud_owner_is_a_dependency_of_the_connection_the_cli_sees() {
+        let (state, record_owner) = cloud_owner_runtime();
+        grant(&state, "cloud-owner", "app");
+        assert_eq!(dependency_installations(&state, &record_owner), ["app"]);
+    }
+
+    #[tokio::test]
+    async fn the_routes_and_grants_of_both_spellings_count_and_other_users_do_not() {
+        let (state, record_owner) = cloud_owner_runtime();
+        create_route(&state, "route-1", "cloud-owner", "app");
+        create_route(&state, "route-2", "local", "local-app");
+        grant(&state, "local", "local-app");
+        grant(&state, "cloud-owner", "app");
+        create_route(&state, "route-3", "someone-else", "other-app");
+        grant(&state, "someone-else", "other-app");
+        assert_eq!(
+            dependency_installations(&state, &record_owner),
+            ["app", "app", "local-app", "local-app"]
+        );
+    }
+}
