@@ -112,6 +112,28 @@ test("an older revision never replaces a newer one, and a failed read keeps the 
   assert.equal(controller.stripe("room")!.text, "1 agent needs you · 2 running")
 })
 
+test("AO-UI-02 a root that leaves the room's agents loses its tree, its view and its revision", async () => {
+  const { controller } = make({ room: three(7) })
+  await controller.refresh("room"); controller.chooseRow("a1")
+  controller.apply(tree(2, [node("b1", "other", "running", 1)], "other"))
+  controller.retainRoots(["other"])
+  assert.deepEqual([controller.stripe("room"), controller.viewOpen, controller.cardOpen, controller.available], [null, false, false, true], "the view of a vanished agent does not turn into another agent's")
+  assert.deepEqual(controller.lines().map(row => row.id), ["b1"])
+  controller.retainRoots(["room", "other"])
+  controller.apply(tree(1, [node("c1", "room", "running", 1)]))
+  assert.equal(controller.stripe("room")!.text, "1 agent running", "an agent that took the id again reads fresh, below the old revision")
+})
+
+test("AO-UI-02 a read of a root that left the room while it was on its way is dropped", async () => {
+  let answer: (value: unknown) => void = () => {}
+  const controller = new SubAgentsController({ send: <T>() => new Promise<T>(resolve => { answer = resolve as (value: unknown) => void }), changed: () => {}, sessionId: () => "s1" })
+  const late = controller.refresh("room")
+  controller.retainRoots([])
+  answer({ AgentTree: { tree: three(1) } })
+  await late
+  assert.equal(controller.available, false)
+})
+
 test("a read answered after the room was left is dropped", async () => {
   const { controller } = make({ room: three() })
   const pending = controller.refresh("room")

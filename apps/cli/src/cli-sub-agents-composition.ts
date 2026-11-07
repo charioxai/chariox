@@ -36,6 +36,7 @@ export function createCliSubAgentsComposition(deps: {
       do {
         again = false
         const ids = deps.attached() ? (deps.session().agents ?? []).map((agent: { id: string }) => agent.id) : []
+        controller.retainRoots(ids)
         await Promise.all(ids.map(id => controller.refresh(id)))
       } while (again)
     } finally { reading = false }

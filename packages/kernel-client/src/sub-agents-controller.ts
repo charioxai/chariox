@@ -24,6 +24,9 @@ export class SubAgentsController {
   private view = false
   private focused: string | null = null
   private generation = 0
+  /** Bumped for a root when it leaves the room: a read of it that was already on its way is dropped. */
+  private epochs = new Map<string, number>()
+  private reading = new Map<string, number>()
 
   constructor(private readonly deps: SubAgentsDeps) {}
 
@@ -38,10 +41,30 @@ export class SubAgentsController {
     const session = this.deps.sessionId()
     if (!session) return
     const generation = this.generation
+    const epoch = this.epochs.get(agentId) ?? 0
+    this.reading.set(agentId, (this.reading.get(agentId) ?? 0) + 1)
     let response: AgentTreeResponse | undefined
-    try { response = await this.deps.send<AgentTreeResponse>(listDescendantsRequest(session, agentId)) } catch { return }
-    if (generation !== this.generation || !response?.AgentTree?.tree) return
+    try { response = await this.deps.send<AgentTreeResponse>(listDescendantsRequest(session, agentId)) } catch { return } finally {
+      const left = (this.reading.get(agentId) ?? 1) - 1
+      if (left > 0) this.reading.set(agentId, left); else this.reading.delete(agentId)
+    }
+    if (generation !== this.generation || epoch !== (this.epochs.get(agentId) ?? 0) || !response?.AgentTree?.tree) return
     this.apply(response.AgentTree.tree)
+  }
+
+  /** The room agents there are now. A root that left them (deleted, or placed under another agent) loses its tree and its
+   * revision, and a read of it still on its way is dropped; a later agent of the same id starts fresh. */
+  retainRoots(rootIds: readonly string[]): void {
+    const keep = new Set(rootIds)
+    const gone = [...new Set([...this.trees.keys(), ...this.revs.keys(), ...this.reading.keys()])].filter(root => !keep.has(root))
+    if (gone.length === 0) return
+    for (const root of gone) {
+      this.epochs.set(root, (this.epochs.get(root) ?? 0) + 1)
+      this.trees.delete(root); this.revs.delete(root)
+      if (this.requested === root) this.requested = null
+      if (this.root === root) { this.card = false; this.view = false }
+    }
+    this.reconcile()
   }
 
   apply(tree: AgentTree): void {
@@ -69,7 +92,7 @@ export class SubAgentsController {
   /** A new room: nothing of the old one stays. */
   reset(): void {
     this.generation += 1
-    this.trees = new Map(); this.revs = new Map(); this.collapsed.clear(); this.root = null; this.requested = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
+    this.trees = new Map(); this.revs = new Map(); this.epochs = new Map(); this.collapsed.clear(); this.root = null; this.requested = null; this.card = false; this.cardIndex = 0; this.view = false; this.focused = null
     this.deps.changed()
   }
 

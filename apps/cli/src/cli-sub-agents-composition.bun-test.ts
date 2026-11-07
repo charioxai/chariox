@@ -121,7 +121,7 @@ test("AO-UI-02 a root placed under another agent leaves the room's trees and the
     await roomChanged()
     assert.equal(sub.stripeFor("a"), null, "a is no room agent any more")
     assert.deepEqual(sub.stripeFor("b")!.text, "2 agents running")
-    assert.deepEqual(sub.controller.lines().map(row => row.id), ["a"])
+    assert.deepEqual(sub.controller.lines().map(row => row.id), ["a", "a1"])
     dispose()
   })
 })
