@@ -241,14 +241,19 @@ impl KernelRuntimeOwnedState {
         interaction_id: &str,
     ) {
         let occurrence = child_decision_occurrence(interaction_id, holder);
-        let events = match self
-            .durable_state_store
-            .agent_work_inbox(session_id, holder, 0, None)
+        let mut events = Vec::new();
+        if let Err(error) =
+            self.durable_state_store
+                .scan_agent_inbox(session_id, holder, 0, None, |event| {
+                    if event.occurrence_id == occurrence {
+                        events.push(event);
+                    }
+                    std::ops::ControlFlow::Continue(())
+                })
         {
-            Ok(events) => events,
-            Err(error) => return log_withdraw_failure(interaction_id, &error),
-        };
-        for event in events.into_iter().filter(|e| e.occurrence_id == occurrence) {
+            return log_withdraw_failure(interaction_id, &error);
+        }
+        for event in events {
             let operation = match event.state.as_str() {
                 "pending" => Operation::Expire {
                     room: session_id.into(),

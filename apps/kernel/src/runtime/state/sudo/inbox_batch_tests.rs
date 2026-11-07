@@ -466,7 +466,12 @@ async fn the_wake_cursor_starts_before_a_held_message_beyond_the_first_page() {
     let (room, agent) = ids(&f);
     let pages = ledger::INBOX_PAGE as u64;
     for n in 0..pages {
-        occur(&f, &format!("old{n}"), "message", serde_json::json!({"message": "old"}));
+        occur(
+            &f,
+            &format!("old{n}"),
+            "message",
+            serde_json::json!({"message": "old"}),
+        );
     }
     f.state
         .ack_agent_inbox(
@@ -476,7 +481,12 @@ async fn the_wake_cursor_starts_before_a_held_message_beyond_the_first_page() {
             1,
         )
         .unwrap();
-    let held = occur(&f, "held", "message", serde_json::json!({"message": "held"}));
+    let held = occur(
+        &f,
+        "held",
+        "message",
+        serde_json::json!({"message": "held"}),
+    );
     let mut lead = occur(&f, "lead", "deadline_reached", serde_json::json!({}));
     lead.urgent = true;
     let cursor = f

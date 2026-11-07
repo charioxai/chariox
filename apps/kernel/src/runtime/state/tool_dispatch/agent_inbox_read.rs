@@ -2,6 +2,7 @@
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, InboxEvent, Operation};
 use crate::runtime::state::agent_inbox_sender::SenderRelation;
+use std::ops::ControlFlow;
 
 /// Events one read returns unless the agent asks for another count.
 const READ_LIMIT_DEFAULT: usize = 16;
@@ -49,10 +50,18 @@ impl KernelRuntimeState {
         let store = &self.owned.durable_state_store;
         // `after` only pages: a row at or below it that was never shown is returned again.
         let mut open = store.agent_unread_inbox(room, actor, 0, after, work.as_deref())?;
-        let page = store.agent_work_inbox(room, actor, after, work.as_deref())?;
-        let page_full = open.len() >= ledger::INBOX_PAGE || page.len() >= ledger::INBOX_PAGE;
-        open.extend(page.into_iter().filter(is_open));
-        let more = open.len() > limit || page_full;
+        let unread_full = open.len() >= ledger::INBOX_PAGE;
+        store.scan_agent_inbox(room, actor, after, work.as_deref(), |event| {
+            if is_open(&event) {
+                open.push(event);
+            }
+            if open.len() > limit {
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })?;
+        let more = open.len() > limit || unread_full;
         let shown: Vec<&InboxEvent> = open.iter().take(limit).collect();
         if !shown.is_empty() {
             store.agent_lifecycle(Operation::MarkShown {

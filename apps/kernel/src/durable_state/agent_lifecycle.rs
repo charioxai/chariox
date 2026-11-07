@@ -55,6 +55,7 @@ use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
+use std::ops::ControlFlow;
 use std::sync::mpsc;
 use transitions::apply;
 pub(super) use types::Request;
@@ -482,12 +483,45 @@ impl DurableKernelStateStore {
         lead: &InboxEvent,
         work: Option<&str>,
     ) -> Result<u64, DaemonError> {
-        let oldest = self
-            .agent_work_inbox(&lead.room_id, &lead.agent_id, 0, work)?
-            .into_iter()
-            .find(|event| event.state == "pending" && event.sequence < lead.sequence)
-            .map_or(lead.sequence, |event| event.sequence);
+        let mut oldest = lead.sequence;
+        self.scan_agent_inbox(&lead.room_id, &lead.agent_id, 0, work, |event| {
+            if event.sequence >= lead.sequence {
+                return ControlFlow::Break(());
+            }
+            if event.state == "pending" {
+                oldest = event.sequence;
+                return ControlFlow::Break(());
+            }
+            ControlFlow::Continue(())
+        })?;
         Ok(oldest.saturating_sub(1))
+    }
+    /// Visits an agent's inbox rows after `after` in order, page by page, until
+    /// `visit` breaks: closed rows are kept, so one page is not the inbox.
+    pub(crate) fn scan_agent_inbox(
+        &self,
+        room: &str,
+        agent: &str,
+        mut after: u64,
+        work: Option<&str>,
+        mut visit: impl FnMut(InboxEvent) -> ControlFlow<()>,
+    ) -> Result<(), DaemonError> {
+        loop {
+            let page = self.agent_work_inbox(room, agent, after, work)?;
+            let full = page.len() >= INBOX_PAGE;
+            let Some(last) = page.last().map(|event| event.sequence) else {
+                return Ok(());
+            };
+            for event in page {
+                if visit(event).is_break() {
+                    return Ok(());
+                }
+            }
+            if !full {
+                return Ok(());
+            }
+            after = last;
+        }
     }
     #[cfg(test)]
     pub(crate) fn agent_inbox(
