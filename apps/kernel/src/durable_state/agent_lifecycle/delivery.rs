@@ -337,6 +337,9 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             super::wakes::record_delivery(tx, &e)?;
             super::delegation::bind_message(tx, &e)?;
             replies::reconcile_event(tx, &e)?;
+            if e.state == "accepted" {
+                super::unread_steers::revert_late_receipt(tx, &mut e)?;
+            }
             Ok(Outcome::Event(e))
         }
         Operation::Ack {

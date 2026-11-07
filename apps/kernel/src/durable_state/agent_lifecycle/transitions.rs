@@ -571,6 +571,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             if t.provider_run_id.as_deref().is_some_and(|r| r != run) {
                 return Err(error("stale provider settlement"));
             }
+            super::unread_steers::revert_for_prompt(tx, &t.room_id, &t.agent_id, &prompt)?;
             if matches!(t.state, ExecutionState::Done | ExecutionState::Cancelled)
                 || (!cancelled && t.pending_prompt_id.is_some())
             {

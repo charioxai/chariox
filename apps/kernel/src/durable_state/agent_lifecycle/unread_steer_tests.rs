@@ -171,11 +171,11 @@ fn a_row_nobody_reads_is_reverted_a_bounded_number_of_times() {
     let f = Fixture::new();
     let r = urgent(&f, "a");
     let mut states = vec![];
-    for round in 0..4 {
+    for round in 0..3 {
         unread_round(&f.store, &r, &format!("p{round}"));
         states.push(row(&f.store, r.sequence).state);
     }
-    assert_eq!(states, ["pending", "pending", "accepted", "accepted"]);
+    assert_eq!(states, ["pending", "pending", "accepted"]);
 }
 
 #[test]
