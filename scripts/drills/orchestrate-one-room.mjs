@@ -4,6 +4,7 @@
 // their files. The driver never helps unless a step stalls; it records what the orchestrator did, the wall time and
 // the model turns and tokens each wake cost. Findings drill: every step is reported, none is asserted to pass.
 import { spawn, execFileSync } from "node:child_process"
+import http from "node:http"
 import { createHmac, createHash, randomBytes, randomUUID } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from "node:fs"
 import { createServer } from "node:net"
@@ -12,6 +13,8 @@ import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../../packages/kernel-client/dist/ipc.js"
 import { submitPromptRequest } from "../../packages/kernel-client/dist/ipc-requests.js"
 import { hiddenBrief, runHidden } from "./hidden-subagents-scenario.mjs"
+import { kindsBrief, orchBrief, decisionsTwoBrief, kindsDriver, sudoProbe, lateParentAnswer, controlProbes } from "./subagents-landing5-scenarios.mjs"
+import { listDescendantsRequest } from "../../packages/kernel-client/dist/ipc-agent-requests.js"
 
 const flags = new Map()
 for (let i = 2; i < process.argv.length; i++) flags.set(process.argv[i], process.argv[++i])
@@ -76,13 +79,13 @@ async function role(name) {
   const dir = join(root, name), ports = []
   for (let i = 0; i < 4; i++) ports.push(await freePort())
   for (const sub of ["chariox", "home", "tmp", "work", "logs", "history", "config", "cache", "state"]) mkdirSync(join(dir, sub), { recursive: true, mode: 0o700 })
-  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[state]\npath = "${dir}/chariox/state.db"\n`, { mode: 0o600 })
+  writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[workflow]\nsession_default_max_agents = ${flags.get("--max-agents") ?? 1024}\n[state]\npath = "${dir}/chariox/state.db"\n`, { mode: 0o600 })
   const localEnv = { ...env, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
     CHARIOX_DAEMON_SOCKET: join("/var/tmp/rch", `orch-${name}-${process.pid}.sock`), CHARIOX_DAEMON_ALIAS: `orch-${name}`, CHARIOX_MACHINE_ALIAS: `orch-${name}`,
     CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
   mkdirSync("/var/tmp/rch", { recursive: true })
-  const r = { name, dir, env: localEnv, passkey: randomBytes(24).toString("hex") }
+  const r = { name, dir, env: localEnv, passkey: randomBytes(24).toString("hex"), mcpPort: ports[1] }
   r.url = `ws://127.0.0.1:${ports[0]}/kernel`
   r.child = start(binary, localEnv, name)
   r.client = new LocalIpcClient(r.url, { localAuthEnvironment: localEnv, controlRequestRetryDeadlineMs: 1000 })
@@ -176,18 +179,22 @@ function toolLog(lines) {
 }
 
 async function main() {
-  note("binaries", { kernel: createHash("sha256").update(readFileSync(binary)).digest("hex"), relay: createHash("sha256").update(readFileSync(relayBinary)).digest("hex") })
+  note("binaries", { kernel: createHash("sha256").update(readFileSync(binary)).digest("hex"), relay: existsSync(relayBinary) ? createHash("sha256").update(readFileSync(relayBinary)).digest("hex") : null })
   const relayPort = await freePort()
   mkdirSync(join(root, "relay"), { mode: 0o700 })
-  start(relayBinary, { HOME: root, CHARIOX_HOME: join(root, "relay"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: issuer, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
-  const a = await role("a"), b = await role("b")
-  for (const r of [a, b]) {
+  if (flags.get("--single") !== "yes") start(relayBinary, { HOME: root, CHARIOX_HOME: join(root, "relay"), CHARIOX_RELAY_HOST: "127.0.0.1", CHARIOX_RELAY_PORT: String(relayPort), CHARIOX_RELAY_SCOPED_ISSUER: issuer, CHARIOX_RELAY_SCOPED_HMAC_SECRET: secret }, "relay")
+  const single = flags.get("--single") === "yes"
+  const a = await role("a"), b = single ? { name: "b", dir: join(root, "b"), status: { daemon_id: "single-kernel" }, rpc: async () => ({}) } : await role("b")
+  if (!single) mkdirSync(join(root, "b/work/w5"), { recursive: true })
+  if (!single) for (const r of [a, b]) {
     await r.rpc({ ConfigureRelay: { relay_url: `ws://127.0.0.1:${relayPort}`, relay_token: token(r.status.daemon_id, "kernel", ["daemon.register", "daemon.heartbeat", "packet.route", "peer.request", "peer.event", ...(flags.get("--kernel-metadata") === "yes" ? ["client.metadata.read"] : [])]) } })
     await until(async () => (await r.rpc({ RelayStatus: null })).RelayStatus.status.connected, `${r.name} relay registration`)
   }
+  if (!single) {
   const pairing = (await b.rpc({ CreateTerminalPairingLink: { terminal_type: "cli", expires_in_ms: 300000 } })).TerminalPairingLinkCreated.pairing
   await a.rpc({ JoinKernelLink: { link: pairing.pairing_link, relay_token: token("orch-operator", "client", ["client.connect", "client.metadata.read", "packet.route"]) } })
   note("paired", { from: "a", to: "b", b: b.status.daemon_id })
+  }
   let profile = "default"
   if (provider === "codex") {
     // The profile directory already holds a product login; the kernel links it and never reads the credential.
@@ -198,13 +205,13 @@ async function main() {
   } else {
     const oauth = readFileSync(tokenFile, "utf8").trim()
     await provision(a, oauth)
-    await provision(b, oauth)
+    if (!single) await provision(b, oauth)
   }
   // The project: a git repository the workers branch their own worktrees from.
   const work = join(a.dir, "work")
   const git = (...args) => execFileSync("git", ["-C", work, ...args], { env: { ...process.env, GIT_AUTHOR_NAME: "drill", GIT_AUTHOR_EMAIL: "drill@example.invalid", GIT_COMMITTER_NAME: "drill", GIT_COMMITTER_EMAIL: "drill@example.invalid" } }).toString()
   git("init", "-q", "-b", "main"); writeFileSync(join(work, "README.md"), "orchestrate-one-room drill project\n"); git("add", "README.md"); git("commit", "-q", "-m", "start")
-  mkdirSync(join(b.dir, "work/w2"), { recursive: true })
+  if (!single) mkdirSync(join(b.dir, "work/w2"), { recursive: true })
   const defaults = { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" }
   const room = (await a.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "team-room", agent_defaults: defaults } })).SessionCreated
   const R = room.session.id, orch = room.agent.id
@@ -213,13 +220,13 @@ async function main() {
   await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
   note("room-ready", { room: R, orchestrator: orch })
   // A person's own second agent: not in the orchestrator's tree, the peer of the tree drill.
-  if (["authority", "messages"].includes(flags.get("--scenario"))) await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
+  if (["authority", "messages", "decisions"].includes(flags.get("--scenario"))) await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
   if (scenario === "hidden") {
     writeFileSync(join(work, "BRIEF.md"), hiddenBrief({ model, work }))
-    const verdicts = await runHidden({ a, R, orch, attached, model, work, note, until, restart, evidence })
+    const verdicts = await runHidden({ a, R, orch, attached, model, work, note, until, restart, evidence, kill: flags.get("--hidden-kill") !== "no" })
     if (!verdicts.every(v => v.ok)) process.exitCode = 1
     return
   }
@@ -323,13 +330,14 @@ You are the ORCHESTRATOR of this Chariox Room (session ${R}). Use only your own 
   const authorityBrief = `# Orchestrator brief (drill, authority scenario)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}); your agent id is ${orch}. A person's other agent called "peer" is in the room but is not yours. Use only your room commands (chariox room run_command) and chariox events tools. No /sudo. Do not ask the owner anything. Never retry a refused call more than once: record the exact answer. Never use shell sleeps or poll.
 Keep ${join(work, "orchestrator-state.json")} updated after every step.
-1. Spawn c1, c2 and m with \`agent spawn <name> --provider claude --model ${model} --effort low --permission yolo\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission required\` (you run freely, so a child that must ask is allowed). Record each answer.
+1. Spawn c1, c2 and m with \`agent spawn <name> --provider claude --model ${model} --effort low --permission yolo\` and p with \`agent spawn p --provider claude --model ${model} --effort low --permission required\` (you run freely, so a child that must ask is allowed; c2 must stay alive and idle). Record each answer.
 2. Prompt c1 with the room command \`prompt c1 "<text>"\`: "Run these room commands with the chariox room run_command tool, one by one, and report the exact answer of each as OK or REFUSED followed by the text: (1) agent spawn g1 --provider claude --model ${model} --effort low --permission yolo (2) prompt g1 'Reply with GCHILD' (3) agent cancel c2 (4) agent cancel peer (5) agent cancel ${orch} (6) agent deadline set c2 10m. Do not retry a refused command. Do not subscribe or wait for anything. End your reply with C1DONE."
 3. Prompt p: "Run these room commands and report each exact answer as OK or REFUSED followed by the text: (1) agent spawn p1 --provider claude --model ${model} --effort low --permission yolo (2) agent spawn p2 --provider claude --model ${model} --effort low --permission required (3) agent delete p2 (4) agent delete p1 if it exists. Do not retry a refused command. Do not subscribe or wait for anything. End with PDONE."
 4. Prompt m: "Run these room commands and report each exact answer as OK or REFUSED followed by the text: (1) agent spawn y1 --provider claude --model ${model} --effort low --permission yolo. Then call the chariox request_popup tool with ONLY the arguments wait true, timeout_sec 600, title 'lower me', message 'Ready?', choices [{id:'ok',label:'OK',reply:'ok'}]. After it returns run: (2) agent spawn y2 --provider claude --model ${model} --effort low --permission yolo (3) agent spawn y3 --provider claude --model ${model} --effort low --permission required. (4) agent delete y1, agent delete y2, agent delete y3 for the ones that exist. Report each answer. Do not subscribe or wait for anything. End with MDONE."
-5. Subscribe to c1, p and m (chariox events_subscribe with the agent id), yield on ALL registrations with a deadline 15 minutes ahead and END YOUR TURN. Each child's finish arrives as a child_finished event with the child's reply in public_answer; for each one record the commands it ran and the answers in the state file; ack; yield again until c1, p and m have finished.
-6. When c1 has finished, delete c2 with \`agent delete c2\` (you never gave it work; this ends your wait on its spawn, so later yields need not cover it). Then YOU control c1's sub-agent g1 (your grandchild): run \`agent children\`, \`agent deadline get g1\`, \`agent cancel g1\` and record the answers (they are allowed).
-7. Write ${join(work, "orchestrator-report.json")}: per step the command, the exact answer, and per child the OK/REFUSED lines it reported. Then delete c1, c2, p, m with \`agent delete <name>\` (delete the sub-agents of a child first if a delete is refused) and reply ORCHDONE.
+4b. Prompt c2: "Reply with the single word C2DONE and nothing else."
+5. Subscribe to c1, c2, p and m (chariox events_subscribe with the agent id), yield on ALL registrations with a deadline 15 minutes ahead and END YOUR TURN. Each child's finish arrives as a child_finished event with the child's reply in public_answer; for each one record the commands it ran and the answers in the state file; ack; yield again until c1, c2, p and m have finished.
+6. When c1 has finished, YOU control c1's sub-agent g1 (your grandchild): run \`agent children\`, \`agent deadline get g1\`, \`agent cancel g1\` and record the answers (they are allowed).
+7. Write ${join(work, "orchestrator-report.json")}: per step the command, the exact answer, and per child the OK/REFUSED lines it reported. Do NOT delete c1, c2, p or m (the person still needs them). Reply ORCHDONE.
 `
   // One card, one holder: a worker's decision goes to the parent that may answer it, else to the person as the same interaction.
   const decisionsBrief = `# Orchestrator brief (drill, decisions scenario)
@@ -345,7 +353,19 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
 4. On each wake: read the events (chariox events_inbox). For every child_decision event run the room command \`agent answer <interaction_id> <id of the choice that allows the action>\` (take the choice ids from the event; the one meaning allow) and append the interaction_id, the child_alias, the time and the EXACT typed answer to the state file. The answer may come back as settled_by_user or not_holder: record it and go on, never retry. Ack the events; for a child_finished event record the child and the outcome. After you answered a decision of c (p's child), subscribe to c with the child_agent_id of the event. Keep waking until you have seen the child_finished of w1, w2, w3, p AND c. Do NOT write the report before that.
 5. Then write ${join(work, "orchestrator-report.json")}: one entry per child_decision event (interaction_id, child_alias, answer status) and one per child_finished event (child, outcome kind). Note whether you ever received a child_decision for w2. Then delete w1, w2, w3, p with \`agent delete <name>\` and reply ORCHDONE.
 `
-  const brief = scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  const payPort = scenario === "kinds" ? await freePort() : 0
+  if (payPort) http.createServer((_q, r) => r.end("ok")).listen(payPort, "127.0.0.1").unref()
+  let otherRoom = { R2: "", q: "" }
+  if (flags.has("--other-room")) {
+    const other = (await a.rpc({ CreateSession: { workspace_id: work, worktree_id: work, alias: "other-room", agent_defaults: { provider, account_profile: profile, model, effort: "low", permission_level: "yolo" } } })).SessionCreated
+    const att2 = (await a.rpc({ AttachToSession: { session_id: other.session.id, client_id: "orch-owner-r2", capability_level: "FullTerminal" } })).SessionAttached.attachment.id
+    await a.client.subscribeToKernelEvents(other.session.id, att2)
+    await a.rpc({ LaunchProviderRun: { session_id: other.session.id, agent_id: other.agent.id, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
+    otherRoom = { R2: other.session.id, q: other.agent.id }
+    note("other-room", { room: otherRoom.R2, agent: otherRoom.q })
+  }
+  const briefFile = flags.get("--brief-file")
+  const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
 the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
@@ -353,8 +373,8 @@ Kernel B id: ${b.status.daemon_id}. Never use shell sleeps and never poll: a chi
 
 Steps:
 1. Run the room commands \`agent profiles\` and \`agent usage\` and record the answers.
-2. Spawn worker w1 with its OWN git worktree: \`agent spawn w1 --provider claude --model ${model} --effort low --worktree ${join(root, "wt/w1")} --branch w1 --permission yolo --account-profile default --deadline 20m --command-id spawn-w1\`. Run the identical command a second time and record whether the same agent id came back.
-3. Spawn worker w2 (same flags, worktree ${join(root, "wt/w2")}, branch w2) and worker w4 (worktree ${join(root, "wt/w4")}, branch w4). Spawn worker w3 with the model claude-no-such-model-1 (worktree ${join(root, "wt/w3")}, branch w3).
+2. Spawn worker w1 with its OWN git worktree: \`agent spawn w1 --provider claude --model ${model} --effort low --worktree ${join(work, "wt/w1")} --branch w1 --permission yolo --account-profile default --deadline 20m --command-id spawn-w1\`. Run the identical command a second time and record whether the same agent id came back.
+3. Spawn worker w2 (same flags, worktree ${join(work, "wt/w2")}, branch w2) and worker w4 (worktree ${join(work, "wt/w4")}, branch w4). Spawn worker w3 with the model claude-no-such-model-1 (worktree ${join(work, "wt/w3")}, branch w3).
 4. Spawn w5 on kernel B: \`agent spawn w5 --provider claude --model ${model} --effort low --kernel ${b.status.daemon_id} --dir ${join(b.dir, "work/w5")}\`. Record the exact answer, even a refusal. Then go on: a refused spawn must not stop you from yielding in step 7.
 5. Give tasks with the room command \`prompt <alias> "<text>"\` (not \`agent prompt\`):
    w1: "Write the single word ALPHA into result.txt in your current working directory. End your reply with W1DONE."
@@ -378,6 +398,8 @@ Steps:
   // Follow R like an outside driver would, recording every change; the owner answers a stalled decision only as a fallback.
   const seen = { agents: new Map(), interactions: new Map(), prompts: new Map(), shown: new Map() }
   const orchTurns = []
+  const treeNoted = new Set()
+  let peerProbed = false, lateDone = false, sudoAt = null, probes = null, probesAt = null
   let reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
@@ -441,7 +463,7 @@ Steps:
       if (holdTitle.test(it.title ?? "") && Date.now() - (seen.interactions.get(it.id) || Date.now()) > 60000) await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: scenario === "ask" ? "go" : "ok" } }).then(() => { fallbackAnswers++; seen.interactions.set(it.id, 0); note("owner-answer-after-restart", { id: it.id }) }, e => note("owner-answer-error", { message: e.message.slice(0, 200) }))
     }
     // The person's side of the decisions drill: a secret request is the user's alone and its card shows in the room agent's panel; a worker the person races the parent for is answered at once; every other card is left to the parents.
-    if (scenario === "decisions" && s) {
+    if ((scenario === "decisions" || scenario === "orch") && s) {
       const alias = new Map((s.agents ?? []).map(x => [x.id, x.alias]))
       for (const it of s.active_interactions ?? []) {
         const open = seen.interactions.get(it.id)
@@ -453,7 +475,21 @@ Steps:
         const secret = it.custom_choice?.input_kind === "secret"
         const ask = (what, choice, reply) => a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: choice, ...(reply ? { custom_reply: reply } : {}) } })
           .then(() => { seen.interactions.set(it.id, 0); note("user-answer", { which: what, id: it.id, asker: who }) }, e => note("user-answer-refused", { which: what, id: it.id, asker: who, message: e.message.slice(0, 200) }))
-        if (secret && age > 15000) await ask("secret", it.custom_choice.id, "drill-not-a-real-secret")
+        if (!secret && !peerProbed && who && (s.agents ?? []).some(x => x.alias === "peer" && !s.prompt_states?.[x.id]?.active_prompt)) {
+          peerProbed = true
+          const peerId = (s.agents ?? []).find(x => x.alias === "peer").id
+          await a.client.send(submitPromptRequest(R, attachedNow, peerId, `Run these room commands with the chariox room_run_command tool and report each exact answer as OK or REFUSED followed by the text. Do not retry. (1) agent answer ${it.id} allow_once (2) agent pass ${it.id} End with PEERANSWERDONE.`, [])).then(() => note("peer-answer-probe", { card: it.id, asker: who }), e => note("peer-answer-probe-refused", { message: e.message.slice(0, 160) }))
+        }
+        if (secret && !treeNoted.has(it.id)) {
+          treeNoted.add(it.id)
+          const tr = await a.rpc(listDescendantsRequest(R, orch)).then(r => r.AgentTree.tree, () => null)
+          const node = tr?.nodes.find(n => n.agent_id === it.agent_id)
+          note("tree-while-open", { id: it.id, asker: who, asker_state: node?.state, asker_needs_user: node?.needs_user, totals: tr?.totals, listed_copies: (s.active_interactions ?? []).filter(x => x.id === it.id).length, shown_in_orchestrator: it.shown_in_agent_id === orch })
+        }
+        if (secret && age > 15000) {
+          await ask("secret", it.custom_choice.id, "drill-not-a-real-secret")
+          if (scenario === "decisions" && !lateDone) { lateDone = true; await lateParentAnswer({ a, R, orch, attached: attachedNow, note }, it.id, "user") }
+        }
         else if (!secret && who === "w3" && age > 4000) await ask("race-user", (it.choices ?? []).find(c => /allow|approve|yes/i.test(c.id))?.id ?? it.choices?.[0]?.id)
         else if (/needs your action/.test(it.title ?? "") && age > 30000) await ask("task-blocked-resume", "resume")
         else if (!secret && age > 240000) await ask("driver-fallback", (it.choices ?? []).find(c => /allow|approve|yes|resume|^ok$/i.test(c.id))?.id ?? it.choices?.[0]?.id)
@@ -484,11 +520,21 @@ Steps:
       const choice = (it.choices ?? []).find(c => c.id === "unlock_once") ?? (it.choices ?? []).find(c => c.requires_passkey) ?? it.choices?.[0]
       await a.rpc({ RespondToInteraction: { session_id: R, interaction_id: it.id, choice_id: choice.id, custom_reply: a.passkey } }).then(() => { seen.interactions.set(it.id, 0); note("owner-vault-unlock", { id: it.id, choice: choice.id }) }, e => note("owner-vault-unlock-error", { message: e.message.slice(0, 200) }))
     }
+    if (scenario === "kinds" && s) {
+      await kindsDriver({ a, R, orch, s, seen, note, attachedNow })
+      if (!sudoAt && Date.now() - since > 15000) { sudoAt = Date.now(); await sudoProbe({ a, R, orch, attached: attachedNow, s, note }) }
+    }
     if (!reportAt && existsSync(reportPath)) { reportAt = Date.now(); note("report-written") }
+    if (scenario === "authority" && reportAt && !probes) {
+      probes = await controlProbes({ a, R, orch, attached: attachedNow, model, note, until, work, profile, mcpPort: a.mcpPort }).catch(e => { note("control-probes-error", { message: e.message.slice(0, 300) }); return {} })
+      probesAt = Date.now()
+    }
     const o = s?.agents?.find(x => x.id === orch)
     // The report can come before the busy receiver ends its turn: its messages are judged after that.
     const othersBusy = scenario === "messages" && (s?.agents ?? []).some(x => x.id !== orch && s.prompt_states?.[x.id]?.active_prompt && Date.now() - reportAt < 180000)
-    if (reportAt && o && !o.is_processing && !s.prompt_states?.[orch]?.active_prompt && !othersBusy) break
+    const kindsBusy = scenario === "kinds" && (!sudoAt || Date.now() - sudoAt < 40000)
+    const probesBusy = kindsBusy || scenario === "authority" && (!probes || (s && Object.values(s.prompt_states ?? {}).some(x => x?.active_prompt)) || Date.now() - probesAt < 150000)
+    if (reportAt && o && !o.is_processing && !s.prompt_states?.[orch]?.active_prompt && !othersBusy && !probesBusy) break
     await delay(2000)
   }
   note("follow-ended", { wall_s: Math.round((Date.now() - since) / 1000), report: !!reportAt, fallbackAnswers })
@@ -520,7 +566,23 @@ Steps:
   writeFileSync(join(evidence, "history-outline.json"), redact(JSON.stringify(outline, null, 1)).slice(0, 400000), { mode: 0o600 })
   let w1log = null
   try { w1log = git("log", "--oneline", "w1") } catch (e) { w1log = `no w1 branch: ${String(e.message).slice(0, 120)}` }
+  try {
+    const db = join(a.dir, "chariox/state.db")
+    const tables = execFileSync("sqlite3", ["-readonly", db, "select name from sqlite_master where type='table' and name like 'agent_inbox%'"]).toString().trim().split("\n").filter(Boolean)
+    const dump = tables.map(t => `## ${t}\n` + execFileSync("sqlite3", ["-readonly", "-header", db, `select * from ${t}`]).toString().slice(0, 60000)).join("\n")
+    writeFileSync(join(evidence, "inbox-tables.txt"), redact(dump), { mode: 0o600 })
+  } catch (e) { note("inbox-dump-failed", { message: String(e.message).slice(0, 120) }) }
+  if (!single) {
+    const bView = async () => {
+      const rooms = (await b.rpc({ ListSessions: null })).SessionsListed.sessions
+      const perRoom = []
+      for (const room of rooms) perRoom.push({ room: room.id, agents: (await b.rpc({ ListAgents: { session_id: room.id } }).then(r => r.AgentsListed.agents, () => [])).map(x => x.alias) })
+      return { rooms: rooms.length, perRoom, agentsInRoomSnapshots: rooms.reduce((n, x) => n + (x.agents ?? []).length, 0) }
+    }
+    note("kernel-b-view", await bView().catch(e => ({ error: String(e.message).slice(0, 200) })))
+  }
   note("results", {
+    workfiles: Object.fromEntries(readdirSync(work).filter(f => /\.(txt|json)$/.test(f) && f !== "orchestrator-report.json").map(f => [f, read(join(work, f))?.slice(0, 300)])),
     report: read(reportPath), w1: read(join(root, "wt/w1/result.txt")), msgs: ["w1", "w2", "w3"].map(w => [w, read(join(root, "wt", w, "msg.txt")), read(join(root, "wt", w, "steer.txt")), read(join(root, "wt", w, "peer.txt"))]), w3: read(join(root, "wt/w3/result.txt")), w3_steer: read(join(root, "wt/w3/steer.txt")), collected: read(join(work, "collected-w2.txt")), orch_state: read(join(work, "orchestrator-state.json")), w2_local: read(join(root, "wt/w2/result.txt")), w2_b: read(join(b.dir, "work/w2/result.txt")), w1_branch_log: w1log,
     agents: (final?.agents ?? []).map(x => ({ id: x.id, alias: x.alias, state: x.state })), b_transcripts: bTranscripts.length,
     orchestrator_turns: stats.length, orchestrator_turns_seen_by_driver: orchTurns.length,
