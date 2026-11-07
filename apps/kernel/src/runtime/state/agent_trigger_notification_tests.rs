@@ -2683,3 +2683,46 @@ async fn a_remote_agent_follow_the_source_does_not_confirm_is_reconciled_as_abse
     assert!(due[0].desired.is_none());
     assert_eq!(due[0].source_kernel_id, "remote-kernel");
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11 (W1): a thread that holds the session store and checks an agent
+// notification target must finish while another thread waits to write. The std lock queues a
+// reader behind a waiting writer, so a second read taken under the first never returns.
+#[tokio::test]
+async fn the_agent_target_check_under_a_held_session_read_completes_while_a_writer_waits() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    rig.runtime
+        .create_agent_trigger(rig.request(&source), "local")
+        .await
+        .unwrap();
+    let subscription = rig.subscriptions().remove(0);
+    let owned = rig.runtime.owned.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (go_tx, go_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let reader = {
+        let owned = owned.clone();
+        std::thread::spawn(move || {
+            let sessions = owned.session_store.read();
+            ready_tx.send(()).unwrap();
+            go_rx.recv().unwrap();
+            let live = owned.agent_notification_target_live(&subscription);
+            drop(sessions);
+            done_tx.send(live).unwrap();
+        })
+    };
+    ready_rx.recv().unwrap();
+    let writer = {
+        let owned = owned.clone();
+        std::thread::spawn(move || drop(owned.session_store.write()))
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    go_tx.send(()).unwrap();
+    let live = done_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the target check re-locked the session store under a waiting writer");
+    assert!(live);
+    reader.join().unwrap();
+    writer.join().unwrap();
+}
