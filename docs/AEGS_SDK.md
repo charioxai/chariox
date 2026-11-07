@@ -195,10 +195,16 @@ lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROT
 - reconnect and revoke/disconnect;
 - emit an authentic test occurrence through AEDS when supported.
 
-An AEGS only generates events. It has no `/v1/actions` route and no provider-action
-hook: a request to `/v1/actions` is answered `not_found`, the SDK keeps no action
-receipts (an older database drops its `action_receipts` table on open), and a
-provider never holds a way to act on a user's behalf through the gateway.
+Mutation actions such as `notification.reply` are idempotent and are retained
+as durable action receipts so a retry cannot repeat the provider side effect.
+`event.context` (and the compatibility alias `notification.context`) is
+different: it is a bounded, read-only query. The SDK serializes requests with
+the same idempotency key while they are in flight within one AEGS process, but
+deliberately does not persist the response or conversation data in
+`action_receipts`; a retry after completion performs a fresh provider query.
+This in-memory coordination is not a cross-replica deduplication guarantee.
+AEGS implementations must keep context responses bounded and must not turn this
+path into a general provider API proxy.
 
 Implement `AegsProvider::inspect_connection`, `refresh_connection`, and
 `test_event` for provider-specific behavior. The SDK supplies a conservative
