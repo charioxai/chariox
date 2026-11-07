@@ -423,6 +423,23 @@ async fn a02_r3_taskless_rejection_timeout_projects_owner_action() {
         .active_interactions()
         .iter()
         .any(|i| i.id() == interaction));
+    let named = runtime
+        .owned
+        .agent_store
+        .get_agent(agent.id())
+        .map(|a| a.alias().unwrap_or(a.agent_ref()).to_owned())
+        .unwrap();
+    assert!(
+        runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .unwrap()
+            .active_interactions()
+            .iter()
+            .any(|i| i.id() == interaction && i.message().starts_with(&format!("{named}: "))),
+        "the decision card names the agent that needs the person"
+    );
     assert!(
         runtime
             .owned
