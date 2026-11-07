@@ -773,4 +773,116 @@ mod owner_mapping_tests {
             ["app", "app", "local-app", "local-app"]
         );
     }
+
+    async fn catalog_request(
+        state: &KernelRuntimeState,
+        caller: &str,
+        request: crate::local::LocalDaemonRequest,
+    ) -> Result<crate::local::LocalDaemonResponse, crate::error::DaemonError> {
+        crate::runtime::event_catalog_control::execute_event_catalog_request_with_client(
+            state,
+            &state.owned.config_projection,
+            &crate::runtime::event_catalog_control::AegsManagementHttpClient::default(),
+            caller,
+            request,
+        )
+        .await
+    }
+
+    // The CLI and the Cloud owner reach the same connection; the dependency list and the removal
+    // guard answer the same for both.
+    #[tokio::test]
+    async fn the_cloud_owner_lists_and_is_guarded_by_the_dependencies_of_the_connection() {
+        let (state, _) = cloud_owner_runtime();
+        create_route(&state, "route-1", "cloud-owner", "app");
+        grant(&state, "cloud-owner", "app");
+        for caller in ["local", "cloud-owner"] {
+            let listed = catalog_request(
+                &state,
+                caller,
+                crate::local::LocalDaemonRequest::ListEventConnectionDependencies(
+                    crate::local::ListEventConnectionDependenciesRequest {
+                        connection_id: "connection-1".into(),
+                    },
+                ),
+            )
+            .await
+            .unwrap();
+            let crate::local::LocalDaemonResponse::EventConnectionDependencies {
+                dependencies, ..
+            } = listed
+            else {
+                panic!("unexpected response: {listed:?}");
+            };
+            assert!(
+                dependencies.len() == 2,
+                "{caller} sees {} dependencies",
+                dependencies.len()
+            );
+            let removal = catalog_request(
+                &state,
+                caller,
+                crate::local::LocalDaemonRequest::RemoveEventConnection(
+                    crate::local::RemoveEventConnectionRequest {
+                        connection_id: "connection-1".into(),
+                        confirm: true,
+                    },
+                ),
+            )
+            .await
+            .expect_err("an App still uses the connection");
+            assert!(
+                removal.to_string().contains("remove the App inbox routes"),
+                "{caller}: {removal}"
+            );
+        }
+    }
+
+    // A grant or route request of the Cloud owner finds the connection the CLI made: the
+    // record is looked up under the mapped owner, so the request goes on to ask the generator
+    // instead of being told the connection does not exist.
+    #[test]
+    fn the_cloud_owner_finds_the_connection_when_granting_an_app() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            kernel_id: None,
+            kernel_credential: None,
+            kernel_public_key_thumbprint: None,
+            user_id: "cloud-owner".to_string(),
+            ..Default::default()
+        });
+        let harness = crate::local::test_support::LocalRouterTestHarness::with_config(config.clone());
+        harness
+            .runtime_state()
+            .event_connection_registry()
+            .upsert(
+                &crate::event_connection::event_connection_user_id(&config, "cloud-owner"),
+                "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.up".into(),
+                    connection_id: "connection-1".into(),
+                    status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                    metadata: serde_json::json!({}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
+        let error = harness
+            .dispatch_as_user(
+                "cloud-owner",
+                crate::local::LocalDaemonRequest::GrantAppConnection(
+                    crate::local::GrantAppConnectionRequest {
+                        installation_id: "app".into(),
+                        generator_id: "dev.chariox.up".into(),
+                        connection_id: "connection-1".into(),
+                    },
+                ),
+            )
+            .expect_err("no generator answers in this test");
+        assert!(
+            !error.to_string().contains("was not found"),
+            "the connection of the person operating the kernel was not found: {error}"
+        );
+    }
 }
