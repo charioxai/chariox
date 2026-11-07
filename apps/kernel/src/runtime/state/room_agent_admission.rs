@@ -198,6 +198,9 @@ impl KernelRuntimeState {
             .agent_store
             .get_session_agents(actor.session_id());
         in_subtree(&actor, &target, &agents)?;
+        if let LocalDaemonRequest::UpdateAgentConfig(r) = request {
+            self.keep_configured_folders_inside_parent(&target, r, &agents)?;
+        }
         // Deleting an agent ends its sub-agents with it (A4); only its own unsettled runs refuse.
         if deleting {
             let session = self.owned.session_store.get_session(room)?;
@@ -214,6 +217,31 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
+    /// A5: moving a sub-agent keeps it inside the folders of its own parent.
+    fn keep_configured_folders_inside_parent(
+        &self,
+        target: &crate::agent::AgentInstance,
+        request: &crate::local::UpdateAgentConfigRequest,
+        agents: &[crate::agent::AgentInstance],
+    ) -> Result<(), DaemonError> {
+        let Some(parent) = target
+            .parent_agent_id()
+            .and_then(|parent| agents.iter().find(|agent| agent.id() == parent))
+        else {
+            return Ok(());
+        };
+        let session = self.owned.session_store.get_session(&request.session_id)?;
+        for directory in [&request.workspace_id, &request.worktree_id]
+            .into_iter()
+            .flatten()
+            .map(|directory| directory.trim())
+            .filter(|directory| !directory.is_empty())
+        {
+            crate::agent::authority_limit::check_directory(parent, &session, directory)?;
+        }
+        Ok(())
+    }
+
     fn authorize_room_extension_target(
         &self,
         actor: &crate::agent::AgentInstance,
