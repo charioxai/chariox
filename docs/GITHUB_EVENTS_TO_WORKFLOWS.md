@@ -131,6 +131,26 @@ inbox counts.
 normal generator and delivery path. Then `/app inbox list github-events` shows it
 delivered and each target runs once.
 
+## Follow the events from an agent outside Chariox
+
+An agent that runs outside Chariox (a Claude Code or Codex CLI session) cannot be an
+automation target, but it can follow the workflow the event starts. It asks for a
+Kernel Access grant (`chariox access request --until-exit`; the owner approves it), then:
+
+```
+chariox events sources                      # lists "<workflow> run finished" for each workflow
+chariox events subscribe --source "<workflow> run finished"
+chariox events wait                         # returns at once when a record is pending
+chariox events ack <cursor>
+```
+
+The record's output is JSON: `status` (`Completed` or `Failed`), `run_id`, `workflow_id`
+and `prompt`, which is the event text (`Handle GitHub pull_request.synchronize for
+<owner>/<repository> #<number> at head <sha>`), plus `failure` for a failed run. The
+notification arrives when the run ends, not when the event arrives; a stopped run emits
+nothing. To be told the moment an event arrives, or to receive its payload, use an agent
+trigger (step 3) on a Room agent.
+
 ## Several routes and several kernels
 
 The kernel accepts any number of routes for the same repository and event type, for
