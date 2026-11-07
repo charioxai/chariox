@@ -11,6 +11,8 @@ pub(crate) mod remote_install;
 pub(crate) mod run_finished;
 mod source_fence;
 #[cfg(test)]
+mod source_fence_tests;
+#[cfg(test)]
 mod run_finished_tests;
 #[cfg(test)]
 pub(crate) mod tests;
