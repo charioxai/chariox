@@ -2221,7 +2221,7 @@ mod workflow_notification_shapes {
         }
         assert_eq!(
             format!("{:x}", Sha256::digest(serde_json::to_vec(&wire).unwrap())),
-            "a1f9549c3b6d095ac7a278678549c23c6aad6d3f666645a6b43eede98e094ae8"
+            "02a8d98603e23bde427cd5c238c4dcf487071f955d4c6848ca31c82f2b6228ee"
         );
     }
 }

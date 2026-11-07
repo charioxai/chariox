@@ -6901,3 +6901,15 @@ the accounts installed before it roll back. `ProviderAccountProfile.context_tran
 the existing unlock card appears in the launching session, an agent's included, and a caller without a session gets the
 typed `vault_locked` refusal. Focused checks: `cargo test -p chariox-kernel --lib vault_login` and
 `vault_login_1003_shapes_are_pinned`.
+
+### Remote notification follows fenced by generation at the source — relay peer 439
+
+MP-08 / MP-10 / MP-11: `SubscribeWorkflowNotifications` and `UnsubscribeWorkflowNotifications` carry a required
+`generation: u64`, the version of the follow the destination wants the source to hold (it starts at 1 and the
+destination raises it on every attach, detach and restore). The source keeps the highest generation it has seen per
+owner and subscription id, written in the same transaction as the subscription row and kept after a detach, and applies
+a request only when its generation is at least that one. `WorkflowNotificationSubscribed` and
+`WorkflowNotificationUnsubscribed` mean applied (the same generation asked again is applied again); the new
+`WorkflowNotificationSuperseded { generation }` means the request was stale and ignored, and names the newest
+generation the source has seen. `ListWorkflowNotificationSources`, `DeliverWorkflowNotification` and
+`WorkflowNotificationAccepted` are unchanged. Focused check: `cargo test -p chariox-kernel --lib workflow_notification`.

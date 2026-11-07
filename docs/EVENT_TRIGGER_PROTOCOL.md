@@ -221,7 +221,10 @@ renames `SubscribeWorkflowNotifications {source_workflow_ref, target_ref}` to `{
 target_ref}`, admits an agent `target_ref` (the subscriber kernel owns target admission), and
 `DeliverWorkflowNotification` carries the reduced envelope. Remote requests require an
 unexpired sender-key-bound kernel or machine identity, matching realm and owner. Remote lease
-workers reject kernel-wide notification requests. Relay remains ciphertext transport.
+workers reject kernel-wide notification requests. Peer 439 adds a required `generation` to
+subscribe and unsubscribe, which the source applies only when it is not older than the newest it has
+seen for that subscription, and answers a stale one with `WorkflowNotificationSuperseded`. Relay
+remains ciphertext transport.
 
 **Delivery.** Bindings use `app_automations.source_kind=workflow_completion`; pending and
 accepted/queued receipts use `app_outbox`, beside `app_event`. Persist-before-send and retry
