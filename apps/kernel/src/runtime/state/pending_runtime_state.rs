@@ -130,6 +130,7 @@ impl PendingInteraction {
             passkey_prompt: None,
             holder: super::DecisionHolder::User,
             responder: Arc::new(StdMutex::new(None)),
+            checking_answer: Default::default(),
         }
     }
 
