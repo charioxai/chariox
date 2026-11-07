@@ -24,6 +24,9 @@ const MAX_REMEMBERED_NONCES: usize = 100_000;
 const MAX_NONCE_BYTES: usize = 128;
 const MAX_OWNER_ID_BYTES: usize = 256;
 const MAX_ALLOWLIST_BYTES: u64 = 1024 * 1024;
+/// How long a read allowlist stays in use. Every request from a key the list does not name
+/// would otherwise read and parse the file (up to 1 MiB), and any key can sign a request.
+const ALLOWLIST_CACHE_MS: u64 = 5_000;
 const DEFAULT_OPEN_MAX_OWNERS_PER_KERNEL: usize = 8;
 const DEFAULT_OPEN_MAX_REQUESTS_PER_MINUTE: u32 = 600;
 /// Across all kernels: 500 requests a second.
@@ -100,8 +103,8 @@ pub(crate) enum Admission {
         max_requests_per_minute_total: u32,
         max_memberships_total: usize,
     },
-    /// Only kernel ids listed in a JSON object file (`{"<kernel_id>": "<label>"}`), read on
-    /// every request, so removing an id takes effect without a restart.
+    /// Only kernel ids listed in a JSON object file (`{"<kernel_id>": "<label>"}`), read again
+    /// every few seconds, so removing an id takes effect without a restart.
     Allowlist { file: PathBuf },
 }
 
@@ -172,19 +175,6 @@ impl Admission {
             Self::Allowlist { .. } => None,
         }
     }
-
-    async fn admits(&self, kernel_id: &str) -> bool {
-        match self {
-            Self::Open { .. } => true,
-            Self::Allowlist { file } => match read_allowlist(file).await {
-                Ok(listed) => listed.contains(kernel_id),
-                Err(error) => {
-                    eprintln!("AEGS allowlist {} is unreadable: {error}", file.display());
-                    false
-                }
-            },
-        }
-    }
 }
 
 fn parse_positive<T: std::str::FromStr + PartialOrd + Default>(
@@ -218,9 +208,17 @@ async fn read_allowlist(file: &PathBuf) -> Result<BTreeSet<String>, String> {
     Ok(entries.into_keys().collect())
 }
 
+/// The allowlist as last read; an unreadable file counts as an empty list until the next read.
+#[derive(Default)]
+struct AllowlistCache {
+    read_at_ms: Option<u64>,
+    listed: BTreeSet<String>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ManagementAuth {
     admission: Admission,
+    allowlist: Arc<tokio::sync::Mutex<AllowlistCache>>,
     seen_nonces: Arc<Mutex<HashMap<(String, String), u64>>>,
     request_windows: Arc<Mutex<HashMap<String, (u64, u32)>>>,
     /// The gateway-wide request window; the lock covers a counter update only.
@@ -231,6 +229,7 @@ impl ManagementAuth {
     pub(crate) fn new(admission: Admission) -> Self {
         Self {
             admission,
+            allowlist: Arc::default(),
             seen_nonces: Arc::default(),
             request_windows: Arc::default(),
             gateway_window: Arc::default(),
@@ -245,8 +244,10 @@ impl ManagementAuth {
         self.admission.max_memberships_total()
     }
 
-    /// Verifies the signature, then the operator's admission and request budget. The caller
-    /// still asks the store whether the kernel belongs to the returned owner id.
+    /// Verifies the signature, then the operator's admission and request budget. The nonce is
+    /// remembered last, for a request that is going to be served: any key signs a request, and a
+    /// refused one must not fill the replay memory of the admitted kernels. The caller still asks
+    /// the store whether the kernel belongs to the returned owner id.
     pub(crate) async fn authenticate(
         &self,
         headers: &HeaderMap,
@@ -285,7 +286,7 @@ impl ManagementAuth {
         .message();
         verify(public_key, &message, signature).map_err(|_| Refusal::SignatureInvalid)?;
         let kernel_id = kernel_id_for_public_key(public_key);
-        self.remember_nonce(&kernel_id, nonce, timestamp_ms, now_ms)?;
+        self.ensure_unseen(&kernel_id, nonce)?;
         if owner_id.is_empty() {
             return Err(Refusal::OwnerRequired);
         }
@@ -294,18 +295,49 @@ impl ManagementAuth {
         {
             return Err(Refusal::OwnerInvalid);
         }
-        if !self.admission.admits(&kernel_id).await {
+        if !self.admits(&kernel_id, now_ms).await {
             return Err(Refusal::NotAdmitted);
         }
         self.spend_request_budget(&kernel_id, now_ms)?;
+        self.remember_nonce(&kernel_id, nonce, timestamp_ms, now_ms)?;
         Ok(AuthenticatedKernel {
             kernel_id,
             owner_id: owner_id.to_string(),
         })
     }
 
-    /// A verified nonce is remembered until its timestamp leaves the window, so a recorded
-    /// request cannot be sent again.
+    async fn admits(&self, kernel_id: &str, now_ms: u64) -> bool {
+        let Admission::Allowlist { file } = &self.admission else {
+            return true;
+        };
+        let mut cache = self.allowlist.lock().await;
+        let fresh = cache.read_at_ms.is_some_and(|read_at_ms| {
+            (read_at_ms..read_at_ms.saturating_add(ALLOWLIST_CACHE_MS)).contains(&now_ms)
+        });
+        if !fresh {
+            cache.listed = read_allowlist(file).await.unwrap_or_else(|error| {
+                eprintln!("AEGS allowlist {} is unreadable: {error}", file.display());
+                BTreeSet::new()
+            });
+            cache.read_at_ms = Some(now_ms);
+        }
+        cache.listed.contains(kernel_id)
+    }
+
+    /// A replay is refused before it can spend an admitted kernel's request budget.
+    fn ensure_unseen(&self, kernel_id: &str, nonce: &str) -> Result<(), Refusal> {
+        let seen = self
+            .seen_nonces
+            .lock()
+            .map_err(|_| Refusal::NonceMemoryFull)?;
+        if seen.contains_key(&(kernel_id.to_string(), nonce.to_string())) {
+            return Err(Refusal::SignatureReplayed);
+        }
+        Ok(())
+    }
+
+    /// A served request's nonce is remembered until its timestamp leaves the window, so a
+    /// recorded request cannot be sent again.
     fn remember_nonce(
         &self,
         kernel_id: &str,
@@ -459,7 +491,12 @@ mod admission_order_tests {
         let file = dir.join("allowlist.json");
         let entries = listed
             .iter()
-            .map(|name| (kernel_id_for_public_key(&kernel(name).1), "listed".to_string()))
+            .map(|name| {
+                (
+                    kernel_id_for_public_key(&kernel(name).1),
+                    "listed".to_string(),
+                )
+            })
             .collect::<std::collections::BTreeMap<_, _>>();
         std::fs::write(&file, serde_json::to_string(&entries).unwrap()).unwrap();
         (dir, file)
@@ -474,9 +511,14 @@ mod admission_order_tests {
         let auth = ManagementAuth::new(Admission::Allowlist { file });
         let now = 1_700_000_000_000;
         for index in 0..3 {
-            let refused =
-                authenticate(&auth, &format!("stranger-{index}"), "owner", &format!("n{index}"), now)
-                    .await;
+            let refused = authenticate(
+                &auth,
+                &format!("stranger-{index}"),
+                "owner",
+                &format!("n{index}"),
+                now,
+            )
+            .await;
             assert_eq!(refused, Err(Refusal::NotAdmitted));
         }
         let too_long = "x".repeat(MAX_OWNER_ID_BYTES + 1);
@@ -515,14 +557,18 @@ mod admission_order_tests {
             max_memberships_total: 1000,
         });
         let now = 1_700_000_000_000;
-        assert!(authenticate(&auth, "busy", "owner", "n1", now).await.is_ok());
+        assert!(authenticate(&auth, "busy", "owner", "n1", now)
+            .await
+            .is_ok());
         for _ in 0..5 {
             assert_eq!(
                 authenticate(&auth, "busy", "owner", "n1", now).await,
                 Err(Refusal::SignatureReplayed)
             );
         }
-        assert!(authenticate(&auth, "busy", "owner", "n2", now).await.is_ok());
+        assert!(authenticate(&auth, "busy", "owner", "n2", now)
+            .await
+            .is_ok());
         assert_eq!(
             authenticate(&auth, "busy", "owner", "n3", now).await,
             Err(Refusal::RateLimited)

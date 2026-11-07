@@ -26,7 +26,7 @@ x-chariox-owner-id:          the secret owner id the request acts for
 
 The signed message is `chariox-aegs-request-v5`, method, path, generator id, owner id,
 timestamp, nonce and the SHA-256 of the body, joined by NUL bytes. The AEGS accepts a request
-only within five minutes of its clock, remembers each nonce for that window (a replay is refused),
+only within five minutes of its clock, remembers the nonce of each request it serves for that window (a replay is refused),
 and requires the body's `owner_id` to equal the signed header.
 
 ## The owner id
@@ -46,8 +46,8 @@ lists the set (kernel ids are not secret).
 The operator chooses who may use the AEGS at all, with the same code for everyone
 (`CHARIOX_AEGS_ADMISSION`): `open` (any kernel that signs, with per-kernel caps:
 `CHARIOX_AEGS_OPEN_MAX_OWNERS_PER_KERNEL`, `CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE`) or
-`allowlist` (`CHARIOX_AEGS_ALLOWLIST_FILE`, a JSON object keyed by kernel id, read on every
-request). `open` also caps the gateway as a whole (`CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL`,
+`allowlist` (`CHARIOX_AEGS_ALLOWLIST_FILE`, a JSON object keyed by kernel id, read again every five seconds).
+`open` also caps the gateway as a whole (`CHARIOX_AEGS_OPEN_MAX_REQUESTS_PER_MINUTE_TOTAL`,
 `CHARIOX_AEGS_OPEN_MAX_MEMBERSHIPS_TOTAL`, the kernel and owner pairs): the refusals are the typed
 codes `gateway_rate_limited` (429) and `gateway_capacity` (503). A non-loopback AEGS must choose explicitly. Admission never decides who sees which
 events: that is the owner id and the per-connection audience.
