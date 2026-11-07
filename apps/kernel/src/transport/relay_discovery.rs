@@ -24,6 +24,7 @@ mod credentials;
 pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
 pub(crate) mod authorization;
 mod inventory_batches;
+mod backoff;
 
 static RELAY_METADATA_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RELAY_METADATA_ATTEMPTS: usize = 3;
@@ -356,6 +357,21 @@ async fn get_live_kernel_inner(
     kernel_ref: &str,
     #[cfg(test)] peer_call_id: Option<u64>,
 ) -> Result<RelayKernelPresence, DaemonError> {
+    let relay = backoff_key(config);
+    admit_or_back_off(&relay)?;
+    #[cfg(test)]
+    let result = get_live_kernel_attempts(config, kernel_ref, peer_call_id).await;
+    #[cfg(not(test))]
+    let result = get_live_kernel_attempts(config, kernel_ref).await;
+    record_dial_outcome(&relay, &result);
+    result
+}
+
+async fn get_live_kernel_attempts(
+    config: &DaemonConfig,
+    kernel_ref: &str,
+    #[cfg(test)] peer_call_id: Option<u64>,
+) -> Result<RelayKernelPresence, DaemonError> {
     #[cfg(test)]
     let peer_call_id = peer_call_id
         .unwrap_or_else(|| NEXT_RELAY_DISCOVERY_TEST_CALL_ID.fetch_add(1, Ordering::Relaxed));
@@ -474,6 +490,58 @@ async fn find_live_kernel_once_with_test_trace(
 }
 
 async fn query_relay(
+    config: &DaemonConfig,
+    query: RelayMetadataQuery,
+) -> Result<RelayEnvelope, DaemonError> {
+    let relay = backoff_key(config);
+    admit_or_back_off(&relay)?;
+    let result = query_relay_attempts(config, query).await;
+    record_dial_outcome(&relay, &result);
+    result
+}
+
+fn backoff_key(config: &DaemonConfig) -> String {
+    config.relay_url.clone().unwrap_or_default()
+}
+
+/// A relay that just failed to answer is not dialed again until its backoff
+/// has passed; callers get the wait in the error instead of a new connection.
+fn admit_or_back_off(relay: &str) -> Result<(), DaemonError> {
+    backoff::ConnectBackoff::shared()
+        .admit(relay, tokio::time::Instant::now())
+        .map_err(|left| DaemonError::LocalTransport {
+            operation: "relay metadata backoff",
+            message: format!(
+                "relay unreachable, retry in {} seconds",
+                left.as_secs_f64().ceil() as u64
+            ),
+        })
+}
+
+fn record_dial_outcome<T>(relay: &str, result: &Result<T, DaemonError>) {
+    let shared = backoff::ConnectBackoff::shared();
+    match result {
+        Err(error) if relay_unreachable(error) => shared.record_failure(
+            relay,
+            tokio::time::Instant::now(),
+            0.5 + rand::random::<f64>() / 2.0,
+        ),
+        _ => shared.record_success(relay),
+    }
+}
+
+fn relay_unreachable(error: &DaemonError) -> bool {
+    relay_metadata_error_is_retryable(error)
+        || matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "connect relay metadata socket",
+                ..
+            }
+        )
+}
+
+async fn query_relay_attempts(
     config: &DaemonConfig,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
