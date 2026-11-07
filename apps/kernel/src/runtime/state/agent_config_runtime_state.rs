@@ -946,6 +946,7 @@ impl KernelRuntimeState {
                     &agent_id,
                     *next_scope,
                     false,
+                    false,
                 )?);
             }
         }

@@ -239,6 +239,11 @@ fn cloud_retry_hint(message: &str) -> Option<Duration> {
         .then(|| Duration::from_secs(seconds.min(3_600)))
 }
 
+/// The relay refused the request outright, so nothing reached the other kernel.
+pub(crate) fn relay_refusal(error: &DaemonError) -> bool {
+    relay_refused_token(&error.to_string())
+}
+
 /// The relay says this token is no good; the kernel does not present it again.
 fn relay_refused_token(message: &str) -> bool {
     let message = message.to_ascii_lowercase();

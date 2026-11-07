@@ -715,6 +715,25 @@ backfills creator authority. Spawn creator is derived from the authenticated
 provider actor, not accepted from a client command. Relay peer shapes are
 unchanged in this PR.
 
+Local daemon protocol 1001 replaces `spawned_by_agent_id` and the agent's
+`controlled_by_metaagent_id` with one edge, `parent_agent_id` (`{"agent_id"}`,
+absent for a root), and adds `spawn_key`, the parent's command id of the spawn
+that created the agent. A caller controls an agent exactly when the caller is
+an ancestor of it in the same Room, at any depth, whatever either agent's
+permission level or mode. Only the user changes the edge, with
+`SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
+`AgentParentChanged {agent}`); every agent caller, a sudo window included, is
+refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
+set|get`, `agent children` and `agent spawn`, and reads `agent usage` and
+`agent profiles`. `agent spawn` takes `--account-profile`, `--permission
+required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
+has a higher permission level or mode than its parent, and a retry with the
+same command id returns the same child. The end of a child's work reaches its
+parent as one urgent `child_finished` inbox event carrying `child_agent_id`,
+`success`, the typed turn `outcome` and `deadline_reached`; a turn that waited
+on a question when the kernel restarted ends as `interrupted_by_restart`. The
+relay peer protocol stays 438.
+
 Agents may spawn without room agent-count limits, message any current room
 agent, create workflows, and observe/run peers' workflows. Agent rename/delete
 requires the caller's direct spawned child in the same room; self, peers,

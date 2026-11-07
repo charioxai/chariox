@@ -1,5 +1,5 @@
 use super::result::meta_command_error;
-use super::spawn_args::parse_meta_agent_spawn_args;
+use super::spawn_args::{parse_deadline_after, parse_meta_agent_spawn_args};
 use super::*;
 use crate::local::{
     CheckProjectEnvironmentRequest, CreateSliceBackupRequest, GetProjectEnvironmentRequest,
@@ -28,7 +28,7 @@ pub(super) fn meta_agent_request(
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 no_subscribe: false,
-                account_profile: None,
+                account_profile: spawn.account_profile,
                 session_id: session.id().to_string(),
                 alias: spawn.alias,
                 provider: spawn
@@ -41,7 +41,9 @@ pub(super) fn meta_agent_request(
                     .effort
                     .or_else(|| metaagent.effort().map(str::to_string)),
                 execution_mode: metaagent.execution_mode_override(),
-                permission_level: metaagent.permission_level_override(),
+                permission_level: spawn
+                    .permission_level
+                    .or(metaagent.permission_level_override()),
                 worktree_id: spawn
                     .worktree_id
                     .or_else(|| metaagent.worktree_id().map(str::to_string)),
@@ -71,7 +73,7 @@ pub(super) fn meta_agent_request(
                 ));
             }
             let agent = room_command_agent(agents, metaagent, &args[1], room_tools)?;
-            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
+            crate::runtime::room_tool_admission::in_subtree(metaagent, &agent, agents)?;
             let alias = args[2..].join(" ");
             let alias = if matches!(alias.as_str(), "clear" | "none" | "-") {
                 String::new()
@@ -92,14 +94,52 @@ pub(super) fn meta_agent_request(
                 return Err(meta_command_error("usage: agent delete <owned-agent-ref>"));
             }
             let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
-            crate::runtime::room_tool_admission::direct_child(metaagent, &agent)?;
+            crate::runtime::room_tool_admission::in_subtree(metaagent, &agent, agents)?;
             Ok(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
             }))
         }
+        Some("deadline") => {
+            let usage = || {
+                meta_command_error(
+                    "usage: agent deadline get <agent-ref> | agent deadline set <agent-ref> <90s|30m|2h|1d>",
+                )
+            };
+            match (args.get(1).map(String::as_str), args.get(2), args.get(3)) {
+                (Some("get"), Some(reference), None) => {
+                    let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
+                    Ok(LocalDaemonRequest::GetAgentDeadline(
+                        crate::local::GetAgentDeadlineRequest {
+                            session_id: session.id().to_string(),
+                            agent_id: agent.id().to_string(),
+                        },
+                    ))
+                }
+                (Some("set"), Some(reference), Some(after)) if args.len() == 4 => {
+                    let after = parse_deadline_after(after)?;
+                    let agent = room_command_agent(agents, metaagent, reference, room_tools)?;
+                    Ok(LocalDaemonRequest::SetAgentDeadline(
+                        crate::local::SetAgentDeadlineRequest {
+                            session_id: session.id().to_string(),
+                            agent_id: agent.id().to_string(),
+                            deadline_ms: crate::session::unix_epoch_ms().saturating_add(
+                                u64::try_from(after.as_millis()).unwrap_or(u64::MAX),
+                            ),
+                        },
+                    ))
+                }
+                _ => Err(usage()),
+            }
+        }
+        Some("usage") if args.len() == 1 => Ok(LocalDaemonRequest::GetProviderUsageSnapshot(
+            crate::local::GetProviderUsageSnapshotRequest {},
+        )),
+        Some("profiles") if args.len() == 1 => Ok(LocalDaemonRequest::ListProviderAccountProfiles(
+            crate::local::ListProviderAccountProfilesRequest { provider: None },
+        )),
         _ => Err(meta_command_error(
-            "usage: agent <list|spawn|focus|alias|delete|destroy> ...",
+            "usage: agent <list|spawn|focus|alias|delete|destroy|cancel|deadline|children|usage|profiles> ...",
         )),
     }
 }
@@ -292,7 +332,7 @@ fn meta_owned_regular_agent_from_session(
         .iter()
         .find(|agent| {
             !agent.is_metaagent()
-                && agent.controlled_by_metaagent_id() == Some(metaagent.id())
+                && agent.parent_agent_id() == Some(metaagent.id())
                 && (agent.id() == reference
                     || agent.agent_ref() == reference
                     || agent.alias() == Some(reference))

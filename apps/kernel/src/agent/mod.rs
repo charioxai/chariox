@@ -1,3 +1,4 @@
+pub(crate) mod authority_limit;
 mod failed_requests;
 mod service;
 mod service_store;
@@ -13,8 +14,8 @@ pub(crate) use service_store::ProviderResumeClearOutcome;
 pub use store::AgentStore;
 pub use types::{
     calculate_agent_layout, generate_agent_ref, recalculate_positions, AgentInstance,
-    AgentOperatingMode, AgentRole, AgentState, AgentSubstituteProfile, CreateAgentRequest,
-    GitWorktreePlacement, GridPosition, RemoteAgentBinding,
+    AgentOperatingMode, AgentRef, AgentRole, AgentState, AgentSubstituteProfile,
+    CreateAgentRequest, GitWorktreePlacement, GridPosition, RemoteAgentBinding,
 };
 
 mod outside_events;

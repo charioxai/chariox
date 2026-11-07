@@ -121,6 +121,26 @@ pub(crate) struct InboxEvent {
     pub attempted_at_ms: Option<u64>,
     pub submit_epoch: Option<u64>,
 }
+impl InboxEvent {
+    /// The outcome of a source the recipient waited on: the receipt of a source or a child's `child_finished`.
+    pub(crate) fn is_source_outcome(&self) -> bool {
+        matches!(
+            self.kind.as_str(),
+            "source_completed" | "source_lost" | "child_finished"
+        )
+    }
+    /// The outcome is about this obligation source (a child's task id also names its `child_finished`).
+    pub(crate) fn reports_source(&self, source: &str) -> bool {
+        self.source_id == source
+            || (self.kind == "child_finished"
+                && self.payload["child_task_id"].as_str() == Some(source))
+    }
+    /// The source did not finish its work.
+    pub(crate) fn is_loss(&self) -> bool {
+        self.kind == "source_lost"
+            || (self.kind == "child_finished" && self.payload["success"].as_bool() == Some(false))
+    }
+}
 /// MP-08 / MP-09 / MP-10 / MP-11 A03: one kernel-owned wake source: the
 /// kernel timer, a watched process, or a source owned by a wake driver. It is
 /// a task obligation plus a live registration; its receipts record when the
@@ -425,6 +445,12 @@ pub(crate) enum Operation {
         reason: DelegateGoneReason,
         now: u64,
     },
+    /// A deleted agent that was never given work: its parents' spawn
+    /// obligations on it end without a failure.
+    ReleaseSpawn {
+        room: String,
+        source: String,
+    },
     SourceOutcome {
         public_answer: Option<serde_json::Value>,
         room: String,
@@ -597,9 +623,11 @@ pub(crate) fn unresolved_source_outcome(task: &AgentTaskExecution, event: &Inbox
     task.room_id == event.room_id
         && task.agent_id == event.agent_id
         && !matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
-        && matches!(event.kind.as_str(), "source_completed" | "source_lost")
+        && event.is_source_outcome()
         && task.obligations.iter().any(|obligation| {
-            obligation.completion_source() == Some(event.source_id.as_str())
+            obligation
+                .completion_source()
+                .is_some_and(|source| event.reports_source(source))
                 && matches!(obligation.status.as_str(), "settling" | "failed")
         })
 }

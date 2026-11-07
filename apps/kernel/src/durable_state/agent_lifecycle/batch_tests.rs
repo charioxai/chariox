@@ -260,3 +260,27 @@ fn a_restart_between_the_attempt_and_the_receipt_keeps_the_batch_together() {
     receipt(&f, first.sequence, "accepted");
     assert!(states(&f).iter().all(|(_, state, _)| state == "accepted"));
 }
+
+/// A message held for a busy agent stays unread by an urgent steer that skips
+/// its sequence: the steer's read starts before the oldest row still pending.
+#[test]
+fn a_steer_reads_from_before_the_oldest_pending_row() {
+    let f = Fixture::new();
+    let held = occur(&f, "a", "message", false);
+    let steer = occur(&f, "b", "message", true);
+    assert_eq!(
+        f.store.agent_read_cursor(&steer, None).unwrap(),
+        held.sequence - 1,
+        "the held message is in the steer's read"
+    );
+    f.apply(Operation::Expire {
+        room: ROOM.into(),
+        agent: AGENT.into(),
+        sequence: held.sequence,
+    });
+    assert_eq!(
+        f.store.agent_read_cursor(&steer, None).unwrap(),
+        steer.sequence - 1,
+        "a row that is no longer pending is not read again"
+    );
+}

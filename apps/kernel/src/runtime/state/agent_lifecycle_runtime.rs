@@ -803,6 +803,14 @@ impl KernelRuntimeState {
                     occurrence: format!("task-terminal-{}", task.task_id),
                     success: task.state == ExecutionState::Done,
                 })?;
+            // The parent hears of every ended task, whatever else the child still has open.
+            if let Err(error) = self
+                .announce_child_finished(&task, failure, public_answer.as_ref())
+                .await
+            {
+                tracing::warn!(%error, agent_id=%task.agent_id,
+                    "child_finished retained for the inbox sweep");
+            }
         }
         if matches!(task.state, ExecutionState::Done | ExecutionState::Cancelled)
             && !resources_unsettled
@@ -1056,6 +1064,19 @@ impl KernelRuntimeState {
                 let Some(source) = obligation.resource_id.as_ref() else {
                     continue;
                 };
+                // Deleting an agent that was never given work loses nothing.
+                if obligation.kind == "delegate"
+                    && obligation.completion_task_id.is_none()
+                    && self.owned.agent_store.get_agent(source).is_err()
+                {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::ReleaseSpawn {
+                            room: task.room_id.clone(),
+                            source: source.clone(),
+                        })?;
+                    continue;
+                }
                 let outcome = match obligation.kind.as_str() {
                     "delegate" => {
                         let child_task = match &obligation.completion_task_id {

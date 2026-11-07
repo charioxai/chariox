@@ -1,6 +1,6 @@
 //! Shared mutation fence below clients/provider bridges. MP-08 / MP-11, A01.
 use super::*;
-use crate::runtime::room_tool_admission::{denied, direct_child};
+use crate::runtime::room_tool_admission::{denied, in_subtree};
 
 impl KernelRuntimeState {
     /// MP-08 / MP-11: retain the admitted typed operation across asynchronous waits.
@@ -75,6 +75,9 @@ impl KernelRuntimeState {
         if matches!(request, LocalDaemonRequest::ArchiveAgent(_)) {
             return Err(denied("only the owner can archive or unarchive agents"));
         }
+        if matches!(request, LocalDaemonRequest::SetAgentParent(_)) {
+            return Err(denied("only the user can change an agent's parent"));
+        }
         if !self.room_agent_tools_enabled() {
             return Ok(());
         }
@@ -106,6 +109,12 @@ impl KernelRuntimeState {
         let (room, target_id, deleting) = match request {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
+            LocalDaemonRequest::CancelActivePrompt(r) => match r.target_agent_id.as_ref() {
+                // An agent may always stop its own turn.
+                Some(target) if target == actor.id() => return Ok(()),
+                Some(target) => (&r.session_id, target, false),
+                None => return Err(denied("cancel names the agent whose turn it stops")),
+            },
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ArchiveAgent(_) => {
                 return Err(denied("only the owner can archive or unarchive agents"))
@@ -137,7 +146,7 @@ impl KernelRuntimeState {
                 if r.session_id != actor.session_id() {
                     return Err(denied("placement is outside the caller room"));
                 }
-                return direct_child(&actor, target);
+                return in_subtree(&actor, target, &agents);
             }
             LocalDaemonRequest::MoveAgentToLocal(r) => {
                 let agents = self
@@ -152,7 +161,7 @@ impl KernelRuntimeState {
                 if r.session_id != actor.session_id() {
                     return Err(denied("placement is outside the caller room"));
                 }
-                return direct_child(&actor, target);
+                return in_subtree(&actor, target, &agents);
             }
             // MP-08/MP-11 A05: App bindings only for self or an immutable direct
             // child; the binding path checks request causation and the subset.
@@ -183,10 +192,20 @@ impl KernelRuntimeState {
             return Err(denied("target is outside the caller room"));
         }
         let target = self.owned.agent_store.get_agent(target_id)?;
-        direct_child(&actor, &target)?;
+        let agents = self
+            .owned
+            .agent_store
+            .get_session_agents(actor.session_id());
+        in_subtree(&actor, &target, &agents)?;
         // Deletion never silently cancels or destroys the target's descendants/work.
         // Keep them visible for the owner and require explicit settlement by the child.
         if deleting {
+            if agents
+                .iter()
+                .any(|agent| agent.parent_agent_id() == Some(target.id()))
+            {
+                return Err(denied("agent still has sub-agents; delete them first"));
+            }
             let session = self.owned.session_store.get_session(room)?;
             if session.workflow_runs().iter().any(|run| {
                 !run.status().is_terminal() && run.created_by_agent_id() == Some(target.id())
@@ -218,7 +237,7 @@ impl KernelRuntimeState {
         if target.id() == actor.id() {
             return Ok(());
         }
-        direct_child(actor, target)
+        in_subtree(actor, target, &agents)
     }
 }
 

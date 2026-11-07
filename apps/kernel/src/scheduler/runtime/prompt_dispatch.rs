@@ -158,7 +158,11 @@ fn workflow_provider_request(
     let provider = crate::provider::provider_id_for_launch(agent.provider());
     let adapter_key = crate::provider::adapter_key_for_provider(provider);
     let session = app.sessions().get_session(session_id)?;
-    let effective_config = crate::session::effective_agent_execution_config(&session, Some(&agent));
+    let effective_config = crate::session::effective_agent_execution_config_in_tree(
+        &session,
+        &agent,
+        &app.agents().get_session_agents(session_id),
+    );
     let mut request = LaunchProviderRequest::new(
         session_id,
         adapter_key,

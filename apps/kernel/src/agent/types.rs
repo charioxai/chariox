@@ -195,6 +195,24 @@ impl GridPosition {
     }
 }
 
+/// Names an agent. Local only for now: a remote parent adds its kernel id.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRef {
+    agent_id: String,
+}
+
+impl AgentRef {
+    pub fn local(agent_id: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.into(),
+        }
+    }
+
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+}
+
 /// Serialized through `AgentInstance::serialize`/`deserialize` (derived with
 /// `remote = "Self"`) so loading can migrate retired sticky-substitution state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,11 +223,14 @@ pub struct AgentInstance {
     session_id: String,
     #[serde(default = "default_agent_owner_user_id")]
     owner_user_id: String,
+    /// The one edge of the agent tree: set when a parent spawns the agent or
+    /// by the user, never by an agent. Control follows it down to every depth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    controlled_by_metaagent_id: Option<String>,
-    /// Immutable home-kernel spawn receipt. Unknown legacy lineage fails closed.
-    #[serde(default)]
-    spawned_by_agent_id: Option<String>,
+    parent_agent_id: Option<AgentRef>,
+    /// The parent's command id of the spawn that created this agent, so a
+    /// retried spawn finds the same child instead of creating another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spawn_key: Option<String>,
     #[serde(default)]
     role: AgentRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -281,8 +302,8 @@ impl AgentInstance {
             agent_ref: agent_ref.into(),
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
-            spawned_by_agent_id: None,
-            controlled_by_metaagent_id: None,
+            parent_agent_id: None,
+            spawn_key: None,
             role: AgentRole::Standard,
             meta_mode: None,
             alias,
@@ -330,20 +351,22 @@ impl AgentInstance {
         &self.owner_user_id
     }
 
-    pub fn spawned_by_agent_id(&self) -> Option<&str> {
-        self.spawned_by_agent_id.as_deref()
+    pub fn parent_agent_id(&self) -> Option<&str> {
+        self.parent_agent_id.as_ref().map(AgentRef::agent_id)
     }
 
-    pub(crate) fn record_spawn_creator(&mut self, creator: Option<String>) {
-        assert!(
-            self.spawned_by_agent_id.is_none(),
-            "spawn creator is immutable"
-        );
-        self.spawned_by_agent_id = creator;
+    pub fn spawn_key(&self) -> Option<&str> {
+        self.spawn_key.as_deref()
     }
 
-    pub fn controlled_by_metaagent_id(&self) -> Option<&str> {
-        self.controlled_by_metaagent_id.as_deref()
+    pub(crate) fn set_spawn_key(&mut self, key: Option<String>) {
+        self.spawn_key = key;
+    }
+
+    /// Only spawning and the user-only `SetAgentParent` call this; no agent
+    /// request reaches it.
+    pub(crate) fn set_parent_agent(&mut self, parent: Option<AgentRef>) {
+        self.parent_agent_id = parent;
     }
 
     pub fn role(&self) -> AgentRole {
@@ -545,7 +568,7 @@ impl AgentInstance {
         self.account_profile = None;
         self.execution_mode_override = None;
         self.permission_level_override = None;
-        self.controlled_by_metaagent_id = None;
+        self.parent_agent_id = None;
         self.meta_mode = None;
         self.workspace_id = None;
         self.worktree_id = None;
@@ -595,10 +618,6 @@ impl AgentInstance {
 
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         self.owner_user_id = owner_user_id.into();
-    }
-
-    pub fn set_controlled_by_metaagent_id(&mut self, metaagent_id: Option<String>) {
-        self.controlled_by_metaagent_id = metaagent_id;
     }
 
     pub fn set_role(&mut self, role: AgentRole) {
@@ -671,7 +690,7 @@ impl AgentInstance {
         self.workspace_id = Some(workspace_id.to_string());
         self.worktree_id = Some(workspace_id.to_string());
         self.clear_publication_runtime_state();
-        self.spawned_by_agent_id = None;
+        self.parent_agent_id = None;
         self.last_activity_at_ms = self.created_at_ms;
         self
     }
@@ -686,7 +705,7 @@ impl AgentInstance {
         self.agent_ref = agent_ref.into();
         self.session_id = session_id.into();
         self.clear_publication_runtime_state();
-        self.spawned_by_agent_id = None;
+        self.parent_agent_id = None;
         self.created_at_ms = crate::session::unix_epoch_ms();
         self.last_activity_at_ms = self.created_at_ms;
         self
@@ -704,8 +723,7 @@ impl AgentInstance {
         self.session_id = session_id.into();
         self.worktree_id = Some(worktree_id.into());
         self.clear_publication_runtime_state();
-        self.spawned_by_agent_id = None;
-        self.controlled_by_metaagent_id = None;
+        self.parent_agent_id = None;
         self.meta_mode = None;
         self.visible_in_freeform = false;
         self.created_at_ms = crate::session::unix_epoch_ms();
@@ -914,9 +932,9 @@ pub struct CreateAgentRequest {
     #[serde(default = "default_agent_owner_user_id")]
     pub owner_user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub controlled_by_metaagent_id: Option<String>,
-    #[serde(default)]
-    pub(crate) spawned_by_agent_id: Option<String>,
+    pub parent_agent_id: Option<AgentRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawn_key: Option<String>,
     #[serde(default)]
     pub role: AgentRole,
     pub alias: Option<String>,
@@ -937,8 +955,8 @@ impl CreateAgentRequest {
         Self {
             session_id: session_id.into(),
             owner_user_id: default_agent_owner_user_id(),
-            spawned_by_agent_id: None,
-            controlled_by_metaagent_id: None,
+            parent_agent_id: None,
+            spawn_key: None,
             role: AgentRole::Standard,
             alias: None,
             provider: provider.into(),
@@ -963,13 +981,13 @@ impl CreateAgentRequest {
         self
     }
 
-    pub(crate) fn with_spawned_by_agent_id(mut self, creator: impl Into<String>) -> Self {
-        self.spawned_by_agent_id = Some(creator.into());
+    pub fn with_spawn_key(mut self, key: impl Into<String>) -> Self {
+        self.spawn_key = Some(key.into());
         self
     }
 
-    pub fn with_controlled_by_metaagent_id(mut self, metaagent_id: impl Into<String>) -> Self {
-        self.controlled_by_metaagent_id = Some(metaagent_id.into());
+    pub fn with_parent_agent_id(mut self, parent: impl Into<String>) -> Self {
+        self.parent_agent_id = Some(AgentRef::local(parent));
         self
     }
 

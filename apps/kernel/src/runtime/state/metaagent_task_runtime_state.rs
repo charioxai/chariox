@@ -509,7 +509,7 @@ impl KernelRuntimeState {
             .get_session_agents(session.id())
             .into_iter()
             .filter(|agent| !agent.is_metaagent())
-            .filter(|agent| agent.controlled_by_metaagent_id() == Some(metaagent.id()))
+            .filter(|agent| agent.parent_agent_id() == Some(metaagent.id()))
             .any(|agent| {
                 activity
                     .get(agent.id())
@@ -773,7 +773,7 @@ impl KernelRuntimeState {
             .get_session_agents(session_id)
             .into_iter()
             .filter(|agent| !agent.is_metaagent())
-            .filter(|agent| agent.controlled_by_metaagent_id() == Some(metaagent.id()))
+            .filter(|agent| agent.parent_agent_id() == Some(metaagent.id()))
             .collect::<Vec<_>>();
         for agent in controlled_agents {
             self.authorize_current_external_command()?;

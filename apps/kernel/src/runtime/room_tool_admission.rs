@@ -1,4 +1,4 @@
-//! MP-08 / MP-11: shared room admission and immutable direct-creator policy.
+//! MP-08 / MP-11: shared room admission and the subtree control policy.
 use crate::{agent::AgentInstance, error::DaemonError};
 
 pub(crate) fn denied(message: impl Into<String>) -> DaemonError {
@@ -26,31 +26,46 @@ pub(crate) fn resolve_agent<'a>(
     Ok(target)
 }
 
-pub(crate) fn direct_child(
+/// Bounds the walk up the parent edges so a corrupt cycle cannot loop.
+const TREE_WALK_LIMIT: usize = 16;
+
+/// A caller controls every agent below it, at any depth, and nothing else.
+/// Membership only: the permission level or mode of either agent never decides.
+pub(crate) fn in_subtree(
     actor: &AgentInstance,
     target: &AgentInstance,
+    agents: &[AgentInstance],
 ) -> Result<(), DaemonError> {
-    if target.session_id() == actor.session_id()
-        && target.id() != actor.id()
-        && target.spawned_by_agent_id() == Some(actor.id())
-    {
-        Ok(())
-    } else {
-        Err(denied(
-            "destructive agent actions require an immutable direct child in this room",
-        ))
+    if target.session_id() == actor.session_id() && target.id() != actor.id() {
+        let mut current = target;
+        for _ in 0..TREE_WALK_LIMIT {
+            let Some(parent_id) = current.parent_agent_id() else {
+                break;
+            };
+            if parent_id == actor.id() {
+                return Ok(());
+            }
+            let Some(parent) = agents.iter().find(|agent| agent.id() == parent_id) else {
+                break;
+            };
+            current = parent;
+        }
     }
+    Err(denied(
+        "only the agents above an agent in this room can control it",
+    ))
 }
 
 /// Workflow execution can reset provider context, so peers are not bindings.
 pub(crate) fn workflow_node(
     actor: &AgentInstance,
     target: &AgentInstance,
+    agents: &[AgentInstance],
 ) -> Result<(), DaemonError> {
     if target.id() == actor.id() && target.session_id() == actor.session_id() {
         Ok(())
     } else {
-        direct_child(actor, target)
+        in_subtree(actor, target, agents)
     }
 }
 
@@ -79,7 +94,7 @@ pub(crate) fn owns_object(
         || creator.is_some_and(|id| {
             agents
                 .iter()
-                .any(|child| child.id() == id && direct_child(actor, child).is_ok())
+                .any(|child| child.id() == id && in_subtree(actor, child, agents).is_ok())
         })
 }
 
@@ -89,7 +104,21 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
         Some("agent")
             if matches!(
                 tokens.get(1).map(String::as_str),
-                Some("list" | "ls" | "spawn" | "alias" | "name" | "delete" | "destroy" | "remove")
+                Some(
+                    "list"
+                        | "ls"
+                        | "spawn"
+                        | "alias"
+                        | "name"
+                        | "delete"
+                        | "destroy"
+                        | "remove"
+                        | "cancel"
+                        | "deadline"
+                        | "children"
+                        | "usage"
+                        | "profiles"
+                )
             ) =>
         {
             Ok(())

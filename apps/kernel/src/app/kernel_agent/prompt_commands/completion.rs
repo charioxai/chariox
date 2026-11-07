@@ -438,10 +438,7 @@ impl<'a> KernelAgentService<'a> {
         if completed_agent.is_metaagent() {
             return Ok(());
         }
-        let Some(metaagent_id) = completed_agent
-            .controlled_by_metaagent_id()
-            .map(str::to_string)
-        else {
+        let Some(metaagent_id) = completed_agent.parent_agent_id().map(str::to_string) else {
             return Ok(());
         };
         let metaagent = self.app.agents.get_agent(&metaagent_id)?;

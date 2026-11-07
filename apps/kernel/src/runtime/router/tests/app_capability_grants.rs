@@ -42,7 +42,7 @@ fn room() -> Room {
             .with_owner_user_id("alice")
             .with_permission_level_override(crate::provider::AgentPermissionLevel::Yolo);
         if let Some(creator) = creator {
-            request = request.with_spawned_by_agent_id(creator);
+            request = request.with_parent_agent_id(creator);
         }
         let agent = crate::app::KernelSessionService::new(app)
             .spawn_agent(request)

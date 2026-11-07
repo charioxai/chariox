@@ -1567,6 +1567,7 @@ mod agent_goal_native_approval;
 mod agent_goal_runtime;
 mod agent_inbox_delivery;
 mod agent_inbox_leased_steer;
+mod agent_inbox_sender;
 mod agent_inbox_wake_text;
 mod agent_leased_process_home;
 mod agent_leased_process_receipts;
@@ -1574,6 +1575,8 @@ mod agent_leased_process_worker;
 mod agent_lifecycle_runtime;
 #[cfg(test)]
 mod agent_membership_read_tests;
+mod agent_parent_runtime;
+mod child_finished_event;
 
 mod agent_owner_cancellation;
 mod agent_process_group;

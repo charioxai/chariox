@@ -504,7 +504,7 @@ fn session_agent_description(
         "queued_prompt_count": session
             .queued_prompts_for_agent(agent.id())
             .map_or(0, std::collections::VecDeque::len),
-        "controlled_by_metaagent_id": agent.controlled_by_metaagent_id(),
+        "parent_agent_id": agent.parent_agent_id(),
         "visible_in_freeform": agent.visible_in_freeform(),
         "location": location,
         "extensions": {

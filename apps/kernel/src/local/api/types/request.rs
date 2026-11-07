@@ -385,6 +385,7 @@ pub enum LocalDaemonRequest {
     SyncRemoteExtensionManifest(SyncRemoteExtensionManifestRequest),
     ListHomeExtensionAudit(ListHomeExtensionAuditRequest),
     ArchiveAgent(ArchiveAgentRequest),
+    SetAgentParent(SetAgentParentRequest),
     DestroyAgent(DestroyAgentRequest),
     FocusAgent(FocusAgentRequest),
     AcknowledgeAgentOutputSeen(AcknowledgeAgentOutputSeenRequest),

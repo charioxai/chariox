@@ -142,6 +142,17 @@ pub struct ArchiveAgentRequest {
     pub archived: bool,
 }
 
+/// Only the user moves an agent in the tree. `parent_agent_id: None` makes it a
+/// root of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetAgentParentRequest {
+    pub session_id: String,
+    pub agent_id: String,
+    #[serde(default)]
+    pub parent_agent_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestroyAgentRequest {
     pub session_id: String,
