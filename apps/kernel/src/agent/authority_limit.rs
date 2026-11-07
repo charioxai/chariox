@@ -145,7 +145,10 @@ pub(crate) fn check_directory(
 /// Test hook: runs once between a spawn's check and its effect, so a test can change the
 /// parent exactly there.
 #[cfg(test)]
-static BEFORE_SPAWN_COMMIT: std::sync::Mutex<Vec<(String, Box<dyn FnOnce() + Send>)>> =
+type SpawnCommitHook = (String, Box<dyn FnOnce() + Send>);
+
+#[cfg(test)]
+static BEFORE_SPAWN_COMMIT: std::sync::Mutex<Vec<SpawnCommitHook>> =
     std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
