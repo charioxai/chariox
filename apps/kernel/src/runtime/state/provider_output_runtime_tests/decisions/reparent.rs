@@ -557,3 +557,157 @@ async fn promoting_a_sub_agent_to_a_room_agent_is_held_to_max_agents() {
         "a room at max_agents = 1 gets a second room agent ({room_agents} now): {promoted:?}"
     );
 }
+
+impl Tree {
+    /// The room default set to `level`, through the client's session config path.
+    async fn set_room_default(&self, attachment: &str, level: &str) {
+        self.runtime
+            .update_session_config(
+                &self.room,
+                attachment,
+                std::collections::BTreeMap::from([("agents.permissions".into(), level.into())]),
+                false,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// p holds c's open question and parks on it; p follows the room default (Yolo), c keeps its
+    /// own Yolo, and g keeps its own Yolo only when `g_keeps_override`. Then the room default is
+    /// lowered to Required.
+    async fn lower_the_room_default_under_a_held_question(
+        &self,
+        id: &str,
+        g_keeps_override: bool,
+    ) -> tokio::sync::oneshot::Receiver<PendingInteractionResolution> {
+        let attachment = {
+            let mut app = self.app.lock().await;
+            app.agents()
+                .update_agent_config(
+                    &self.c,
+                    None,
+                    Some(Some(AgentPermissionLevel::Yolo)),
+                    None,
+                    None,
+                )
+                .unwrap();
+            crate::app::KernelSessionService::new(&mut app)
+                .attach(crate::attachment::AttachRequest::new(
+                    &self.room,
+                    "config-client",
+                    crate::attachment::ClientCapabilityLevel::FullTerminal,
+                ))
+                .unwrap()
+                .id()
+                .to_owned()
+        };
+        self.set_room_default(&attachment, "yolo").await;
+        {
+            let mut app = self.app.lock().await;
+            let followers: &[&str] = if g_keeps_override {
+                &[&self.p]
+            } else {
+                &[&self.p, &self.g]
+            };
+            for agent in followers {
+                app.agents()
+                    .update_agent_config(agent, None, Some(None), None, None)
+                    .unwrap();
+            }
+        }
+        let answer = self.raise(permission(id, &self.c)).await;
+        assert_eq!(self.holder(id), DecisionHolder::Agent(self.p.clone()));
+        // The holder parks on its child, so the room default may change under it; g parks too
+        // when it follows the room default, since a running turn refuses the change.
+        self.park(&self.p).await;
+        if !g_keeps_override {
+            self.park(&self.g).await;
+        }
+        self.set_room_default(&attachment, "required").await;
+        answer
+    }
+
+    /// `agent` yields and its prompt settles, so it runs no turn.
+    async fn park(&self, agent: &str) {
+        self.end_turn_yielded(agent).await;
+        let run = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&self.room, agent)
+            .unwrap();
+        self.runtime
+            .owned
+            .complete_local_prompt_without_advance(&self.room, agent, Some(run.id()))
+            .unwrap();
+    }
+}
+
+/// Pre-review: the room default lowers every agent without its own level, as lowering one agent
+/// does. With g following it too (and parked), no ancestor may hold the question: it is the
+/// user's at once.
+#[tokio::test]
+async fn lowering_the_room_default_hands_the_decision_to_the_user_at_once() {
+    let t = tree(
+        "lowered-room-default-user",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t
+        .lower_the_room_default_under_a_held_question("perm-room", false)
+        .await;
+    assert_eq!(
+        t.holder("perm-room"),
+        DecisionHolder::User,
+        "a holder the room default lowered to Required keeps the decision"
+    );
+    assert_eq!(t.panels(), vec![(t.g.clone(), cards(&["perm-room"]))]);
+    assert_eq!(t.needs().1, 1, "the user's decision is counted");
+    assert!(t.all_closed(&t.p), "the former holder's event is withdrawn");
+    assert!(t.decision_events(&t.g).is_empty(), "g may not hold it");
+    assert!(answer.try_recv().is_err(), "the asker waits for the user");
+    t.runtime
+        .owned
+        .resolve_runtime_interaction(&t.room, "perm-room", "allow", None, None, false)
+        .unwrap();
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("allow"),
+        "the user's one answer reaches the asker"
+    );
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-room", "deny")
+            .await
+            .unwrap(),
+        ChildDecisionStatus::SettledByUser,
+        "the lowered former holder cannot answer as well"
+    );
+}
+
+/// Same, but g keeps its own Yolo: g is the next ancestor that may hold the question, so it gets
+/// the question with one event, and p's is withdrawn.
+#[tokio::test]
+async fn lowering_the_room_default_hands_the_decision_to_an_ancestor_with_its_own_level() {
+    let t = tree(
+        "lowered-room-default-g",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t
+        .lower_the_room_default_under_a_held_question("perm-room-g", true)
+        .await;
+    assert_eq!(
+        t.holder("perm-room-g"),
+        DecisionHolder::Agent(t.g.clone()),
+        "a holder the room default lowered to Required keeps the decision"
+    );
+    let events = t.decision_events(&t.g);
+    assert_eq!(events.len(), 1, "g is told once: {events:?}");
+    assert_eq!(events[0].payload["interaction_id"], "perm-room-g");
+    assert!(t.all_closed(&t.p), "the former holder's event is withdrawn");
+    assert_eq!(t.needs().1, 0, "nothing waits for the user");
+    assert!(answer.try_recv().is_err(), "the asker waits for g");
+}
