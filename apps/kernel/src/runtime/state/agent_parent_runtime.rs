@@ -96,3 +96,7 @@ impl KernelRuntimeOwnedState {
         Ok((agent, moved, announce))
     }
 }
+
+#[cfg(test)]
+#[path = "agent_parent_runtime_tests.rs"]
+mod tests;
