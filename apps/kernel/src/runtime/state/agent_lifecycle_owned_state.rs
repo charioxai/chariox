@@ -351,7 +351,7 @@ impl KernelRuntimeOwnedState {
                 operation,
             });
         }
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
