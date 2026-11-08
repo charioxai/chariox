@@ -57,6 +57,7 @@ fn room_client_request(request: &LocalDaemonRequest) -> bool {
             | LocalDaemonRequest::JoinSessionInvite(_)
             | LocalDaemonRequest::GetWaitingRoomInventory(_)
             | LocalDaemonRequest::GetWaitingRoomPublicSnapshot(_)
+            | LocalDaemonRequest::ListWaitingRoomSessions(_)
             // The composer's command and model catalogs, from the caller's own accounts.
             | LocalDaemonRequest::GetTerminalCommandCatalog(_)
             | LocalDaemonRequest::GetProviderCatalog(_)
