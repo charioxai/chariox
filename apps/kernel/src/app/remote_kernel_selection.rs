@@ -1,4 +1,4 @@
-use chariox_relay::protocol::RelayKernelPresence;
+use chariox_relay::protocol::{RelayKernelPresence, RelayMachinePresence};
 
 use crate::error::DaemonError;
 
@@ -119,12 +119,14 @@ pub(super) fn ensure_kernel_can_host_provider(
     Ok(kernel)
 }
 
-/// What a person can name instead of a missing kernel: the kernels that could host the provider.
+/// What a person can name instead of a missing kernel: the kernels that could host the provider,
+/// or, while this kernel's own inventory is empty, the machines the relay lists.
 pub(super) fn usable_kernel_refs_message(
     kernels: &[RelayKernelPresence],
+    machines: &[RelayMachinePresence],
     provider: &str,
 ) -> String {
-    let usable = kernels
+    let mut usable = kernels
         .iter()
         .filter(|kernel| {
             kernel.accepting_remote_leases
@@ -138,6 +140,22 @@ pub(super) fn usable_kernel_refs_message(
             None => format!("`{}`", kernel.kernel_id),
         })
         .collect::<Vec<_>>();
+    if usable.is_empty() {
+        usable = machines
+            .iter()
+            .filter(|machine| {
+                machine.kernel_count > 0
+                    && machine
+                        .available_providers
+                        .iter()
+                        .any(|candidate| candidate == provider)
+            })
+            .map(|machine| match machine.machine_alias.as_deref() {
+                Some(alias) => format!("`{}` (machine name `{alias}`)", machine.machine_id),
+                None => format!("`{}`", machine.machine_id),
+            })
+            .collect();
+    }
     if usable.is_empty() {
         format!("no visible kernel is accepting `{provider}` agents; next: connect a worker kernel")
     } else {

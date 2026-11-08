@@ -1499,7 +1499,12 @@ impl DaemonApp {
                     }
                 }
                 Err(error) if relay_discovery::is_admission_refusal(&error) => {
-                    return Err(self.kernel_ref_not_available(kernel_ref, provider, &error));
+                    return Err(self.kernel_ref_not_available(
+                        kernel_ref,
+                        provider,
+                        &error,
+                        Vec::new(),
+                    ));
                 }
                 Err(_) => {}
             }
@@ -1535,7 +1540,13 @@ impl DaemonApp {
             operation: "select remote kernel",
             message: format!("kernel `{kernel_ref}` did not appear"),
         });
-        Err(self.kernel_ref_not_available(kernel_ref, provider, &error))
+        let machines = if relay_discovery::is_admission_refusal(&error) {
+            Vec::new()
+        } else {
+            self.block_on_relay_future(relay_discovery::list_live_machines(relay_config))
+                .unwrap_or_default()
+        };
+        Err(self.kernel_ref_not_available(kernel_ref, provider, &error, machines))
     }
 
     fn kernel_ref_not_available(
@@ -1543,6 +1554,7 @@ impl DaemonApp {
         kernel_ref: &str,
         provider: &str,
         error: &DaemonError,
+        live_machines: Vec<chariox_relay::protocol::RelayMachinePresence>,
     ) -> DaemonError {
         let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
         DaemonError::NoRemoteKernelAvailable {
@@ -1550,7 +1562,7 @@ impl DaemonApp {
             provider: provider.to_string(),
             message: format!(
                 "{error}; {}",
-                usable_kernel_refs_message(&projected_kernels, provider)
+                usable_kernel_refs_message(&projected_kernels, &live_machines, provider)
             ),
         }
     }

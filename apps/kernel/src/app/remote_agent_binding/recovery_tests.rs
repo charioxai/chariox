@@ -851,6 +851,33 @@ async fn spawn_target_asks_the_relay_when_the_inventory_has_not_synced() {
     assert_eq!(selected.kernel_id, wanted.kernel_id);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn spawn_target_refusal_names_what_the_relay_lists_when_the_inventory_is_empty() {
+    let fixture = Fixture::with_relay_fixture(false, false, false, false).await;
+    let home = fixture.home.lock().await;
+    home.remote_relay_inventory_projection_store()
+        .update(Vec::new(), Vec::new());
+    let live = crate::transport::relay_discovery::list_live_machines(home.config())
+        .await
+        .unwrap();
+    let machine = live
+        .iter()
+        .find(|machine| machine.machine_id == fixture.presences[1].machine_id)
+        .expect("the relay lists the second worker's machine");
+    let provider = machine
+        .available_providers
+        .first()
+        .expect("the machine advertises a provider");
+    let error = home
+        .select_remote_kernel_by_ref_with_config("no-such-machine", provider, home.config())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(&machine.machine_id),
+        "the refusal must name the machines the relay lists: {error}"
+    );
+}
+
 /// A relay that closes every metadata request with a refusal, counting them.
 async fn refusing_relay() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
     use futures_util::{SinkExt, StreamExt};
