@@ -42,20 +42,40 @@ impl KernelRuntimeOwnedState {
                     operation: "runtime interaction",
                     message: "Interaction store is unavailable".into(),
                 })?;
-        if let Some(parent_id) = request.parent_agent_id.as_deref() {
-            let agents = self.agent_store.get_session_agents(&request.session_id);
-            let find = |id: &str| {
-                agents
+        let agents = self.agent_store.get_session_agents(&request.session_id);
+        let find = |id: &str| {
+            agents
+                .iter()
+                .find(|candidate| candidate.id() == id)
+                .ok_or_else(|| DaemonError::AgentNotInSession {
+                    session_id: request.session_id.clone(),
+                    agent_id: id.to_owned(),
+                })
+        };
+        let agent = find(&request.agent_id)?;
+        match request.parent_agent_id.as_deref() {
+            Some(parent_id) => {
+                crate::agent::authority_limit::check_placement(agent, find(parent_id)?, &agents)
+                    .map_err(crate::runtime::room_tool_admission::denied)?;
+            }
+            // A sub-agent made a room agent counts toward the room's limit, as a new one does.
+            None if agent.is_sub_agent() => {
+                let max_agents = self
+                    .session_store
+                    .get_session(&request.session_id)?
+                    .max_agents();
+                let room_agents = agents
                     .iter()
-                    .find(|candidate| candidate.id() == id)
-                    .ok_or_else(|| DaemonError::AgentNotInSession {
+                    .filter(|other| !other.archived() && !other.is_sub_agent())
+                    .count();
+                if room_agents >= max_agents as usize {
+                    return Err(DaemonError::AgentLimitReached {
                         session_id: request.session_id.clone(),
-                        agent_id: id.to_owned(),
-                    })
-            };
-            let (agent, parent) = (find(&request.agent_id)?, find(parent_id)?);
-            crate::agent::authority_limit::check_placement(agent, parent, &agents)
-                .map_err(crate::runtime::room_tool_admission::denied)?;
+                        max_agents,
+                    });
+                }
+            }
+            None => {}
         }
         let agent = self.agent_store.set_parent_agent(
             &request.agent_id,
