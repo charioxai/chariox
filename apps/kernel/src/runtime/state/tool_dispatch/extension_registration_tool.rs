@@ -730,3 +730,7 @@ fn registration_result(
     }
     crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
 }
+
+#[cfg(test)]
+#[path = "extension_registration_tool_tests.rs"]
+mod tests;
