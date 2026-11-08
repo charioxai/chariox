@@ -3,7 +3,7 @@
 // stored owner must treat that identity as the owner, like the sub-agent tree does.
 use super::historical_workflows::terminal_command;
 use super::*;
-use crate::local::ListAppInstallationsRequest;
+use crate::local::{ListAppInstallationsRequest, ListWorkflowNotificationsRequest};
 
 const ENROLLED_OWNER: &str = "kernel-owner";
 
@@ -35,6 +35,26 @@ async fn as_user(
         .dispatch(terminal_command(&request, Some(user)), request)
         .await
         .expect("the enrolled owner is admitted to its room")
+}
+
+#[test]
+fn the_enrolled_owner_lists_the_workflow_notifications_of_a_room_made_before_enrollment() {
+    run_remote_authorization_large_stack_test("enrolled-owner-notifications", || async {
+        let (router, session_id, _worktree) = enrolled_owner_room("enrolled-owner-notifications");
+        let list = || {
+            LocalDaemonRequest::ListWorkflowNotifications(ListWorkflowNotificationsRequest {
+                session_id: session_id.clone(),
+            })
+        };
+        let as_enrolled = as_user(&router, ENROLLED_OWNER, list()).await;
+        assert!(
+            matches!(
+                as_enrolled,
+                LocalDaemonResponse::WorkflowNotifications { .. }
+            ),
+            "{as_enrolled:?}"
+        );
+    });
 }
 
 #[test]
