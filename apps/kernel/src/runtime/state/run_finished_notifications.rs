@@ -1,10 +1,6 @@
 //! Every workflow of a Room owner has a "run finished" source on the ordinary notification
 //! router: one occurrence per run that completed or failed.
-use super::*;
-use crate::durable_state::workflow_notifications::{
-    naming, run_finished::RUN_FINISHED_NODE, NotificationOperation, NotificationOutcome,
-    SourceAdmission,
-};
+use crate::durable_state::workflow_notifications::{naming, run_finished::RUN_FINISHED_NODE};
 
 /// The "run finished" source of one workflow of a Room, for the Room's current owner.
 pub(super) fn run_finished_source(
@@ -37,26 +33,5 @@ pub(super) fn run_finished_source(
         display_name: naming::run_display_name(&name),
         name,
         exit_ordinal: 0,
-    }
-}
-
-impl KernelRuntimeOwnedState {
-    pub(super) fn ensure_run_finished_notification_source(
-        &self,
-        session: &crate::session::RuntimeSession,
-        workflow: &crate::session::WorkflowDefinition,
-    ) -> Result<crate::local::WorkflowNotificationSource, DaemonError> {
-        let source = run_finished_source(session, workflow);
-        match self
-            .durable_state_store
-            .notify(NotificationOperation::Register(SourceAdmission {
-                source,
-                workflow_json: String::new(),
-            }))? {
-            NotificationOutcome::Source(source) => Ok(source),
-            _ => Err(crate::durable_state::workflow_notifications::error(
-                "unexpected notification registration result",
-            )),
-        }
     }
 }
