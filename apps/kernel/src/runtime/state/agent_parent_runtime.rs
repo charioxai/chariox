@@ -23,6 +23,14 @@ impl KernelRuntimeState {
             .await?;
         self.finish_moved_decisions(&request.session_id, placement.moved, placement.announce)
             .await?;
+        // The moved team's existing local runs start their next turn within the new parent chain.
+        self.limit_local_runs(
+            "set agent parent",
+            &request.session_id,
+            placement.local,
+            "place the agent again to retry",
+        )
+        .await?;
         // A worker launches a leased agent's next turn with what it was last told, so every leased
         // agent of the moved team is told the limit of its new parent chain.
         self.tell_workers_leased_limits(
@@ -44,6 +52,8 @@ struct AgentPlacement {
     announce: Vec<String>,
     /// The leased agents of the moved team, by home agent id.
     leased: Vec<String>,
+    /// The local agents of the moved team.
+    local: Vec<String>,
 }
 
 impl KernelRuntimeOwnedState {
@@ -113,11 +123,13 @@ impl KernelRuntimeOwnedState {
         )?;
         let (moved, announce) = self.move_subtree_decisions(&request.session_id, agent.id())?;
         let leased = self.leased_subtree(&request.session_id, agent.id());
+        let local = self.local_subtree(&request.session_id, agent.id());
         Ok(AgentPlacement {
             agent,
             moved,
             announce,
             leased,
+            local,
         })
     }
 }

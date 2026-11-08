@@ -944,24 +944,24 @@ impl KernelRuntimeState {
             self.owned
                 .update_session_config(session_id, attachment_id, values, requires_idle)?;
         let changed = self.session_agent_execution_configs(session_id);
-        let mut terminated_run_ids = Vec::new();
         let mut rescoped = Vec::new();
         for (agent_id, scope) in scopes {
-            if let Some(next_scope) = changed.get(&agent_id).filter(|next| **next != scope) {
+            if changed.get(&agent_id).is_some_and(|next| *next != scope) {
                 rescoped.push(agent_id.clone());
                 self.claude_session_grants.forget(&agent_id);
                 self.terminal_input_grants.forget(&agent_id);
-                terminated_run_ids.extend(self.owned.apply_agent_execution_config_to_provider(
-                    session_id,
-                    &agent_id,
-                    *next_scope,
-                    false,
-                    false,
-                )?);
             }
         }
-        self.remove_terminated_provider_processes(terminated_run_ids)
-            .await;
+        // Every local agent may follow the room default or sit under an agent that does.
+        if sets_agent_limits {
+            self.limit_local_runs(
+                "update session config",
+                session_id,
+                self.owned.local_room_agents(session_id),
+                "update the room default again to retry",
+            )
+            .await?;
+        }
         // The room default rescopes every agent without its own setting, as `update_agent_config`
         // does one agent: a lowered holder may no longer hold the decisions it held.
         for agent_id in rescoped {
@@ -1002,6 +1002,29 @@ impl KernelRuntimeState {
                 (agent.id().to_string(), scope)
             })
             .collect()
+    }
+
+    /// Moves the existing provider runs of the local agents among `agent_ids` to the limit their
+    /// parent chain sets now: Codex reads it at its next turn start, and a provider that cannot
+    /// take it in its process ends that process so its next turn launches with it. Moving again
+    /// is harmless, so a failure is retried by repeating the change.
+    pub(super) async fn limit_local_runs(
+        &self,
+        operation: &'static str,
+        session_id: &str,
+        agent_ids: Vec<String>,
+        retry: &str,
+    ) -> Result<(), DaemonError> {
+        let limits = self
+            .owned
+            .limit_local_runs(operation, session_id, &agent_ids, retry)?;
+        for agent_id in &limits.relimited {
+            self.claude_session_grants.forget(agent_id);
+            self.terminal_input_grants.forget(agent_id);
+        }
+        self.remove_terminated_provider_processes(limits.terminated_run_ids)
+            .await;
+        Ok(())
     }
 
     /// Tells the worker of each leased agent the limit its parent chain sets now. The limit is read
@@ -1148,7 +1171,21 @@ impl KernelRuntimeState {
             }
         }
         if execution_mode_override.is_some() || permission_level_override.is_some() {
-            // The agents below run within this agent's settings, so leased ones are told again.
+            // The agents below run within this agent's settings: local runs move to the new limit
+            // and leased ones are told again.
+            let local_below = self
+                .owned
+                .local_subtree(session_id, agent_id)
+                .into_iter()
+                .filter(|local| local != agent_id)
+                .collect();
+            self.limit_local_runs(
+                "update agent config",
+                session_id,
+                local_below,
+                "update the agent again to retry",
+            )
+            .await?;
             let below = self
                 .owned
                 .leased_subtree(session_id, agent_id)

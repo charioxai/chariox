@@ -81,26 +81,26 @@ impl KernelRuntimeOwnedState {
             });
         }
         let scope_changed = effective_config_changed || working_directory_changed;
+        // The agent runs, here or on its worker, with what its parent chain allows.
+        let agents = self
+            .agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .map(|other| {
+                if other.id() == agent_id {
+                    next_agent.clone()
+                } else {
+                    other
+                }
+            })
+            .collect::<Vec<_>>();
+        let limited = crate::session::effective_agent_execution_config_in_tree(
+            &session,
+            &next_agent,
+            &agents,
+        );
         let remote_update = effective_config_changed
             .then(|| {
-                // The worker launches with what it is told, so it is told the parent chain's limit.
-                let agents = self
-                    .agent_store
-                    .get_session_agents(session_id)
-                    .into_iter()
-                    .map(|other| {
-                        if other.id() == agent_id {
-                            next_agent.clone()
-                        } else {
-                            other
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                let limited = crate::session::effective_agent_execution_config_in_tree(
-                    &session,
-                    &next_agent,
-                    &agents,
-                );
                 agent
                     .remote_execution()
                     .map(|binding| leased_agent_limit(binding, limited))
@@ -111,7 +111,7 @@ impl KernelRuntimeOwnedState {
             self.apply_agent_execution_config_to_provider(
                 session_id,
                 agent_id,
-                next_config,
+                limited,
                 working_directory_changed,
                 active_turn,
             )?
@@ -142,6 +142,15 @@ impl KernelRuntimeOwnedState {
 
     /// The leased agents among `agent_id` and its descendants, by home agent id.
     pub(super) fn leased_subtree(&self, session_id: &str, agent_id: &str) -> Vec<String> {
+        self.subtree_agents(session_id, agent_id, true)
+    }
+
+    /// The local agents among `agent_id` and its descendants.
+    pub(super) fn local_subtree(&self, session_id: &str, agent_id: &str) -> Vec<String> {
+        self.subtree_agents(session_id, agent_id, false)
+    }
+
+    fn subtree_agents(&self, session_id: &str, agent_id: &str, leased: bool) -> Vec<String> {
         let agents = self.agent_store.get_session_agents(session_id);
         agents
             .iter()
@@ -149,19 +158,96 @@ impl KernelRuntimeOwnedState {
             .chain(crate::agent::authority_limit::descendants(
                 agent_id, &agents,
             ))
-            .filter(|agent| !agent.archived() && agent.remote_execution().is_some())
+            .filter(|agent| !agent.archived() && agent.remote_execution().is_some() == leased)
             .map(|agent| agent.id().to_owned())
             .collect()
     }
 
     /// The leased agents of the room, by home agent id.
     pub(super) fn leased_room_agents(&self, session_id: &str) -> Vec<String> {
+        self.room_agents(session_id, true)
+    }
+
+    /// The local agents of the room.
+    pub(super) fn local_room_agents(&self, session_id: &str) -> Vec<String> {
+        self.room_agents(session_id, false)
+    }
+
+    fn room_agents(&self, session_id: &str, leased: bool) -> Vec<String> {
         self.agent_store
             .get_session_agents(session_id)
             .into_iter()
-            .filter(|agent| !agent.archived() && agent.remote_execution().is_some())
+            .filter(|agent| !agent.archived() && agent.remote_execution().is_some() == leased)
             .map(|agent| agent.id().to_owned())
             .collect()
+    }
+
+    /// Moves the live provider run of each local agent among `agent_ids` to the limit its parent
+    /// chain sets now, so its next turn starts there. The limit is read again after each move, so
+    /// the run ends at the current limit whichever change moved it last.
+    pub(super) fn limit_local_runs(
+        &self,
+        operation: &'static str,
+        session_id: &str,
+        agent_ids: &[String],
+        retry: &str,
+    ) -> Result<LocalRunLimits, DaemonError> {
+        const MOVES: usize = 4;
+        let mut limits = LocalRunLimits::default();
+        for agent_id in agent_ids {
+            for moved in 0.. {
+                let Some(limit) = self.local_run_limit_to_apply(session_id, agent_id)? else {
+                    break;
+                };
+                if moved == MOVES {
+                    return Err(DaemonError::LocalTransport {
+                        operation,
+                        message: format!(
+                            "the limit of agent `{agent_id}` kept changing while its provider run moved to it; {retry}"
+                        ),
+                    });
+                }
+                // A lowered limit holds from now, so a provider that cannot take it within its
+                // process ends it, even mid-turn, as a lowered room default always did.
+                limits
+                    .terminated_run_ids
+                    .extend(self.apply_agent_execution_config_to_provider(
+                        session_id, agent_id, limit, false, false,
+                    )?);
+                if !limits.relimited.contains(agent_id) {
+                    limits.relimited.push(agent_id.clone());
+                }
+            }
+        }
+        Ok(limits)
+    }
+
+    /// The limit local `agent_id`'s live provider run must move to; `None` once it runs at it,
+    /// has no live run, is controlled by a provider-native TUI or is leased.
+    fn local_run_limit_to_apply(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<crate::session::EffectiveAgentExecutionConfig>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let agents = self.agent_store.get_session_agents(session_id);
+        let Some(agent) = agents.iter().find(|agent| {
+            agent.id() == agent_id && !agent.archived() && agent.remote_execution().is_none()
+        }) else {
+            return Ok(None);
+        };
+        let limit =
+            crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
+        Ok(self
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .filter(|run| {
+                run.state() != crate::provider::ProviderRunState::Ended
+                    && run.client_interface().is_chariox()
+                    && (run.execution_mode(), run.permission_level())
+                        != (limit.mode, limit.permission_level)
+            })
+            .map(|_| limit))
     }
 
     /// What leased `agent_id` must run under on its worker, as its parent chain limits it now;
@@ -292,6 +378,15 @@ impl KernelRuntimeOwnedState {
             ),
         })
     }
+}
+
+/// What moving local runs to their limit did.
+#[derive(Default)]
+pub(super) struct LocalRunLimits {
+    /// The agents whose run moved.
+    pub(super) relimited: Vec<String>,
+    /// The runs that ended to relaunch at the limit.
+    pub(super) terminated_run_ids: Vec<String>,
 }
 
 fn leased_agent_limit(
