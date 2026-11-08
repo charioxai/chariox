@@ -93,3 +93,7 @@ impl KernelRuntimeState {
         self.agent_cancellation_response(&request.session_id, &wakes[0].task_id)
     }
 }
+
+#[cfg(test)]
+#[path = "enrolled_owner_terminal_controls_tests.rs"]
+mod enrolled_owner_terminal_controls_tests;
