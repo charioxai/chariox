@@ -1317,6 +1317,57 @@ fn event_connection_import_refuses_a_different_record_and_keeps_an_identical_one
 }
 
 #[test]
+fn event_connection_rollback_after_a_restart_removes_the_record_the_import_created() {
+    let fixture = event_connection_fixture("event-restart", &["connection-a"]);
+    let source = event_registry(&fixture.root, "source");
+    seed_connection(
+        &source,
+        SOURCE_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let exported = export_managed_context_package(
+        event_export_request(&fixture, &source).expect("export selected connection"),
+    )
+    .expect("export event connections");
+
+    // The first run imports the record, then Cloud fails retryably and the kernel restarts.
+    let before_restart = event_registry(&fixture.root, "target");
+    let first =
+        apply_managed_context_package(event_apply_request(&fixture, &exported, &before_restart))
+            .expect("first run imports the record");
+    drop(first);
+    drop(before_restart);
+
+    // The re-claimed run applies again on the restarted kernel, then Cloud rejects it.
+    let after_restart = event_registry(&fixture.root, "target");
+    let rerun =
+        apply_managed_context_package(event_apply_request(&fixture, &exported, &after_restart))
+            .expect("the re-claimed run applies again");
+    rollback_managed_context_package_application(
+        &rerun,
+        "unused-for-empty-context",
+        None,
+        None,
+        Some(&ManagedContextEventConnectionImportTarget {
+            registry: after_restart.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        }),
+    )
+    .expect("roll back the rejected import");
+
+    assert!(
+        after_restart
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read connection-a")
+            .is_none(),
+        "the import created the record, so a rejected transfer must not leave the event owner id behind"
+    );
+    fixture.cleanup();
+}
+
+#[test]
 fn event_connection_export_refuses_a_connection_that_cannot_be_copied() {
     let fixture = event_connection_fixture("event-preflight", &["connection-a"]);
     let source = event_registry(&fixture.root, "source");
