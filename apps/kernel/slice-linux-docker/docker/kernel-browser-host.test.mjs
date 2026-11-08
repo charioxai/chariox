@@ -1114,6 +1114,20 @@ test('MP-08 a desktop tab drops the Browser panel DPR emulation with its last vi
  }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
 }));
 
+// MP-08/MP-10: a viewer that cannot decode H.264 (no VideoDecoder, or only VP8/VP9) offers no `avc1.420033`. On the
+// owned desktop it is served from the CDP display like a native start that cannot run; the visible-page adapter
+// is for the offer that carries the attested video codec, and must not refuse the others as a retired reference.
+test('MP-08/MP-10 a desktop viewer that offers no H.264 is served from the CDP display, not refused as stale',()=>using(async({host})=>{
+ const original=process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;process.env.CHARIOX_KERNEL_BROWSER_DISPLAY='1';
+ try{const tab=await host.request({op:'open',url:'about:blank'});host.chromium.desktop={binding:()=>({})};
+ for(const codecs of [['png'],['vp8','png','chariox-video-dependencies-v1']]){
+  const subscribed=await host.request({op:'display_subscribe',tab_id:tab.tab_id,generation:tab.generation,codecs,bitrate:8000000,device_scale_factor:1});
+  assert.equal(subscribed.generation,tab.generation);assert.equal(subscribed.codec,codecs[0]);
+  await host.request({op:'unsubscribe',subscription_id:subscribed.subscription_id,generation:subscribed.generation});
+ }
+ }finally{delete host.chromium.desktop;if(original===undefined)delete process.env.CHARIOX_KERNEL_BROWSER_DISPLAY;else process.env.CHARIOX_KERNEL_BROWSER_DISPLAY=original;}
+}));
+
 // MP-08/MP-10: the unsubscribe no longer holds the controller lock, so it can finish after the viewer resized the window;
 // its late clear must not wipe the viewport the resize set (the region screenshot then has the wrong size).
 test('MP-08/MP-10 a late display unsubscribe does not clear the viewer-sized viewport',()=>using(async({host,sent})=>{

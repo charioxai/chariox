@@ -1105,7 +1105,8 @@ export class KernelBrowserHost {
       return {generation:this.generation,parked:Boolean(stream.parked)};
     }
     // MP-08/MP-10/MP-11: allocated536 default fallback never resizes the owned desktop.
-    if(command.op==='display_subscribe'&&!command.target&&this.chromium.desktop?.binding?.()){
+    // The visible-page adapter attests H.264; an offer without it (no decoder, VP8/VP9 only) takes the CDP display below.
+    if(command.op==='display_subscribe'&&!command.target&&command.codecs?.includes?.('avc1.420033')&&this.chromium.desktop?.binding?.()){
       try{return this.initialPush(command,await subscribeVisiblePage(this,command,scope,signal));}
       catch(error){const png=pngFallbackCommand(error,command);if(!png)throw error;this.timing('native_visible_page_png_fallback',timestamp());command=png;}
     }
