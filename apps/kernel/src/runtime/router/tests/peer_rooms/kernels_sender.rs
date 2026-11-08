@@ -5,6 +5,8 @@ use super::*;
 use crate::runtime::state::peer_agent_outbound::peer_agent_link_for_tests;
 use crate::transport::relay_peer::RelayPeerRequest;
 
+mod follow;
+
 const OWNER: &str = "owner-p5b";
 
 /// One kernel: its id, name and one room with a running room agent.
@@ -302,14 +304,6 @@ fn a_room_agent_spawns_one_ordinary_peer_in_a_room_on_another_kernel() {
             AgentPermissionLevel::Required,
             AgentPermissionLevel::Yolo,
         );
-        let followed = a
-            .command(format!(
-                "agent spawn reviewer --room {} --kernel {}",
-                b.room, b.name
-            ))
-            .await
-            .unwrap_err();
-        assert!(followed.contains("--no-follow"), "{followed}");
         let spawned = a
             .command(format!(
                 "agent spawn reviewer --room {} --kernel {} --no-follow --permission yolo",

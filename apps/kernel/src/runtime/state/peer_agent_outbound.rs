@@ -11,6 +11,8 @@ use crate::transport::relay_peer::{
 };
 
 const PEER_AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A subscription id names one follow, used once: it has one generation.
+const PEER_FOLLOW_GENERATION: u64 = 1;
 
 fn refusal(reason: &str, detail: impl std::fmt::Display) -> DaemonError {
     denied(format!("{reason}: {detail}"))
@@ -95,6 +97,8 @@ pub(crate) struct RoomPeerSpawn {
     pub(crate) permission_level: Option<crate::provider::AgentPermissionLevel>,
     /// Names the call across turns, as `agent spawn --command-id` does on this kernel.
     pub(crate) command_id: Option<String>,
+    /// The caller's turn hears of the new peer's turn end, as a spawn in a room here does.
+    pub(crate) follow: bool,
 }
 
 /// The peer a spawn on another kernel created; `duplicate` when an earlier attempt of the same
@@ -103,6 +107,8 @@ pub(crate) struct RoomPeerSpawned {
     pub(crate) agent: PeerAgentStamp,
     pub(crate) alias: String,
     pub(crate) duplicate: bool,
+    /// The caller's follow of the new peer, when the spawn asked for one.
+    pub(crate) follow_registration_id: Option<String>,
 }
 
 impl KernelRuntimeState {
@@ -174,6 +180,52 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Follows `target` on `kernel` under `subscription`; answers the followed agent's stamp.
+    pub(super) async fn follow_peer_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        target: PeerAgentAddress,
+        subscription: String,
+    ) -> Result<PeerAgentStamp, DaemonError> {
+        if sender.is_sub_agent() {
+            return Err(refused(kernel, PeerAgentRefusal::SubAgentCaller));
+        }
+        let caller = self.peer_agent_caller(sender, kernel)?;
+        let request = RelayPeerRequest::SubscribePeerAgent {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            request_id: subscription.clone(),
+            sender: caller.stamp,
+            target,
+            subscription_id: subscription,
+            generation: PEER_FOLLOW_GENERATION,
+        };
+        match self.peer_agent_link(&caller.owner, kernel, request).await? {
+            RelayPeerResponse::PeerAgentSubscribed { target, .. } => Ok(target),
+            RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
+            _ => Err(kernel_unreachable(kernel)),
+        }
+    }
+
+    /// Ends a follow this kernel holds on `kernel`.
+    pub(super) async fn unfollow_peer_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        subscription: &str,
+    ) -> Result<(), DaemonError> {
+        let caller = self.peer_agent_caller(sender, kernel)?;
+        let request = RelayPeerRequest::UnsubscribePeerAgent {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            subscription_id: subscription.into(),
+            generation: PEER_FOLLOW_GENERATION,
+        };
+        match self.peer_agent_link(&caller.owner, kernel, request).await? {
+            RelayPeerResponse::PeerAgentOutcomeAck { .. } => Ok(()),
+            _ => Err(kernel_unreachable(kernel)),
+        }
+    }
+
     /// Creates an ordinary agent in `spawn.room` on `kernel`. A retry of the same call after a
     /// lost answer reaches the peer the first attempt created.
     pub(crate) async fn spawn_room_peer(
@@ -187,6 +239,18 @@ impl KernelRuntimeState {
         }
         let caller = self.peer_agent_caller(sender, kernel)?;
         let request_id = self.peer_spawn_request_id(sender, &spawn)?;
+        // The follow is named by the call, so a retried spawn re-asks for the same follow.
+        let follow = spawn
+            .follow
+            .then(|| crate::transport::relay_peer::PeerFollow {
+                subscription_id: format!("follow-{request_id}"),
+                generation: PEER_FOLLOW_GENERATION,
+            });
+        let task = match &follow {
+            Some(_) => Some(self.peer_follow_task(sender)?),
+            None => None,
+        };
+        let source_cursor = self.owned.durable_state_store.agent_source_cursor()?;
         let request = RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
@@ -201,7 +265,7 @@ impl KernelRuntimeState {
             execution_mode: None,
             permission_level: spawn.permission_level,
             caller_authority: caller.authority,
-            follow: None,
+            follow: follow.clone(),
         };
         match self.peer_agent_link(&caller.owner, kernel, request).await? {
             RelayPeerResponse::RoomPeerSpawned {
@@ -209,11 +273,24 @@ impl KernelRuntimeState {
                 alias,
                 duplicate,
                 ..
-            } => Ok(RoomPeerSpawned {
-                agent,
-                alias,
-                duplicate,
-            }),
+            } => {
+                let follow_registration_id = match (follow, task) {
+                    (Some(follow), Some((task, prompt))) => Some(self.register_peer_follow(
+                        &task,
+                        &prompt,
+                        follow.subscription_id,
+                        &agent,
+                        source_cursor,
+                    )?),
+                    _ => None,
+                };
+                Ok(RoomPeerSpawned {
+                    agent,
+                    alias,
+                    duplicate,
+                    follow_registration_id,
+                })
+            }
             RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
             _ => Err(kernel_unreachable(kernel)),
         }
@@ -306,7 +383,7 @@ impl KernelRuntimeState {
 
     /// The one link to a kernel of the same owner. A kernel that is gone before or while it
     /// answers is unreachable; any answer it gave reaches the caller as it is.
-    async fn peer_agent_link(
+    pub(super) async fn peer_agent_link(
         &self,
         owner: &str,
         kernel: &str,

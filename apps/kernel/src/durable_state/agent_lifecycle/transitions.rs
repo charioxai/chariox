@@ -712,6 +712,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelOwnerTimer { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
+        op @ (Operation::FollowPeer { .. }
+        | Operation::UnfollowPeer { .. }
+        | Operation::PeerSourceLost { .. }
+        | Operation::PeerOutboxDelivered { .. }
+        | Operation::PeerOutboxRetry { .. }) => super::peer_follows::apply(tx, op),
         Operation::RememberPeerRequest {
             kernel,
             request_id,
@@ -744,7 +749,7 @@ pub(super) fn source_end(
             source,
             occurrence_id,
             "peer_event",
-            serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":if success { "turn_ended" } else { "turn_failed" }}),
+            serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)}),
         );
     }
     occurrence(
@@ -759,6 +764,17 @@ pub(super) fn source_end(
         },
         serde_json::json!({"task_id":task.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":occurrence_id,"success":success,"public_answer":public_answer}),
     )
+}
+
+/// What a followed peer's end was: a source lost on another kernel says so itself.
+fn peer_event_name(occurrence_id: &str, success: bool) -> &'static str {
+    if success {
+        "turn_ended"
+    } else if occurrence_id.starts_with(super::peer_follows::SOURCE_LOST_OCCURRENCE) {
+        "source_lost"
+    } else {
+        "turn_failed"
+    }
 }
 
 pub(super) fn recover_source(

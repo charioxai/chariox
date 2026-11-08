@@ -103,7 +103,13 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|run| run.id() == event.source_id)
         });
-        let source_kind = if agent.is_some() {
+        // A followed peer on another kernel is named by where it runs there.
+        let remote = agent
+            .is_none()
+            .then(|| super::super::peer_source_stamp(&event.source_id))
+            .flatten()
+            .filter(|_| event.kind == "peer_event");
+        let source_kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {
             "workflow_run"
@@ -113,8 +119,18 @@ impl KernelRuntimeState {
         let alias = agent
             .as_ref()
             .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned());
-        let name = alias.as_deref().unwrap_or(&event.source_id);
-        let relation = SenderRelation::of(reader, agent.as_ref(), agents);
+        let remote_name = remote
+            .as_ref()
+            .map(|stamp| format!("{}/{}", stamp.kernel_id, stamp.agent_id));
+        let name = alias
+            .as_deref()
+            .or(remote_name.as_deref())
+            .unwrap_or(&event.source_id);
+        let relation = if remote.is_some() {
+            SenderRelation::Peer
+        } else {
+            SenderRelation::of(reader, agent.as_ref(), agents)
+        };
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");
         summary.truncate(summary.floor_char_boundary(SUMMARY_LIMIT));
@@ -130,7 +146,10 @@ impl KernelRuntimeState {
                 Some(self.owned.config_projection.snapshot().daemon_id),
                 Some(agent.session_id().to_owned()),
             ),
-            None => (None, None),
+            None => match &remote {
+                Some(stamp) => (Some(stamp.kernel_id.clone()), Some(stamp.room_id.clone())),
+                None => (None, None),
+            },
         };
         let view = serde_json::json!({
             "sequence": event.sequence,

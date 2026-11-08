@@ -831,8 +831,8 @@ impl CommandRouter {
     }
 
     /// `agent spawn --room <room> --kernel <kernel>`: an ordinary agent in a room on another
-    /// kernel of the owner, with the same defaults a peer on this kernel gets. Its turns cannot
-    /// be followed across kernels yet, so the caller says --no-follow.
+    /// kernel of the owner, with the same defaults and the same follow a peer on this kernel
+    /// gets, unless the caller says --no-follow.
     async fn spawn_peer_on_kernel(
         &self,
         metaagent: &crate::agent::AgentInstance,
@@ -841,14 +841,6 @@ impl CommandRouter {
         room: String,
         spawn: MetaAgentSpawnArgs,
     ) -> RuntimeToolResult {
-        if !spawn.no_follow {
-            return meta_command_failure_result(
-                command,
-                meta_command_error(
-                    "usage: agent spawn --room --kernel needs --no-follow; following a peer on another kernel is not carried yet",
-                ),
-            );
-        }
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let inherited =
             |value: Option<&str>| same_provider.then(|| value.map(str::to_string)).flatten();
@@ -868,6 +860,7 @@ impl CommandRouter {
                 .permission_level
                 .or(metaagent.permission_level_override()),
             command_id: spawn.command_id,
+            follow: !spawn.no_follow,
         };
         match self
             .runtime_state
@@ -879,6 +872,7 @@ impl CommandRouter {
                 payload: serde_json::json!({
                     "command": command,
                     "response": {"spawned": {"kernel": spawned.agent.kernel_id, "room": spawned.agent.room_id, "agent": spawned.agent.agent_id, "alias": spawned.alias, "duplicate": spawned.duplicate}},
+                    "follow_registration_id": spawned.follow_registration_id,
                 }),
             },
             Err(error) => meta_command_failure_result(command, error),

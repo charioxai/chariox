@@ -202,6 +202,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     save(tx, &t)?;
                 }
             }
+            super::peer_follows::turn_ended(tx, &room, &source, &id, success, now)?;
             replies::forward_to_sender_room(
                 tx,
                 &room,

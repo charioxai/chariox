@@ -146,7 +146,45 @@ impl KernelRuntimeState {
                         prompt: prompt.id().into(),
                         registration: id.into(),
                     })?;
+                self.end_peer_follow_on_other_kernel(actor, id).await;
                 serde_json::json!({"unsubscribed":id})
+            }
+            "chariox.events.subscribe" if other_kernel(&args).is_some() => {
+                let kernel = other_kernel(&args).unwrap_or_default();
+                let peer_room = args["room"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|room| !room.is_empty())
+                    .ok_or_else(|| {
+                        ledger::error("room required to follow an agent on another kernel")
+                    })?;
+                let source = args["source_id"]
+                    .as_str()
+                    .ok_or_else(|| ledger::error("source_id required"))?;
+                match self.resolve_peer_kernel(kernel).await? {
+                    Some(kernel) => {
+                        self.subscribe_peer_on_other_kernel(
+                            actor,
+                            task_id,
+                            prompt.id(),
+                            &kernel,
+                            peer_room,
+                            source,
+                        )
+                        .await?
+                    }
+                    None if peer_room != room => self.subscribe_peer_in_other_room(
+                        &session,
+                        actor,
+                        task_id,
+                        prompt.id(),
+                        &args,
+                        peer_room,
+                    )?,
+                    None => return Err(ledger::error(
+                        "that kernel is this one; follow an agent of this room without `kernel`",
+                    )),
+                }
             }
             "chariox.events.subscribe" if other_room(&args, room).is_some() => self
                 .subscribe_peer_in_other_room(
@@ -287,6 +325,14 @@ impl KernelRuntimeState {
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
     }
+}
+
+/// The kernel named by a subscribe that follows an agent on another kernel of the owner.
+fn other_kernel(args: &serde_json::Value) -> Option<&str> {
+    args["kernel"]
+        .as_str()
+        .map(str::trim)
+        .filter(|kernel| !kernel.is_empty())
 }
 
 /// The room named by a subscribe that follows an agent outside the caller's room.

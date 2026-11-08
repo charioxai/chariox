@@ -33,6 +33,7 @@ mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
 mod outside_tests;
+pub(crate) mod peer_follows;
 #[cfg(test)]
 mod peer_room_reply_tests;
 #[cfg(test)]
@@ -121,6 +122,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     }
     index_task_lookups(db)?;
     outside::initialize(db)?;
+    peer_follows::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;

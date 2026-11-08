@@ -50,6 +50,13 @@ impl CommandRouter {
                 "invalid peer request id",
             ));
         }
+        if follow.as_ref().is_some_and(|follow| {
+            follow.subscription_id.trim().is_empty() || follow.subscription_id.len() > 128
+        }) {
+            return Err(crate::durable_state::agent_lifecycle::error(
+                "invalid peer subscription id",
+            ));
+        }
         let store = self.runtime_state.durable_state_store();
         if let Some(answer) = store.peer_agent_request_answer(kernel, &request_id)? {
             let mut answer: RelayPeerResponse = serde_json::from_str(&answer)
@@ -58,11 +65,6 @@ impl CommandRouter {
                 *duplicate = true;
             }
             return Ok(answer);
-        }
-        if follow.is_some() {
-            return Err(crate::durable_state::agent_lifecycle::error(
-                "following a peer across kernels is not carried yet; spawn it without a follow",
-            ));
         }
         let authority = match self.runtime_state.admit_room_peer_spawn(
             owner,
@@ -116,6 +118,10 @@ impl CommandRouter {
             }
             Err(error) => return Err(error),
         };
+        if let Some(follow) = follow {
+            self.runtime_state
+                .follow_spawned_room_peer(kernel, owner, follow, &agent)?;
+        }
         let answer = RelayPeerResponse::RoomPeerSpawned {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             duplicate: false,

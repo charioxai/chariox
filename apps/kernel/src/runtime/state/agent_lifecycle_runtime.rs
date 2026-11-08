@@ -886,6 +886,8 @@ impl KernelRuntimeState {
                     success: task.state == ExecutionState::Done,
                 })?;
         }
+        // A followed agent's end is owed to its followers on other kernels now.
+        self.spawn_peer_agent_outcome_delivery();
         // A retried settlement changed nothing: the sweep that found it would
         // find it again, so waking it here would spin.
         if changed {
@@ -1093,6 +1095,13 @@ impl KernelRuntimeState {
         }
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
+        }
+        if let Err(error) = self.settle_lost_peer_follows(now) {
+            tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
+        }
+        // Outcomes another kernel did not take yet, including across a relay reconnect.
+        if let Err(error) = self.deliver_peer_agent_outcomes().await {
+            tracing::warn!(%error, "peer outcomes retained for the next delivery");
         }
         // Recover replies orphaned before this version, even when delivery already ended.
         for (room, agent) in self

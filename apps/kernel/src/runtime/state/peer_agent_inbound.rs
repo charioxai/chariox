@@ -88,11 +88,14 @@ impl KernelRuntimeState {
                     target: self.peer_agent_stamp(&target),
                 })
             }
-            RelayPeerRequest::SubscribePeerAgent { .. }
-            | RelayPeerRequest::UnsubscribePeerAgent { .. }
-            | RelayPeerRequest::DeliverPeerAgentOutcome { .. } => Err(ledger::error(
-                "this kernel does not carry follow or outcome requests across kernels yet",
-            )),
+            request @ (RelayPeerRequest::SubscribePeerAgent { .. }
+            | RelayPeerRequest::UnsubscribePeerAgent { .. }) => {
+                self.receive_peer_follow(kernel, owner, request)
+            }
+            request @ RelayPeerRequest::DeliverPeerAgentOutcome { .. } => {
+                self.receive_peer_agent_outcome(kernel, owner, request)
+                    .await
+            }
             RelayPeerRequest::PeerAgentMessage { .. }
             | RelayPeerRequest::PeerAgentCancel { .. } => {
                 Err(ledger::error("peer agent protocol version mismatch"))
@@ -106,7 +109,7 @@ impl KernelRuntimeState {
 
     /// The one peer resolver, with a room this owner cannot address told apart from an agent
     /// that is not there: the caller already names a room of its own owner.
-    fn peer_agent_target(
+    pub(super) fn peer_agent_target(
         &self,
         owner: &str,
         address: &PeerAgentAddress,
