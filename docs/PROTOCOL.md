@@ -6963,6 +6963,14 @@ peer 439 stays, and no client minimum changes. Snapshot:
 `protocol_shapes/remote-agent-binding-worktree-1000.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- remote_agent_binding_worktree lease_dir_after_restart`.
 
+### Peers, the sub-agent tree event and the sub-agent access refusal — local 1001 / relay peer 440
+
+Landing 6 carries one pair. Local daemon protocol 1001 adds peers across rooms of one owner (`agent
+spawn --room`, messages, steer, cancel and follow of an ordinary agent of another room, the `peer_event`
+inbox kind), the room clients' `agent_tree_changed` event and the typed `kernel_access_sub_agent`
+refusal. Relay peer 440 carries the same peers across kernels of one owner, below. Managed upgrades
+admit 1000 and 1001.
+
 ### Peers across kernels of one owner — relay peer 440
 
 MP-08 / MP-10 / MP-11: an agent messages, steers, cancels, follows or spawns an ordinary agent in a
@@ -6977,6 +6985,6 @@ responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
 Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
 `caller_authority` is lowered to the receiving kernel's record of the target room before the
 authority rule (level and mode at least the target's) runs. A message is an inbox `message` event
-with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The local
-protocol and client minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
+with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The client
+minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.

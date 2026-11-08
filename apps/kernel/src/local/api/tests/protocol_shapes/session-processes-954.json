@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1000,
+  "protocol_version": 1001,
   "relay_peer_protocol_version": 440,
   "shapes": [
     {

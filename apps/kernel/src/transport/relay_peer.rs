@@ -199,7 +199,7 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 437 carries the local998 notification listener contract.
 /// Peer 439 carries local1000: the run finished source kind, event connection selections in the managed-context plan
 /// binding and Vault provider logins in the context package.
-/// Peer 440 carries peers across kernels of one owner.
+/// Peer 440 carries local 1001: peers across kernels of one owner.
 pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 440;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.

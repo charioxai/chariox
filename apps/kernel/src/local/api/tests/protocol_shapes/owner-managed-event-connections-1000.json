@@ -1,5 +1,5 @@
 {
-  "local_protocol": 1000,
+  "local_protocol": 1001,
   "peer_protocol": 440,
   "request": {
     "StartManagedContextTransfer": {
