@@ -122,6 +122,20 @@ fn the_enrolled_owner_grants_and_revokes_extensions_of_an_agent_made_before_enro
 }
 
 #[test]
+fn the_enrolled_owner_cycles_focus_through_agents_of_a_room_made_before_enrollment() {
+    let room = enrolled_owner_room("enrolled-owner-focus");
+    let cycled = |user: &str| {
+        room.state
+            .owned
+            .cycle_agent_focus(&room.session_id, user)
+            .unwrap()
+            .is_some()
+    };
+    assert!(cycled("kernel-owner"));
+    assert!(!cycled("guest"));
+}
+
+#[test]
 fn uninstalling_an_app_of_the_enrolled_owner_invalidates_copies_of_a_pre_enrollment_agent() {
     let room = enrolled_owner_room("enrolled-owner-uninstall");
     let (workflow_id, endpoint_id, node_id) = {
