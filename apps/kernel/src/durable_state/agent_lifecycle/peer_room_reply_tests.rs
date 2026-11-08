@@ -139,3 +139,44 @@ fn only_a_peer_registration_reaches_across_rooms() {
     });
     assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
 }
+
+#[test]
+fn a_sender_still_working_in_another_room_does_not_hold_the_recipients_receipt() {
+    let f = Fixture::new();
+    f.begin("p");
+    let Outcome::Event(event) = send_to_peer_room(&f, "first", "room").unwrap() else {
+        panic!("event")
+    };
+    let prompt = format!("agent-event-peer-{}", event.sequence);
+    f.apply(Operation::Begin {
+        owner: "owner".into(),
+        room: "peer-room".into(),
+        agent: "peer".into(),
+        prompt: prompt.clone(),
+        run: Some("peer-run".into()),
+        now: 2,
+    });
+    f.apply(Operation::Attempt {
+        room: "peer-room".into(),
+        agent: "peer".into(),
+        sequence: event.sequence,
+        prompt,
+        target: None,
+        run: None,
+        now: 2,
+        work: None,
+        through: 0,
+    });
+    let receipt = f.store.agent_lifecycle(Operation::Receipt {
+        room: "peer-room".into(),
+        agent: "peer".into(),
+        sequence: event.sequence,
+        state: "accepted".into(),
+        now: 3,
+    });
+    assert!(receipt.is_ok(), "{receipt:?}");
+    assert_eq!(
+        f.store.agent_inbox("peer-room", "peer", 0).unwrap()[0].state,
+        "accepted"
+    );
+}
