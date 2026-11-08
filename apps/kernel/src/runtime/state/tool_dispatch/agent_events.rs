@@ -154,7 +154,10 @@ impl KernelRuntimeState {
                     .ok_or_else(|| ledger::error("source_id required"))?;
                 let agents = self.session_agents(room);
                 let delegate = agents.iter().any(|a| a.id() == source && a.id() != actor);
-                let room_tasks = self.owned.durable_state_store.agent_tasks(Some(room), None)?;
+                let room_tasks = self
+                    .owned
+                    .durable_state_store
+                    .agent_tasks(Some(room), None)?;
                 let peer_task = room_tasks
                     .iter()
                     .any(|t| t.task_id == source && t.agent_id != actor);

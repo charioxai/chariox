@@ -1076,7 +1076,11 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![room,agent,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let mut p: InboxEvent = decode(&previous)?;
-        if matches!(e.kind.as_str(), "source_completed" | "source_lost" | "peer_event") && p.kind == e.kind {
+        if matches!(
+            e.kind.as_str(),
+            "source_completed" | "source_lost" | "peer_event"
+        ) && p.kind == e.kind
+        {
             let mut left = p.payload.clone();
             let mut right = e.payload.clone();
             if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object_mut()) {

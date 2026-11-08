@@ -1,6 +1,7 @@
 //! An agent that follows a peer (neither above nor below it) hears of the peer's turns as
 //! `peer_event`, through the same subscribe tool, inbox and wake as every other source.
 use super::child_finished::{family, Family};
+use super::*;
 use crate::durable_state::agent_lifecycle::{InboxEvent, Operation, Outcome};
 
 /// Subscribes kid `follower` to kid `source` through the runtime tool entry.
@@ -74,7 +75,10 @@ async fn a_peers_finished_turn_reaches_its_follower_as_a_peer_event() {
     let team = family("peer-event-finished", 2, None, true).await;
     let (follower, peer) = (team.kids[0].child.clone(), team.kids[1].child.clone());
     let registration = follow(&team, 0, &peer).await;
-    assert!(registration["registration_id"].is_string(), "{registration}");
+    assert!(
+        registration["registration_id"].is_string(),
+        "{registration}"
+    );
     finish(&team, 1, false).await;
 
     let events = inbox(&team, &follower);
@@ -240,7 +244,12 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
         .await
         .unwrap();
 
-    let session = team.runtime.owned.session_store.get_session(&team.room).unwrap();
+    let session = team
+        .runtime
+        .owned
+        .session_store
+        .get_session(&team.room)
+        .unwrap();
     let prompt = team
         .runtime
         .owned
@@ -269,4 +278,71 @@ async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
     for peer in &peers {
         assert!(sources.contains(&peer.as_str()), "{sources:?}");
     }
+}
+
+#[tokio::test]
+async fn a_peer_address_resolves_only_inside_the_callers_own_rooms() {
+    let worktree = crate::test_support::TestWorktree::new("peer-source-resolver");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut rooms = Vec::new();
+    for owner in [None, None, Some("someone-else")] {
+        let mut request = worktree.session_request();
+        if let Some(owner) = owner {
+            request = request.with_owner_user_id(owner);
+        }
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(request)
+            .unwrap();
+        rooms.push((session.id().to_owned(), agent.id().to_owned()));
+    }
+    let owner = app
+        .sessions()
+        .session_owner_user_id(&rooms[0].0)
+        .expect("the room has an owner");
+    let (own_room, own_agent) = (rooms[1].0.clone(), rooms[1].1.clone());
+    crate::test_support::admit_room_test_turn(&mut app, &own_room, &own_agent);
+    let sub = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(&own_room, "dev-stub")
+                .with_alias("hidden-helper".to_owned())
+                .with_parent_agent_id(&own_agent),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let found = runtime
+        .resolve_peer_source(&owner, &own_room, &own_agent)
+        .unwrap();
+    assert_eq!(
+        (found.room.as_str(), found.agent_id.as_str()),
+        (own_room.as_str(), own_agent.as_str())
+    );
+    // A sub-agent is hidden from outside its team: refused like an agent that is not there.
+    for reference in [sub.id(), "hidden-helper", "@HIDDEN-HELPER"] {
+        let refusal = runtime
+            .resolve_peer_source(&owner, &own_room, reference)
+            .unwrap_err();
+        assert!(
+            matches!(
+                refusal,
+                crate::runtime::state::tool_dispatch::peer_source::PeerRefusal::NoSuchAgent { .. }
+            ),
+            "{refusal}"
+        );
+    }
+    // Another owner's room, and a room that is not there, are the same refusal.
+    for room in [rooms[2].0.as_str(), "no-such-room"] {
+        let refusal = runtime
+            .resolve_peer_source(&owner, room, &rooms[2].1)
+            .unwrap_err();
+        assert_eq!(
+            refusal,
+            crate::runtime::state::tool_dispatch::peer_source::PeerRefusal::NoSuchRoom,
+            "{refusal}"
+        );
+    }
+    assert!(runtime.resolve_peer_source(&owner, &own_room, "").is_err());
 }
