@@ -14,6 +14,8 @@ mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
+mod inbox_lookup_tests;
+#[cfg(test)]
 mod unread_steer_tests;
 mod unread_steers;
 mod worker_stops;
@@ -764,6 +766,8 @@ thread_local! {
     pub(crate) static VISIBLE_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
     pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
+    pub(crate) static INBOX_LOOKUP_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 fn decode_task(
     id: &str,

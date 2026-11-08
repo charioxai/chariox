@@ -554,6 +554,8 @@ fn siblings(
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
+    #[cfg(test)]
+    INBOX_LOOKUP_STEPS.with(|n| n.set(n.get() + q.get_status(rusqlite::StatementStatus::VmStep)));
     rows.into_iter()
         .map(|s| u64::try_from(s).map_err(|_| error("corrupt delivery sequence")))
         .collect()
