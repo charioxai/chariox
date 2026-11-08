@@ -314,6 +314,91 @@ fn follows_of_peers_on_other_kernels_are_lost_when_this_kernel_leaves_their_owne
     });
 }
 
+/// Cloud's kernel directory as A reads it with its kernel credential, listing `kernel` with the
+/// status `status` holds.
+async fn kernel_directory(kernel: &Kernel, status: Arc<std::sync::Mutex<&'static str>>) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let id = kernel.id.clone();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                match stream.read(&mut chunk).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&chunk[..n]),
+                }
+            }
+            assert!(request.starts_with(b"GET /relay/targets?"));
+            let status = *status.lock().unwrap();
+            let body =
+                serde_json::json!({"targets": [{"daemonId": id, "status": status}]}).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+    url
+}
+
+#[test]
+fn follows_of_a_kernel_its_owner_unlinked_are_lost_and_of_a_stopped_one_kept() {
+    run_peer_test("peer-offline-revoked", || async {
+        let (a, b, _task, follow) = followed("peer-offline-revoked").await;
+        let status = Arc::new(std::sync::Mutex::new("OFFLINE"));
+        let api_url = kernel_directory(&b, status.clone()).await;
+        let state = &a.router.runtime_state;
+        crate::runtime::cloud_relay_profile_store::persist_cloud_profile(
+            state,
+            crate::config::PersistedCloudRelayProfile {
+                api_url,
+                user_id: OWNER.into(),
+                account_id: "account-peer-offline".into(),
+                realm_id: "realm-peer-offline".into(),
+                kernel_credential: Some("synthetic-kernel-credential".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let now = crate::session::unix_epoch_ms();
+        state.sweep_agent_lifecycle_at_for_test(now).await.unwrap();
+        assert!(
+            a.peer_events().await.is_empty(),
+            "a stopped kernel keeps its followers"
+        );
+        // B was unlinked from the owner while A stays signed in.
+        *status.lock().unwrap() = "REVOKED";
+        state
+            .sweep_agent_lifecycle_at_for_test(now + 60_000)
+            .await
+            .unwrap();
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
+        assert_eq!(events[0].source_id, source_of(&b));
+        let held = a
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_registration(follow["registration_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(!held.live, "{held:?}");
+        state
+            .sweep_agent_lifecycle_at_for_test(now + 120_000)
+            .await
+            .unwrap();
+        assert_eq!(a.peer_events().await.len(), 1, "once");
+        unlink(&[&a, &b]);
+    });
+}
+
 #[test]
 fn a_kernel_without_an_owner_keeps_its_follows_of_peers_in_its_own_rooms() {
     run_peer_test("peer-offline-local", || async {
