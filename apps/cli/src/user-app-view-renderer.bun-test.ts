@@ -6,8 +6,27 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { TextareaRenderable, BoxRenderable } from "@opentui/core"
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { createCliKernelApprovalComposition } from "./cli-kernel-approval-composition.js"
+import { handleAppSlashCommand } from "./app-command-handler.js"
+import { parseSlashCommand } from "./commands.js"
+import { tuiAppHelp } from "./app-command-catalog.js"
 
 const flag = "CHARIOX_USER_APP_VIEWS_PROTOTYPE"
+test("/app view open shows an installed App's view in the TUI with no environment flag",async()=>{
+  const old=process.env[flag];delete process.env[flag]
+  const h=await createTestRenderer({width:100,height:24,useThread:false})
+  const view={view_id:"v",installation_id:"fixture",generation:"g",origin:"https://app.invalid",browser:{tab_id:"host-tab-1",generation:1}}
+  const client={send:async(request:any)=>{if(request.OpenUserAppView)return {UserAppViewOpened:{view}};if(request.ListUserAppViews)return {UserAppViewsListed:{views:[view]}};if(request.CloseUserAppView)return {UserAppViewClosed:{view_id:"v"}};return {KernelBrowser:{result:{generation:1,snapshot:{accessibility_nodes:[{node_ref:"n",role:"button",name:"Call App",disabled:false}]}}}}}}
+  let dispose!:()=>void
+  try {
+    const views=createRoot(cleanup=>{dispose=cleanup;return createCliUserAppViewsComposition({
+      client:()=>client,renderer:h.renderer,dimensions:()=>({width:100,height:24}),themeRevision:()=>0,currentFocus:()=>null,promptFocus:()=>null,notify(){},approvalOwnsInput:()=>false,
+    })})
+    assert.ok(views,"the App views surface exists without an environment flag")
+    await handleAppSlashCommand({userAppViews:views,sendAppRequest:r=>client.send(r),appendNotice(){},flashFooter(){}},parseSlashCommand("/app view open fixture") as never)
+    await h.renderOnce();assert.match(h.captureCharFrame(),/Call App/)
+    assert.match(tuiAppHelp().join("\n"),/\/app views \| view open INSTALLATION/)
+  }finally{dispose?.();h.renderer.destroy();if(old===undefined)delete process.env[flag];else process.env[flag]=old}
+})
 test("flag off creates no panel, timers, requests or input hooks",()=>{
   const old=process.env[flag];delete process.env[flag]
   try {assert.equal(createCliUserAppViewsComposition({} as never),undefined)}finally{if(old===undefined)delete process.env[flag];else process.env[flag]=old}
