@@ -151,7 +151,7 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         if let LocalDaemonRequest::ListWorkflowNotifications(list) = &request {
             let session = self.owned.session_store.get_session(&list.session_id)?;
-            if !session.has_member(owner) {
+            if !self.is_room_member(&session, owner) {
                 return Err(store::error("notification room access denied"));
             }
             self.owned
@@ -313,8 +313,8 @@ impl KernelRuntimeState {
                         let session = sessions.get_session(&request.session_id)?;
                         // Members and room agents list this room's notifications, nothing of the
                         // owner's other rooms or kernels.
-                        let room_member =
-                            session.owner_user_id() != owner || self.room_provider_origin.is_some();
+                        let room_member = !self.acts_for_room_owner(&session, owner)
+                            || self.room_provider_origin.is_some();
                         let inventory_owner = session.owner_user_id().to_owned();
                         let (mut sources, mut subscriptions, mut diagnostics) = self
                             .owned
@@ -387,7 +387,7 @@ impl KernelRuntimeState {
     ) -> bool {
         matches!(request, LocalDaemonRequest::ListWorkflowNotifications(list)
             if self.owned.session_store.get_session(&list.session_id)
-                .is_ok_and(|session| session.owner_user_id() != caller))
+                .is_ok_and(|session| !self.acts_for_room_owner(&session, caller)))
     }
 
     /// An enabled source of this kernel, or an available one of another kernel's cached picker.
