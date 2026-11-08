@@ -5,14 +5,21 @@ const CHILD: &str = "CHARIOX_THREAD_STACK_CHILD";
 
 /// The stack size of the running thread behind `handle`.
 pub(crate) fn spawned_thread_stack_size<T>(handle: &std::thread::JoinHandle<T>) -> usize {
-    // SAFETY: the thread is alive while its handle is held, the calls only read its attributes,
-    // and the attribute object is destroyed before returning.
+    stack_size(handle.as_pthread_t())
+}
+
+/// The stack size of the thread the caller runs on.
+pub(crate) fn current_thread_stack_size() -> usize {
+    // SAFETY: `pthread_self` has no preconditions.
+    stack_size(unsafe { libc::pthread_self() })
+}
+
+fn stack_size(thread: libc::pthread_t) -> usize {
+    // SAFETY: the callers pass a live thread, the calls only read its attributes, and the
+    // attribute object is destroyed before returning.
     unsafe {
         let mut attributes: libc::pthread_attr_t = std::mem::zeroed();
-        assert_eq!(
-            libc::pthread_getattr_np(handle.as_pthread_t(), &mut attributes),
-            0
-        );
+        assert_eq!(libc::pthread_getattr_np(thread, &mut attributes), 0);
         let mut size = 0;
         assert_eq!(libc::pthread_attr_getstacksize(&attributes, &mut size), 0);
         libc::pthread_attr_destroy(&mut attributes);

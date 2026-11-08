@@ -293,15 +293,16 @@ impl ProviderRunWorkerDeps {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_actor_runtime;
-    use crate::test_support::stack::{current_thread_stack_size, is_stack_check_child};
-
     /// A steer into a Codex turn overflowed the actor's default 2 MiB stack and aborted the
     /// kernel.
+    #[cfg(target_os = "linux")]
     #[test]
     fn provider_actor_workers_run_on_the_kernel_runtime_stack() {
+        use super::provider_actor_runtime;
+        use crate::test_support::{current_thread_stack_size, rerun_without_min_stack};
+
         let test = "provider::run_actor::worker::tests::provider_actor_workers_run_on_the_kernel_runtime_stack";
-        if !is_stack_check_child(test) {
+        if !rerun_without_min_stack(test) {
             return;
         }
         let size = provider_actor_runtime().block_on(async {

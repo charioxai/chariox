@@ -140,12 +140,13 @@ mod tests {
 
     /// The kernel runs without `RUST_MIN_STACK`: relay futures (peer requests, Vault
     /// credential transfers) must run on the kernel runtime stack on every path.
+    #[cfg(target_os = "linux")]
     #[test]
     fn relay_future_runtimes_use_the_kernel_runtime_stack() {
-        use crate::test_support::stack::{current_thread_stack_size, is_stack_check_child};
+        use crate::test_support::{current_thread_stack_size, rerun_without_min_stack};
 
         let test = "app::relay_runtime::tests::relay_future_runtimes_use_the_kernel_runtime_stack";
-        if !is_stack_check_child(test) {
+        if !rerun_without_min_stack(test) {
             return;
         }
         let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
