@@ -75,3 +75,26 @@ async fn an_inbox_of_instructions_only_is_not_marked_untrusted() {
     let inbox = read(&team, child);
     assert_eq!(inbox["untrusted"], false, "{inbox}");
 }
+
+#[tokio::test]
+async fn a_message_from_an_agent_on_another_kernel_is_a_peer_with_the_kernel_that_stamped_it() {
+    let team = family("inbox-sender-remote", 1, None, true).await;
+    let reader = &team.kids[0].child;
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Occur(occurrence(
+            &team.room,
+            reader,
+            "peer:kernel-b:agent-x",
+            "kernel-b:request-1",
+            "message",
+            serde_json::json!({"message": "parser.rs is mine", "sender_agent_id": "agent-x", "sender_room_id": "room-x", "sender_kernel_id": "kernel-b", "no_reply": true}),
+        )))
+        .unwrap();
+    let event = &read(&team, reader)["events"][0];
+    assert_eq!(event["source"]["kind"], "agent", "{event}");
+    assert_eq!(event["source"]["relation"], "peer", "{event}");
+    assert_eq!(event["source"]["kernel_id"], "kernel-b", "{event}");
+    assert_eq!(event["source"]["room"], "room-x", "{event}");
+}

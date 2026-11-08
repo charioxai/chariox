@@ -234,6 +234,35 @@ fn a_room_agent_messages_steers_and_cancels_a_peer_on_another_kernel_by_its_name
 }
 
 #[test]
+fn a_retried_message_to_a_peer_on_another_kernel_is_reported_duplicate_and_lands_once() {
+    run_peer_test("peer-kernel-duplicate", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-duplicate",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let message = || {
+            serde_json::json!({
+                "agent": "worker",
+                "room": b.room,
+                "kernel": b.name,
+                "message": "parser.rs is mine for the next hour",
+                "idempotency_key": "retry-1",
+            })
+        };
+        let first = a
+            .send(message())
+            .await
+            .expect("the first send is delivered");
+        assert_eq!(first["status"], "delivered");
+        let again = a.send(message()).await.expect("the retry is answered");
+        assert_eq!(again["status"], "duplicate", "{again:?}");
+        assert_eq!(b.messages(b.agent.id()).await.len(), 1);
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
 fn a_peer_on_another_kernel_answers_a_reply_request_as_a_stamped_message() {
     run_peer_test("peer-kernel-reply", || async {
         let (a, b) = two_kernels(
