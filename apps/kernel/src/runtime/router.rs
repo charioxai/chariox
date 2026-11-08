@@ -106,6 +106,7 @@ pub(crate) struct CommandRouter {
 mod tests {
     mod agent_deadline_owner;
     mod agent_parent_owner;
+    mod agent_utility_owner;
     mod app_notification_access;
     mod metaagent_task_owner;
     mod provider_run_selection_owner;
