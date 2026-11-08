@@ -129,3 +129,51 @@ async fn a_question_restored_with_a_parked_holder_reaches_the_user() {
         "a second recovery changes nothing"
     );
 }
+
+/// The holders passed the question up to the user during their running turns and the kernel
+/// restarted before those turns ended. The restored question keeps the holder the passes gave
+/// it: no former holder is told again and the user's decision does not return to an agent.
+#[tokio::test]
+async fn a_question_passed_before_a_restart_keeps_its_holder() {
+    let t = tree(
+        "decision-restored-passed",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.begin_task(&t.g);
+    t.begin_task(&t.p);
+    let wake = t.ask_without_waiting(&t.c, "ask-passed");
+    for holder in [&t.p, &t.g] {
+        assert_eq!(
+            t.holder("ask-passed"),
+            DecisionHolder::Agent(holder.clone())
+        );
+        assert_eq!(
+            t.runtime
+                .pass_child_decision(&t.room, holder, "ask-passed")
+                .await
+                .unwrap(),
+            ChildDecisionStatus::Passed
+        );
+    }
+    assert_eq!(t.holder("ask-passed"), DecisionHolder::User);
+    for former in [&t.p, &t.g] {
+        assert_eq!(t.last_task_state(former), ExecutionState::Working);
+    }
+
+    t.restart_with(&wake);
+
+    assert_eq!(
+        t.holder("ask-passed"),
+        DecisionHolder::User,
+        "the restart gave the passed decision back to an agent"
+    );
+    for former in [&t.p, &t.g] {
+        assert_eq!(
+            t.decision_events(former).len(),
+            1,
+            "a holder that passed the question is never told again"
+        );
+    }
+}
