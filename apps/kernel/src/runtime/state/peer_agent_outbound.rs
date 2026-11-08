@@ -44,13 +44,13 @@ fn retry_hint(request: &RelayPeerRequest) -> String {
 }
 
 /// A peer request that got no answer, as its caller can act on it: the other kernel's own
-/// refusal as it is, an answer lost after that kernel took the request as `uncertain`, and
-/// anything else as `kernel_unreachable`.
+/// refusal as it is, an answer lost or late after the relay handed the request over as
+/// `uncertain`, and anything else as `kernel_unreachable`.
 fn unanswered(kernel: &str, retry: &str, error: DaemonError) -> DaemonError {
+    if error.is_peer_answer_lost() {
+        return uncertain(kernel, retry);
+    }
     match &error {
-        DaemonError::RelayTransport { code, .. } if code == "target_disconnected" => {
-            uncertain(kernel, retry)
-        }
         DaemonError::RelayTransport { code, .. }
             if error.is_answered_peer_refusal() && code != "target_not_connected" =>
         {
@@ -453,8 +453,8 @@ impl KernelRuntimeState {
     }
 
     /// The one link to a kernel of the same owner. A kernel that is gone before it takes the
-    /// request is unreachable, one gone after it is uncertain; any answer it gave reaches the
-    /// caller as it is.
+    /// request is unreachable, one gone or silent after it is uncertain; any answer it gave
+    /// reaches the caller as it is.
     pub(super) async fn peer_agent_link(
         &self,
         owner: &str,
