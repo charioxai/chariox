@@ -116,7 +116,10 @@ impl KernelRuntimeState {
     /// The Vault, open for one export. Takes the unlock preflight held; when that lapsed or was
     /// used, asks again with the unlock card of the session that launched the machine. Dropping
     /// the guard ends the use.
-    pub(crate) async fn vault_for_login_export(&self) -> Result<VaultUnlockGuard, DaemonError> {
+    pub(crate) async fn vault_for_login_export(
+        &self,
+        _session_id: Option<&str>,
+    ) -> Result<VaultUnlockGuard, DaemonError> {
         let Some(path) = self.carry_vault_path() else {
             return Ok(VaultUnlockGuard::not_required());
         };

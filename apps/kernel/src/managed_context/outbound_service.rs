@@ -549,7 +549,7 @@ pub(crate) fn start_managed_context_outbound_operation(
                 &authoritative_ticket,
             ) {
                 Ok(true) => runtime
-                    .vault_for_login_export()
+                    .vault_for_login_export(None)
                     .await
                     .map(Some)
                     .map_err(|_| vault_login_locked_error()),

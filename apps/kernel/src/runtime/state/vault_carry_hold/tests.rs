@@ -18,6 +18,7 @@ struct Fixture {
     runtime: KernelRuntimeState,
     session_id: String,
     agent_id: String,
+    other_session_id: String,
     request: crate::local::PreflightProviderAccountPortabilityRequest,
 }
 
@@ -53,6 +54,12 @@ impl Fixture {
                 root.to_string_lossy(),
             ))
             .expect("session should create");
+        let (other_session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                root.to_string_lossy(),
+                root.to_string_lossy(),
+            ))
+            .expect("second session should create");
         let registry = app.provider_account_profile_registry();
         let profile = registry
             .create_managed(
@@ -100,11 +107,16 @@ impl Fixture {
             runtime,
             session_id: session.id().to_owned(),
             agent_id: agent.id().to_owned(),
+            other_session_id: other_session.id().to_owned(),
             request,
         }
     }
 
     fn command(&self) -> crate::runtime::command::KernelCommand {
+        self.command_in(&self.session_id)
+    }
+
+    fn command_in(&self, session_id: &str) -> crate::runtime::command::KernelCommand {
         let mut command = crate::runtime::command::KernelCommand::from_local_request(
             "preflight",
             None,
@@ -113,16 +125,20 @@ impl Fixture {
                 self.request.clone(),
             ),
         );
-        command.session_id = Some(self.session_id.clone());
+        command.session_id = Some(session_id.to_owned());
         command
     }
 
     async fn preflight(&self) {
+        self.preflight_in(&self.session_id).await;
+    }
+
+    async fn preflight_in(&self, session_id: &str) {
         crate::runtime::provider_account_portability::execute_preflight(
             &self.runtime,
             &self.config,
             &self.registry,
-            &self.command(),
+            &self.command_in(session_id),
             &self.request,
         )
         .await
@@ -209,7 +225,7 @@ async fn the_unlock_taken_at_preflight_is_held_for_the_export_and_used_once() {
 
     let export = fx
         .runtime
-        .vault_for_login_export()
+        .vault_for_login_export(Some(&fx.session_id))
         .await
         .expect("the export takes the held unlock without asking again");
     assert!(fx.login_readable(), "the export reads the login");
@@ -223,11 +239,16 @@ async fn a_second_export_asks_again_instead_of_reusing_a_used_unlock() {
     let _env = crate::env_lock::lock();
     let fx = Fixture::new().await;
     fx.preflight_answering_the_card().await;
-    drop(fx.runtime.vault_for_login_export().await.unwrap());
+    drop(
+        fx.runtime
+            .vault_for_login_export(Some(&fx.session_id))
+            .await
+            .unwrap(),
+    );
     assert!(!fx.unlocked());
 
     let export = fx
-        .answering_the_card(fx.runtime.vault_for_login_export())
+        .answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id)))
         .await
         .expect("a used unlock is asked for again through the unlock card");
     assert!(fx.login_readable());
@@ -264,7 +285,7 @@ async fn a_lapsed_hold_ends_by_itself_and_the_export_asks_again() {
     );
 
     let export = fx
-        .answering_the_card(fx.runtime.vault_for_login_export())
+        .answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id)))
         .await
         .expect("a lapsed hold asks again through the unlock card");
     assert!(fx.login_readable());
@@ -293,7 +314,11 @@ async fn a_client_ask_every_time_unlock_is_held_past_its_minute() {
         expires_at_ms <= crate::session::unix_epoch_ms() + 11 * 60_000,
         "the hold is bounded"
     );
-    let export = fx.runtime.vault_for_login_export().await.unwrap();
+    let export = fx
+        .runtime
+        .vault_for_login_export(Some(&fx.session_id))
+        .await
+        .unwrap();
     assert!(fx.login_readable());
     drop(export);
     assert!(!fx.unlocked());
@@ -311,7 +336,11 @@ async fn a_normal_lease_is_neither_extended_nor_closed_by_the_export() {
         .expires_at_ms;
 
     fx.preflight().await;
-    let export = fx.runtime.vault_for_login_export().await.unwrap();
+    let export = fx
+        .runtime
+        .vault_for_login_export(Some(&fx.session_id))
+        .await
+        .unwrap();
     assert!(fx.login_readable());
     drop(export);
 
@@ -324,4 +353,68 @@ async fn a_normal_lease_is_neither_extended_nor_closed_by_the_export() {
         before,
         "the expiry is the lease's own"
     );
+}
+
+// MP-10 / MP-11: a later launch in another session must not take over the first launch's ask.
+#[tokio::test]
+async fn two_launches_in_two_sessions_each_keep_their_own_ask() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fx = Fixture::new().await;
+    fx.preflight_answering_the_card().await;
+    // The Vault is open on the first hold, so the second launch shows no card.
+    fx.preflight_in(&fx.other_session_id).await;
+    drop(
+        fx.runtime
+            .vault_for_login_export(Some(&fx.session_id))
+            .await
+            .unwrap(),
+    );
+    assert!(!fx.unlocked());
+
+    let asked = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        fx.answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id))),
+    )
+    .await
+    .expect("the first launch's export asks in the first launch's session");
+    drop(asked.expect("the unlock card opens the Vault"));
+    let other = fx
+        .runtime
+        .owned
+        .session_store
+        .get_session(&fx.other_session_id)
+        .unwrap();
+    assert!(other.active_interactions().is_empty());
+}
+
+// MP-10 / MP-11: a restart drops the in-memory holds; the export must end, not wait for a card.
+#[tokio::test]
+async fn an_export_after_a_restart_ends_with_the_locked_refusal_instead_of_waiting() {
+    crate::test_support::isolated_env_test!();
+    let _env = crate::env_lock::lock();
+    let fx = Fixture::new().await;
+    fx.preflight_answering_the_card().await;
+    drop(
+        fx.runtime
+            .vault_for_login_export(Some(&fx.session_id))
+            .await
+            .unwrap(),
+    );
+    locked_entries().clear();
+    assert!(!fx.unlocked());
+    let ended = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fx.runtime.vault_for_login_export(Some(&fx.session_id)),
+    )
+    .await
+    .expect("no unlock card is awaited after a restart");
+    assert!(matches!(
+        ended,
+        Err(DaemonError::VaultUnlock {
+            retryable: true,
+            ..
+        })
+    ));
+    assert!(fx.card().is_none());
 }
