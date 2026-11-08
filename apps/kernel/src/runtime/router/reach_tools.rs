@@ -38,23 +38,10 @@ fn kernel_request(request: serde_json::Value) -> Result<LocalDaemonRequest, Daem
     })
 }
 
-/// Answering a decision of the caller's own room would let an agent approve what it asked for.
-fn answers_own_room(
-    router: &CommandRouter,
-    caller: &ReachCaller,
-    kernel: Option<&str>,
-    request: &LocalDaemonRequest,
-) -> bool {
-    let LocalDaemonRequest::RespondToInteraction(answer) = request else {
-        return false;
-    };
-    let config = router.config_projection.snapshot();
-    let own_kernel = kernel.is_none_or(|kernel| {
-        kernel == "local"
-            || kernel == config.daemon_id
-            || config.daemon_alias.as_deref() == Some(kernel)
-    });
-    own_kernel && answer.session_id == caller.session_id
+/// A reach caller is an agent, and an agent answers a decision only as its holder, through
+/// `agent answer`; no room, kernel or sudo window changes that.
+fn answers_a_decision(request: &LocalDaemonRequest) -> bool {
+    matches!(request, LocalDaemonRequest::RespondToInteraction(_))
 }
 
 impl CommandRouter {
@@ -199,10 +186,10 @@ impl CommandRouter {
             }
             return self.reach_events(caller, request).await;
         }
-        if answers_own_room(self, caller, kernel.as_deref(), &request) {
+        if answers_a_decision(&request) {
             return Ok(refused(
                 "excluded_for_agents",
-                "an agent does not answer the decisions of its own room; answer the room you drive",
+                "agents do not answer decisions; the person answers them in Chariox",
             ));
         }
         if acquires_machine(&request) && sudo.is_none() {

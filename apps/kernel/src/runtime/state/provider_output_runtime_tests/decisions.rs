@@ -424,6 +424,66 @@ async fn only_the_current_holder_may_answer() {
 }
 
 #[tokio::test]
+async fn a_peer_never_answers_a_decision_in_its_room_or_another() {
+    let t = tree(
+        "decision-peer-never",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let (neighbour, outsider) = {
+        let mut app = t.app.lock().await;
+        let neighbour = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(&t.room, "dev-stub").with_alias("neighbour"),
+            )
+            .unwrap();
+        let (other_room, outsider) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "decision-peer-other",
+                std::env::temp_dir().to_string_lossy(),
+            ))
+            .unwrap();
+        (
+            neighbour.id().to_owned(),
+            (other_room.id().to_owned(), outsider.id().to_owned()),
+        )
+    };
+    let mut answer = t.raise(permission("perm-peer", &t.c)).await;
+    for (room, agent) in [
+        (t.room.as_str(), neighbour.as_str()),
+        (t.room.as_str(), outsider.1.as_str()),
+        (outsider.0.as_str(), outsider.1.as_str()),
+    ] {
+        for status in [
+            t.runtime
+                .answer_child_decision(room, agent, "perm-peer", "allow")
+                .unwrap(),
+            t.runtime
+                .pass_child_decision(room, agent, "perm-peer")
+                .await
+                .unwrap(),
+        ] {
+            assert!(
+                matches!(
+                    status,
+                    ChildDecisionStatus::NotHolder | ChildDecisionStatus::SettledByUser
+                ),
+                "{status:?}"
+            );
+        }
+    }
+    assert!(answer.try_recv().is_err(), "a peer settles nothing");
+    assert_eq!(t.session().active_interactions().len(), 1);
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-peer", "allow")
+            .unwrap(),
+        ChildDecisionStatus::Answered
+    );
+}
+
+#[tokio::test]
 async fn the_user_and_the_holder_answering_at_once_give_one_winner() {
     let t = tree(
         "decision-race",

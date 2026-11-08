@@ -947,7 +947,7 @@ async fn the_reach_tools_are_listed_before_the_run_is_running_and_called_only_wh
 /// AT-40 on the reach surface: a driver follows the room of an agent it drives, is woken by
 /// the decision that agent raises, reads it and answers it; nothing from other rooms arrives.
 #[tokio::test]
-async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it() {
+async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_but_never_answers_it() {
     let (reach, server, _) = offered_reach().await;
     let (ok, subscription) = tool(
         &reach,
@@ -1007,14 +1007,22 @@ async fn a_driver_is_woken_by_the_decision_a_driven_agent_raises_and_answers_it(
             "choice_id": "accept"}}}),
     )
     .await;
-    assert!(ok, "{answered}");
-    let result = driven.await.unwrap().unwrap();
-    assert_ne!(
-        code(&result.payload),
-        "acquisition_declined",
-        "the driver's answer reached the driven agent: {}",
-        result.payload
+    assert!(
+        !ok,
+        "a peer never answers another room's decision: {answered}"
     );
+    assert_eq!(code(&answered), "excluded_for_agents");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(300), async {
+            while !driven.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_err(),
+        "the driven agent still waits for the person's answer"
+    );
+    driven.abort();
     let cursor = batch["EventsListed"]["next_cursor"]
         .as_u64()
         .expect("cursor");
@@ -1124,12 +1132,7 @@ async fn a_driver_does_not_answer_a_decision_only_the_person_may_answer() {
     )
     .await;
     assert!(!ok, "{payload}");
-    assert!(
-        payload
-            .to_string()
-            .contains("agents cannot answer approvals"),
-        "{payload}"
-    );
+    assert_eq!(code(&payload), "excluded_for_agents", "{payload}");
     reach
         .router
         .runtime_state()
