@@ -121,6 +121,7 @@ mod waiting_room_workspace;
 
 mod provider_tool_images;
 mod room_pin;
+mod session_outline_tool_images;
 mod usage_snapshot;
 mod vault_creation;
 mod vault_secret;

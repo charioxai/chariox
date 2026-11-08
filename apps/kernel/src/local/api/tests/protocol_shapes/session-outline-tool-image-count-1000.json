@@ -1,0 +1,20 @@
+{
+  "local_protocol": 1000,
+  "peer_protocol": 439,
+  "stored_tool_call": {
+    "id": "call-chart",
+    "tool": "render_chart",
+    "status": "completed",
+    "output": "drawn",
+    "images": [
+      "data:image/png;base64,iVBORw0KGgo=",
+      "data:image/png;base64,R0lGODlh"
+    ]
+  },
+  "outline_preview": {
+    "id": "call-chart",
+    "tool": "render_chart",
+    "status": "completed",
+    "imageCount": 2
+  }
+}
