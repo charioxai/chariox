@@ -510,3 +510,50 @@ async fn a_move_cannot_exceed_the_tree_depth_or_close_a_cycle() {
             .is_none_or(|top| top.parent_agent_id().is_none()));
     }
 }
+
+/// Pre-review: a room never has more room agents than its `max_agents`. A sub-agent is not
+/// counted while it is one (A4), so placing it as a room agent must be held to the same limit a
+/// new room agent or an unarchived one is.
+#[tokio::test]
+async fn promoting_a_sub_agent_to_a_room_agent_is_held_to_max_agents() {
+    let worktree = crate::test_support::TestWorktree::new("promote-max-agents");
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    config.user_config.workflow.session_default_max_agents = Some(1);
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, g) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(worktree.session_request())
+        .unwrap();
+    crate::test_support::admit_room_test_turn(&mut app, session.id(), g.id());
+    let s = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("s")
+                .with_parent_agent_id(g.id()),
+        )
+        .unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let promoted = runtime
+        .set_agent_parent(
+            USER,
+            crate::local::SetAgentParentRequest {
+                session_id: session.id().into(),
+                agent_id: s.id().into(),
+                parent_agent_id: None,
+            },
+        )
+        .await;
+    let room_agents = app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(session.id())
+        .iter()
+        .filter(|agent| !agent.archived() && agent.parent_agent_id().is_none())
+        .count();
+    assert!(
+        promoted.is_err(),
+        "a room at max_agents = 1 gets a second room agent ({room_agents} now): {promoted:?}"
+    );
+}
