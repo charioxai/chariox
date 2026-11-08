@@ -888,11 +888,15 @@ impl SessionRuntimeStore {
     pub(super) async fn update_session_config(
         &self,
         request: UpdateSessionConfigRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let session_id = request.session_id.clone();
+        if let Err(error) = self.state.ensure_room_control(&session_id, &caller_user_id) {
+            return (Err(error), None);
+        }
         let result = match self
             .state
             .update_session_config(
@@ -1036,43 +1040,68 @@ impl SessionRuntimeStore {
     pub(super) async fn alias_session(
         &self,
         request: AliasSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .alias_session(&request.session_id, request.alias)
-            .await
-            .map(|session| LocalDaemonResponse::SessionAliased { session });
+        let result = async {
+            self.state
+                .ensure_room_control(&request.session_id, &caller_user_id)?;
+            self.state
+                .alias_session(&request.session_id, request.alias)
+                .await
+        }
+        .await
+        .map(|session| LocalDaemonResponse::SessionAliased { session });
         self.with_session_projection_action_result(result).await
     }
 
     pub(super) async fn end_session(
         &self,
         request: EndSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .end_session(&request.session_id)
-            .await
-            .map(|session| LocalDaemonResponse::SessionEnded { session });
+        let result = async {
+            self.state
+                .ensure_room_control(&request.session_id, &caller_user_id)?;
+            self.state.end_session(&request.session_id).await
+        }
+        .await
+        .map(|session| LocalDaemonResponse::SessionEnded { session });
         self.with_session_projection_action_result(result).await
+    }
+
+    async fn delete_controlled_session(
+        &self,
+        request: DeleteSessionRequest,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = self
+            .state
+            .resolve_session_ref_id_for_delete(
+                &request.session_ref,
+                request.workspace_id.as_deref(),
+            )
+            .await?;
+        self.state
+            .ensure_room_control(&session_id, caller_user_id)?;
+        self.state.delete_session_id(&session_id).await
     }
 
     pub(super) async fn delete_session(
         &self,
         request: DeleteSessionRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
         let result = self
-            .state
-            .delete_session_ref(&request.session_ref, request.workspace_id.as_deref())
+            .delete_controlled_session(request, &caller_user_id)
             .await
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await

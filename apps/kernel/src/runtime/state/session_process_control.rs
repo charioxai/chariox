@@ -7,6 +7,16 @@ use crate::runtime::process_resources::{
 impl KernelRuntimeState {
     fn authorize_process_control(&self, session_id: &str, caller: &str) -> Result<(), DaemonError> {
         self.authorize_current_external_command()?;
+        self.ensure_room_control(session_id, caller)
+    }
+
+    /// The room-wide control rule (processes, end, delete, rename, configuration): act for the
+    /// room owner, or hold Full collaboration.
+    pub(crate) fn ensure_room_control(
+        &self,
+        session_id: &str,
+        caller: &str,
+    ) -> Result<(), DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         if !self.acts_for_owner(session_id, caller, session.owner_user_id())
             && !session

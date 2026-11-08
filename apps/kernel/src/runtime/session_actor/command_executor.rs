@@ -275,9 +275,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::PollRuntimeNotices(request) => {
                 Box::pin(async move { self.store.poll_runtime_notices(request).await })
             }
-            LocalDaemonRequest::UpdateSessionConfig(request) => {
-                Box::pin(async move { self.store.update_session_config(request).await })
-            }
+            LocalDaemonRequest::UpdateSessionConfig(request) => Box::pin(async move {
+                self.store
+                    .update_session_config(request, caller_user_id)
+                    .await
+            }),
             LocalDaemonRequest::StartRoomEnvironment(request) => Box::pin(async move {
                 self.store
                     .start_room_environment(request, caller_user_id)
@@ -406,7 +408,7 @@ impl SessionRuntimeCommandExecutor {
                     .await
             }),
             LocalDaemonRequest::AliasSession(request) => {
-                Box::pin(async move { self.store.alias_session(request).await })
+                Box::pin(async move { self.store.alias_session(request, caller_user_id).await })
             }
             LocalDaemonRequest::SpawnAgent(request) => Box::pin(async move {
                 self.store
@@ -438,10 +440,10 @@ impl SessionRuntimeCommandExecutor {
                     .await
             }),
             LocalDaemonRequest::EndSession(request) => {
-                Box::pin(async move { self.store.end_session(request).await })
+                Box::pin(async move { self.store.end_session(request, caller_user_id).await })
             }
             LocalDaemonRequest::DeleteSession(request) => {
-                Box::pin(async move { self.store.delete_session(request).await })
+                Box::pin(async move { self.store.delete_session(request, caller_user_id).await })
             }
             _ => Box::pin(async move {
                 (
