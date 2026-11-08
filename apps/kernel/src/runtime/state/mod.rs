@@ -200,6 +200,9 @@ mod visible_region_capture;
 mod web_bot_auth_runtime;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
+/// When Cloud's kernel directory was read, and the kernels it listed as unlinked.
+type UnlinkedKernels = (u64, BTreeSet<String>);
+
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
@@ -229,7 +232,7 @@ pub(crate) struct KernelRuntimeState {
     /// When this kernel life first saw each follow still waiting to learn its peer.
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
-    unlinked_kernels: Arc<std::sync::Mutex<Option<(u64, BTreeSet<String>)>>>,
+    unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
