@@ -218,6 +218,7 @@ impl Tree {
                     obligation_id: Some(obligation.id.clone()),
                     source_cursor: 0,
                     live: true,
+                    peer: false,
                 },
             )
             .collect::<Vec<_>>();
@@ -458,6 +459,7 @@ async fn a_peer_never_answers_a_decision_in_its_room_or_another() {
         for status in [
             t.runtime
                 .answer_child_decision(room, agent, "perm-peer", "allow")
+                .await
                 .unwrap(),
             t.runtime
                 .pass_child_decision(room, agent, "perm-peer")
@@ -478,6 +480,7 @@ async fn a_peer_never_answers_a_decision_in_its_room_or_another() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.p, "perm-peer", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered
     );
