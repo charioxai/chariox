@@ -107,6 +107,7 @@ mod tests {
     mod agent_deadline_owner;
     mod agent_parent_owner;
     mod app_notification_access;
+    mod metaagent_task_owner;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
