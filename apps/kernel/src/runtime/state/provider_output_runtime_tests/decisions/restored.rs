@@ -2,13 +2,13 @@
 //! source: a kernel restart restores it. Its holder is checked again then, as on any hand-on.
 use super::reparent::cards;
 use super::*;
-use crate::durable_state::agent_lifecycle::{AgentWake, ExecutionState};
+use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
 use crate::runtime::state::decision_holder::DecisionHolder;
 use crate::runtime::state::wake_driver::Recovery;
 
 impl Tree {
-    /// `agent` asks without waiting in its running turn and parks on the question.
-    fn ask_without_waiting(&self, agent: &str, id: &str) -> AgentWake {
+    /// The task of `agent`'s running turn, as the kernel begins it for a provider turn.
+    pub(super) fn begin_task(&self, agent: &str) -> AgentTaskExecution {
         let prompt = self
             .session()
             .active_prompt_for_agent(agent)
@@ -35,6 +35,14 @@ impl Tree {
         else {
             panic!("begin returns the task")
         };
+        task
+    }
+
+    /// `agent` asks without waiting in its running turn and parks on the question.
+    fn ask_without_waiting(&self, agent: &str, id: &str) -> AgentWake {
+        let task = self.begin_task(agent);
+        let store = &self.runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
         self.runtime
             .arm_interaction_wake(&self.room, agent, permission(id, agent))
             .unwrap();
