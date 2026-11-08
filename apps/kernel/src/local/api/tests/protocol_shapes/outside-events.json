@@ -120,6 +120,18 @@
             "name": "Review",
             "display_name": "Review run finished",
             "available": true
+          },
+          {
+            "kind": "app_event",
+            "source_id": "app_event_a",
+            "kernel_id": "kernel-a",
+            "session_id": "installation-a",
+            "workflow_id": "route-a",
+            "exit_node_id": "pull_request_updated",
+            "exit_ordinal": 0,
+            "name": "pull_request_updated",
+            "display_name": "Pull request updated",
+            "available": true
           }
         ]
       }

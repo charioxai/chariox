@@ -6913,3 +6913,25 @@ a request only when its generation is at least that one. `WorkflowNotificationSu
 `WorkflowNotificationSuperseded { generation }` means the request was stale and ignored, and names the newest
 generation the source has seen. `ListWorkflowNotificationSources`, `DeliverWorkflowNotification` and
 `WorkflowNotificationAccepted` are unchanged. Focused check: `cargo test -p chariox-kernel --lib workflow_notification`.
+
+### An installed App's events as a notification source — local 1000
+
+MP-08 / MP-10: `NotificationSourceKind` gains `app_event`, in `ListNotificationSources` answers, in a
+followed source of `GetEventSubscription` and as the `source_kind` of a `notification` event. One
+`app_event` source exists per active inbox route of an installed App: `workflow_id` is the route,
+`exit_node_id` is the App's event name, `exit_ordinal` is 0, `session_id` is the installation, and
+`name` / `display_name` add the route's scope when it has one (`pull_request_updated@owner/repo`,
+"Pull request updated (owner/repo)"). It stays available while the installation and the route exist, not while a Room is live.
+Following it uses the same outside grant, subscription, receipt and acknowledgement as the other
+kinds; the notification text is the event text. Snapshot: `protocol_shapes/outside-events.json`.
+Focused check: `cargo test -p chariox-kernel --lib -- app_event outside_events_snapshot`.
+
+### A tool call's picture count in the outline preview — local 1000
+
+MP-08 / MP-10: a `ProviderTool` blob's `preview` in `SessionHistoryOutline` leaves the call's `images`
+out and, when the stored call returned pictures, adds `imageCount` (the number of `images`). A client
+reads the call's blob contents to show them. The field is optional and absent for a call without
+pictures; no client minimum changes (the Web feature minimum 629 gates request size, not this field).
+Codex MCP tool results carry their image blocks in `images` like the other tool results. Snapshot:
+`protocol_shapes/session-outline-tool-image-count-1000.json`. Focused check:
+`cargo test -p chariox-kernel --lib -- session_outline_tool_images tool_blob_preview`.
