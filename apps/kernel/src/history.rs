@@ -347,13 +347,25 @@ impl HistoryEvent {
             )
     }
 
-    /// Agent-only kernel instructions never become user prompt rows.
+    /// Agent-only kernel instructions never become user prompt rows. A steered
+    /// instruction is recorded under the running turn's prompt id; its own id
+    /// is the one in the steering merge key.
     pub fn is_internal_prompt_echo(&self) -> bool {
         self.kind == HistoryEventKind::UserPrompt
             && self
                 .prompt_id
                 .as_deref()
-                .is_some_and(crate::session::is_internal_prompt_echo_id)
+                .into_iter()
+                .chain(self.steering_prompt_id())
+                .any(crate::session::is_internal_prompt_echo_id)
+    }
+
+    /// The id of the prompt a steering row carries into a running turn.
+    fn steering_prompt_id(&self) -> Option<&str> {
+        self.metadata
+            .get("merge_key")
+            .and_then(serde_json::Value::as_str)?
+            .strip_prefix(STEERING_PROMPT_MERGE_KEY_PREFIX)
     }
 
     /// MP-08/MP-10/MP-11: historical kernel diagnostics are not agent speech.

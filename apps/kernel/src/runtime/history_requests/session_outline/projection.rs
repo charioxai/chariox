@@ -20,7 +20,9 @@ pub(super) fn event_projects_as_outline_entry(event: &HistoryEvent) -> bool {
         HistoryEventKind::ProviderOutput => true,
         HistoryEventKind::ProviderStatus => event_provider_status_projects_as_outline_entry(event),
         HistoryEventKind::Notice => true,
-        HistoryEventKind::UserPrompt => is_steering_prompt_event(event),
+        HistoryEventKind::UserPrompt => {
+            is_steering_prompt_event(event) && !event.is_internal_prompt_echo()
+        }
         _ => false,
     }
 }

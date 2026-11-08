@@ -343,6 +343,86 @@ async fn a_steering_finish_is_recorded_as_a_kernel_owned_prompt() {
     );
 }
 
+/// The wake is a kernel instruction to the model. The kernel keeps it as a
+/// steering row of the parent's turn, but no client projection shows it as
+/// something the person wrote; a person's own steer in the same turn stays.
+#[tokio::test]
+async fn a_steering_finish_is_not_shown_to_clients_as_a_user_prompt() {
+    let team = team("child-finished-steer-hidden", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let wake = child_finished(&team)[0]
+        .prompt_id
+        .clone()
+        .expect("the wake prompt");
+    let wake_row = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_events(&team.room, Some(&team.parent))
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            event.metadata.get("merge_key").and_then(|key| key.as_str())
+                == Some(crate::history::steering_prompt_merge_key(&wake).as_str())
+        })
+        .expect("the wake's steering row");
+    let turn_prompt = wake_row.prompt_id.clone().expect("the running turn");
+    let attachment = wake_row.metadata["source_attachment_id"]
+        .as_str()
+        .expect("the wake's attachment")
+        .to_owned();
+    team.runtime
+        .owned
+        .append_steering_prompt_history(
+            &team.room,
+            wake_row
+                .provider_run_id
+                .as_deref()
+                .expect("the parent's run"),
+            &turn_prompt,
+            &attachment,
+            &team.parent,
+            "person-steer-1",
+            "please also check the logs",
+            &[],
+            crate::session::PromptOrigin::Chariox,
+        )
+        .unwrap();
+    for include_prefetched_content in [false, true] {
+        let crate::local::LocalDaemonResponse::SessionHistoryOutline { agents } =
+            crate::runtime::history_requests::execute_session_history_outline_request(
+                team.runtime.owned.operational_history_store.clone(),
+                crate::local::GetSessionHistoryOutlineRequest {
+                    session_id: team.room.clone(),
+                    agent_ids: Some(vec![team.parent.clone()]),
+                    latest_prompt_count: Some(4),
+                    include_prefetched_content,
+                    cursor: None,
+                },
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("expected the history outline");
+        };
+        let text = serde_json::to_string(&agents).unwrap();
+        assert!(
+            !text.contains("Inbox: at least") && !text.contains(&wake),
+            "the kernel's wake shows as a user prompt (prefetch {include_prefetched_content}): {text}"
+        );
+        assert!(
+            text.contains("please also check the logs"),
+            "the person's steer is gone (prefetch {include_prefetched_content}): {text}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     let team = team_with("child-finished-deadline-stop", None, false).await;
