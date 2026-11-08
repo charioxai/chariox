@@ -35,6 +35,12 @@ fn lookup_steps(closed: usize) -> i32 {
     let Outcome::Event(event) = f.apply(Operation::Occur(event)) else {
         panic!("event")
     };
+    // The writer thread keeps its own counters, so the operations run on this thread.
+    let mut run = |op: Operation| {
+        let tx = db.transaction().unwrap();
+        apply(&tx, op).unwrap();
+        tx.commit().unwrap();
+    };
     INBOX_LOOKUP_STEPS.with(|n| n.set(0));
     for op in [
         Operation::Attempt {
@@ -56,10 +62,18 @@ fn lookup_steps(closed: usize) -> i32 {
             now: 11,
         },
     ] {
-        f.apply(op);
+        run(op);
     }
     let receipt = INBOX_LOOKUP_STEPS.with(|n| n.get());
-    f.settle("p", true);
+    run(Operation::Settle {
+        room: "room".into(),
+        agent: "parent".into(),
+        prompt: "p".into(),
+        run: "run".into(),
+        has_answer: true,
+        cancelled: false,
+        now: 12,
+    });
     let settled = INBOX_LOOKUP_STEPS.with(|n| n.get()) - receipt;
     assert!(
         receipt > 0 && settled > 0,
