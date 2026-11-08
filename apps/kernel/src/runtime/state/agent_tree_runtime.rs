@@ -22,20 +22,6 @@ impl KernelRuntimeState {
                 user_id: caller_user_id.to_string(),
             });
         }
-        let member = self.room_member_user_id_in(session.owner_user_id(), caller_user_id);
-        let may_read = self
-            .owned
-            .agent_store
-            .get_session_agents(&request.session_id)
-            .iter()
-            .find(|agent| agent.id() == request.agent_id)
-            .is_none_or(|root| session.can_view_agent_tree(&member, root));
-        if !may_read {
-            return Err(DaemonError::SessionAccessDenied {
-                session_id: request.session_id,
-                user_id: caller_user_id.to_string(),
-            });
-        }
         let tasks = self
             .owned
             .durable_state_store

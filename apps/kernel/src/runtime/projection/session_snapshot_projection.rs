@@ -112,7 +112,9 @@ impl SessionSnapshotProjection {
                 .agents()
                 .iter()
                 .find(|agent| agent.id() == root)
-                .is_some_and(|agent| session.can_view_agent_tree(user_id, agent))
+                .is_some_and(|agent| {
+                    session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
+                })
         });
         self.session = self
             .session

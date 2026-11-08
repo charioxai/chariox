@@ -1320,7 +1320,7 @@ Current pushed event contract:
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
 - `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
 - `agent_activity_changed` carries `session_id` and the complete agent activity map for activity-only projection updates
-- `agent_tree_changed` carries `session_id`, the `root` agent whose sub-agent tree changed and the same `rev` the external-agent `agent_tree` event carries; it is sent beside `agent_activity_changed`, once per changed tree, only to members who may read that root with `ListDescendants` (the root's owner, or a member who can view agent traces), and a client reads `ListDescendants` again
+- `agent_tree_changed` carries `session_id`, the `root` agent whose sub-agent tree changed and the same `rev` the external-agent `agent_tree` event carries; it is sent beside `agent_activity_changed`, once per changed tree, only to members whose `ListDescendants` shows the agents of that tree (the root's owner, or a member who can view agent traces), and a client reads `ListDescendants` again
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts

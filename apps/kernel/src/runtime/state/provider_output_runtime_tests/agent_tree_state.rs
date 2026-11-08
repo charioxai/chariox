@@ -346,20 +346,16 @@ async fn the_rooms_clients_hear_a_tree_change_through_their_projection() {
     );
 }
 
-// A tree and the news of its change go to the members who may read it: the owner, and a member who can
-// view agent traces. A private member of the room gets neither the tree nor the event for another's agent.
+// `agent_tree_changed` and `ListDescendants` follow one rule: a member hears of a change to a tree
+// exactly when the listing shows them its agents. A full collaborator reads every node of the owner's
+// tree and hears of its change; a private member reads none of them and hears nothing.
 #[tokio::test]
-async fn a_private_member_neither_reads_nor_hears_of_the_tree_of_another_users_agent() {
+async fn a_tree_change_reaches_exactly_the_members_whose_listing_shows_the_tree() {
     use crate::session::CollaborationLevel;
     let team = team_with("tree-private", None, true).await;
     {
         let mut sessions = team.runtime.owned.session_store.write();
         for (invite_id, user_id, level) in [
-            (
-                "invite-transparent",
-                "user-transparent",
-                CollaborationLevel::Transparent,
-            ),
             ("invite-full", "user-full", CollaborationLevel::Full),
             (
                 "invite-private",
@@ -382,30 +378,56 @@ async fn a_private_member_neither_reads_nor_hears_of_the_tree_of_another_users_a
                 .unwrap();
         }
     }
-    team.runtime.publish_changed_agent_trees();
-    let request = |_: ()| ListDescendantsRequest {
-        session_id: team.room.clone(),
-        agent_id: team.parent.clone(),
-    };
-    for (user, allowed) in [
-        (USER, true),
-        ("user-transparent", true),
-        ("user-full", true),
-        ("user-private", false),
-    ] {
-        let listed = team.runtime.list_descendants(user, request(()));
-        assert_eq!(listed.is_ok(), allowed, "{user}: {listed:?}");
-        let heard = team
-            .runtime
+    let history = &team.runtime.owned.durable_state_store;
+    let seen_by = |user: &str| {
+        team.runtime
             .session_snapshot_projection(&team.room, 0)
             .unwrap()
-            .redacted_for_user(user, &team.runtime.owned.durable_state_store)
+            .redacted_for_user(user, history)
             .unwrap()
-            .agent_tree_revs;
+    };
+    let before = [
+        ("user-full", seen_by("user-full")),
+        ("user-private", seen_by("user-private")),
+    ];
+    team.runtime.publish_changed_agent_trees();
+    let whole = read(&team);
+    assert!(!whole.nodes.is_empty());
+    for (user, quiet) in before {
+        let listed = match team
+            .runtime
+            .list_descendants(
+                user,
+                ListDescendantsRequest {
+                    session_id: team.room.clone(),
+                    agent_id: team.parent.clone(),
+                },
+            )
+            .unwrap()
+        {
+            LocalDaemonResponse::AgentTree { tree } => tree,
+            other => panic!("agent tree expected, got {other:?}"),
+        };
+        let heard: Vec<String> = tree_changed_events(&seen_by(user), &quiet)
+            .into_iter()
+            .filter_map(|event| match event {
+                crate::transport::kernel_protocol::KernelEvent::AgentTreeChanged {
+                    root, ..
+                } => Some(root),
+                _ => None,
+            })
+            .collect();
+        let shown = !listed.nodes.is_empty();
         assert_eq!(
-            heard.contains_key(&team.parent),
-            allowed,
-            "{user}: {heard:?}"
+            heard == vec![team.parent.clone()],
+            shown,
+            "{user}: heard {heard:?}, listed {:?}",
+            listed.nodes
         );
+        assert_eq!(heard.is_empty(), !shown, "{user}: heard {heard:?}");
+        match user {
+            "user-full" => assert_eq!(listed.nodes.len(), whole.nodes.len()),
+            _ => assert!(heard.is_empty() && listed.nodes.is_empty(), "{user}"),
+        }
     }
 }

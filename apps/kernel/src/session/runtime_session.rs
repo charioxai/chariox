@@ -523,12 +523,13 @@ impl RuntimeSession {
             .map(|member| member.collaboration_level())
     }
 
-    /// Whether `user_id` may read the sub-agents below `root`: the owner of the agent,
-    /// or a member who can view agent traces. Used for `ListDescendants` and its change event.
-    pub fn can_view_agent_tree(&self, user_id: &str, root: &crate::agent::AgentInstance) -> bool {
-        root.owner_user_id() == user_id
+    /// Whether `viewer` may see an agent of `agent_owner_user_id` in a sub-agent tree: their own
+    /// agent, or any agent once they can view agent traces. `ListDescendants` keeps the nodes this
+    /// allows, and `agent_tree_changed` goes to the viewers it allows for the tree's root.
+    pub fn can_view_tree_agent_owned_by(&self, viewer: &str, agent_owner_user_id: &str) -> bool {
+        agent_owner_user_id == viewer
             || self
-                .collaboration_level_for_user(user_id)
+                .collaboration_level_for_user(viewer)
                 .is_some_and(|level| level.can_view_agent_trace())
     }
 
