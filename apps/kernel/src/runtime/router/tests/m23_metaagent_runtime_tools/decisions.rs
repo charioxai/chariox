@@ -98,7 +98,9 @@ async fn peer_flags_and_unknown_ids() {
         RuntimeInteractionLevel::Warning,
         Some("Allow command?".into()),
         "Run `ls`?",
-        vec![RuntimeInteractionChoice::new("allow", "Allow", "allow", None)],
+        vec![RuntimeInteractionChoice::new(
+            "allow", "Allow", "allow", None,
+        )],
         None,
         None,
         None,
@@ -112,13 +114,19 @@ async fn peer_flags_and_unknown_ids() {
     for command in [
         format!("agent answer perm-peer allow --room {}", world.room),
         "agent answer perm-peer allow --kernel elsewhere".to_string(),
-        format!("agent pass perm-peer --room {} --kernel elsewhere", world.room),
+        format!(
+            "agent pass perm-peer --room {} --kernel elsewhere",
+            world.room
+        ),
         "agent pass perm-peer --machine elsewhere".to_string(),
     ] {
         let refused = room_command(&world, "b", &command).await;
         assert!(!refused.ok, "{command}: {refused:?}");
         assert!(
-            refused.payload.to_string().contains("peer_decision_refused"),
+            refused
+                .payload
+                .to_string()
+                .contains("peer_decision_refused"),
             "{command}: {refused:?}"
         );
     }

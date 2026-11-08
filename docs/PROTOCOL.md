@@ -724,7 +724,7 @@ permission level or mode. Only the user changes the edge, with
 `SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
 `AgentParentChanged {agent}`); every agent caller, a sudo window included, is
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
-set|get`, `agent children` and `agent spawn`, and reads `agent usage` and
+set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
@@ -746,8 +746,9 @@ not listed to the user until it reaches the user. A holder agent gets an urgent
 `question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
 command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
 pass <interaction>`; both return `ChildDecision {status}` with `status` one of
-`answered`, `passed`, `not_holder`, `settled_by_user`, `invalid_answer`, and no
-text. The decision moves up at once, with no model turn, when its holder's turn
+`answered`, `passed`, `not_holder`, `settled_by_user`, `unknown_interaction`,
+`invalid_answer`, and no text; `--room`, `--kernel` and `--machine` are refused
+with `peer_decision_refused`, because a peer never settles a decision. The decision moves up at once, with no model turn, when its holder's turn
 ends, errors, is cancelled or is blocked. A decision answered by a parent closes
 as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
 

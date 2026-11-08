@@ -137,7 +137,10 @@ fn the_message_and_steer_room_commands_reach_a_peer_like_the_tool() {
         let steer = rooms
             .room_command(
                 &rooms.sender_token,
-                format!("agent steer peer \"stop editing\" --room {}", rooms.peer_room),
+                format!(
+                    "agent steer peer \"stop editing\" --room {}",
+                    rooms.peer_room
+                ),
             )
             .await;
         assert!(steer.ok, "{}", steer.payload);
@@ -191,9 +194,14 @@ fn the_steer_room_command_keeps_the_authority_limit_and_the_message_one_does_not
             )
             .await;
         assert!(message.ok, "{}", message.payload);
-        assert_eq!(rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(), 1);
+        assert_eq!(
+            rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(),
+            1
+        );
         for bad in ["agent steer peer", "agent message", "agent steer peer a b"] {
-            let usage = rooms.room_command(&rooms.sender_token, bad.to_string()).await;
+            let usage = rooms
+                .room_command(&rooms.sender_token, bad.to_string())
+                .await;
             assert!(
                 !usage.ok && usage.payload.to_string().contains("usage:"),
                 "{bad}: {}",

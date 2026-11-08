@@ -755,7 +755,10 @@ fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed
             .command("agent message worker hi --kernel elsewhere".to_string())
             .await
             .unwrap_err();
-        assert!(no_room_for_kernel.contains("usage:"), "{no_room_for_kernel}");
+        assert!(
+            no_room_for_kernel.contains("usage:"),
+            "{no_room_for_kernel}"
+        );
         unlink(&[&a, &b]);
     });
 }
