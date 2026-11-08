@@ -71,7 +71,7 @@ async fn restarted(kernel: Kernel) -> Kernel {
     drop(router);
     drop(app);
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config).expect("the kernel boots again"),
+        crate::test_support::bootstrap_after_test_owner_exit(config).await,
     ));
     let router = CommandRouter::with_interactive_capacity(app.clone(), 4);
     let kernel = Kernel {
@@ -449,11 +449,14 @@ fn no_request_from_another_kernel_answers_a_card_on_this_one() {
         sent.dedup();
         assert_eq!(sent, pinned, "every peer request kind is fenced");
 
-        let mut cards = Vec::new();
-        for (id, kind) in [
+        // One card at a time is pending for an agent; the cancel, which may end its turn,
+        // comes with the last one.
+        let kinds = [
             ("perm-fence", RuntimeInteractionKind::Permission),
             ("choice-fence", RuntimeInteractionKind::Choice),
-        ] {
+        ];
+        for (round, (id, kind)) in kinds.into_iter().enumerate() {
+            let last = round + 1 == kinds.len();
             let card = RuntimeInteraction::new(
                 id,
                 b.agent.id(),
@@ -469,31 +472,38 @@ fn no_request_from_another_kernel_answers_a_card_on_this_one() {
                 None,
                 None,
             );
-            let answer = b
+            let mut answer = b
                 .router
                 .runtime_state
                 .create_runtime_interaction(&b.room, card)
                 .await
                 .unwrap();
-            cards.push((id, answer));
-        }
-        for request in requests {
-            let kind = serde_json::to_value(&request).unwrap()["kind"].clone();
-            let cancel = matches!(request, RelayPeerRequest::PeerAgentCancel { .. });
-            let _ = b.router.relay_peer_agent(&a.id, OWNER, request).await;
-            for (id, answer) in &mut cards {
+            for request in every_peer_request(&a, &b) {
+                let cancel = matches!(request, RelayPeerRequest::PeerAgentCancel { .. });
+                if cancel && !last {
+                    continue;
+                }
+                let sent = serde_json::to_value(&request).unwrap()["kind"].clone();
+                let _ = b.router.relay_peer_agent(&a.id, OWNER, request).await;
                 match answer.try_recv() {
                     Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
                     // A cancel may end the turn its card belongs to; that is no answer.
                     Err(closed) if cancel => {
                         let _ = closed;
                     }
-                    Err(closed) => panic!("{kind} closed card {id}: {closed:?}"),
+                    Err(closed) => panic!("{sent} closed card {id}: {closed:?}"),
                     Ok(resolved) => assert!(
                         cancel && resolved.choice_id.is_none() && resolved.reply.is_none(),
-                        "{kind} answered card {id}: {resolved:?}"
+                        "{sent} answered card {id}: {resolved:?}"
                     ),
                 }
+            }
+            if !last {
+                b.router
+                    .runtime_state
+                    .resolve_runtime_interaction(&b.room, id, "deny", None)
+                    .await
+                    .unwrap();
             }
         }
         unlink(&[&a, &b]);
