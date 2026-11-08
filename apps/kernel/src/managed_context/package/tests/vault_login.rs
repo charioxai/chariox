@@ -781,3 +781,51 @@ fn a_failure_after_the_login_import_leaves_neither_the_login_nor_the_transferred
         "the kernel context is rolled back"
     );
 }
+
+#[test]
+fn a_rollback_on_a_locked_vault_keeps_the_profile_so_a_later_rollback_clears_the_login() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::new("vault-login-locked-rollback");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let receipt = transfer
+        .apply(&transfer.export("context-locked", &[&profile_id]))
+        .expect("apply package");
+    let vault = Path::new(&transfer.target.config.user_config.credential_vault.path);
+    // The new machine's Vault lapsed (restart, unlock lease) before Cloud rejected the transfer.
+    crate::secret::lock_chariox_encrypted_vault(vault).expect("lock the target Vault");
+
+    let rollback = || {
+        transfer.target.enter();
+        rollback_managed_context_package_application(
+            &receipt,
+            &transfer.target.config.relay_private_key,
+            Some(&transfer.target_accounts()),
+            None,
+            None,
+        )
+    };
+    rollback().expect_err("a locked Vault cannot remove the login");
+    crate::secret::unlock_chariox_encrypted_vault(
+        vault,
+        PASSPHRASE,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("reopen the target Vault");
+    rollback().expect("the retried rollback succeeds");
+
+    assert_eq!(
+        transfer.target.vault_token(&profile_id),
+        None,
+        "the retried rollback removes the login from the rejected machine's Vault"
+    );
+    assert!(
+        transfer
+            .target
+            .registry
+            .get(OWNER, "claude", &profile_id)
+            .is_err(),
+        "and the profile"
+    );
+}
