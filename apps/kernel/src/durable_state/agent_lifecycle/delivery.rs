@@ -545,7 +545,7 @@ fn siblings(
     sequence: u64,
 ) -> Result<Vec<u64>, DaemonError> {
     let mut q = tx
-        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND json_valid(payload) AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id')=(SELECT json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3) ORDER BY sequence")
+        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END IS NOT NULL AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END=(SELECT CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3) ORDER BY sequence")
         .map_err(sql)?;
     let rows = q
         .query_map(params![room, agent, sql_integer(sequence)?], |r| {

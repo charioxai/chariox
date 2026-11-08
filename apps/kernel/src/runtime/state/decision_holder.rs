@@ -275,16 +275,11 @@ impl KernelRuntimeOwnedState {
         tenure: u32,
         interaction_id: &str,
     ) -> Result<Vec<ledger::InboxEvent>, DaemonError> {
-        let occurrence = child_decision_occurrence(interaction_id, holder, tenure);
-        let mut events = Vec::new();
-        self.durable_state_store
-            .scan_agent_inbox(session_id, holder, 0, None, |event| {
-                if event.occurrence_id == occurrence {
-                    events.push(event);
-                }
-                std::ops::ControlFlow::Continue(())
-            })?;
-        Ok(events)
+        self.durable_state_store.agent_inbox_occurrence(
+            session_id,
+            holder,
+            &child_decision_occurrence(interaction_id, holder, tenure),
+        )
     }
 
     /// The decisions `holder` already had: its event for the current tenure is no longer

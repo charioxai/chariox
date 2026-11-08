@@ -110,6 +110,9 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
+    CREATE INDEX IF NOT EXISTS agent_inbox_occurrence ON agent_inbox(room_id,agent_id,occurrence_id);
+    CREATE INDEX IF NOT EXISTS agent_inbox_prompt ON agent_inbox(room_id,agent_id,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END);
+    CREATE INDEX IF NOT EXISTS agent_inbox_target_prompt ON agent_inbox(room_id,agent_id,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.target_prompt_id') END);
     CREATE TABLE IF NOT EXISTS peer_agent_requests(sender_kernel_id TEXT NOT NULL,request_id TEXT NOT NULL,answer TEXT NOT NULL,PRIMARY KEY(sender_kernel_id,request_id));").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
@@ -619,6 +622,36 @@ impl DurableKernelStateStore {
         .collect()
     }
 
+    /// The recipient's rows for one occurrence id, read through the occurrence index.
+    pub(crate) fn agent_inbox_occurrence(
+        &self,
+        room: &str,
+        agent: &str,
+        occurrence: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox")?;
+        let mut q = db
+            .prepare_cached("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 ORDER BY sequence")
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, occurrence], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|r| {
+            let (seq, source, id, payload) = r.map_err(sql)?;
+            #[cfg(test)]
+            INBOX_ROWS_READ.with(|n| n.set(n.get() + 1));
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+
     /// Open rows with `after < sequence <= upto` the agent was never shown by an inbox read, whatever
     /// cursor it passed: the read state is the ledger's, not the agent's.
     pub(crate) fn agent_unread_inbox(
@@ -768,7 +801,6 @@ thread_local! {
     pub(crate) static VISIBLE_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
     pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
     /// Inbox rows decoded by the recipient reads on this thread.
     pub(crate) static INBOX_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
