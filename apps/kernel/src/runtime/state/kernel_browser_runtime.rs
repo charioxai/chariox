@@ -1082,11 +1082,6 @@ impl KernelRuntimeState {
                 serde_json::json!({"loaded": BROWSER, "granted": granted, "prompt_id": prompt}),
             ));
         }
-        if arguments.lifetime_hours.is_some() {
-            return Err(host_error(
-                "MP-08: lifetime_hours applies only to a new user-requested grant".into(),
-            ));
-        }
         if !host.is_loaded(&user, agent.id()) {
             self.user_domain_agent_authority(run)?;
             host.load(&user, agent.id()).map_err(host_error)?;
