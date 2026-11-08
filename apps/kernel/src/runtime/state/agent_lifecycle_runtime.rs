@@ -1330,7 +1330,7 @@ impl KernelRuntimeState {
                 if let Some(ended) = ledger::end_failed_turn(
                     &self.owned.durable_state_store,
                     &task,
-                    "No live provider turn or confirmed wake delivery; owner must reconcile and resume".into(),
+                    "Interrupted before it finished. Resume it to continue where it stopped, or cancel it.".into(),
                 )? {
                     blocked.push(ended);
                 }
