@@ -704,3 +704,58 @@ fn guest_turn(app: &mut DaemonApp, room: &str, agent: &str, user: &str) -> (Stri
         .to_string();
     (token, prompt.id().to_string())
 }
+
+#[test]
+fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed_refusals() {
+    run_peer_test("peer-kernel-room-commands", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-room-commands",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        a.command(format!(
+            "agent message worker \"parser.rs is mine\" --room {} --kernel {} --reply-requested",
+            b.room, b.name
+        ))
+        .await
+        .expect("a message reaches the peer");
+        a.command(format!(
+            "agent steer worker \"stop editing\" --room {} --kernel {}",
+            b.room, b.id
+        ))
+        .await
+        .expect("a steer reaches the peer");
+        let inbox = b.messages(b.agent.id()).await;
+        assert_eq!(inbox.len(), 2, "{inbox:?}");
+        assert!(!inbox[0].urgent && inbox[0].reply_requested);
+        assert!(inbox[1].urgent);
+        for event in &inbox {
+            assert_eq!(event.payload["sender_kernel_id"], a.id.as_str());
+            assert_eq!(event.payload["sender_agent_id"], a.agent.id());
+        }
+        assert!(b.turn_running(b.agent.id()).await, "no user prompt");
+
+        let unreachable = a
+            .command(format!(
+                "agent steer worker stop --room {} --kernel no-such-kernel",
+                b.room
+            ))
+            .await
+            .unwrap_err();
+        assert!(unreachable.contains("kernel_unreachable"), "{unreachable}");
+        let no_room = a
+            .command(format!(
+                "agent message worker hi --room no-such-room --kernel {}",
+                b.name
+            ))
+            .await
+            .unwrap_err();
+        assert!(no_room.contains("room_unavailable"), "{no_room}");
+        let no_room_for_kernel = a
+            .command("agent message worker hi --kernel elsewhere".to_string())
+            .await
+            .unwrap_err();
+        assert!(no_room_for_kernel.contains("usage:"), "{no_room_for_kernel}");
+        unlink(&[&a, &b]);
+    });
+}

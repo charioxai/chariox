@@ -69,3 +69,68 @@ async fn commands() {
     let late = room_command(&world, "b", "agent answer perm-cmd deny").await;
     assert_eq!(late.payload["response"]["status"], "settled_by_user");
 }
+
+#[test]
+fn a_decision_is_never_answered_or_passed_for_another_room_or_kernel() {
+    run_large_stack_async_test("decision-commands-peer", peer_flags_and_unknown_ids);
+}
+
+async fn peer_flags_and_unknown_ids() {
+    let world = world("decision-commands-peer").await;
+    world
+        .app
+        .lock()
+        .await
+        .agents()
+        .update_agent_config(
+            &world.ids["b"],
+            None,
+            Some(Some(AgentPermissionLevel::Yolo)),
+            None,
+            None,
+        )
+        .unwrap();
+    launch(&world.app, &world.room, &world.ids["d"]).await;
+    let asked = RuntimeInteraction::new(
+        "perm-peer",
+        &world.ids["d"],
+        RuntimeInteractionKind::Permission,
+        RuntimeInteractionLevel::Warning,
+        Some("Allow command?".into()),
+        "Run `ls`?",
+        vec![RuntimeInteractionChoice::new("allow", "Allow", "allow", None)],
+        None,
+        None,
+        None,
+    );
+    let mut answer = world
+        .router
+        .runtime_state
+        .create_runtime_interaction(&world.room, asked)
+        .await
+        .unwrap();
+    for command in [
+        format!("agent answer perm-peer allow --room {}", world.room),
+        "agent answer perm-peer allow --kernel elsewhere".to_string(),
+        format!("agent pass perm-peer --room {} --kernel elsewhere", world.room),
+        "agent pass perm-peer --machine elsewhere".to_string(),
+    ] {
+        let refused = room_command(&world, "b", &command).await;
+        assert!(!refused.ok, "{command}: {refused:?}");
+        assert!(
+            refused.payload.to_string().contains("peer_decision_refused"),
+            "{command}: {refused:?}"
+        );
+    }
+    assert!(answer.try_recv().is_err(), "no flag settled the card");
+    let unknown = room_command(&world, "b", "agent answer no-such-card allow").await;
+    assert!(!unknown.ok);
+    assert_eq!(
+        unknown.payload["response"]["status"], "unknown_interaction",
+        "{unknown:?}"
+    );
+    let unknown = room_command(&world, "b", "agent pass no-such-card").await;
+    assert_eq!(unknown.payload["response"]["status"], "unknown_interaction");
+    let done = room_command(&world, "b", "agent answer perm-peer allow").await;
+    assert!(done.ok, "own-room answering is unchanged: {done:?}");
+}

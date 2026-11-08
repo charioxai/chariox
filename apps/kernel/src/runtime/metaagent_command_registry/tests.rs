@@ -11,6 +11,8 @@ const ROUTED_COMMAND_CASES: &[&str] = &[
     "agent delete code-reviewer",
     "agent destroy code-reviewer",
     "agent remove code-reviewer",
+    "agent steer worker-1 stop",
+    "agent message worker-1 hello --room 18e6036479710b80 --reply-requested",
     "workflow",
     "workflow list",
     "workflow ls",
@@ -373,4 +375,33 @@ fn command_docs_prefer_specific_denial_policy_entries() {
         docs.get("routed").and_then(serde_json::Value::as_bool),
         Some(false)
     );
+}
+
+#[test]
+fn peer_message_and_steer_are_documented_and_decisions_are_not_a_peer_path() {
+    for (name, usage) in [
+        ("agent steer", "agent steer <agent-ref> <text>"),
+        ("agent message", "agent message <agent-ref> <text>"),
+    ] {
+        let docs = command_docs(MetaCommandDocsArgs {
+            command: name.to_string(),
+        })
+        .unwrap_or_else(|| panic!("`{name}` should be documented"));
+        assert!(
+            docs["usage"].as_str().unwrap().starts_with(usage)
+                && docs["usage"].as_str().unwrap().contains("--room"),
+            "{docs}"
+        );
+        assert_eq!(docs["routed"], true, "{docs}");
+    }
+    for name in ["agent answer", "agent pass"] {
+        let docs = command_docs(MetaCommandDocsArgs {
+            command: name.to_string(),
+        })
+        .unwrap();
+        assert!(
+            docs["description"].as_str().unwrap().contains("never"),
+            "`{name}` says it is not a peer path: {docs}"
+        );
+    }
 }

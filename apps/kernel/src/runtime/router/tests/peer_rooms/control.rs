@@ -119,3 +119,86 @@ fn a_same_room_peer_may_cancel_but_a_sub_agent_never_cancels_its_parent() {
         assert!(rooms.turn_running(&rooms.home, child.id()).await);
     });
 }
+
+#[test]
+fn the_message_and_steer_room_commands_reach_a_peer_like_the_tool() {
+    run_peer_test("peer-room-message-steer", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let message = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!(
+                    "agent message peer \"parser.rs is mine\" --room {} --reply-requested",
+                    rooms.peer_room
+                ),
+            )
+            .await;
+        assert!(message.ok, "{}", message.payload);
+        let steer = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent steer peer \"stop editing\" --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(steer.ok, "{}", steer.payload);
+        let inbox = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await;
+        assert_eq!(inbox.len(), 2, "{inbox:?}");
+        assert!(!inbox[0].urgent && inbox[0].reply_requested);
+        assert!(inbox[1].urgent && !inbox[1].reply_requested);
+        for event in &inbox {
+            assert_eq!(event.source_id, rooms.sender.id());
+            assert_eq!(event.payload["sender_room_id"], rooms.home.as_str());
+        }
+        assert!(
+            rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "a steer is an inbox message, never a user prompt"
+        );
+    });
+}
+
+#[test]
+fn the_steer_room_command_keeps_the_authority_limit_and_the_message_one_does_not_have_it() {
+    run_peer_test("peer-room-steer-clamp", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Required, AgentPermissionLevel::Yolo);
+        let steer = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent steer peer stop --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(!steer.ok);
+        let text = steer.payload.to_string();
+        assert!(
+            text.contains("more authority") && text.contains("send it a message instead"),
+            "{text}"
+        );
+        let foreign = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent message foreign hi --room {}", rooms.foreign_room),
+            )
+            .await;
+        assert!(!foreign.ok);
+        assert!(
+            foreign.payload.to_string().contains("unavailable"),
+            "{}",
+            foreign.payload
+        );
+        let message = rooms
+            .room_command(
+                &rooms.sender_token,
+                format!("agent message peer fyi --room {}", rooms.peer_room),
+            )
+            .await;
+        assert!(message.ok, "{}", message.payload);
+        assert_eq!(rooms.inbox(&rooms.peer_room, rooms.peer.id()).await.len(), 1);
+        for bad in ["agent steer peer", "agent message", "agent steer peer a b"] {
+            let usage = rooms.room_command(&rooms.sender_token, bad.to_string()).await;
+            assert!(
+                !usage.ok && usage.payload.to_string().contains("usage:"),
+                "{bad}: {}",
+                usage.payload
+            );
+        }
+    });
+}
