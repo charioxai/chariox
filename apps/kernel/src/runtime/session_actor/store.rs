@@ -134,6 +134,12 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let viewport = match self.state.room_environment_snapshot(&request.session_id) {
             Ok(environment) => Ok(environment.viewport),
             Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => {
@@ -178,10 +184,17 @@ impl SessionRuntimeStore {
     pub(super) async fn stop_room_environment(
         &self,
         request: StopRoomEnvironmentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let result = if self
             .state
             .browser_controller_enabled_for_room(&request.session_id)
@@ -201,10 +214,17 @@ impl SessionRuntimeStore {
     pub(super) async fn retry_room_environment(
         &self,
         request: RetryRoomEnvironmentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
+        if let Err(error) = self
+            .state
+            .ensure_room_control(&request.session_id, &caller_user_id)
+        {
+            return (Err(error), None);
+        }
         let result = self
             .state
             .retry_room_environment(&request.session_id)

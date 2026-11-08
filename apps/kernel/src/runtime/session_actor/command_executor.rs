@@ -291,12 +291,16 @@ impl SessionRuntimeCommandExecutor {
                 self.store
                     .bind_room_environment_slice(request, caller_user_id)
             }),
-            LocalDaemonRequest::StopRoomEnvironment(request) => {
-                Box::pin(async move { self.store.stop_room_environment(request).await })
-            }
-            LocalDaemonRequest::RetryRoomEnvironment(request) => {
-                Box::pin(async move { self.store.retry_room_environment(request).await })
-            }
+            LocalDaemonRequest::StopRoomEnvironment(request) => Box::pin(async move {
+                self.store
+                    .stop_room_environment(request, caller_user_id)
+                    .await
+            }),
+            LocalDaemonRequest::RetryRoomEnvironment(request) => Box::pin(async move {
+                self.store
+                    .retry_room_environment(request, caller_user_id)
+                    .await
+            }),
             LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => Box::pin(async move {
                 self.store
                     .update_room_environment_viewport(request, caller_user_id)

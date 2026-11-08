@@ -3,7 +3,7 @@ use super::*;
 // MP-08 / MP-11: starting, stopping or retrying the Room's environment controls the Room, like
 // its processes: the owner or a member who may prompt agents directly, never a Private member.
 #[tokio::test]
-async fn a_private_member_cannot_stop_or_retry_the_room_environment() {
+async fn a_private_member_cannot_start_stop_or_retry_the_room_environment() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
     let (session, _) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new("workspace", "worktree"))
@@ -17,7 +17,13 @@ async fn a_private_member_cannot_stop_or_retry_the_room_environment() {
     app.sessions_mut().restore_session(room);
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
     let session_id = session.id();
-    let controls: [LocalDaemonRequest; 2] = [
+    // Start is refused before it runs, so the test never starts an environment.
+    let controls: [LocalDaemonRequest; 3] = [
+        serde_json::from_value(serde_json::json!({ "StartRoomEnvironment": {
+            "session_id": session_id,
+            "viewport": { "css_width": 1280, "css_height": 800, "device_scale_factor": 1, "desktop_pixel_width": 1280, "desktop_pixel_height": 800 }
+        } }))
+        .unwrap(),
         serde_json::from_value(
             serde_json::json!({ "StopRoomEnvironment": { "session_id": session_id } }),
         )
