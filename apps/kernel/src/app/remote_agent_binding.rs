@@ -3294,6 +3294,70 @@ mod cleanup_tests {
             .remote_lease_context_pending(session.id(), agent.id(), &replacement)
             .unwrap());
     }
+
+    /// MP-08 / MP-09 / MP-10 / MP-11: a renewed binding launches the worker within the parent chain.
+    #[test]
+    fn binding_refresh_carries_the_parent_chain_limit() {
+        use crate::provider::{AgentExecutionMode as Mode, AgentPermissionLevel as Level};
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+        let (session, root) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "limit-workspace",
+                std::env::current_dir()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+            .unwrap();
+        crate::test_support::admit_room_test_turn(&mut app, session.id(), root.id());
+        let child = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_parent_agent_id(root.id()),
+            )
+            .unwrap();
+        for (agent, mode, level) in [
+            (root.id(), Mode::Plan, Level::Required),
+            (child.id(), Mode::Build, Level::Yolo),
+        ] {
+            app.agents()
+                .update_agent_config(agent, Some(Some(mode)), Some(Some(level)), None, None)
+                .unwrap();
+        }
+        let binding = RemoteAgentBinding {
+            worker_kernel_id: "limit-worker".into(),
+            worker_machine_id: "limit-machine".into(),
+            execution_lease_id: "limit-lease".into(),
+            leased_agent_id: "limit-leased-agent".into(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+            worker_worktree_id: None,
+        };
+        app.agents()
+            .bind_remote_execution(child.id(), binding)
+            .unwrap();
+        let binding = app
+            .agents()
+            .get_agent(child.id())
+            .unwrap()
+            .remote_execution()
+            .cloned()
+            .unwrap();
+
+        let plan = app
+            .prepare_remote_agent_binding_refresh(child.id(), &binding)
+            .unwrap();
+
+        assert_eq!(
+            (plan.execution_mode, plan.permission_level),
+            (Mode::Plan, Level::Required),
+            "a Yolo/Build child below a Required/Plan root is renewed at Required/Plan"
+        );
+    }
 }
 
 impl DaemonApp {
