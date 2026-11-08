@@ -156,8 +156,8 @@ pub(crate) struct RoomPeerSpawned {
 }
 
 impl KernelRuntimeState {
-    /// The other kernel `kernel_ref` names, by id or name as `agent spawn --kernel` takes them;
-    /// `None` when it names this kernel.
+    /// The other kernel `kernel_ref` names, by id or name as `agent spawn --kernel` takes them,
+    /// or by the name of the machine it runs on (`--machine`); `None` when it names this kernel.
     pub(crate) async fn resolve_peer_kernel(
         &self,
         kernel_ref: &str,
@@ -173,10 +173,25 @@ impl KernelRuntimeState {
         if let Some(kernel) = peer_agent_link_for_tests::resolve(kernel_ref) {
             return Ok(Some(kernel));
         }
-        crate::transport::relay_discovery::get_live_kernel(&config, kernel_ref)
-            .await
-            .map(|presence| Some(presence.kernel_id))
-            .map_err(|_| kernel_unreachable(kernel_ref))
+        if let Ok(presence) =
+            crate::transport::relay_discovery::get_live_kernel(&config, kernel_ref).await
+        {
+            return Ok(Some(presence.kernel_id));
+        }
+        // A machine of the owner names the one kernel it runs.
+        let kernels =
+            crate::transport::relay_discovery::list_live_kernels_for_machine(&config, kernel_ref)
+                .await
+                .map_err(|_| kernel_unreachable(kernel_ref))?;
+        match kernels.as_slice() {
+            [] => Err(kernel_unreachable(kernel_ref)),
+            [kernel] if kernel.kernel_id == config.daemon_id => Ok(None),
+            [kernel] => Ok(Some(kernel.kernel_id.clone())),
+            _ => Err(refusal(
+                "kernel_ambiguous",
+                format!("machine `{kernel_ref}` runs several kernels; name one with --kernel"),
+            )),
+        }
     }
 
     /// Messages, steers or cancels `agent` of `room` on `kernel`; answers the target's stamp.
