@@ -1,6 +1,7 @@
 //! A launch held before start can run on another owned kernel instead.
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::{ExecOutput, LaunchIntent};
@@ -34,4 +35,10 @@ pub(crate) trait ExecPlacement: Send + Sync {
         wait: Duration,
     ) -> PlacementFuture<'a, ExecOutput>;
     fn cancel<'a>(&'a self, exec_id: &'a str) -> PlacementFuture<'a, ()>;
+}
+
+/// One decision to run a held launch elsewhere, taken while it was queued.
+pub(super) struct Placed {
+    pub(super) target: Arc<dyn ExecPlacement>,
+    pub(super) attributed_agent: Option<String>,
 }
