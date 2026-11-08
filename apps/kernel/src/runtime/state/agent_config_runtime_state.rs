@@ -943,8 +943,10 @@ impl KernelRuntimeState {
                 .update_session_config(session_id, attachment_id, values, requires_idle)?;
         let changed = self.session_agent_execution_configs(session_id);
         let mut terminated_run_ids = Vec::new();
+        let mut rescoped = Vec::new();
         for (agent_id, scope) in scopes {
             if let Some(next_scope) = changed.get(&agent_id).filter(|next| **next != scope) {
+                rescoped.push(agent_id.clone());
                 self.claude_session_grants.forget(&agent_id);
                 self.terminal_input_grants.forget(&agent_id);
                 terminated_run_ids.extend(self.owned.apply_agent_execution_config_to_provider(
@@ -958,6 +960,15 @@ impl KernelRuntimeState {
         }
         self.remove_terminated_provider_processes(terminated_run_ids)
             .await;
+        // The room default rescopes every agent without its own setting, as `update_agent_config`
+        // does one agent: a lowered holder may no longer hold the decisions it held.
+        for agent_id in rescoped {
+            let (moved, announce) = self
+                .owned
+                .recheck_subtree_decisions(session_id, &agent_id)?;
+            self.finish_moved_decisions(session_id, moved, announce)
+                .await?;
+        }
         Ok(config)
     }
 
