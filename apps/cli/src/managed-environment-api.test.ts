@@ -35,7 +35,8 @@ for (const action of ["create", "reimage"] as const) for (const rejected of [fal
   const selected = {...contextPlan, providerAccounts}
   const client = {send: async (request: unknown) => {
     calls.push("kernel-preflight")
-    assert.deepEqual(request, {PreflightProviderAccountPortability: {providerAccounts}})
+    // A create names its launch with its client request id, which its transfer start carries too.
+    assert.deepEqual(request, {PreflightProviderAccountPortability: {providerAccounts, ...(action === "create" ? {launchId: "create-1"} : {})}})
     if (rejected) throw new Error("selected provider account has no transferable credentials")
     return {ProviderAccountPortabilityPreflightPassed: {}}
   }} as unknown as LocalIpcClient
