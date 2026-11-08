@@ -314,35 +314,27 @@ async fn a_peer_address_resolves_only_inside_the_callers_own_rooms() {
     let runtime = owned_runtime_state(&app).await;
 
     let found = runtime
-        .resolve_peer_source(&owner, &own_room, &own_agent)
+        .resolve_peer_agent(&owner, &own_room, &own_agent)
         .unwrap();
     assert_eq!(
-        (found.room.as_str(), found.agent_id.as_str()),
+        (found.session_id(), found.id()),
         (own_room.as_str(), own_agent.as_str())
     );
-    // A sub-agent is hidden from outside its team: refused like an agent that is not there.
-    for reference in [sub.id(), "hidden-helper", "@HIDDEN-HELPER"] {
-        let refusal = runtime
-            .resolve_peer_source(&owner, &own_room, reference)
-            .unwrap_err();
+    // A sub-agent is hidden from outside its team, another owner's room and a room that is not
+    // there are not addressable, and an empty name names nobody: one refusal for all of them.
+    let refusals = [sub.id(), "hidden-helper", "@hidden-helper", ""]
+        .into_iter()
+        .map(|reference| runtime.resolve_peer_agent(&owner, &own_room, reference))
+        .chain(
+            [rooms[2].0.as_str(), "no-such-room"]
+                .into_iter()
+                .map(|room| runtime.resolve_peer_agent(&owner, room, &rooms[2].1)),
+        );
+    for refusal in refusals {
+        let refusal = refusal.unwrap_err().to_string();
         assert!(
-            matches!(
-                refusal,
-                crate::runtime::state::tool_dispatch::peer_source::PeerRefusal::NoSuchAgent { .. }
-            ),
+            refusal.contains("agent is unavailable in that room"),
             "{refusal}"
         );
     }
-    // Another owner's room, and a room that is not there, are the same refusal.
-    for room in [rooms[2].0.as_str(), "no-such-room"] {
-        let refusal = runtime
-            .resolve_peer_source(&owner, room, &rooms[2].1)
-            .unwrap_err();
-        assert_eq!(
-            refusal,
-            crate::runtime::state::tool_dispatch::peer_source::PeerRefusal::NoSuchRoom,
-            "{refusal}"
-        );
-    }
-    assert!(runtime.resolve_peer_source(&owner, &own_room, "").is_err());
 }

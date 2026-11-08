@@ -27,12 +27,25 @@ impl KernelRuntimeState {
         if room == session.id() {
             return resolve_agent(&self.session_agents(room), room, reference).cloned();
         }
+        self.resolve_peer_agent(sender.owner_user_id(), room, reference)
+    }
+
+    /// An ordinary agent of a room of `owner`, the one address a peer has across rooms. Every
+    /// other answer (another owner's room, a missing room, a sub-agent, an archived agent, an
+    /// unknown or ambiguous name) is the same refusal.
+    pub(crate) fn resolve_peer_agent(
+        &self,
+        owner: &str,
+        room: &str,
+        reference: &str,
+    ) -> Result<crate::agent::AgentInstance, DaemonError> {
+        let reference = reference.trim().trim_start_matches('@');
         let other = self
             .owned
             .session_store
             .get_session(room)
             .map_err(|_| unavailable())?;
-        if other.owner_user_id() != sender.owner_user_id() {
+        if other.owner_user_id() != owner {
             return Err(unavailable());
         }
         let agents = self.session_agents(room);

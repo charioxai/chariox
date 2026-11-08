@@ -22,7 +22,6 @@ mod extension_request_tool;
 mod home_connector_executor;
 mod home_extension_authorizer;
 mod notification;
-pub(super) mod peer_source;
 mod popup;
 pub(in crate::runtime::state) use popup::{
     blocking_popup_timeout_seconds, popup_status, CANCEL_CHOICE_ID,

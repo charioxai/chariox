@@ -148,6 +148,14 @@ impl KernelRuntimeState {
                     })?;
                 serde_json::json!({"unsubscribed":id})
             }
+            "chariox.events.subscribe" if other_room(&args, room).is_some() => self
+                .subscribe_peer_in_other_room(
+                    session.owner_user_id(),
+                    task_id,
+                    prompt.id(),
+                    &args,
+                    other_room(&args, room).unwrap_or_default(),
+                )?,
             "chariox.events.subscribe" => {
                 let source = args["source_id"]
                     .as_str()
@@ -277,5 +285,48 @@ impl KernelRuntimeState {
             _ => return Err(ledger::error("unknown event tool")),
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+}
+
+/// The room named by a subscribe that follows an agent outside the caller's room.
+fn other_room<'a>(args: &'a serde_json::Value, room: &str) -> Option<&'a str> {
+    args["room"]
+        .as_str()
+        .map(str::trim)
+        .filter(|other| !other.is_empty() && *other != room)
+}
+
+impl KernelRuntimeState {
+    /// A peer in another room of the owner is followed by its address there; its turns end in
+    /// that room and reach this task as peer events.
+    fn subscribe_peer_in_other_room(
+        &self,
+        owner: &str,
+        task_id: &str,
+        prompt_id: &str,
+        args: &serde_json::Value,
+        other: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let source = args["source_id"]
+            .as_str()
+            .ok_or_else(|| ledger::error("source_id required"))?;
+        let peer = self.resolve_peer_agent(owner, other, source)?;
+        let id = format!("subscription-{:032x}", rand::random::<u128>());
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Subscribe {
+                task: task_id.into(),
+                prompt: prompt_id.into(),
+                registration: Registration {
+                    id: id.clone(),
+                    task_id: task_id.into(),
+                    source_id: peer.id().into(),
+                    obligation_id: None,
+                    source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
+                    live: true,
+                    peer: true,
+                },
+            })?;
+        Ok(serde_json::json!({"registration_id":id,"source_id":peer.id(),"room":other}))
     }
 }
