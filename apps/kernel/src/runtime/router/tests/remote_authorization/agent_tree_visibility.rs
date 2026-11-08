@@ -1,6 +1,7 @@
 // MP-08 / MP-09 / MP-10 / MP-11: ListDescendants follows the room's collaboration levels, like the
 // session projection: a Private collaborator sees nothing of another user's sub-agents, a
 // Transparent one sees them without provider and model, a Full one and the owner see everything.
+use super::historical_workflows::terminal_command;
 use super::*;
 use crate::local::{AgentTree, ListDescendantsRequest};
 
@@ -35,9 +36,13 @@ fn invite(
 }
 
 fn room(label: &str) -> (Room, crate::test_support::TestWorktree) {
+    room_on(label, DaemonConfig::for_tests())
+}
+
+fn room_on(label: &str, config: DaemonConfig) -> (Room, crate::test_support::TestWorktree) {
     use crate::session::CollaborationLevel::{Full, Private, Transparent};
     let worktree = crate::test_support::TestWorktree::new(label);
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
         .sessions_mut()
         .create_session(worktree.session_request())
@@ -93,13 +98,26 @@ fn both(room: &Room) -> Vec<&str> {
 }
 
 async fn descendants(room: &Room, user: &str) -> AgentTree {
+    read_descendants(room, user, remote_command_for_request).await
+}
+
+/// The enrolled owner reaches its pre-enrollment room through its terminal.
+async fn terminal_descendants(room: &Room, user: &str) -> AgentTree {
+    read_descendants(room, user, terminal_command).await
+}
+
+async fn read_descendants(
+    room: &Room,
+    user: &str,
+    command_for: fn(&LocalDaemonRequest, Option<&str>) -> KernelCommand,
+) -> AgentTree {
     let request = LocalDaemonRequest::ListDescendants(ListDescendantsRequest {
         session_id: room.session_id.clone(),
         agent_id: room.root.clone(),
     });
     match room
         .router
-        .dispatch(remote_command_for_request(&request, Some(user)), request)
+        .dispatch(command_for(&request, Some(user)), request)
         .await
         .expect("a room member reads the tree")
     {
@@ -165,5 +183,31 @@ async fn owner_and_full_collaborator() {
             Some(room.child.as_str()),
             "{user}"
         );
+    }
+}
+
+#[test]
+fn the_enrolled_owner_reads_the_whole_tree_of_a_room_made_before_enrollment() {
+    run_remote_authorization_large_stack_test("tree-enrolled-owner", enrolled_owner);
+}
+
+/// The room, its owner and its agents keep `local`; the owner reaches it over the relay under
+/// its Cloud identity and must read what `local` reads.
+async fn enrolled_owner() {
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let (room, _worktree) = room_on("tree-enrolled-owner", config);
+    let as_local = terminal_descendants(&room, DEFAULT_LOCAL_USER_ID).await;
+    let tree = terminal_descendants(&room, "kernel-owner").await;
+    assert_eq!(sorted_ids(&tree), both(&room));
+    assert_eq!(sorted_ids(&tree), sorted_ids(&as_local));
+    assert_eq!(tree.totals, as_local.totals);
+    for node in &tree.nodes {
+        assert_eq!(node.provider, "dev-stub");
+        assert_eq!(node.model.as_deref(), Some("secret-model"));
     }
 }
