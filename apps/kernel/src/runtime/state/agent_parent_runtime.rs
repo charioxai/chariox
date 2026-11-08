@@ -18,33 +18,64 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
-        if let Some(parent_id) = request.parent_agent_id.as_deref() {
-            let agents = self
-                .owned
-                .agent_store
-                .get_session_agents(&request.session_id);
-            let parent = agents
-                .iter()
-                .find(|candidate| candidate.id() == parent_id)
-                .ok_or_else(|| DaemonError::AgentNotInSession {
-                    session_id: request.session_id.clone(),
-                    agent_id: parent_id.to_owned(),
+        let (agent, moved, announce) = self.owned.place_agent(&request)?;
+        self.append_agent_durable_event("agent.updated", &agent, None)
+            .await?;
+        if moved > 0 {
+            self.owned.session_snapshot(&request.session_id)?;
+            self.owned
+                .terminal_stream
+                .notify_terminal_projection_change(&request.session_id);
+        }
+        for id in announce {
+            self.announce_child_decision(&request.session_id, &id)
+                .await?;
+        }
+        Ok(LocalDaemonResponse::AgentParentChanged { agent })
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Checks the new edge, sets it and moves the open decisions of the moved subtree as one step
+    /// under the interaction lock, so no decision is raised or answered against a half-moved tree.
+    fn place_agent(
+        &self,
+        request: &SetAgentParentRequest,
+    ) -> Result<(crate::agent::AgentInstance, usize, Vec<String>), DaemonError> {
+        let _mutation =
+            self.pending_interactions
+                .mutation
+                .lock()
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime interaction",
+                    message: "Interaction store is unavailable".into(),
                 })?;
+        if let Some(parent_id) = request.parent_agent_id.as_deref() {
+            let agents = self.agent_store.get_session_agents(&request.session_id);
+            let find = |id: &str| {
+                agents
+                    .iter()
+                    .find(|candidate| candidate.id() == id)
+                    .ok_or_else(|| DaemonError::AgentNotInSession {
+                        session_id: request.session_id.clone(),
+                        agent_id: id.to_owned(),
+                    })
+            };
+            let (agent, parent) = (find(&request.agent_id)?, find(parent_id)?);
             // An agent under itself or under its own descendant would make a cycle.
             if parent.id() == agent.id()
-                || crate::runtime::room_tool_admission::in_subtree(&agent, parent, &agents).is_ok()
+                || crate::runtime::room_tool_admission::in_subtree(agent, parent, &agents).is_ok()
             {
                 return Err(crate::runtime::room_tool_admission::denied(
                     "an agent cannot be placed under itself or under one of its descendants",
                 ));
             }
         }
-        let agent = self.owned.agent_store.set_parent_agent(
+        let agent = self.agent_store.set_parent_agent(
             &request.agent_id,
-            request.parent_agent_id.map(AgentRef::local),
+            request.parent_agent_id.clone().map(AgentRef::local),
         )?;
-        self.append_agent_durable_event("agent.updated", &agent, None)
-            .await?;
-        Ok(LocalDaemonResponse::AgentParentChanged { agent })
+        let (moved, announce) = self.move_subtree_decisions(&request.session_id, agent.id())?;
+        Ok((agent, moved, announce))
     }
 }

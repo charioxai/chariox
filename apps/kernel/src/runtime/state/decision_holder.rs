@@ -2,7 +2,7 @@
 //! kernel only moves its holder (the parent agent that may answer it, or the user). The
 //! holder is kernel state for routing and audit; clients never read it.
 use super::*;
-use crate::agent::authority_limit::ancestors;
+use crate::agent::authority_limit::{ancestors, descendants};
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation};
 use crate::provider::AgentPermissionLevel;
 
@@ -347,6 +347,83 @@ impl KernelRuntimeOwnedState {
             self.withdraw_child_decision_event(session_id, agent, &id);
         }
         Ok((moved, announce))
+    }
+
+    /// `agent` was just placed elsewhere in the tree; the caller holds the interaction lock. Every
+    /// open decision its subtree raised follows it: a card the user holds is shown in the new top
+    /// panel, and one held by an agent no longer above the asker goes to the nearest ancestor
+    /// that may hold it, or the user. Returns the moved count and the decisions to announce.
+    pub(super) fn move_subtree_decisions(
+        &self,
+        session_id: &str,
+        agent: &str,
+    ) -> Result<(usize, Vec<String>), DaemonError> {
+        let agents = self.agent_store.get_session_agents(session_id);
+        let subtree = std::iter::once(agent)
+            .chain(descendants(agent, &agents).into_iter().map(|a| a.id()))
+            .collect::<std::collections::HashSet<_>>();
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        let open = session
+            .active_interactions()
+            .iter()
+            .filter(|interaction| subject_agent(interaction).is_some_and(|s| subtree.contains(s)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let (mut publish, mut announce, mut withdraw) = (Vec::new(), Vec::new(), Vec::new());
+        for interaction in open {
+            let id = interaction.id().to_owned();
+            let Some(mut pending) = self.pending_interactions.write().get(&id).cloned() else {
+                continue;
+            };
+            let still_above = |holder: &str| {
+                subject_agent(&interaction)
+                    .and_then(|asker| agents.iter().find(|a| a.id() == asker))
+                    .is_some_and(|asker| ancestors(asker, &agents).iter().any(|a| a.id() == holder))
+            };
+            match pending.holder.clone() {
+                DecisionHolder::Agent(holder) if still_above(&holder) => {}
+                DecisionHolder::Agent(holder) => {
+                    withdraw.push((holder, id.clone()));
+                    pending.holder =
+                        self.decision_holder_at_raise(&session, &pending, &interaction);
+                    if let Some(entry) = self.pending_interactions.write().get_mut(&id) {
+                        entry.holder = pending.holder.clone();
+                    }
+                    match pending.holder {
+                        DecisionHolder::Agent(_) => announce.push(id),
+                        DecisionHolder::User => publish.push((interaction, pending)),
+                    }
+                }
+                DecisionHolder::User => publish.push((interaction, pending)),
+            }
+        }
+        let publish = publish
+            .into_iter()
+            .filter_map(|(interaction, pending)| {
+                let shown = self.decision_shown_in(session_id, &interaction);
+                let changed = shown.as_deref() != interaction.shown_in_agent_id()
+                    || withdraw.iter().any(|(_, id)| id == interaction.id());
+                changed.then(|| {
+                    session.show_interaction_in(interaction.id(), shown.clone());
+                    (interaction.shown_in(shown), pending)
+                })
+            })
+            .collect::<Vec<_>>();
+        sessions.restore_session(session);
+        drop(sessions);
+        for (holder, id) in &withdraw {
+            self.withdraw_child_decision_event(session_id, holder, id);
+        }
+        // The follower hears of each card where it is now listed.
+        for (interaction, pending) in &publish {
+            self.publish_outside_interaction(
+                session_id,
+                interaction,
+                InteractionPhase::Pending(pending),
+            )?;
+        }
+        Ok((publish.len() + announce.len(), announce))
     }
 }
 
