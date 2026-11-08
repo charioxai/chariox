@@ -18,7 +18,7 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
-        let (agent, moved, announce) = self.owned.place_agent(&request)?;
+        let (agent, moved, announce) = self.owned.place_agent(caller_user_id, &request)?;
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
         self.finish_moved_decisions(&request.session_id, moved, announce)
@@ -32,6 +32,7 @@ impl KernelRuntimeOwnedState {
     /// under the interaction lock, so no decision is raised or answered against a half-moved tree.
     fn place_agent(
         &self,
+        caller_user_id: &str,
         request: &SetAgentParentRequest,
     ) -> Result<(crate::agent::AgentInstance, usize, Vec<String>), DaemonError> {
         let _mutation =
@@ -55,7 +56,17 @@ impl KernelRuntimeOwnedState {
         let agent = find(&request.agent_id)?;
         match request.parent_agent_id.as_deref() {
             Some(parent_id) => {
-                crate::agent::authority_limit::check_placement(agent, find(parent_id)?, &agents)
+                let parent = find(parent_id)?;
+                // A parent answers its children's decisions with its own authority, so the caller
+                // places only under an agent it acts for; another user's agent reads as unknown.
+                if !self.acts_for_owner(&request.session_id, caller_user_id, parent.owner_user_id())
+                {
+                    return Err(DaemonError::AgentNotInSession {
+                        session_id: request.session_id.clone(),
+                        agent_id: parent_id.to_owned(),
+                    });
+                }
+                crate::agent::authority_limit::check_placement(agent, parent, &agents)
                     .map_err(crate::runtime::room_tool_admission::denied)?;
             }
             // A sub-agent made a room agent counts toward the room's limit, as a new one does.
