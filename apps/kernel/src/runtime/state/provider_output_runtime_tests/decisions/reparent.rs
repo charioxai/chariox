@@ -378,3 +378,45 @@ async fn a_decision_that_returns_to_a_holder_is_announced_again() {
         .unwrap();
     assert_eq!(t.decision_events(&t.p).len(), 2);
 }
+
+/// The reparent fix hands on a decision whose holder lost its authority under a new parent
+/// chain. The same loss through a permission change leaves the decision with the holder: its
+/// answer is refused as `NotHolder`, yet it still holds the decision and the user has no card.
+#[tokio::test]
+async fn a_holder_lowered_by_a_permission_change_does_not_keep_a_decision_it_may_not_answer() {
+    let t = tree(
+        "lowered-holder-keeps",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-lowered-keeps", &t.c)).await;
+    assert_eq!(
+        t.holder("perm-lowered-keeps"),
+        DecisionHolder::Agent(t.p.clone())
+    );
+    t.app
+        .lock()
+        .await
+        .agents()
+        .update_agent_config(
+            &t.g,
+            None,
+            Some(Some(AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let status = t
+        .runtime
+        .answer_child_decision(&t.room, &t.p, "perm-lowered-keeps", "allow")
+        .unwrap();
+    assert_eq!(status, ChildDecisionStatus::NotHolder);
+    assert!(answer.try_recv().is_err(), "the decision is still pending");
+    assert_ne!(
+        t.holder("perm-lowered-keeps"),
+        DecisionHolder::Agent(t.p.clone()),
+        "p was told it does not hold the decision but still holds it; user panels: {:?}",
+        t.panels()
+    );
+}
