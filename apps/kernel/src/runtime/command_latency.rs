@@ -189,9 +189,18 @@ pub(crate) fn log_command_completed(
         }),
     );
     if let Err(error) = result {
-        fields = merge_fields(fields, json!({ "error": error.to_string() }));
+        fields = merge_fields(fields, failure_fields(error));
     }
     crate::logging::info_with_fields("daemon.command_latency", "kernel command completed", fields);
+}
+
+/// The client text of a user-domain refusal never says why; the bounded reason code goes to the kernel log only.
+fn failure_fields(error: &DaemonError) -> Value {
+    let mut fields = json!({ "error": error.to_string() });
+    if let DaemonError::UserDomainRefused { reason } = error {
+        fields["refusal_reason"] = json!(reason.code());
+    }
+    fields
 }
 
 pub(crate) fn is_quiet_success_command_type(command_type: &str) -> bool {
@@ -781,5 +790,20 @@ mod tests {
         assert_eq!(fields["saw_response_content"], true);
         assert_eq!(fields["completion_recorded"], true);
         assert_eq!(fields["settlement_requested"], true);
+    }
+
+    #[test]
+    fn a_user_domain_refusal_logs_its_reason_beside_the_client_text() {
+        let refused = DaemonError::UserDomainRefused {
+            reason: crate::error::UserDomainRefusalReason::NotGranted,
+        };
+        let fields = failure_fields(&refused);
+        assert_eq!(fields["error"], "User-domain request refused");
+        assert_eq!(fields["refusal_reason"], "user_domain_not_granted");
+        let other = failure_fields(&DaemonError::InvalidConfig {
+            field: "port",
+            message: "bad",
+        });
+        assert!(other.get("refusal_reason").is_none());
     }
 }
