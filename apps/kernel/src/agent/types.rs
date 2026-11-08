@@ -902,7 +902,29 @@ impl<'de> Deserialize<'de> for AgentInstance {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = serde_json::Value::deserialize(deserializer)?;
         restore_legacy_substitute_primary(&mut value);
+        restore_legacy_parent_edge(&mut value);
         AgentInstance::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The previous release kept a child's control edge in
+/// `controlled_by_metaagent_id` (cleared when the user let the child go) and a
+/// spawn receipt in `spawned_by_agent_id`. The control edge is the parent now;
+/// the receipt has no successor, so a released child loads as a room member.
+fn restore_legacy_parent_edge(value: &mut serde_json::Value) {
+    let Some(agent) = value.as_object_mut() else {
+        return;
+    };
+    agent.remove("spawned_by_agent_id");
+    let controller = agent.remove("controlled_by_metaagent_id");
+    if agent.contains_key("parent_agent_id") {
+        return;
+    }
+    if let Some(parent) = controller.filter(|id| id.as_str().is_some_and(|id| !id.is_empty())) {
+        agent.insert(
+            "parent_agent_id".to_string(),
+            serde_json::json!({ "agent_id": parent }),
+        );
     }
 }
 
