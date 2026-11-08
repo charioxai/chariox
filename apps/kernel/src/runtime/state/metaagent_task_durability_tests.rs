@@ -518,7 +518,7 @@ async fn assert_meta_request_append_failure_rolls_back(kind: &str) {
         .expect("append failure should install");
 
     let error = runtime
-        .execute_metaagent_task_request(request.clone())
+        .execute_metaagent_task_request(crate::session::DEFAULT_LOCAL_USER_ID, request.clone())
         .await
         .expect_err("failed append must reject the request");
     assert!(
@@ -570,7 +570,7 @@ async fn assert_meta_request_append_failure_rolls_back(kind: &str) {
     // without starting a provider. Update/resume notification delivery has separate tests.
     if matches!(kind, "pause" | "abort") {
         runtime
-            .execute_metaagent_task_request(request)
+            .execute_metaagent_task_request(crate::session::DEFAULT_LOCAL_USER_ID, request)
             .await
             .expect("request should retry");
         let task = runtime

@@ -245,7 +245,7 @@ impl CommandRouter {
             | LocalDaemonRequest::ResumeMetaagentTask(_)
             | LocalDaemonRequest::AbortMetaagentTask(_)) => boxed_handler(|| async move {
                 self.runtime_state
-                    .execute_metaagent_task_request(request)
+                    .execute_metaagent_task_request(&command_caller_user_id(&command), request)
                     .await
             }),
             request @ LocalDaemonRequest::GetDaemonHealth(_) => boxed_handler(|| async move {

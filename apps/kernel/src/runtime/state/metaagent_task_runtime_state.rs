@@ -542,13 +542,17 @@ impl KernelRuntimeState {
 
     pub(crate) async fn execute_metaagent_task_request(
         &self,
+        caller_user_id: &str,
         request: LocalDaemonRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
         self.authorize_current_external_command()?;
         match request {
             LocalDaemonRequest::UpdateMetaagentTask(request) => {
-                let metaagent =
-                    self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
+                let metaagent = self.ensure_session_metaagent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    caller_user_id,
+                )?;
                 if request.task_markdown.is_none() && request.plan_markdown.is_none() {
                     return Err(DaemonError::LocalTransport {
                         operation: "update_metaagent_task",
@@ -595,8 +599,11 @@ impl KernelRuntimeState {
                 Ok(metaagent_task_response(session, &metaagent_id))
             }
             LocalDaemonRequest::PauseMetaagentTask(request) => {
-                let metaagent =
-                    self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
+                let metaagent = self.ensure_session_metaagent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    caller_user_id,
+                )?;
                 self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_paused",
@@ -623,8 +630,11 @@ impl KernelRuntimeState {
                 Ok(metaagent_task_response(session, &request.metaagent_id))
             }
             LocalDaemonRequest::ResumeMetaagentTask(request) => {
-                let metaagent =
-                    self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
+                let metaagent = self.ensure_session_metaagent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    caller_user_id,
+                )?;
                 self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_resumed",
@@ -695,8 +705,11 @@ impl KernelRuntimeState {
                 Ok(metaagent_task_response(session, &request.metaagent_id))
             }
             LocalDaemonRequest::AbortMetaagentTask(request) => {
-                let metaagent =
-                    self.ensure_session_metaagent(&request.session_id, &request.metaagent_id)?;
+                let metaagent = self.ensure_session_metaagent(
+                    &request.session_id,
+                    &request.metaagent_id,
+                    caller_user_id,
+                )?;
                 self.mutate_metaagent_task_session(
                     &request.session_id,
                     "metaagent_task_aborted",
@@ -746,13 +759,18 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Only who acts for the metaagent's owner steers its task; another user's reads as unknown.
     fn ensure_session_metaagent(
         &self,
         session_id: &str,
         metaagent_id: &str,
+        caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(metaagent_id)?;
-        if agent.session_id() != session_id || !agent.is_metaagent() {
+        if agent.session_id() != session_id
+            || !agent.is_metaagent()
+            || !self.acts_for_owner(session_id, caller_user_id, agent.owner_user_id())
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "metaagent_task_request",
                 message: format!("agent `{metaagent_id}` is not a metaagent in this session"),
