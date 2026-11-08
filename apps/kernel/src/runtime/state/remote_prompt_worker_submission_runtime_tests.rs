@@ -214,6 +214,7 @@ async fn cancelling_accepted_remote_prompt_never_sends_submit_request() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -362,6 +363,7 @@ async fn connected_held_prompt_response_does_not_block_remote_manifest_sync() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -578,6 +580,7 @@ async fn trigger_origin_peer_submission(
                 relay_url: None,
                 relay_token: None,
                 relay_peer_protocol_version: Some(version),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -831,6 +834,7 @@ impl WorkflowSubmissionFixture {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -1494,6 +1498,7 @@ async fn trigger_resend_idle_remote_admission_failure_retries_one_peer_submissio
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

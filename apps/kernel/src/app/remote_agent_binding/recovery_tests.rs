@@ -253,6 +253,7 @@ impl Fixture {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+            worker_worktree_id: None,
         };
         home.agents()
             .bind_remote_execution(agent.id(), binding.clone())

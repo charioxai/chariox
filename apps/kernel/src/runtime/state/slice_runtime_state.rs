@@ -1294,6 +1294,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         let mut parked = captured.clone();
         parked.active_worker_provider_run_id = None;
@@ -1490,6 +1491,7 @@ mod tests {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
             adapter_key: "opencode".to_string(),
             provider: "opencode".to_string(),
@@ -1718,6 +1720,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("remote execution should bind");
@@ -1750,6 +1753,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("remote execution should bind");
@@ -2005,6 +2009,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("slice agent should bind to its worker");

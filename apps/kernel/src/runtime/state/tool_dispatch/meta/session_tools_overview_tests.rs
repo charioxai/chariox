@@ -25,6 +25,7 @@ async fn room_overview_excludes_transport_and_provider_private_state_in_both_mcp
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

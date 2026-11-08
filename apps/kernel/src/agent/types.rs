@@ -23,6 +23,10 @@ pub struct RemoteAgentBinding {
     pub relay_token: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_peer_protocol_version: Option<u32>,
+    /// The folder the worker runs this agent in, so a binding renewed after
+    /// the worker restarts keeps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_worktree_id: Option<String>,
 }
 
 impl RemoteAgentBinding {

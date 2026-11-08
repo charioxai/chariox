@@ -336,6 +336,7 @@ async fn room_admission_current_leased_epoch_accepts_only_its_actor_and_run() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

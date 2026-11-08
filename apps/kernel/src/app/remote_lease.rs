@@ -1337,6 +1337,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     #[cfg(test)]
+    pub(crate) fn leased_agent_working_directories(&self) -> Vec<String> {
+        self.app
+            .leased_agents
+            .values()
+            .filter_map(|agent| {
+                self.app
+                    .sessions
+                    .get_session(&agent.backing_session_id)
+                    .ok()
+            })
+            .map(|session| session.worktree_id().to_string())
+            .collect()
+    }
+
+    #[cfg(test)]
     pub(crate) fn leased_agent_snapshot_for_test(
         &self,
         leased_agent_id: &str,

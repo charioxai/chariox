@@ -372,6 +372,7 @@ async fn cancel_response_wait_keeps_home_app_lock_available(cancel_parent: Optio
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -741,6 +742,7 @@ async fn direct_settled_cancel_dispatches_queued_successor_once() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -1174,6 +1176,7 @@ async fn dispatching_cancellation_waits_for_exact_receipt_without_replay() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -1635,6 +1638,7 @@ async fn resumed_remote_cancellation_fences_to_the_expected_prompt() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");

@@ -130,6 +130,7 @@ mod tests {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: protocol,
+            worker_worktree_id: None,
         }
     }
 

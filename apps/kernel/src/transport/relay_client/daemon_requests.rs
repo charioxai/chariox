@@ -1343,6 +1343,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         }));
 
         let mut response = serde_json::to_value(LocalDaemonResponse::AgentMovedToRemote { agent })

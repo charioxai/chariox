@@ -116,7 +116,13 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
     let worker_worktree_id = plan
         .slice_recovery
         .as_ref()
-        .map(SliceBindingRecovery::worktree_id);
+        .map(SliceBindingRecovery::worktree_id)
+        .or_else(|| {
+            plan.agent
+                .remote_execution()
+                .and_then(|binding| binding.worker_worktree_id.clone())
+        })
+        .or_else(|| plan.agent.worktree_id().map(ToOwned::to_owned));
     let relay_config = plan.relay_config.clone();
     let use_connected_relay = hosted_shared_slice;
     remember_remote_worker_public_key_off_lock(&relay_config, &worker_kernel, &plan.relay_state)
@@ -362,8 +368,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             execution_mode: Some(plan.execution_mode),
             permission_level: Some(plan.permission_level),
             workspace_live_sync_mode: Some(plan.workspace_live_sync_mode),
-            worktree_id: worker_worktree_id
-                .or_else(|| plan.agent.worktree_id().map(ToOwned::to_owned)),
+            worktree_id: worker_worktree_id.clone(),
             worktree_placement: None,
         },
         use_connected_relay,
@@ -416,6 +421,7 @@ pub(crate) async fn execute_remote_agent_binding_refresh(
             .as_ref()
             .and_then(|config| config.relay_token.clone()),
         relay_peer_protocol_version: Some(relay_peer_protocol_version),
+        worker_worktree_id,
     };
     if let Err(error) = ensure_remote_skill_packages_off_lock(
         &plan,
@@ -778,6 +784,7 @@ impl DaemonApp {
         context: RemoteBindingContext<'_>,
     ) -> Result<AgentInstance, DaemonError> {
         authorize()?;
+        let worktree_id = worker_worktree_id.or_else(|| agent.worktree_id().map(ToOwned::to_owned));
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
@@ -1044,8 +1051,7 @@ impl DaemonApp {
                 execution_mode: Some(effective_config.mode),
                 permission_level: Some(effective_config.permission_level),
                 workspace_live_sync_mode: Some(workspace_live_sync_mode),
-                worktree_id: worker_worktree_id
-                    .or_else(|| agent.worktree_id().map(ToOwned::to_owned)),
+                worktree_id: worktree_id.clone(),
                 worktree_placement,
             },
             use_connected_relay,
@@ -1089,6 +1095,7 @@ impl DaemonApp {
                 .as_ref()
                 .and_then(|config| config.relay_token.clone()),
             relay_peer_protocol_version: Some(relay_peer_protocol_version),
+            worker_worktree_id: worktree_id,
         };
         let bound_result = if matches!(context, RemoteBindingContext::Recreated) {
             self.commit_recreated_remote_execution(agent, remote_execution)
@@ -1256,10 +1263,12 @@ impl DaemonApp {
                 &discovery_config,
             )?,
         };
-        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
-            &worker_kernel.kernel_id,
-            &worker_kernel.machine_id,
-        );
+        let worker_worktree_id = self
+            .worker_worktree_id_for_rebound_worker(
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
+            )
+            .or_else(|| remote_execution.worker_worktree_id.clone());
         authorize()?;
         let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
@@ -1322,10 +1331,12 @@ impl DaemonApp {
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
-        let worker_worktree_id = self.worker_worktree_id_for_rebound_worker(
-            &worker_kernel.kernel_id,
-            &worker_kernel.machine_id,
-        );
+        let worker_worktree_id = self
+            .worker_worktree_id_for_rebound_worker(
+                &worker_kernel.kernel_id,
+                &worker_kernel.machine_id,
+            )
+            .or_else(|| remote_execution.worker_worktree_id.clone());
         let rebound = self.bind_remote_agent_to_worker_authorized(
             &agent,
             worker_kernel,
@@ -2370,6 +2381,7 @@ mod tests {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: None,
+            worker_worktree_id: None,
         };
         assert!(!legacy.relay_peer_protocol_compatible());
         let stale = RemoteAgentBinding {
@@ -2539,6 +2551,7 @@ mod tests {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to worker");
@@ -3114,6 +3127,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         });
 
         assert_eq!(
@@ -3142,6 +3156,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         });
 
         assert_eq!(
@@ -3242,6 +3257,7 @@ mod cleanup_tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), original.clone())

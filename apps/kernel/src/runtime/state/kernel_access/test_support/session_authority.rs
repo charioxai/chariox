@@ -152,6 +152,7 @@ async fn revoked_remote_operation(spawn: bool, discovery_wait: bool) {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -363,6 +364,7 @@ async fn kernel_access_revocation_after_remote_destroy_still_settles_lease_and_h
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

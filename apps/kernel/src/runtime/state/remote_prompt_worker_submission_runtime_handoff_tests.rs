@@ -65,6 +65,7 @@ async fn assert_home_handoff_scenario(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to the fake worker");
@@ -439,6 +440,7 @@ async fn review976_completed_projection_skips_replay_until_lease_identity_change
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -669,6 +671,7 @@ async fn review976_history_read_failure_keeps_scrubbed_existing_context() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -763,6 +766,7 @@ async fn a_profile_change_on_a_recreated_lease_replays_home_history_again() {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     app.agents
         .bind_remote_execution(agent.id(), binding.clone())

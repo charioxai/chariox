@@ -823,6 +823,7 @@ async fn make_receipt_reconciliation_fixture(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("home agent should bind to fake worker");
@@ -2177,6 +2178,7 @@ mod receipt_reconciliation {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -2359,6 +2361,7 @@ mod receipt_reconciliation {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -2503,6 +2506,7 @@ mod receipt_reconciliation {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();
@@ -2814,6 +2818,7 @@ fn actual_worker_output_then_completion(
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     (binding, provider_run_id, output_event, completion_event)
 }
@@ -3056,6 +3061,7 @@ mod projection_drain {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -3222,6 +3228,7 @@ mod projection_drain {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -3796,6 +3803,7 @@ mod projection_drain {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), binding)
@@ -4373,6 +4381,7 @@ mod dispatch_settlement {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -4454,6 +4463,7 @@ mod dispatch_settlement {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("agent should bind to remote execution");
@@ -4590,6 +4600,7 @@ mod dispatch_settlement {
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .expect("home agent should bind to the fake worker");
@@ -4824,6 +4835,7 @@ mod dispatch_settlement {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         };
         app.agents
             .bind_remote_execution(agent.id(), binding.clone())

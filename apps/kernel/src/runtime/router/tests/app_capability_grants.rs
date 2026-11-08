@@ -345,6 +345,7 @@ async fn capability_stale_home_run_cannot_acquire_after_agent_is_leased() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -442,6 +443,7 @@ async fn capability_leased_acquisition_uses_delivered_worker_run_and_owner_appro
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

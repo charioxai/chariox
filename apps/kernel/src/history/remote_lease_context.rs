@@ -215,6 +215,7 @@ mod tests {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: None,
+            worker_worktree_id: None,
         };
         store
             .mark_remote_lease_context_pending("session", "agent", &binding)

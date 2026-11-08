@@ -564,6 +564,7 @@ fn capability_leased_agents_cannot_acquire_or_receive_user_domain_access() {
                         relay_peer_protocol_version: Some(
                             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                         ),
+                        worker_worktree_id: None,
                     },
                 )
                 .unwrap();

@@ -467,6 +467,7 @@ async fn profile_compaction_does_not_run_on_the_home_for_a_remote_agent() {
                 relay_url: None,
                 relay_token: None,
                 relay_peer_protocol_version: None,
+                worker_worktree_id: None,
             },
         )
         .unwrap();

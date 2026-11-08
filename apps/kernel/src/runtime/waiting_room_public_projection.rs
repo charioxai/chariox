@@ -1550,6 +1550,7 @@ mod tests {
             relay_peer_protocol_version: Some(
                 crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
             ),
+            worker_worktree_id: None,
         }));
         session.set_agents(vec![agent]);
         let metaagent_events = MetaagentEventStore::default();
@@ -1614,6 +1615,7 @@ mod tests {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             }));
             session.set_agents(vec![agent]);
             let mut summaries = waiting_room_session_summaries(

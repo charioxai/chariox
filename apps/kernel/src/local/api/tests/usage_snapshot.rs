@@ -174,6 +174,7 @@ fn usage_snapshot_uses_agent_projection_and_never_serializes_remote_credentials(
                     relay_url: None,
                     relay_token: Some("fixture-private-value".into()),
                     relay_peer_protocol_version: Some(195),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

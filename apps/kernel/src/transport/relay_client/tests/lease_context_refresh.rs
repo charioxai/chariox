@@ -73,6 +73,7 @@ async fn sync_refresh_async() {
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     home.agents()
         .bind_remote_execution(agent.id(), original.clone())

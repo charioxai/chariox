@@ -46,6 +46,7 @@ async fn forwarded_agent_message_requires_current_home_sender_prompt() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("sender should be remote-backed");
@@ -212,6 +213,7 @@ async fn forwarded_prompt_command_binds_the_leased_delegators_task() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("sender should be remote-backed");

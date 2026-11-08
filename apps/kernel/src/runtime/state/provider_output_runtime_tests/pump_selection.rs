@@ -394,6 +394,7 @@ async fn local_provider_launch_preserves_and_restores_projected_remote_predecess
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("remote agent should bind");

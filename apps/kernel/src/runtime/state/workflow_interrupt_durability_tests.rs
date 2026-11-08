@@ -2185,6 +2185,7 @@ async fn revoked_remote_workflow_interrupt(discovery: bool, pause: bool) {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -3259,6 +3260,7 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

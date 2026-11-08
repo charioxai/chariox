@@ -28,6 +28,7 @@ async fn forwarded_home_credential_secret_rejects_stale_worker_provider_run() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -137,6 +138,7 @@ async fn home_extension_invocation_cancellation_is_authorized_and_audited() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");
@@ -283,6 +285,7 @@ async fn home_extension_invocation_rejects_wrong_worker_provider_run() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should be remote-backed");

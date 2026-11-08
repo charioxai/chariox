@@ -201,6 +201,7 @@ async fn projected_unacknowledged_prompt_blocks_local_move_and_protects_its_run(
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .expect("agent should bind to its worker");

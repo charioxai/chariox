@@ -434,6 +434,7 @@ async fn delayed_leased_steer_ack_keeps_the_original_receipt_deadline_while_the_
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();

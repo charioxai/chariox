@@ -137,6 +137,7 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
                 relay_peer_protocol_version: Some(
                     crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                 ),
+                worker_worktree_id: None,
             },
         )
         .unwrap();
@@ -368,6 +369,7 @@ async fn forwarded_native_interactions_resolve_back_to_worker_over_temporary_con
                     relay_peer_protocol_version: Some(
                         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
                     ),
+                    worker_worktree_id: None,
                 },
             )
             .unwrap();

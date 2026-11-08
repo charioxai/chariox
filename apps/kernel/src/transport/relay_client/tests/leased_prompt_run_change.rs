@@ -249,6 +249,7 @@ async fn home_does_not_settle_a_completion_the_worker_refuses_for_a_run_change_a
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
+        worker_worktree_id: None,
     };
     let (session_id, agent_id, attachment_id) = {
         let mut app = app.lock().await;

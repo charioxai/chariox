@@ -118,6 +118,7 @@ mod tests {
             relay_url: None,
             relay_token: None,
             relay_peer_protocol_version: Some(240),
+            worker_worktree_id: None,
         }));
         before.session.set_agents(vec![agent.clone()]);
         let mut after = before.clone();
