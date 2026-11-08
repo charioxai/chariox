@@ -467,9 +467,10 @@ impl KernelRuntimeState {
         if let Some(link) = peer_agent_link_for_tests::link(kernel) {
             let from = self.owned.config_projection.snapshot().daemon_id;
             return match link(from, owner.to_string(), request).await {
-                Err(error @ DaemonError::RelayTransport { .. }) => {
-                    Err(unanswered(kernel, &retry, error))
-                }
+                Err(
+                    error @ (DaemonError::RelayTransport { .. }
+                    | DaemonError::LocalTransport { .. }),
+                ) => Err(unanswered(kernel, &retry, error)),
                 answered => answered,
             };
         }

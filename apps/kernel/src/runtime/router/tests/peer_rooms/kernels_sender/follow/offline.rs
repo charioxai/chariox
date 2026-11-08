@@ -54,6 +54,34 @@ fn link_dropping_after_the_first_message(kernel: &Kernel) {
     );
 }
 
+/// `kernel` acts on its first message, but its answer is not back before the caller stops waiting.
+fn link_timing_out_after_the_first_message(kernel: &Kernel) {
+    let router = kernel.router.clone();
+    let late = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                let late = late.clone();
+                Box::pin(async move {
+                    let message = matches!(request, RelayPeerRequest::PeerAgentMessage { .. });
+                    let answer = router.relay_peer_agent(&from, &owner, request).await;
+                    if message && !late.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return Err(
+                            crate::transport::relay_client::relay_peer_response_timed_out(Some(
+                                std::time::Duration::from_secs(30),
+                            )),
+                        );
+                    }
+                    answer
+                })
+            },
+        ),
+    );
+}
+
 /// `kernel` boots again on the state it left, as after a restart, and answers peers again.
 async fn restarted(kernel: Kernel) -> Kernel {
     let config = kernel.app.lock().await.config().clone();
@@ -161,6 +189,42 @@ fn a_message_whose_answer_was_lost_is_uncertain_and_its_retry_is_one_delivery() 
             b.messages(b.agent.id()).await.len(),
             1,
             "an uncertain send and its retry are one delivery"
+        );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_message_that_timed_out_after_the_relay_took_it_is_uncertain_and_its_retry_is_one_delivery() {
+    run_peer_test("peer-offline-timeout", || async {
+        let (a, b) = two_kernels(
+            "peer-offline-timeout",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        link_timing_out_after_the_first_message(&b);
+        let message = serde_json::json!({"agent": "worker", "room": b.room, "kernel": b.name, "message": "parser.rs is mine"});
+        let uncertain = a.send(message.clone()).await.unwrap_err();
+        assert!(uncertain.contains("uncertain"), "{uncertain}");
+        assert!(
+            !uncertain.contains("kernel_unreachable") && !uncertain.contains("timed out"),
+            "the reason, not the transport's words: {uncertain}"
+        );
+        let key = uncertain
+            .split("idempotency_key `")
+            .nth(1)
+            .and_then(|rest| rest.split('`').next())
+            .unwrap_or_else(|| panic!("the refusal names the key to retry with: {uncertain}"))
+            .to_owned();
+        let mut retry = message;
+        retry["idempotency_key"] = key.into();
+        a.send(retry)
+            .await
+            .expect("the retry is answered by the kernel that took the first");
+        assert_eq!(
+            b.messages(b.agent.id()).await.len(),
+            1,
+            "a send that timed out and its retry are one delivery"
         );
         unlink(&[&a, &b]);
     });
