@@ -712,10 +712,9 @@ impl CommandRouter {
                     .then(|| metaagent.effort().map(str::to_string))
                     .flatten()
             }),
-            execution_mode: metaagent.execution_mode_override(),
-            permission_level: spawn
-                .permission_level
-                .or(metaagent.permission_level_override()),
+            // Omitted, the child takes the parent's effective limit where it is created.
+            execution_mode: None,
+            permission_level: spawn.permission_level,
             worktree_id: spawn
                 .worktree_id
                 .or_else(|| metaagent.worktree_id().map(str::to_string)),

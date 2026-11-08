@@ -14,16 +14,20 @@ use super::super::projection_policy::SessionProjectionAction;
 use super::SessionRuntimeStore;
 use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 
-/// A child never has more authority than its parent: its level and mode
-/// default to the parent's current limit and cannot be raised above it. A spawn from a
-/// person (no parent) keeps the requested values.
+/// A child never has more authority than its parent: a level or mode the spawn does not ask
+/// for is the parent's current limit, and one it asks for cannot be above it. A spawn from a
+/// person (no parent) keeps the requested values, filled from the room defaults.
 fn child_authority(
     parent: Option<crate::session::EffectiveAgentExecutionConfig>,
     mode: Option<AgentExecutionMode>,
     level: Option<AgentPermissionLevel>,
+    defaults: &crate::session::SessionAgentDefaults,
 ) -> Result<(Option<AgentExecutionMode>, Option<AgentPermissionLevel>), DaemonError> {
     let Some(limit) = parent else {
-        return Ok((mode, level));
+        return Ok((
+            mode.or(defaults.execution_mode),
+            level.or(defaults.permission_level),
+        ));
     };
     let (parent_mode, parent_level) = (limit.mode, limit.permission_level);
     let child_mode = mode.unwrap_or(parent_mode);
@@ -287,8 +291,9 @@ impl SessionRuntimeStore {
                 parent.as_ref(),
                 &self.state.session_agents(&request.session_id),
             ),
-            request.execution_mode.or(defaults.execution_mode),
-            request.permission_level.or(defaults.permission_level),
+            request.execution_mode,
+            request.permission_level,
+            defaults,
         ) {
             Ok(authority) => authority,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
@@ -509,8 +514,6 @@ impl SessionRuntimeStore {
         let default_model = defaults.model.clone();
         let default_effort = defaults.effort.clone();
         let default_account_profile = defaults.account_profile.clone();
-        let default_execution_mode = defaults.execution_mode;
-        let default_permission_level = defaults.permission_level;
         let room_agents = self.state.session_agents(&request.session_id);
         let parent = caller_metaagent_id
             .as_deref()
@@ -552,8 +555,9 @@ impl SessionRuntimeStore {
                 .or_else(|| same_provider.then(|| default_effort.clone()).flatten());
             let (execution_mode, permission_level) = match child_authority(
                 parent_limit(&session, parent.as_ref(), &room_agents),
-                item.execution_mode.or(default_execution_mode),
-                item.permission_level.or(default_permission_level),
+                item.execution_mode,
+                item.permission_level,
+                defaults,
             ) {
                 Ok(authority) => authority,
                 Err(error) => return self.with_session_projection_action_result(Err(error)).await,
