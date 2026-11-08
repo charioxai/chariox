@@ -389,6 +389,14 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Followed side: this kernel's relay connection is back, so the kernels it owes outcomes
+    /// can be reached again.
+    pub(crate) async fn peer_links_restored(&self) {
+        if let Err(error) = self.deliver_peer_agent_outcomes().await {
+            tracing::warn!(%error, "peer outcomes retained for the next delivery");
+        }
+    }
+
     /// Delivers due outcomes off the caller's path; a settlement never waits on another kernel.
     pub(super) fn spawn_peer_agent_outcome_delivery(&self) {
         let state = self.clone();

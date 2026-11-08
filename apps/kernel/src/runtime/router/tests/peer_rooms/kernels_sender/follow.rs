@@ -8,6 +8,8 @@ use crate::transport::relay_peer::{
 };
 use crate::transport::relay_peer_agents::PeerEventKind;
 
+mod offline;
+
 /// A's room agent gets a durable task for its running turn, as an admitted turn has.
 async fn with_task(kernel: &Kernel) -> String {
     let app = kernel.app.lock().await;
