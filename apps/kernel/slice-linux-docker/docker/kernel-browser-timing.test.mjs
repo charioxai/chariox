@@ -25,8 +25,10 @@ test('MP-08/MP-10/MP-11 a diagnostic written before the browser root exists neve
   assert.deepEqual(readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line).stage),['early'],'the first record lands in a root that did not exist yet');
   assert.equal(statSync(root).mode&0o777,0o700,'the root it creates is private like the browser root');
   writeFileSync(path.join(parent,'blocker'),'a file where a directory is needed');
-  blocked('lost',1,2);blocked.hardware('lost');
-  assert.doesNotThrow(()=>blocked.flush(),'a diagnostic that cannot be written is dropped, not thrown into a timer');
+  const logged=[],log=console.error;console.error=(...line)=>logged.push(line.join(' '));
+  try{blocked('lost',1,2);blocked.hardware('lost');assert.doesNotThrow(()=>blocked.flush(),'a diagnostic that cannot be written is dropped, not thrown into a timer');blocked('lost',3,4);blocked.flush()}
+  finally{console.error=log}
+  assert.deepEqual(logged,['CHARIOX-LOG display_timing_unwritable'],'the first dropped record is named once for the daemon log');
  }finally{timing.flush();if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(parent,{recursive:true,force:true})}
 });
 test('MP-08/MP-10 input/frame join records keep finite numbers only',()=>{

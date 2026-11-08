@@ -16,13 +16,18 @@ export function roomDisplayTiming(environment=process.env) {
 }
 export function displayTiming(root) {
   // The browser root is created by the first `start`, which can come after the first mark. A diagnostic must never
-  // end the controller (its flush runs in a timer, where a throw is fatal), so a record that cannot be written is dropped.
+  // end the controller (its flush runs in a timer, where a throw is fatal), so a record that cannot be written is
+  // dropped; the first drop is named once in the daemon log.
+  let reported=false;
   const append=(name,data)=>{
     const file=path.join(root,name);
     try{appendFileSync(file,data,{mode:0o600});return true}
     catch(error){
-      if(error.code!=='ENOENT')return false;
-      try{mkdirSync(root,{recursive:true,mode:0o700});appendFileSync(file,data,{mode:0o600});return true}catch{return false}
+      if(error.code==='ENOENT'){
+        try{mkdirSync(root,{recursive:true,mode:0o700});appendFileSync(file,data,{mode:0o600});return true}catch{}
+      }
+      if(!reported){reported=true;console.error('CHARIOX-LOG display_timing_unwritable');}
+      return false;
     }
   };
   // MP-08/MP-10: bounded control diagnostics, one append per frame interval.
