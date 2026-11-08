@@ -116,6 +116,7 @@ mod tests {
     mod prompt_input_history_owner;
     mod provider_run_read_owner;
     mod provider_run_selection_owner;
+    mod recall_owner;
     mod room_control_owner;
     use std::collections::BTreeMap;
     use std::sync::Arc;
