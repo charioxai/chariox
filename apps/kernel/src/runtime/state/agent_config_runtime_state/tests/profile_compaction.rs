@@ -119,6 +119,18 @@ async fn compact_fixture_with_lease(
         pty_env: Default::default(), pty_env_remove: vec![], working_directory: None, structured_endpoint: None,
     });
     run.set_execution_config(AgentExecutionMode::Plan, AgentPermissionLevel::Required);
+    // The agent asks for what its run has, so dispatch reuses the run as it is.
+    runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &agent,
+            Some(Some(AgentExecutionMode::Plan)),
+            Some(Some(AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
     run.mark_running();
     run.set_usage(ProviderRunTokenUsage {
         context_tokens: Some(320_000),

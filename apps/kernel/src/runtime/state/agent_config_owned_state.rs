@@ -183,8 +183,11 @@ impl KernelRuntimeOwnedState {
     }
 
     /// Moves the live provider run of each local agent among `agent_ids` to the limit its parent
-    /// chain sets now, so its next turn starts there. The limit is read again after each move, so
-    /// the run ends at the current limit whichever change moved it last.
+    /// chain sets now, so its next turn starts there. An idle run moves now: in place when its
+    /// provider takes settings per turn, otherwise its process ends and the next turn launches at
+    /// the limit. A run in a turn keeps that turn: it only takes a lowered limit in place, and
+    /// the next dispatch moves it otherwise. The limit is read again after each move, so the run
+    /// ends at the current limit whichever change moved it last.
     pub(super) fn limit_local_runs(
         &self,
         operation: &'static str,
@@ -196,7 +199,13 @@ impl KernelRuntimeOwnedState {
         let mut limits = LocalRunLimits::default();
         for agent_id in agent_ids {
             for moved in 0.. {
-                let Some(limit) = self.local_run_limit_to_apply(session_id, agent_id)? else {
+                let Some(off_limit) = self.local_run_off_limit(session_id, agent_id)? else {
+                    break;
+                };
+                if !limits.relimited.contains(agent_id) {
+                    limits.relimited.push(agent_id.clone());
+                }
+                let OffLimitRun::MovesNow(limit) = off_limit else {
                     break;
                 };
                 if moved == MOVES {
@@ -207,28 +216,24 @@ impl KernelRuntimeOwnedState {
                         ),
                     });
                 }
-                // A lowered limit holds from now, so a provider that cannot take it within its
-                // process ends it, even mid-turn, as a lowered room default always did.
+                // Only an idle run, or one its provider moves in place, gets here: no turn ends.
                 limits
                     .terminated_run_ids
                     .extend(self.apply_agent_execution_config_to_provider(
                         session_id, agent_id, limit, false, false,
                     )?);
-                if !limits.relimited.contains(agent_id) {
-                    limits.relimited.push(agent_id.clone());
-                }
             }
         }
         Ok(limits)
     }
 
-    /// The limit local `agent_id`'s live provider run must move to; `None` once it runs at it,
-    /// has no live run, is controlled by a provider-native TUI or is leased.
-    fn local_run_limit_to_apply(
+    /// How local `agent_id`'s live provider run differs from its limit; `None` once it runs at
+    /// it, has no live run, is controlled by a provider-native TUI or is leased.
+    fn local_run_off_limit(
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<Option<crate::session::EffectiveAgentExecutionConfig>, DaemonError> {
+    ) -> Result<Option<OffLimitRun>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
         let Some(agent) = agents.iter().find(|agent| {
@@ -238,7 +243,7 @@ impl KernelRuntimeOwnedState {
         };
         let limit =
             crate::session::effective_agent_execution_config_in_tree(&session, agent, &agents);
-        Ok(self
+        let Some(run) = self
             .provider_store
             .get_run_for_agent(session_id, agent_id)
             .filter(|run| {
@@ -247,7 +252,27 @@ impl KernelRuntimeOwnedState {
                     && (run.execution_mode(), run.permission_level())
                         != (limit.mode, limit.permission_level)
             })
-            .map(|_| limit))
+        else {
+            return Ok(None);
+        };
+        let active_turn = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .is_some();
+        // As for one agent's own update: a running turn takes a lowered setting in place at once,
+        // since every permission lookup reads it at use, and anything else at its next dispatch.
+        let lowers_only = run.execution_mode().permits(limit.mode)
+            && run.permission_level().permits(limit.permission_level);
+        let movable = !active_turn
+            || (lowers_only
+                && self
+                    .provider_store
+                    .adapter_supports_turn_scoped_execution_config(run.adapter_key()));
+        Ok(Some(if movable {
+            OffLimitRun::MovesNow(limit)
+        } else {
+            OffLimitRun::AtNextDispatch
+        }))
     }
 
     /// What leased `agent_id` must run under on its worker, as its parent chain limits it now;
@@ -380,10 +405,19 @@ impl KernelRuntimeOwnedState {
     }
 }
 
+/// How a local run off its limit moves.
+enum OffLimitRun {
+    /// It takes the limit now without ending a turn: in place, or by ending its idle process
+    /// so the next turn launches at it.
+    MovesNow(crate::session::EffectiveAgentExecutionConfig),
+    /// Its turn keeps running as it is; the next dispatch moves the run.
+    AtNextDispatch,
+}
+
 /// What moving local runs to their limit did.
 #[derive(Default)]
 pub(super) struct LocalRunLimits {
-    /// The agents whose run moved.
+    /// The agents whose run moved now or moves at its next dispatch.
     pub(super) relimited: Vec<String>,
     /// The runs that ended to relaunch at the limit.
     pub(super) terminated_run_ids: Vec<String>,

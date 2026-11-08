@@ -14,8 +14,10 @@ const WORKER_ID: &str = "worker-leased-limits";
 
 /// Room agents `low` (Required/Plan) and `high` (Yolo/Build); `child` under `high` and
 /// `grandchild` under `child`, both executing on one worker. `local` (with `child`'s settings)
-/// under `high` and `local_child` (Yolo/Build) under `local` run here, each with a launched run.
+/// under `high` and `local_child` (Yolo/Build) under `local` run here, each with a launched run;
+/// so does `claude_like` (Yolo/Build) under `high`, whose provider takes settings only at launch.
 struct LeasedTree {
+    app: Arc<Mutex<crate::app::DaemonApp>>,
     runtime: KernelRuntimeState,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     priority_rx: tokio::sync::mpsc::Receiver<chariox_relay::protocol::RelayEnvelope>,
@@ -29,12 +31,43 @@ struct LeasedTree {
     grandchild: String,
     local: String,
     local_child: String,
+    claude_like: String,
 }
 
 fn limit(app: &crate::app::DaemonApp, agent: &str, mode: Mode, level: Level) {
     app.agents()
         .update_agent_config(agent, Some(Some(mode)), Some(Some(level)), None, None)
         .unwrap();
+}
+
+/// Takes new settings in the run it already has, as Codex does at its next turn start.
+const CODEX_LIKE: &str = "managed-dev-stub";
+/// Takes settings only when its process launches, as Claude does.
+const CLAUDE_LIKE: &str = "dev-stub";
+
+/// Launches the provider run of `agent` with `settings` through `adapter`.
+fn launch(
+    app: &mut crate::app::DaemonApp,
+    room: &str,
+    agent: &str,
+    adapter: &str,
+    (mode, level): (Mode, Level),
+) {
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                room,
+                adapter,
+                "dev-stub",
+                "default",
+                "room-model",
+            )
+            .with_agent_id(agent)
+            .with_execution_mode(mode)
+            .with_permission_level(level),
+        )
+        .unwrap();
+    app.update_provider_run_projection(run);
 }
 
 fn lease(app: &crate::app::DaemonApp, agent: &str) {
@@ -107,12 +140,24 @@ async fn leased_tree_under(
     }
     limit(&app, &child, child_mode, child_level);
     limit(&app, &grandchild, Mode::Build, Level::Yolo);
-    // The local agents launch their runs once their settings are set.
+    // The local agents launch their runs with their own settings, on a provider that takes
+    // settings per turn as Codex does.
     let local = spawn(&mut app, "local", Some(&high));
     limit(&app, &local, child_mode, child_level);
+    launch(
+        &mut app,
+        &room,
+        &local,
+        CODEX_LIKE,
+        (child_mode, child_level),
+    );
     let local_child = spawn(&mut app, "local-child", Some(&local));
     limit(&app, &local_child, Mode::Build, Level::Yolo);
+    launch(&mut app, &room, &local_child, CODEX_LIKE, OPEN);
     crate::test_support::admit_room_test_turn(&mut app, &room, &local_child);
+    let claude_like = spawn(&mut app, "claude-like", Some(&high));
+    limit(&app, &claude_like, Mode::Build, Level::Yolo);
+    launch(&mut app, &room, &claude_like, CLAUDE_LIKE, OPEN);
     // The spawning turns end, so the room can raise `high` again.
     for agent in [&high, &child, &local, &local_child] {
         app.complete_active_prompt(&room, agent, None).unwrap();
@@ -140,6 +185,7 @@ async fn leased_tree_under(
         relay.remember_peer_public_key(WORKER_ID, worker.relay_public_key.clone());
     }
     LeasedTree {
+        app,
         runtime,
         relay_state,
         priority_rx,
@@ -153,6 +199,7 @@ async fn leased_tree_under(
         grandchild,
         local,
         local_child,
+        claude_like,
     }
 }
 
@@ -336,6 +383,24 @@ impl LeasedTree {
             .expect("the local agent keeps its launched provider run");
         assert_ne!(run.state(), crate::provider::ProviderRunState::Ended);
         (run.execution_mode(), run.permission_level())
+    }
+
+    /// The live provider run of `agent`, if it has one.
+    fn live_run(&self, agent: &str) -> Option<crate::provider::RuntimeProviderRun> {
+        self.runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&self.room, agent)
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+    }
+
+    /// Dispatches the next turn of `agent` as ordinary dispatch does, and returns the run it uses.
+    async fn dispatch(&self, agent: &str) -> crate::provider::RuntimeProviderRun {
+        let mut app = self.app.lock().await;
+        let run_id = app
+            .ensure_prompt_provider_run_for_agent(&self.room, agent)
+            .unwrap();
+        app.providers().get_run(&run_id).unwrap()
     }
 
     /// The settings `agent` asked for itself.
@@ -634,4 +699,80 @@ async fn the_local_and_leased_paths_limit_the_same_tree_alike() {
             "a local and a leased agent at one place in the tree must run under one limit"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_idle_run_that_takes_settings_only_at_launch_relaunches_at_a_lowered_limit() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (high, claude_like) = (tree.high.clone(), tree.claude_like.clone());
+    let launched = tree.live_run(&claude_like).unwrap();
+    assert_eq!(
+        (launched.execution_mode(), launched.permission_level()),
+        OPEN
+    );
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    assert!(
+        tree.live_run(&claude_like).is_none(),
+        "an idle process that cannot take a lowered limit must end"
+    );
+    let next = tree.dispatch(&claude_like).await;
+    assert_ne!(next.id(), launched.id());
+    assert_eq!(
+        (next.execution_mode(), next.permission_level()),
+        LIMITED,
+        "its next turn must launch at the parent's Required/Plan"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_running_turn_keeps_its_process_and_the_next_dispatch_moves_the_run() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high) = (tree.room.clone(), tree.high.clone());
+    let (claude_like, local) = (tree.claude_like.clone(), tree.local.clone());
+    {
+        let mut app = tree.app.lock().await;
+        crate::test_support::admit_room_test_turn(&mut app, &room, &claude_like);
+        crate::test_support::admit_room_test_turn(&mut app, &room, &local);
+    }
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    assert_eq!(
+        tree.live_run(&claude_like).map(|run| run.id().to_owned()),
+        Some(launched.id().to_owned()),
+        "a lowered limit must never end a turn in progress"
+    );
+    assert_eq!(
+        tree.next_turn(&local),
+        LIMITED,
+        "a run that takes settings per turn takes a lowered limit at once"
+    );
+    tree.app
+        .lock()
+        .await
+        .complete_active_prompt(&room, &claude_like, None)
+        .unwrap();
+    let next = tree.dispatch(&claude_like).await;
+    assert_ne!(next.id(), launched.id());
+    assert_eq!(
+        (next.execution_mode(), next.permission_level()),
+        LIMITED,
+        "the turn after it launches at the lowered limit"
+    );
+
+    // A raise waits for the turn to end, then the run takes it in place.
+    let running = tree.live_run(&local).unwrap();
+    tree.set_settings(&high, Mode::Build, Level::Yolo).await;
+    assert_eq!(
+        tree.next_turn(&local),
+        LIMITED,
+        "a running turn must not be raised"
+    );
+    tree.app
+        .lock()
+        .await
+        .complete_active_prompt(&room, &local, None)
+        .unwrap();
+    let next = tree.dispatch(&local).await;
+    assert_eq!(next.id(), running.id());
+    assert_eq!((next.execution_mode(), next.permission_level()), OPEN);
 }

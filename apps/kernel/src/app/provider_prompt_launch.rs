@@ -122,10 +122,32 @@ impl DaemonApp {
             request,
         )?;
         let mut replace_environment = false;
-        if let Some(agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
-            if agent_run.project_environment_revision()
-                == request.project_environment_revision.as_deref()
-            {
+        if let Some(mut agent_run) = self.providers.get_run_for_agent(session_id, agent_id) {
+            let same_environment = agent_run.project_environment_revision()
+                == request.project_environment_revision.as_deref();
+            // A limit that changed while the agent's last turn ran applies from this turn on; a
+            // provider-native TUI keeps the settings it was started with.
+            let mut at_limit = !agent_run.client_interface().is_chariox()
+                || (agent_run.execution_mode(), agent_run.permission_level())
+                    == (effective_config.mode, effective_config.permission_level);
+            if same_environment && !at_limit && agent_run.state() != ProviderRunState::Ended {
+                if self
+                    .providers
+                    .adapter_supports_turn_scoped_execution_config(agent_run.adapter_key())
+                {
+                    agent_run = self.providers.update_run_execution_config(
+                        agent_run.id(),
+                        effective_config.mode,
+                        effective_config.permission_level,
+                    )?;
+                    self.update_provider_run_projection(agent_run.clone());
+                    at_limit = true;
+                } else if self.provider_run_has_active_prompt(session_id, &agent_run)? {
+                    // The process keeps its settings until the turn it runs ends.
+                    return Ok(agent_run.id().to_string());
+                }
+            }
+            if same_environment && at_limit {
                 match agent_run.state() {
                     ProviderRunState::Running | ProviderRunState::Starting => {
                         return Ok(agent_run.id().to_string());
