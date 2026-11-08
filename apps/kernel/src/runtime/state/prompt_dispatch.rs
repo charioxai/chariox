@@ -730,6 +730,11 @@ impl KernelRuntimeState {
             )
             .await?;
             authorize()?;
+            self.limit_local_run_for_next_turn(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+            )
+            .await?;
             self.with_external_command_authority(authority)
                 .refresh_project_prompt_provider(
                     &prepared.session_id,

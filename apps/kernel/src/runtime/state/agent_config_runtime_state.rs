@@ -1027,6 +1027,33 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// Moves the provider run of local `agent_id` to the limit its parent chain sets now,
+    /// before ordinary work starts on it: a limit that changed during the agent's last turn
+    /// applies from the next turn on, whether or not a Project environment needs resolving. A
+    /// running turn keeps its process, and a backlog is launched by its own queue promotion.
+    pub(super) async fn limit_local_run_for_next_turn(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session = self.owned.session_store.get_session(session_id)?;
+        if self
+            .owned
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.limit_local_runs(
+            "submit prompt",
+            session_id,
+            vec![agent_id.to_string()],
+            "send the prompt again",
+        )
+        .await
+    }
+
     /// Tells the worker of each leased agent the limit its parent chain sets now. The limit is read
     /// again once the worker applied it and sent again if a concurrent change moved it meanwhile,
     /// so the worker ends at the current limit whichever change it heard last. Telling it again

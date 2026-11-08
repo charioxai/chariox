@@ -394,28 +394,12 @@ impl LeasedTree {
             .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
     }
 
-    /// Dispatches the next turn of `agent` as ordinary dispatch does, and returns the run it uses.
-    async fn dispatch(&self, agent: &str) -> crate::provider::RuntimeProviderRun {
-        let mut app = self.app.lock().await;
-        let run_id = app
-            .ensure_prompt_provider_run_for_agent(&self.room, agent)
-            .unwrap();
-        app.providers().get_run(&run_id).unwrap()
-    }
-
-    /// Sends `agent` an ordinary prompt through runtime submission and returns the run its turn
-    /// starts on.
+    /// Sends idle `agent` an ordinary prompt through runtime submission and returns the run its
+    /// turn starts on: the run it reused, or the one it launched and waits for.
     async fn submit(&self, agent: &str, prompt_id: &str) -> crate::provider::RuntimeProviderRun {
-        let submission = self.submit_prompt(agent, prompt_id).await;
-        assert!(matches!(
-            submission.outcome,
-            crate::session::PromptSubmissionOutcome::Started { .. }
-        ));
-        let run_id = submission
-            .dispatch
-            .expect("a started turn dispatches")
-            .provider_run_id;
-        self.runtime.owned.provider_store.get_run(&run_id).unwrap()
+        self.submit_prompt(agent, prompt_id).await;
+        self.live_run(agent)
+            .expect("an ordinary prompt has a provider run to start on")
     }
 
     async fn submit_prompt(
@@ -752,7 +736,7 @@ async fn an_idle_run_that_takes_settings_only_at_launch_relaunches_at_a_lowered_
         tree.live_run(&claude_like).is_none(),
         "an idle process that cannot take a lowered limit must end"
     );
-    let next = tree.dispatch(&claude_like).await;
+    let next = tree.submit(&claude_like, "next-turn").await;
     assert_ne!(next.id(), launched.id());
     assert_eq!(
         (next.execution_mode(), next.permission_level()),
@@ -788,7 +772,7 @@ async fn a_running_turn_keeps_its_process_and_the_next_dispatch_moves_the_run() 
         .await
         .complete_active_prompt(&room, &claude_like, None)
         .unwrap();
-    let next = tree.dispatch(&claude_like).await;
+    let next = tree.submit(&claude_like, "next-turn").await;
     assert_ne!(next.id(), launched.id());
     assert_eq!(
         (next.execution_mode(), next.permission_level()),
@@ -809,7 +793,7 @@ async fn a_running_turn_keeps_its_process_and_the_next_dispatch_moves_the_run() 
         .await
         .complete_active_prompt(&room, &local, None)
         .unwrap();
-    let next = tree.dispatch(&local).await;
+    let next = tree.submit(&local, "next-turn-local").await;
     assert_eq!(next.id(), running.id());
     assert_eq!((next.execution_mode(), next.permission_level()), OPEN);
 }
