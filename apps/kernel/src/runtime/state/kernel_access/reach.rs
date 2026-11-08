@@ -22,6 +22,16 @@ pub(crate) struct ReachCaller {
     pub(crate) harness: String,
 }
 
+impl ReachCaller {
+    /// The gateway origin this agent forwards under.
+    pub(crate) fn origin(&self) -> crate::runtime::kernel_gateway::Origin {
+        crate::runtime::kernel_gateway::Origin {
+            grant_id: self.id.clone(),
+            harness: self.harness.clone(),
+        }
+    }
+}
+
 /// What a request needs from a reach caller.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReachNeed {

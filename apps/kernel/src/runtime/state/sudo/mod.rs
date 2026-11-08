@@ -12,6 +12,8 @@ use crate::session::{
 mod approval_attachments;
 mod end_wake;
 mod entry;
+#[cfg(test)]
+mod exec_place_tests;
 mod external;
 mod goal;
 pub(crate) mod leased;

@@ -188,6 +188,7 @@ mod room_display;
 mod room_environment_health;
 mod room_environment_placement;
 mod room_environment_state;
+mod room_exec_place_runtime_state;
 mod room_exec_runtime_state;
 mod room_screenshot;
 mod room_secret_observation;

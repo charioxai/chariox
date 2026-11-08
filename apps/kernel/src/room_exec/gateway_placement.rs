@@ -24,32 +24,30 @@ pub(crate) trait GrantedSend: Send + Sync {
     fn send<'a>(&'a self, command_id: String, request: &'a LocalDaemonRequest) -> SendFuture<'a>;
 }
 
-/// The agent's own gateway grant on this kernel: the same check and the same forwarding
-/// as an external agent's request, with no grant of its own.
-pub(crate) struct AgentGrant {
+/// The requester's own gateway grant on this kernel (the owning agent's reach, or the
+/// owner's person grant): the same check and the same forwarding as an external agent's
+/// request, with no grant of its own.
+pub(crate) struct OriginGrant {
     router: crate::runtime::router::CommandRouter,
     origin: crate::runtime::kernel_gateway::Origin,
     kernel: String,
 }
 
-impl AgentGrant {
+impl OriginGrant {
     pub(crate) fn new(
         router: crate::runtime::router::CommandRouter,
-        caller: &crate::runtime::state::reach::ReachCaller,
+        origin: crate::runtime::kernel_gateway::Origin,
         kernel: &str,
     ) -> Self {
         Self {
             router,
-            origin: crate::runtime::kernel_gateway::Origin {
-                grant_id: caller.id.clone(),
-                harness: caller.harness.clone(),
-            },
+            origin,
             kernel: kernel.to_owned(),
         }
     }
 }
 
-impl GrantedSend for AgentGrant {
+impl GrantedSend for OriginGrant {
     fn send<'a>(&'a self, command_id: String, request: &'a LocalDaemonRequest) -> SendFuture<'a> {
         Box::pin(async move {
             self.router

@@ -31,6 +31,14 @@ pub enum RoomTerminalOperation {
     ExecStartNow {
         exec_id: String,
     },
+    /// Run a launch that is still held on another of the owner's kernels. The
+    /// target Room is made in `directory` there, else in this Room's directory.
+    ExecPlace {
+        exec_id: String,
+        kernel: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
     ExecWrite {
         exec_id: String,
         offset: u64,
@@ -168,6 +176,7 @@ impl RoomTerminalOperation {
             Self::ExecList
                 | Self::ExecOpen { .. }
                 | Self::ExecStartNow { .. }
+                | Self::ExecPlace { .. }
                 | Self::ExecWrite { .. }
                 | Self::ExecStdinClose { .. }
                 | Self::ExecRead { .. }

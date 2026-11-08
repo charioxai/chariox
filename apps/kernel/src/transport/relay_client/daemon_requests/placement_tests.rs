@@ -14,9 +14,9 @@ use super::*;
 use crate::local::{
     LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
-use crate::room_exec::gateway_placement::{AgentGrant, GatewayExecPlacement, GrantedSend};
+use crate::room_exec::gateway_placement::{GatewayExecPlacement, GrantedSend, OriginGrant};
 use crate::room_exec::queue_tests::{limited, queued, TempDir};
-use crate::room_exec::{ExecOutcome, ExecState, ExecStream, RoomExecService};
+use crate::room_exec::{ExecOutcome, ExecState, ExecStream, Placement, Requester, RoomExecService};
 use crate::runtime::kernel_gateway::{origins, GatewayError};
 use crate::runtime::process_resources::SessionProcessOwner;
 
@@ -187,7 +187,7 @@ impl GrantedSend for SecondKernel {
     ) -> crate::room_exec::gateway_placement::SendFuture<'a> {
         Box::pin(async move {
             self.sent.lock().unwrap().push(command_id.clone());
-            let fault = if command_id.ends_with(":open") {
+            let fault = if command_id.ends_with(":open") || command_id.ends_with(":room") {
                 self.faults.lock().unwrap().pop_front()
             } else {
                 None
@@ -442,7 +442,7 @@ async fn an_ended_agent_grant_sends_nothing_and_the_launch_does_not_start() {
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
         harness: "claude".into(),
     };
-    let grant = AgentGrant::new(second.router.clone(), &caller, "kernel-b");
+    let grant = OriginGrant::new(second.router.clone(), caller.origin(), "kernel-b");
     home.place(
         "room",
         &id,
@@ -463,4 +463,205 @@ async fn an_ended_agent_grant_sends_nothing_and_the_launch_does_not_start() {
     );
     assert!(second.execs().await.is_empty());
     assert!(!home.has_running_work());
+}
+
+fn code_of(failure: &crate::error::DaemonError) -> &str {
+    match failure {
+        crate::error::DaemonError::MachineRequest { code, .. } => code,
+        other => panic!("not a typed refusal: {other}"),
+    }
+}
+
+// The `exec place` command: a Room is made on the target, then the held launch runs there.
+fn placement<'a>(second: &'a SecondKernel, id: &'a str, directory: &'a str) -> Placement<'a> {
+    Placement {
+        session_id: "room",
+        exec_id: id,
+        directory,
+        origin_kernel: ORIGIN_NAME,
+    }
+}
+
+fn target_directory(second: &SecondKernel) -> String {
+    second._workspace.path().display().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_owning_agent_places_its_held_launch_into_a_room_made_on_the_target() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "cat; exit 9", Some("agent-1"));
+    queued(&home, &id).await;
+    let directory = target_directory(&second);
+
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, &directory),
+        &Requester::Agent("agent-1".into()),
+        second.clone(),
+    )
+    .await
+    .unwrap();
+
+    home.write(
+        "room",
+        &id,
+        0,
+        &base64::engine::general_purpose::STANDARD.encode(b"hi"),
+    )
+    .unwrap();
+    home.close_stdin("room", &id, 2).unwrap();
+    let (stdout, _, outcome) = collect(&home, &id).await;
+    assert_eq!(stdout, b"hi");
+    assert_eq!(outcome, ExecOutcome::Exited { code: 9 });
+    let sent = second.sent.lock().unwrap().clone();
+    assert_eq!(
+        sent.iter().filter(|id| id.ends_with(":room")).count(),
+        1,
+        "one Room made, under an id derived from the launch: {sent:?}"
+    );
+    assert_eq!(second.open_command_ids(), vec![format!("place:{id}:open")]);
+    assert!(
+        second.execs().await.is_empty(),
+        "the launch runs in the Room made for it, not in the target's first Room"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_person_places_the_launch_of_an_agent() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "exit 3", Some("agent-1"));
+    queued(&home, &id).await;
+    let directory = target_directory(&second);
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, &directory),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .unwrap();
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert_eq!(outcome, ExecOutcome::Exited { code: 3 });
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn another_agent_cannot_place_the_launch_and_nothing_is_sent() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let by_agent = hold(&home, home_dir.path(), "exit 3", Some("agent-1"));
+    let by_person = hold(&home, home_dir.path(), "exit 3", None);
+    queued(&home, &by_agent).await;
+    queued(&home, &by_person).await;
+    let directory = target_directory(&second);
+    for id in [&by_agent, &by_person] {
+        let refused = crate::room_exec::run_on_kernel(
+            &home,
+            placement(&second, id, &directory),
+            &Requester::Agent("agent-2".into()),
+            second.clone(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(code_of(&refused), "exec_not_yours");
+    }
+    assert!(
+        second.sent.lock().unwrap().is_empty(),
+        "no request left this kernel"
+    );
+    assert!(home
+        .list("room")
+        .iter()
+        .all(|row| matches!(row.state, ExecState::Queued { .. })));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_started_launch_is_not_placed() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(u64::MAX / 2, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "sleep 30", Some("agent-1"));
+    eventually(|| matches!(home.list("room")[0].state, ExecState::Running).then_some(())).await;
+    let directory = target_directory(&second);
+    let refused = crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, &directory),
+        &Requester::Agent("agent-1".into()),
+        second.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code_of(&refused), "exec_not_queued");
+    assert!(second.sent.lock().unwrap().is_empty());
+    home.cancel("room", &id).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_target_that_cannot_make_the_room_leaves_the_launch_held() {
+    // The Room request is lost twice: the outcome is unknown, so the launch is not started
+    // anywhere and stays held at home.
+    let second = SecondKernel::new(&[Fault::DropRequest, Fault::DropRequest]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "exit 3", Some("agent-1"));
+    queued(&home, &id).await;
+    let directory = target_directory(&second);
+    let failed = crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, &directory),
+        &Requester::Agent("agent-1".into()),
+        second.clone(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code_of(&failed), "kernel_outcome_unknown");
+    assert!(second.open_command_ids().is_empty());
+    assert!(matches!(
+        home.list("room")[0].state,
+        ExecState::Queued { .. }
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreachable_kernel_is_a_typed_refusal_and_the_launch_stays_held() {
+    struct Offline;
+    impl GrantedSend for Offline {
+        fn send<'a>(
+            &'a self,
+            _command_id: String,
+            _request: &'a LocalDaemonRequest,
+        ) -> crate::room_exec::gateway_placement::SendFuture<'a> {
+            Box::pin(async {
+                Err(GatewayError::Offline {
+                    name: "kernel-b".into(),
+                })
+            })
+        }
+    }
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "exit 3", None);
+    queued(&home, &id).await;
+    let failed = crate::room_exec::run_on_kernel(
+        &home,
+        Placement {
+            session_id: "room",
+            exec_id: &id,
+            directory: "/",
+            origin_kernel: ORIGIN_NAME,
+        },
+        &Requester::Person,
+        Arc::new(Offline),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(code_of(&failed), "kernel_offline");
+    assert!(matches!(
+        home.list("room")[0].state,
+        ExecState::Queued { .. }
+    ));
 }

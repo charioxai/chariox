@@ -1,9 +1,9 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
-#[allow(dead_code)] // reached through the Run on command, which is not wired yet
 pub(crate) mod gateway_placement;
 mod launch;
 mod lease;
+mod place_command;
 mod placement;
 #[cfg(test)]
 mod placement_tests;
@@ -29,6 +29,7 @@ use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
+pub(crate) use place_command::{run_on_kernel, Placement, Requester};
 
 pub const CHUNK_BYTES: usize = crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize;
 const MAX_PER_ROOM: usize = 16;
@@ -82,6 +83,9 @@ pub struct ExecSummary {
     pub command_line: String,
     pub command: Vec<String>,
     pub owner: crate::runtime::process_resources::SessionProcessOwner,
+    /// Kernels a held launch could run on instead; the router fills it for the caller.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub placeable_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +309,7 @@ impl RoomExecService {
                         &record.intent.command,
                     ),
                     owner: record.intent.process_owner(),
+                    placeable_on: Vec::new(),
                 }
             })
             .collect()
@@ -449,9 +454,26 @@ impl RoomExecService {
         Ok(())
     }
 
+    /// Whether `requester` may run this launch on another kernel: it is still held, and an
+    /// agent asks only for the launches it started itself.
+    pub(crate) fn ensure_placeable_by(
+        &self,
+        session_id: &str,
+        exec_id: &str,
+        requester: &place_command::Requester,
+    ) -> Result<(), DaemonError> {
+        let record = self.record(session_id, exec_id)?;
+        if !matches!(
+            *record.state.lock().expect("exec state poisoned"),
+            ExecState::Queued { .. }
+        ) {
+            return Err(not_placeable());
+        }
+        requester.ensure_owns(record.intent.acting_agent.as_deref())
+    }
+
     /// Runs a launch that is still held on another kernel. A process that
     /// already started keeps running where it is.
-    #[allow(dead_code)] // reached through the Run on command, which is not wired yet
     pub(crate) fn place(
         &self,
         session_id: &str,
@@ -462,10 +484,7 @@ impl RoomExecService {
         let record = self.record(session_id, exec_id)?;
         let mut state = record.state.lock().expect("exec state poisoned");
         if !matches!(*state, ExecState::Queued { .. }) {
-            return Err(error(
-                "exec_not_queued",
-                "only a launch held before start can run on another kernel; a started process keeps running where it is",
-            ));
+            return Err(not_placeable());
         }
         // Not queued any more: the held launch must not start here, and it
         // reads as starting until the other kernel reports it running.
@@ -550,6 +569,13 @@ fn input_error(failure: mpsc::error::TrySendError<Option<Vec<u8>>>) -> DaemonErr
             "the command closed stdin; drain output and collect its outcome",
         ),
     }
+}
+
+fn not_placeable() -> DaemonError {
+    error(
+        "exec_not_queued",
+        "only a launch held before start can run on another kernel; a started process keeps running where it is",
+    )
 }
 
 pub(super) fn error(code: &str, message: impl Into<String>) -> DaemonError {
