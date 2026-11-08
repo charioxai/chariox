@@ -25,6 +25,7 @@ impl KernelRuntimeState {
                 let failure_agent_id = agent_id.clone();
                 let spawn_result = std::thread::Builder::new()
                     .name("room-browser-manifest-sync".to_string())
+                    .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
                     .spawn(move || {
                         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                             .enable_all()

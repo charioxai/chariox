@@ -64,6 +64,35 @@ fn provider_run_actors_use_async_mailboxes_and_bounded_blocking_work() {
     assert!(source.contains("blocking_executor_permits"));
 }
 
+/// The kernel binary runs without `RUST_MIN_STACK`; a thread that syncs remote extension
+/// manifests must not fall back to the 2 MiB default stack.
+#[test]
+fn remote_extension_manifest_sync_threads_use_the_kernel_runtime_stack() {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime/state");
+    for (relative, thread) in [
+        (
+            "room_browser_manifest_sync.rs",
+            "room-browser-manifest-sync",
+        ),
+        (
+            "agent_config_runtime_state.rs",
+            "remote-extension-manifest-retry",
+        ),
+    ] {
+        let source = std::fs::read_to_string(src_root.join(relative))
+            .expect("manifest sync source should be readable");
+        let builder = source
+            .split("std::thread::Builder::new()")
+            .find(|part| part.contains(thread))
+            .unwrap_or_else(|| panic!("{relative} must start `{thread}` with a thread builder"));
+        let builder = &builder[..builder.find(".spawn(").expect("builder spawns")];
+        assert!(
+            builder.contains("KERNEL_RUNTIME_THREAD_STACK_SIZE"),
+            "{relative}: `{thread}` must set the kernel runtime thread stack"
+        );
+    }
+}
+
 #[test]
 fn remote_provider_launches_preserve_explicit_adapter_selection() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

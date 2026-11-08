@@ -657,30 +657,36 @@ impl KernelRuntimeState {
             serde_json::Value::Object(payload),
         );
         let state = self.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(delay));
-            let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            else {
-                return;
-            };
-            runtime.block_on(async move {
-                let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) else {
+        let spawned = std::thread::Builder::new()
+            .name("remote-extension-manifest-retry".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(delay));
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
                     return;
                 };
-                let status_matches = agent
-                    .remote_extension_manifest_sync()
-                    .and_then(|status| status.manifest_hash.as_deref())
-                    == Some(manifest_hash.as_str());
-                if !status_matches {
-                    return;
-                }
-                let _ = state
-                    .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None, None)
-                    .await;
+                runtime.block_on(async move {
+                    let Ok(agent) = state.owned.agent_store.get_agent(&agent_id) else {
+                        return;
+                    };
+                    let status_matches = agent
+                        .remote_extension_manifest_sync()
+                        .and_then(|status| status.manifest_hash.as_deref())
+                        == Some(manifest_hash.as_str());
+                    if !status_matches {
+                        return;
+                    }
+                    let _ = state
+                        .sync_remote_extension_manifest_for_agent_inner::<false>(&agent, None, None)
+                        .await;
+                });
             });
-        });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "cannot start the remote extension manifest retry thread");
+        }
     }
 
     pub(crate) async fn retry_remote_extension_manifest_sync(
