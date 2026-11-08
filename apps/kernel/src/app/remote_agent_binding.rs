@@ -1461,12 +1461,14 @@ impl DaemonApp {
             slice_recovery::recorded_slice_worker_id(&self.slices, kernel_ref)?;
         if self.can_use_connected_relay_inventory(kernel_ref, relay_config) {
             let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-            if let Some(kernel) = projected_kernels.iter().find(|kernel| {
-                match expected_slice_worker.as_deref() {
-                    Some(expected) => kernel.kernel_id == expected,
-                    None => kernel_presence_matches_ref(kernel, kernel_ref),
-                }
-            }) {
+            if let Some(kernel) =
+                projected_kernels
+                    .iter()
+                    .find(|kernel| match expected_slice_worker.as_deref() {
+                        Some(expected) => kernel.kernel_id == expected,
+                        None => kernel_presence_matches_ref(kernel, kernel_ref),
+                    })
+            {
                 return ensure_kernel_can_host_provider(kernel.clone(), kernel_ref, provider);
             }
             // A machine name, as the machine and kernel pickers show it.
