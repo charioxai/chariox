@@ -1,0 +1,20 @@
+[
+  {
+    "path": "apps/kernel/src/runtime/app_dev_push.rs",
+    "guard": "jobs",
+    "init": "self .jobs .lock() .unwrap_or_else(std::sync::PoisonError::into_inner)",
+    "reason": "shutdown_blocking only: sync drain of the spawned build jobs on retained blocking shutdown ownership; `stopped` is set first and cancels builds, new requests refuse once stopped; not on a shared loop"
+  },
+  {
+    "path": "apps/kernel/src/runtime/app_install_control.rs",
+    "guard": "_shutdown",
+    "init": "self .0 .shutdown .lock() .unwrap_or_else(std::sync::PoisonError::into_inner)",
+    "reason": "shutdown_blocking only: the guard serializes concurrent shutdowns while the tasks drain; `stopped` is set first and entries are cancelled; not on a shared loop"
+  },
+  {
+    "path": "apps/kernel/src/runtime/app_publisher_control.rs",
+    "guard": "_shutdown",
+    "init": "self .0 .shutdown .lock() .unwrap_or_else(std::sync::PoisonError::into_inner)",
+    "reason": "shutdown_blocking only: the guard serializes concurrent shutdowns while the tasks drain; `stopped` is set first and entries are cancelled; not on a shared loop"
+  }
+]
