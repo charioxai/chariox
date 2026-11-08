@@ -68,3 +68,66 @@ fn vault_login_1000_shapes_are_pinned() {
     assert_eq!(sealed, ["ciphertext", "nonce", "sender_public_key"]);
     assert!(!value.to_string().contains("SHAPE-ONLY"));
 }
+
+// A login the new machine could not install (its Vault was not open) is named in the import
+// receipt, on the relay peer wire and in the local receipt Cloud reads. A full import omits it.
+const OMITTED_LOGINS_FIXTURE: &[u8] = include_bytes!("managed-context-omitted-logins-1000.json");
+
+#[test]
+fn managed_context_omitted_logins_1000_snapshot_and_hash() {
+    use crate::managed_context::package::{
+        ManagedContextProviderAccountNextStep, ManagedContextProviderAccountOmission,
+    };
+    use crate::transport::relay_peer::{
+        RelayManagedContextImportReceipt, RelayManagedContextOmittedProviderAccount,
+        RelayManagedDevelopmentContextImportReceipt, RelayManagedKernelContextImportReceipt,
+    };
+    assert_eq!(
+        format!("{:x}", Sha256::digest(OMITTED_LOGINS_FIXTURE)),
+        "ce1e425c1113d57f4cd0182e378427e843b1e5618d04ceae7e560b6b61d68e0e"
+    );
+    let fixture: serde_json::Value = serde_json::from_slice(OMITTED_LOGINS_FIXTURE).unwrap();
+    assert_eq!(fixture["local_protocol"], LOCAL_DAEMON_PROTOCOL_VERSION);
+    assert_eq!(
+        fixture["peer_protocol"],
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+    );
+
+    let receipt = |omitted_provider_accounts| RelayManagedContextImportReceipt {
+        destination: None,
+        transfer_id: "transfer".into(),
+        archive_sha256: "a".repeat(64),
+        plan_digest: "sha256:plan".into(),
+        development: RelayManagedDevelopmentContextImportReceipt::Empty,
+        kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+        omitted_provider_accounts,
+        receipt_sha256: "b".repeat(64),
+    };
+    let relay = receipt(vec![RelayManagedContextOmittedProviderAccount {
+        provider: "claude".into(),
+        profile_id: "work".into(),
+        label: "Work".into(),
+        reason: ManagedContextProviderAccountOmission::VaultClosed,
+        next_step: ManagedContextProviderAccountNextStep::SignInAgain,
+    }]);
+    assert_eq!(
+        serde_json::to_value(&relay).unwrap()["omitted_provider_accounts"],
+        fixture["relay_receipt_omitted_provider_accounts"]
+    );
+    let local =
+        crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(relay);
+    assert_eq!(
+        serde_json::to_value(&local).unwrap()["omittedProviderAccounts"],
+        fixture["local_receipt_omitted_provider_accounts"]
+    );
+
+    let full = serde_json::to_value(receipt(Vec::new())).unwrap();
+    assert!(full.get("omitted_provider_accounts").is_none());
+    let full_local = serde_json::to_value(
+        crate::managed_context::outbound_service::ManagedContextOutboundImportReceipt::from(
+            receipt(Vec::new()),
+        ),
+    )
+    .unwrap();
+    assert!(full_local.get("omittedProviderAccounts").is_none());
+}

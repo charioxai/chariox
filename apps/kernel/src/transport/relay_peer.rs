@@ -289,7 +289,19 @@ pub struct RelayManagedContextImportReceipt {
     pub plan_digest: String,
     pub development: RelayManagedDevelopmentContextImportReceipt,
     pub kernel_context: RelayManagedKernelContextImportReceipt,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_provider_accounts: Vec<RelayManagedContextOmittedProviderAccount>,
     pub receipt_sha256: String,
+}
+
+/// A selected provider login the target left out of the import.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextOmittedProviderAccount {
+    pub provider: String,
+    pub profile_id: String,
+    pub label: String,
+    pub reason: crate::managed_context::package::ManagedContextProviderAccountOmission,
+    pub next_step: crate::managed_context::package::ManagedContextProviderAccountNextStep,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

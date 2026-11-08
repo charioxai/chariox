@@ -359,7 +359,8 @@ fn the_new_machine_writes_the_login_into_its_own_vault_and_registers_the_profile
 
     let receipt = transfer.apply(&exported).expect("apply package");
 
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
     else {
         panic!("selected provider account became None")
     };
@@ -633,7 +634,7 @@ fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() 
         .expect("the import completes although the target Vault is not open");
 
     match &receipt.provider_accounts {
-        ManagedContextImportedProviderAccounts::Selected { accounts } => assert!(
+        ManagedContextImportedProviderAccounts::Selected { accounts, .. } => assert!(
             accounts.is_empty(),
             "the login is not carried while no Vault is open: {accounts:?}"
         ),
@@ -767,7 +768,8 @@ fn a_transferred_vault_is_installed_before_the_login_is_written_into_it() {
         .apply(&exported)
         .expect("the import completes on a machine whose Vault arrives in the package");
 
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
     else {
         panic!("the selection stays recorded");
     };

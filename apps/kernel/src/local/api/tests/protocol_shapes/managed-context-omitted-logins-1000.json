@@ -1,0 +1,22 @@
+{
+  "local_protocol": 1000,
+  "peer_protocol": 439,
+  "relay_receipt_omitted_provider_accounts": [
+    {
+      "provider": "claude",
+      "profile_id": "work",
+      "label": "Work",
+      "reason": "vault_closed",
+      "next_step": "sign_in_again"
+    }
+  ],
+  "local_receipt_omitted_provider_accounts": [
+    {
+      "provider": "claude",
+      "profileId": "work",
+      "label": "Work",
+      "reason": "vault_closed",
+      "nextStep": "sign_in_again"
+    }
+  ]
+}

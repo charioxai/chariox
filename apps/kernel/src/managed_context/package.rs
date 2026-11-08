@@ -322,7 +322,35 @@ pub(crate) enum ManagedContextImportedProviderAccounts {
     None,
     Selected {
         accounts: Vec<ManagedContextProviderAccountReceipt>,
+        /// Selected logins this machine could not install; the owner acts on each one here.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        omitted: Vec<ManagedContextOmittedProviderAccount>,
     },
+}
+
+/// A selected provider login that the import left out, named the way the owner selected it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextOmittedProviderAccount {
+    pub provider: String,
+    pub profile_id: String,
+    pub label: String,
+    pub reason: ManagedContextProviderAccountOmission,
+    pub next_step: ManagedContextProviderAccountNextStep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContextProviderAccountOmission {
+    /// The login lives only in the owner's Vault, and this machine's Vault was not open.
+    VaultClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContextProviderAccountNextStep {
+    /// Nothing keeps the login for later: the owner signs this account in on this machine.
+    SignInAgain,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1051,6 +1079,22 @@ pub(crate) fn apply_managed_context_package(
     })
 }
 
+/// Logins that need the owner's Vault, named for a machine whose Vault is not open.
+fn omitted_vault_logins(
+    vault_logins: &[VaultLoginMaterialization],
+) -> Vec<ManagedContextOmittedProviderAccount> {
+    vault_logins
+        .iter()
+        .map(|login| ManagedContextOmittedProviderAccount {
+            provider: login.profile.provider.clone(),
+            profile_id: login.profile.profile_id.clone(),
+            label: login.profile.label.clone(),
+            reason: ManagedContextProviderAccountOmission::VaultClosed,
+            next_step: ManagedContextProviderAccountNextStep::SignInAgain,
+        })
+        .collect()
+}
+
 /// Whether a provider login can be written into the target's own Vault now.
 fn target_vault_is_open(config: &crate::config::DaemonConfig) -> Result<bool, DaemonError> {
     let vault = &config.user_config.credential_vault;
@@ -1084,18 +1128,19 @@ fn import_provider_accounts(
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
-            let vault_logins = if vault_logins.is_empty() || target_vault_is_open(&target.config)? {
-                vault_logins.as_slice()
-            } else {
-                // Only the owner creates or opens this machine's Vault; the rest of the context
-                // still arrives, and the owner signs these accounts in here.
-                tracing::info!(
-                    context_id = %request.expected_binding.plan.context_id,
-                    logins = vault_logins.len(),
-                    "provider logins not carried: this machine's Vault is not open"
-                );
-                &[]
-            };
+            let (vault_logins, omitted) =
+                if vault_logins.is_empty() || target_vault_is_open(&target.config)? {
+                    (vault_logins.as_slice(), Vec::new())
+                } else {
+                    // Only the owner creates or opens this machine's Vault; the rest of the context
+                    // still arrives, and the receipt tells the owner which accounts to sign in here.
+                    tracing::info!(
+                        context_id = %request.expected_binding.plan.context_id,
+                        logins = vault_logins.len(),
+                        "provider logins not carried: this machine's Vault is not open"
+                    );
+                    (&[][..], omitted_vault_logins(vault_logins))
+                };
             let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
@@ -1123,8 +1168,10 @@ fn import_provider_accounts(
                     }) {
                     Ok(()) => {}
                     Err(error) => {
-                        let imported =
-                            ManagedContextImportedProviderAccounts::Selected { accounts };
+                        let imported = ManagedContextImportedProviderAccounts::Selected {
+                            accounts,
+                            omitted: Vec::new(),
+                        };
                         if let Err(rollback_error) =
                             rollback_imported_provider_accounts(Some(target), &imported)
                         {
@@ -1164,8 +1211,10 @@ fn import_provider_accounts(
                     }) {
                     Ok(()) => {}
                     Err(error) => {
-                        let imported =
-                            ManagedContextImportedProviderAccounts::Selected { accounts };
+                        let imported = ManagedContextImportedProviderAccounts::Selected {
+                            accounts,
+                            omitted: Vec::new(),
+                        };
                         if let Err(rollback_error) =
                             rollback_imported_provider_accounts(Some(target), &imported)
                         {
@@ -1177,7 +1226,7 @@ fn import_provider_accounts(
                     }
                 }
             }
-            Ok(ManagedContextImportedProviderAccounts::Selected { accounts })
+            Ok(ManagedContextImportedProviderAccounts::Selected { accounts, omitted })
         }
         _ => Err(package_error(
             "managed context provider-account component does not match the launch plan",
@@ -1189,7 +1238,8 @@ fn rollback_imported_provider_accounts(
     target: Option<&ManagedContextProviderAccountImportTarget>,
     provider_accounts: &ManagedContextImportedProviderAccounts,
 ) -> Result<(), DaemonError> {
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = provider_accounts else {
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } = provider_accounts
+    else {
         return Ok(());
     };
     let target = target.ok_or_else(|| {
@@ -1386,6 +1436,7 @@ pub(crate) fn rollback_persisted_managed_context_publication(
         selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
             ManagedContextImportedProviderAccounts::Selected {
                 accounts: provider_account_receipts(&context_id, &package_sha256, selected)?,
+                omitted: Vec::new(),
             }
         }
     };
@@ -1518,13 +1569,15 @@ fn preflight_import_receipt_capacity(
     };
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
+        selected @ ManagedContextPackageProviderAccounts::Selected { vault_logins, .. } => {
+            // Either outcome of a login must fit: installed (an account) or left out (omitted).
             ManagedContextImportedProviderAccounts::Selected {
                 accounts: provider_account_receipts(
                     &request.expected_binding.plan.context_id,
                     &request.expected_package_sha256,
                     selected,
                 )?,
+                omitted: omitted_vault_logins(vault_logins),
             }
         }
     };

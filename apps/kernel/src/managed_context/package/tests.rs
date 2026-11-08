@@ -403,7 +403,8 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     };
     assert!(!format!("{:?}", request()).contains("provider-package-secret"));
     let receipt = apply_managed_context_package(request()).expect("apply provider account package");
-    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
     else {
         panic!("selected provider account became None")
     };
@@ -673,6 +674,7 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     conflicting_receipt.materialization_sha256 = "b".repeat(64);
     let imported = ManagedContextImportedProviderAccounts::Selected {
         accounts: vec![receipts[0].clone(), conflicting_receipt],
+        omitted: Vec::new(),
     };
     let target_binding = ManagedContextProviderAccountImportTarget {
         registry: target.clone(),

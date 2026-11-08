@@ -90,6 +90,10 @@ pub struct ManagedContextOutboundImportReceipt {
     pub plan_digest: String,
     pub development: ManagedContextOutboundDevelopmentImportReceipt,
     pub kernel_context: ManagedContextOutboundKernelContextImportReceipt,
+    /// Selected logins the target left out; each names the account and what the owner does next.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_provider_accounts:
+        Vec<crate::managed_context::package::ManagedContextOmittedProviderAccount>,
     pub receipt_sha256: String,
 }
 
@@ -153,6 +157,19 @@ impl From<RelayManagedContextImportReceipt> for ManagedContextOutboundImportRece
             plan_digest: receipt.plan_digest,
             development: receipt.development.into(),
             kernel_context: receipt.kernel_context.into(),
+            omitted_provider_accounts: receipt
+                .omitted_provider_accounts
+                .into_iter()
+                .map(|account| {
+                    crate::managed_context::package::ManagedContextOmittedProviderAccount {
+                        provider: account.provider,
+                        profile_id: account.profile_id,
+                        label: account.label,
+                        reason: account.reason,
+                        next_step: account.next_step,
+                    }
+                })
+                .collect(),
             receipt_sha256: receipt.receipt_sha256,
         }
     }
@@ -2479,6 +2496,7 @@ mod tests {
                     plan_digest: plan.plan_digest.clone(),
                     development: RelayManagedDevelopmentContextImportReceipt::Empty,
                     kernel_context: RelayManagedKernelContextImportReceipt::Empty,
+                    omitted_provider_accounts: Vec::new(),
                     receipt_sha256: "d".repeat(64),
                 },
             },
