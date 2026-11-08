@@ -45,6 +45,7 @@ mod pre_lane_request;
 mod priority_dispatch;
 mod reach_tools;
 mod refresh_dispatch;
+mod relay_collaborator_gate;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;

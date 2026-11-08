@@ -37,10 +37,25 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
         serde_json::json!({ "ListMcpServers": {} }),
         serde_json::json!({ "GetWorkspaceGitOverview": { "workspace_id": "workspace", "worktree_id": "worktree" } }),
     ];
+    // Refused before they run, so a missing gate would act on this test's kernel.
+    let destructive = [
+        serde_json::json!({ "DeleteKernel": null }),
+        serde_json::json!({ "ConfigureRelay": {} }),
+        serde_json::json!({ "SetUserConfigValue": { "path": "relay.url", "value": "ws://elsewhere" } }),
+    ];
+    let mut requests: Vec<LocalDaemonRequest> = kernel_global
+        .into_iter()
+        .chain(destructive)
+        .map(|request| serde_json::from_value(request).unwrap())
+        .collect();
+    requests.push(LocalDaemonRequest::KernelBrowser(
+        crate::local::KernelBrowserRequest {
+            command: crate::local::KernelBrowserCommand::State,
+        },
+    ));
     let mut reached = Vec::new();
     for member in ["private-member", "full-member"] {
-        for (index, request) in kernel_global.iter().enumerate() {
-            let request: LocalDaemonRequest = serde_json::from_value(request.clone()).unwrap();
+        for (index, request) in requests.iter().enumerate() {
             let outcome = dispatch_relay_client_request(
                 &router,
                 &AtomicU64::new(1),
@@ -61,6 +76,42 @@ async fn a_room_collaborator_over_the_relay_cannot_use_kernel_global_requests() 
         reached.is_empty(),
         "a collaborator's relay client reached kernel-global requests: {reached:#?}"
     );
+
+    // The owner keeps the kernel; a member keeps what its Room client sends outside a session.
+    for (user_id, request) in [
+        ("local", serde_json::json!({ "ListCredentials": null })),
+        ("local", serde_json::json!({ "GetUserConfig": null })),
+        (
+            "private-member",
+            serde_json::json!({ "GetDaemonHealth": null }),
+        ),
+        (
+            "full-member",
+            serde_json::json!({ "GetDaemonHealth": null }),
+        ),
+    ] {
+        let request: LocalDaemonRequest = serde_json::from_value(request).unwrap();
+        let outcome = dispatch_relay_client_request(
+            &router,
+            &AtomicU64::new(1),
+            KernelCaller::for_relay_request(Some(relay_user(user_id))),
+            request.clone(),
+            Some(format!("allowed-{user_id}-{}", request_kind_name(&request))),
+            &cache,
+        )
+        .await;
+        assert!(
+            matches!(outcome, RelayDispatchOutcome::Response(_)),
+            "{user_id} was refused {request:?}"
+        );
+    }
+}
+
+fn request_kind_name(request: &LocalDaemonRequest) -> String {
+    format!("{request:?}")
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect()
 }
 
 fn relay_user(user_id: &str) -> RelayCallerIdentity {
