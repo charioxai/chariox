@@ -1263,3 +1263,4 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
 }
 
 mod reparent;
+mod restored;

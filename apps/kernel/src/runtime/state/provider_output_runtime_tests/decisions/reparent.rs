@@ -41,7 +41,7 @@ impl Tree {
     }
 
     /// A new agent, under `parent` when given, with its own permission level.
-    async fn agent_at(
+    pub(super) async fn agent_at(
         &self,
         alias: &str,
         parent: Option<&str>,
@@ -81,7 +81,7 @@ impl Tree {
 
     /// What the user's client shows: the projected session's room agents, each with the open
     /// cards the shared client lookup (`shown_in_agent_id ?? agent_id`) finds in its panel.
-    fn panels(&self) -> Vec<(String, Vec<String>)> {
+    pub(super) fn panels(&self) -> Vec<(String, Vec<String>)> {
         let session = self
             .runtime
             .owned
@@ -105,7 +105,7 @@ impl Tree {
             .collect()
     }
 
-    fn holder(&self, id: &str) -> DecisionHolder {
+    pub(super) fn holder(&self, id: &str) -> DecisionHolder {
         self.runtime
             .owned
             .pending_interactions
@@ -117,7 +117,7 @@ impl Tree {
     }
 }
 
-fn cards(ids: &[&str]) -> Vec<String> {
+pub(super) fn cards(ids: &[&str]) -> Vec<String> {
     ids.iter().map(|id| (*id).to_owned()).collect()
 }
 
