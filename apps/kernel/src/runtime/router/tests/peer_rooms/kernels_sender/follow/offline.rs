@@ -413,6 +413,129 @@ fn a_spawned_peer_whose_first_turn_ends_before_the_spawn_is_answered_still_reach
     });
 }
 
+/// `kernel` creates the spawned peer for the first spawn, then drops off before the answer is
+/// back; it answers every later request. The peer it created is named in `created`.
+fn link_losing_the_first_spawn_answer(kernel: &Kernel) -> Arc<std::sync::Mutex<Option<String>>> {
+    let router = kernel.router.clone();
+    let created = Arc::new(std::sync::Mutex::new(None));
+    let seen = created.clone();
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let (router, seen) = (router.clone(), seen.clone());
+                Box::pin(async move {
+                    let answer = router.relay_peer_agent(&from, &owner, request).await;
+                    if let Ok(RelayPeerResponse::RoomPeerSpawned { agent, .. }) = &answer {
+                        let mut seen = seen.lock().unwrap();
+                        if seen.is_none() {
+                            *seen = Some(agent.agent_id.clone());
+                            return Err(relay_error("target_disconnected"));
+                        }
+                    }
+                    answer
+                })
+            },
+        ),
+    );
+    created
+}
+
+/// A's live follows of peers, among them a spawn's follow whose peer is not known yet.
+async fn live_peer_follows(kernel: &Kernel) -> usize {
+    kernel
+        .app
+        .lock()
+        .await
+        .durable_state_store()
+        .live_peer_registrations()
+        .unwrap()
+        .len()
+}
+
+#[test]
+fn a_spawned_peer_whose_turn_ends_before_a_lost_spawn_answer_is_retried_reaches_its_creator_once() {
+    run_peer_test("peer-offline-spawn-retry", || async {
+        let (a, b) = two_kernels(
+            "peer-offline-spawn-retry",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let created = link_losing_the_first_spawn_answer(&b);
+        with_task(&a).await;
+        let spawn = format!("agent spawn reviewer --room {} --kernel {}", b.room, b.name);
+        let uncertain = a.command(spawn.clone()).await.unwrap_err();
+        assert!(uncertain.contains("uncertain"), "{uncertain}");
+        let peer = created.lock().unwrap().clone().expect("B created the peer");
+        // The peer's first turn ends while A does not know it yet.
+        running_turn(&mut *b.app.lock().await, &b.room, &peer);
+        b.router
+            .runtime_state
+            .end_agent_turn_for_tests(&b.room, &peer, false)
+            .await
+            .unwrap();
+        b.router
+            .runtime_state
+            .deliver_peer_agent_outcomes()
+            .await
+            .unwrap();
+        let spawned = a
+            .command(spawn)
+            .await
+            .expect("the retry reaches the peer the first spawn created");
+        assert_eq!(spawned["response"]["spawned"]["agent"], peer.as_str());
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].source_id, format!("{}/{}/{peer}", b.id, b.room));
+        assert_eq!(events[0].payload["event"], "turn_ended");
+        b.router
+            .runtime_state
+            .deliver_peer_agent_outcomes()
+            .await
+            .unwrap();
+        assert_eq!(a.peer_events().await.len(), 1, "once");
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_spawn_follow_whose_answer_was_lost_is_dropped_when_no_retry_comes_in_ten_minutes() {
+    run_peer_test("peer-offline-spawn-held", || async {
+        let (a, b) = two_kernels(
+            "peer-offline-spawn-held",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        link_losing_the_first_spawn_answer(&b);
+        with_task(&a).await;
+        let uncertain = a
+            .command(format!(
+                "agent spawn reviewer --room {} --kernel {}",
+                b.room, b.name
+            ))
+            .await
+            .unwrap_err();
+        assert!(uncertain.contains("uncertain"), "{uncertain}");
+        assert_eq!(live_peer_follows(&a).await, 1, "held for the retry");
+        let now = crate::session::unix_epoch_ms();
+        let state = &a.router.runtime_state;
+        state.sweep_agent_lifecycle_at_for_test(now).await.unwrap();
+        state
+            .sweep_agent_lifecycle_at_for_test(now + 9 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(live_peer_follows(&a).await, 1, "still held");
+        state
+            .sweep_agent_lifecycle_at_for_test(now + 10 * 60_000)
+            .await
+            .unwrap();
+        assert_eq!(live_peer_follows(&a).await, 0, "dropped");
+        assert!(a.peer_events().await.is_empty(), "dropped, not lost");
+        unlink(&[&a, &b]);
+    });
+}
+
 /// One request of every kind the peer link carries, from `a` to `b`'s worker, each worded as an
 /// answer to the card the worker holds.
 fn every_peer_request(a: &Kernel, b: &Kernel) -> Vec<RelayPeerRequest> {
