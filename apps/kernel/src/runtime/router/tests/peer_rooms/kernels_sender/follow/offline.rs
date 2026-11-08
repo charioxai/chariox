@@ -250,6 +250,48 @@ fn follows_of_peers_on_other_kernels_are_lost_when_this_kernel_leaves_their_owne
     });
 }
 
+#[test]
+fn a_kernel_without_an_owner_keeps_its_follows_of_peers_in_its_own_rooms() {
+    run_peer_test("peer-offline-local", || async {
+        let a = kernel("peer-offline-local", AgentPermissionLevel::Yolo, false);
+        let other = {
+            let mut app = a.app.lock().await;
+            let room = create_room(&mut app, "peer-offline-local-other", Some(OWNER));
+            owned_agent(
+                &mut app,
+                &room,
+                "neighbour",
+                OWNER,
+                AgentPermissionLevel::Yolo,
+            );
+            room
+        };
+        let task = with_task(&a).await;
+        let follow = a
+            .subscribe(
+                &task,
+                serde_json::json!({"source_id": "neighbour", "room": other}),
+            )
+            .await
+            .expect("A follows a peer in another room of its own kernel");
+        a.router
+            .runtime_state
+            .sweep_agent_lifecycle_for_test()
+            .await
+            .unwrap();
+        assert!(a.peer_events().await.is_empty());
+        let held = a
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_registration(follow["registration_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(held.live, "{held:?}");
+    });
+}
+
 /// `kernel` creates the spawned peer, whose first turn then ends before the answer is back.
 fn link_ending_the_spawned_turn_before_answering(kernel: &Kernel) {
     let router = kernel.router.clone();
