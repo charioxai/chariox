@@ -6900,7 +6900,13 @@ the accounts installed before it roll back. `ProviderAccountProfile.context_tran
 `unavailable`, which marks only a login whose Vault is not a Chariox Vault (the earlier `vault_credential` is gone).
 `PreflightProviderAccountPortability` accepts a Vault login and, with a Vault login selected, finds the Vault unlocked:
 the existing unlock card appears in the launching session, an agent's included, and a caller without a session gets the
-typed `vault_locked` refusal. A package without a transferred Vault that reaches a machine whose Vault is not open
+typed `vault_locked` refusal. That unlock is held, once and for a bounded time, for the export of the same launch.
+Preflight and `StartManagedContextTransfer` both take an optional `launchId` (the client's own key for one launch,
+omitted when absent; no protocol number of its own): an export whose start names a `launchId` takes only that launch's
+held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
+two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
+found by the launching session, else the latest launch. Focused check:
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package without a transferred Vault that reaches a machine whose Vault is not open
 still imports, without those logins: the import receipt names each one in `providerAccounts.omitted`, the relay peer
 receipt in `omitted_provider_accounts` and the local `ManagedContextTransferStatus` receipt in
 `omittedProviderAccounts`, each `{provider, profileId, label, reason: "vault_closed", nextStep: "sign_in_again"}`

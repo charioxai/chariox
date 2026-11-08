@@ -56,7 +56,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
     idempotencyKey: string
   }): Promise<ManagedEnvironmentResult>
   prepareContextTransfer(environmentId: string): Promise<ManagedContextTransferTicket>
-  startContextTransfer(ticket: ManagedContextTransferTicket): Promise<ManagedContextTransferStatus>
+  /** `launchId` is the client request id of the create that made this machine, when this controller made it. */
+  startContextTransfer(ticket: ManagedContextTransferTicket, launchId?: string): Promise<ManagedContextTransferStatus>
   getContextTransferStatus(contextId: string): Promise<ManagedContextTransferStatus>
   connectKernel(
     machineId: string,
@@ -74,6 +75,8 @@ export type WaitingRoomManagedEnvironmentLaunchControllerDeps = {
 export class WaitingRoomManagedEnvironmentLaunchController {
   private pendingCreate: { readonly signature: string; readonly key: string } | null = null
   private readonly lifecycleKeys = new Map<string, string>()
+  /** The create's client request id per machine: the launch key its preflight and transfer start share. */
+  private readonly launchKeys = new Map<string, string>()
 
   constructor(private readonly deps: WaitingRoomManagedEnvironmentLaunchControllerDeps) {}
 
@@ -107,11 +110,13 @@ export class WaitingRoomManagedEnvironmentLaunchController {
       this.pendingCreate = { signature, key: this.deps.createIdempotencyKey() }
     }
     attempt.progress("Creating managed machine.")
+    const clientRequestId = this.pendingCreate.key
     const result = await this.deps.createEnvironment({
-      clientRequestId: this.pendingCreate.key,
+      clientRequestId,
       ...requestWithoutId,
     })
     attempt.assertActive()
+    this.launchKeys.set(result.environment.environmentId, clientRequestId)
     this.pendingCreate = null
     attempt.environmentChanged(result.environment)
     return result.environment
@@ -169,7 +174,7 @@ export class WaitingRoomManagedEnvironmentLaunchController {
           )
           attempt.assertActive()
           transferStatus = validateTransferStatus(
-            await this.deps.startContextTransfer(ticket),
+            await this.deps.startContextTransfer(ticket, this.launchKeys.get(current.environmentId)),
             current,
           )
           attempt.assertActive()
