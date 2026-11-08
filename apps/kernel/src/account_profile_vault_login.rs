@@ -362,17 +362,20 @@ impl ProviderAccountProfileRegistry {
                 "provider account belongs to another managed context",
             ));
         }
-        let mut next = document.clone();
-        let removed = next.profiles.remove(index);
-        self.persist_locked(&next)?;
-        *document = next;
-        drop(document);
+        // Reverse of the import: the login goes first. A locked Vault fails here with the
+        // profile still registered, so a retry finds the work and removes the login once the
+        // Vault opens.
         crate::provider::remove_provider_account_credential(
             config,
             owner_user_id,
             provider,
             profile_id,
         )?;
+        let mut next = document.clone();
+        let removed = next.profiles.remove(index);
+        self.persist_locked(&next)?;
+        *document = next;
+        drop(document);
         for root in removed.locator.roots() {
             let _ = fs::remove_dir_all(root);
         }
