@@ -24,21 +24,14 @@ impl KernelRuntimeState {
         self.finish_moved_decisions(&request.session_id, placement.moved, placement.announce)
             .await?;
         // A worker launches a leased agent's next turn with what it was last told, so every leased
-        // agent of the moved team is told the limit of its new parent chain. Telling it again is
-        // harmless, so a failed move is retried by placing the agent again.
-        for (agent_id, limit) in placement.leased_limits {
-            let (level, mode) = (limit.permission_level, limit.execution_mode);
-            self.send_leased_agent_config(limit)
-                .await
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "set agent parent",
-                    message: format!(
-                        "agent `{agent_id}` moved, but its worker did not apply the {} {} limit: {error}; place the agent again to retry",
-                        level.as_str(),
-                        mode.as_str()
-                    ),
-                })?;
-        }
+        // agent of the moved team is told the limit of its new parent chain.
+        self.tell_workers_leased_limits(
+            "set agent parent",
+            &request.session_id,
+            placement.leased,
+            "place the agent again to retry",
+        )
+        .await?;
         Ok(LocalDaemonResponse::AgentParentChanged {
             agent: placement.agent,
         })
@@ -49,8 +42,8 @@ struct AgentPlacement {
     agent: crate::agent::AgentInstance,
     moved: usize,
     announce: Vec<String>,
-    /// What each leased agent of the moved team runs under now, by home agent id.
-    leased_limits: Vec<(String, super::owned::OwnedRemoteAgentConfigUpdate)>,
+    /// The leased agents of the moved team, by home agent id.
+    leased: Vec<String>,
 }
 
 impl KernelRuntimeOwnedState {
@@ -119,12 +112,12 @@ impl KernelRuntimeOwnedState {
             request.parent_agent_id.clone().map(AgentRef::local),
         )?;
         let (moved, announce) = self.move_subtree_decisions(&request.session_id, agent.id())?;
-        let leased_limits = self.leased_subtree_limits(&request.session_id, agent.id())?;
+        let leased = self.leased_subtree(&request.session_id, agent.id());
         Ok(AgentPlacement {
             agent,
             moved,
             announce,
-            leased_limits,
+            leased,
         })
     }
 }

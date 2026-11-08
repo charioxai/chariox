@@ -140,28 +140,49 @@ impl KernelRuntimeOwnedState {
         })
     }
 
-    /// What `agent_id` and every leased agent below it must run under on their workers, as their
-    /// parent chain limits them now, by home agent id.
-    pub(super) fn leased_subtree_limits(
+    /// The leased agents among `agent_id` and its descendants, by home agent id.
+    pub(super) fn leased_subtree(&self, session_id: &str, agent_id: &str) -> Vec<String> {
+        let agents = self.agent_store.get_session_agents(session_id);
+        agents
+            .iter()
+            .filter(|agent| agent.id() == agent_id)
+            .chain(crate::agent::authority_limit::descendants(
+                agent_id, &agents,
+            ))
+            .filter(|agent| !agent.archived() && agent.remote_execution().is_some())
+            .map(|agent| agent.id().to_owned())
+            .collect()
+    }
+
+    /// The leased agents of the room, by home agent id.
+    pub(super) fn leased_room_agents(&self, session_id: &str) -> Vec<String> {
+        self.agent_store
+            .get_session_agents(session_id)
+            .into_iter()
+            .filter(|agent| !agent.archived() && agent.remote_execution().is_some())
+            .map(|agent| agent.id().to_owned())
+            .collect()
+    }
+
+    /// What leased `agent_id` must run under on its worker, as its parent chain limits it now;
+    /// `None` once it is no longer leased.
+    pub(super) fn leased_agent_limit_now(
         &self,
         session_id: &str,
         agent_id: &str,
-    ) -> Result<Vec<(String, owned::OwnedRemoteAgentConfigUpdate)>, DaemonError> {
+    ) -> Result<Option<owned::OwnedRemoteAgentConfigUpdate>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let agents = self.agent_store.get_session_agents(session_id);
-        let subtree = agents.iter().filter(|agent| agent.id() == agent_id).chain(
-            crate::agent::authority_limit::descendants(agent_id, &agents),
-        );
-        Ok(subtree
-            .filter(|agent| !agent.archived())
-            .filter_map(|agent| {
+        Ok(agents
+            .iter()
+            .find(|agent| agent.id() == agent_id && !agent.archived())
+            .and_then(|agent| {
                 let binding = agent.remote_execution()?;
                 let limited = crate::session::effective_agent_execution_config_in_tree(
                     &session, agent, &agents,
                 );
-                Some((agent.id().to_owned(), leased_agent_limit(binding, limited)))
-            })
-            .collect())
+                Some(leased_agent_limit(binding, limited))
+            }))
     }
 
     /// Apply the next scope to the provider too: its process may hold session rules.

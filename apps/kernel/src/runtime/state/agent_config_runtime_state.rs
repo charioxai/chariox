@@ -938,6 +938,8 @@ impl KernelRuntimeState {
         requires_idle: bool,
     ) -> Result<crate::session::SessionConfigState, DaemonError> {
         let scopes = self.session_agent_execution_configs(session_id);
+        let sets_agent_limits = values.contains_key(crate::session::SESSION_AGENT_MODE_CONFIG_KEY)
+            || values.contains_key(crate::session::SESSION_AGENT_PERMISSION_CONFIG_KEY);
         let config =
             self.owned
                 .update_session_config(session_id, attachment_id, values, requires_idle)?;
@@ -969,6 +971,16 @@ impl KernelRuntimeState {
             self.finish_moved_decisions(session_id, moved, announce)
                 .await?;
         }
+        // Every leased agent may sit under an agent that follows the room default.
+        if sets_agent_limits {
+            self.tell_workers_leased_limits(
+                "update session config",
+                session_id,
+                self.owned.leased_room_agents(session_id),
+                "update the room default again to retry",
+            )
+            .await?;
+        }
         Ok(config)
     }
 
@@ -990,6 +1002,52 @@ impl KernelRuntimeState {
                 (agent.id().to_string(), scope)
             })
             .collect()
+    }
+
+    /// Tells the worker of each leased agent the limit its parent chain sets now. The limit is read
+    /// again once the worker applied it and sent again if a concurrent change moved it meanwhile,
+    /// so the worker ends at the current limit whichever change it heard last. Telling it again
+    /// is harmless, so a failure is retried by repeating the change.
+    pub(super) async fn tell_workers_leased_limits(
+        &self,
+        operation: &'static str,
+        session_id: &str,
+        agent_ids: Vec<String>,
+        retry: &str,
+    ) -> Result<(), DaemonError> {
+        const SENDS: usize = 4;
+        for agent_id in agent_ids {
+            let mut told = None;
+            for sent in 0.. {
+                let Some(limit) = self.owned.leased_agent_limit_now(session_id, &agent_id)? else {
+                    break;
+                };
+                let (mode, level) = (limit.execution_mode, limit.permission_level);
+                if told == Some((mode, level)) {
+                    break;
+                }
+                if sent == SENDS {
+                    return Err(DaemonError::LocalTransport {
+                        operation,
+                        message: format!(
+                            "the limit of agent `{agent_id}` kept changing while its worker applied it; {retry}"
+                        ),
+                    });
+                }
+                self.send_leased_agent_config(limit)
+                    .await
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation,
+                        message: format!(
+                            "the worker of agent `{agent_id}` did not apply the {} {} limit: {error}; {retry}",
+                            level.as_str(),
+                            mode.as_str()
+                        ),
+                    })?;
+                told = Some((mode, level));
+            }
+        }
+        Ok(())
     }
 
     /// Tells the worker what a leased agent runs under; its next provider turn launches with it.
@@ -1088,6 +1146,22 @@ impl KernelRuntimeState {
                 self.claude_session_grants.forget(agent_id);
                 self.terminal_input_grants.forget(agent_id);
             }
+        }
+        if execution_mode_override.is_some() || permission_level_override.is_some() {
+            // The agents below run within this agent's settings, so leased ones are told again.
+            let below = self
+                .owned
+                .leased_subtree(session_id, agent_id)
+                .into_iter()
+                .filter(|leased| leased != agent_id)
+                .collect();
+            self.tell_workers_leased_limits(
+                "update agent config",
+                session_id,
+                below,
+                "update the agent again to retry",
+            )
+            .await?;
         }
         if update.scope_changed {
             // A lowered agent and its subtree may no longer hold the decisions they held.

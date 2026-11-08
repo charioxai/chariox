@@ -44,7 +44,8 @@ pub use agent_config::{
     effective_agent_execution_config, effective_agent_execution_config_in_tree,
     effective_agent_execution_mode, effective_agent_extension_registration_authority,
     effective_agent_permission_level, effective_agent_user_authority,
-    EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
+    EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority, SESSION_AGENT_MODE_CONFIG_KEY,
+    SESSION_AGENT_PERMISSION_CONFIG_KEY,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub use room_environment::{
