@@ -649,6 +649,64 @@ async fn an_approval_action_asks_the_user_and_a_denial_never_reaches_the_page() 
     assert_eq!(outcome.unwrap_err().code, "approval_denied");
 }
 
+/// An App view the agent holds but has not claimed cannot run the action, so
+/// the owner is not asked to approve it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unclaimed_user_view_is_refused_before_any_approval_card() {
+    let mut rig = rig_for_catalog(true);
+    rig.grant().await;
+    rig.stage_signed_v2_fixture();
+    let view_id = rig.open_user_view(None);
+    rig.start_signed_v2_fixture_worker().await;
+    let host = rig.runtime.kernel_browser_host_for_test();
+    host.set_focus("alice", Some(rig.agent.id()));
+    host.load("alice", rig.agent.id()).unwrap();
+    let mut context = rig
+        .runtime
+        .view_context(&rig.agent, "host-tab-native-test")
+        .await
+        .unwrap();
+    context.declared = declared();
+
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
+    match tokio::time::timeout(std::time::Duration::from_secs(3), invoke).await {
+        Ok(outcome) => {
+            let refused = outcome.unwrap_err();
+            assert_eq!(refused.code, "AGENT_APP_NOT_GRANTED");
+            assert!(refused.message.contains("claim"), "{}", refused.message);
+            assert!(pending_approval_none(&rig).await);
+        }
+        Err(_) => panic!(
+            "the owner was asked to approve an action on an unclaimed view (card raised: {})",
+            !pending_approval_none(&rig).await
+        ),
+    }
+
+    // Claiming the view, as a click on its Tab does, lets the one card through.
+    let admission = host.admit("alice", rig.agent.id()).unwrap();
+    host.claim_resource(
+        Some(&admission),
+        crate::local::UserDomainResource::AppView { view_id },
+        false,
+    )
+    .unwrap();
+    let invoke = rig
+        .runtime
+        .invoke_declared(rig.run.id(), &rig.agent, &context, "wipe", json!({}));
+    let (outcome, ()) = tokio::join!(invoke, async {
+        let asked = pending_approval(&rig)
+            .await
+            .expect("the claimed view asks the user");
+        rig.runtime
+            .resolve_runtime_interaction(&rig.session, asked.id(), "allow_once", None)
+            .await
+            .unwrap();
+    });
+    assert_ne!(outcome.unwrap_err().code, "AGENT_APP_NOT_GRANTED");
+}
+
 #[tokio::test]
 async fn an_approved_action_goes_on_to_the_page() {
     let mut rig = rig();
