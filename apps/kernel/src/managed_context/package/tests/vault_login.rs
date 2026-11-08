@@ -655,6 +655,86 @@ fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() 
     assert!(plain_files_containing(&transfer.fixture.root, FIRST_TOKEN).is_empty());
 }
 
+#[test]
+fn the_receipt_names_each_selected_login_a_closed_vault_left_out_and_the_step_to_take() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-login-omitted");
+    let first = transfer
+        .source
+        .vault_login_profile("Work Claude", FIRST_TOKEN);
+    let second = transfer
+        .source
+        .vault_login_profile("Home Claude", SECOND_TOKEN);
+    let exported = transfer.export("context-omitted", &[&first, &second]);
+
+    let receipt = transfer
+        .apply(&exported)
+        .expect("the rest of the context still arrives");
+
+    let serialized = serde_json::to_value(&receipt).expect("serialize the receipt");
+    let omitted = serialized
+        .pointer("/providerAccounts/omitted")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("the receipt names the logins left out: {serialized}"));
+    let mut named = omitted
+        .iter()
+        .map(|account| {
+            (
+                account["provider"].as_str().unwrap_or_default().to_string(),
+                account["profileId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                account["label"].as_str().unwrap_or_default().to_string(),
+                account["reason"].as_str().unwrap_or_default().to_string(),
+                account["nextStep"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    named.sort();
+    let mut expected = [
+        (first.as_str(), "Work Claude"),
+        (second.as_str(), "Home Claude"),
+    ]
+    .into_iter()
+    .map(|(profile_id, label)| {
+        (
+            "claude".to_string(),
+            profile_id.to_string(),
+            label.to_string(),
+            "vault_closed".to_string(),
+            "sign_in_again".to_string(),
+        )
+    })
+    .collect::<Vec<_>>();
+    expected.sort();
+    assert_eq!(named, expected);
+    assert!(!serialized.to_string().contains(FIRST_TOKEN));
+    assert!(!serialized.to_string().contains(SECOND_TOKEN));
+}
+
+#[test]
+fn a_login_that_reaches_the_vault_is_never_listed_as_left_out() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::new("vault-login-not-omitted");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let exported = transfer.export("context-not-omitted", &[&profile_id]);
+
+    let receipt = transfer.apply(&exported).expect("apply the package");
+
+    let serialized = serde_json::to_value(&receipt).expect("serialize the receipt");
+    assert_eq!(
+        serialized.pointer("/providerAccounts/accounts/0/profileId"),
+        Some(&serde_json::json!(profile_id))
+    );
+    assert!(
+        serialized.pointer("/providerAccounts/omitted").is_none(),
+        "a full import keeps its shape: {serialized}"
+    );
+}
+
 /// A Path 1 target whose configured Vault is where the package's transferred Vault lands.
 fn managed_target_without_vault(label: &str) -> Transfer {
     let transfer = Transfer::with_unopened_target(label);
