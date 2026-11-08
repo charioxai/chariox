@@ -359,9 +359,17 @@ impl KernelRuntimeState {
     /// does not answer gets it again later, until the outcome expires.
     pub(crate) async fn deliver_peer_agent_outcomes(&self) -> Result<(), DaemonError> {
         let now = crate::session::unix_epoch_ms();
+        self.deliver_peer_agent_outcomes_due_by(now, now).await
+    }
+
+    async fn deliver_peer_agent_outcomes_due_by(
+        &self,
+        due_by: u64,
+        now: u64,
+    ) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;
         let kernel_id = self.owned.config_projection.snapshot().daemon_id;
-        for row in store.peer_agent_outbox_due(now)? {
+        for row in store.peer_agent_outbox_due(due_by, now)? {
             let delivery = row.delivery_id.clone();
             let answered = self
                 .peer_agent_link(
@@ -390,9 +398,11 @@ impl KernelRuntimeState {
     }
 
     /// Followed side: this kernel's relay connection is back, so the kernels it owes outcomes
-    /// can be reached again.
+    /// can be reached again: every owed outcome goes out now, not when its retry falls due.
     pub(crate) async fn peer_links_restored(&self) {
-        if let Err(error) = self.deliver_peer_agent_outcomes().await {
+        let now = crate::session::unix_epoch_ms();
+        let owed = self.deliver_peer_agent_outcomes_due_by(i64::MAX as u64, now);
+        if let Err(error) = owed.await {
             tracing::warn!(%error, "peer outcomes retained for the next delivery");
         }
     }

@@ -82,7 +82,10 @@ impl Kernel {
             .lock()
             .await
             .durable_state_store()
-            .peer_agent_outbox_due(crate::session::unix_epoch_ms() + 60 * 60 * 1_000)
+            .peer_agent_outbox_due(
+                crate::session::unix_epoch_ms() + 60 * 60 * 1_000,
+                crate::session::unix_epoch_ms(),
+            )
             .unwrap()
     }
 

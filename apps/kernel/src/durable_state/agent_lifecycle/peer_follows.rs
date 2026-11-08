@@ -222,17 +222,18 @@ fn owe(
 }
 
 impl DurableKernelStateStore {
-    /// Outcomes due now, oldest first; expired ones are not news any more.
+    /// Outcomes due by `due_by`, oldest first; ones expired at `now` are not news any more.
     pub(crate) fn peer_agent_outbox_due(
         &self,
+        due_by: u64,
         now: u64,
     ) -> Result<Vec<PeerOutboxRow>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.peer_outbox")?;
         let mut q = db
-            .prepare("SELECT delivery_id,subscription_id,subscriber_kernel_id,owner,target_room,target_agent,occurrence_id,event,attempts FROM peer_agent_outbox WHERE next_attempt_at_ms<=?1 AND expires_at_ms>?1 ORDER BY sequence LIMIT 256")
+            .prepare("SELECT delivery_id,subscription_id,subscriber_kernel_id,owner,target_room,target_agent,occurrence_id,event,attempts FROM peer_agent_outbox WHERE next_attempt_at_ms<=?1 AND expires_at_ms>?2 ORDER BY sequence LIMIT 256")
             .map_err(sql)?;
         let rows = q
-            .query_map(params![sql_integer(now)?], |r| {
+            .query_map(params![sql_integer(due_by)?, sql_integer(now)?], |r| {
                 Ok((
                     PeerOutboxRow {
                         delivery_id: r.get(0)?,
