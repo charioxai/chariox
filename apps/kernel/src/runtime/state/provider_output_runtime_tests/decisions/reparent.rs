@@ -603,7 +603,7 @@ impl Tree {
         };
         self.set_room_default(&attachment, "yolo").await;
         {
-            let mut app = self.app.lock().await;
+            let app = self.app.lock().await;
             let followers: &[&str] = if g_keeps_override {
                 &[&self.p]
             } else {
