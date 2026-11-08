@@ -71,6 +71,12 @@ export type KernelEvent =
     agent_activity_revision: number
   }
   | {
+    event: "agent_tree_changed"
+    session_id: string
+    root: string
+    rev: number
+  }
+  | {
     event: "provider_run_changed"
     session_id: string
     provider_run: Record<string, unknown> | null

@@ -1034,3 +1034,58 @@ fn session_snapshot_projection_marks_completed_prompt_as_idle() {
     assert_eq!(activity.prompt_status, AgentPromptRuntimeStatus::None);
     assert!(!activity.busy);
 }
+
+// MP-08/MP-09/MP-10/MP-11: the tree change event follows ListDescendants' rule, per recipient.
+#[test]
+fn a_private_member_does_not_hear_of_the_tree_of_another_users_agent() {
+    use crate::agent::{AgentInstance, GridPosition};
+    use crate::session::{CollaborationLevel, RuntimeSession};
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let mut room = RuntimeSession::new("room", None, "workspace", "tree", "machine", "home");
+    room.add_member("owner", None, CollaborationLevel::Full);
+    room.add_member("viewer", None, CollaborationLevel::Transparent);
+    room.add_member("full", None, CollaborationLevel::Full);
+    room.add_member("private", None, CollaborationLevel::Private);
+    let agent = |id: &str, owner: &str| {
+        let mut agent = AgentInstance::new(
+            id,
+            id,
+            "room",
+            None,
+            "codex",
+            None,
+            None,
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        agent.set_owner_user_id(owner);
+        agent
+    };
+    room.set_agents(vec![agent("root", "owner"), agent("mine", "private")]);
+    let projection = |user: &str| {
+        let snapshot = SessionSnapshotProjection {
+            processes: Vec::new(),
+            disk_usage: Vec::new(),
+            room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(&room, user),
+            metadata: crate::runtime::projection::ProjectionMetadata::new(
+                super::SESSION_SNAPSHOT_PROJECTION_VERSION,
+                0,
+            ),
+            session: room.clone(),
+            provider_run: None,
+            agent_activity: Default::default(),
+            agent_tree_revs: [("root".to_string(), 7), ("mine".to_string(), 8)].into(),
+        };
+        snapshot
+            .redacted_for_user(user, &app.durable_state_store())
+            .unwrap()
+            .agent_tree_revs
+            .into_keys()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(projection("owner"), ["mine", "root"]);
+    assert_eq!(projection("viewer"), ["mine", "root"]);
+    assert_eq!(projection("full"), ["mine", "root"]);
+    assert_eq!(projection("private"), ["mine"]);
+    assert!(projection("stranger").is_empty());
+}

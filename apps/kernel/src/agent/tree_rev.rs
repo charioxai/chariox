@@ -9,6 +9,8 @@ struct Tree {
     rev: u64,
     fingerprint: u64,
     published: Option<u64>,
+    /// The revision that went out with the last publication.
+    published_rev: Option<u64>,
 }
 
 #[derive(Default)]
@@ -41,13 +43,17 @@ pub(crate) fn observe(session: &str, root: &str, fingerprint: u64) -> u64 {
         .max(crate::session::unix_epoch_ms())
         .saturating_add(1);
     let rev = revs.counter;
-    let published = revs.trees.get(&key).and_then(|tree| tree.published);
+    let (published, published_rev) = revs
+        .trees
+        .get(&key)
+        .map_or((None, None), |tree| (tree.published, tree.published_rev));
     revs.trees.insert(
         key,
         Tree {
             rev,
             fingerprint,
             published,
+            published_rev,
         },
     );
     rev
@@ -55,7 +61,7 @@ pub(crate) fn observe(session: &str, root: &str, fingerprint: u64) -> u64 {
 
 /// Whether followers are still owed an event for this fingerprint of the tree;
 /// true once, until the tree changes again.
-pub(crate) fn claim_publication(session: &str, root: &str, fingerprint: u64) -> bool {
+pub(crate) fn claim_publication(session: &str, root: &str, fingerprint: u64, rev: u64) -> bool {
     let mut revs = revs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -66,7 +72,20 @@ pub(crate) fn claim_publication(session: &str, root: &str, fingerprint: u64) -> 
         return false;
     }
     tree.published = Some(fingerprint);
+    tree.published_rev = Some(rev);
     true
+}
+
+/// The revision of every tree of one session that followers were told about.
+pub(crate) fn published_revs(session: &str) -> std::collections::BTreeMap<String, u64> {
+    let revs = revs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    revs.trees
+        .iter()
+        .filter(|((seen, _), _)| seen == session)
+        .filter_map(|((_, root), tree)| Some((root.clone(), tree.published_rev?)))
+        .collect()
 }
 
 /// The roots of one session whose trees were seen.

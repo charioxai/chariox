@@ -579,6 +579,7 @@ impl KernelRuntimeState {
             session,
             provider_run,
             agent_activity,
+            agent_tree_revs: crate::agent::tree_rev::published_revs(session_id),
         })
     }
 
