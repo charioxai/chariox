@@ -794,6 +794,46 @@ fn owner_publication_root(
     }
 }
 
+/// The kernel context the package carries, and what undoes it if this application installed it.
+fn import_package_kernel_context(
+    request: &ManagedContextPackageApplicationRequest,
+    extracted: &ExtractedManagedContextPackage,
+) -> Result<
+    (
+        ManagedContextImportedKernelContext,
+        Option<(KernelContextImportReceipt, PathBuf)>,
+    ),
+    DaemonError,
+> {
+    let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context else {
+        return Ok((ManagedContextImportedKernelContext::Empty, None));
+    };
+    let (capability_root, vault_path) = context_import_paths(
+        &request.expected_binding.plan,
+        &request.development_destination_root,
+    )?;
+    let context_existed = capability_root.exists();
+    let rollback_vault_path = vault_path.clone();
+    let receipt = import_kernel_context(KernelContextImportRequest {
+        publication_root: owner_publication_root(&request.expected_binding.plan)?,
+        snapshot: snapshot.as_ref().clone(),
+        expected_source: TransferredVaultSourceBinding {
+            context_id: request.expected_binding.plan.context_id.clone(),
+            source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+            source_key_thumbprint: request.expected_binding.source_key_thumbprint.clone(),
+        },
+        target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+        target_private_key: request.target_private_key.clone(),
+        capability_root,
+        vault_path,
+    })?;
+    let rollback = (!context_existed).then(|| (receipt.clone(), rollback_vault_path));
+    Ok((
+        ManagedContextImportedKernelContext::FromKernel { receipt },
+        rollback,
+    ))
+}
+
 pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
@@ -821,17 +861,43 @@ pub(crate) fn apply_managed_context_package(
         }
     }
     preflight_import_receipt_capacity(&request, &extracted)?;
-    let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
+    // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault first: provider logins and
+    // selected Project values are committed to that target-owned Vault.
+    let (kernel_context, kernel_context_rollback) =
+        import_package_kernel_context(&request, &extracted)?;
+    let rollback_kernel_context = || match &kernel_context_rollback {
+        Some((receipt, vault_path)) => {
+            cleanup_kernel_context_import(receipt, vault_path, &request.target_private_key)
+        }
+        None => Ok(()),
+    };
+    let provider_accounts = match import_provider_accounts(&request, &extracted.provider_accounts) {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            if let Err(rollback_error) = rollback_kernel_context() {
+                return Err(package_unavailable(format!(
+                    "{error}; roll back kernel context: {rollback_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
     let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
         Ok(credentials) => credentials,
         Err(error) => {
-            if let Err(rollback_error) = rollback_imported_provider_accounts(
-                request.provider_account_target.as_ref(),
-                &provider_accounts,
-            ) {
-                return Err(package_unavailable(format!(
-                    "{error}; roll back provider accounts: {rollback_error}"
-                )));
+            let rollback = run_import_rollbacks(
+                rollback_kernel_context,
+                || Ok(()),
+                || {
+                    rollback_imported_provider_accounts(
+                        request.provider_account_target.as_ref(),
+                        &provider_accounts,
+                    )
+                },
+                || Ok(()),
+            );
+            if let Err(rollback_error) = rollback {
+                return Err(package_unavailable(format!("{error}; {rollback_error}")));
             }
             return Err(error);
         }
@@ -840,7 +906,7 @@ pub(crate) fn apply_managed_context_package(
         Ok(connections) => connections,
         Err(error) => {
             let rollback = run_import_rollbacks(
-                || Ok(()),
+                rollback_kernel_context,
                 || {
                     rollback_imported_git_credentials(
                         request.git_credential_target.as_ref(),
@@ -861,42 +927,7 @@ pub(crate) fn apply_managed_context_package(
             return Err(error);
         }
     };
-    let mut kernel_context_rollback = None;
-    let imported_components = (|| {
-        // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault before selected
-        // Project values are committed to that target-owned Vault.
-        let kernel_context = match &extracted.kernel_context {
-            ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
-            ManagedContextPackageKernel::FromKernel(snapshot) => {
-                let (capability_root, vault_path) = context_import_paths(
-                    &request.expected_binding.plan,
-                    &request.development_destination_root,
-                )?;
-                let context_existed = capability_root.exists();
-                let rollback_vault_path = vault_path.clone();
-                let receipt = import_kernel_context(KernelContextImportRequest {
-                    publication_root: owner_publication_root(&request.expected_binding.plan)?,
-                    snapshot: snapshot.as_ref().clone(),
-                    expected_source: TransferredVaultSourceBinding {
-                        context_id: request.expected_binding.plan.context_id.clone(),
-                        source_kernel_id: request.expected_binding.source_kernel_id.clone(),
-                        source_key_thumbprint: request
-                            .expected_binding
-                            .source_key_thumbprint
-                            .clone(),
-                    },
-                    target_kernel_id: request.expected_binding.target_kernel_id.clone(),
-                    target_private_key: request.target_private_key.clone(),
-                    capability_root,
-                    vault_path,
-                })?;
-                if !context_existed {
-                    kernel_context_rollback = Some((receipt.clone(), rollback_vault_path));
-                }
-                ManagedContextImportedKernelContext::FromKernel { receipt }
-            }
-        };
-
+    let imported_development = (|| {
         let development = match (
             &extracted.development,
             &request.expected_binding.plan.development,
@@ -973,20 +1004,13 @@ pub(crate) fn apply_managed_context_package(
                 ))
             }
         };
-        Ok::<_, DaemonError>((development, kernel_context))
+        Ok::<_, DaemonError>(development)
     })();
-    let (development, kernel_context) = match imported_components {
-        Ok(imported) => imported,
+    let development = match imported_development {
+        Ok(development) => development,
         Err(error) => {
             let rollback = run_import_rollbacks(
-                || match kernel_context_rollback {
-                    Some((receipt, vault_path)) => cleanup_kernel_context_import(
-                        &receipt,
-                        &vault_path,
-                        &request.target_private_key,
-                    ),
-                    None => Ok(()),
-                },
+                rollback_kernel_context,
                 || {
                     rollback_imported_git_credentials(
                         request.git_credential_target.as_ref(),
@@ -1027,6 +1051,17 @@ pub(crate) fn apply_managed_context_package(
     })
 }
 
+/// Whether a provider login can be written into the target's own Vault now.
+fn target_vault_is_open(config: &crate::config::DaemonConfig) -> Result<bool, DaemonError> {
+    let vault = &config.user_config.credential_vault;
+    match vault.backend {
+        crate::config::CredentialVaultBackend::CharioxEncrypted => {
+            Ok(crate::secret::chariox_encrypted_vault_status(&vault.path)?.unlocked)
+        }
+        crate::config::CredentialVaultBackend::ProcessMemory => Ok(true),
+    }
+}
+
 fn import_provider_accounts(
     request: &ManagedContextPackageApplicationRequest,
     provider_accounts: &ManagedContextPackageProviderAccounts,
@@ -1049,6 +1084,18 @@ fn import_provider_accounts(
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
+            let vault_logins = if vault_logins.is_empty() || target_vault_is_open(&target.config)? {
+                vault_logins.as_slice()
+            } else {
+                // Only the owner creates or opens this machine's Vault; the rest of the context
+                // still arrives, and the owner signs these accounts in here.
+                tracing::info!(
+                    context_id = %request.expected_binding.plan.context_id,
+                    logins = vault_logins.len(),
+                    "provider logins not carried: this machine's Vault is not open"
+                );
+                &[]
+            };
             let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
@@ -2683,7 +2730,8 @@ fn run_import_rollbacks(
     provider: impl FnOnce() -> Result<(), DaemonError>,
     event_connections: impl FnOnce() -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
-    let failures = [kernel(), git(), provider(), event_connections()]
+    // Reverse import order: the kernel context holds the Vault the provider logins live in.
+    let failures = [event_connections(), git(), provider(), kernel()]
         .into_iter()
         .filter_map(Result::err)
         .map(|error| error.to_string())
