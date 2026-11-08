@@ -27,12 +27,14 @@ pub(super) async fn run(
     {
         Ok(id) => id,
         Err(failure) => {
-            service.finish(
-                &record,
-                ExecOutcome::Failed {
-                    message: format!("the other kernel did not start the command: {failure}"),
-                },
-            );
+            // A lost start may have started the command; it is never sent again.
+            let message = if matches!(&failure, crate::error::DaemonError::MachineRequest { code, .. } if code == "kernel_outcome_unknown")
+            {
+                "the other kernel may have started the command; its outcome is unknown, so it was not started again".to_string()
+            } else {
+                format!("the other kernel did not start the command: {failure}")
+            };
+            service.finish(&record, ExecOutcome::Failed { message });
             return;
         }
     };

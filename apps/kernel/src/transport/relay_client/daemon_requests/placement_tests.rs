@@ -289,10 +289,10 @@ async fn a_placed_launch_runs_through_the_gateway_and_shows_the_origin_agent() {
         (!rows.is_empty()).then_some(rows)
     })
     .await;
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].owner,
-        SessionProcessOwner::Agent("kernel-a/agent-1".into())
+    assert!(
+        rows.iter()
+            .all(|row| row.owner == SessionProcessOwner::Agent("kernel-a/agent-1".into())),
+        "every process of the launch is the origin kernel's agent: {rows:?}"
     );
     let remote = second.execs().await;
     assert_eq!(

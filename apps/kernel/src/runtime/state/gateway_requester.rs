@@ -81,4 +81,29 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+
+    /// Whether `acting_agent` names an agent of the kernel this request came from
+    /// (`<origin kernel>/<agent>`). Only a request of an admitted gateway can carry
+    /// one, and only under the origin name this kernel verified for it, so a sender
+    /// cannot make a process look like another kernel's agent. It labels a process;
+    /// the gateway grant is what authorizes the request.
+    pub(super) fn names_origin_agent(&self, acting_agent: &str) -> bool {
+        let Some(requester) = &self.gateway_requester else {
+            return false;
+        };
+        let access = self
+            .owned
+            .kernel_access
+            .lock()
+            .expect("access state poisoned");
+        access
+            .remote_requesters
+            .get(&requester.id)
+            .is_some_and(|known| {
+                acting_agent
+                    .strip_prefix(known.origin_name.as_str())
+                    .and_then(|rest| rest.strip_prefix('/'))
+                    .is_some_and(|agent| !agent.is_empty())
+            })
+    }
 }

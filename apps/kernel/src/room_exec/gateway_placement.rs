@@ -101,11 +101,10 @@ impl GatewayExecPlacement {
             host_agent: None,
             operation,
         });
-        let _ = (command_id, request);
-        let answer: Value = return Err(error(
-            "exec_placement_unavailable",
-            "the gateway is not connected to exec placement yet",
-        ));
+        let (grant, sent) = (&*self.grant, &request);
+        let answer = forward_with_retry(command_id, move |id| grant.send(id, sent))
+            .await
+            .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
         match serde_json::from_value(answer) {
             Ok(LocalDaemonResponse::RoomTerminal { result }) => Ok(result),
             _ => Err(error(
