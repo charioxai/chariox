@@ -1072,6 +1072,12 @@ impl KernelRuntimeState {
                 self.terminal_input_grants.forget(agent_id);
             }
         }
+        if update.scope_changed {
+            // A lowered agent and its subtree may no longer hold the decisions they held.
+            let (moved, announce) = self.owned.recheck_subtree_decisions(session_id, agent_id)?;
+            self.finish_moved_decisions(session_id, moved, announce)
+                .await?;
+        }
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
         self.invalidate_workflow_copies_after_source_agent_change(session_id, agent_id)?;

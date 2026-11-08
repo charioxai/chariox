@@ -21,16 +21,8 @@ impl KernelRuntimeState {
         let (agent, moved, announce) = self.owned.place_agent(&request)?;
         self.append_agent_durable_event("agent.updated", &agent, None)
             .await?;
-        if moved > 0 {
-            self.owned.session_snapshot(&request.session_id)?;
-            self.owned
-                .terminal_stream
-                .notify_terminal_projection_change(&request.session_id);
-        }
-        for id in announce {
-            self.announce_child_decision(&request.session_id, &id)
-                .await?;
-        }
+        self.finish_moved_decisions(&request.session_id, moved, announce)
+            .await?;
         Ok(LocalDaemonResponse::AgentParentChanged { agent })
     }
 }

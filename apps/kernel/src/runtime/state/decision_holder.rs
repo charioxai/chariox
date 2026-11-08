@@ -392,6 +392,24 @@ impl KernelRuntimeOwnedState {
         Ok((moved, announce))
     }
 
+    /// The authority above or of `agent` changed (its permission or mode): every open decision of
+    /// its subtree is checked again under the interaction lock, exactly as for a move in the tree.
+    pub(super) fn recheck_subtree_decisions(
+        &self,
+        session_id: &str,
+        agent: &str,
+    ) -> Result<(usize, Vec<String>), DaemonError> {
+        let _mutation =
+            self.pending_interactions
+                .mutation
+                .lock()
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime interaction",
+                    message: "Interaction store is unavailable".into(),
+                })?;
+        self.move_subtree_decisions(session_id, agent)
+    }
+
     /// `agent` was just placed elsewhere in the tree; the caller holds the interaction lock. Every
     /// open decision its subtree raised follows it: a card the user holds is shown in the new top
     /// panel, and one held by an agent that is no longer above the asker, or can no longer hold
@@ -462,7 +480,10 @@ impl KernelRuntimeOwnedState {
                 })
             })
             .collect::<Vec<_>>();
-        sessions.restore_session(session);
+        // A recheck that moved no card leaves the session as it is.
+        if !publish.is_empty() {
+            sessions.restore_session(session);
+        }
         drop(sessions);
         for (holder, tenure, id) in &withdraw {
             self.withdraw_child_decision_event(session_id, holder, *tenure, id);
@@ -559,6 +580,25 @@ impl KernelRuntimeState {
             .agent_lifecycle(Operation::Occur(event))?;
         let holder = holder.clone();
         Box::pin(self.deliver_agent_inbox(session_id, &holder)).await
+    }
+
+    /// Shows the cards that moved to the user and tells each new holder agent.
+    pub(super) async fn finish_moved_decisions(
+        &self,
+        session_id: &str,
+        moved: usize,
+        announce: Vec<String>,
+    ) -> Result<(), DaemonError> {
+        if moved > 0 {
+            self.owned.session_snapshot(session_id)?;
+            self.owned
+                .terminal_stream
+                .notify_terminal_projection_change(session_id);
+        }
+        for id in announce {
+            self.announce_child_decision(session_id, &id).await?;
+        }
+        Ok(())
     }
 
     /// `agent` ended, errored or was cancelled: the decisions it held move up at once.

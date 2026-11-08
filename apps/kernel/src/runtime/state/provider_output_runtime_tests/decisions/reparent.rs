@@ -422,3 +422,36 @@ async fn a_holder_lowered_by_a_permission_change_does_not_keep_a_decision_it_may
         t.panels()
     );
 }
+
+/// Review of #1281: the user lowers the room agent, so the parent holding its child's decision
+/// may no longer answer it. The decision moves on at the config change, not when the parent next
+/// tries to answer: the user's card is listed in the top parent's panel at once.
+#[tokio::test]
+async fn lowering_the_holders_authority_hands_the_decision_to_the_user_at_once() {
+    let t = tree(
+        "lowered-config-update",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-cfg", &t.c)).await;
+    assert_eq!(t.holder("perm-cfg"), DecisionHolder::Agent(t.p.clone()));
+    t.runtime
+        .update_agent_config(
+            &t.room,
+            &t.g,
+            USER,
+            None,
+            Some(Some(AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(t.holder("perm-cfg"), DecisionHolder::User);
+    assert_eq!(t.panels(), vec![(t.g.clone(), cards(&["perm-cfg"]))]);
+    assert!(t.all_closed(&t.p), "p's event is withdrawn");
+    assert!(t.decision_events(&t.g).is_empty(), "g is not told");
+    assert_eq!(t.needs().1, 1);
+    assert!(answer.try_recv().is_err(), "the asker waits for the user");
+}
