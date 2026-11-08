@@ -115,7 +115,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
-                if t.room_id != room || t.state == ExecutionState::Done {
+                // Only a peer's follower lives in another room; its registration below decides.
+                if t.state == ExecutionState::Done {
                     continue;
                 }
                 let registrations = match registrations(tx, &t.task_id) {

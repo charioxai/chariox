@@ -87,3 +87,55 @@ fn a_message_cannot_claim_a_room_its_sender_is_not_in() {
         .unwrap()
         .is_empty());
 }
+
+fn follow(f: &Fixture, id: &str, peer: bool) {
+    f.apply(Operation::Subscribe {
+        task: "p".into(),
+        prompt: "p".into(),
+        registration: Registration {
+            id: id.into(),
+            task_id: "p".into(),
+            source_id: "peer".into(),
+            obligation_id: None,
+            source_cursor: 0,
+            live: true,
+            peer,
+        },
+    });
+}
+
+#[test]
+fn a_peer_followed_from_another_room_ends_as_one_peer_event() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "follow-peer", true);
+    f.apply(Operation::SourceOutcome {
+        room: "peer-room".into(),
+        source: "peer".into(),
+        occurrence: "turn-1".into(),
+        success: true,
+        public_answer: Some(serde_json::json!({"text":"private notes"})),
+        now: 2,
+    });
+    let events = f.store.agent_inbox("room", "parent", 0).unwrap();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].kind, "peer_event");
+    assert_eq!(events[0].payload["event"], "turn_ended");
+    assert!(events[0].payload.get("public_answer").is_none());
+}
+
+#[test]
+fn only_a_peer_registration_reaches_across_rooms() {
+    let f = Fixture::new();
+    f.begin("p");
+    follow(&f, "same-room-only", false);
+    f.apply(Operation::SourceOutcome {
+        room: "peer-room".into(),
+        source: "peer".into(),
+        occurrence: "turn-1".into(),
+        success: true,
+        public_answer: None,
+        now: 2,
+    });
+    assert!(f.store.agent_inbox("room", "parent", 0).unwrap().is_empty());
+}

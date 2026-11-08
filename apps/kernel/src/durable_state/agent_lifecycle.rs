@@ -885,9 +885,11 @@ fn live_tasks(
 /// The room's tasks a terminal outcome of `source` can change, in ledger order: those
 /// registered on it, those holding obligations, and unreadable ones so they are quarantined.
 /// Plain turns stay in the ledger, so the outcome of every turn would otherwise read them all.
+/// A peer follows across the rooms of its owner, so its registration is found in any room.
 const SOURCE_TASKS: &str = "rowid IN (\
     SELECT t.rowid FROM agent_registrations r CROSS JOIN agent_tasks t ON t.task_id=r.task_id \
-    WHERE (r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1 \
+    WHERE ((r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1) \
+    OR (r.source_id=?2 AND json_extract(r.payload,'$.peer')=1) \
     UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
     UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
 fn source_tasks(
