@@ -599,6 +599,7 @@ impl KernelRuntimeState {
 
 #[cfg(test)]
 mod tests {
+    mod enrolled_owner;
     mod generation;
     mod local_access;
     mod reconnect;
