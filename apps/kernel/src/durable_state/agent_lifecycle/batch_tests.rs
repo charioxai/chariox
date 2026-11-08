@@ -315,3 +315,55 @@ fn a_shown_row_stays_shown_after_a_restart() {
     assert_eq!(sequences(&reopened, AGENT), vec![unseen.sequence]);
     assert_eq!(sequences(&reopened, "other"), vec![other.sequence]);
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: admission reads the recipient's rows, not every sequence between
+// them. Another agent filled the global sequence between the two pending rows.
+#[test]
+fn a_batch_is_admitted_across_a_large_gap_of_other_recipients_rows() {
+    const GAP: u64 = 300_000;
+    let f = Fixture::new();
+    let first = occur(&f, "a", "peer_event", false);
+    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    let tx = db.transaction().unwrap();
+    {
+        let mut insert = tx
+            .prepare("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,'other','peer',?2,'{}')")
+            .unwrap();
+        for n in 0..GAP {
+            insert.execute(params![ROOM, n.to_string()]).unwrap();
+        }
+    }
+    tx.commit().unwrap();
+    drop(db);
+    let second = occur(&f, "b", "peer_event", false);
+    assert!(second.sequence - first.sequence > GAP);
+    let lead = f
+        .store
+        .agent_work_delivery_front(ROOM, AGENT, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(lead.sequence, first.sequence);
+    let batch = f.store.agent_delivery_batch(&lead, false, None).unwrap();
+    assert_eq!(
+        batch.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        vec![second.sequence]
+    );
+    let started = std::time::Instant::now();
+    attempt(&f, &lead, second.sequence, None, None);
+    let elapsed = started.elapsed();
+    let prompt = format!("agent-event-{AGENT}-{}", lead.sequence);
+    let delivered = f
+        .store
+        .agent_events_for_prompt(ROOM, AGENT, &prompt)
+        .unwrap();
+    assert_eq!(
+        delivered.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        vec![first.sequence, second.sequence]
+    );
+    // One statement over the recipient's rows takes milliseconds; a lookup per sequence in the
+    // gap takes seconds.
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "admission took {elapsed:?} for a gap of {GAP} sequences"
+    );
+}
