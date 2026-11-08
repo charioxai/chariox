@@ -545,7 +545,9 @@ async fn approval_lifetime_delayed_local_and_relay_requests_cannot_attach_to_fol
         .unwrap();
     let response =
         crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request(
-            &f.runtime, local,
+            &f.runtime,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            local,
         )
         .await
         .unwrap();

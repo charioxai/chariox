@@ -179,7 +179,12 @@ impl CommandRouter {
             }
             LocalDaemonRequest::RequestNativeProviderTurnInteraction(request) => {
                 boxed_handler(|| async move {
-                    execute_native_provider_interaction_request(&self.runtime_state, request).await
+                    execute_native_provider_interaction_request(
+                        &self.runtime_state,
+                        &command_caller_user_id(&command),
+                        request,
+                    )
+                    .await
                 })
             }
             LocalDaemonRequest::LaunchProviderRun(request) => boxed_handler(|| async move {

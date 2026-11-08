@@ -308,8 +308,17 @@ pub(crate) fn install_provider_native_interaction_bridge(
 
 pub(crate) async fn execute_native_provider_interaction_request(
     state: &KernelRuntimeState,
+    caller_user_id: &str,
     request: RequestNativeProviderTurnInteractionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    // The approval asks the room in the agent's name, so only who acts for its owner raises it.
+    state
+        .ensure_agent_owner(
+            &request.agent_id,
+            caller_user_id,
+            "request native interaction",
+        )
+        .await?;
     let session_id = request.session_id.clone();
     let interaction = RuntimeInteraction::new(
         request.interaction_id,
