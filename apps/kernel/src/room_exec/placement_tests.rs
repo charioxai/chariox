@@ -208,3 +208,35 @@ async fn a_refusing_target_ends_the_launch_without_running_it_at_home() {
     );
     assert!(!marker.exists(), "the held command is not started at home");
 }
+
+#[tokio::test]
+async fn capacity_freed_at_home_does_not_start_a_placed_launch() {
+    let home = TempDir::new();
+    let away = TempDir::new();
+    let (second, target) = second_kernel(away.path(), false);
+    let first = limited(32 * 1024 * 1024, u64::MAX / 2);
+    let holder = super::tests::open(&first, "cat");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while first.list("room")[0].state != ExecState::Running {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let id = open_held(&first, home.path(), "pwd", None);
+    queued(&first, &id).await;
+    first.place("room", &id, "kernel-a", target).unwrap();
+    first.close_stdin("room", &holder, 0).unwrap();
+    assert_eq!(
+        super::tests::collect(&first, &holder).await.2,
+        ExecOutcome::Exited { code: 0 }
+    );
+    let (stdout, _, outcome) = super::tests::collect(&first, &id).await;
+    assert_eq!(
+        stdout,
+        format!("{}\n", away.path().canonicalize().unwrap().display()).into_bytes(),
+        "the freed capacity at home is not used for a placed launch"
+    );
+    assert_eq!(outcome, ExecOutcome::Exited { code: 0 });
+    assert_eq!(second.list("room").len(), 1);
+}
