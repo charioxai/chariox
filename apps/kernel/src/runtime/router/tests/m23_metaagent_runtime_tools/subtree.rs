@@ -435,11 +435,14 @@ async fn spawn_deadline() {
     world
         .router
         .runtime_state
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: world.room.clone(),
-            agent_id: world.ids["a"].clone(),
-            deadline_ms: crate::session::unix_epoch_ms() + 10 * 60_000,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: world.room.clone(),
+                agent_id: world.ids["a"].clone(),
+                deadline_ms: crate::session::unix_epoch_ms() + 10 * 60_000,
+            },
+        )
         .unwrap();
     let bounded = room_command(
         &world,

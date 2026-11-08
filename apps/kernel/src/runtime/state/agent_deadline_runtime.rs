@@ -35,9 +35,15 @@ impl KernelRuntimeOwnedState {
 impl KernelRuntimeState {
     pub(crate) fn set_agent_deadline(
         &self,
+        caller_user_id: &str,
         request: SetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let agent = self.owned.agent_store.get_agent(&request.agent_id)?;
+        // A reached deadline ends the agent's work, so only who acts for its owner arms one.
+        let agent = self.owned.ensure_agent_owner(
+            &request.agent_id,
+            caller_user_id,
+            "set agent deadline",
+        )?;
         if agent.session_id() != request.session_id {
             return Err(DaemonError::AgentNotInSession {
                 session_id: request.session_id,

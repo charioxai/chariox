@@ -1165,11 +1165,14 @@ async fn agent_deadline_stops_an_active_turn_and_fences_later_admission() {
     f.begin(&f.prompt_id);
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
     f.runtime.tick_agent_deadlines(now).await.unwrap();
     let deadline = f
@@ -1251,11 +1254,14 @@ async fn agent_deadline_is_not_stopped_while_an_owned_source_is_still_stopping()
     f.arm(&task, "wake-resisting").unwrap();
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
     let error = f.runtime.tick_agent_deadlines(now).await.unwrap_err();
     assert!(
@@ -1300,11 +1306,14 @@ async fn pending_deadline_cleanup_does_not_stop_the_sweep_for_other_wakes() {
     f.arm(&task, "wake-resisting").unwrap();
     let now = crate::session::unix_epoch_ms();
     f.runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: f.room.clone(),
-            agent_id: f.agent.clone(),
-            deadline_ms: now - 1,
-        })
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: f.room.clone(),
+                agent_id: f.agent.clone(),
+                deadline_ms: now - 1,
+            },
+        )
         .unwrap();
 
     let other = "agent-other";

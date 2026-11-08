@@ -422,14 +422,14 @@ async fn deadline() {
     let world = world("authority-deadline").await;
     let now = crate::session::unix_epoch_ms();
     let set = |agent: &str, after_ms: u64| {
-        world
-            .router
-            .runtime_state
-            .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
+        world.router.runtime_state.set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
                 session_id: world.room.clone(),
                 agent_id: world.ids[agent].clone(),
                 deadline_ms: now + after_ms,
-            })
+            },
+        )
     };
     set("a", 10 * 60_000).unwrap();
     let later = room_command(&world, "a", "agent deadline set b 2h").await;
