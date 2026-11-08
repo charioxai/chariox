@@ -16,6 +16,8 @@ const RETRY_FIRST_MS: u64 = 5_000;
 const RETRY_CEILING_MS: u64 = 10 * 60 * 1_000;
 /// How long a follow waits for the retry of a spawn whose answer was lost.
 const UNKNOWN_PEER_FOLLOW_MS: u64 = 10 * 60 * 1_000;
+/// How often Cloud's kernel directory is read while this kernel follows a peer on another one.
+const KERNEL_DIRECTORY_READ_MS: u64 = 60 * 1_000;
 
 fn ack(ack: PeerOutcomeAck) -> RelayPeerResponse {
     RelayPeerResponse::PeerAgentOutcomeAck {
@@ -420,8 +422,9 @@ impl KernelRuntimeState {
     }
 
     /// Following side: this kernel speaks for its owner to the owner's other kernels. Once it no
-    /// longer does (unlinked from the owner's account, or signed in as another owner), no
-    /// outcome reaches its follows of peers there again: each is a lost source.
+    /// longer does (unlinked from the owner's account, or signed in as another owner), or once
+    /// the followed kernel was unlinked from the owner, no outcome reaches its follows of peers
+    /// there again: each is a lost source.
     pub(super) async fn settle_unpaired_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         // The same owner the sending side vouches for (`peer_agent_caller`).
@@ -431,21 +434,29 @@ impl KernelRuntimeState {
             .map(|profile| profile.user_id.clone())
             .filter(|owner| !owner.is_empty());
         let store = &self.owned.durable_state_store;
-        for registration in store.live_peer_registrations()? {
-            // A follow of a peer in another room here needs no owner to speak for.
-            let other_kernel = peer_source_stamp(&registration.source_id)
-                .is_some_and(|source| source.kernel_id != config.daemon_id);
-            if !other_kernel {
-                continue;
-            }
+        // A follow of a peer in another room here needs no owner to speak for.
+        let follows = store
+            .live_peer_registrations()?
+            .into_iter()
+            .filter_map(|registration| {
+                let kernel = peer_source_stamp(&registration.source_id)?.kernel_id;
+                (kernel != config.daemon_id).then_some((registration, kernel))
+            })
+            .collect::<Vec<_>>();
+        if follows.is_empty() {
+            return Ok(());
+        }
+        let unlinked = self.unlinked_kernels(now).await;
+        for (registration, kernel) in follows {
             let Some(task) = store.agent_task(&registration.task_id)? else {
                 continue;
             };
-            let paired = self
-                .owned
-                .session_store
-                .get_session(&task.room_id)
-                .is_ok_and(|room| owner.as_deref() == Some(room.owner_user_id()));
+            let paired = !unlinked.contains(&kernel)
+                && self
+                    .owned
+                    .session_store
+                    .get_session(&task.room_id)
+                    .is_ok_and(|room| owner.as_deref() == Some(room.owner_user_id()));
             if paired {
                 continue;
             }
@@ -469,6 +480,51 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
+    }
+
+    /// The kernels Cloud's directory lists as unlinked from their owner (`REVOKED`); a stopped
+    /// kernel is listed `OFFLINE` and keeps its followers. Read with this kernel's credential at
+    /// most once a minute; an unreadable directory keeps the last answer.
+    async fn unlinked_kernels(&self, now: u64) -> BTreeSet<String> {
+        let last = self
+            .unlinked_kernels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some((read_at, unlinked)) = &last {
+            if now.saturating_sub(*read_at) < KERNEL_DIRECTORY_READ_MS {
+                return unlinked.clone();
+            }
+        }
+        let profile = self
+            .owned
+            .config_projection
+            .snapshot()
+            .cloud_relay
+            .filter(|profile| profile.kernel_credential.is_some());
+        let Some(profile) = profile else {
+            return BTreeSet::new();
+        };
+        let directory =
+            match crate::runtime::cloud_api_client::get_cloud_kernel_directory(&profile).await {
+                Ok(directory) => directory,
+                Err(error) => {
+                    tracing::warn!(%error, "kernel directory unreadable; peer follows kept");
+                    return last.map(|(_, unlinked)| unlinked).unwrap_or_default();
+                }
+            };
+        let unlinked = directory["targets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|target| target["status"] == "REVOKED")
+            .filter_map(|target| target["daemonId"].as_str().map(str::to_owned))
+            .collect::<BTreeSet<_>>();
+        *self
+            .unlinked_kernels
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((now, unlinked.clone()));
+        unlinked
     }
 
     /// Following side: a follow held for a spawn whose answer was lost waits for the retry that

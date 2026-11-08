@@ -228,6 +228,8 @@ pub(crate) struct KernelRuntimeState {
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
     /// When this kernel life first saw each follow still waiting to learn its peer.
     unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
+    unlinked_kernels: Arc<std::sync::Mutex<Option<(u64, BTreeSet<String>)>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
@@ -1079,6 +1081,7 @@ impl KernelRuntimeState {
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             unknown_peer_follows: Default::default(),
+            unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
