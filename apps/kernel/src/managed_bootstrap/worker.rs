@@ -623,6 +623,7 @@ mod tests {
                 owner_managed: None,
                 interactive: false,
                 ticket: Some(ticket.clone()),
+                launch_id: None,
             }),
         )
         .await;

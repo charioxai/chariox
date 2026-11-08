@@ -15,6 +15,9 @@ pub struct StartManagedContextTransferRequest {
     pub owner_managed: Option<crate::managed_context::owner_managed::OwnerManagedTransfer>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub interactive: bool,
+    /// The launch whose preflight held the Vault unlock, so the export asks in that launch's room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

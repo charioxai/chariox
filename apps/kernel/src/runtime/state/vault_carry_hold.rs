@@ -134,6 +134,7 @@ impl KernelRuntimeState {
     pub(crate) async fn vault_for_login_export(
         &self,
         session_id: Option<&str>,
+        _launch_id: Option<&str>,
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let Some(path) = self.carry_vault_path() else {
             return Ok(VaultUnlockGuard::not_required());

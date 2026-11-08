@@ -2025,6 +2025,7 @@ mod tests {
                     account_profile: profile.profile_id.clone(),
                 }],
             },
+            launch_id: None,
         };
         let command_in = |session: Option<&str>| {
             let mut command = crate::runtime::command::KernelCommand::from_local_request(

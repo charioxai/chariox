@@ -569,7 +569,7 @@ pub(crate) fn start_managed_context_outbound_operation(
             ) {
                 Ok(true) => caller
                     .runtime
-                    .vault_for_login_export(caller.session_id.as_deref())
+                    .vault_for_login_export(caller.session_id.as_deref(), None)
                     .await
                     .map(Some)
                     .map_err(|_| vault_login_locked_error()),

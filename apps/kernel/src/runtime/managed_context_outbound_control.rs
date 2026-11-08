@@ -235,6 +235,7 @@ mod tests {
                         ticket: None,
                         owner_managed: Some(selection),
                         interactive: true,
+                        launch_id: None,
                     },
                 ),
             )

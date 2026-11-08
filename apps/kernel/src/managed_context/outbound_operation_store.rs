@@ -978,6 +978,7 @@ mod tests {
                     ticket: include_ticket.then(|| ticket.clone()),
                     owner_managed: include_owner.then(|| selection.clone()),
                     interactive,
+                    launch_id: None,
                 },
             );
             let error = crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request(

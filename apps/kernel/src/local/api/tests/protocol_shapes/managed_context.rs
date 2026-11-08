@@ -94,7 +94,8 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
             crate::local::StartManagedContextTransferRequest {
                 ticket: Some(ticket),
                 owner_managed: None,
-                interactive: false
+                interactive: false,
+                launch_id: None,
             },
         ),
         LocalDaemonRequest::GetManagedContextTransferStatus(
