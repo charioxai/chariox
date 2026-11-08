@@ -214,7 +214,11 @@ impl Fixture {
         self.answering_the_card(self.preflight()).await;
     }
 
-    fn card_in(&self, session_id: &str, agent_id: &str) -> Option<crate::session::RuntimeInteraction> {
+    fn card_in(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Option<crate::session::RuntimeInteraction> {
         self.runtime
             .owned
             .session_store
@@ -305,7 +309,10 @@ async fn a_second_export_asks_again_instead_of_reusing_a_used_unlock() {
     assert!(!fx.unlocked());
 
     let export = fx
-        .answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id), None))
+        .answering_the_card(
+            fx.runtime
+                .vault_for_login_export(Some(&fx.session_id), None),
+        )
         .await
         .expect("a used unlock is asked for again through the unlock card");
     assert!(fx.login_readable());
@@ -331,6 +338,7 @@ async fn a_lapsed_hold_ends_by_itself_and_the_export_asks_again() {
     fx.runtime.hold_vault_until(
         unlocked,
         &command,
+        None,
         Instant::now() + std::time::Duration::from_millis(150),
     );
     assert!(fx.unlocked(), "held while the hold lives");
@@ -342,7 +350,10 @@ async fn a_lapsed_hold_ends_by_itself_and_the_export_asks_again() {
     );
 
     let export = fx
-        .answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id), None))
+        .answering_the_card(
+            fx.runtime
+                .vault_for_login_export(Some(&fx.session_id), None),
+        )
         .await
         .expect("a lapsed hold asks again through the unlock card");
     assert!(fx.login_readable());
@@ -431,7 +442,10 @@ async fn two_launches_in_two_sessions_each_keep_their_own_ask() {
 
     let asked = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        fx.answering_the_card(fx.runtime.vault_for_login_export(Some(&fx.session_id), None)),
+        fx.answering_the_card(
+            fx.runtime
+                .vault_for_login_export(Some(&fx.session_id), None),
+        ),
     )
     .await
     .expect("the first launch's export asks in the first launch's session");
@@ -462,7 +476,8 @@ async fn an_export_after_a_restart_ends_with_the_locked_refusal_instead_of_waiti
     assert!(!fx.unlocked());
     let ended = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        fx.runtime.vault_for_login_export(Some(&fx.session_id), None),
+        fx.runtime
+            .vault_for_login_export(Some(&fx.session_id), None),
     )
     .await
     .expect("no unlock card is awaited after a restart");

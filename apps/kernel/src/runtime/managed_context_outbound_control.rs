@@ -80,6 +80,7 @@ pub(crate) fn execute_managed_context_outbound_request(
                     runtime,
                     user_id: caller_user_id.to_string(),
                     session_id: requester.session_id.map(str::to_owned),
+                    launch_id: request.launch_id,
                 }),
                 request.interactive,
             )?;
