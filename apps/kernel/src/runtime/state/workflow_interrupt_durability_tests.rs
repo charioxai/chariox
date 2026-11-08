@@ -287,11 +287,28 @@ async fn legacy_existing_task_catalog_reload_keeps_workflow_context() {
         Some((fixture.workflow_run_id.clone(), fixture.node_run_id.clone())),
         "catalog reload must retain the existing invocation"
     );
+    let capture = crate::logging::capture::start();
     fixture
         .runtime
         .dispatch_task_continuation(&task, prompt.source_attachment_id(), "Continue".into())
         .await
         .unwrap();
+    let decision = capture
+        .records()
+        .into_iter()
+        .find(|record| {
+            record.contains("task continuation queued") && record.contains(&task.task_id)
+        })
+        .expect("the continuation decision is logged");
+    // The fixture's turn is still running with another continuation waiting: the facts a stall would need.
+    for fact in [
+        r#""queued_prompts":2"#,
+        r#""turn_active":true"#,
+        r#""reload_pending":false"#,
+        r#""mcp_continuation_pending":true"#,
+    ] {
+        assert!(decision.contains(fact), "{fact} missing in {decision}");
+    }
     let mut projected = owned
         .session_store
         .get_session(&fixture.session_id)

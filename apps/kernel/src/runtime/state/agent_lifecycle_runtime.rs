@@ -913,8 +913,13 @@ impl KernelRuntimeState {
             .pending_mcp_continuations
             .write()
             .contains_key(&task.agent_id);
-        tracing::info!(task_id=%task.task_id, agent_id=%task.agent_id, queued_prompts, turn_active,
-            reload_pending, mcp_continuation_pending, "task continuation queued");
+        crate::logging::info_with_fields(
+            "daemon.agent_lifecycle",
+            "task continuation queued",
+            serde_json::json!({"task_id": task.task_id, "agent_id": task.agent_id,
+                "queued_prompts": queued_prompts, "turn_active": turn_active,
+                "reload_pending": reload_pending, "mcp_continuation_pending": mcp_continuation_pending}),
+        );
     }
     async fn dispatch_kernel_task_continuation(
         &self,
