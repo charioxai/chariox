@@ -449,3 +449,146 @@ async fn deadline() {
         assert!(deadline_ms <= now + 60_000, "{agent}: {deadline_ms}");
     }
 }
+
+/// G and its child P start at Build/Yolo; P keeps those preferences after its tree limit drops.
+async fn bold_pair(world: &mut World, g: &'static str, p: &'static str) {
+    use crate::provider::AgentExecutionMode::Build;
+    let parent = {
+        let mut app = world.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&world.room, "dev-stub")
+                    .with_alias(g)
+                    .with_permission_level_override(AgentPermissionLevel::Yolo)
+                    .with_execution_mode_override(Build),
+            )
+            .unwrap()
+    };
+    let token = launch(&world.app, &world.room, parent.id()).await;
+    world.tokens.insert(g, token);
+    world.ids.insert(g, parent.id().to_owned());
+    let spawned = room_command(world, g, &format!("agent spawn {p} --provider dev-stub")).await;
+    assert!(spawned.ok, "{spawned:?}");
+    let child = spawned.payload["response"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let token = launch(&world.app, &world.room, &child).await;
+    world.tokens.insert(p, token);
+    world.ids.insert(p, child);
+    let child = agent_by_alias(world, p).await;
+    assert_eq!(
+        (
+            child.execution_mode_override(),
+            child.permission_level_override()
+        ),
+        (Some(Build), Some(AgentPermissionLevel::Yolo))
+    );
+}
+
+async fn agent_by_alias(world: &World, alias: &str) -> crate::agent::AgentInstance {
+    world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_session_agents(&world.room)
+        .into_iter()
+        .find(|agent| agent.alias() == Some(alias))
+        .unwrap()
+}
+
+/// An unqualified spawn from P starts at P's current tree limit, and an explicit request above
+/// that limit is still refused.
+async fn assert_spawn_takes_the_tree_limit(world: &World, p: &str, helper: &str) {
+    use crate::provider::AgentExecutionMode::Plan;
+    let spawned = room_command(
+        world,
+        p,
+        &format!("agent spawn {helper} --provider dev-stub"),
+    )
+    .await;
+    assert!(spawned.ok, "no elevation was requested: {spawned:?}");
+    let child = agent_by_alias(world, helper).await;
+    assert_eq!(
+        (
+            child.execution_mode_override(),
+            child.permission_level_override()
+        ),
+        (Some(Plan), Some(AgentPermissionLevel::Required)),
+        "the child takes its parent's effective limit, not its stored preferences"
+    );
+    let bold = room_command(
+        world,
+        p,
+        &format!("agent spawn {helper}-bold --provider dev-stub --permission yolo"),
+    )
+    .await;
+    assert!(
+        !bold.ok && error_text(&bold).contains("more authority than its parent"),
+        "{bold:?}"
+    );
+    assert!(!alias_exists(world, &format!("{helper}-bold")).await);
+}
+
+#[test]
+fn a_nested_spawn_after_the_ancestor_was_lowered_takes_the_tree_limit() {
+    run_large_stack_async_test("authority-lowered-ancestor", lowered_ancestor);
+}
+
+async fn lowered_ancestor() {
+    use crate::provider::AgentExecutionMode::Plan;
+    let mut world = world("authority-lowered-ancestor").await;
+    bold_pair(&mut world, "g", "p").await;
+    world
+        .app
+        .lock()
+        .await
+        .agents()
+        .update_agent_config(
+            &world.ids["g"],
+            Some(Some(Plan)),
+            Some(Some(AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
+}
+
+#[test]
+fn a_nested_spawn_after_a_move_under_a_lower_root_takes_the_tree_limit() {
+    run_large_stack_async_test("authority-reparented", reparented);
+}
+
+async fn reparented() {
+    use crate::provider::AgentExecutionMode::Plan;
+    let mut world = world("authority-reparented").await;
+    bold_pair(&mut world, "g", "p").await;
+    let root = {
+        let mut app = world.app.lock().await;
+        crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(&world.room, "dev-stub")
+                    .with_alias("low-root")
+                    .with_permission_level_override(AgentPermissionLevel::Required)
+                    .with_execution_mode_override(Plan),
+            )
+            .unwrap()
+    };
+    let request = LocalDaemonRequest::SetAgentParent(crate::local::SetAgentParentRequest {
+        session_id: world.room.clone(),
+        agent_id: world.ids["p"].clone(),
+        parent_agent_id: Some(root.id().to_owned()),
+    });
+    let mut command = KernelCommand::from_local_request("user-move-p", None, None, &request);
+    command.caller = command
+        .caller
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let moved = world.router.dispatch(command, request).await.unwrap();
+    assert!(matches!(
+        moved,
+        LocalDaemonResponse::AgentParentChanged { .. }
+    ));
+    assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
+}
