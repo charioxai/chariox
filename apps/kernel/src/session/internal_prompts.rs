@@ -11,6 +11,9 @@ pub(crate) fn is_internal_prompt_echo_id(prompt_id: &str) -> bool {
         || crate::durable_state::agent_lifecycle::goals::is_correction_prompt_id(prompt_id)
         || crate::durable_state::agent_lifecycle::goals::is_owner_resume_prompt_id(prompt_id)
         || crate::durable_state::agent_lifecycle::goals::is_goal_continuation_prompt_id(prompt_id)
+        || crate::durable_state::agent_lifecycle::goals::is_catalog_continuation_prompt_id(
+            prompt_id,
+        )
         || is_agent_inbox_prompt_id(prompt_id)
         || prompt_id.starts_with(WORKFLOW_OUTPUT_FOLLOW_UP_PREFIX)
 }

@@ -306,6 +306,23 @@ async fn loader_turn_promised_continuation_starts(
     })
     .await
     .expect("the promised continuation turn must start after the loader turn ends");
+    // The replay carries the person's request text again, so it must not show up
+    // as a second prompt of theirs: only the loader turn keeps a visible prompt.
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_events(session.id(), Some(agent.id()))
+        .expect("operational history should load");
+    let visible_prompts = history
+        .iter()
+        .filter(|event| event.kind == crate::history::HistoryEventKind::UserPrompt)
+        .filter(|event| !event.is_internal_prompt_echo())
+        .map(|event| event.prompt_id.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        visible_prompts == [prompt.id().to_string()],
+        "the continuation replay {continuation_id} is shown as a user prompt: {visible_prompts:?}"
+    );
 }
 
 // P2-4: when the refreshed task cannot resume, the owner is told instead of
