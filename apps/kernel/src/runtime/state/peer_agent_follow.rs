@@ -417,6 +417,52 @@ impl KernelRuntimeState {
         });
     }
 
+    /// Following side: this kernel speaks for its owner to the owner's other kernels. Once it no
+    /// longer does (unlinked from the owner's account, or signed in as another owner), no
+    /// outcome reaches its follows of peers there again: each is a lost source.
+    pub(super) async fn settle_unpaired_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
+        let config = self.owned.config_projection.snapshot();
+        // The same owner the sending side vouches for (`peer_agent_caller`).
+        let owner = config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.clone())
+            .filter(|owner| !owner.is_empty());
+        let store = &self.owned.durable_state_store;
+        for registration in store.live_peer_registrations()? {
+            let Some(task) = store.agent_task(&registration.task_id)? else {
+                continue;
+            };
+            let paired = self
+                .owned
+                .session_store
+                .get_session(&task.room_id)
+                .is_ok_and(|room| owner.as_deref() == Some(room.owner_user_id()));
+            if paired {
+                continue;
+            }
+            store.agent_lifecycle(Operation::SourceOutcome {
+                public_answer: None,
+                room: task.room_id.clone(),
+                source: registration.source_id,
+                occurrence: format!(
+                    "{}unpaired-{}",
+                    ledger::peer_follows::SOURCE_LOST_OCCURRENCE,
+                    registration.id
+                ),
+                success: false,
+                now,
+            })?;
+            if let Err(error) =
+                Box::pin(self.deliver_agent_inbox(&task.room_id, &task.agent_id)).await
+            {
+                tracing::warn!(%error, agent_id = %task.agent_id,
+                    "lost peer source is durable and pending delivery");
+            }
+        }
+        Ok(())
+    }
+
     /// Followed side: a followed agent or room that is gone tells its followers so.
     pub(super) fn settle_lost_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;

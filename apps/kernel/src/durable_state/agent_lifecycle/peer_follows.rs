@@ -291,6 +291,27 @@ impl DurableKernelStateStore {
         .transpose()
     }
 
+    /// The live follows held here of agents on other kernels.
+    pub(crate) fn live_peer_registrations(&self) -> Result<Vec<Registration>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.registration")?;
+        let mut q = db
+            .prepare("SELECT payload FROM agent_registrations")
+            .map_err(sql)?;
+        let payloads = q
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(sql)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sql)?;
+        let mut live = Vec::new();
+        for payload in payloads {
+            let registration: Registration = decode(&payload)?;
+            if registration.peer && registration.live {
+                live.push(registration);
+            }
+        }
+        Ok(live)
+    }
+
     /// Whether `occurrence` of `source` was already recorded in `room`.
     pub(crate) fn agent_source_occurred(
         &self,
