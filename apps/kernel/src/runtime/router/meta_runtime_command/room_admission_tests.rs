@@ -149,3 +149,45 @@ fn spawn_flags_carry_the_free_choices_and_the_bounded_ones() {
         );
     }
 }
+
+#[test]
+fn deadline_values_are_checked_by_both_commands_without_panicking() {
+    let parent = agent("p", None);
+    let child = agent("c", Some("p"));
+    let agents = [parent.clone(), child];
+    let set = |value: &str| {
+        super::request::meta_agent_request(
+            &session(),
+            &parent,
+            &["deadline".into(), "set".into(), "c".into(), value.into()],
+            &agents,
+            true,
+        )
+    };
+    let spawn = |value: &str| {
+        super::spawn_args::parse_meta_agent_spawn_args(
+            &["w1".into(), "--deadline".into(), value.into()],
+            &session(),
+        )
+        .map(|spawn| spawn.deadline)
+    };
+    for bad in ["30秒", "30ｍ", "", "0s", "m", "99999999999999999999d", "1é"] {
+        let duration_error = |result: Result<(), crate::error::DaemonError>| {
+            matches!(
+                result,
+                Err(crate::error::DaemonError::LocalTransport { ref message, .. })
+                    if message.starts_with("a deadline is a duration")
+            )
+        };
+        assert!(duration_error(set(bad).map(|_| ())), "set {bad:?}");
+        assert!(duration_error(spawn(bad).map(|_| ())), "spawn {bad:?}");
+    }
+    for (good, seconds) in [("90s", 90), ("30m", 1_800), ("2h", 7_200), ("1d", 86_400)] {
+        assert!(set(good).is_ok(), "set {good}");
+        assert_eq!(
+            spawn(good).unwrap(),
+            Some(std::time::Duration::from_secs(seconds)),
+            "spawn {good}"
+        );
+    }
+}

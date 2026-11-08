@@ -80,16 +80,11 @@ pub(super) struct MetaAgentSpawnArgs {
 /// `90s`, `30m`, `2h` or `1d`: how long from now.
 pub(super) fn parse_deadline_after(value: &str) -> Result<std::time::Duration, DaemonError> {
     let usage = || meta_command_error("a deadline is a duration such as 90s, 30m, 2h or 1d");
-    let split = value.len().saturating_sub(1);
-    let (number, unit) = value.split_at(split);
+    let (number, seconds) = [("s", 1), ("m", 60), ("h", 3_600), ("d", 86_400)]
+        .into_iter()
+        .find_map(|(unit, seconds)| Some((value.strip_suffix(unit)?, seconds)))
+        .ok_or_else(usage)?;
     let number: u64 = number.parse().map_err(|_| usage())?;
-    let seconds = match unit {
-        "s" => 1,
-        "m" => 60,
-        "h" => 3_600,
-        "d" => 86_400,
-        _ => return Err(usage()),
-    };
     if number == 0 {
         return Err(usage());
     }
