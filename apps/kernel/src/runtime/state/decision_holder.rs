@@ -587,12 +587,13 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|state| matches!(state, ExecutionState::Waiting | ExecutionState::Done))
     }
 
-    /// A question restored after a restart is registered again with its holder at raise, which is
-    /// not told again (its event of that tenure was already sent) and may be parked or ended. It
-    /// goes to the nearest ancestor of the asker that may hold it and whose turn is not parked or
-    /// ended, told with a new event, else to the user's card in the top panel. A decision the
-    /// user holds, or one already handed on, stays as it is.
-    pub(super) fn hand_on_restored_decision(
+    /// A question that does not block its turn is registered, when asked and again after a
+    /// restart, with its holder at raise, which may be parked or ended. It goes to the nearest
+    /// ancestor of the asker that may hold it and whose turn is not parked or ended, told with
+    /// the event of its new tenure (the same event when a restart hands it to the same holder),
+    /// else to the user's card in the top panel. A decision the user holds, or one already
+    /// handed on, stays as it is.
+    pub(super) fn hand_on_decision_at_raise(
         &self,
         session_id: &str,
         interaction_id: &str,
