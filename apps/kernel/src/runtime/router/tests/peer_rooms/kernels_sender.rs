@@ -350,6 +350,98 @@ fn a_room_agent_spawns_one_ordinary_peer_in_a_room_on_another_kernel() {
     });
 }
 
+/// `kernel` acts on every request but its answer to the first spawn is lost on the way back.
+fn link_losing_the_first_spawn_answer(kernel: &Kernel) {
+    let router = kernel.router.clone();
+    let lost = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                let lost = lost.clone();
+                Box::pin(async move {
+                    let spawn = matches!(request, RelayPeerRequest::SpawnRoomPeer { .. });
+                    let answer = router.relay_peer_agent(&from, &owner, request).await;
+                    if spawn && !lost.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return Err(crate::runtime::room_tool_admission::denied(
+                            "kernel_unreachable: the answer was lost",
+                        ));
+                    }
+                    answer
+                })
+            },
+        ),
+    );
+}
+
+#[test]
+fn a_retried_spawn_on_another_kernel_returns_the_same_peer() {
+    run_peer_test("peer-kernel-spawn-retry", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-spawn-retry",
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Yolo,
+        );
+        link_losing_the_first_spawn_answer(&b);
+        let spawn = format!(
+            "agent spawn reviewer --room {} --kernel {} --no-follow",
+            b.room, b.name
+        );
+        let lost = a.command(spawn.clone()).await.unwrap_err();
+        assert!(lost.contains("kernel_unreachable"), "{lost}");
+        let retried = a
+            .command(spawn)
+            .await
+            .expect("the retry answers the peer the lost answer named");
+        assert_eq!(retried["response"]["spawned"]["duplicate"], true);
+        let reviewers = |agents: Vec<crate::agent::AgentInstance>, alias: &str| {
+            agents
+                .into_iter()
+                .filter(|agent| agent.alias() == Some(alias))
+                .map(|agent| agent.id().to_string())
+                .collect::<Vec<_>>()
+        };
+        let on_b = reviewers(
+            b.app.lock().await.agents().get_session_agents(&b.room),
+            "reviewer",
+        );
+        assert_eq!(on_b.len(), 1, "one peer for one spawn call: {on_b:?}");
+        assert_eq!(retried["response"]["spawned"]["agent"], on_b[0].as_str());
+
+        // A command id names the call across turns: the same id is the same peer.
+        let keyed = format!(
+            "agent spawn tester --room {} --kernel {} --no-follow --command-id spawn-tester-1",
+            b.room, b.name
+        );
+        let first = a.command(keyed.clone()).await.expect("a keyed spawn");
+        assert_eq!(first["response"]["spawned"]["duplicate"], false);
+        let again = a.command(keyed).await.expect("the same keyed spawn");
+        assert_eq!(again["response"]["spawned"]["duplicate"], true);
+        assert_eq!(
+            again["response"]["spawned"]["agent"],
+            first["response"]["spawned"]["agent"]
+        );
+        let testers = reviewers(
+            b.app.lock().await.agents().get_session_agents(&b.room),
+            "tester",
+        );
+        assert_eq!(testers.len(), 1, "{testers:?}");
+
+        // A command id names a cross-kernel call only; a peer on this kernel keeps the refusal.
+        let local = a
+            .command(format!(
+                "agent spawn other --room {} --kernel {} --no-follow --command-id spawn-local-1",
+                a.room, a.name
+            ))
+            .await
+            .unwrap_err();
+        assert!(local.contains("--command-id"), "{local}");
+        unlink(&[&a, &b]);
+    });
+}
+
 #[test]
 fn every_cross_kernel_refusal_is_typed_and_tells_nothing_about_what_the_caller_cannot_address() {
     run_peer_test("peer-kernel-refusals", || async {
