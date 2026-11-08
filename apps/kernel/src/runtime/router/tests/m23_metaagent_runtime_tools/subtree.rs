@@ -548,6 +548,40 @@ async fn remote_refusal() {
         !unresolved(&unplaced),
         "a spawn that found no kernel leaves no open delegate obligation"
     );
+    // The worker answered that the working directory is missing on it: it created nothing,
+    // so the obligation ends rejected and the parent can go on.
+    let missing_dir = register();
+    let error = crate::app::settle_remote_spawn_failure(
+        &store,
+        Some(&missing_dir),
+        "worker",
+        DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "transport_error".into(),
+            message: "local transport `resolve leased agent working directory` failed: remote working directory `/missing/w1` does not exist".into(),
+            retryable: true,
+        },
+    );
+    assert!(error.to_string().contains("does not exist"), "{error}");
+    assert!(
+        !unresolved(&missing_dir),
+        "a worker's answered refusal settles the obligation"
+    );
+    // The worker dropped off after the relay forwarded the request: it may have created the agent.
+    let disconnected = register();
+    let error = crate::app::settle_remote_spawn_failure(
+        &store,
+        Some(&disconnected),
+        "worker",
+        DaemonError::RelayTransport {
+            operation: "read relay peer response",
+            code: "target_disconnected".into(),
+            message: "target daemon disconnected from relay".into(),
+            retryable: true,
+        },
+    );
+    assert!(error.to_string().contains("uncertain dispatch"), "{error}");
+    assert!(unresolved(&disconnected));
     // Any other failure may have created the agent: the obligation stays for inspection.
     let uncertain = register();
     let error = crate::app::settle_remote_spawn_failure(

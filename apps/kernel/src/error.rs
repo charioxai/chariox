@@ -595,6 +595,20 @@ impl DaemonError {
                 .is_exact_peer_refusal(crate::transport::relay_peer::LEASED_PROMPT_RUN_CHANGED_CODE)
     }
 
+    /// The relay or the worker kernel answered the request with an error. Only a
+    /// worker that disconnected after the relay forwarded the request leaves
+    /// its side unknown.
+    pub(crate) fn is_answered_peer_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::RelayTransport {
+                operation: "read relay peer response" | "read temporary relay peer response",
+                code,
+                ..
+            } if code != "target_disconnected"
+        )
+    }
+
     fn is_exact_peer_refusal(&self, expected_code: &str) -> bool {
         matches!(
             self,
