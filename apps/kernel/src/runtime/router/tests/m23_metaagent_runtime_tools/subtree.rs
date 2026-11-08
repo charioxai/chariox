@@ -156,15 +156,24 @@ async fn command_table() {
         ("peer", "b"),
         ("q", "b"),
     ];
+    // A peer of equal authority may stop a turn; it never reaches the tree's other controls.
+    let peers = [("b", "s"), ("a", "peer"), ("peer", "b")];
     for verb in verbs {
-        for (caller, target) in allowed {
+        let cancel = verb.starts_with("agent cancel");
+        for (caller, target) in allowed
+            .into_iter()
+            .chain(peers.into_iter().filter(|_| cancel))
+        {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
             assert!(
                 !refused_by_policy(&result),
                 "{caller} -> {target}: {verb}: {result:?}"
             );
         }
-        for (caller, target) in refused {
+        for (caller, target) in refused
+            .into_iter()
+            .filter(|pair| !(cancel && peers.contains(pair)))
+        {
             let result = room_command(&world, caller, &verb.replace("{}", target)).await;
             assert!(
                 refused_by_policy(&result),
