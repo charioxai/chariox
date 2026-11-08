@@ -351,8 +351,9 @@ impl KernelRuntimeOwnedState {
 
     /// `agent` was just placed elsewhere in the tree; the caller holds the interaction lock. Every
     /// open decision its subtree raised follows it: a card the user holds is shown in the new top
-    /// panel, and one held by an agent no longer above the asker goes to the nearest ancestor
-    /// that may hold it, or the user. Returns the moved count and the decisions to announce.
+    /// panel, and one held by an agent that is no longer above the asker, or can no longer hold
+    /// under the new parent chain, goes to the nearest ancestor that may hold it, or the user.
+    /// Returns the moved count and the decisions to announce.
     pub(super) fn move_subtree_decisions(
         &self,
         session_id: &str,
@@ -376,13 +377,18 @@ impl KernelRuntimeOwnedState {
             let Some(mut pending) = self.pending_interactions.write().get(&id).cloned() else {
                 continue;
             };
-            let still_above = |holder: &str| {
+            // Above the asker is not enough: a new parent chain can lower the holder's authority.
+            let may_still_hold = |holder: &str| {
                 subject_agent(&interaction)
                     .and_then(|asker| agents.iter().find(|a| a.id() == asker))
-                    .is_some_and(|asker| ancestors(asker, &agents).iter().any(|a| a.id() == holder))
+                    .is_some_and(|asker| {
+                        ancestors(asker, &agents).iter().any(|a| {
+                            a.id() == holder && self.ancestor_can_hold(&session, a, &agents)
+                        })
+                    })
             };
             match pending.holder.clone() {
-                DecisionHolder::Agent(holder) if still_above(&holder) => {}
+                DecisionHolder::Agent(holder) if may_still_hold(&holder) => {}
                 DecisionHolder::Agent(holder) => {
                     withdraw.push((holder, id.clone()));
                     pending.holder =

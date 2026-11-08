@@ -17,6 +17,8 @@ struct Tree {
     g: String,
     p: String,
     c: String,
+    /// Keeps the room's working folder for agents spawned later.
+    _worktree: crate::test_support::TestWorktree,
 }
 
 async fn tree(label: &str, g_level: AgentPermissionLevel, p_level: AgentPermissionLevel) -> Tree {
@@ -58,6 +60,7 @@ async fn tree(label: &str, g_level: AgentPermissionLevel, p_level: AgentPermissi
         g: g.id().into(),
         p: p.id().into(),
         c: c.id().into(),
+        _worktree: worktree,
     }
 }
 

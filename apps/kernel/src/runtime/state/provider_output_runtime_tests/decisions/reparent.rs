@@ -40,6 +40,31 @@ impl Tree {
             .to_owned()
     }
 
+    /// A new agent, under `parent` when given, with its own permission level.
+    async fn agent_at(
+        &self,
+        alias: &str,
+        parent: Option<&str>,
+        level: AgentPermissionLevel,
+    ) -> String {
+        let mut app = self.app.lock().await;
+        let mut request =
+            crate::agent::CreateAgentRequest::new(&self.room, "dev-stub").with_alias(alias);
+        if let Some(parent) = parent {
+            request = request.with_parent_agent_id(parent);
+        }
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(request)
+            .unwrap()
+            .id()
+            .to_owned();
+        crate::test_support::admit_room_test_turn(&mut app, &self.room, &agent);
+        app.agents()
+            .update_agent_config(&agent, None, Some(Some(level)), None, None)
+            .unwrap();
+        agent
+    }
+
     async fn place(&self, agent: &str, parent: Option<&str>) {
         self.runtime
             .set_agent_parent(
@@ -239,4 +264,78 @@ async fn a_holder_no_longer_above_the_asker_hands_the_decision_on() {
     );
     assert_eq!(t.session().active_interactions().len(), 1);
     assert!(open.try_recv().is_err(), "still waiting for an answer");
+}
+
+#[tokio::test]
+async fn a_holder_made_ineligible_by_its_new_parent_hands_the_decision_to_the_user() {
+    let t = tree(
+        "reparent-ineligible",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let q = t.agent_at("q", None, AgentPermissionLevel::Required).await;
+    let _open = t.raise(permission("reparent-perm-ineligible", &t.c)).await;
+    assert_eq!(
+        t.holder("reparent-perm-ineligible"),
+        DecisionHolder::Agent(t.p.clone())
+    );
+    assert!(t.panels().is_empty());
+
+    // p stays above c, but under a Required root it would ask the user itself.
+    t.place(&t.p, Some(&q)).await;
+    assert_eq!(t.holder("reparent-perm-ineligible"), DecisionHolder::User);
+    assert!(t.all_closed(&t.p), "p's event is withdrawn");
+    assert!(t.decision_events(&q).is_empty());
+    assert_eq!(
+        t.panels(),
+        vec![(q, cards(&["reparent-perm-ineligible"]))],
+        "the user sees the card under the new root"
+    );
+}
+
+#[tokio::test]
+async fn a_subtree_moved_under_a_lower_authority_root_does_not_keep_an_ineligible_holder() {
+    let t = tree(
+        "reparent-ineligible-subtree",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let q = t.agent_at("q", None, AgentPermissionLevel::Required).await;
+    let _open = t.raise(permission("reparent-perm-deep", &t.c)).await;
+    assert_eq!(
+        t.holder("reparent-perm-deep"),
+        DecisionHolder::Agent(t.p.clone())
+    );
+
+    t.place(&t.g, Some(&q)).await;
+    assert_eq!(t.holder("reparent-perm-deep"), DecisionHolder::User);
+    assert!(t.all_closed(&t.p));
+    assert_eq!(t.panels(), vec![(q, cards(&["reparent-perm-deep"]))]);
+}
+
+#[tokio::test]
+async fn an_ineligible_holder_hands_the_decision_to_an_eligible_ancestor() {
+    let t = tree(
+        "reparent-eligible-ancestor",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let q = t.agent_at("q", None, AgentPermissionLevel::Yolo).await;
+    let r = t
+        .agent_at("r", Some(&q), AgentPermissionLevel::Required)
+        .await;
+    let _open = t.raise(permission("reparent-perm-up", &t.c)).await;
+
+    // p now sits under the Required r; q above r is the nearest ancestor that may hold.
+    t.place(&t.p, Some(&r)).await;
+    assert_eq!(
+        t.holder("reparent-perm-up"),
+        DecisionHolder::Agent(q.clone())
+    );
+    assert!(t.all_closed(&t.p), "p's event is withdrawn");
+    assert_eq!(t.decision_events(&q).len(), 1, "q is told once");
+    assert!(t.panels().is_empty(), "an agent holds it");
 }
