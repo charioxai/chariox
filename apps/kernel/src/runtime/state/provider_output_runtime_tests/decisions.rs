@@ -389,11 +389,13 @@ async fn only_the_current_holder_may_answer() {
     let refused = t
         .runtime
         .answer_child_decision(&t.room, &t.g, "perm-4", "allow")
+        .await
         .unwrap();
     assert_eq!(refused, ChildDecisionStatus::NotHolder);
     let refused = t
         .runtime
         .answer_child_decision(&t.room, &t.c, "perm-4", "allow")
+        .await
         .unwrap();
     assert_eq!(
         refused,
@@ -407,6 +409,7 @@ async fn only_the_current_holder_may_answer() {
     let done = t
         .runtime
         .answer_child_decision(&t.room, &t.p, "perm-4", "allow")
+        .await
         .unwrap();
     assert_eq!(done, ChildDecisionStatus::Answered);
     assert_eq!(
@@ -429,10 +432,13 @@ async fn the_user_and_the_holder_answering_at_once_give_one_winner() {
     )
     .await;
     let mut answer = t.raise(permission("perm-5", &t.c)).await;
+    let handle = tokio::runtime::Handle::current();
     let (agent, user) = std::thread::scope(|scope| {
         let agent = scope.spawn(|| {
-            t.runtime
-                .answer_child_decision(&t.room, &t.p, "perm-5", "allow")
+            handle.block_on(
+                t.runtime
+                    .answer_child_decision(&t.room, &t.p, "perm-5", "allow"),
+            )
         });
         let user = scope.spawn(|| {
             t.runtime
@@ -457,6 +463,7 @@ async fn the_user_and_the_holder_answering_at_once_give_one_winner() {
     let late = t
         .runtime
         .answer_child_decision(&t.room, &t.p, "perm-5", "allow")
+        .await
         .unwrap();
     assert_eq!(late, ChildDecisionStatus::SettledByUser);
 }
@@ -502,6 +509,7 @@ async fn the_last_holder_ending_hands_the_same_interaction_to_the_user() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.g, "perm-9", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::NotHolder
     );
@@ -535,6 +543,7 @@ async fn a_pass_hands_the_decision_to_the_next_holder() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.g, "perm-7", "deny")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered
     );
@@ -565,6 +574,7 @@ async fn lowering_the_holder_is_rechecked_when_it_answers() {
     let status = t
         .runtime
         .answer_child_decision(&t.room, &t.p, "perm-8", "allow")
+        .await
         .unwrap();
     assert_eq!(
         status,
@@ -605,6 +615,7 @@ async fn free_text_answers_a_decision_that_takes_text() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.p, "ask-1", "main")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered
     );
@@ -897,6 +908,7 @@ async fn the_decision_survives_when_its_holder_ends_its_turn() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.g, "perm-s1", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered,
         "the next holder answers it"
@@ -1113,6 +1125,7 @@ async fn a_settled_decision_event_beyond_the_first_inbox_page_is_still_closed() 
     let done = t
         .runtime
         .answer_child_decision(&t.room, &t.p, "perm-long", "allow")
+        .await
         .unwrap();
     assert_eq!(done, ChildDecisionStatus::Answered);
     assert_eq!(
@@ -1160,6 +1173,7 @@ async fn a_decision_raised_while_the_holders_turn_settles_does_not_wait_for_its_
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.p, "perm-settling", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered,
         "the holder still answers the same decision"
@@ -1212,6 +1226,7 @@ async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
         assert_eq!(
             t.runtime
                 .answer_child_decision(&t.room, former, "perm-yield", "allow")
+                .await
                 .unwrap(),
             ChildDecisionStatus::NotHolder,
             "a former holder that wakes later no longer holds it"
@@ -1241,6 +1256,7 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.p, "perm-unread", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered
     );

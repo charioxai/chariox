@@ -196,6 +196,7 @@ async fn a_deeper_subtree_moves_its_cards_and_keeps_a_holder_still_above_the_ask
     assert_eq!(
         t.runtime
             .answer_child_decision(&t.room, &t.g, "reparent-perm-done", "allow")
+            .await
             .unwrap(),
         ChildDecisionStatus::Answered
     );
@@ -410,6 +411,7 @@ async fn a_holder_lowered_by_a_permission_change_does_not_keep_a_decision_it_may
     let status = t
         .runtime
         .answer_child_decision(&t.room, &t.p, "perm-lowered-keeps", "allow")
+        .await
         .unwrap();
     assert_eq!(status, ChildDecisionStatus::NotHolder);
     assert!(answer.try_recv().is_err(), "the decision is still pending");

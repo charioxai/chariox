@@ -247,9 +247,16 @@ impl CommandRouter {
             tokens.get(1).map(String::as_str),
             tokens.get(2..).unwrap_or_default(),
         ) {
-            (Some("answer"), [interaction, answer @ ..]) if !answer.is_empty() => self
-                .runtime_state
-                .answer_child_decision(session.id(), caller.id(), interaction, &answer.join(" "))?,
+            (Some("answer"), [interaction, answer @ ..]) if !answer.is_empty() => {
+                self.runtime_state
+                    .answer_child_decision(
+                        session.id(),
+                        caller.id(),
+                        interaction,
+                        &answer.join(" "),
+                    )
+                    .await?
+            }
             (Some("pass"), [interaction]) => {
                 self.runtime_state
                     .pass_child_decision(session.id(), caller.id(), interaction)

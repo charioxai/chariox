@@ -628,7 +628,24 @@ impl KernelRuntimeState {
     }
 
     /// `agent answer`: only the current holder answers; the answer is a choice id or free text.
-    pub(crate) fn answer_child_decision(
+    /// A holder refused because it may no longer answer (a permission change above it, its own
+    /// question to the user, its deadline) does not keep the decision: it moves on at once.
+    pub(crate) async fn answer_child_decision(
+        &self,
+        session_id: &str,
+        holder: &str,
+        interaction_id: &str,
+        answer: &str,
+    ) -> Result<ChildDecisionStatus, DaemonError> {
+        let status = self.answer_held_child_decision(session_id, holder, interaction_id, answer)?;
+        if status == ChildDecisionStatus::NotHolder {
+            self.move_decisions_up_matching(session_id, holder, Some(interaction_id))
+                .await?;
+        }
+        Ok(status)
+    }
+
+    fn answer_held_child_decision(
         &self,
         session_id: &str,
         holder: &str,
