@@ -15,7 +15,7 @@ fn enrolled_owner_room(label: &str) -> (CommandRouter, String, crate::test_suppo
         realm_id: "test-realm".into(),
         ..Default::default()
     });
-    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
+    let app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let session = app
         .sessions_mut()
         .create_session(worktree.session_request())
