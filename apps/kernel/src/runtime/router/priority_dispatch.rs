@@ -579,6 +579,7 @@ impl CommandRouter {
                     execute_agent_utility_request(
                         &self.runtime_state,
                         &self.config_projection,
+                        &command_caller_user_id(&command),
                         request,
                     )
                     .await

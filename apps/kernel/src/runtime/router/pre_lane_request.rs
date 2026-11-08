@@ -149,6 +149,7 @@ impl CommandRouter {
                     execute_agent_utility_request(
                         &self.runtime_state,
                         &self.config_projection,
+                        caller_user_id,
                         request.clone(),
                     )
                     .await
