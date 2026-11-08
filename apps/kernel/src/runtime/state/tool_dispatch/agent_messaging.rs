@@ -21,7 +21,7 @@ impl KernelRuntimeState {
                 "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
                 "agents": agents
                     .iter()
-                    .map(|agent| session_agent_description(session, requester, agent))
+                    .map(|agent| session_agent_description(session, requester, agent, &agents))
                     .collect::<Vec<_>>(),
             }),
         }
@@ -50,7 +50,7 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "session_id": session.id(),
-                    "agent": session_agent_description(session, requester, agent),
+                    "agent": session_agent_description(session, requester, agent, &agents),
                 }),
             },
             Err(message) => agent_message_failure(message),
@@ -456,8 +456,10 @@ fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
+    agents: &[crate::agent::AgentInstance],
 ) -> serde_json::Value {
-    let effective = crate::session::effective_agent_execution_config(session, Some(agent));
+    let effective =
+        crate::session::effective_agent_execution_config_in_tree(session, agent, agents);
     let location = agent.remote_execution().map_or_else(
         || serde_json::json!({ "kind": "local" }),
         |remote| {
