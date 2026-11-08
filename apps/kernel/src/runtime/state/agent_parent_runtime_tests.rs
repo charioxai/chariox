@@ -424,14 +424,18 @@ impl LeasedTree {
             .unwrap()
     }
 
-    /// Sends `agent` the entry prompt of a new one-node workflow through the admission every
-    /// workflow prompt takes, and returns what it dispatched.
+    /// Sends `agent` the entry prompt of a new one-node workflow that keeps the agent's context,
+    /// through the admission every workflow prompt takes, and returns what it dispatched.
     async fn submit_workflow(&self, agent: &str, prompt_id: &str) -> WorkflowPromptDispatches {
         let (run_id, node_run_id) = {
-            let mut app = self.app.lock().await;
+            let app = self.app.lock().await;
             let mut sessions = app.sessions_mut();
             let workflow = sessions
                 .create_workflow(&self.room, Some(prompt_id.to_string()))
+                .unwrap();
+            // A flushing workflow relaunches the run anyway; one that keeps context reuses it.
+            sessions
+                .set_workflow_flush_agent_context_before_run(&self.room, workflow.id(), false)
                 .unwrap();
             let node = sessions
                 .add_workflow_node(&self.room, workflow.id(), agent)
