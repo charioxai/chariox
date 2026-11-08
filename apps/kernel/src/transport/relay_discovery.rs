@@ -410,7 +410,11 @@ async fn get_live_kernel_attempts(
                 });
             }
             Err(error) => {
+                let refused = is_admission_refusal(&error);
                 last_error = Some(error);
+                if refused {
+                    break;
+                }
             }
         }
         if attempt + 1 < RELAY_METADATA_ATTEMPTS {
@@ -827,6 +831,17 @@ async fn query_relay_once_body(
         );
     }
     response
+}
+
+/// The relay answered and said no; asking again cannot change that.
+pub(crate) fn is_admission_refusal(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "relay metadata admission",
+            ..
+        }
+    )
 }
 
 fn relay_metadata_error_is_retryable(error: &DaemonError) -> bool {

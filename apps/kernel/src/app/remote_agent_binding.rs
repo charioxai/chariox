@@ -1482,6 +1482,28 @@ impl DaemonApp {
                 }
             }
         }
+        // The relay resolves a machine name too, also before this kernel's own
+        // inventory has synced; a refusal is final and needs no waiting.
+        if expected_slice_worker.is_none() {
+            match self.block_on_relay_future(relay_discovery::list_live_kernels_for_machine(
+                relay_config,
+                kernel_ref,
+            )) {
+                Ok(kernels) => {
+                    if let Some(kernel) = select_remote_kernel(
+                        slice_recovery::ordinary_machine_workers(&self.slices, kernels),
+                        kernel_ref,
+                        provider,
+                    ) {
+                        return Ok(kernel);
+                    }
+                }
+                Err(error) if relay_discovery::is_admission_refusal(&error) => {
+                    return Err(self.kernel_ref_not_available(kernel_ref, provider, &error));
+                }
+                Err(_) => {}
+            }
+        }
         let mut last_error = None;
         for attempt in 0..REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
             match self.block_on_relay_future(relay_discovery::get_live_kernel(
@@ -1496,7 +1518,11 @@ impl DaemonApp {
                     return ensure_kernel_can_host_provider(kernel, kernel_ref, provider);
                 }
                 Err(error) => {
+                    let refused = relay_discovery::is_admission_refusal(&error);
                     last_error = Some(error);
+                    if refused {
+                        break;
+                    }
                     if attempt + 1 < REMOTE_KERNEL_REF_DISCOVERY_ATTEMPTS {
                         std::thread::sleep(Duration::from_millis(
                             REMOTE_KERNEL_REF_DISCOVERY_RETRY_DELAY_MS,
@@ -1509,15 +1535,24 @@ impl DaemonApp {
             operation: "select remote kernel",
             message: format!("kernel `{kernel_ref}` did not appear"),
         });
+        Err(self.kernel_ref_not_available(kernel_ref, provider, &error))
+    }
+
+    fn kernel_ref_not_available(
+        &self,
+        kernel_ref: &str,
+        provider: &str,
+        error: &DaemonError,
+    ) -> DaemonError {
         let (_, projected_kernels) = self.remote_relay_inventory_projection_store().snapshot();
-        Err(DaemonError::NoRemoteKernelAvailable {
+        DaemonError::NoRemoteKernelAvailable {
             machine_ref: kernel_ref.to_string(),
             provider: provider.to_string(),
             message: format!(
                 "{error}; {}",
                 usable_kernel_refs_message(&projected_kernels, provider)
             ),
-        })
+        }
     }
 
     fn can_use_connected_relay_inventory(
