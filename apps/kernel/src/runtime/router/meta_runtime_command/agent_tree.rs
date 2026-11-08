@@ -110,29 +110,46 @@ impl CommandRouter {
         command: &str,
         args: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let [reference] = args else {
-            return Ok(meta_command_failure_result(
-                command,
-                meta_command_error("usage: agent cancel <agent-ref>"),
-            ));
+        let (reference, room) = match args {
+            [reference] => (reference, None),
+            [reference, flag, room] if flag == "--room" => (reference, Some(room.as_str())),
+            _ => {
+                return Ok(meta_command_failure_result(
+                    command,
+                    meta_command_error("usage: agent cancel <agent-ref> [--room <room>]"),
+                ))
+            }
         };
-        let target = match self
-            .resolve_owned_regular_agent(session.id(), parent, reference)
-            .await
-        {
+        let target = match room {
+            Some(room) => {
+                self.runtime_state
+                    .resolve_message_target(session, parent, Some(room), reference)
+            }
+            None => {
+                self.resolve_owned_regular_agent(session.id(), parent, reference)
+                    .await
+            }
+        };
+        let target = match target {
             Ok(target) => target,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let attachment_id = match self
-            .ensure_metaagent_command_attachment(session.id(), parent)
-            .await
-        {
+        // In another room the kernel cancels through that agent's own delivery seat, so the
+        // caller never joins the room; the command still records the caller.
+        let attachment_id = if target.session_id() == session.id() {
+            self.ensure_metaagent_command_attachment(session.id(), parent)
+                .await
+        } else {
+            self.runtime_state
+                .ensure_agent_message_attachment(target.session_id(), &target)
+        };
+        let attachment_id = match attachment_id {
             Ok(id) => id,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
         let request =
             LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
-                session_id: session.id().to_string(),
+                session_id: target.session_id().to_string(),
                 attachment_id,
                 target_agent_id: Some(target.id().to_string()),
                 expected_prompt_id: None,

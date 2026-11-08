@@ -91,6 +91,31 @@ impl KernelRuntimeState {
             }
             return Ok(());
         }
+        // A peer may stop a turn in another room of the same owner, so a cancel is admitted
+        // against its target before the caller-room fence below.
+        if let LocalDaemonRequest::CancelActivePrompt(r) = request {
+            return match r.target_agent_id.as_deref() {
+                // An agent may always stop its own turn.
+                Some(target) if target == actor.id() && r.session_id == actor.session_id() => {
+                    Ok(())
+                }
+                Some(target) => {
+                    let target = self
+                        .owned
+                        .agent_store
+                        .get_agent(target)
+                        .ok()
+                        .filter(|target| target.session_id() == r.session_id)
+                        .ok_or_else(|| denied("agent is unavailable in that room"))?;
+                    self.authorize_peer_control(
+                        &actor,
+                        &target,
+                        super::peer_rooms::PeerControl::Cancel,
+                    )
+                }
+                None => Err(denied("cancel names the agent whose turn it stops")),
+            };
+        }
         if let Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(
             room,
         )) = crate::runtime::session_membership::scope::request_session_scope(request)
@@ -116,12 +141,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::CancelActivePrompt(r) => match r.target_agent_id.as_ref() {
-                // An agent may always stop its own turn.
-                Some(target) if target == actor.id() => return Ok(()),
-                Some(target) => (&r.session_id, target, false),
-                None => return Err(denied("cancel names the agent whose turn it stops")),
-            },
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ArchiveAgent(_) => {
                 return Err(denied("only the owner can archive or unarchive agents"))

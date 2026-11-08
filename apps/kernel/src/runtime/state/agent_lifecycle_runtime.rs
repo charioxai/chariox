@@ -526,6 +526,9 @@ impl KernelRuntimeState {
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
         }
+        if args.urgent {
+            self.authorize_peer_control(sender, target, super::peer_rooms::PeerControl::Steer)?;
+        }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
         if let Err(error) =

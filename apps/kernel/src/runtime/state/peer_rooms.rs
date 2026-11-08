@@ -43,3 +43,71 @@ impl KernelRuntimeState {
         Ok(target.clone())
     }
 }
+
+/// What a peer does to another agent's running turn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerControl {
+    Steer,
+    Cancel,
+}
+
+impl KernelRuntimeState {
+    /// Inside one tree the tree decides: the agents above an agent control it, and an agent
+    /// only messages the agents above it. Any other agent of the same owner is a peer and may
+    /// steer or cancel when its authority is at least the target's.
+    pub(crate) fn authorize_peer_control(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        target: &crate::agent::AgentInstance,
+        control: PeerControl,
+    ) -> Result<(), DaemonError> {
+        if target.session_id() == actor.session_id() {
+            let agents = self.session_agents(actor.session_id());
+            let actor_above = crate::agent::authority_limit::ancestors(target, &agents)
+                .iter()
+                .any(|agent| agent.id() == actor.id());
+            let actor_below = crate::agent::authority_limit::ancestors(actor, &agents)
+                .iter()
+                .any(|agent| agent.id() == target.id());
+            if actor_above || (actor_below && control == PeerControl::Steer) {
+                return Ok(());
+            }
+            if actor_below {
+                return crate::runtime::room_tool_admission::in_subtree(actor, target, &agents);
+            }
+        }
+        let target_session = self
+            .owned
+            .session_store
+            .get_session(target.session_id())
+            .map_err(|_| unavailable())?;
+        if target_session.owner_user_id() != actor.owner_user_id()
+            || (target.session_id() != actor.session_id() && target.parent_agent_id().is_some())
+        {
+            return Err(unavailable());
+        }
+        let actor_session = self.owned.session_store.get_session(actor.session_id())?;
+        let mine = crate::session::effective_agent_execution_config_in_tree(
+            &actor_session,
+            actor,
+            &self.session_agents(actor.session_id()),
+        );
+        let theirs = crate::session::effective_agent_execution_config_in_tree(
+            &target_session,
+            target,
+            &self.session_agents(target.session_id()),
+        );
+        if mine.permission_level.permits(theirs.permission_level) && mine.mode.permits(theirs.mode)
+        {
+            return Ok(());
+        }
+        Err(denied(format!(
+            "{} has more authority than you ({:?} in {} mode, you run {:?} in {} mode); send it a message instead",
+            target.alias().unwrap_or(target.agent_ref()),
+            theirs.permission_level,
+            theirs.mode,
+            mine.permission_level,
+            mine.mode,
+        )))
+    }
+}

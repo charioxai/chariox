@@ -3,6 +3,7 @@
 use super::*;
 use crate::provider::AgentPermissionLevel;
 
+mod control;
 mod messages;
 
 /// Room `home` holds the sender; room `peer_room` holds an ordinary agent and its hidden
@@ -122,6 +123,32 @@ impl Rooms {
             .await?;
         assert!(result.ok, "{}", result.payload);
         Ok(result.payload)
+    }
+
+    async fn room_command(
+        &self,
+        token: &str,
+        command: String,
+    ) -> crate::transport::runtime_tools::RuntimeToolResult {
+        self.router
+            .dispatch_authenticated_runtime_tool_call(
+                token,
+                "chariox.room.run_command",
+                serde_json::json!({ "command": command }),
+            )
+            .await
+            .expect("room command answers")
+    }
+
+    async fn turn_running(&self, room: &str, agent: &str) -> bool {
+        self.app
+            .lock()
+            .await
+            .sessions()
+            .get_session(room)
+            .unwrap()
+            .active_prompt_for_agent(agent)
+            .is_some_and(|prompt| prompt.status() == PromptStatus::Running)
     }
 
     async fn inbox(
