@@ -104,6 +104,7 @@ pub(crate) struct CommandRouter {
 
 #[cfg(test)]
 mod tests {
+    mod agent_deadline_owner;
     mod agent_parent_owner;
     mod app_notification_access;
     use std::collections::BTreeMap;
