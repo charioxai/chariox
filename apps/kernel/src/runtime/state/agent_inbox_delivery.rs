@@ -3,6 +3,8 @@ use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, ExecutionState, Operation, Outcome};
 /// Rows one wake may carry beyond its lead; later rows get the next wake.
 const MAX_WAKE_BATCH: usize = 63;
+/// How long a steer waits for the running turn's provider lane.
+const STEER_LANE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn names_task(event: &ledger::InboxEvent, task: &str) -> bool {
     event.payload["task_id"].as_str() == Some(task)
@@ -251,10 +253,19 @@ impl KernelRuntimeState {
             return Ok(());
         }
         if let Some(dispatch) = steer {
-            let _permit = self
-                .provider_runtime_lanes
-                .acquire(&dispatch.provider_run_id)
-                .await;
+            // A turn that is settling holds its lane until it ends. The steer then
+            // sent nothing: the row waits for the idle wake instead of the lane.
+            let Ok(_permit) = tokio::time::timeout(
+                STEER_LANE_WAIT,
+                self.provider_runtime_lanes
+                    .acquire(&dispatch.provider_run_id),
+            )
+            .await
+            else {
+                self.record_agent_delivery_receipt(room, agent, event.sequence, "rejected")?;
+                self.schedule_agent_lifecycle_sweep();
+                return Ok(());
+            };
             if !self
                 .owned
                 .prompt_dispatch_matches_active_prompt(&dispatch)

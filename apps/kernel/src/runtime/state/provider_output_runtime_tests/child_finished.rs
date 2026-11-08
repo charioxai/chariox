@@ -367,3 +367,76 @@ async fn a_parents_deadline_stops_the_working_sub_agent_below_it() {
                 == crate::durable_state::agent_lifecycle::ExecutionState::Cancelled)
     );
 }
+
+/// The parent's `child_finished`, read until `done` holds.
+async fn child_finished_when(
+    runtime: &KernelRuntimeState,
+    room: &str,
+    parent: &str,
+    done: impl Fn(&crate::durable_state::agent_lifecycle::InboxEvent) -> bool,
+) -> crate::durable_state::agent_lifecycle::InboxEvent {
+    let read = || {
+        runtime
+            .owned
+            .durable_state_store
+            .agent_inbox(room, parent, 0)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.kind == "child_finished")
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match read() {
+            Some(event) if done(&event) => return event,
+            last if std::time::Instant::now() >= until => {
+                panic!("child_finished never reached the expected state: {last:?}")
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_finish_while_the_parents_turn_settles_wakes_the_parent_when_it_ends() {
+    let family = family("child-finished-settling", 1, Some(false), true).await;
+    let kid = &family.kids[0];
+    // The parent's turn is settling: its output pump holds the run's lane.
+    let lane = family
+        .runtime
+        .provider_runtime_lanes
+        .acquire(&family.parent_run)
+        .await;
+    let settled = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        family.runtime.finish_agent_task_settlement(
+            Some((kid.task.clone(), kid.correction)),
+            &kid.child_prompt,
+        ),
+    )
+    .await;
+    assert!(
+        settled.is_ok(),
+        "the child's settlement does not wait for the parent's settling turn"
+    );
+    settled.unwrap().unwrap();
+    // The turn ends; its pump lets the lane go a moment later.
+    family
+        .runtime
+        .owned
+        .complete_local_prompt_without_advance(
+            &family.room,
+            &family.parent,
+            Some(&family.parent_run),
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    drop(lane);
+    let event = child_finished_when(&family.runtime, &family.room, &family.parent, |event| {
+        event.prompt_id.is_some() && event.target_prompt_id.is_none()
+    })
+    .await;
+    assert!(
+        !matches!(event.state.as_str(), "pending" | "blocked"),
+        "the parked parent is woken with its child's finish: {event:?}"
+    );
+}
