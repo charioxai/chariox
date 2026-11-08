@@ -906,7 +906,7 @@ impl KernelRuntimeState {
         let offered = self
             .owned
             .durable_state_store
-            .agent_inbox(session_id, holder, 0)
+            .agent_work_inbox(session_id, holder, 0, None)
             .map_or(true, |events| {
                 events.iter().any(|event| {
                     event.kind == CHILD_DECISION_EVENT
