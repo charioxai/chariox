@@ -992,6 +992,58 @@ impl KernelRuntimeState {
             .collect()
     }
 
+    /// Tells the worker what a leased agent runs under; its next provider turn launches with it.
+    pub(super) async fn send_leased_agent_config(
+        &self,
+        remote_update: owned::OwnedRemoteAgentConfigUpdate,
+    ) -> Result<(), DaemonError> {
+        let mut config = self.config_snapshot().await;
+        if let (Some(relay_url), Some(relay_token)) = (
+            remote_update.relay_url.clone(),
+            remote_update.relay_token.clone(),
+        ) {
+            config.apply_remote_relay_override(relay_url, relay_token);
+        }
+        let target = ClientTarget {
+            daemon_id: Some(remote_update.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let request = RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id: remote_update.leased_agent_id,
+            execution_mode: remote_update.execution_mode,
+            permission_level: remote_update.permission_level,
+        };
+        let response = match self.connected_relay_state_for_config(&config).await {
+            Some(relay_state) => {
+                crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
+                    &config,
+                    &relay_state,
+                    target,
+                    request,
+                    Duration::from_millis(config.relay_request_timeout_ms),
+                    || self.authorize_current_external_command(),
+                )
+                .await
+            }
+            None => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
+                    &config, target, request,
+                    Duration::from_millis(config.relay_request_timeout_ms),
+                    || self.authorize_current_external_command(),
+                )
+                .await
+            }
+        };
+        match response {
+            Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. }) => Ok(()),
+            Ok(other) => Err(DaemonError::LocalTransport {
+                operation: "update remote leased agent config",
+                message: format!("unexpected remote config response: {other:?}"),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "Preserve the existing update_agent_config operation signature and explicit context arguments"
@@ -1024,53 +1076,7 @@ impl KernelRuntimeState {
             .await;
         let mut agent = update.agent;
         if let Some(remote_update) = update.remote_update {
-            let mut config = self.config_snapshot().await;
-            if let (Some(relay_url), Some(relay_token)) = (
-                remote_update.relay_url.clone(),
-                remote_update.relay_token.clone(),
-            ) {
-                config.apply_remote_relay_override(relay_url, relay_token);
-            }
-            let target = ClientTarget {
-                daemon_id: Some(remote_update.worker_kernel_id.clone()),
-                daemon_alias: None,
-            };
-            let request = RelayPeerRequest::UpdateLeasedAgentConfig {
-                leased_agent_id: remote_update.leased_agent_id,
-                execution_mode: remote_update.execution_mode,
-                permission_level: remote_update.permission_level,
-            };
-            let response = match self.connected_relay_state_for_config(&config).await {
-                Some(relay_state) => {
-                    crate::transport::relay_client::send_peer_request_via_connected_relay_authorized(
-                        &config,
-                        &relay_state,
-                        target,
-                        request,
-                        Duration::from_millis(config.relay_request_timeout_ms),
-                        || self.authorize_current_external_command(),
-                    )
-                    .await
-                }
-                None => {
-                    crate::transport::relay_client::send_peer_request_via_temporary_connection_authorized(
-                        &config, target, request,
-                        Duration::from_millis(config.relay_request_timeout_ms),
-                        || self.authorize_current_external_command(),
-                    )
-                    .await
-                }
-            };
-            match response {
-                Ok(RelayPeerResponse::LeasedAgentConfigUpdated { .. }) => {}
-                Ok(other) => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "update remote leased agent config",
-                        message: format!("unexpected remote config response: {other:?}"),
-                    });
-                }
-                Err(error) => return Err(error),
-            }
+            self.send_leased_agent_config(remote_update).await?;
             self.authorize_current_external_command()?;
             agent = self.owned.commit_remote_agent_config_update(
                 session_id,

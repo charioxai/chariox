@@ -18,13 +18,39 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id,
             });
         }
-        let (agent, moved, announce) = self.owned.place_agent(caller_user_id, &request)?;
-        self.append_agent_durable_event("agent.updated", &agent, None)
+        let placement = self.owned.place_agent(caller_user_id, &request)?;
+        self.append_agent_durable_event("agent.updated", &placement.agent, None)
             .await?;
-        self.finish_moved_decisions(&request.session_id, moved, announce)
+        self.finish_moved_decisions(&request.session_id, placement.moved, placement.announce)
             .await?;
-        Ok(LocalDaemonResponse::AgentParentChanged { agent })
+        // A worker launches a leased agent's next turn with what it was last told, so every leased
+        // agent of the moved team is told the limit of its new parent chain. Telling it again is
+        // harmless, so a failed move is retried by placing the agent again.
+        for (agent_id, limit) in placement.leased_limits {
+            let (level, mode) = (limit.permission_level, limit.execution_mode);
+            self.send_leased_agent_config(limit)
+                .await
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "set agent parent",
+                    message: format!(
+                        "agent `{agent_id}` moved, but its worker did not apply the {} {} limit: {error}; place the agent again to retry",
+                        level.as_str(),
+                        mode.as_str()
+                    ),
+                })?;
+        }
+        Ok(LocalDaemonResponse::AgentParentChanged {
+            agent: placement.agent,
+        })
     }
+}
+
+struct AgentPlacement {
+    agent: crate::agent::AgentInstance,
+    moved: usize,
+    announce: Vec<String>,
+    /// What each leased agent of the moved team runs under now, by home agent id.
+    leased_limits: Vec<(String, super::owned::OwnedRemoteAgentConfigUpdate)>,
 }
 
 impl KernelRuntimeOwnedState {
@@ -34,7 +60,7 @@ impl KernelRuntimeOwnedState {
         &self,
         caller_user_id: &str,
         request: &SetAgentParentRequest,
-    ) -> Result<(crate::agent::AgentInstance, usize, Vec<String>), DaemonError> {
+    ) -> Result<AgentPlacement, DaemonError> {
         let _mutation =
             self.pending_interactions
                 .mutation
@@ -93,7 +119,13 @@ impl KernelRuntimeOwnedState {
             request.parent_agent_id.clone().map(AgentRef::local),
         )?;
         let (moved, announce) = self.move_subtree_decisions(&request.session_id, agent.id())?;
-        Ok((agent, moved, announce))
+        let leased_limits = self.leased_subtree_limits(&request.session_id, agent.id())?;
+        Ok(AgentPlacement {
+            agent,
+            moved,
+            announce,
+            leased_limits,
+        })
     }
 }
 

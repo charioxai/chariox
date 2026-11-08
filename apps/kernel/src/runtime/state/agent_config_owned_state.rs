@@ -83,16 +83,27 @@ impl KernelRuntimeOwnedState {
         let scope_changed = effective_config_changed || working_directory_changed;
         let remote_update = effective_config_changed
             .then(|| {
+                // The worker launches with what it is told, so it is told the parent chain's limit.
+                let agents = self
+                    .agent_store
+                    .get_session_agents(session_id)
+                    .into_iter()
+                    .map(|other| {
+                        if other.id() == agent_id {
+                            next_agent.clone()
+                        } else {
+                            other
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let limited = crate::session::effective_agent_execution_config_in_tree(
+                    &session,
+                    &next_agent,
+                    &agents,
+                );
                 agent
                     .remote_execution()
-                    .map(|binding| owned::OwnedRemoteAgentConfigUpdate {
-                        worker_kernel_id: binding.worker_kernel_id.clone(),
-                        leased_agent_id: binding.leased_agent_id.clone(),
-                        relay_url: binding.relay_url.clone(),
-                        relay_token: binding.relay_token.clone(),
-                        execution_mode: next_config.mode,
-                        permission_level: next_config.permission_level,
-                    })
+                    .map(|binding| leased_agent_limit(binding, limited))
             })
             .flatten();
 
@@ -127,6 +138,30 @@ impl KernelRuntimeOwnedState {
             remote_update,
             scope_changed,
         })
+    }
+
+    /// What `agent_id` and every leased agent below it must run under on their workers, as their
+    /// parent chain limits them now, by home agent id.
+    pub(super) fn leased_subtree_limits(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<(String, owned::OwnedRemoteAgentConfigUpdate)>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let agents = self.agent_store.get_session_agents(session_id);
+        let subtree = agents.iter().filter(|agent| agent.id() == agent_id).chain(
+            crate::agent::authority_limit::descendants(agent_id, &agents),
+        );
+        Ok(subtree
+            .filter(|agent| !agent.archived())
+            .filter_map(|agent| {
+                let binding = agent.remote_execution()?;
+                let limited = crate::session::effective_agent_execution_config_in_tree(
+                    &session, agent, &agents,
+                );
+                Some((agent.id().to_owned(), leased_agent_limit(binding, limited)))
+            })
+            .collect())
     }
 
     /// Apply the next scope to the provider too: its process may hold session rules.
@@ -235,5 +270,19 @@ impl KernelRuntimeOwnedState {
                 "agent `{agent_id}` is controlled by a provider-native TUI; change provider settings in that TUI"
             ),
         })
+    }
+}
+
+fn leased_agent_limit(
+    binding: &crate::agent::RemoteAgentBinding,
+    limited: crate::session::EffectiveAgentExecutionConfig,
+) -> owned::OwnedRemoteAgentConfigUpdate {
+    owned::OwnedRemoteAgentConfigUpdate {
+        worker_kernel_id: binding.worker_kernel_id.clone(),
+        leased_agent_id: binding.leased_agent_id.clone(),
+        relay_url: binding.relay_url.clone(),
+        relay_token: binding.relay_token.clone(),
+        execution_mode: limited.mode,
+        permission_level: limited.permission_level,
     }
 }
