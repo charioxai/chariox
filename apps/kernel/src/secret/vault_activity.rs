@@ -17,7 +17,7 @@ fn close_unfinished_attempts(
 ) -> Vec<OwnerVaultActivity> {
     let mut closed = Vec::with_capacity(events.len());
     let mut open: Option<u64> = None;
-    let mut fail_open = |closed: &mut Vec<OwnerVaultActivity>, open: &mut Option<u64>| {
+    let fail_open = |closed: &mut Vec<OwnerVaultActivity>, open: &mut Option<u64>| {
         if let Some(at_ms) = open.take().filter(|at_ms| *at_ms < started_at_ms) {
             closed.push(OwnerVaultActivity {
                 at_ms,
