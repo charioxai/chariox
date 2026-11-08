@@ -48,6 +48,7 @@ mod reach_tools;
 mod refresh_dispatch;
 mod relay_collaborator_gate;
 mod relay_peer_bridge;
+mod room_exec_place;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
 pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;

@@ -70,6 +70,15 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
+        if let Some(user_id) = grant_id.strip_prefix(super::reach::OWNER_GRANT_PREFIX) {
+            return if self.is_gateway_owner(user_id) {
+                Ok(())
+            } else {
+                Err(error(
+                    "only this kernel's owner uses the owner's gateway grant",
+                ))
+            };
+        }
         if grant_id.starts_with(super::reach::REACH_PREFIX) {
             let caller = self
                 .reach_for_id(grant_id)
@@ -97,6 +106,15 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    /// The kernel owner is the one person who forwards to the owner's other kernels without
+    /// an access grant: the owner's own gateway grant on this kernel.
+    pub(crate) fn is_gateway_owner(&self, user_id: &str) -> bool {
+        let daemon_id = self.owned.config_projection.snapshot().daemon_id;
+        self.owned
+            .config_projection
+            .is_kernel_owner(&daemon_id, user_id)
+    }
+
     /// Both owner-authorized entry points keep their existing lifetime. A Room
     /// bearer alone has neither, and revocation ends access on the next use.
     pub(crate) fn gateway_origin(
@@ -104,7 +122,10 @@ impl KernelRuntimeState {
         id: &str,
     ) -> Option<crate::runtime::kernel_gateway::Origin> {
         self.sweep_kernel_access();
-        let harness = if id.starts_with(super::reach::REACH_PREFIX) {
+        let harness = if let Some(user_id) = id.strip_prefix(super::reach::OWNER_GRANT_PREFIX) {
+            self.is_gateway_owner(user_id)
+                .then(|| "Chariox".to_string())?
+        } else if id.starts_with(super::reach::REACH_PREFIX) {
             self.reach_for_id(id)?.harness
         } else if id.starts_with("sudo:") {
             let turn = self.sudo_window_bound(id).ok()?;

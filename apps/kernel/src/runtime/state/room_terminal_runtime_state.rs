@@ -316,7 +316,7 @@ impl KernelRuntimeState {
         crate::agent_temp::clear_room(session_id);
     }
 
-    fn authorize_room_terminal(
+    pub(super) fn authorize_room_terminal(
         &self,
         caller: &KernelCaller,
         request: &RoomTerminalRequest,

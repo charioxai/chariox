@@ -113,6 +113,31 @@ impl GatewayExecPlacement {
     }
 }
 
+/// The Room on the other kernel the launch runs in. Its command id comes from the launch, so
+/// a retry after a lost answer is answered by the target's ledger instead of making a second Room.
+pub(crate) async fn create_target_room(
+    grant: &dyn GrantedSend,
+    exec_id: &str,
+    directory: &str,
+) -> Result<String, DaemonError> {
+    let mut create = crate::session::CreateSessionRequest::new(directory, directory);
+    create.no_subscribe = true;
+    let request = LocalDaemonRequest::CreateSession(create);
+    let sent = &request;
+    let answer = forward_with_retry(format!("place:{exec_id}:room"), move |id| {
+        grant.send(id, sent)
+    })
+    .await
+    .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
+    match serde_json::from_value(answer) {
+        Ok(LocalDaemonResponse::SessionCreated { session, .. }) => Ok(session.id().to_owned()),
+        _ => Err(error(
+            "exec_target_unreadable",
+            "the other kernel answered with something that is not a new Room",
+        )),
+    }
+}
+
 fn unexpected() -> DaemonError {
     error(
         "exec_target_unreadable",

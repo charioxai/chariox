@@ -1,7 +1,7 @@
 //! The command that runs a held launch on another of the owner's kernels.
 use std::sync::Arc;
 
-use super::gateway_placement::GrantedSend;
+use super::gateway_placement::{self, GatewayExecPlacement, GrantedSend};
 use super::{error, RoomExecService};
 use crate::error::DaemonError;
 
@@ -13,7 +13,7 @@ pub(crate) enum Requester {
 }
 
 impl Requester {
-    pub(super) fn ensure_owns(&self, launch_agent: Option<&str>) -> Result<(), DaemonError> {
+    pub(crate) fn ensure_owns(&self, launch_agent: Option<&str>) -> Result<(), DaemonError> {
         match self {
             Self::Person => Ok(()),
             Self::Agent(id) if launch_agent == Some(id.as_str()) => Ok(()),
@@ -34,14 +34,22 @@ pub(crate) struct Placement<'a> {
     pub(crate) origin_kernel: &'a str,
 }
 
+/// Makes a Room on the other kernel, then hands the held launch to it. Nothing starts
+/// anywhere unless the Room exists; a refusal leaves the launch held.
 pub(crate) async fn run_on_kernel(
-    _service: &RoomExecService,
-    _placement: Placement<'_>,
-    _requester: &Requester,
-    _grant: Arc<dyn GrantedSend>,
+    service: &RoomExecService,
+    placement: Placement<'_>,
+    requester: &Requester,
+    grant: Arc<dyn GrantedSend>,
 ) -> Result<(), DaemonError> {
-    Err(error(
-        "exec_place_unavailable",
-        "running a held launch on another kernel is not wired yet",
-    ))
+    service.ensure_placeable_by(placement.session_id, placement.exec_id, requester)?;
+    let target_session_id =
+        gateway_placement::create_target_room(&*grant, placement.exec_id, placement.directory)
+            .await?;
+    service.place(
+        placement.session_id,
+        placement.exec_id,
+        placement.origin_kernel,
+        Arc::new(GatewayExecPlacement::new(grant, target_session_id)),
+    )
 }

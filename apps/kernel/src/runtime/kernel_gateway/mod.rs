@@ -159,6 +159,11 @@ impl KernelGateway {
         })
     }
 
+    /// What this kernel is called to its owner, as the other kernel sees it in `on_behalf_of`.
+    pub(crate) fn own_name(&self) -> String {
+        names::own_name(&self.config.snapshot())
+    }
+
     /// Forwards `request` to `kernel` and returns the target's response value.
     pub(crate) async fn forward(
         &self,

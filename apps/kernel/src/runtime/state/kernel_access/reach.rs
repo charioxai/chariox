@@ -11,6 +11,10 @@ use super::*;
 /// A reach caller's id: this prefix plus its provider run id.
 pub(crate) const REACH_PREFIX: &str = "reach:";
 
+/// The kernel owner's own gateway grant, for what a person asks their kernel to do on
+/// another kernel without an access grant: this prefix plus the owner's user id.
+pub(crate) const OWNER_GRANT_PREFIX: &str = "owner:";
+
 #[derive(Clone, Debug)]
 pub(crate) struct ReachCaller {
     pub(crate) id: String,

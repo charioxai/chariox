@@ -61,6 +61,12 @@ impl KernelRuntimeState {
                 service.start_now(session_id, &exec_id)?;
                 RoomTerminalResult::ExecOpened { exec_id }
             }
+            RoomTerminalOperation::ExecPlace { .. } => {
+                return Err(crate::room_exec::error(
+                    "exec_place_not_here",
+                    "a held launch is placed by the kernel that holds it, not through a worker or another kernel's gateway",
+                ))
+            }
             RoomTerminalOperation::ExecWrite {
                 exec_id,
                 offset,
