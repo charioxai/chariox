@@ -6,16 +6,54 @@ async fn pin(
     pinned: bool,
     user: &str,
 ) -> Result<serde_json::Value, DaemonError> {
+    pin_as(router, session_id, pinned, user, None).await
+}
+
+async fn pin_as(
+    router: &CommandRouter,
+    session_id: &str,
+    pinned: bool,
+    user: &str,
+    connection_class: Option<crate::local::KernelConnectionClass>,
+) -> Result<serde_json::Value, DaemonError> {
     let request: LocalDaemonRequest = serde_json::from_value(
         serde_json::json!({"SetRoomPinned":{"session_id":session_id,"pinned":pinned}}),
     )
     .expect("pin request decodes");
     let mut command = KernelCommand::from_local_request("room-pin", None, None, &request);
     command.caller.user_id = Some(user.to_string());
+    command.caller.connection_class = connection_class;
     router
         .dispatch(command, request)
         .await
         .map(|response| serde_json::to_value(response).unwrap())
+}
+
+#[tokio::test]
+async fn the_enrolled_owner_pins_a_room_made_before_enrollment() {
+    let mut config = DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let (session, _) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new("workspace", "worktree")
+                .with_owner_user_id(DEFAULT_LOCAL_USER_ID),
+        )
+        .unwrap();
+    let id = session.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+    let terminal = Some(crate::local::KernelConnectionClass::Terminal);
+    pin_as(&router, &id, true, "stranger", terminal)
+        .await
+        .expect_err("a stranger still cannot pin the Room");
+    let response = pin_as(&router, &id, true, "kernel-owner", terminal)
+        .await
+        .expect("the enrolled owner pins its Room");
+    assert_eq!(response["RoomPinned"]["session"]["pinned"], true);
 }
 
 #[tokio::test]
