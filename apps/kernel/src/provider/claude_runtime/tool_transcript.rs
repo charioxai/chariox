@@ -11,6 +11,8 @@ const RESULT_BYTES: usize = 16 * 1024;
 const RESULT_BLOCKS: usize = 256;
 const RESULT_IMAGES: usize = 4;
 const IMAGE_BASE64_BYTES: usize = 512 * 1024;
+/// The largest picture file whose base64 form `bounded_result_images` keeps.
+pub(crate) const RESULT_IMAGE_FILE_BYTES: usize = IMAGE_BASE64_BYTES / 4 * 3;
 const TRUNCATED: &str = "\n[chariox: tool transcript truncated]";
 
 struct BoundedJson(Vec<u8>);

@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use base64::Engine as _;
 use serde_json::{json, Value};
@@ -9,6 +10,7 @@ use super::item::is_codex_tool_item;
 use super::tool_update::render_codex_tool_transcript_update;
 use crate::extension::RemoteExtensionManifest;
 use crate::provider::codex_runtime::CodexOutputChunk;
+use crate::runtime::workspace_repo_files::{read_workspace_picture, WorkspacePicture};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
@@ -18,6 +20,15 @@ pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
     pub(in crate::provider::codex_runtime) output_stream: Option<ToolOutputStream>,
     pub(in crate::provider::codex_runtime) progress_messages: Vec<String>,
     pub(in crate::provider::codex_runtime) last_emitted: Option<String>,
+    /// What a completed `view_image` call showed, read once when the call completes.
+    pub(in crate::provider::codex_runtime) pictures: Option<CodexToolPictures>,
+}
+
+/// The pictures a call carries to the transcript, and how many were too large to keep.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(in crate::provider::codex_runtime) struct CodexToolPictures {
+    pub(in crate::provider::codex_runtime) images: Vec<String>,
+    pub(in crate::provider::codex_runtime) omitted: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -81,6 +92,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     item: &Value,
     lifecycle: CodexItemLifecycle,
     remote_extension_manifest: &RemoteExtensionManifest,
+    workspace_root: Option<&Path>,
 ) -> Option<CodexOutputChunk> {
     if !is_codex_tool_item(item) {
         return None;
@@ -107,8 +119,12 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
+            pictures: None,
         });
     entry.item = item.clone();
+    if entry.pictures.is_none() && is_completed_image_view(item) {
+        entry.pictures = Some(viewed_pictures(item, workspace_root));
+    }
     for field in ["aggregatedOutput", "aggregated_output", "output", "stderr"] {
         if let Some(serde_json::Value::String(text)) = entry.item.get_mut(field) {
             super::output_window::trim(text);
@@ -126,6 +142,42 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     }
     super::output_window::trim(&mut entry.streamed_output);
     render_tool_chunk_if_changed(&item_id, entry, remote_extension_manifest)
+}
+
+fn is_completed_image_view(item: &Value) -> bool {
+    item.get("type").and_then(Value::as_str) == Some("imageView")
+        && item.get("status").and_then(Value::as_str) == Some("completed")
+}
+
+/// The picture a completed `view_image` call showed, when it is an image file the kernel may read for the agent.
+fn viewed_pictures(item: &Value, workspace_root: Option<&Path>) -> CodexToolPictures {
+    let mut pictures = CodexToolPictures::default();
+    let Some((workspace_root, path)) =
+        workspace_root.zip(item.get("path").and_then(Value::as_str).and_then(non_empty))
+    else {
+        return pictures;
+    };
+    match read_workspace_picture(
+        workspace_root,
+        Path::new(path),
+        crate::provider::RESULT_IMAGE_FILE_BYTES,
+    ) {
+        Some(WorkspacePicture::Picture { media_type, bytes }) => {
+            let block = json!([{
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+            }]);
+            (pictures.images, pictures.omitted) =
+                crate::provider::bounded_result_images(Some(&block));
+        }
+        Some(WorkspacePicture::TooLarge) => pictures.omitted = 1,
+        None => {}
+    }
+    pictures
 }
 
 pub(in crate::provider::codex_runtime) fn append_tool_output_delta(
@@ -177,6 +229,7 @@ fn append_output_delta_from_stream(
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
+            pictures: None,
         });
     // MP-08 / MP-10: app-server can emit both legacy and modern deltas for
     // one call. Keep the first live stream, avoiding duplicated bytes while
@@ -239,6 +292,7 @@ pub(in crate::provider::codex_runtime) fn append_tool_progress(
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
+            pictures: None,
         });
     entry.progress_messages.push(message.trim().to_string());
     render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
@@ -374,6 +428,7 @@ mod output_window_tests {
             &completed,
             CodexItemLifecycle::Completed,
             &RemoteExtensionManifest::default(),
+            None,
         )
         .unwrap();
         let rendered: Value = serde_json::from_slice(&chunk.bytes).unwrap();
@@ -388,5 +443,148 @@ mod output_window_tests {
                 .len()
                 <= super::super::output_window::MAX_OUTPUT_BYTES
         );
+    }
+}
+
+#[cfg(test)]
+mod view_image_tests {
+    use super::*;
+
+    // A 1x1 PNG.
+    const PNG: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+        0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
+        0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8,
+        0xff, 0xff, 0x3f, 0x00, 0x05, 0xfe, 0x02, 0xfe, 0xa7, 0x35, 0x81, 0x84, 0x00, 0x00, 0x00,
+        0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let root = std::env::temp_dir()
+                .canonicalize()
+                .unwrap()
+                .join(format!("chariox-view-image-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("workspace")).unwrap();
+            std::fs::create_dir_all(root.join("elsewhere")).unwrap();
+            Self(root)
+        }
+
+        fn workspace(&self) -> std::path::PathBuf {
+            self.0.join("workspace")
+        }
+
+        fn elsewhere(&self) -> std::path::PathBuf {
+            self.0.join("elsewhere")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn view(path: &Path, lifecycle: CodexItemLifecycle, workspace: &Path) -> Value {
+        let item = json!({"type": "imageView", "id": "iv-1", "path": path});
+        let mut tools = BTreeMap::new();
+        let chunk = sync_tool_item_with_manifest(
+            &mut tools,
+            &item,
+            lifecycle,
+            &RemoteExtensionManifest::default(),
+            Some(workspace),
+        )
+        .expect("a view_image update");
+        serde_json::from_slice(&chunk.bytes).unwrap()
+    }
+
+    fn completed_view(path: &Path, workspace: &Path) -> Value {
+        view(path, CodexItemLifecycle::Completed, workspace)
+    }
+
+    #[test]
+    fn a_viewed_picture_in_the_workspace_is_carried_with_its_call() {
+        let scratch = Scratch::new("picture");
+        std::fs::write(scratch.workspace().join("chart.png"), PNG).unwrap();
+        let expected = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(PNG)
+        );
+        let absolute = completed_view(&scratch.workspace().join("chart.png"), &scratch.workspace());
+        assert_eq!(absolute["tool"], "view_image");
+        assert_eq!(absolute["images"], json!([expected]));
+        assert!(absolute.get("images_omitted").is_none());
+        let relative = completed_view(Path::new("chart.png"), &scratch.workspace());
+        assert_eq!(relative["images"], json!([expected]));
+        let running = view(
+            &scratch.workspace().join("chart.png"),
+            CodexItemLifecycle::Started,
+            &scratch.workspace(),
+        );
+        assert!(
+            running.get("images").is_none(),
+            "no picture before the call completes"
+        );
+    }
+
+    #[test]
+    fn a_picture_is_recognised_by_its_content_not_its_name() {
+        let scratch = Scratch::new("content");
+        std::fs::write(scratch.workspace().join("figure"), PNG).unwrap();
+        std::fs::write(scratch.workspace().join("notes.png"), b"just text").unwrap();
+        std::fs::write(scratch.workspace().join("vector.svg"), b"<svg/>").unwrap();
+        let named_oddly = completed_view(&scratch.workspace().join("figure"), &scratch.workspace());
+        assert_eq!(named_oddly["images"].as_array().map(Vec::len), Some(1));
+        for not_a_picture in ["notes.png", "vector.svg", "missing.png"] {
+            let rendered = completed_view(
+                &scratch.workspace().join(not_a_picture),
+                &scratch.workspace(),
+            );
+            assert!(rendered.get("images").is_none(), "{not_a_picture}");
+            assert!(rendered.get("images_omitted").is_none(), "{not_a_picture}");
+        }
+    }
+
+    #[test]
+    fn a_picture_outside_the_workspace_is_never_read() {
+        let scratch = Scratch::new("outside");
+        std::fs::write(scratch.elsewhere().join("secret.png"), PNG).unwrap();
+        let outside = completed_view(
+            &scratch.elsewhere().join("secret.png"),
+            &scratch.workspace(),
+        );
+        assert!(outside.get("images").is_none());
+        let traversal = completed_view(Path::new("../elsewhere/secret.png"), &scratch.workspace());
+        assert!(traversal.get("images").is_none());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                scratch.elsewhere().join("secret.png"),
+                scratch.workspace().join("link.png"),
+            )
+            .unwrap();
+            let linked =
+                completed_view(&scratch.workspace().join("link.png"), &scratch.workspace());
+            assert!(linked.get("images").is_none(), "a symlink does not escape");
+        }
+    }
+
+    #[test]
+    fn a_picture_over_the_size_limit_is_counted_as_omitted() {
+        let scratch = Scratch::new("large");
+        let mut large = PNG.to_vec();
+        large.resize(crate::provider::RESULT_IMAGE_FILE_BYTES + 1, 0);
+        std::fs::write(scratch.workspace().join("big.png"), &large).unwrap();
+        let rendered = completed_view(&scratch.workspace().join("big.png"), &scratch.workspace());
+        assert!(rendered.get("images").is_none());
+        assert_eq!(rendered["images_omitted"], 1);
+        large.truncate(crate::provider::RESULT_IMAGE_FILE_BYTES);
+        std::fs::write(scratch.workspace().join("fits.png"), &large).unwrap();
+        let fits = completed_view(&scratch.workspace().join("fits.png"), &scratch.workspace());
+        assert_eq!(fits["images"].as_array().map(Vec::len), Some(1));
     }
 }

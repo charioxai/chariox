@@ -1,6 +1,7 @@
 //! Codex notification projection and external-turn backfill.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -54,6 +55,7 @@ pub(super) fn apply_notification(
         terminal_failure,
         resolved_usage,
         &RemoteExtensionManifest::default(),
+        None,
     );
 }
 
@@ -74,6 +76,7 @@ pub(super) fn apply_notification_with_manifest(
     terminal_failure: &mut Option<String>,
     resolved_usage: &mut Option<ProviderRunTokenUsage>,
     remote_extension_manifest: &RemoteExtensionManifest,
+    workspace_root: Option<&Path>,
 ) {
     turn_tracker.observe_provider_turn(&notification);
     match notification {
@@ -99,6 +102,7 @@ pub(super) fn apply_notification_with_manifest(
                 terminal_failure,
                 resolved_usage,
                 remote_extension_manifest,
+                workspace_root,
             );
         }
         CodexNotification::AgentMessageDelta { item_id, delta } => {
@@ -154,6 +158,7 @@ pub(super) fn apply_notification_with_manifest(
                 &item,
                 CodexItemLifecycle::Started,
                 remote_extension_manifest,
+                workspace_root,
             ) {
                 chunks.push(chunk);
             }
@@ -168,6 +173,7 @@ pub(super) fn apply_notification_with_manifest(
                 &item,
                 CodexItemLifecycle::Completed,
                 remote_extension_manifest,
+                workspace_root,
             ) {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(text_items, &item) {
@@ -185,6 +191,7 @@ pub(super) fn apply_notification_with_manifest(
                 &codex_exec_command_item(&call_id, command, cwd, None),
                 CodexItemLifecycle::Started,
                 remote_extension_manifest,
+                workspace_root,
             ) {
                 chunks.push(chunk);
             }
@@ -216,6 +223,7 @@ pub(super) fn apply_notification_with_manifest(
                 &item,
                 CodexItemLifecycle::Completed,
                 remote_extension_manifest,
+                workspace_root,
             ) {
                 chunks.push(chunk);
             }
@@ -321,6 +329,7 @@ pub(super) fn apply_notification_with_manifest(
                     item,
                     CodexItemLifecycle::Completed,
                     remote_extension_manifest,
+                    workspace_root,
                 ) {
                     chunks.push(chunk);
                 } else if let Some(chunk) = sync_completed_text_item(text_items, item) {
@@ -421,6 +430,7 @@ pub(super) fn backfill_completed_turn(
     client: &CodexClient,
     state: &mut CodexRuntimeState,
     remote_extension_manifest: &RemoteExtensionManifest,
+    workspace_root: Option<&Path>,
     chunks: &mut Vec<CodexOutputChunk>,
     completions: &mut Vec<CodexAssistantCompletion>,
     notices: &mut Vec<String>,
@@ -469,6 +479,7 @@ pub(super) fn backfill_completed_turn(
                 item,
                 CodexItemLifecycle::Completed,
                 remote_extension_manifest,
+                workspace_root,
             ) {
                 chunks.push(chunk);
             } else if let Some(chunk) = sync_completed_text_item(&mut state.text_items, item) {

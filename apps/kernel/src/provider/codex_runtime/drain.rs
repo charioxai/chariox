@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::DaemonError;
@@ -96,6 +97,7 @@ pub fn drain_codex_events(
             &mut terminal_failure,
             &mut resolved_usage,
             run.remote_extension_manifest(),
+            run.working_directory().map(PathBuf::as_path),
         );
         // MP-08/MP-10/MP-11: a fresh utility owns one turn, with no successor.
         // Its exact terminal packet settles it before any later socket close
@@ -150,6 +152,7 @@ pub fn drain_codex_events(
             &client,
             state,
             run.remote_extension_manifest(),
+            run.working_directory().map(PathBuf::as_path),
             &mut chunks,
             &mut completions,
             &mut notices,

@@ -248,8 +248,16 @@ pub(in crate::provider::codex_runtime) fn render_codex_tool_transcript_update(
             output: None,
             error: None,
             raw: None,
-            images: None,
-            images_omitted: None,
+            images: state
+                .pictures
+                .as_ref()
+                .map(|pictures| pictures.images.clone())
+                .filter(|images| !images.is_empty()),
+            images_omitted: state
+                .pictures
+                .as_ref()
+                .map(|pictures| pictures.omitted)
+                .filter(|omitted| *omitted > 0),
             placement: None,
             authority: None,
             execution_location: None,
@@ -398,6 +406,7 @@ mod tests {
             output_stream: None,
             progress_messages: Vec::new(),
             last_emitted: None,
+            pictures: None,
         };
         let text = render_codex_tool_transcript_update(&state, &RemoteExtensionManifest::default())
             .expect("a tool update");
