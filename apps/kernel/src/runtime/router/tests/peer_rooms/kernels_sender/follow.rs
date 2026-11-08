@@ -498,3 +498,58 @@ fn a_peer_spawned_on_another_kernel_is_followed_by_its_creator_unless_no_follow(
         unlink(&[&a, &b]);
     });
 }
+
+/// `kernel` follows as asked, then its worker's turn ends and the outcome goes out before the
+/// follow's answer is back on the following kernel.
+fn link_ending_the_turn_before_answering(kernel: &Kernel) {
+    let router = kernel.router.clone();
+    let (room, agent) = (kernel.room.clone(), kernel.agent.id().to_owned());
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                let (room, agent) = (room.clone(), agent.clone());
+                Box::pin(async move {
+                    let follow = matches!(request, RelayPeerRequest::SubscribePeerAgent { .. });
+                    let answer = router.relay_peer_agent(&from, &owner, request).await;
+                    if follow {
+                        router
+                            .runtime_state
+                            .end_agent_turn_for_tests(&room, &agent, false)
+                            .await?;
+                        router.runtime_state.deliver_peer_agent_outcomes().await?;
+                    }
+                    answer
+                })
+            },
+        ),
+    );
+}
+
+#[test]
+fn a_turn_end_that_overtakes_the_follow_answer_still_reaches_the_follower_once() {
+    run_peer_test("peer-follow-overtaken", || async {
+        let (a, b) = two_kernels(
+            "peer-follow-overtaken",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        link_ending_the_turn_before_answering(&b);
+        let task = with_task(&a).await;
+        a.subscribe(
+            &task,
+            serde_json::json!({"source_id": "worker", "room": b.room, "kernel": b.name}),
+        )
+        .await
+        .expect("A follows a peer on another kernel");
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].source_id, source_of(&b));
+        assert_eq!(events[0].payload["event"], "turn_ended");
+        assert!(b.outbox_drained().await);
+        assert_eq!(a.peer_events().await.len(), 1);
+        unlink(&[&a, &b]);
+    });
+}

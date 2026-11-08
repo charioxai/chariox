@@ -151,7 +151,10 @@ impl KernelRuntimeState {
             .session_store
             .get_session(&task.room_id)
             .is_ok_and(|room| room.owner_user_id() == owner);
-        if !registration.peer || registration.source_id != source_id || !room_owned {
+        // A follow whose answer is still on its way names only the kernel it follows.
+        let followed_kernel = peer_source_stamp(&registration.source_id)
+            .is_some_and(|followed| followed.kernel_id == kernel);
+        if !registration.peer || !followed_kernel || !room_owned {
             return Ok(ack(PeerOutcomeAck::UnknownSubscription));
         }
         if store.agent_source_occurred(&task.room_id, &source_id, &occurrence_id)? {
@@ -195,7 +198,21 @@ impl KernelRuntimeState {
         let subscription = format!("subscription-{:032x}", rand::random::<u128>());
         // Only occurrences after this follow starts reach it.
         let source_cursor = self.owned.durable_state_store.agent_source_cursor()?;
-        let target = self
+        // The follow is held here before the other kernel knows of it, so a turn that ends
+        // before its answer arrives is recorded and reaches the follow once its source is known.
+        let pending = PeerAgentStamp {
+            kernel_id: kernel.into(),
+            room_id: room.trim().into(),
+            agent_id: subscription.clone(),
+        };
+        self.register_peer_follow(
+            task_id,
+            prompt_id,
+            subscription.clone(),
+            &pending,
+            source_cursor,
+        )?;
+        let followed = self
             .follow_peer_agent(
                 &sender,
                 kernel,
@@ -205,7 +222,20 @@ impl KernelRuntimeState {
                 },
                 subscription.clone(),
             )
-            .await?;
+            .await;
+        let target = match followed {
+            Ok(target) => target,
+            Err(error) => {
+                self.owned
+                    .durable_state_store
+                    .agent_lifecycle(Operation::Unsubscribe {
+                        task: task_id.into(),
+                        prompt: prompt_id.into(),
+                        registration: subscription,
+                    })?;
+                return Err(error);
+            }
+        };
         let source = peer_source(&target);
         let registered = self.register_peer_follow(
             task_id,
