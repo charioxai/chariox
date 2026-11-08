@@ -57,6 +57,46 @@ impl KernelRuntimeState {
     }
 }
 
+impl KernelRuntimeState {
+    /// The turn that spawned `peer` in another room follows it: each of the peer's turn ends
+    /// reaches the spawner as a peer event while this task waits on the returned registration.
+    pub(crate) fn follow_spawned_peer(
+        &self,
+        spawner: &crate::agent::AgentInstance,
+        peer: &crate::agent::AgentInstance,
+    ) -> Result<String, DaemonError> {
+        use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Registration};
+        let session = self.owned.session_store.get_session(spawner.session_id())?;
+        let prompt = session
+            .active_prompt_for_agent(spawner.id())
+            .ok_or_else(|| ledger::error("no live creating turn"))?;
+        let task = self
+            .owned
+            .durable_state_store
+            .agent_tasks(Some(spawner.session_id()), Some(spawner.id()))?
+            .into_iter()
+            .find(|task| task.prompt_id == prompt.id())
+            .ok_or_else(|| ledger::error("no live creating turn"))?;
+        let id = format!("follow-{}", peer.id());
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Subscribe {
+                task: task.task_id.clone(),
+                prompt: prompt.id().into(),
+                registration: Registration {
+                    id: id.clone(),
+                    task_id: task.task_id,
+                    source_id: peer.id().into(),
+                    obligation_id: None,
+                    source_cursor: 0,
+                    live: true,
+                    peer: true,
+                },
+            })?;
+        Ok(id)
+    }
+}
+
 /// What a peer does to another agent's running turn.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PeerControl {

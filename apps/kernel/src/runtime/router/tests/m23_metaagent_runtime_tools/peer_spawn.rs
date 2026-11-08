@@ -243,3 +243,88 @@ fn the_spawn_usage_documents_the_room_option() {
             .contains("[--room <room> [--no-follow]]")
     );
 }
+
+#[test]
+fn a_peer_spawn_follows_the_peer_unless_told_not_to() {
+    run_large_stack_async_test("peer-spawn-follow", follows);
+}
+
+async fn follows() {
+    let world = world("peer-spawn-follow").await;
+    let other = world.other_room.clone();
+    let followed = spawn_into(&world, "a", &other, "").await;
+    assert!(followed.ok, "{followed:?}");
+    let peer = followed.payload["response"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let registration = followed.payload["follow_registration_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the spawner follows its peer: {followed:?}"))
+        .to_owned();
+    let runtime = world.router.runtime_state();
+    let store = runtime.durable_state_store();
+    let registrations = store
+        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
+        .unwrap()
+        .into_iter()
+        .flat_map(|task| store.agent_registrations(&task.task_id).unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        registrations
+            .iter()
+            .any(|r| r.id == registration && r.source_id == peer && r.peer && r.live),
+        "{registrations:?}"
+    );
+
+    let unfollowed = room_command(
+        &world,
+        "a",
+        &format!("agent spawn py --provider dev-stub --room {other} --no-follow"),
+    )
+    .await;
+    assert!(unfollowed.ok, "{unfollowed:?}");
+    assert!(
+        unfollowed.payload["follow_registration_id"].is_null(),
+        "{unfollowed:?}"
+    );
+    let quiet = unfollowed.payload["response"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(!store
+        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
+        .unwrap()
+        .into_iter()
+        .flat_map(|task| store.agent_registrations(&task.task_id).unwrap())
+        .any(|r| r.source_id == quiet));
+
+    // Following is also open later, by the peer's address in its room.
+    let task = store
+        .agent_tasks(Some(&world.room), Some(&world.ids["a"]))
+        .unwrap()
+        .pop()
+        .unwrap();
+    let subscribe = |source: &str| {
+        world.router.dispatch_authenticated_runtime_tool_call(
+            &world.tokens["a"],
+            "chariox.events.subscribe",
+            serde_json::json!({"task_id": task.task_id, "origin_prompt_id": task.prompt_id,
+                "source_id": source, "room": other}),
+        )
+    };
+    let subscribed = subscribe("py").await.unwrap();
+    assert!(subscribed.ok, "{subscribed:?}");
+    assert_eq!(subscribed.payload["source_id"], quiet.as_str());
+    let id = subscribed.payload["registration_id"].as_str().unwrap();
+    assert!(store
+        .agent_registrations(&task.task_id)
+        .unwrap()
+        .iter()
+        .any(|r| r.id == id && r.source_id == quiet && r.peer));
+    let refused = format!("{:?}", subscribe("nobody").await);
+    assert!(
+        refused.contains("agent is unavailable in that room"),
+        "{refused}"
+    );
+}
