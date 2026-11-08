@@ -20,7 +20,7 @@ pub(super) fn block_undeliverable_waits(
              AND json_extract(blocked.payload,'$.state')='blocked'
              AND json_extract(wake.payload,'$.state')='pending'
              AND json_extract(wake.payload,'$.kind') IN
-                 ('deadline_reached','wait_recheck','source_lost','source_completed')
+                 ('deadline_reached','wait_recheck','source_lost','source_completed','peer_event')
              AND (json_extract(wake.payload,'$.payload.task_id')=?3 OR
                  EXISTS(SELECT 1 FROM json_each(json_extract(wake.payload,'$.payload.task_ids'))
                         WHERE value=?3))

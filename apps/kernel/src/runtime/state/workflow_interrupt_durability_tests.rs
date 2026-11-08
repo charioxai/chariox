@@ -694,6 +694,7 @@ async fn workflow_wait_cancellation(cancel_creator: bool) {
                     obligation_id: None,
                     source_cursor: 0,
                     live: true,
+                    peer: false,
                 },
             })
             .unwrap();

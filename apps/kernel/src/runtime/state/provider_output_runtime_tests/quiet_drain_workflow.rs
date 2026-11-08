@@ -1477,6 +1477,7 @@ fn yield_on_helper(
                 obligation_id: Some("helper".into()),
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         })
         .unwrap();

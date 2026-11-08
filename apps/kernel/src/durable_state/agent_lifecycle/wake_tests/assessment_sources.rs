@@ -100,6 +100,7 @@ fn a12_assessment_exact_inactive_id_cannot_rebind_to_a_live_sibling() {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         });
     }

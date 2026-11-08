@@ -102,6 +102,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                         obligation_id: Some(id),
                         source_cursor: 0,
                         live: true,
+                        peer: false,
                     };
                     tx.execute(
                         "INSERT INTO agent_registrations VALUES(?1,?2,?3)",

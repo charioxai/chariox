@@ -38,6 +38,7 @@ async fn a12_assessment_exact_inactive_id_cannot_cross_the_protected_boundary() 
                     obligation_id: None,
                     source_cursor: 0,
                     live: true,
+                    peer: false,
                 },
             })
             .unwrap();
@@ -143,6 +144,7 @@ async fn a12_assessment_unique_live_prefix_crosses_the_protected_boundary() {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         },
         Operation::Settle {

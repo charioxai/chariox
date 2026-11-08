@@ -88,6 +88,7 @@ impl Fixture {
                 obligation_id: Some("obligation".into()),
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         });
     }
@@ -573,6 +574,7 @@ fn a02_source_occurrence_preceding_subscription_is_recovered() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     assert_eq!(
@@ -744,6 +746,7 @@ fn a02_named_wake_keeps_independent_waits_separate() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     f.apply(Operation::Yield {
@@ -1027,6 +1030,7 @@ fn a02_one_source_occurrence_reaches_multiple_tasks_without_conflict() {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         });
     }
@@ -1145,6 +1149,7 @@ fn a02_corrupt_source_is_quarantined_without_poisoning_other_tasks() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     let db = Connection::open(f.root.join("state.sqlite")).unwrap();
@@ -2592,6 +2597,7 @@ fn a02_security_f1_full_recipient_cannot_abort_source_outcome() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     security_fill_inbox(&f, "parent", "pending");
@@ -2670,6 +2676,7 @@ fn a02_security_f1_done_task_closes_registrations() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     f.settle("p", true);
@@ -3432,6 +3439,7 @@ fn a02_existing_child_subscription_uses_the_submitted_task_not_prior_agent_resul
                 obligation_id: Some("message".into()),
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         });
         let reg = f.store.agent_registrations("p").unwrap().remove(0);
@@ -3512,6 +3520,7 @@ fn a02_child_subscription_prefers_unresolved_completion_to_delivered_message() {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         });
         let reg = f

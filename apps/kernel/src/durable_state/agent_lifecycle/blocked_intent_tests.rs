@@ -144,6 +144,7 @@ fn restart_failure_retirement_keeps_owned_work_and_requires_current_revision() {
                         obligation_id: None,
                         source_cursor: 0,
                         live: true,
+                        peer: false,
                     },
                 });
             }

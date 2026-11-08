@@ -119,6 +119,7 @@ fn subscribe(runtime: &KernelRuntimeState, task: &str, id: &str) {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         })
         .expect("subscription should register");

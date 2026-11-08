@@ -388,6 +388,7 @@ mod tests {
                     obligation_id: Some("helper".into()),
                     source_cursor: 0,
                     live: true,
+                    peer: false,
                 },
             })
             .unwrap();

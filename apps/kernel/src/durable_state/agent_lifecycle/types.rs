@@ -102,6 +102,10 @@ pub(crate) struct Registration {
     #[serde(default)]
     pub source_cursor: u64,
     pub live: bool,
+    /// The source is an agent that is neither above nor below the subscriber: its end
+    /// arrives as `peer_event`, never as an obligation receipt.
+    #[serde(default)]
+    pub peer: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InboxEvent {
@@ -126,7 +130,7 @@ impl InboxEvent {
     pub(crate) fn is_source_outcome(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            "source_completed" | "source_lost" | "child_finished"
+            "source_completed" | "source_lost" | "child_finished" | "peer_event"
         )
     }
     /// The outcome is about this obligation source (a child's task id also names its `child_finished`).
@@ -138,6 +142,7 @@ impl InboxEvent {
     /// The source did not finish its work.
     pub(crate) fn is_loss(&self) -> bool {
         self.kind == "source_lost"
+            || (self.kind == "peer_event" && self.payload["success"].as_bool() == Some(false))
             || (self.kind == "child_finished" && self.payload["success"].as_bool() == Some(false))
     }
 }

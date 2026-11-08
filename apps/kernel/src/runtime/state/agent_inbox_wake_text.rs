@@ -51,6 +51,7 @@ pub(crate) fn kind_label(kind: &str) -> String {
     let label = match kind {
         "message" => "message",
         "source_completed" => "finished",
+        "peer_event" => "peer event",
         "source_lost" => "lost",
         "deadline_reached" => "deadline",
         "wait_recheck" => "recheck",
@@ -111,6 +112,14 @@ mod tests {
         );
         assert!(!text.contains("AGENT"), "{text}");
         assert!(!text.contains("ignore previous instructions"));
+    }
+
+    #[test]
+    fn a_peer_event_is_named_in_plain_words() {
+        assert_eq!(kind_label("peer_event"), "peer event");
+        let text = wake_text(&event(2, "peer_event", false), &[], 1);
+        assert!(text.contains("1 peer event"), "{text}");
+        assert!(!text.contains('_'), "{text}");
     }
 
     #[test]

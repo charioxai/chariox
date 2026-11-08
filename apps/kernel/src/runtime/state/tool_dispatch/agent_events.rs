@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: authenticated source/task admission.
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome, Registration};
+use crate::runtime::state::agent_inbox_sender::SenderRelation;
 impl KernelRuntimeState {
     pub(super) async fn dispatch_agent_event_tool(
         &self,
@@ -153,12 +154,25 @@ impl KernelRuntimeState {
                     .ok_or_else(|| ledger::error("source_id required"))?;
                 let agents = self.session_agents(room);
                 let delegate = agents.iter().any(|a| a.id() == source && a.id() != actor);
-                let peer_task = self
-                    .owned
-                    .durable_state_store
-                    .agent_tasks(Some(room), None)?
+                let room_tasks = self.owned.durable_state_store.agent_tasks(Some(room), None)?;
+                let peer_task = room_tasks
                     .iter()
                     .any(|t| t.task_id == source && t.agent_id != actor);
+                let peer = {
+                    let followed = room_tasks
+                        .iter()
+                        .find(|t| t.task_id == source)
+                        .map_or(source, |t| t.agent_id.as_str());
+                    match (
+                        agents.iter().find(|a| a.id() == actor),
+                        agents.iter().find(|a| a.id() == followed),
+                    ) {
+                        (Some(me), Some(other)) if other.id() != actor => {
+                            SenderRelation::of(me, Some(other), &agents) == SenderRelation::Peer
+                        }
+                        _ => false,
+                    }
+                };
                 let workflow = session.workflow_runs().iter().any(|w| {
                     w.id() == source
                         && !matches!(
@@ -190,6 +204,7 @@ impl KernelRuntimeState {
                             obligation_id: obligation,
                             source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
                             live: true,
+                            peer,
                         },
                     })?;
                 serde_json::json!({"registration_id":id})

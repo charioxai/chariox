@@ -77,6 +77,7 @@ fn delegator_waiting_on(
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         })
         .unwrap();
