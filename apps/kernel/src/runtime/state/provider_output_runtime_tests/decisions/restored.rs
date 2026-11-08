@@ -1,5 +1,6 @@
 //! A sub-agent's question that does not block its turn (`request_popup` wait:false) is a wake
-//! source: a kernel restart restores it. Its holder is checked again then, as on any hand-on.
+//! source: a kernel restart restores it with the holder its last hand-on stored; a question
+//! never handed on is handed on at raise again.
 use super::reparent::cards;
 use super::*;
 use crate::durable_state::agent_lifecycle::{AgentTaskExecution, AgentWake, ExecutionState};
@@ -220,4 +221,39 @@ async fn a_question_the_user_holds_stays_with_the_user_across_a_restart() {
             "no agent is told of a decision the user holds"
         );
     }
+}
+
+/// A question stored by a kernel that predates the stored holder has no holder row: it is
+/// handed on at raise as before.
+#[tokio::test]
+async fn a_question_without_a_stored_holder_is_handed_on_at_raise() {
+    let t = tree(
+        "decision-restored-unstored",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.begin_task(&t.g);
+    t.begin_task(&t.p);
+    let wake = t.ask_without_waiting(&t.c, "ask-unstored");
+    assert_eq!(t.holder("ask-unstored"), DecisionHolder::Agent(t.p.clone()));
+    let store = &t.runtime.owned.durable_state_store;
+    assert!(store.decision_holder("ask-unstored").unwrap().is_some());
+    rusqlite::Connection::open(store.path())
+        .unwrap()
+        .execute_batch("DROP TABLE decision_holders;")
+        .unwrap();
+    let upgraded = crate::durable_state::DurableKernelStateStore::open(store.path().to_path_buf())
+        .expect("a store without the holder table opens");
+    assert_eq!(upgraded.decision_holder("ask-unstored").unwrap(), None);
+    drop(upgraded);
+
+    t.restart_with(&wake);
+
+    assert_eq!(t.holder("ask-unstored"), DecisionHolder::Agent(t.p.clone()));
+    assert_eq!(
+        t.decision_events(&t.p).len(),
+        1,
+        "the same holder is told with the same event"
+    );
 }

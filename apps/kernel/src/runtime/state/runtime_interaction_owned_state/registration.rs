@@ -387,6 +387,13 @@ impl KernelRuntimeOwnedState {
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
         pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+        // Registered again after a restart, a question keeps the holder it was handed to.
+        if let Some((holder, tenure)) =
+            self.restored_decision_holder(&session, &pending, &interaction)?
+        {
+            pending.holder = holder;
+            pending.holder_tenure = tenure;
+        }
         // The user sees a sub-agent's decision in its top parent's panel, not in its own.
         let interaction = if pending.holder == super::super::DecisionHolder::User {
             let shown_in = self.decision_shown_in(session_id, &interaction);

@@ -367,9 +367,7 @@ impl KernelRuntimeOwnedState {
             };
             let holder = self.decision_holder_above(&session, &pending, &interaction, agent);
             let old_tenure = pending.holder_tenure;
-            if let Some(entry) = self.pending_interactions.write().get_mut(&id) {
-                entry.hand_to(holder.clone());
-            }
+            self.hand_decision_to(session_id, &id, &holder)?;
             match &holder {
                 DecisionHolder::User => {
                     let shown = self.decision_shown_in(session_id, &interaction);
@@ -452,14 +450,9 @@ impl KernelRuntimeOwnedState {
                 DecisionHolder::Agent(holder) if may_still_hold(&holder) => {}
                 DecisionHolder::Agent(holder) => {
                     withdraw.push((holder, pending.holder_tenure, id.clone()));
-                    pending.hand_to(self.decision_holder_at_raise(
-                        &session,
-                        &pending,
-                        &interaction,
-                    ));
-                    if let Some(entry) = self.pending_interactions.write().get_mut(&id) {
-                        entry.hand_to(pending.holder.clone());
-                    }
+                    let holder = self.decision_holder_at_raise(&session, &pending, &interaction);
+                    self.hand_decision_to(session_id, &id, &holder)?;
+                    pending.hand_to(holder);
                     match pending.holder {
                         DecisionHolder::Agent(_) => announce.push(id),
                         DecisionHolder::User => publish.push((interaction, pending)),
@@ -587,6 +580,79 @@ impl KernelRuntimeOwnedState {
             .is_some_and(|state| matches!(state, ExecutionState::Waiting | ExecutionState::Done))
     }
 
+    /// Hands the decision to `holder` for a new tenure. The holder is stored first: a pass to the
+    /// user leaves no other trace, and a question registered again after a restart keeps it. The
+    /// caller holds the interaction lock, so the tenure cannot change in between.
+    fn hand_decision_to(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        holder: &DecisionHolder,
+    ) -> Result<(), DaemonError> {
+        let Some(tenure) = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .map(|pending| pending.holder_tenure + 1)
+        else {
+            return Ok(());
+        };
+        self.durable_state_store.record_decision_holder(
+            &crate::durable_state::StoredDecisionHolder {
+                room_id: session_id.to_owned(),
+                interaction_id: interaction_id.to_owned(),
+                holder_agent_id: match holder {
+                    DecisionHolder::User => None,
+                    DecisionHolder::Agent(agent) => Some(agent.clone()),
+                },
+                tenure,
+            },
+        )?;
+        if let Some(entry) = self.pending_interactions.write().get_mut(interaction_id) {
+            entry.hand_to(holder.clone());
+        }
+        Ok(())
+    }
+
+    /// The holder and tenure a question that does not block its turn had before a restart.
+    /// `None` when it was never handed on (or was stored by a kernel that predates the stored
+    /// holder), or when the stored agent can no longer hold it: it is then handed on at raise.
+    pub(super) fn restored_decision_holder(
+        &self,
+        session: &crate::session::RuntimeSession,
+        pending: &PendingInteraction,
+        interaction: &crate::session::RuntimeInteraction,
+    ) -> Result<Option<(DecisionHolder, u32)>, DaemonError> {
+        if pending.async_task_id.is_none() {
+            return Ok(None);
+        }
+        let Some(stored) = self.durable_state_store.decision_holder(interaction.id())? else {
+            return Ok(None);
+        };
+        if stored.room_id != pending.session_id || stored.tenure == 0 {
+            return Ok(None);
+        }
+        let holder = match stored.holder_agent_id {
+            None => DecisionHolder::User,
+            Some(holder) => {
+                let agents = self.agent_store.get_session_agents(&pending.session_id);
+                let may_still_hold = subject_agent(interaction)
+                    .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
+                    .is_some_and(|asker| {
+                        ancestors(asker, &agents).iter().any(|ancestor| {
+                            ancestor.id() == holder
+                                && self.ancestor_can_hold(session, ancestor, &agents)
+                        })
+                    });
+                if !may_still_hold {
+                    return Ok(None);
+                }
+                DecisionHolder::Agent(holder)
+            }
+        };
+        Ok(Some((holder, stored.tenure)))
+    }
+
     /// A question that does not block its turn is registered, when asked and again after a
     /// restart, with its holder at raise, which may be parked or ended. It goes to the nearest
     /// ancestor of the asker that may hold it and whose turn is not parked or ended, told with
@@ -639,9 +705,7 @@ impl KernelRuntimeOwnedState {
             .map_or(DecisionHolder::User, |ancestor| {
                 DecisionHolder::Agent(ancestor.id().to_owned())
             });
-        if let Some(entry) = self.pending_interactions.write().get_mut(interaction_id) {
-            entry.hand_to(holder.clone());
-        }
+        self.hand_decision_to(session_id, interaction_id, &holder)?;
         if holder != DecisionHolder::User {
             drop(sessions);
             return self
