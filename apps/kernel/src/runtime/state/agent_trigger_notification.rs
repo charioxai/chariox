@@ -215,7 +215,8 @@ impl KernelRuntimeState {
             ));
         }
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = caller != owner || self.room_provider_origin.is_some();
+        let guest = !self.owned.acts_for_owner_in(owner, caller, owner)
+            || self.room_provider_origin.is_some();
         let (local, _, _) = self
             .owned
             .durable_state_store
@@ -281,7 +282,8 @@ impl KernelRuntimeState {
         source_id: &str,
     ) -> Result<ResolvedSource, DaemonError> {
         let home = self.owned.config_projection.snapshot().daemon_id;
-        let guest = caller != owner || self.room_provider_origin.is_some();
+        let guest = !self.owned.acts_for_owner_in(owner, caller, owner)
+            || self.room_provider_origin.is_some();
         let (sources, _, _) = self
             .owned
             .durable_state_store
