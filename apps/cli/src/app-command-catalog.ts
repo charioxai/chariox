@@ -1,4 +1,3 @@
-import { userAppViewsPrototypeEnabled } from "./user-app-views-flag.js"
 /**
  * Every `app` command of the standalone CLI (`chariox app …`) and the TUI
  * (`/app …`): the source of both help texts and of the parity test. A command
@@ -57,10 +56,11 @@ export function cliAppUsage(): string {
 }
 
 /** The `/app` lines of the TUI command help. */
-export function tuiAppHelp(enabled = userAppViewsPrototypeEnabled()): string[] {
+export function tuiAppHelp(): string[] {
   return [...appCommandCatalog
     .filter((entry) => entry.tui)
     .map((entry) => `  /app ${entry.tui}  ${entry.summary}`),
-    ...(enabled ? ["  /app views | view open INSTALLATION | view show VIEW | view close [VIEW]", "  /app view call METHOD \'JSON\' | view approvals | view answer INTERACTION CHOICE"] : []),
+    "  /app views | view open INSTALLATION | view show VIEW | view close [VIEW]",
+    "  /app view call METHOD \'JSON' | view approvals | view answer INTERACTION CHOICE",
   ]
 }

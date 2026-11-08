@@ -6,7 +6,6 @@ import { passkeyPromptsFromEvent } from "./passkey-popup-controller.js"
 import { answerUserDomainInteraction } from "./user-domain-interaction-api.js"
 import { handleAppSlashCommand } from "./app-command-handler.js"
 import { parseSlashCommand } from "./commands.js"
-import { tuiAppHelp } from "./app-command-catalog.js"
 
 const view = { view_id: "v", installation_id: "fixture", generation: "g", origin: "https://app.invalid", browser: {tab_id: "host-tab-1", generation: 3} }
 const outline = { accessibility_nodes: [{ node_ref: "n", role: "textbox", name: "Message", value: "", focused: true }] }
@@ -42,15 +41,13 @@ test("waiting-room App opens without session and shares the kernel browser seam"
   } finally { await h.controller.dispose() }
   assert.deepEqual(h.requests.at(-1),{CloseUserAppView:{view_id:"v"}})
 })
-test("App open uses the kernel browser, flag-off verbs send nothing",async()=>{
+test("App open uses the kernel browser; a --session open stays with the Room",async()=>{
   const h=harness()
   try { assert.equal(await h.controller.handle(["open","fixture"]),true)
     assert.deepEqual(h.requests[0],{OpenUserAppView:{installation_id:"fixture",host:"kernel_browser"}})
     const count=h.requests.length
     assert.equal(await h.controller.handle(["open","fixture","--session","room"]),false)
     assert.equal(h.requests.length,count)
-    await assert.rejects(handleAppSlashCommand({sendAppRequest:async()=>{throw Error("must not send")},appendNotice(){},flashFooter(){}},parseSlashCommand("/app views") as any),/CHARIOX_USER_APP_VIEWS_PROTOTYPE/)
-    assert.equal(tuiAppHelp(true).length,tuiAppHelp(false).length+2)
   } finally {await h.controller.dispose()}
 })
 test("keyboard App input binds the exact owned tab; Escape never closes the instance",async()=>{

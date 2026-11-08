@@ -102,9 +102,6 @@ async function executeAppSlashCommand(
   const args = appSlashArgs(command.raw)
   if (deps.appActions && await deps.appActions.handle(args)) return
   if (deps.userAppViews && await deps.userAppViews.handle(args)) return
-  if (args[0] === "view" || args[0] === "views") {
-    throw new Error("Enable CHARIOX_USER_APP_VIEWS_PROTOTYPE=1 to use the App text prototype")
-  }
   if (command.args[0] === "host") {
     const [, action, explicitOperation, ...extra] = tokenizeShellLine(command.raw.replace(/^\/app(?:\s|$)/, ""))
     if (action !== "accept" || extra.length) throw new Error("usage: /app host accept [OPERATION]")
