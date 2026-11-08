@@ -20,6 +20,7 @@ struct LeasedTree {
     worker: crate::config::DaemonConfig,
     home_public_key: String,
     room: String,
+    attachment: String,
     low: String,
     high: String,
     child: String,
@@ -54,6 +55,15 @@ fn lease(app: &crate::app::DaemonApp, agent: &str) {
 }
 
 async fn leased_tree(child_mode: Mode, child_level: Level) -> LeasedTree {
+    leased_tree_under(Some((Mode::Build, Level::Yolo)), child_mode, child_level).await
+}
+
+/// `high` follows the room default when it has no settings of its own.
+async fn leased_tree_under(
+    high_settings: Option<(Mode, Level)>,
+    child_mode: Mode,
+    child_level: Level,
+) -> LeasedTree {
     let mut config = crate::config::DaemonConfig::for_tests();
     config.relay_url = Some(RELAY_URL.to_string());
     config.relay_token = Some("relay-token".to_string());
@@ -88,11 +98,25 @@ async fn leased_tree(child_mode: Mode, child_level: Level) -> LeasedTree {
     let child = spawn(&mut app, "child", Some(&high));
     let grandchild = spawn(&mut app, "grandchild", Some(&child));
     limit(&app, &low, Mode::Plan, Level::Required);
-    limit(&app, &high, Mode::Build, Level::Yolo);
+    if let Some((mode, level)) = high_settings {
+        limit(&app, &high, mode, level);
+    }
     limit(&app, &child, child_mode, child_level);
     limit(&app, &grandchild, Mode::Build, Level::Yolo);
+    // The spawning turns end, so the room can raise `high` again.
+    app.complete_active_prompt(&room, &high, None).unwrap();
+    app.complete_active_prompt(&room, &child, None).unwrap();
     lease(&app, &child);
     lease(&app, &grandchild);
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &room,
+            "leased-limits-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .unwrap()
+        .id()
+        .to_string();
     let relay_state = app.relay_client_state();
     let app = Arc::new(Mutex::new(app));
     let runtime =
@@ -111,6 +135,7 @@ async fn leased_tree(child_mode: Mode, child_level: Level) -> LeasedTree {
         worker,
         home_public_key,
         room,
+        attachment,
         low,
         high,
         child,
@@ -129,62 +154,157 @@ impl LeasedTree {
                 agent_id: self.child.clone(),
                 parent_agent_id: Some(parent.to_string()),
             };
-            async move { runtime.set_agent_parent(USER, request).await }
+            async move { runtime.set_agent_parent(USER, request).await.map(drop) }
         });
+        self.answer_worker(placement).await
+    }
+
+    /// Sets `agent`'s own mode and level through UpdateAgentConfig while acting as the worker.
+    async fn set_settings(
+        &mut self,
+        agent: &str,
+        mode: Mode,
+        level: Level,
+    ) -> BTreeMap<String, (Mode, Level)> {
+        let update = self.spawn_settings(agent, mode, level);
+        self.answer_worker(update).await
+    }
+
+    fn spawn_settings(
+        &self,
+        agent: &str,
+        mode: Mode,
+        level: Level,
+    ) -> tokio::task::JoinHandle<Result<(), DaemonError>> {
+        tokio::spawn({
+            let (runtime, room, agent) =
+                (self.runtime.clone(), self.room.clone(), agent.to_owned());
+            async move {
+                runtime
+                    .update_agent_config(
+                        &room,
+                        &agent,
+                        USER,
+                        Some(Some(mode)),
+                        Some(Some(level)),
+                        None,
+                        None,
+                    )
+                    .await
+                    .map(drop)
+            }
+        })
+    }
+
+    /// Sets the room default mode and level through UpdateSessionConfig while acting as the worker.
+    async fn set_room_default(
+        &mut self,
+        mode: Mode,
+        level: Level,
+    ) -> BTreeMap<String, (Mode, Level)> {
+        let update = tokio::spawn({
+            let (runtime, room, attachment) = (
+                self.runtime.clone(),
+                self.room.clone(),
+                self.attachment.clone(),
+            );
+            let values = [
+                ("agents.mode".to_string(), mode.as_str().to_string()),
+                ("agents.permissions".to_string(), level.as_str().to_string()),
+            ]
+            .into();
+            async move {
+                runtime
+                    .update_session_config(&room, &attachment, values, false)
+                    .await
+                    .map(drop)
+            }
+        });
+        self.answer_worker(update).await
+    }
+
+    /// Answers every config update the worker gets until `task` ends, and returns what the
+    /// worker was last told per leased agent.
+    async fn answer_worker(
+        &mut self,
+        mut task: tokio::task::JoinHandle<Result<(), DaemonError>>,
+    ) -> BTreeMap<String, (Mode, Level)> {
         let mut told = BTreeMap::new();
-        while told.len() < 2 {
-            let envelope = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                self.priority_rx.recv(),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                panic!("the worker must be told the moved subtree's limits; it was told {told:?}")
-            })
-            .unwrap();
-            let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
-                request_id,
-                target,
-                encrypted_request,
-            } = envelope
-            else {
-                panic!("expected a peer request to the worker");
-            };
-            assert_eq!(target.daemon_id.as_deref(), Some(WORKER_ID));
-            let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key(
-                &self.worker.relay_private_key,
-                &encrypted_request,
-            )
-            .unwrap()
-            .plaintext;
-            let RelayPeerRequest::UpdateLeasedAgentConfig {
-                leased_agent_id,
-                execution_mode,
-                permission_level,
-            } = serde_json::from_slice(&plaintext).unwrap()
-            else {
-                panic!("expected a leased agent config update");
-            };
-            let response = RelayPeerResponse::LeasedAgentConfigUpdated {
-                leased_agent: leased_agent(&leased_agent_id, execution_mode, permission_level),
-            };
-            let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
-                &self.worker.relay_private_key,
-                &self.home_public_key,
-                &serde_json::to_vec(&response).unwrap(),
-            )
-            .unwrap();
-            crate::transport::relay_client::resolve_pending_peer_response_for_test(
-                &self.relay_state,
-                request_id,
-                WORKER_ID.to_string(),
-                encrypted,
-            )
-            .await;
-            told.insert(leased_agent_id, (execution_mode, permission_level));
+        loop {
+            tokio::select! {
+                result = &mut task => {
+                    result.unwrap().unwrap();
+                    return told;
+                }
+                Some(envelope) = self.priority_rx.recv() => {
+                    let request = self.read_request(envelope);
+                    told.insert(request.1.clone(), (request.2, request.3));
+                    self.answer(request).await;
+                }
+            }
         }
-        placement.await.unwrap().unwrap();
-        told
+    }
+
+    /// The next config update the worker gets, unanswered.
+    async fn next_request(&mut self) -> WorkerRequest {
+        let envelope =
+            tokio::time::timeout(std::time::Duration::from_secs(2), self.priority_rx.recv())
+                .await
+                .expect("the worker must be told the leased team's limits")
+                .unwrap();
+        self.read_request(envelope)
+    }
+
+    fn read_request(&self, envelope: chariox_relay::protocol::RelayEnvelope) -> WorkerRequest {
+        let chariox_relay::protocol::RelayEnvelope::DaemonPeerRequest {
+            request_id,
+            target,
+            encrypted_request,
+        } = envelope
+        else {
+            panic!("expected a peer request to the worker");
+        };
+        assert_eq!(target.daemon_id.as_deref(), Some(WORKER_ID));
+        let plaintext = crate::transport::relay_crypto::decrypt_payload_for_private_key(
+            &self.worker.relay_private_key,
+            &encrypted_request,
+        )
+        .unwrap()
+        .plaintext;
+        let RelayPeerRequest::UpdateLeasedAgentConfig {
+            leased_agent_id,
+            execution_mode,
+            permission_level,
+        } = serde_json::from_slice(&plaintext).unwrap()
+        else {
+            panic!("expected a leased agent config update");
+        };
+        (
+            request_id,
+            leased_agent_id,
+            execution_mode,
+            permission_level,
+        )
+    }
+
+    /// The worker applies `request`.
+    async fn answer(&self, (request_id, leased_agent_id, mode, level): WorkerRequest) {
+        let response = RelayPeerResponse::LeasedAgentConfigUpdated {
+            leased_agent: leased_agent(&leased_agent_id, mode, level),
+        };
+        let encrypted = crate::transport::relay_crypto::encrypt_payload_for_peer(
+            &self.worker.relay_private_key,
+            &self.home_public_key,
+            &serde_json::to_vec(&response).unwrap(),
+        )
+        .unwrap();
+        crate::transport::relay_client::resolve_pending_peer_response_for_test(
+            &self.relay_state,
+            request_id,
+            WORKER_ID.to_string(),
+            encrypted,
+        )
+        .await;
     }
 
     fn told(&self, plan: [(&str, Mode, Level); 2]) -> BTreeMap<String, (Mode, Level)> {
@@ -193,6 +313,9 @@ impl LeasedTree {
             .collect()
     }
 }
+
+/// Request id, leased agent id, mode and level of one config update to the worker.
+type WorkerRequest = (String, String, Mode, Level);
 
 fn leased_agent(id: &str, mode: Mode, level: Level) -> crate::execution_lease::LeasedAgent {
     crate::execution_lease::LeasedAgent {
@@ -262,5 +385,104 @@ async fn a_higher_root_never_raises_a_leased_agent_above_its_own_settings() {
             (&grandchild, Mode::Plan, Level::Required),
         ]),
         "a Required/Plan agent and the team below it stay at Required/Plan under a Yolo/Build root"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lowering_a_parent_limits_its_leased_team_on_the_worker() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let high = tree.high.clone();
+    let (child, grandchild) = (tree.child.clone(), tree.grandchild.clone());
+    let told = tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Plan, Level::Required),
+            (&grandchild, Mode::Plan, Level::Required),
+        ]),
+        "a Yolo/Build leased team under a parent lowered to Required/Plan must launch at Required/Plan"
+    );
+
+    // Raised again, the team runs at its own settings again.
+    let told = tree.set_settings(&high, Mode::Build, Level::Yolo).await;
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Build, Level::Yolo),
+            (&grandchild, Mode::Build, Level::Yolo),
+        ])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raising_a_parent_never_raises_a_leased_agent_above_its_own_settings() {
+    let mut tree = leased_tree(Mode::Plan, Level::Required).await;
+    let high = tree.high.clone();
+    let (child, grandchild) = (tree.child.clone(), tree.grandchild.clone());
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    let told = tree.set_settings(&high, Mode::Build, Level::Yolo).await;
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Plan, Level::Required),
+            (&grandchild, Mode::Plan, Level::Required),
+        ]),
+        "a Required/Plan agent and the team below it stay at Required/Plan under a raised parent"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lowering_the_room_default_limits_a_leased_team_whose_parent_follows_it() {
+    let mut tree = leased_tree_under(None, Mode::Build, Level::Yolo).await;
+    let (child, grandchild) = (tree.child.clone(), tree.grandchild.clone());
+    let told = tree.set_room_default(Mode::Plan, Level::Required).await;
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Plan, Level::Required),
+            (&grandchild, Mode::Plan, Level::Required),
+        ]),
+        "a leased team under a parent on the lowered room default must launch at Required/Plan"
+    );
+
+    let told = tree.set_room_default(Mode::Build, Level::Yolo).await;
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Build, Level::Yolo),
+            (&grandchild, Mode::Build, Level::Yolo),
+        ])
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_worker_told_a_limit_that_changed_meanwhile_is_told_the_current_one() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let high = tree.high.clone();
+    let (child, grandchild) = (tree.child.clone(), tree.grandchild.clone());
+    let lowering = tree.spawn_settings(&high, Mode::Plan, Level::Required);
+    let first = tree.next_request().await;
+    // `high` is raised again while the worker still applies the lowered limit.
+    tree.runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &high,
+            Some(Some(Mode::Build)),
+            Some(Some(Level::Yolo)),
+            None,
+            None,
+        )
+        .unwrap();
+    let mut told = BTreeMap::from([(first.1.clone(), (first.2, first.3))]);
+    tree.answer(first).await;
+    told.extend(tree.answer_worker(lowering).await);
+    assert_eq!(
+        told,
+        tree.told([
+            (&child, Mode::Build, Level::Yolo),
+            (&grandchild, Mode::Build, Level::Yolo),
+        ]),
+        "the worker must end at what the parent chain allows now, not at a limit computed before"
     );
 }
