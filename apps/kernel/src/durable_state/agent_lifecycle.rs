@@ -535,6 +535,25 @@ impl DurableKernelStateStore {
         self.agent_work_inbox(room, agent, after, None)
     }
 
+    /// Whether this occurrence of `source` already reached the agent's inbox.
+    pub(crate) fn agent_inbox_has_occurrence(
+        &self,
+        room: &str,
+        agent: &str,
+        source: &str,
+        occurrence: &str,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox")?;
+        db.query_row(
+            "SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",
+            params![room, agent, source, occurrence],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|found| found.is_some())
+        .map_err(sql)
+    }
+
     pub(crate) fn agent_work_inbox(
         &self,
         room: &str,

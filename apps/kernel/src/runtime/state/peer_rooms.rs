@@ -145,8 +145,29 @@ impl KernelRuntimeState {
             actor,
             &self.session_agents(actor.session_id()),
         );
+        self.peer_authority_covers(mine, &target_session, target)
+            .map_err(|theirs| {
+                denied(format!(
+                    "{} has more authority than you ({:?} in {} mode, you run {:?} in {} mode); send it a message instead",
+                    target.alias().unwrap_or(target.agent_ref()),
+                    theirs.permission_level,
+                    theirs.mode,
+                    mine.permission_level,
+                    mine.mode,
+                ))
+            })
+    }
+
+    /// The authority rule for a peer's steer or cancel: the caller's level and mode are at least
+    /// the target's. Returns the target's authority when they are not.
+    pub(crate) fn peer_authority_covers(
+        &self,
+        mine: crate::session::EffectiveAgentExecutionConfig,
+        target_session: &crate::session::RuntimeSession,
+        target: &crate::agent::AgentInstance,
+    ) -> Result<(), crate::session::EffectiveAgentExecutionConfig> {
         let theirs = crate::session::effective_agent_execution_config_in_tree(
-            &target_session,
+            target_session,
             target,
             &self.session_agents(target.session_id()),
         );
@@ -154,13 +175,6 @@ impl KernelRuntimeState {
         {
             return Ok(());
         }
-        Err(denied(format!(
-            "{} has more authority than you ({:?} in {} mode, you run {:?} in {} mode); send it a message instead",
-            target.alias().unwrap_or(target.agent_ref()),
-            theirs.permission_level,
-            theirs.mode,
-            mine.permission_level,
-            mine.mode,
-        )))
+        Err(theirs)
     }
 }

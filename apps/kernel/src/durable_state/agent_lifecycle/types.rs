@@ -378,10 +378,8 @@ pub(crate) enum Operation {
         cancelled: bool,
         now: u64,
     },
-    #[allow(
-        dead_code,
-        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
-    )]
+    /// An event without a sender turn on this kernel, such as a message from a peer on
+    /// another kernel; de-duplicated on (room, agent, source, occurrence).
     Occur(InboxEvent),
     Send {
         task: String,
