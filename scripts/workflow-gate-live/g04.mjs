@@ -42,7 +42,7 @@ for(const [verb,allowed] of [['trap',['gate_trapped']],['spin',['gate_fuel_exhau
  const b=await Promise.all([late,soon].map(id=>rig.entry(A,id)));
  C.ok('D7','pending before clock jump',b.every(x=>!isTerminal(x)),{b:b.map(x=>x.disposition+' due '+x.next_due_at_ms+' deadline '+x.deadline_ms)});
  const r0=await nruns();await rig.stop();rig.exited=undefined;
- Object.assign(rig.extraEnv,{LD_PRELOAD:'/root/.chariox/dev/wfgate-r1/shim/clockshim.so',FAKE_CLOCK_OFFSET_S:String(8*86400)});
+ Object.assign(rig.extraEnv,{LD_PRELOAD:R+'/shim/clockshim.so',FAKE_CLOCK_OFFSET_S:String(8*86400)});
  await rig.start();await sleep(4000);
  const a=await Promise.all([late,soon].map(id=>rig.entry(A,id)));
  C.ok('D7','after +8d clock: Expired gate_expired, no run',a.every(x=>x.disposition==='expired'&&x.failure==='gate_expired')&&(await nruns())===r0,{a:a.map(x=>x.disposition+'/'+x.failure),runsBefore:r0,runsAfter:await nruns()});
