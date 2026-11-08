@@ -31,6 +31,7 @@ pub(crate) fn execute_managed_context_outbound_request(
     authorize_source_user(&config, caller_user_id)?;
     match request {
         LocalDaemonRequest::StartManagedContextTransfer(request) => {
+            let request = *request;
             let ticket = match (request.ticket, request.owner_managed) {
                 (Some(ticket), None)
                     if ticket.context_plan.package_binding().destination.is_none() =>
@@ -231,14 +232,14 @@ mod tests {
                     user_id: "owner",
                     session_id: None,
                 },
-                LocalDaemonRequest::StartManagedContextTransfer(
+                LocalDaemonRequest::StartManagedContextTransfer(Box::new(
                     crate::local::StartManagedContextTransferRequest {
                         ticket: None,
                         owner_managed: Some(selection),
                         interactive: true,
                         launch_id: None,
                     },
-                ),
+                )),
             )
             .unwrap_err()
         };

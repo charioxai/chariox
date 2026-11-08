@@ -112,14 +112,14 @@ fn preflight_and_transfer_start_carry_an_optional_launch_key() {
     assert_eq!(request.launch_id.as_deref(), Some("launch-1"));
     assert_eq!(serde_json::to_value(&parsed).unwrap(), start);
 
-    let without = serde_json::to_value(LocalDaemonRequest::StartManagedContextTransfer(
+    let without = serde_json::to_value(LocalDaemonRequest::StartManagedContextTransfer(Box::new(
         StartManagedContextTransferRequest {
             ticket: None,
             owner_managed: None,
             interactive: true,
             launch_id: None,
         },
-    ))
+    )))
     .unwrap();
     assert_eq!(
         without,
