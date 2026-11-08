@@ -177,3 +177,47 @@ async fn a_question_passed_before_a_restart_keeps_its_holder() {
         );
     }
 }
+
+/// The user holds the question after both holders passed it, and the nearest one's turn then
+/// parks. A restart must not hand the user's decision to the other, still working, former holder
+/// with a new event: the user keeps it and no agent is told.
+#[tokio::test]
+async fn a_question_the_user_holds_stays_with_the_user_across_a_restart() {
+    let t = tree(
+        "decision-restored-user",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    t.begin_task(&t.g);
+    t.begin_task(&t.p);
+    let wake = t.ask_without_waiting(&t.c, "ask-user-held");
+    for holder in [&t.p, &t.g] {
+        assert_eq!(
+            t.runtime
+                .pass_child_decision(&t.room, holder, "ask-user-held")
+                .await
+                .unwrap(),
+            ChildDecisionStatus::Passed
+        );
+    }
+    assert_eq!(t.holder("ask-user-held"), DecisionHolder::User);
+    t.end_turn_yielded(&t.p).await;
+    assert_eq!(t.last_task_state(&t.p), ExecutionState::Waiting);
+    assert_eq!(t.last_task_state(&t.g), ExecutionState::Working);
+
+    t.restart_with(&wake);
+
+    assert_eq!(
+        t.holder("ask-user-held"),
+        DecisionHolder::User,
+        "the restart took the user's decision away"
+    );
+    for former in [&t.p, &t.g] {
+        assert_eq!(
+            t.decision_events(former).len(),
+            1,
+            "no agent is told of a decision the user holds"
+        );
+    }
+}
