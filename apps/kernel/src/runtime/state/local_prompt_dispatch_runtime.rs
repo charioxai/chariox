@@ -4299,7 +4299,7 @@ pub(in crate::runtime::state) mod tests {
         assert!(!task.reason.contains("provider_catalog"));
         assert!(!task.reason.contains("provider protocol"));
         assert!(task.reason.contains("Resume"));
-        assert!(!task.reason.contains("No live provider turn"));
+        assert!(!task.reason.contains("Interrupted before it finished"));
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if runtime
