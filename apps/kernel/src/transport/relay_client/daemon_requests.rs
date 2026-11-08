@@ -3,6 +3,8 @@
 use super::request_errors::map_relay_error;
 #[cfg(test)]
 mod app_tests;
+#[cfg(test)]
+mod collaborator_gate_tests;
 mod prepare;
 pub(super) mod request_limits;
 pub(super) use prepare::{prepare_daemon_request, PreparedDaemonRequest};
