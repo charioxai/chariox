@@ -1,6 +1,6 @@
 // MP-08/MP-10/MP-11: bounded timing records must survive batching/shutdown.
 import test from 'node:test';import assert from 'node:assert/strict';
-import {mkdtempSync,readFileSync,existsSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';
+import {mkdtempSync,readFileSync,existsSync,rmSync,statSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import path from 'node:path';
 import {displayTiming,slowMark,roomDisplayTiming,timedHostRequests} from './kernel-browser-timing.mjs';
 test('MP-08/MP-10 native diagnostics batch without losing order or final shutdown records',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'chariox-mp24-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
@@ -14,6 +14,20 @@ test('MP-08/MP-10 native diagnostics batch without losing order or final shutdow
   assert.equal(records.length,603);assert.deepEqual(records.slice(0,3).map(r=>[r.stage,r.duration_ms]),[['capture',1],['convert',1],['encode',2]]);
   assert.deepEqual(records.slice(3).map(r=>r.started_ms),Array.from({length:600},(_,i)=>i));
  }finally{timing.flush();if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(root,{recursive:true,force:true})}
+});
+test('MP-08/MP-10/MP-11 a diagnostic written before the browser root exists never ends the controller',()=>{
+ const parent=mkdtempSync(path.join(tmpdir(),'chariox-vn4-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
+ const root=path.join(parent,'state','kernel-browser','profile-root'),file=path.join(root,'display-timing.jsonl');
+ const timing=displayTiming(root),blocked=displayTiming(path.join(parent,'blocker','below'));
+ try{
+  process.env.CHARIOX_BROWSER_DISPLAY_TIMING='1';
+  timing('early',1,2);timing.flush();
+  assert.deepEqual(readFileSync(file,'utf8').trim().split('\n').map(line=>JSON.parse(line).stage),['early'],'the first record lands in a root that did not exist yet');
+  assert.equal(statSync(root).mode&0o777,0o700,'the root it creates is private like the browser root');
+  writeFileSync(path.join(parent,'blocker'),'a file where a directory is needed');
+  blocked('lost',1,2);blocked.hardware('lost');
+  assert.doesNotThrow(()=>blocked.flush(),'a diagnostic that cannot be written is dropped, not thrown into a timer');
+ }finally{timing.flush();if(old===undefined)delete process.env.CHARIOX_BROWSER_DISPLAY_TIMING;else process.env.CHARIOX_BROWSER_DISPLAY_TIMING=old;rmSync(parent,{recursive:true,force:true})}
 });
 test('MP-08/MP-10 input/frame join records keep finite numbers only',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'chariox-mp24-timing-')),old=process.env.CHARIOX_BROWSER_DISPLAY_TIMING;
