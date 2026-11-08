@@ -100,6 +100,12 @@ fn request_kind(request: &RelayPeerRequest) -> &'static str {
             "unsubscribe_workflow_notifications"
         }
         RelayPeerRequest::DeliverWorkflowNotification { .. } => "deliver_workflow_notification",
+        RelayPeerRequest::PeerAgentMessage { .. } => "peer_agent_message",
+        RelayPeerRequest::PeerAgentCancel { .. } => "peer_agent_cancel",
+        RelayPeerRequest::SubscribePeerAgent { .. } => "subscribe_peer_agent",
+        RelayPeerRequest::UnsubscribePeerAgent { .. } => "unsubscribe_peer_agent",
+        RelayPeerRequest::SpawnRoomPeer { .. } => "spawn_room_peer",
+        RelayPeerRequest::DeliverPeerAgentOutcome { .. } => "deliver_peer_agent_outcome",
         RelayPeerRequest::RoomBrowserController { .. } => "room_browser_controller",
         RelayPeerRequest::OpenRoomSharedDisplay { .. } => "open_room_shared_display_with_audience",
         RelayPeerRequest::RoomSharedDisplay { .. } => "room_shared_display",

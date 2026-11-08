@@ -3,6 +3,10 @@ mod snapshot_wire;
 
 use serde::{Deserialize, Serialize};
 
+pub use super::relay_peer_agents::{
+    PeerAgentAddress, PeerAgentOutcome, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority,
+    PeerFollow, PeerOutcomeAck,
+};
 use crate::agent::GitWorktreePlacement;
 use crate::execution_lease::{ExecutionLease, LeasedAgent, RemoteWorkflowTurnContext};
 use crate::history::{HistoryAttributionConfidence, HistoryEventKind, HistoryEventTurnContext};
@@ -195,7 +199,8 @@ impl std::fmt::Debug for RelayManagedSliceToken {
 /// Peer 437 carries the local998 notification listener contract.
 /// Peer 439 carries local1000: the run finished source kind, event connection selections in the managed-context plan
 /// binding and Vault provider logins in the context package.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 439;
+/// Peer 440 carries peers across kernels of one owner.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 440;
 /// MP-08/MP-10/MP-11: runtime admission requires the integrated agent contract,
 /// independently of a relay's ability to downgrade its binary transport.
 pub const MINIMUM_RELAY_PEER_RUNTIME_VERSION: u32 = RELAY_PEER_PROTOCOL_VERSION;
@@ -860,6 +865,60 @@ pub enum RelayPeerRequest {
         subscription_id: String,
         envelope: crate::local::WorkflowNotificationEnvelope,
     },
+    /// An agent on the sending kernel messages an ordinary agent of a room here; `urgent` steers.
+    PeerAgentMessage {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+        target: PeerAgentAddress,
+        message: String,
+        urgent: bool,
+        reply_requested: bool,
+        caller_authority: PeerCallerAuthority,
+    },
+    PeerAgentCancel {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+        target: PeerAgentAddress,
+        caller_authority: PeerCallerAuthority,
+    },
+    SubscribePeerAgent {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+        target: PeerAgentAddress,
+        subscription_id: String,
+        generation: u64,
+    },
+    UnsubscribePeerAgent {
+        protocol_version: u32,
+        subscription_id: String,
+        generation: u64,
+    },
+    /// A room agent on the sending kernel creates an ordinary agent in a room here.
+    SpawnRoomPeer {
+        protocol_version: u32,
+        request_id: String,
+        sender: PeerAgentStamp,
+        room: String,
+        provider: String,
+        account_profile: Option<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        alias: Option<String>,
+        prompt: Option<String>,
+        execution_mode: Option<crate::provider::AgentExecutionMode>,
+        permission_level: Option<crate::provider::AgentPermissionLevel>,
+        caller_authority: PeerCallerAuthority,
+        follow: Option<PeerFollow>,
+    },
+    /// A followed peer's event, or the reply to a message, back to the kernel that asked.
+    DeliverPeerAgentOutcome {
+        protocol_version: u32,
+        delivery_id: String,
+        outcome: PeerAgentOutcome,
+    },
     RoomBrowserController {
         session_id: String,
         slice_id: String,
@@ -1331,6 +1390,31 @@ pub enum RelayPeerResponse {
     },
     WorkflowNotificationAccepted {
         ack: crate::local::WorkflowNotificationAck,
+    },
+    PeerAgentAccepted {
+        protocol_version: u32,
+        duplicate: bool,
+        target: PeerAgentStamp,
+    },
+    PeerAgentSubscribed {
+        protocol_version: u32,
+        subscription_id: String,
+        generation: u64,
+        target: PeerAgentStamp,
+    },
+    RoomPeerSpawned {
+        protocol_version: u32,
+        duplicate: bool,
+        agent: PeerAgentStamp,
+        alias: String,
+    },
+    PeerAgentOutcomeAck {
+        protocol_version: u32,
+        ack: PeerOutcomeAck,
+    },
+    PeerAgentRefused {
+        protocol_version: u32,
+        refusal: PeerAgentRefusal,
     },
     RoomBrowserController {
         session_id: String,

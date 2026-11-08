@@ -832,7 +832,7 @@ mod tests {
         assert!(matches!(
             ask(VERSION),
             Ok(RelayPeerResponse::WorkflowNotificationSources { protocol_version, .. })
-                if protocol_version == VERSION && protocol_version >= 439
+                if protocol_version == VERSION && protocol_version >= 440
         ));
     }
 

@@ -353,7 +353,8 @@ pub(super) async fn handle_daemon_peer_request(
             | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
             | RelayPeerRequest::DeliverWorkflowNotification { .. }
-    ) || project_environment_request(&request);
+    ) || project_environment_request(&request)
+        || peer_agent_request(&request);
     if same_owner_request {
         // The existing relay projects home-kernel claims to a bound Machine
         // identity for peer requests (the same seam used by execution leases).
@@ -412,6 +413,38 @@ pub(super) async fn handle_daemon_peer_request(
                 )),
             };
         };
+        if peer_agent_request(&request) {
+            // The stamp names the acting agent's kernel; only the authenticated link may fill it.
+            if !peer_agent_stamp_matches(&request, from_daemon_id) {
+                return RelayRequestOutcome {
+                    display_event: None,
+                    encrypted_response: None,
+                    error: Some(relay_error(
+                        "unauthorized",
+                        "peer sender kernel mismatch",
+                        false,
+                    )),
+                };
+            }
+            state.write().await.remember_peer_public_key(
+                stable_peer_daemon_id(from_daemon_id),
+                requester_public_key.clone(),
+            );
+            let response = match router
+                .relay_peer_agent(stable_peer_daemon_id(from_daemon_id), &owner, request)
+                .await
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        display_event: None,
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            };
+            return encrypt_peer_response(&daemon_private_key, &requester_public_key, response);
+        }
         state.write().await.remember_peer_public_key(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
@@ -540,6 +573,12 @@ pub(super) async fn handle_daemon_peer_request(
         | RelayPeerRequest::SubscribeWorkflowNotifications { .. }
         | RelayPeerRequest::UnsubscribeWorkflowNotifications { .. }
         | RelayPeerRequest::DeliverWorkflowNotification { .. }
+        | RelayPeerRequest::PeerAgentMessage { .. }
+        | RelayPeerRequest::PeerAgentCancel { .. }
+        | RelayPeerRequest::SubscribePeerAgent { .. }
+        | RelayPeerRequest::UnsubscribePeerAgent { .. }
+        | RelayPeerRequest::SpawnRoomPeer { .. }
+        | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
         | RelayPeerRequest::ReadProjectEnvironment { .. }
         | RelayPeerRequest::PullProjectEnvironmentSecret { .. }
         | RelayPeerRequest::PullProjectEnvironmentFile { .. }
@@ -2517,6 +2556,37 @@ fn project_environment_setup_request(request: &RelayPeerRequest) -> bool {
             | RelayPeerRequest::GetProjectEnvironmentOperation { .. }
             | RelayPeerRequest::CancelProjectEnvironmentOperation { .. }
     )
+}
+
+fn peer_agent_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::PeerAgentMessage { .. }
+            | RelayPeerRequest::PeerAgentCancel { .. }
+            | RelayPeerRequest::SubscribePeerAgent { .. }
+            | RelayPeerRequest::UnsubscribePeerAgent { .. }
+            | RelayPeerRequest::SpawnRoomPeer { .. }
+            | RelayPeerRequest::DeliverPeerAgentOutcome { .. }
+    )
+}
+
+/// A peer request's stamp must name the kernel the authenticated link comes from.
+fn peer_agent_stamp_matches(request: &RelayPeerRequest, from_daemon_id: &str) -> bool {
+    let stamped = match request {
+        RelayPeerRequest::PeerAgentMessage { sender, .. }
+        | RelayPeerRequest::PeerAgentCancel { sender, .. }
+        | RelayPeerRequest::SubscribePeerAgent { sender, .. }
+        | RelayPeerRequest::SpawnRoomPeer { sender, .. } => sender.kernel_id.as_str(),
+        RelayPeerRequest::DeliverPeerAgentOutcome {
+            outcome:
+                crate::transport::relay_peer::PeerAgentOutcome::Event { source, .. }
+                | crate::transport::relay_peer::PeerAgentOutcome::Reply { source, .. },
+            ..
+        } => source.kernel_id.as_str(),
+        RelayPeerRequest::UnsubscribePeerAgent { .. } => return true,
+        _ => return false,
+    };
+    stamped == stable_peer_daemon_id(from_daemon_id)
 }
 
 fn project_environment_request(request: &RelayPeerRequest) -> bool {
@@ -5592,3 +5662,51 @@ mod tests {
 #[cfg(test)]
 #[path = "owner_context_drill.rs"]
 mod owner_context_drill;
+
+#[cfg(test)]
+mod peer_agent_stamp_tests {
+    use super::*;
+    use crate::transport::relay_peer::{
+        PeerAgentAddress, PeerAgentStamp, PeerCallerAuthority, RELAY_PEER_PROTOCOL_VERSION,
+    };
+
+    fn message_from(kernel: &str) -> RelayPeerRequest {
+        RelayPeerRequest::PeerAgentMessage {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            request_id: "request-1".into(),
+            sender: PeerAgentStamp {
+                kernel_id: kernel.into(),
+                room_id: "room".into(),
+                agent_id: "agent".into(),
+            },
+            target: PeerAgentAddress {
+                room: "room-b".into(),
+                agent: "peer".into(),
+            },
+            message: "hello".into(),
+            urgent: false,
+            reply_requested: false,
+            caller_authority: PeerCallerAuthority {
+                mode: crate::provider::AgentExecutionMode::Build,
+                permission_level: crate::provider::AgentPermissionLevel::Required,
+            },
+        }
+    }
+
+    #[test]
+    fn a_peer_agent_stamp_naming_another_kernel_is_refused() {
+        assert!(peer_agent_request(&message_from("kernel-a")));
+        assert!(peer_agent_stamp_matches(
+            &message_from("kernel-a"),
+            "kernel-a"
+        ));
+        assert!(peer_agent_stamp_matches(
+            &message_from("kernel-a"),
+            "kernel-a:peer-tmp:daemon-peer-tmp-1"
+        ));
+        assert!(!peer_agent_stamp_matches(
+            &message_from("kernel-c"),
+            "kernel-a"
+        ));
+    }
+}

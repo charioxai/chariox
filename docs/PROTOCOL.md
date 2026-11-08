@@ -6954,3 +6954,21 @@ unchanged: the worker gets the folder through the existing `SpawnLeasedAgent.wor
 peer 439 stays, and no client minimum changes. Snapshot:
 `protocol_shapes/remote-agent-binding-worktree-1000.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- remote_agent_binding_worktree lease_dir_after_restart`.
+
+### Peers across kernels of one owner — relay peer 440
+
+MP-08 / MP-10 / MP-11: an agent messages, steers, cancels, follows or spawns an ordinary agent in a
+room of another kernel of the same owner (design: `docs/design/sub-agents.md` 7.5,
+`docs/design/PEERS_P5.md`). Relay peer 440 adds six requests: `peer_agent_message` (`urgent` steers),
+`peer_agent_cancel`, `subscribe_peer_agent`, `unsubscribe_peer_agent`, `spawn_room_peer` and
+`deliver_peer_agent_outcome` (a followed peer's `event` or the `reply` to a message), and five
+responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
+`peer_agent_outcome_ack` and `peer_agent_refused` with a typed `refusal` (`room_unavailable`,
+`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`, `room_full`,
+`attachments_local_only`). Each request is admitted only between kernels of one authenticated
+Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
+`caller_authority` is lowered to the receiving kernel's record of the target room before the
+authority rule (level and mode at least the target's) runs. A message is an inbox `message` event
+with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The local
+protocol and client minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
+Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.
