@@ -1,5 +1,7 @@
 //! Binary pipes owned by the Room terminal authority, never a PTY or history.
 mod buffer;
+#[allow(dead_code)] // reached through the Run on command, which is not wired yet
+pub(crate) mod gateway_placement;
 mod launch;
 mod lease;
 mod placement;
@@ -7,7 +9,7 @@ mod placement;
 mod placement_tests;
 mod process;
 #[cfg(test)]
-mod queue_tests;
+pub(crate) mod queue_tests;
 mod remote;
 #[cfg(test)]
 mod tests;

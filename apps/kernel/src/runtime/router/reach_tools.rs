@@ -4,7 +4,7 @@
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::LocalDaemonRequest;
-use crate::runtime::kernel_gateway::Origin;
+use crate::runtime::kernel_gateway::{forward_with_retry, Origin};
 use crate::runtime::state::is_outside_event_request;
 use crate::runtime::state::reach::{acquires_machine, reach_need, ReachCaller, ReachNeed};
 use crate::transport::runtime_tools::{
@@ -274,7 +274,7 @@ impl CommandRouter {
             return Ok(refused("not_allowed", error.to_string()));
         }
         Ok(
-            match forward_reach(command_id, |id| {
+            match forward_with_retry(command_id, |id| {
                 let (origin, follow_origin, kernel, request) =
                     (&origin, &follow_origin, &kernel, &request);
                 async move {
@@ -386,34 +386,6 @@ impl CommandRouter {
     }
 }
 
-/// MP-08 / MP-09 / MP-10 / MP-11: the tool owns a forwarded command's retry identity.
-async fn forward_reach<F, Fut>(
-    command_id: String,
-    mut forward: F,
-) -> Result<serde_json::Value, crate::runtime::kernel_gateway::GatewayError>
-where
-    F: FnMut(String) -> Fut,
-    Fut: std::future::Future<
-        Output = Result<serde_json::Value, crate::runtime::kernel_gateway::GatewayError>,
-    >,
-{
-    use crate::runtime::kernel_gateway::GatewayError;
-    match forward(command_id.clone()).await {
-        Err(error) if matches!(error.code(), "kernel_request_timeout" | "kernel_connection_lost") => {
-            match forward(command_id).await {
-                Ok(value) => Ok(value),
-                Err(_) => Err(GatewayError::Remote {
-                    name: "remote kernel".into(),
-                    code: "kernel_outcome_unknown".into(),
-                    message: "The kernel may have completed this request, but its reply could not be recovered with the original command ID. Read the state before starting another operation.".into(),
-                    retryable: false,
-                }),
-            }
-        }
-        result => result,
-    }
-}
-
 #[cfg(test)]
 mod retry_tests {
     use super::*;
@@ -436,7 +408,7 @@ mod retry_tests {
         let command =
             crate::runtime::command::KernelCommand::from_local_request("one", None, None, &request);
         let fingerprint = CommandFingerprint::for_app_control(&command, &request);
-        let answer = forward_reach("reach:run:one".into(), |id| {
+        let answer = forward_with_retry("reach:run:one".into(), |id| {
             let (ledger, effects, attempts, fingerprint) =
                 (&ledger, &effects, &attempts, fingerprint.clone());
             async move {
@@ -468,7 +440,7 @@ mod retry_tests {
     #[tokio::test]
     async fn reach_exhausted_retry_requires_reading_state_instead_of_replaying() {
         let attempts = AtomicU32::new(0);
-        let failure = forward_reach("reach:one".into(), |_| {
+        let failure = forward_with_retry("reach:one".into(), |_| {
             attempts.fetch_add(1, Ordering::SeqCst);
             async {
                 Err(GatewayError::RequestTimeout {

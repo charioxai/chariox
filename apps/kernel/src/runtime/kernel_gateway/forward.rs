@@ -64,3 +64,29 @@ pub(crate) async fn forward_audited(
     }
     answered
 }
+
+/// The caller owns a forwarded command's retry identity: one retry with the same command id,
+/// which the target's ledger answers instead of running the command again.
+pub(crate) async fn forward_with_retry<F, Fut>(
+    command_id: String,
+    mut forward: F,
+) -> Result<serde_json::Value, GatewayError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<serde_json::Value, GatewayError>>,
+{
+    match forward(command_id.clone()).await {
+        Err(error) if matches!(error.code(), "kernel_request_timeout" | "kernel_connection_lost") => {
+            match forward(command_id).await {
+                Ok(value) => Ok(value),
+                Err(_) => Err(GatewayError::Remote {
+                    name: "remote kernel".into(),
+                    code: "kernel_outcome_unknown".into(),
+                    message: "The kernel may have completed this request, but its reply could not be recovered with the original command ID. Read the state before starting another operation.".into(),
+                    retryable: false,
+                }),
+            }
+        }
+        result => result,
+    }
+}
