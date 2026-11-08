@@ -169,9 +169,12 @@ impl KernelRuntimeState {
                 match request {
                     LocalDaemonRequest::RegisterWorkflowNotificationSource(request) => {
                         let session = sessions.get_session(&request.session_id)?;
-                        if session.owner_user_id() != owner {
+                        if !self.acts_for_room_owner(&session, owner) {
                             return Err(store::error("source not available"));
                         }
+                        // The room's notifications stay under the identity the room keeps for its
+                        // owner, `local` in a room made before enrollment.
+                        let owner = &self.room_member_user_id_in(session.owner_user_id(), owner);
                         let workflow =
                             sessions.resolve_workflow_ref(session.id(), &request.workflow_ref)?;
                         let exit_node_id =
@@ -221,9 +224,12 @@ impl KernelRuntimeState {
                         }
                     }
                     LocalDaemonRequest::AttachWorkflowNotification(request) => {
+                        let session = sessions.get_session(&request.session_id)?;
+                        let room_owner =
+                            self.room_member_user_id_in(session.owner_user_id(), owner);
                         let source = self.attachable_source(
                             &sessions,
-                            owner,
+                            &room_owner,
                             &request.source_id,
                             shared_access,
                         )?;
@@ -232,10 +238,10 @@ impl KernelRuntimeState {
                                 "shared access cannot attach remote workflow notifications",
                             ));
                         }
-                        let session = sessions.get_session(&request.session_id)?;
-                        if session.owner_user_id() != owner {
+                        if !self.acts_for_room_owner(&session, owner) {
                             return Err(store::error("notification target not owner"));
                         }
+                        let owner = room_owner.as_str();
                         let target = WorkflowNotificationTarget::resolve(
                             &sessions,
                             owner,

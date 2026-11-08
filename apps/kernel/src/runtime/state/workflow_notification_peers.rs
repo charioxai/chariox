@@ -277,7 +277,7 @@ impl KernelRuntimeState {
             let (_, subs, _) = self
                 .owned
                 .durable_state_store
-                .notification_inventory(owner)?;
+                .notification_inventory(&self.room_member_user_id(&request.session_id, owner))?;
             let sub = subs
                 .into_iter()
                 .find(|s| {

@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: the enrolled owner registers and attaches the workflow
 //! notifications of its room made before enrollment under `local`. The room keeps its `local`
-//! identity: what the owner registers is stored under it and lists back in the same room.
+//! identity: what the owner registers or attaches is stored under it, lists back in the same room
+//! and detaches from it.
 use super::*;
 
 const ENROLLED_OWNER: &str = "kernel-owner";
@@ -101,8 +102,8 @@ fn the_enrolled_owner_registers_a_source_of_a_room_made_before_enrollment() {
     cleanup(f);
 }
 
-#[test]
-fn the_enrolled_owner_attaches_a_notification_in_a_room_made_before_enrollment() {
+#[tokio::test]
+async fn the_enrolled_owner_attaches_a_notification_in_a_room_made_before_enrollment() {
     let (f, runtime, workflow, publication) = enrolled_owner_room();
     let LocalDaemonResponse::WorkflowNotificationSourceRegistered { source } = runtime
         .execute_workflow_notification_request(register(&f, &workflow), "local")
@@ -137,6 +138,22 @@ fn the_enrolled_owner_attaches_a_notification_in_a_room_made_before_enrollment()
             .iter()
             .any(|listed| listed.subscription_id == subscription.subscription_id),
         "{subscriptions:?}"
+    );
+    let detached = runtime
+        .execute_workflow_notification_command(
+            LocalDaemonRequest::DetachWorkflowNotification(DetachWorkflowNotificationRequest {
+                session_id: f.session.clone(),
+                subscription_id: subscription.subscription_id.clone(),
+            }),
+            ENROLLED_OWNER,
+        )
+        .await;
+    assert!(
+        matches!(
+            detached,
+            Ok(LocalDaemonResponse::WorkflowNotificationDetached { .. })
+        ),
+        "{detached:?}"
     );
     drop(runtime);
     cleanup(f);
