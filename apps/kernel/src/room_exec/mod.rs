@@ -2,6 +2,9 @@
 mod buffer;
 mod launch;
 mod lease;
+mod placement;
+#[cfg(test)]
+mod placement_tests;
 mod process;
 #[cfg(test)]
 mod queue_tests;
@@ -428,6 +431,22 @@ impl RoomExecService {
         }
         record.force.send_replace(true);
         Ok(())
+    }
+
+    /// Runs a launch that is still held on another kernel. A process that
+    /// already started keeps running where it is.
+    #[allow(dead_code)]
+    pub(crate) fn place(
+        &self,
+        _session_id: &str,
+        _exec_id: &str,
+        _origin_kernel: &str,
+        _placement: Arc<dyn placement::ExecPlacement>,
+    ) -> Result<(), DaemonError> {
+        Err(error(
+            "exec_placement_unavailable",
+            "placement is not built",
+        ))
     }
 
     pub fn cancel(&self, session_id: &str, exec_id: &str) -> Result<(), DaemonError> {
