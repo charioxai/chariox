@@ -109,6 +109,7 @@ mod tests {
     mod agent_utility_owner;
     mod app_notification_access;
     mod metaagent_task_owner;
+    mod native_interaction_owner;
     mod provider_run_selection_owner;
     use std::collections::BTreeMap;
     use std::sync::Arc;
