@@ -122,7 +122,7 @@
   {
     "path": "apps/kernel/src/durable_state/agent_lifecycle.rs",
     "method": "wait",
-    "context": ")) } pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> { db.execute_batch( ).map_err(sql)?; let columns: Vec<String> = db .prepare( ) .map_err(sql)? .query_map([], |r| r.get(1)) .map_err(sql)? .collect::<Result<_, _>>() .map_err(sql)?; if !columns.iter().any(|c| c == ) { db.execute_batch( ) .map_err(sql)?; } index_task_lookups(db)?; outside::initialize(db)?; deadlines::initialize(db)?; wakes::initialize(db)?; leased_processes::initialize(db)?; worker_stops::initialize(db)?; workflow_tasks::initialize(db)?; migration::migrate(db) } impl DurableKernelStateStore { pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> { self.enqueue_agent_lifecycle(operation)?"
+    "context": ").map_err(sql)?; let columns: Vec<String> = db .prepare( ) .map_err(sql)? .query_map([], |r| r.get(1)) .map_err(sql)? .collect::<Result<_, _>>() .map_err(sql)?; if !columns.iter().any(|c| c == ) { db.execute_batch( ) .map_err(sql)?; } index_task_lookups(db)?; outside::initialize(db)?; peer_follows::initialize(db)?; deadlines::initialize(db)?; wakes::initialize(db)?; leased_processes::initialize(db)?; worker_stops::initialize(db)?; workflow_tasks::initialize(db)?; migration::migrate(db) } impl DurableKernelStateStore { pub(crate) fn agent_lifecycle(&self, operation: Operation) -> Result<Outcome, DaemonError> { self.enqueue_agent_lifecycle(operation)?"
   },
   {
     "path": "apps/kernel/src/runtime/browser_controller_process/cancellation.rs",
