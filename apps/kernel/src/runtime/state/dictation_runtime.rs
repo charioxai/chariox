@@ -15,7 +15,7 @@ impl KernelRuntimeState {
             if remote {
                 if let Some(context) = context {
                     let session = self.owned.session_store.get_session(&context.session_id)?;
-                    if session.owner_user_id() != owner {
+                    if !self.acts_for_room_owner(&session, owner) {
                         return Err(DaemonError::RelayTransport {
                             operation: "dictation",
                             code: "dictation_context_invalid".into(),
