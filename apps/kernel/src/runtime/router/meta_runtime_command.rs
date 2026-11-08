@@ -24,6 +24,7 @@ use crate::transport::runtime_tools::{MetaRunCommandArgs, RuntimeToolResult};
 
 use super::CommandRouter;
 
+mod agent_peer;
 mod agent_tree;
 mod dispatch;
 mod request;

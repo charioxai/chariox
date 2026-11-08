@@ -1,4 +1,5 @@
 //! Room commands for the agent tree: a parent reads and controls the agents below it.
+use super::agent_peer::PeerTarget;
 use super::request::meta_kernel_command;
 use super::result::{meta_command_error, meta_command_failure_result};
 use super::*;
@@ -30,6 +31,17 @@ impl CommandRouter {
                     args,
                 )
                 .await?,
+            ),
+            Some(verb @ ("steer" | "message")) => Some(
+                self.dispatch_meta_agent_message_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    verb == "steer",
+                    args,
+                )
+                .await,
             ),
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
@@ -114,27 +126,17 @@ impl CommandRouter {
             Ok(meta_command_failure_result(
                 command,
                 meta_command_error(
-                    "usage: agent cancel <agent-ref> [--room <room> [--kernel <kernel>]]",
+                    "usage: agent cancel <agent-ref> [--room <room> [--kernel <kernel>|--machine <machine>]]",
                 ),
             ))
         };
         let Some((reference, options)) = args.split_first() else {
             return usage();
         };
-        let (mut room, mut kernel) = (None, None);
-        for pair in options.chunks(2) {
-            match pair {
-                [flag, value] if flag == "--room" && room.is_none() => room = Some(value.as_str()),
-                [flag, value] if flag == "--kernel" && kernel.is_none() => {
-                    kernel = Some(value.as_str())
-                }
-                _ => return usage(),
-            }
-        }
-        if let Some(kernel) = kernel {
-            let Some(room) = room else {
-                return usage();
-            };
+        let Some(PeerTarget { room, kernel, .. }) = PeerTarget::parse(options, false) else {
+            return usage();
+        };
+        if let (Some(kernel), Some(room)) = (kernel, room) {
             match self.runtime_state.resolve_peer_kernel(kernel).await {
                 Ok(Some(kernel)) => {
                     return Ok(
@@ -318,6 +320,18 @@ impl CommandRouter {
         tokens: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
         use crate::runtime::state::ChildDecisionStatus;
+        if tokens
+            .iter()
+            .skip(2)
+            .any(|token| matches!(token.as_str(), "--room" | "--kernel" | "--machine"))
+        {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "peer_decision_refused: a decision is answered or passed only by the agent that holds it in its own room; a peer never settles it, send the agent a message instead",
+                ),
+            ));
+        }
         let status = match (
             tokens.get(1).map(String::as_str),
             tokens.get(2..).unwrap_or_default(),

@@ -114,6 +114,8 @@ pub(crate) fn command(tokens: &[String]) -> Result<(), DaemonError> {
                         | "destroy"
                         | "remove"
                         | "cancel"
+                        | "steer"
+                        | "message"
                         | "deadline"
                         | "children"
                         | "answer"
