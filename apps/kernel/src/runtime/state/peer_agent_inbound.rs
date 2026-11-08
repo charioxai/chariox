@@ -61,14 +61,45 @@ impl KernelRuntimeState {
                 )
                 .await
             }
-            RelayPeerRequest::PeerAgentCancel { .. }
-            | RelayPeerRequest::SubscribePeerAgent { .. }
+            RelayPeerRequest::PeerAgentCancel {
+                protocol_version: VERSION,
+                request_id: _,
+                sender: _,
+                target,
+                caller_authority,
+            } => {
+                let target = match self.peer_agent_target(owner, &target) {
+                    Ok(target) => target,
+                    Err(refusal) => return Ok(refused(refusal)),
+                };
+                if let Err(refusal) = self.peer_caller_covers(caller_authority, &target) {
+                    return Ok(refused(refusal));
+                }
+                // As for a peer in another room: the kernel cancels through the target's own
+                // delivery seat, so the caller never joins the room.
+                let attachment =
+                    self.ensure_agent_message_attachment(target.session_id(), &target)?;
+                self.cancel_agent_prompt_with_external_authority(
+                    target.session_id(),
+                    target.id(),
+                    &attachment,
+                    None,
+                )
+                .await?;
+                Ok(RelayPeerResponse::PeerAgentAccepted {
+                    protocol_version: VERSION,
+                    duplicate: false,
+                    target: self.peer_agent_stamp(&target),
+                })
+            }
+            RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }
             | RelayPeerRequest::SpawnRoomPeer { .. }
             | RelayPeerRequest::DeliverPeerAgentOutcome { .. } => Err(ledger::error(
-                "this kernel does not carry cancel, follow, spawn or outcome requests across kernels yet",
+                "this kernel does not carry follow, spawn or outcome requests across kernels yet",
             )),
-            RelayPeerRequest::PeerAgentMessage { .. } => {
+            RelayPeerRequest::PeerAgentMessage { .. }
+            | RelayPeerRequest::PeerAgentCancel { .. } => {
                 Err(ledger::error("peer agent protocol version mismatch"))
             }
             _ => Err(ledger::error("not a peer agent request")),

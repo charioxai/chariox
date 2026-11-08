@@ -50,6 +50,19 @@ fn message_as(
     }
 }
 
+fn cancel(rooms: &Rooms, mode: AgentExecutionMode) -> RelayPeerRequest {
+    RelayPeerRequest::PeerAgentCancel {
+        protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        request_id: "cancel-1".into(),
+        sender: stamp(),
+        target: PeerAgentAddress {
+            room: rooms.peer_room.clone(),
+            agent: "peer".into(),
+        },
+        caller_authority: authority(mode, AgentPermissionLevel::Required),
+    }
+}
+
 impl Rooms {
     async fn from_kernel_a(&self, request: RelayPeerRequest) -> RelayPeerResponse {
         let owner = self.peer.owner_user_id().to_string();
@@ -158,5 +171,52 @@ fn a_steer_from_another_kernel_needs_at_least_the_targets_authority() {
             .await
             .is_empty());
         assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+    });
+}
+
+#[test]
+fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
+    run_peer_test("peer-kernel-control", || async {
+        let rooms = Rooms::new(
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Required,
+        );
+        let steer = rooms
+            .from_kernel_a(message_as(
+                &rooms,
+                "steer-2",
+                "peer",
+                true,
+                AgentPermissionLevel::Required,
+            ))
+            .await;
+        assert!(
+            matches!(steer, RelayPeerResponse::PeerAgentAccepted { .. }),
+            "{steer:?}"
+        );
+        let inbox = rooms.inbox(&rooms.peer_room, rooms.peer.id()).await;
+        assert_eq!(inbox.len(), 1);
+        assert!(
+            inbox[0].urgent,
+            "a steer arrives as an urgent message, not a prompt"
+        );
+
+        assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+        let less = rooms
+            .from_kernel_a(cancel(&rooms, AgentExecutionMode::Plan))
+            .await;
+        assert!(matches!(
+            refusal(less),
+            PeerAgentRefusal::MoreAuthority { .. }
+        ));
+        assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+        let equal = rooms
+            .from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(equal, RelayPeerResponse::PeerAgentAccepted { .. }),
+            "{equal:?}"
+        );
+        assert!(!rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
     });
 }
