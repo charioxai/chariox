@@ -190,6 +190,7 @@ impl KernelRuntimeState {
     /// A message event with a kernel-stamped sender, never a prompt. One `request_id` of one
     /// sending kernel is one delivery. A requested reply goes back as a message to the stamped
     /// sender on its kernel; nothing here waits for it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn admit_peer_agent_message(
         &self,
         kernel: &str,
