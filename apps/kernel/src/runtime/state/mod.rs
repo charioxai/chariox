@@ -1613,6 +1613,8 @@ mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
 #[cfg(test)]
+mod peer_gone_tests;
+#[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod terminal_wake;
