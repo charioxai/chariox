@@ -43,6 +43,25 @@ impl Kernel {
         kernel
     }
 
+    /// A new machine whose configured Vault nobody has created or opened yet.
+    fn with_unopened_vault(root: &Path, id: &str) -> Self {
+        let home = root.join(id);
+        fs::create_dir_all(&home).expect("create kernel home");
+        let mut config = DaemonConfig::new(id, id, "owner");
+        config.user_config.credential_vault.backend = CredentialVaultBackend::CharioxEncrypted;
+        config.user_config.credential_vault.path =
+            home.join("vault.json").to_string_lossy().into_owned();
+        let registry = ProviderAccountProfileRegistry::open(home.join("accounts.json"))
+            .expect("open account registry");
+        let kernel = Self {
+            home,
+            config,
+            registry,
+        };
+        kernel.enter();
+        kernel
+    }
+
     /// The credential registry is per kernel home; a test plays both kernels in one process.
     fn enter(&self) {
         std::env::set_var("CHARIOX_HOME", &self.home);
@@ -107,6 +126,23 @@ impl Transfer {
         let mut fixture = PackageFixture::new(label);
         let source = Kernel::new(&fixture.root, "source-kernel-1");
         let target = Kernel::new(&fixture.root, "target-kernel-1");
+        fixture.binding.source_key_thumbprint = source.thumbprint();
+        fixture.binding.target_key_thumbprint = target.thumbprint();
+        Self {
+            fixture,
+            source,
+            target,
+            _claude: claude,
+            _env: env,
+        }
+    }
+
+    fn with_unopened_target(label: &str) -> Self {
+        let env = crate::env_lock::lock();
+        let claude = crate::test_support::TestClaudeExecutable::new();
+        let mut fixture = PackageFixture::new(label);
+        let source = Kernel::new(&fixture.root, "source-kernel-1");
+        let target = Kernel::with_unopened_vault(&fixture.root, "target-kernel-1");
         fixture.binding.source_key_thumbprint = source.thumbprint();
         fixture.binding.target_key_thumbprint = target.thumbprint();
         Self {
@@ -536,4 +572,42 @@ fn two_imports_of_one_login_never_delete_the_winning_credential() {
         Some(*token),
         "the winning login ({context_id}) still resolves from the Vault"
     );
+}
+
+#[test]
+fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-login-unopened");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let exported = transfer.export("context-unopened", &[&profile_id]);
+    let target_vault = PathBuf::from(&transfer.target.config.user_config.credential_vault.path);
+    assert!(!target_vault.exists(), "the new machine has no Vault yet");
+
+    let receipt = transfer
+        .apply(&exported)
+        .expect("the import completes although the target Vault is not open");
+
+    match &receipt.provider_accounts {
+        ManagedContextImportedProviderAccounts::Selected { accounts } => assert!(
+            accounts.is_empty(),
+            "the login is not carried while no Vault is open: {accounts:?}"
+        ),
+        other => panic!("the selection stays recorded: {other:?}"),
+    }
+    assert!(
+        transfer
+            .target
+            .registry
+            .get(OWNER, "claude", &profile_id)
+            .is_err(),
+        "no profile points at a value that was never stored"
+    );
+    assert!(
+        !target_vault.exists(),
+        "the import neither creates nor half-installs a Vault"
+    );
+    assert!(!format!("{receipt:?}").contains(FIRST_TOKEN));
+    assert!(plain_files_containing(&transfer.fixture.root, FIRST_TOKEN).is_empty());
 }
