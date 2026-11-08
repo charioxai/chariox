@@ -59,29 +59,32 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
     }
 }
 
-/// What `viewer` reads of `tree`, by the rule the session projection applies to agents: an agent
+/// What the viewer reads of `tree`, by the rule the session projection applies to agents: an agent
 /// of the viewer is whole; another user's agent shows only to a collaborator who may view traces
 /// and then without provider and model unless the collaborator may view parameters.
+/// `member` is the identity the room stores for the viewer and `is_viewers` says whether an agent
+/// owner is the viewer, so the enrolled owner of a pre-enrollment room reads as its `local` owner.
 pub(crate) fn tree_for_viewer(
     mut tree: AgentTree,
     session: &RuntimeSession,
     agents: &[AgentInstance],
-    viewer: &str,
+    member: &str,
+    is_viewers: &dyn Fn(&str) -> bool,
 ) -> AgentTree {
     let level = session
-        .collaboration_level_for_user(viewer)
+        .collaboration_level_for_user(member)
         .unwrap_or(CollaborationLevel::Private);
-    let owner_of = |agent_id: &str| {
+    let viewers_agent = |agent_id: &str| {
         agents
             .iter()
             .find(|agent| agent.id() == agent_id)
-            .map(|agent| agent.owner_user_id())
+            .is_some_and(|agent| is_viewers(agent.owner_user_id()))
     };
     tree.nodes
-        .retain(|node| owner_of(&node.agent_id) == Some(viewer) || level.can_view_agent_trace());
+        .retain(|node| viewers_agent(&node.agent_id) || level.can_view_agent_trace());
     if !level.can_view_agent_parameters() {
         for node in &mut tree.nodes {
-            if owner_of(&node.agent_id) != Some(viewer) {
+            if !viewers_agent(&node.agent_id) {
                 node.provider = "redacted".to_owned();
                 node.model = None;
             }

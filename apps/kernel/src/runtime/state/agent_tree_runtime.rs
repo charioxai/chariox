@@ -33,7 +33,11 @@ impl KernelRuntimeState {
                 agent_id: request.agent_id.clone(),
             })?;
         let agents = self.owned.agent_store.get_session_agents(session.id());
-        let tree = tree_for_viewer(tree, &session, &agents, caller_user_id);
+        let member = self.room_member_user_id_in(session.owner_user_id(), caller_user_id);
+        let tree = tree_for_viewer(tree, &session, &agents, &member, &|agent_owner| {
+            self.owned
+                .acts_for_owner_in(session.owner_user_id(), caller_user_id, agent_owner)
+        });
         Ok(LocalDaemonResponse::AgentTree { tree })
     }
 
