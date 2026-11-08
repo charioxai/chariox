@@ -226,7 +226,10 @@ fn a_use_left_unfinished_by_a_stopped_kernel_reads_as_failed_closed() {
     };
     assert_eq!(
         events(&service),
-        [attempted, "Use failed: the kernel stopped before it finished"]
+        [
+            attempted,
+            "Use failed: the kernel stopped before it finished"
+        ]
     );
     // This process's own attempt is still in flight: it stays open until its result.
     service.record_vault_activity("entry", attempted).unwrap();
