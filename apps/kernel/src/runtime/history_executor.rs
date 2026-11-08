@@ -1,9 +1,8 @@
 use crate::error::DaemonError;
 use crate::history::{HistoryEventQuery, OperationalHistoryStore, SessionHistoryStore};
 use crate::local::{
-    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, GetPromptInputHistoryRequest,
-    LocalDaemonRequest, LocalDaemonResponse, RecordPromptInputHistoryRequest,
-    RunAgentUtilityRequest, SemanticRecallMatch, SemanticSearchRecallMode,
+    AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput, LocalDaemonRequest,
+    LocalDaemonResponse, RunAgentUtilityRequest, SemanticRecallMatch, SemanticSearchRecallMode,
     SemanticSearchRecallRequest,
 };
 use crate::runtime::agent_utility_executor::run_agent_utility;
@@ -14,7 +13,7 @@ use crate::runtime::history_requests::{
     execute_scoped_session_history_blob_content_request,
     execute_scoped_session_history_blob_contents_request,
     execute_scoped_session_history_outline_request, knn_semantic_recall_search,
-    recall_query_from_request, recall_query_from_search_request,
+    prompt_input_recorded_by, recall_query_from_request, recall_query_from_search_request,
     semantic_recall_utility_input_from_search_request,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
@@ -24,11 +23,26 @@ use std::time::Instant;
 /// MP-08 / MP-11: an agent's history is its trace, so a room member reads only the agents the
 /// room shows them the trace of (`can_view_agent_trace_owned_by`). An outline keeps the visible
 /// agents (a view lists every agent of the room); blob content of a hidden agent is refused.
+/// Recall without a room searches every room's history, so only the kernel's owner may.
 pub(crate) async fn authorize_history_request(
     runtime_state: &KernelRuntimeState,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonRequest, DaemonError> {
+    let unscoped_recall = match &request {
+        LocalDaemonRequest::QueryRecall(recall) => recall.session_id.is_none(),
+        LocalDaemonRequest::SearchRecall(recall) => recall.session_id.is_none(),
+        LocalDaemonRequest::SemanticSearchRecall(recall) => recall.session_id.is_none(),
+        _ => false,
+    };
+    if unscoped_recall && !runtime_state.acts_for_kernel_owner(caller_user_id) {
+        return Err(DaemonError::OwnershipAccessDenied {
+            user_id: caller_user_id.to_string(),
+            owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            resource: "every room's history".into(),
+            operation: "recall without a room",
+        });
+    }
     let session_id = match &request {
         LocalDaemonRequest::GetSessionHistoryOutline(outline) => &outline.session_id,
         LocalDaemonRequest::GetSessionHistoryBlobContent(blob) => &blob.session_id,
@@ -175,12 +189,6 @@ pub(crate) async fn execute_history_request(
             )
             .await
         }
-        LocalDaemonRequest::GetPromptInputHistory(request) => {
-            execute_prompt_input_history_request(operational_history_store, request).await
-        }
-        LocalDaemonRequest::RecordPromptInputHistory(request) => {
-            execute_record_prompt_input_history_request(operational_history_store, request).await
-        }
         LocalDaemonRequest::QueryRecall(request) => {
             execute_query_recall_request(
                 operational_history_store,
@@ -263,18 +271,53 @@ async fn agent_external_import(
         .and_then(|agent| agent.external_provider_import().cloned()))
 }
 
-pub(crate) async fn execute_prompt_input_history_request(
+/// MP-08 / MP-11: a member's prompt input history holds what they recorded and the prompts of
+/// the agents whose trace the room shows them (`can_view_agent_trace_owned_by`).
+pub(crate) async fn execute_prompt_input_request(
     operational_history_store: OperationalHistoryStore,
-    request: GetPromptInputHistoryRequest,
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    execute_prompt_input_history(operational_history_store, request).await
-}
-
-pub(crate) async fn execute_record_prompt_input_history_request(
-    operational_history_store: OperationalHistoryStore,
-    request: RecordPromptInputHistoryRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    execute_record_prompt_input_history(operational_history_store, request).await
+    match request {
+        LocalDaemonRequest::GetPromptInputHistory(request) => {
+            let session = runtime_state.session_snapshot(&request.session_id).await?;
+            let author =
+                runtime_state.room_member_user_id_in(session.owner_user_id(), caller_user_id);
+            let traced_agents = session
+                .agents()
+                .iter()
+                .filter(|agent| {
+                    runtime_state.can_view_agent_trace_owned_by(
+                        &session,
+                        caller_user_id,
+                        agent.owner_user_id(),
+                    )
+                })
+                .map(|agent| agent.id().to_string())
+                .collect::<std::collections::HashSet<_>>();
+            execute_prompt_input_history(operational_history_store, request, move |event| {
+                match event.kind {
+                    crate::history::HistoryEventKind::PromptInput => {
+                        prompt_input_recorded_by(event, &author)
+                    }
+                    _ => event
+                        .agent_id
+                        .as_deref()
+                        .is_some_and(|agent_id| traced_agents.contains(agent_id)),
+                }
+            })
+            .await
+        }
+        LocalDaemonRequest::RecordPromptInputHistory(request) => {
+            let author = runtime_state.room_member_user_id(&request.session_id, caller_user_id);
+            execute_record_prompt_input_history(operational_history_store, request, author).await
+        }
+        _ => Err(DaemonError::LocalTransport {
+            operation: "prompt input history request",
+            message: "unsupported prompt input history request".to_string(),
+        }),
+    }
 }
 
 pub(crate) async fn execute_query_recall_request(

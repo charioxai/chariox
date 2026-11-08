@@ -129,6 +129,12 @@ impl KernelRuntimeState {
         self.owned.is_room_member(session, user_id)
     }
 
+    /// Whether `user_id` is this kernel's owner: `local`, or the owner it was enrolled for.
+    pub(in crate::runtime) fn acts_for_kernel_owner(&self, user_id: &str) -> bool {
+        self.room_member_user_id_in(crate::session::DEFAULT_LOCAL_USER_ID, user_id)
+            == crate::session::DEFAULT_LOCAL_USER_ID
+    }
+
     pub(in crate::runtime) fn can_prompt_agent_owned_by(
         &self,
         session: &RuntimeSession,

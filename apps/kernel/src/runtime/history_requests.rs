@@ -7,6 +7,7 @@ mod session_outline;
 
 pub(crate) use prompt_input::{
     execute_prompt_input_history_request, execute_record_prompt_input_history_request,
+    prompt_input_recorded_by,
 };
 pub(crate) use query::{
     execute_query_recall_request, recall_query_from_request, recall_query_from_search_request,

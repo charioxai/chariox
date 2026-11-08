@@ -14,6 +14,7 @@ use crate::local::{
 pub(crate) async fn execute_prompt_input_history_request(
     history: OperationalHistoryStore,
     request: GetPromptInputHistoryRequest,
+    shown: impl Fn(&HistoryEvent) -> bool + Send + 'static,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let session_id = request.session_id.clone();
     let limit = request.limit.unwrap_or(5000).clamp(1, 5000);
@@ -33,6 +34,7 @@ pub(crate) async fn execute_prompt_input_history_request(
             after_sequence,
             limit,
         )?);
+        events.retain(|event| shown(event));
         events.sort_by_key(|event| event.sequence);
         events.truncate(limit);
         Ok(LocalDaemonResponse::PromptInputHistory {
@@ -52,6 +54,7 @@ pub(crate) async fn execute_prompt_input_history_request(
 pub(crate) async fn execute_record_prompt_input_history_request(
     history: OperationalHistoryStore,
     request: RecordPromptInputHistoryRequest,
+    author_user_id: String,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if request.text.trim().is_empty() {
         return Ok(LocalDaemonResponse::PromptInputHistoryRecorded {
@@ -76,6 +79,10 @@ pub(crate) async fn execute_record_prompt_input_history_request(
             .to_string(),
         ),
     );
+    metadata.insert(
+        AUTHOR_METADATA_KEY.to_string(),
+        serde_json::Value::String(author_user_id),
+    );
     if let Some(attachment_id) = request.attachment_id.clone() {
         metadata.insert(
             "source_attachment_id".to_string(),
@@ -99,6 +106,17 @@ pub(crate) async fn execute_record_prompt_input_history_request(
         }
     })?;
     Ok(LocalDaemonResponse::PromptInputHistoryRecorded { entry })
+}
+
+const AUTHOR_METADATA_KEY: &str = "author_user_id";
+
+/// Whether `user_id` recorded this prompt input.
+pub(crate) fn prompt_input_recorded_by(event: &HistoryEvent, user_id: &str) -> bool {
+    event
+        .metadata
+        .get(AUTHOR_METADATA_KEY)
+        .and_then(|value| value.as_str())
+        == Some(user_id)
 }
 
 fn prompt_input_history_entry_from_event(event: HistoryEvent) -> Option<PromptInputHistoryEntry> {
@@ -280,6 +298,7 @@ mod tests {
                     kind: PromptInputHistoryEntryKind::Prompt,
                     text: "draft input".to_string(),
                 },
+                "local".to_string(),
             ))
             .expect("draft input should record");
 
@@ -291,6 +310,7 @@ mod tests {
                     after_sequence: None,
                     limit: None,
                 },
+                |_| true,
             ))
             .expect("prompt input history should load");
         let LocalDaemonResponse::PromptInputHistory { entries } = response else {
@@ -345,6 +365,7 @@ mod tests {
                     after_sequence: None,
                     limit: None,
                 },
+                |_| true,
             ))
             .expect("prompt input history should load")
         else {
@@ -407,6 +428,7 @@ mod tests {
                     after_sequence: None,
                     limit: None,
                 },
+                |_| true,
             ))
             .expect("prompt input history should load")
         else {
@@ -481,6 +503,7 @@ mod tests {
                     after_sequence: None,
                     limit: Some(2),
                 },
+                |_| true,
             ))
             .expect("prompt input history should load");
         let LocalDaemonResponse::PromptInputHistory { entries } = response else {

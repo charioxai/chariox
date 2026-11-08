@@ -13,7 +13,9 @@ use crate::runtime::credential_enrollment_control::{
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::debug_bundle_control::execute_export_debug_bundle_request;
 use crate::runtime::external_provider_session_control::execute_external_provider_session_request;
-use crate::runtime::history_executor::{authorize_history_request, execute_history_request};
+use crate::runtime::history_executor::{
+    authorize_history_request, execute_history_request, execute_prompt_input_request,
+};
 use crate::runtime::interactive_command_dispatcher::{
     dispatch_interactive_command, is_interactive_command,
 };
@@ -286,11 +288,10 @@ impl CommandRouter {
             }),
             request @ (LocalDaemonRequest::GetPromptInputHistory(_)
             | LocalDaemonRequest::RecordPromptInputHistory(_)) => boxed_handler(|| async move {
-                execute_history_request(
-                    self.history_store.clone(),
+                execute_prompt_input_request(
                     self.operational_history_store.clone(),
                     &self.runtime_state,
-                    &self.config_projection,
+                    &command_caller_user_id(&command),
                     request,
                 )
                 .await
