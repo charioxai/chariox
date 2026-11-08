@@ -65,6 +65,67 @@ mod tests {
     use super::*;
     use crate::local::{DictationContext, DictationProvider, DictationRequest, LocalDaemonRequest};
 
+    // MP-08 / MP-09 / MP-10 / MP-11: the enrolled owner dictates into its room made before
+    // enrollment under `local`; anyone else still cannot open a Vault prompt there.
+    #[test]
+    fn the_enrolled_owner_dictates_into_a_room_made_before_enrollment() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "kernel-owner".into(),
+            realm_id: "test-realm".into(),
+            ..Default::default()
+        });
+        let harness = crate::local::test_support::LocalRouterTestHarness::with_config(config);
+        let request = harness
+            .fixture_session_request("dictation-enrolled-owner")
+            .with_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
+        let (session, agent) = harness.with_app_mut(|app| {
+            crate::app::KernelSessionService::new(app)
+                .create_session(request)
+                .unwrap()
+        });
+        let state = harness.runtime_state();
+        harness
+            .block_on_test_task(state.owned.dictation.handle(
+                "kernel-owner",
+                DictationCommand::SetService {
+                    service: DictationProvider::Openai,
+                },
+            ))
+            .unwrap();
+        let command = DictationCommand::Transcribe {
+            upload_id: "missing".into(),
+            context: Some(DictationContext {
+                session_id: session.id().into(),
+                agent_id: agent.id().into(),
+            }),
+        };
+        let request = LocalDaemonRequest::Dictation(DictationRequest {
+            command: command.clone(),
+        });
+        let caller = crate::runtime::command::KernelCommand::from_local_request(
+            "dictation-enrolled-owner",
+            None,
+            None,
+            &request,
+        );
+        let refused_context = |user: &str| {
+            harness.block_on_test_task(async {
+                // Past the Room check the request may wait for the Vault; that wait is admission.
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    state.dictation_request(&caller, user, command.clone()),
+                )
+                .await
+                .is_ok_and(|reply| {
+                    matches!(reply, Err(DaemonError::RelayTransport { code, .. }) if code == "dictation_context_invalid")
+                })
+            })
+        };
+        assert!(!refused_context("kernel-owner"));
+        assert!(refused_context("guest"));
+    }
+
     #[test]
     fn dictation_service_change_during_vault_unlock_does_not_consume_the_recording() {
         let root = crate::test_support::TestWorktree::new("dictation-unlock-service");
