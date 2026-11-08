@@ -95,6 +95,9 @@ impl KernelRuntimeState {
         // JoinSet aborts the separate maintenance task when this scheduler is
         // cancelled at kernel shutdown, including a pending Vault interaction.
         let mut maintenance = tokio::task::JoinSet::new();
+        // An orphan's cleanup can wait on a worker or on the process registry;
+        // due wakes must not wait with it. One pass at a time.
+        let mut orphan_sweep = tokio::task::JoinSet::new();
         let mut recovered = false;
         let mut worker_recovered = false;
         loop {
@@ -108,7 +111,11 @@ impl KernelRuntimeState {
             {
                 tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: deadline cleanup retained for retry");
             }
-            self.end_orphaned_sub_agents().await;
+            while orphan_sweep.try_join_next().is_some() {}
+            if orphan_sweep.is_empty() {
+                let state = self.clone();
+                orphan_sweep.spawn(async move { state.end_orphaned_sub_agents().await });
+            }
             self.publish_changed_agent_trees();
             if !worker_recovered {
                 worker_recovered = self
