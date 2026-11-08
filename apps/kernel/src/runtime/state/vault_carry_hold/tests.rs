@@ -505,8 +505,13 @@ async fn each_export_asks_in_the_room_of_its_launch_in_either_ready_order() {
             .await;
         // The Vault is open on the first hold, so the second launch shows no card.
         fx.launch_in(second.0, Some("launch-b")).await;
-        // Both holds are gone before either machine is ready: each export has to ask.
-        lock_chariox_encrypted_vault(&fx.vault_path).unwrap();
+        // Both holds lapse before either machine is ready, so each export has to ask.
+        let lapsed: Vec<Held> = locked_entries()
+            .values_mut()
+            .filter_map(|entry| entry.held.take())
+            .collect();
+        drop(lapsed);
+        assert!(!fx.unlocked());
         let exports = if a_ready_first {
             [("launch-a", first, second), ("launch-b", second, first)]
         } else {
