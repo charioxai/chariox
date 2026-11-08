@@ -14,6 +14,8 @@ use crate::transport::relay_peer::{
 /// The first retry of an outcome the other kernel did not take, doubled up to the ceiling.
 const RETRY_FIRST_MS: u64 = 5_000;
 const RETRY_CEILING_MS: u64 = 10 * 60 * 1_000;
+/// How long a follow waits for the retry of a spawn whose answer was lost.
+const UNKNOWN_PEER_FOLLOW_MS: u64 = 10 * 60 * 1_000;
 
 fn ack(ack: PeerOutcomeAck) -> RelayPeerResponse {
     RelayPeerResponse::PeerAgentOutcomeAck {
@@ -466,6 +468,47 @@ impl KernelRuntimeState {
                     "lost peer source is durable and pending delivery");
             }
         }
+        Ok(())
+    }
+
+    /// Following side: a follow held for a spawn whose answer was lost waits for the retry that
+    /// names its peer. One still waiting ten minutes after this kernel life first saw it is
+    /// dropped; no retry is coming.
+    pub(super) fn drop_unknown_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
+        let store = &self.owned.durable_state_store;
+        let mut first_seen = self
+            .unknown_peer_follows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut waiting = BTreeSet::new();
+        for registration in store.live_peer_registrations()? {
+            let unknown_peer = peer_source_stamp(&registration.source_id)
+                .is_some_and(|source| source.agent_id == registration.id);
+            if !unknown_peer {
+                continue;
+            }
+            let seen = *first_seen.entry(registration.id.clone()).or_insert(now);
+            let task = store.agent_task(&registration.task_id)?;
+            let (Some(task), true) = (task, now.saturating_sub(seen) >= UNKNOWN_PEER_FOLLOW_MS)
+            else {
+                waiting.insert(registration.id);
+                continue;
+            };
+            match store.agent_lifecycle(Operation::Unsubscribe {
+                task: task.task_id,
+                prompt: task.prompt_id,
+                registration: registration.id.clone(),
+            }) {
+                Ok(_) => tracing::warn!(registration = %registration.id,
+                    "peer follow dropped: the spawn it was held for was not retried"),
+                Err(error) => {
+                    tracing::warn!(%error, registration = %registration.id,
+                        "peer follow of an unanswered spawn retained for the next sweep");
+                    waiting.insert(registration.id);
+                }
+            }
+        }
+        first_seen.retain(|id, _| waiting.contains(id));
         Ok(())
     }
 

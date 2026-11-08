@@ -1102,6 +1102,9 @@ impl KernelRuntimeState {
         if let Err(error) = self.settle_unpaired_peer_follows(now).await {
             tracing::warn!(%error, "peer follows of a former owner retained for the next sweep");
         }
+        if let Err(error) = self.drop_unknown_peer_follows(now) {
+            tracing::warn!(%error, "peer follows of unanswered spawns retained for the next sweep");
+        }
         // Outcomes another kernel did not take yet, including across a relay reconnect.
         if let Err(error) = self.deliver_peer_agent_outcomes().await {
             tracing::warn!(%error, "peer outcomes retained for the next delivery");

@@ -56,6 +56,15 @@ fn unanswered(kernel: &str, retry: &str, error: DaemonError) -> DaemonError {
         {
             error
         }
+        // What the other kernel answered through the test link reaches the caller as it is.
+        #[cfg(test)]
+        _ if !matches!(
+            error,
+            DaemonError::RelayTransport { .. } | DaemonError::LocalTransport { .. }
+        ) =>
+        {
+            error
+        }
         _ => kernel_unreachable(kernel),
     }
 }
@@ -285,7 +294,20 @@ impl KernelRuntimeState {
             Some(_) => Some(self.peer_follow_task(sender)?),
             None => None,
         };
-        let source_cursor = self.owned.durable_state_store.agent_source_cursor()?;
+        // A retry after a lost answer finds the follow still held, with what it recorded since.
+        let still_held = match (&follow, &task) {
+            (Some(follow), Some((task, _))) => self
+                .owned
+                .durable_state_store
+                .agent_registration(&follow.subscription_id)?
+                .filter(|held| held.live && held.task_id == *task)
+                .map(|held| held.source_cursor),
+            _ => None,
+        };
+        let source_cursor = match still_held {
+            Some(cursor) => cursor,
+            None => self.owned.durable_state_store.agent_source_cursor()?,
+        };
         // The follow is held here before the other kernel creates the peer, so a first turn that
         // ends before the answer arrives is recorded and reaches the follow once the peer is known.
         let held = match (&follow, &task) {
@@ -321,7 +343,11 @@ impl KernelRuntimeState {
             caller_authority: caller.authority,
             follow: follow.clone(),
         };
-        let answered = match self.peer_agent_link(&caller.owner, kernel, request).await {
+        let retry = retry_hint(&request);
+        let answer = self.peer_agent_send(&caller.owner, kernel, request).await;
+        // The other kernel may have created the peer: the follow stays held for the retry.
+        let lost = matches!(&answer, Err(error) if error.is_peer_answer_lost());
+        let answered = match answer.map_err(|error| unanswered(kernel, &retry, error)) {
             Ok(RelayPeerResponse::RoomPeerSpawned {
                 agent,
                 alias,
@@ -337,7 +363,7 @@ impl KernelRuntimeState {
         let (agent, alias, duplicate) = match answered {
             Ok(spawned) => spawned,
             Err(error) => {
-                if let (Some(registration), Some((task, prompt))) = (held, task) {
+                if let (Some(registration), Some((task, prompt)), false) = (held, task, lost) {
                     self.owned
                         .durable_state_store
                         .agent_lifecycle(Operation::Unsubscribe {
@@ -462,21 +488,26 @@ impl KernelRuntimeState {
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
         let retry = retry_hint(&request);
-        // The test link stands for the relay: what it answers is mapped as the relay's would be.
+        self.peer_agent_send(owner, kernel, request)
+            .await
+            .map_err(|error| unanswered(kernel, &retry, error))
+    }
+
+    /// The request on the link, with the relay's own failure when no answer came back.
+    async fn peer_agent_send(
+        &self,
+        owner: &str,
+        kernel: &str,
+        request: RelayPeerRequest,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        // The test link stands for the relay: its transport failures are the relay's.
         #[cfg(test)]
         if let Some(link) = peer_agent_link_for_tests::link(kernel) {
             let from = self.owned.config_projection.snapshot().daemon_id;
-            return match link(from, owner.to_string(), request).await {
-                Err(
-                    error @ (DaemonError::RelayTransport { .. }
-                    | DaemonError::LocalTransport { .. }),
-                ) => Err(unanswered(kernel, &retry, error)),
-                answered => answered,
-            };
+            return link(from, owner.to_string(), request).await;
         }
         self.send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
             .await
-            .map_err(|error| unanswered(kernel, &retry, error))
     }
 }
 
