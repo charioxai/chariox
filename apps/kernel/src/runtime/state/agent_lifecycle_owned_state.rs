@@ -372,6 +372,7 @@ impl KernelRuntimeOwnedState {
         self.kernel_browser_host.revoke_agent(agent.id());
         let session_id = agent.session_id().to_string();
         self.cancel_owned_agent_wakes(&session_id, Some(agent_id));
+        self.announce_agent_gone(&session_id, agent_id);
         let provider_run_ids = self
             .provider_store
             .list_runs()

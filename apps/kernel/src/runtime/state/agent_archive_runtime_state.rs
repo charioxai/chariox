@@ -154,6 +154,7 @@ impl KernelRuntimeState {
                     })?;
             }
         }
+        owned.announce_agent_gone(room, agent_id);
         let (_, queued) = owned.prompt_state_owner.state_parts(&session, agent_id);
         for prompt in queued {
             if let Some(mut cancelled) =
