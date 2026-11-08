@@ -245,9 +245,11 @@ impl SessionRuntimeCommandExecutor {
                     .attach_to_session(request, caller_user_id, terminal_caller)
                     .await
             }),
-            LocalDaemonRequest::DetachFromSession(request) => {
-                Box::pin(async move { self.store.detach_from_session(request).await })
-            }
+            LocalDaemonRequest::DetachFromSession(request) => Box::pin(async move {
+                self.store
+                    .detach_from_session(request, caller_user_id)
+                    .await
+            }),
             LocalDaemonRequest::FocusAgent(request) => Box::pin(async move {
                 self.store
                     .focus_agent(request, caller_user_id, terminal_caller)
