@@ -16,6 +16,7 @@ mod notification_follows;
 mod pressure;
 mod session_authority;
 mod standing;
+mod sub_agent;
 pub(in crate::runtime::state) mod worker_spy;
 mod workflow_authority;
 

@@ -393,7 +393,7 @@ pub(super) async fn admit_frame(
     Ok(caller)
 }
 
-fn access_transport_error(
+pub(crate) fn access_transport_error(
     error: &crate::error::DaemonError,
 ) -> crate::transport::kernel_protocol::KernelTransportError {
     match Refusal::exact(error) {

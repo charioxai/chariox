@@ -37,7 +37,7 @@ use crate::transport::kernel_protocol::{
 
 mod local_auth;
 mod local_presence;
-mod unix_access;
+pub(crate) mod unix_access;
 
 pub(crate) mod command_cache;
 mod outbound;
