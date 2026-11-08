@@ -1028,3 +1028,51 @@ async fn a_settled_decision_event_beyond_the_first_inbox_page_is_still_closed() 
         "the settled decision is still an open event in the holder's inbox"
     );
 }
+
+/// The holder's turn is settling and its output pump holds the run's provider lane: the child's
+/// approval request must not wait for it, and must reach the holder once its turn has ended.
+#[tokio::test]
+async fn a_decision_raised_while_the_holders_turn_settles_does_not_wait_for_its_lane() {
+    let t = tree(
+        "decision-settling-holder",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let run = t
+        .runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(&t.room, &t.p)
+        .unwrap();
+    let lane = t.runtime.provider_runtime_lanes.acquire(run.id()).await;
+    let raised = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        t.raise(permission("perm-settling", &t.c)),
+    )
+    .await;
+    assert!(
+        raised.is_ok(),
+        "the child's approval request waited for the holder's settling turn"
+    );
+    let mut answer = raised.unwrap();
+    let events = t.decision_events(&t.p);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_ne!(
+        events[0].state, "submitting",
+        "the steer that sent nothing is not left in flight: {events:?}"
+    );
+    assert!(answer.try_recv().is_err(), "nobody has answered yet");
+    drop(lane);
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-settling", "allow")
+            .unwrap(),
+        ChildDecisionStatus::Answered,
+        "the holder still answers the same decision"
+    );
+    assert_eq!(
+        answer.try_recv().unwrap().choice_id.as_deref(),
+        Some("allow")
+    );
+}
