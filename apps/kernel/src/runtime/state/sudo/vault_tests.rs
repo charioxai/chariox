@@ -1476,6 +1476,15 @@ async fn a_browser_fill_that_errors_closes_its_attempt_as_failed() {
     assert!(events[0].starts_with("Use attempted in browser by "));
     assert_eq!(events[1], "Use failed: the action did not finish");
     assert!(!events.iter().any(|event| event.starts_with("Used")));
+    let activity = serde_json::to_string(
+        &f.state
+            .home_runtime_secret_service()
+            .unwrap()
+            .vault_activity(&handle)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!activity.contains(stored(f, &handle).as_str()));
     f.state.shutdown_cleanup().await.unwrap();
 }
 
