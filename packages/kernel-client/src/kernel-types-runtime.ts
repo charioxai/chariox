@@ -468,6 +468,8 @@ export type AgentInstance = {
     leased_agent_id: string
     active_worker_provider_run_id?: string | null
     relay_peer_protocol_version?: number | null
+    /** The folder the worker runs this agent in (protocol 1000). */
+    worker_worktree_id?: string | null
   } | null
   /** A Move the kernel holds for this agent until it settles or is cancelled (protocol 639). */
   agent_move?: AgentMoveStatus | null

@@ -6935,3 +6935,15 @@ pictures; no client minimum changes (the Web feature minimum 629 gates request s
 Codex MCP tool results carry their image blocks in `images` like the other tool results. Snapshot:
 `protocol_shapes/session-outline-tool-image-count-1000.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- session_outline_tool_images tool_blob_preview`.
+
+### A remote agent's worker folder in its binding — local 1000
+
+MP-08 / MP-11: an agent's `remote_execution` binding gains `worker_worktree_id`, the folder the worker
+kernel runs the remote child in (the spawn's `--dir`). The home kernel sends it again with every renewal
+of the binding (the off-lock refresh, the authorized refresh and a refresh to a given worker), so a
+child whose worker restarted keeps its folder; a slice keeps its own path first. The field is optional
+and absent when the spawn named no folder; a stored binding without it reads as before. Peers are
+unchanged: the worker gets the folder through the existing `SpawnLeasedAgent.worktree_id`, so relay
+peer 439 stays, and no client minimum changes. Snapshot:
+`protocol_shapes/remote-agent-binding-worktree-1000.json`. Focused check:
+`cargo test -p chariox-kernel --lib -- remote_agent_binding_worktree lease_dir_after_restart`.

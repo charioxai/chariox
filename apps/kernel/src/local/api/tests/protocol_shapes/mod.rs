@@ -120,6 +120,7 @@ mod screenshot;
 mod waiting_room_workspace;
 
 mod provider_tool_images;
+mod remote_agent_binding_worktree;
 mod room_pin;
 mod session_outline_tool_images;
 mod usage_snapshot;
