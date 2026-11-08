@@ -712,6 +712,18 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelOwnerTimer { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
+        Operation::RememberPeerRequest {
+            kernel,
+            request_id,
+            answer,
+        } => {
+            tx.execute(
+                "INSERT OR IGNORE INTO peer_agent_requests VALUES(?1,?2,?3)",
+                params![kernel, request_id, answer],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
     }
 }
 

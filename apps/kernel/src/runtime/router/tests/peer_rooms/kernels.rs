@@ -220,3 +220,82 @@ fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
         assert!(!rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
     });
 }
+
+fn spawn(request_id: &str, room: &str) -> RelayPeerRequest {
+    RelayPeerRequest::SpawnRoomPeer {
+        protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        request_id: request_id.into(),
+        sender: stamp(),
+        room: room.into(),
+        provider: "dev-stub".into(),
+        account_profile: None,
+        model: None,
+        effort: None,
+        alias: Some(format!("remote-{request_id}")),
+        prompt: Some("review parser.rs".into()),
+        execution_mode: None,
+        permission_level: Some(AgentPermissionLevel::Yolo),
+        caller_authority: authority(AgentExecutionMode::Build, AgentPermissionLevel::Required),
+        follow: None,
+    }
+}
+
+#[test]
+fn a_room_agent_on_another_kernel_spawns_one_ordinary_clamped_peer_per_request() {
+    run_peer_test("peer-kernel-spawn", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        let first = rooms
+            .from_kernel_a(spawn("spawn-1", &rooms.peer_room))
+            .await;
+        let RelayPeerResponse::RoomPeerSpawned {
+            duplicate: false,
+            agent,
+            alias,
+            ..
+        } = first
+        else {
+            panic!("spawned: {first:?}")
+        };
+        assert_eq!(alias, "remote-spawn-1");
+        assert_eq!(agent.room_id, rooms.peer_room);
+        let retry = rooms
+            .from_kernel_a(spawn("spawn-1", &rooms.peer_room))
+            .await;
+        assert!(
+            matches!(&retry, RelayPeerResponse::RoomPeerSpawned { duplicate: true, agent: again, .. } if again.agent_id == agent.agent_id),
+            "a retried request id is the same agent: {retry:?}"
+        );
+        let app = rooms.app.lock().await;
+        let spawned: Vec<_> = app
+            .agents()
+            .get_session_agents(&rooms.peer_room)
+            .into_iter()
+            .filter(|candidate| candidate.alias() == Some("remote-spawn-1"))
+            .collect();
+        assert_eq!(spawned.len(), 1, "one agent for two sends");
+        assert!(
+            spawned[0].parent_agent_id().is_none(),
+            "an ordinary agent, no edge"
+        );
+        assert_eq!(
+            spawned[0].permission_level_override(),
+            Some(AgentPermissionLevel::Required),
+            "clamped to the caller's authority"
+        );
+        drop(app);
+        let inbox = rooms.inbox(&rooms.peer_room, &agent.agent_id).await;
+        assert_eq!(inbox.len(), 1, "the task arrives once, as a message");
+        assert_eq!(inbox[0].payload["sender_kernel_id"], KERNEL_A);
+    });
+}
+
+#[test]
+fn a_peer_spawn_from_another_kernel_into_a_room_it_cannot_address_is_refused() {
+    run_peer_test("peer-kernel-spawn-refused", || async {
+        let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
+        for room in ["no-such-room", rooms.foreign_room.as_str()] {
+            let response = rooms.from_kernel_a(spawn("spawn-2", room)).await;
+            assert_eq!(refusal(response), PeerAgentRefusal::RoomUnavailable);
+        }
+    });
+}

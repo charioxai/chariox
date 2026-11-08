@@ -378,6 +378,12 @@ pub(crate) enum Operation {
         cancelled: bool,
         now: u64,
     },
+    /// The first answer to a peer request of another kernel, so a retry gets the same one.
+    RememberPeerRequest {
+        kernel: String,
+        request_id: String,
+        answer: String,
+    },
     /// An event without a sender turn on this kernel, such as a message from a peer on
     /// another kernel; de-duplicated on (room, agent, source, occurrence).
     Occur(InboxEvent),

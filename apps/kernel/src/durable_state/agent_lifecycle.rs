@@ -106,7 +106,8 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
+    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
+    CREATE TABLE IF NOT EXISTS peer_agent_requests(sender_kernel_id TEXT NOT NULL,request_id TEXT NOT NULL,answer TEXT NOT NULL,PRIMARY KEY(sender_kernel_id,request_id));").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
         .map_err(sql)?
@@ -533,6 +534,37 @@ impl DurableKernelStateStore {
         after: u64,
     ) -> Result<Vec<InboxEvent>, DaemonError> {
         self.agent_work_inbox(room, agent, after, None)
+    }
+
+    /// The answer this kernel gave to a peer request of another kernel, if it already acted on it.
+    pub(crate) fn peer_agent_request_answer(
+        &self,
+        kernel: &str,
+        request_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.peer_requests")?;
+        db.query_row(
+            "SELECT answer FROM peer_agent_requests WHERE sender_kernel_id=?1 AND request_id=?2",
+            params![kernel, request_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)
+    }
+
+    /// Keeps the first answer to a peer request, so a retry gets the same one.
+    pub(crate) fn remember_peer_agent_request_answer(
+        &self,
+        kernel: &str,
+        request_id: &str,
+        answer: &str,
+    ) -> Result<(), DaemonError> {
+        self.agent_lifecycle(Operation::RememberPeerRequest {
+            kernel: kernel.into(),
+            request_id: request_id.into(),
+            answer: answer.into(),
+        })
+        .map(|_| ())
     }
 
     /// Whether this occurrence of `source` already reached the agent's inbox.

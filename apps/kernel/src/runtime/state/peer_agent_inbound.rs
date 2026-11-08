@@ -94,14 +94,16 @@ impl KernelRuntimeState {
             }
             RelayPeerRequest::SubscribePeerAgent { .. }
             | RelayPeerRequest::UnsubscribePeerAgent { .. }
-            | RelayPeerRequest::SpawnRoomPeer { .. }
             | RelayPeerRequest::DeliverPeerAgentOutcome { .. } => Err(ledger::error(
-                "this kernel does not carry follow, spawn or outcome requests across kernels yet",
+                "this kernel does not carry follow or outcome requests across kernels yet",
             )),
             RelayPeerRequest::PeerAgentMessage { .. }
             | RelayPeerRequest::PeerAgentCancel { .. } => {
                 Err(ledger::error("peer agent protocol version mismatch"))
             }
+            RelayPeerRequest::SpawnRoomPeer { .. } => Err(ledger::error(
+                "a peer spawn from another kernel runs through the command router",
+            )),
             _ => Err(ledger::error("not a peer agent request")),
         }
     }
@@ -123,6 +125,38 @@ impl KernelRuntimeState {
         }
         self.resolve_peer_agent(owner, &address.room, &address.agent)
             .map_err(|_| PeerAgentRefusal::AgentUnavailable)
+    }
+
+    /// A peer spawn from another kernel: the room is one of `owner`'s, and the new agent gets
+    /// what it asks for lowered to the caller's authority, itself lowered to this kernel's own
+    /// record of the room.
+    pub(crate) fn admit_room_peer_spawn(
+        &self,
+        owner: &str,
+        room: &str,
+        claimed: PeerCallerAuthority,
+        mode: Option<crate::provider::AgentExecutionMode>,
+        level: Option<crate::provider::AgentPermissionLevel>,
+    ) -> Result<crate::session::EffectiveAgentExecutionConfig, PeerAgentRefusal> {
+        let session = self
+            .owned
+            .session_store
+            .get_session(room)
+            .map_err(|_| PeerAgentRefusal::RoomUnavailable)?;
+        if session.owner_user_id() != owner {
+            return Err(PeerAgentRefusal::RoomUnavailable);
+        }
+        let record = crate::session::effective_agent_execution_config(&session, None);
+        let mine = crate::session::EffectiveAgentExecutionConfig {
+            mode: claimed.mode.lower(record.mode),
+            permission_level: claimed.permission_level.lower(record.permission_level),
+        };
+        Ok(crate::session::EffectiveAgentExecutionConfig {
+            mode: mode.unwrap_or(mine.mode).lower(mine.mode),
+            permission_level: level
+                .unwrap_or(mine.permission_level)
+                .lower(mine.permission_level),
+        })
     }
 
     /// The caller's authority, lowered to this kernel's own record of the target room, must
@@ -149,7 +183,7 @@ impl KernelRuntimeState {
             })
     }
 
-    fn peer_agent_stamp(&self, agent: &crate::agent::AgentInstance) -> PeerAgentStamp {
+    pub(crate) fn peer_agent_stamp(&self, agent: &crate::agent::AgentInstance) -> PeerAgentStamp {
         PeerAgentStamp {
             kernel_id: self.owned.config_projection.snapshot().daemon_id,
             room_id: agent.session_id().into(),
@@ -159,7 +193,7 @@ impl KernelRuntimeState {
 
     /// A message event with a kernel-stamped sender, never a prompt. One `request_id` of one
     /// sending kernel is one delivery.
-    async fn admit_peer_agent_message(
+    pub(crate) async fn admit_peer_agent_message(
         &self,
         kernel: &str,
         request_id: &str,

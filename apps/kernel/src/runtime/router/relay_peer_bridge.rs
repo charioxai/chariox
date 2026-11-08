@@ -41,6 +41,11 @@ impl CommandRouter {
         owner: &str,
         request: crate::transport::relay_peer::RelayPeerRequest,
     ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        if let request @ crate::transport::relay_peer::RelayPeerRequest::SpawnRoomPeer { .. } =
+            request
+        {
+            return self.spawn_room_peer(kernel, owner, request).await;
+        }
         self.runtime_state
             .receive_peer_agent_request(kernel, owner, request)
             .await
