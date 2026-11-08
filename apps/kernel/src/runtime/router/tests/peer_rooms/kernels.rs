@@ -64,7 +64,7 @@ fn cancel(rooms: &Rooms, mode: AgentExecutionMode) -> RelayPeerRequest {
 }
 
 impl Rooms {
-    async fn from_kernel_a(&self, request: RelayPeerRequest) -> RelayPeerResponse {
+    async fn request_from_kernel_a(&self, request: RelayPeerRequest) -> RelayPeerResponse {
         let owner = self.peer.owner_user_id().to_string();
         self.router
             .relay_peer_agent(KERNEL_A, &owner, request)
@@ -86,7 +86,7 @@ fn a_message_from_another_kernel_lands_once_as_a_stamped_message() {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Required);
         for _ in 0..2 {
             let response = rooms
-                .from_kernel_a(message(&rooms, "request-1", "peer", false))
+                .request_from_kernel_a(message(&rooms, "request-1", "peer", false))
                 .await;
             assert!(
                 matches!(&response, RelayPeerResponse::PeerAgentAccepted { target, .. } if target.agent_id == rooms.peer.id()),
@@ -99,7 +99,7 @@ fn a_message_from_another_kernel_lands_once_as_a_stamped_message() {
         assert_eq!(inbox[0].payload["sender_kernel_id"], KERNEL_A);
         assert_eq!(inbox[0].payload["sender_agent_id"], "agent-on-a");
         let RelayPeerResponse::PeerAgentAccepted { duplicate, .. } = rooms
-            .from_kernel_a(message(&rooms, "request-1", "peer", false))
+            .request_from_kernel_a(message(&rooms, "request-1", "peer", false))
             .await
         else {
             panic!("accepted")
@@ -113,7 +113,7 @@ fn a_peer_on_another_kernel_addresses_only_ordinary_agents_of_its_owner() {
     run_peer_test("peer-kernel-address", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let hidden = rooms
-            .from_kernel_a(message(&rooms, "r-hidden", "hidden", false))
+            .request_from_kernel_a(message(&rooms, "r-hidden", "hidden", false))
             .await;
         assert_eq!(refusal(hidden), PeerAgentRefusal::AgentUnavailable);
         let mut foreign = message(&rooms, "r-foreign", "foreign", false);
@@ -121,7 +121,7 @@ fn a_peer_on_another_kernel_addresses_only_ordinary_agents_of_its_owner() {
             target.room = rooms.foreign_room.clone();
         }
         assert_eq!(
-            refusal(rooms.from_kernel_a(foreign).await),
+            refusal(rooms.request_from_kernel_a(foreign).await),
             PeerAgentRefusal::RoomUnavailable
         );
         let mut missing = message(&rooms, "r-missing", "peer", false);
@@ -129,7 +129,7 @@ fn a_peer_on_another_kernel_addresses_only_ordinary_agents_of_its_owner() {
             target.room = "no-such-room".into();
         }
         assert_eq!(
-            refusal(rooms.from_kernel_a(missing).await),
+            refusal(rooms.request_from_kernel_a(missing).await),
             PeerAgentRefusal::RoomUnavailable
         );
         assert!(rooms
@@ -148,7 +148,7 @@ fn a_steer_from_another_kernel_needs_at_least_the_targets_authority() {
     run_peer_test("peer-kernel-steer", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Required, AgentPermissionLevel::Yolo);
         let response = rooms
-            .from_kernel_a(message_as(
+            .request_from_kernel_a(message_as(
                 &rooms,
                 "steer-1",
                 "peer",
@@ -182,7 +182,7 @@ fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
             AgentPermissionLevel::Required,
         );
         let steer = rooms
-            .from_kernel_a(message_as(
+            .request_from_kernel_a(message_as(
                 &rooms,
                 "steer-2",
                 "peer",
@@ -203,7 +203,7 @@ fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
 
         assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
         let less = rooms
-            .from_kernel_a(cancel(&rooms, AgentExecutionMode::Plan))
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Plan))
             .await;
         assert!(matches!(
             refusal(less),
@@ -211,7 +211,7 @@ fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
         ));
         assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
         let equal = rooms
-            .from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
             .await;
         assert!(
             matches!(equal, RelayPeerResponse::PeerAgentAccepted { .. }),
@@ -245,7 +245,7 @@ fn a_room_agent_on_another_kernel_spawns_one_ordinary_clamped_peer_per_request()
     run_peer_test("peer-kernel-spawn", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         let first = rooms
-            .from_kernel_a(spawn("spawn-1", &rooms.peer_room))
+            .request_from_kernel_a(spawn("spawn-1", &rooms.peer_room))
             .await;
         let RelayPeerResponse::RoomPeerSpawned {
             duplicate: false,
@@ -259,7 +259,7 @@ fn a_room_agent_on_another_kernel_spawns_one_ordinary_clamped_peer_per_request()
         assert_eq!(alias, "remote-spawn-1");
         assert_eq!(agent.room_id, rooms.peer_room);
         let retry = rooms
-            .from_kernel_a(spawn("spawn-1", &rooms.peer_room))
+            .request_from_kernel_a(spawn("spawn-1", &rooms.peer_room))
             .await;
         assert!(
             matches!(&retry, RelayPeerResponse::RoomPeerSpawned { duplicate: true, agent: again, .. } if again.agent_id == agent.agent_id),
@@ -294,7 +294,7 @@ fn a_peer_spawn_from_another_kernel_into_a_room_it_cannot_address_is_refused() {
     run_peer_test("peer-kernel-spawn-refused", || async {
         let rooms = Rooms::new(AgentPermissionLevel::Yolo, AgentPermissionLevel::Yolo);
         for room in ["no-such-room", rooms.foreign_room.as_str()] {
-            let response = rooms.from_kernel_a(spawn("spawn-2", room)).await;
+            let response = rooms.request_from_kernel_a(spawn("spawn-2", room)).await;
             assert_eq!(refusal(response), PeerAgentRefusal::RoomUnavailable);
         }
     });
