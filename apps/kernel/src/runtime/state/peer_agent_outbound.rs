@@ -4,6 +4,7 @@
 //! failure into one typed refusal the agent can act on. An unknown room, kernel or agent and one
 //! the caller may not address give the same refusal.
 use super::*;
+use crate::durable_state::agent_lifecycle::Operation;
 use crate::runtime::room_tool_admission::denied;
 use crate::transport::relay_peer::{
     PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority, RelayPeerRequest,
@@ -285,6 +286,25 @@ impl KernelRuntimeState {
             None => None,
         };
         let source_cursor = self.owned.durable_state_store.agent_source_cursor()?;
+        // The follow is held here before the other kernel creates the peer, so a first turn that
+        // ends before the answer arrives is recorded and reaches the follow once the peer is known.
+        let held = match (&follow, &task) {
+            (Some(follow), Some((task, prompt))) => {
+                let pending = PeerAgentStamp {
+                    kernel_id: kernel.into(),
+                    room_id: spawn.room.trim().into(),
+                    agent_id: follow.subscription_id.clone(),
+                };
+                Some(self.register_peer_follow(
+                    task,
+                    prompt,
+                    follow.subscription_id.clone(),
+                    &pending,
+                    source_cursor,
+                )?)
+            }
+            _ => None,
+        };
         let request = RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
             request_id,
@@ -301,33 +321,50 @@ impl KernelRuntimeState {
             caller_authority: caller.authority,
             follow: follow.clone(),
         };
-        match self.peer_agent_link(&caller.owner, kernel, request).await? {
-            RelayPeerResponse::RoomPeerSpawned {
+        let answered = match self.peer_agent_link(&caller.owner, kernel, request).await {
+            Ok(RelayPeerResponse::RoomPeerSpawned {
                 agent,
                 alias,
                 duplicate,
                 ..
-            } => {
-                let follow_registration_id = match (follow, task) {
-                    (Some(follow), Some((task, prompt))) => Some(self.register_peer_follow(
-                        &task,
-                        &prompt,
-                        follow.subscription_id,
-                        &agent,
-                        source_cursor,
-                    )?),
-                    _ => None,
-                };
-                Ok(RoomPeerSpawned {
-                    agent,
-                    alias,
-                    duplicate,
-                    follow_registration_id,
-                })
+            }) => Ok((agent, alias, duplicate)),
+            Ok(RelayPeerResponse::PeerAgentRefused { refusal, .. }) => {
+                Err(refused(kernel, refusal))
             }
-            RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
-            _ => Err(kernel_unreachable(kernel)),
-        }
+            Ok(_) => Err(kernel_unreachable(kernel)),
+            Err(error) => Err(error),
+        };
+        let (agent, alias, duplicate) = match answered {
+            Ok(spawned) => spawned,
+            Err(error) => {
+                if let (Some(registration), Some((task, prompt))) = (held, task) {
+                    self.owned
+                        .durable_state_store
+                        .agent_lifecycle(Operation::Unsubscribe {
+                            task,
+                            prompt,
+                            registration,
+                        })?;
+                }
+                return Err(error);
+            }
+        };
+        let follow_registration_id = match (follow, task) {
+            (Some(follow), Some((task, prompt))) => Some(self.register_peer_follow(
+                &task,
+                &prompt,
+                follow.subscription_id,
+                &agent,
+                source_cursor,
+            )?),
+            _ => None,
+        };
+        Ok(RoomPeerSpawned {
+            agent,
+            alias,
+            duplicate,
+            follow_registration_id,
+        })
     }
 
     /// One spawn call is one request id, which the receiving kernel remembers with its answer.
