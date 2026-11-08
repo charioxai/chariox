@@ -605,6 +605,32 @@ impl CommandRouter {
             Ok(spawn) => spawn,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
+        // `--room` with `--kernel` names a room on that kernel; this kernel's own name keeps the
+        // spawn here.
+        if let (Some(room), Some(kernel)) = (spawn.room.clone(), spawn.kernel_ref.take()) {
+            match self.runtime_state.resolve_peer_kernel(&kernel).await {
+                Ok(Some(kernel)) => {
+                    return Ok(self
+                        .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
+                        .await)
+                }
+                Ok(None) => {}
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        }
+
+        // A guest of this room reaches no other room: every one reads as missing.
+        if spawn
+            .room
+            .as_deref()
+            .is_some_and(|room| room != session.id())
+            && self.runtime_state.drives_as_room_guest(session, metaagent)
+        {
+            return Ok(meta_command_failure_result(
+                command,
+                crate::runtime::room_tool_admission::denied("the room for the peer does not exist"),
+            ));
+        }
 
         if let Some(reference) = spawn.slice_ref.as_deref() {
             match self
@@ -794,6 +820,60 @@ impl CommandRouter {
             }
         }
         Ok(result)
+    }
+
+    /// `agent spawn --room <room> --kernel <kernel>`: an ordinary agent in a room on another
+    /// kernel of the owner, with the same defaults a peer on this kernel gets. Its turns cannot
+    /// be followed across kernels yet, so the caller says --no-follow.
+    async fn spawn_peer_on_kernel(
+        &self,
+        metaagent: &crate::agent::AgentInstance,
+        command: &str,
+        kernel: &str,
+        room: String,
+        spawn: MetaAgentSpawnArgs,
+    ) -> RuntimeToolResult {
+        if !spawn.no_follow {
+            return meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent spawn --room --kernel needs --no-follow; following a peer on another kernel is not carried yet",
+                ),
+            );
+        }
+        let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
+        let inherited =
+            |value: Option<&str>| same_provider.then(|| value.map(str::to_string)).flatten();
+        let request = crate::runtime::state::peer_agent_outbound::RoomPeerSpawn {
+            room,
+            provider: spawn
+                .provider
+                .unwrap_or_else(|| metaagent.provider().to_string()),
+            account_profile: spawn
+                .account_profile
+                .or_else(|| inherited(metaagent.account_profile())),
+            model: spawn.model.or_else(|| inherited(metaagent.model())),
+            effort: spawn.effort.or_else(|| inherited(metaagent.effort())),
+            alias: spawn.alias,
+            prompt: None,
+            permission_level: spawn
+                .permission_level
+                .or(metaagent.permission_level_override()),
+        };
+        match self
+            .runtime_state
+            .spawn_room_peer(metaagent, kernel, request)
+            .await
+        {
+            Ok((agent, alias)) => RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "command": command,
+                    "response": {"spawned": {"kernel": agent.kernel_id, "room": agent.room_id, "agent": agent.agent_id, "alias": alias}},
+                }),
+            },
+            Err(error) => meta_command_failure_result(command, error),
+        }
     }
 
     /// `trigger notification <source> [prompt]` and `trigger remove <id>`: an agent acts on its own

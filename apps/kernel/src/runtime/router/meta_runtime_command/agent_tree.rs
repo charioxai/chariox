@@ -110,16 +110,50 @@ impl CommandRouter {
         command: &str,
         args: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let (reference, room) = match args {
-            [reference] => (reference, None),
-            [reference, flag, room] if flag == "--room" => (reference, Some(room.as_str())),
-            _ => {
-                return Ok(meta_command_failure_result(
-                    command,
-                    meta_command_error("usage: agent cancel <agent-ref> [--room <room>]"),
-                ))
-            }
+        let usage = || {
+            Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent cancel <agent-ref> [--room <room> [--kernel <kernel>]]",
+                ),
+            ))
         };
+        let Some((reference, options)) = args.split_first() else {
+            return usage();
+        };
+        let (mut room, mut kernel) = (None, None);
+        for pair in options.chunks(2) {
+            match pair {
+                [flag, value] if flag == "--room" && room.is_none() => room = Some(value.as_str()),
+                [flag, value] if flag == "--kernel" && kernel.is_none() => {
+                    kernel = Some(value.as_str())
+                }
+                _ => return usage(),
+            }
+        }
+        if let Some(kernel) = kernel {
+            let Some(room) = room else {
+                return usage();
+            };
+            match self.runtime_state.resolve_peer_kernel(kernel).await {
+                Ok(Some(kernel)) => {
+                    return Ok(
+                        match self
+                            .cancel_peer_agent_on_kernel(parent, &kernel, room, reference)
+                            .await
+                        {
+                            Ok(cancelled) => RuntimeToolResult {
+                                ok: true,
+                                payload: serde_json::json!({"command": command, "response": cancelled}),
+                            },
+                            Err(error) => meta_command_failure_result(command, error),
+                        },
+                    )
+                }
+                Ok(None) => {}
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        }
         let target = match room {
             Some(room) => {
                 self.runtime_state
@@ -165,6 +199,30 @@ impl CommandRouter {
             )),
             Err(error) => Ok(meta_command_failure_result(command, error)),
         }
+    }
+
+    /// `agent cancel <agent> --room <room> --kernel <kernel>` on another kernel of the owner.
+    async fn cancel_peer_agent_on_kernel(
+        &self,
+        parent: &crate::agent::AgentInstance,
+        kernel: &str,
+        room: &str,
+        reference: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let target = self
+            .runtime_state
+            .relay_peer_agent(
+                parent,
+                kernel,
+                room,
+                reference,
+                crate::runtime::state::peer_agent_outbound::PeerAgentCall::Cancel,
+                format!("{:032x}", rand::random::<u128>()),
+            )
+            .await?;
+        Ok(
+            serde_json::json!({"cancelled": true, "kernel": target.kernel_id, "room": target.room_id, "agent": target.agent_id}),
+        )
     }
 
     /// `agent children [agent]` lists everything below the caller, or below one of its descendants.

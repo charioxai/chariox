@@ -8,6 +8,9 @@ pub struct SendAgentMessageArgs {
     /// Another room of the same owner on this kernel; the sender's room when absent.
     #[serde(default)]
     pub room: Option<String>,
+    /// Another kernel of the same owner, by id or name; `room` then names a room there.
+    #[serde(default)]
+    pub kernel: Option<String>,
     pub message: String,
     pub origin_prompt_id: String,
     #[serde(default)]
@@ -65,6 +68,10 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                     "room": {
                         "type": "string",
                         "description": "Optional id of another room of the same owner on this kernel. Its ordinary agents are addressable; sub-agents are not."
+                    },
+                    "kernel": {
+                        "type": "string",
+                        "description": "Optional id or name of another kernel of the same owner; `room` then names a room on that kernel. To answer a message from another kernel, use its sender_kernel_id, sender_room_id and sender_agent_id."
                     },
                     "message": {
                         "type": "string",

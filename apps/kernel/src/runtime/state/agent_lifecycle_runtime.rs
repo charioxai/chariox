@@ -520,6 +520,13 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("stale sender turn"));
         }
+        if let Some(kernel) = args.kernel.as_deref() {
+            if let Some(kernel) = self.resolve_peer_kernel(kernel).await? {
+                return self
+                    .send_agent_message_to_kernel(sender, &kernel, args)
+                    .await;
+            }
+        }
         let target =
             &self.resolve_message_target(session, sender, args.room.as_deref(), &args.agent)?;
         let target_room = target.session_id();
@@ -633,6 +640,45 @@ impl KernelRuntimeState {
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
+        })
+    }
+    /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
+    /// Nothing waits here for its answer: a reply comes back the same way, as a message.
+    async fn send_agent_message_to_kernel(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        args: crate::transport::runtime_tools::SendAgentMessageArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let Some(room) = args.room.as_deref() else {
+            return Err(ledger::error(
+                "a message to another kernel names the agent's room there",
+            ));
+        };
+        super::peer_agent_outbound::refuse_peer_attachments(&args.attachments)?;
+        let request_id = args
+            .idempotency_key
+            .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
+        if request_id.trim().is_empty() || request_id.len() > 128 {
+            return Err(ledger::error("invalid message occurrence"));
+        }
+        let target = self
+            .relay_peer_agent(
+                sender,
+                kernel,
+                room,
+                &args.agent,
+                super::peer_agent_outbound::PeerAgentCall::Message {
+                    message: args.message,
+                    urgent: args.urgent,
+                    reply_requested: args.reply_requested,
+                },
+                request_id,
+            )
+            .await?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({"status":"delivered","kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
         })
     }
     /// Native TUI turns end at the provider Stop event, which completes the prompt without the

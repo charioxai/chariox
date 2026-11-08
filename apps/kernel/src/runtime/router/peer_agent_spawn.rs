@@ -138,6 +138,7 @@ impl CommandRouter {
                     &agent,
                     prompt,
                     false,
+                    false,
                 )
                 .await?;
         }

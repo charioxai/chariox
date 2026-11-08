@@ -399,7 +399,6 @@ pub(super) fn parse_meta_agent_spawn_args(
                 "--dir/--worktree",
                 directory.is_some() || git_worktree.is_some(),
             ),
-            ("--kernel/--machine", kernel_ref.is_some()),
             (
                 "--slice",
                 slice_ref.is_some() || slice_create.is_some() || slice_display_mode.is_some(),
@@ -409,7 +408,7 @@ pub(super) fn parse_meta_agent_spawn_args(
         ];
         if let Some((option, _)) = unsupported.iter().find(|(_, given)| *given) {
             return Err(meta_command_error(format!(
-                "usage: agent spawn --room does not accept {option}; a peer starts in the target room's own folder on this kernel, and only its owner sets a deadline"
+                "usage: agent spawn --room does not accept {option}; a peer starts in the target room's own folder on its kernel, and only its owner sets a deadline"
             )));
         }
     }

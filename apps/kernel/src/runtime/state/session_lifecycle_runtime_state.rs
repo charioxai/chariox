@@ -1429,7 +1429,10 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
 }
 
-fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+pub(super) fn kernel_ref_matches_local_config(
+    config: &crate::config::DaemonConfig,
+    kernel_ref: &str,
+) -> bool {
     let kernel_ref = kernel_ref.trim();
     !kernel_ref.is_empty()
         && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))

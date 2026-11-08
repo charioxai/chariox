@@ -1,7 +1,284 @@
 //! Peers across kernels, sending side: a room agent here messages, steers, cancels or spawns an
-//! ordinary agent of a room on another kernel of its owner.
+//! ordinary agent of a room on another kernel of its owner. The receiving kernel decides with its
+//! own records (`peer_agent_inbound.rs`); this side names and stamps the caller and turns every
+//! failure into one typed refusal the agent can act on. An unknown room, kernel or agent and one
+//! the caller may not address give the same refusal.
 use super::*;
-use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
+use crate::runtime::room_tool_admission::denied;
+use crate::transport::relay_peer::{
+    PeerAgentAddress, PeerAgentRefusal, PeerAgentStamp, PeerCallerAuthority, RelayPeerRequest,
+    RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+};
+
+const PEER_AGENT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn refusal(reason: &str, detail: impl std::fmt::Display) -> DaemonError {
+    denied(format!("{reason}: {detail}"))
+}
+
+fn kernel_unreachable(kernel: &str) -> DaemonError {
+    refusal(
+        "kernel_unreachable",
+        format!("kernel `{kernel}` is not reachable now; try again when it is online"),
+    )
+}
+
+fn room_unavailable(kernel: &str) -> DaemonError {
+    refusal(
+        "room_unavailable",
+        format!("that room is not available on kernel `{kernel}`"),
+    )
+}
+
+/// What the receiving kernel answered, as the caller sees it.
+fn refused(kernel: &str, refusal_reason: PeerAgentRefusal) -> DaemonError {
+    match refusal_reason {
+        PeerAgentRefusal::RoomUnavailable => room_unavailable(kernel),
+        PeerAgentRefusal::AgentUnavailable | PeerAgentRefusal::Ambiguous => refusal(
+            "agent_unavailable",
+            format!("agent is unavailable in that room on kernel `{kernel}`"),
+        ),
+        PeerAgentRefusal::MoreAuthority {
+            mode,
+            permission_level,
+        } => refusal(
+            "not_permitted",
+            format!(
+                "the agent has more authority than you ({permission_level:?} in {mode} mode); send it a message instead"
+            ),
+        ),
+        PeerAgentRefusal::SubAgentCaller => refusal(
+            "not_permitted",
+            "only a room agent reaches agents on another kernel",
+        ),
+        PeerAgentRefusal::RoomFull => refusal(
+            "room_full",
+            format!("that room on kernel `{kernel}` has no room for another agent"),
+        ),
+        PeerAgentRefusal::AttachmentsLocalOnly => attachments_local_only(),
+    }
+}
+
+fn attachments_local_only() -> DaemonError {
+    refusal(
+        "attachments_local_only",
+        "attachments stay on this kernel; send the message without them",
+    )
+}
+
+/// The calling agent as the other kernel sees it: its owner, its stamp and its authority.
+struct PeerAgentCaller {
+    owner: String,
+    stamp: PeerAgentStamp,
+    authority: PeerCallerAuthority,
+}
+
+/// What a room agent here asks of an agent on another kernel.
+pub(crate) enum PeerAgentCall {
+    Message {
+        message: String,
+        urgent: bool,
+        reply_requested: bool,
+    },
+    Cancel,
+}
+
+/// A peer to create in a room on another kernel.
+pub(crate) struct RoomPeerSpawn {
+    pub(crate) room: String,
+    pub(crate) provider: String,
+    pub(crate) account_profile: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) effort: Option<String>,
+    pub(crate) alias: Option<String>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) permission_level: Option<crate::provider::AgentPermissionLevel>,
+}
+
+impl KernelRuntimeState {
+    /// The other kernel `kernel_ref` names, by id or name as `agent spawn --kernel` takes them;
+    /// `None` when it names this kernel.
+    pub(crate) async fn resolve_peer_kernel(
+        &self,
+        kernel_ref: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let kernel_ref = kernel_ref.trim();
+        let config = self.owned.config_projection.snapshot();
+        if super::session_lifecycle_runtime_state::kernel_ref_matches_local_config(
+            &config, kernel_ref,
+        ) {
+            return Ok(None);
+        }
+        #[cfg(test)]
+        if let Some(kernel) = peer_agent_link_for_tests::resolve(kernel_ref) {
+            return Ok(Some(kernel));
+        }
+        crate::transport::relay_discovery::get_live_kernel(&config, kernel_ref)
+            .await
+            .map(|presence| Some(presence.kernel_id))
+            .map_err(|_| kernel_unreachable(kernel_ref))
+    }
+
+    /// Messages, steers or cancels `agent` of `room` on `kernel`; answers the target's stamp.
+    pub(crate) async fn relay_peer_agent(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        room: &str,
+        agent: &str,
+        call: PeerAgentCall,
+        request_id: String,
+    ) -> Result<PeerAgentStamp, DaemonError> {
+        let caller = self.peer_agent_caller(sender, kernel)?;
+        let target = PeerAgentAddress {
+            room: room.trim().into(),
+            agent: agent.trim().trim_start_matches('@').into(),
+        };
+        let request = match call {
+            PeerAgentCall::Message {
+                message,
+                urgent,
+                reply_requested,
+            } => RelayPeerRequest::PeerAgentMessage {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                request_id,
+                sender: caller.stamp,
+                target,
+                message,
+                urgent,
+                reply_requested,
+                caller_authority: caller.authority,
+            },
+            PeerAgentCall::Cancel => RelayPeerRequest::PeerAgentCancel {
+                protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                request_id,
+                sender: caller.stamp,
+                target,
+                caller_authority: caller.authority,
+            },
+        };
+        match self.peer_agent_link(&caller.owner, kernel, request).await? {
+            RelayPeerResponse::PeerAgentAccepted { target, .. } => Ok(target),
+            RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
+            _ => Err(kernel_unreachable(kernel)),
+        }
+    }
+
+    /// Creates an ordinary agent in `spawn.room` on `kernel`; answers its stamp and alias.
+    pub(crate) async fn spawn_room_peer(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        spawn: RoomPeerSpawn,
+    ) -> Result<(PeerAgentStamp, String), DaemonError> {
+        if sender.is_sub_agent() {
+            return Err(refused(kernel, PeerAgentRefusal::SubAgentCaller));
+        }
+        let caller = self.peer_agent_caller(sender, kernel)?;
+        let request = RelayPeerRequest::SpawnRoomPeer {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            request_id: format!("{:032x}", rand::random::<u128>()),
+            sender: caller.stamp,
+            room: spawn.room.trim().into(),
+            provider: spawn.provider,
+            account_profile: spawn.account_profile,
+            model: spawn.model,
+            effort: spawn.effort,
+            alias: spawn.alias,
+            prompt: spawn.prompt,
+            execution_mode: None,
+            permission_level: spawn.permission_level,
+            caller_authority: caller.authority,
+            follow: None,
+        };
+        match self.peer_agent_link(&caller.owner, kernel, request).await? {
+            RelayPeerResponse::RoomPeerSpawned { agent, alias, .. } => Ok((agent, alias)),
+            RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
+            _ => Err(kernel_unreachable(kernel)),
+        }
+    }
+
+    /// The caller's owner must be the Cloud owner both kernels share, and a guest of a room
+    /// reaches no agent outside it: it gets the answer of a room that is not there.
+    fn peer_agent_caller(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+    ) -> Result<PeerAgentCaller, DaemonError> {
+        let session = self.owned.session_store.get_session(sender.session_id())?;
+        if self.drives_as_room_guest(&session, sender) {
+            return Err(room_unavailable(kernel));
+        }
+        let config = self.owned.config_projection.snapshot();
+        let Some(owner) = config
+            .cloud_relay
+            .as_ref()
+            .map(|profile| profile.user_id.clone())
+            .filter(|owner| !owner.is_empty() && owner == session.owner_user_id())
+        else {
+            return Err(refusal(
+                "owner_unverified",
+                "this kernel is not signed in to the Cloud account of this room's owner, so it cannot reach agents on other kernels",
+            ));
+        };
+        let authority = crate::session::effective_agent_execution_config_in_tree(
+            &session,
+            sender,
+            &self.session_agents(sender.session_id()),
+        );
+        Ok(PeerAgentCaller {
+            owner,
+            stamp: PeerAgentStamp {
+                kernel_id: config.daemon_id,
+                room_id: sender.session_id().into(),
+                agent_id: sender.id().into(),
+            },
+            authority: PeerCallerAuthority {
+                mode: authority.mode,
+                permission_level: authority.permission_level,
+            },
+        })
+    }
+
+    /// The one link to a kernel of the same owner. A kernel that is gone before or while it
+    /// answers is unreachable; any answer it gave reaches the caller as it is.
+    async fn peer_agent_link(
+        &self,
+        owner: &str,
+        kernel: &str,
+        request: RelayPeerRequest,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        #[cfg(test)]
+        if let Some(link) = peer_agent_link_for_tests::link(kernel) {
+            let from = self.owned.config_projection.snapshot().daemon_id;
+            return link(from, owner.to_string(), request).await;
+        }
+        match self
+            .send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
+            .await
+        {
+            Ok(response) => Ok(response),
+            Err(error @ DaemonError::RelayTransport { .. })
+                if error.is_answered_peer_refusal()
+                    && !matches!(&error, DaemonError::RelayTransport { code, .. } if code == "target_not_connected") =>
+            {
+                Err(error)
+            }
+            Err(_) => Err(kernel_unreachable(kernel)),
+        }
+    }
+}
+
+/// Peer refusals for attachments are decided here: files stay on this kernel.
+pub(crate) fn refuse_peer_attachments(
+    attachments: &[crate::session::PromptAttachment],
+) -> Result<(), DaemonError> {
+    if attachments.is_empty() {
+        Ok(())
+    } else {
+        Err(attachments_local_only())
+    }
+}
 
 /// Two kernels in one test process: a request to a registered kernel id reaches its router as
 /// the relay would deliver it, after the same-owner admission.

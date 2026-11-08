@@ -150,7 +150,8 @@ impl KernelRuntimeState {
             }
             "chariox.events.subscribe" if other_room(&args, room).is_some() => self
                 .subscribe_peer_in_other_room(
-                    session.owner_user_id(),
+                    &session,
+                    actor,
                     task_id,
                     prompt.id(),
                     &args,
@@ -301,7 +302,8 @@ impl KernelRuntimeState {
     /// that room and reach this task as peer events.
     fn subscribe_peer_in_other_room(
         &self,
-        owner: &str,
+        session: &crate::session::RuntimeSession,
+        actor: &str,
         task_id: &str,
         prompt_id: &str,
         args: &serde_json::Value,
@@ -310,7 +312,8 @@ impl KernelRuntimeState {
         let source = args["source_id"]
             .as_str()
             .ok_or_else(|| ledger::error("source_id required"))?;
-        let peer = self.resolve_peer_agent(owner, other, source)?;
+        let caller = self.owned.agent_store.get_agent(actor)?;
+        let peer = self.resolve_message_target(session, &caller, Some(other), source)?;
         let id = format!("subscription-{:032x}", rand::random::<u128>());
         self.owned
             .durable_state_store

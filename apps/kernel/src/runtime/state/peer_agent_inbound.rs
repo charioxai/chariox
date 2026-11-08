@@ -46,11 +46,6 @@ impl KernelRuntimeState {
                         return Ok(refused(refusal));
                     }
                 }
-                if reply_requested {
-                    return Err(ledger::error(
-                        "a reply across kernels is not carried yet; send the message without a reply request",
-                    ));
-                }
                 self.admit_peer_agent_message(
                     kernel,
                     &request_id,
@@ -58,6 +53,7 @@ impl KernelRuntimeState {
                     &target,
                     message,
                     urgent,
+                    reply_requested,
                 )
                 .await
             }
@@ -192,7 +188,8 @@ impl KernelRuntimeState {
     }
 
     /// A message event with a kernel-stamped sender, never a prompt. One `request_id` of one
-    /// sending kernel is one delivery.
+    /// sending kernel is one delivery. A requested reply goes back as a message to the stamped
+    /// sender on its kernel; nothing here waits for it.
     pub(crate) async fn admit_peer_agent_message(
         &self,
         kernel: &str,
@@ -201,6 +198,7 @@ impl KernelRuntimeState {
         target: &crate::agent::AgentInstance,
         message: String,
         urgent: bool,
+        reply_requested: bool,
     ) -> Result<RelayPeerResponse, DaemonError> {
         if message.trim().is_empty() {
             return Err(ledger::error("message is empty"));
@@ -223,7 +221,7 @@ impl KernelRuntimeState {
             &source,
             &occurrence,
             "message",
-            serde_json::json!({"message":message,"sender_agent_id":sender.agent_id,"sender_room_id":sender.room_id,"sender_kernel_id":kernel,"no_reply":true,"attachments":[]}),
+            serde_json::json!({"message":message,"sender_agent_id":sender.agent_id,"sender_room_id":sender.room_id,"sender_kernel_id":kernel,"no_reply":!reply_requested,"attachments":[]}),
         );
         event.urgent = urgent;
         let Outcome::Event(event) = self

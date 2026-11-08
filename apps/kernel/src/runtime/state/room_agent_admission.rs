@@ -258,6 +258,10 @@ impl KernelRuntimeState {
             ));
         }
         let rooms = &self.owned.session_store;
+        let own_room = rooms.get_session(actor.session_id())?;
+        if self.drives_as_room_guest(&own_room, actor) {
+            return Err(denied("the room for the peer does not exist"));
+        }
         let (Some(own_owner), Some(room_owner)) = (
             rooms.session_owner_user_id(actor.session_id()),
             rooms.session_owner_user_id(&request.session_id),
