@@ -884,6 +884,38 @@ impl KernelRuntimeState {
             .dispatch_kernel_task_continuation(task, attachment, text, hidden_system_context)
             .await
     }
+    /// A continuation that never starts leaves no other trace: this records what
+    /// it queues behind (the agent's prompt queue, a turn still running, a
+    /// deferred provider reload or MCP continuation) for diagnosing a stall.
+    fn log_task_continuation_decision(&self, task: &AgentTaskExecution) {
+        let (queued_prompts, turn_active) = self
+            .owned
+            .session_store
+            .get_session(&task.room_id)
+            .map_or((0, false), |session| {
+                (
+                    self.owned
+                        .prompt_state_owner
+                        .queued_prompt_count_for_agent(&session, &task.agent_id),
+                    self.owned
+                        .prompt_state_owner
+                        .active_prompt_for_agent(&session, &task.agent_id)
+                        .is_some(),
+                )
+            });
+        let reload_pending = self
+            .owned
+            .pending_provider_reloads
+            .write()
+            .contains_key(&task.agent_id);
+        let mcp_continuation_pending = self
+            .owned
+            .pending_mcp_continuations
+            .write()
+            .contains_key(&task.agent_id);
+        tracing::info!(task_id=%task.task_id, agent_id=%task.agent_id, queued_prompts, turn_active,
+            reload_pending, mcp_continuation_pending, "task continuation queued");
+    }
     async fn dispatch_kernel_task_continuation(
         &self,
         task: &AgentTaskExecution,
@@ -967,6 +999,7 @@ impl KernelRuntimeState {
         } else {
             prompt
         };
+        self.log_task_continuation_decision(task);
         let mut submission = self
             .submit_prepared_prompt_with_queue_policy(
                 crate::app::KernelPreparedPromptSubmission {
