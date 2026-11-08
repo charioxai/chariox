@@ -6,7 +6,7 @@ use crate::durable_state::agent_lifecycle::ExecutionState;
 use crate::local::{
     AgentTree, EventRefs, ListDescendantsRequest, LocalDaemonResponse, OutsideEventValue,
 };
-use crate::runtime::agent_tree_projection::{project_agent_tree, NodeTurn};
+use crate::runtime::agent_tree_projection::{project_agent_tree, tree_for_viewer, NodeTurn};
 use std::hash::{Hash, Hasher};
 
 impl KernelRuntimeState {
@@ -32,6 +32,8 @@ impl KernelRuntimeState {
                 session_id: request.session_id.clone(),
                 agent_id: request.agent_id.clone(),
             })?;
+        let agents = self.owned.agent_store.get_session_agents(session.id());
+        let tree = tree_for_viewer(tree, &session, &agents, caller_user_id);
         Ok(LocalDaemonResponse::AgentTree { tree })
     }
 

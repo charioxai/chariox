@@ -14,7 +14,7 @@
 use crate::agent::AgentInstance;
 use crate::local::{AgentTree, AgentTreeNode, AgentTreeState, AgentTreeTotals};
 use crate::provider::TurnOutcomeKind;
-use crate::session::RuntimeSession;
+use crate::session::{CollaborationLevel, RuntimeSession};
 
 /// What the latest task of an agent says about its turn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,57 @@ fn node_state(agent: &AgentInstance, waiting: bool, turn: Option<NodeTurn>) -> A
     } else {
         AgentTreeState::Idle
     }
+}
+
+fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
+    AgentTreeTotals {
+        live: nodes
+            .iter()
+            .filter(|node| {
+                !matches!(
+                    node.state,
+                    AgentTreeState::Idle | AgentTreeState::Ended | AgentTreeState::Error
+                )
+            })
+            .count() as u32,
+        running: nodes
+            .iter()
+            .filter(|node| node.state == AgentTreeState::Running)
+            .count() as u32,
+        needs_user: nodes.iter().filter(|node| node.needs_user).count() as u32,
+    }
+}
+
+/// What `viewer` reads of `tree`, by the rule the session projection applies to agents: an agent
+/// of the viewer is whole; another user's agent shows only to a collaborator who may view traces
+/// and then without provider and model unless the collaborator may view parameters.
+pub(crate) fn tree_for_viewer(
+    mut tree: AgentTree,
+    session: &RuntimeSession,
+    agents: &[AgentInstance],
+    viewer: &str,
+) -> AgentTree {
+    let level = session
+        .collaboration_level_for_user(viewer)
+        .unwrap_or(CollaborationLevel::Private);
+    let owner_of = |agent_id: &str| {
+        agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .map(|agent| agent.owner_user_id())
+    };
+    tree.nodes
+        .retain(|node| owner_of(&node.agent_id) == Some(viewer) || level.can_view_agent_trace());
+    if !level.can_view_agent_parameters() {
+        for node in &mut tree.nodes {
+            if owner_of(&node.agent_id) != Some(viewer) {
+                node.provider = "redacted".to_owned();
+                node.model = None;
+            }
+        }
+    }
+    tree.totals = totals_of(&tree.nodes);
+    tree
 }
 
 /// `None` when `root` is not an agent of the session. Nodes are the descendants
@@ -109,22 +160,7 @@ pub(crate) fn project_agent_tree(
             created_at_ms: agent.created_at_ms(),
         });
     }
-    let totals = AgentTreeTotals {
-        live: nodes
-            .iter()
-            .filter(|node| {
-                !matches!(
-                    node.state,
-                    AgentTreeState::Idle | AgentTreeState::Ended | AgentTreeState::Error
-                )
-            })
-            .count() as u32,
-        running: nodes
-            .iter()
-            .filter(|node| node.state == AgentTreeState::Running)
-            .count() as u32,
-        needs_user: nodes.iter().filter(|node| node.needs_user).count() as u32,
-    };
+    let totals = totals_of(&nodes);
     Some(AgentTree {
         root: root.to_owned(),
         rev: 0,
