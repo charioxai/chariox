@@ -109,3 +109,100 @@ async fn ending_the_room_ends_its_sub_agents() {
         .get_session_agents(&tree.room)
         .is_empty());
 }
+
+/// An orphan's cleanup ends its processes, which can wait on the process
+/// registry. The wake scheduler must not wait with it: other Rooms' timers
+/// still fire on time.
+// Other lifecycle work takes the registry synchronously, so the stuck cleanup
+// needs worker threads of its own to be observable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stuck_orphan_cleanup_does_not_hold_back_due_wakes() {
+    use crate::durable_state::agent_lifecycle::{AgentWake, Operation};
+    let tree = tree("cascade-stuck-sweep").await;
+    // g's parent c1 is gone, so g is an orphan; r and c2 are live.
+    tree.runtime
+        .destroy_one_agent(&tree.ids["c1"], USER, false)
+        .await
+        .unwrap();
+    let registry = crate::runtime::process_resources::hold_registry_for_test();
+    let scheduler = {
+        let runtime = tree.runtime.clone();
+        tokio::spawn(async move { runtime.run_agent_wake_scheduler().await })
+    };
+    let store = &tree.runtime.owned.durable_state_store;
+    let (room, agent) = (tree.room.as_str(), tree.ids["r"].as_str());
+    let now = crate::session::unix_epoch_ms();
+    store
+        .agent_lifecycle(Operation::Begin {
+            owner: "test-owner".into(),
+            room: room.into(),
+            agent: agent.into(),
+            prompt: "timer-task".into(),
+            run: Some("timer-run".into()),
+            now,
+        })
+        .unwrap();
+    store
+        .agent_lifecycle(Operation::CreateWake {
+            task: "timer-task".into(),
+            prompt: "timer-task".into(),
+            wake: AgentWake {
+                id: "due-timer".into(),
+                task_id: "timer-task".into(),
+                room_id: room.into(),
+                agent_id: agent.into(),
+                registration_id: "completion-due-timer".into(),
+                kind: "timer".into(),
+                label: "due timer".into(),
+                state: String::new(),
+                created_at_ms: now,
+                verified_at_ms: None,
+                next_due_ms: Some(now + 100),
+                interval_ms: None,
+                command: vec![],
+                match_text: None,
+                matched_at_ms: None,
+                pid: None,
+                exit_code: None,
+                summary: String::new(),
+                detail: serde_json::Value::Null,
+                fire_count: 0,
+                missed_fires: 0,
+                last_fired_at_ms: None,
+                last_sequence: None,
+                last_delivery: None,
+                last_delivered_at_ms: None,
+                last_acknowledged_at_ms: None,
+                alerted_sequence: None,
+            },
+        })
+        .unwrap();
+    let fired = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let wakes = store.agent_wakes(Some(room), Some(agent)).unwrap();
+            if wakes.iter().any(|wake| wake.fire_count == 1) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    drop(registry);
+    // The released cleanup still ends the orphan, off the scheduler's loop.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while alive(&tree, "g") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    scheduler.abort();
+    let _ = scheduler.await;
+    assert!(
+        fired.is_ok(),
+        "a due timer must fire while an orphan's cleanup waits"
+    );
+    assert!(
+        ended.is_ok(),
+        "the orphan is ended once its cleanup can run"
+    );
+}

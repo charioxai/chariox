@@ -65,6 +65,12 @@ pub(crate) fn pause_sampling_for_key(key: &str) -> mpsc::Sender<()> {
     resume
 }
 
+/// Holds the registry of watches: whatever ends or lists processes waits for it.
+#[cfg(test)]
+pub(crate) fn hold_registry_for_test() -> Box<dyn std::any::Any> {
+    Box::new(registry().lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 pub(crate) fn stop_for_key(key: &str, process_id: Option<String>) -> Result<Vec<String>, String> {
     ask(key, |reply| WatchCommand::Stop { process_id, reply })
 }
