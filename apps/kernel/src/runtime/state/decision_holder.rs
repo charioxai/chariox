@@ -241,19 +241,10 @@ impl KernelRuntimeOwnedState {
         tenure: u32,
         interaction_id: &str,
     ) {
-        let occurrence = child_decision_occurrence(interaction_id, holder, tenure);
-        let mut events = Vec::new();
-        if let Err(error) =
-            self.durable_state_store
-                .scan_agent_inbox(session_id, holder, 0, None, |event| {
-                    if event.occurrence_id == occurrence {
-                        events.push(event);
-                    }
-                    std::ops::ControlFlow::Continue(())
-                })
-        {
-            return log_withdraw_failure(interaction_id, &error);
-        }
+        let events = match self.child_decision_events(session_id, holder, tenure, interaction_id) {
+            Ok(events) => events,
+            Err(error) => return log_withdraw_failure(interaction_id, &error),
+        };
         for event in events {
             let operation = match event.state.as_str() {
                 "pending" => Operation::Expire {
@@ -274,6 +265,51 @@ impl KernelRuntimeOwnedState {
                 log_withdraw_failure(interaction_id, &error);
             }
         }
+    }
+
+    /// The `child_decision` events `holder` was sent for `interaction_id` in its `tenure`.
+    fn child_decision_events(
+        &self,
+        session_id: &str,
+        holder: &str,
+        tenure: u32,
+        interaction_id: &str,
+    ) -> Result<Vec<ledger::InboxEvent>, DaemonError> {
+        let occurrence = child_decision_occurrence(interaction_id, holder, tenure);
+        let mut events = Vec::new();
+        self.durable_state_store
+            .scan_agent_inbox(session_id, holder, 0, None, |event| {
+                if event.occurrence_id == occurrence {
+                    events.push(event);
+                }
+                std::ops::ControlFlow::Continue(())
+            })?;
+        Ok(events)
+    }
+
+    /// The decisions `holder` already had: its event for the current tenure is no longer
+    /// waiting to be delivered (a turn that never read a steered event gives it back as pending).
+    fn decisions_seen_by(&self, session_id: &str, holder: &str) -> Vec<String> {
+        let held = self
+            .pending_interactions
+            .write()
+            .iter()
+            .filter(|(_, pending)| {
+                pending.session_id == session_id
+                    && pending.holder == DecisionHolder::Agent(holder.to_owned())
+            })
+            .map(|(id, pending)| (id.clone(), pending.holder_tenure))
+            .collect::<Vec<_>>();
+        held.into_iter()
+            .filter(|(id, tenure)| {
+                // An unreadable inbox must not keep the decision from the user.
+                self.child_decision_events(session_id, holder, *tenure, id)
+                    .map_or(true, |events| {
+                        !events.iter().any(|event| event.state == "pending")
+                    })
+            })
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Withdraws the holder's event once the decision is no longer pending.
@@ -534,6 +570,20 @@ impl KernelRuntimeState {
         self.move_decisions_up_matching(session_id, agent, None)
             .await
             .map(|_| ())
+    }
+
+    /// `agent` yielded: it runs again only when one of its sources fires, so a decision it already
+    /// had would wait on it for nobody. Those move up; one it was not given yet still wakes it.
+    pub(super) async fn move_seen_decisions_up(
+        &self,
+        session_id: &str,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        for id in self.owned.decisions_seen_by(session_id, agent) {
+            self.move_decisions_up_matching(session_id, agent, Some(&id))
+                .await?;
+        }
+        Ok(())
     }
 
     async fn move_decisions_up_matching(

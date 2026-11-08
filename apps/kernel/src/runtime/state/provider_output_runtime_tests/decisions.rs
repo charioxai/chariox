@@ -177,6 +177,96 @@ impl Tree {
             .unwrap();
     }
 
+    /// `agent` yields on a live source and ends its admitted turn parked, answering nothing.
+    async fn end_turn_yielded(&self, agent: &str) {
+        let session = self.session();
+        let prompt = session.active_prompt_for_agent(agent).unwrap().clone();
+        let run = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&self.room, agent)
+            .unwrap();
+        let store = &self.runtime.owned.durable_state_store;
+        let now = crate::session::unix_epoch_ms();
+        store
+            .agent_lifecycle(Operation::Begin {
+                owner: "local".into(),
+                room: self.room.clone(),
+                agent: agent.into(),
+                prompt: prompt.id().into(),
+                run: Some(run.id().into()),
+                now,
+            })
+            .unwrap();
+        let task = store
+            .agent_tasks(Some(&self.room), Some(agent))
+            .unwrap()
+            .pop()
+            .unwrap();
+        // Like `events.yield`: one live registration per open obligation (here the delegation
+        // of the child), each on that obligation's completion source.
+        let registrations = task
+            .obligations
+            .iter()
+            .filter(|obligation| obligation.requires_resolution())
+            .map(
+                |obligation| crate::durable_state::agent_lifecycle::Registration {
+                    id: format!("{agent}-{}", obligation.id),
+                    task_id: task.task_id.clone(),
+                    source_id: obligation.completion_source().unwrap().into(),
+                    obligation_id: Some(obligation.id.clone()),
+                    source_cursor: 0,
+                    live: true,
+                },
+            )
+            .collect::<Vec<_>>();
+        assert!(!registrations.is_empty(), "the holder waits on its child");
+        let ids = registrations.iter().map(|r| r.id.clone()).collect();
+        for registration in registrations {
+            store
+                .agent_lifecycle(Operation::Subscribe {
+                    task: task.task_id.clone(),
+                    prompt: task.task_id.clone(),
+                    registration,
+                })
+                .unwrap();
+        }
+        store
+            .agent_lifecycle(Operation::Yield {
+                task: task.task_id.clone(),
+                prompt: task.task_id.clone(),
+                registrations: ids,
+                cursor: 0,
+                deadline: now + 7_200_000,
+                reason: "waiting for the child".into(),
+                now,
+            })
+            .unwrap();
+        let Outcome::Settled { task, correction } = store
+            .agent_lifecycle(Operation::Settle {
+                room: self.room.clone(),
+                agent: agent.into(),
+                prompt: prompt.id().into(),
+                run: run.id().into(),
+                has_answer: false,
+                cancelled: false,
+                now,
+            })
+            .unwrap()
+        else {
+            panic!("settled")
+        };
+        assert_eq!(
+            task.state,
+            crate::durable_state::agent_lifecycle::ExecutionState::Waiting
+        );
+        self.runtime
+            .finish_agent_task_settlement(Some((task, correction)), &prompt)
+            .await
+            .unwrap();
+    }
+
     /// Settles `agent`'s admitted turn as cancelled through the real settlement path.
     async fn end_turn(&self, agent: &str) {
         self.end_turn_as(agent, true).await
@@ -1077,6 +1167,82 @@ async fn a_decision_raised_while_the_holders_turn_settles_does_not_wait_for_its_
     assert_eq!(
         answer.try_recv().unwrap().choice_id.as_deref(),
         Some("allow")
+    );
+}
+
+impl Tree {
+    /// `agent` reads its inbox in its turn, the way the `events.inbox` tool does.
+    fn read_inbox(&self, agent: &str) {
+        self.runtime
+            .read_agent_inbox(&self.room, agent, &serde_json::json!({}))
+            .unwrap();
+    }
+}
+
+/// Live (uiqa r5 hk-10): the parent read its child's decision, said it would leave it to the
+/// person and yielded on the child. Nobody else would ever see the decision: it moves up as for
+/// any ended turn, and the user's card is listed in the top panel.
+#[tokio::test]
+async fn a_holder_that_yields_without_answering_hands_the_decision_on() {
+    let t = tree(
+        "decision-yield",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut answer = t.raise(permission("perm-yield", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1, "p holds it and is told");
+
+    t.read_inbox(&t.p);
+    t.end_turn_yielded(&t.p).await;
+    assert!(t.all_closed(&t.p), "p's event is withdrawn");
+    assert_eq!(t.decision_events(&t.g).len(), 1, "g holds it and is told");
+    assert!(t.session().interactions_listed_for(&t.g).is_empty());
+
+    t.read_inbox(&t.g);
+    t.end_turn_yielded(&t.g).await;
+    assert!(t.all_closed(&t.g));
+    assert_eq!(
+        t.session().interactions_listed_for(&t.g)[0].id(),
+        "perm-yield",
+        "nobody above g: the user sees the card in g's panel"
+    );
+    assert_eq!(t.needs().1, 1, "the user's decision is counted");
+    for former in [&t.p, &t.g] {
+        assert_eq!(
+            t.runtime
+                .answer_child_decision(&t.room, former, "perm-yield", "allow")
+                .unwrap(),
+            ChildDecisionStatus::NotHolder,
+            "a former holder that wakes later no longer holds it"
+        );
+    }
+    assert!(
+        answer.try_recv().is_err(),
+        "the asker still waits, for the user"
+    );
+}
+
+/// A holder that yields before its turn read the decision is woken for it: it keeps the decision.
+#[tokio::test]
+async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
+    let t = tree(
+        "decision-yield-unread",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let _answer = t.raise(permission("perm-unread", &t.c)).await;
+    t.end_turn_yielded(&t.p).await;
+    let events = t.decision_events(&t.p);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].state, "pending", "the next wake delivers it");
+    assert!(t.decision_events(&t.g).is_empty());
+    assert_eq!(
+        t.runtime
+            .answer_child_decision(&t.room, &t.p, "perm-unread", "allow")
+            .unwrap(),
+        ChildDecisionStatus::Answered
     );
 }
 

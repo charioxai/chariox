@@ -732,14 +732,18 @@ impl KernelRuntimeState {
         let Some((task, correction)) = settlement else {
             return Ok(());
         };
-        if matches!(
-            task.state,
-            ExecutionState::Done | ExecutionState::Cancelled | ExecutionState::Blocked
-        ) {
+        match task.state {
             // The agent's turn ended (a blocked task waits for its owner, not for a decision to be
             // answered): the decisions it held move up, whatever else it has open.
-            self.move_decisions_up(&task.room_id, &task.agent_id)
-                .await?;
+            ExecutionState::Done | ExecutionState::Cancelled | ExecutionState::Blocked => {
+                self.move_decisions_up(&task.room_id, &task.agent_id)
+                    .await?;
+            }
+            ExecutionState::Waiting => {
+                self.move_seen_decisions_up(&task.room_id, &task.agent_id)
+                    .await?;
+            }
+            ExecutionState::Working => {}
         }
         self.retract_stale_task_owner_interactions(&task.room_id)
             .await;
