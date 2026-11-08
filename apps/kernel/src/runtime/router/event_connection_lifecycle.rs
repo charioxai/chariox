@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use futures_util::{stream, StreamExt};
@@ -24,6 +25,29 @@ const READY_REFRESH_BATCH_SIZE: usize = 64;
 
 type ConnectionLaneKey = (String, String);
 type ConnectionLane = Weak<Mutex<()>>;
+
+/// Where the next ready refresh starts, so every ready connection is asked about in turn
+/// whatever the earlier answers were. In memory: a restarted kernel starts from the first.
+/// Shared by every clone of the router.
+#[derive(Debug, Default, Clone)]
+pub(super) struct ReadyRefreshCursor(Arc<AtomicUsize>);
+
+impl ReadyRefreshCursor {
+    /// All of `ready` (in its stable order) when it fits in one batch; otherwise the
+    /// `READY_REFRESH_BATCH_SIZE` rows after the previous batch, wrapping around.
+    fn next_batch<T>(&self, mut ready: Vec<T>) -> Vec<T> {
+        let len = ready.len();
+        if len <= READY_REFRESH_BATCH_SIZE {
+            return ready;
+        }
+        let start = self.0.load(Ordering::Relaxed) % len;
+        self.0
+            .store((start + READY_REFRESH_BATCH_SIZE) % len, Ordering::Relaxed);
+        ready.rotate_left(start);
+        ready.truncate(READY_REFRESH_BATCH_SIZE);
+        ready
+    }
+}
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EventConnectionReconciliationSummary {
@@ -123,10 +147,7 @@ impl CommandRouter {
                 return EventConnectionReconciliationSummary::default();
             }
         };
-        let ready = ready
-            .into_iter()
-            .take(READY_REFRESH_BATCH_SIZE)
-            .collect::<Vec<_>>();
+        let ready = self.ready_refresh_cursor.next_batch(ready);
         let mut summary = EventConnectionReconciliationSummary {
             attempted: ready.len(),
             ..Default::default()
@@ -366,6 +387,38 @@ impl CommandRouter {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReadyRefreshCursor, READY_REFRESH_BATCH_SIZE};
+
+    #[test]
+    fn fewer_ready_connections_than_a_batch_keep_their_order() {
+        let cursor = ReadyRefreshCursor::default();
+        for _ in 0..3 {
+            assert_eq!(cursor.next_batch(vec![1, 2, 3]), vec![1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn batches_go_round_every_ready_connection_and_drop_one_no_longer_ready() {
+        let cursor = ReadyRefreshCursor::default();
+        let ready = (0..130).collect::<Vec<_>>();
+        let mut asked = std::collections::BTreeSet::new();
+        for _ in 0..130_usize.div_ceil(READY_REFRESH_BATCH_SIZE) {
+            asked.extend(cursor.next_batch(ready.clone()));
+        }
+        assert_eq!(asked.len(), 130, "rows 65 and 130 are asked about too");
+        let without_7 = ready
+            .iter()
+            .copied()
+            .filter(|row| *row != 7)
+            .collect::<Vec<_>>();
+        for _ in 0..3 {
+            assert!(!cursor.next_batch(without_7.clone()).contains(&7));
         }
     }
 }

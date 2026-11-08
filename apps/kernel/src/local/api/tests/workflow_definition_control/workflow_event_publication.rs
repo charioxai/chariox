@@ -867,6 +867,46 @@ fn a_copy_notices_a_revoked_connection_without_being_queried() {
 }
 
 #[test]
+fn ready_refreshes_ask_about_every_connection_beyond_one_batch_even_when_questions_fail() {
+    let server = ReadyConnectionServer::start();
+    let harness = harness_with_ready_connection(&server);
+    let mut ids = (0..129)
+        .map(|n| format!("connection-{n:03}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        harness
+            .runtime_state()
+            .event_connection_registry()
+            .upsert(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "event-owner-test",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    connection_id: id.clone(),
+                    status: chariox_event_protocol::AegsConnectionStatus::Ready,
+                    metadata: serde_json::json!({"account": "local"}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .unwrap();
+    }
+    ids.push("connection-local".to_string());
+    // Every question fails, so every connection stays ready: the batches must move on anyway.
+    server.unavailable.store(true, Ordering::Relaxed);
+    for _ in 0..ids.len().div_ceil(64) {
+        let summary = harness.refresh_ready_event_connections();
+        assert_eq!((summary.attempted, summary.failed), (64, 64));
+    }
+    let requests = server.requests.lock().unwrap().join("\n");
+    let never_asked = ids
+        .iter()
+        .filter(|id| !requests.contains(id.as_str()))
+        .collect::<Vec<_>>();
+    assert!(never_asked.is_empty(), "never asked about: {never_asked:?}");
+}
+
+#[test]
 fn an_unreachable_event_service_leaves_a_ready_connection_ready() {
     let server = ReadyConnectionServer::start();
     let harness = harness_with_ready_connection(&server);
