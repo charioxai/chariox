@@ -29,6 +29,7 @@ fn provider_actor_runtime() -> &'static tokio::runtime::Runtime {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("chariox-provider-actor")
+            .thread_stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .enable_all()
             .build()
             .expect("provider actor runtime should start")
@@ -287,5 +288,63 @@ impl ProviderRunWorkerDeps {
             ProviderRunActorCommand::Stop => return true,
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_actor_runtime;
+
+    const CHILD: &str = "CHARIOX_PROVIDER_ACTOR_STACK_CHILD";
+
+    /// The stack size of the thread the caller runs on.
+    fn current_thread_stack_size() -> usize {
+        // SAFETY: the calls only read the calling thread's own attributes, and the attribute
+        // object is destroyed before returning.
+        unsafe {
+            let mut attributes: libc::pthread_attr_t = std::mem::zeroed();
+            assert_eq!(
+                libc::pthread_getattr_np(libc::pthread_self(), &mut attributes),
+                0
+            );
+            let mut address = std::ptr::null_mut();
+            let mut size = 0;
+            assert_eq!(
+                libc::pthread_attr_getstack(&attributes, &mut address, &mut size),
+                0
+            );
+            libc::pthread_attr_destroy(&mut attributes);
+            size
+        }
+    }
+
+    /// A steer into a Codex turn overflowed the actor's default 2 MiB stack and aborted the
+    /// kernel. The kernel binary runs without `RUST_MIN_STACK`, so the check runs in a child
+    /// test process that has none either.
+    #[test]
+    fn provider_actor_workers_run_on_the_kernel_runtime_stack() {
+        let test = "provider::run_actor::worker::tests::provider_actor_workers_run_on_the_kernel_runtime_stack";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([test, "--exact", "--nocapture"])
+                .env(CHILD, "1")
+                .env_remove("RUST_MIN_STACK")
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "the provider actor worker stack is too small"
+            );
+            return;
+        }
+        let size = provider_actor_runtime().block_on(async {
+            tokio::spawn(async { current_thread_stack_size() })
+                .await
+                .unwrap()
+        });
+        assert!(
+            size >= crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "provider actor worker stack is {size} bytes"
+        );
     }
 }
