@@ -82,7 +82,7 @@ async function role(name) {
   writeFileSync(join(dir, "chariox/config.toml"), `[credential_vault]\nbackend = "chariox_encrypted"\npath = "${dir}/chariox/vault.json"\nunlock_policy = "kernel_init"\n[workflow]\nsession_default_max_agents = ${flags.get("--max-agents") ?? 1024}\n[state]\npath = "${dir}/chariox/state.db"\n`, { mode: 0o600 })
   const localEnv = { ...env, HOME: join(dir, "home"), TMPDIR: join(dir, "tmp"), XDG_CONFIG_HOME: join(dir, "config"), XDG_CACHE_HOME: join(dir, "cache"), XDG_STATE_HOME: join(dir, "state"),
     CHARIOX_HOME: join(dir, "chariox"), CHARIOX_LOG_DIR: join(dir, "logs"), CHARIOX_SESSION_HISTORY_DIR: join(dir, "history"),
-    CHARIOX_DAEMON_SOCKET: join("/var/tmp/rch", `orch-${name}-${process.pid}.sock`), CHARIOX_DAEMON_ALIAS: `orch-${name}`, CHARIOX_MACHINE_ALIAS: `orch-${name}`,
+    CHARIOX_DAEMON_SOCKET: join("/var/tmp/rch", `orch-${name}-${process.pid}.sock`), CHARIOX_DAEMON_ALIAS: `orch-${name}`, CHARIOX_MACHINE_ALIAS: `orch-${name}-machine`,
     CHARIOX_KERNEL_PORT: String(ports[0]), CHARIOX_MCP_PORT: String(ports[1]), CHARIOX_OPENCODE_PORT: String(ports[2]), CHARIOX_CODEX_PORT: String(ports[3]) }
   mkdirSync("/var/tmp/rch", { recursive: true })
   const r = { name, dir, env: localEnv, passkey: randomBytes(24).toString("hex"), mcpPort: ports[1] }
@@ -220,7 +220,7 @@ async function main() {
   await a.rpc({ LaunchProviderRun: { session_id: R, agent_id: orch, adapter_key: provider, provider, account_profile: profile, model, variant: "low", native_tui: false } })
   note("room-ready", { room: R, orchestrator: orch })
   // A person's own second agent: not in the orchestrator's tree, the peer of the tree drill.
-  if (["authority", "messages", "decisions"].includes(flags.get("--scenario"))) await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider: "claude", model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
+  if (["authority", "messages", "decisions"].includes(flags.get("--scenario"))) await a.rpc({ SpawnAgent: { session_id: R, alias: "peer", provider, account_profile: profile, model, effort: "low", permission_level: "yolo", worktree_id: null } }).then(() => note("peer-created"), e => note("peer-error", { message: e.message.slice(0, 300) }))
 
   const deadline = Date.now() + 25 * 60 * 1000
   const scenario = flags.get("--scenario") ?? "team"
@@ -365,7 +365,7 @@ Keep ${join(work, "orchestrator-state.json")} updated after every step.
     note("other-room", { room: otherRoom.R2, agent: otherRoom.q })
   }
   const briefFile = flags.get("--brief-file")
-  const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
+  const brief = briefFile ? readFileSync(briefFile, "utf8").replaceAll("{{R}}", R).replaceAll("{{WORK}}", work).replaceAll("{{MODEL}}", model).replaceAll("{{ORCH}}", orch).replaceAll("{{ROOT}}", root).replaceAll("{{Q}}", otherRoom.q).replaceAll("{{R2}}", otherRoom.R2).replaceAll("{{B}}", b.status.daemon_id) : scenario === "decisions" ? decisionsTwoBrief({ R, model, work }) : scenario === "kinds" ? kindsBrief({ R, model, work, payPort }) : scenario === "orch" ? orchBrief({ R, model, work }) : scenario === "decisions" ? decisionsBrief : scenario === "authority" ? authorityBrief : scenario === "ask" ? askBrief : scenario === "messages" ? messagesBrief : scenario === "batchyield" ? batchYieldBrief : scenario === "batch" ? batchBrief : scenario === "heartbeat" ? heartbeatBrief : scenario === "restart" ? restartBrief : scenario === "sudo" ? sudoBrief : `# Orchestrator brief (drill)
 You are the ORCHESTRATOR of this Chariox Room (session ${R}). Run a small team inside THIS Room using only the tools of an ordinary room agent:
 the room commands (chariox room run_command), list_session_agents, send_agent_message, history and the chariox events tools (subscribe, yield, inbox, ack). There is NO /sudo.
 Do not ask the owner anything. Never retry a refused call more than once; record the exact refusal code and message instead.
@@ -401,7 +401,7 @@ Steps:
   const treeNoted = new Set()
   const raceCards = new Map()
   let peerProbed = false, lateDone = false, sudoAt = null, probes = null, probesAt = null
-  let reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
+  let bRestartAt = null, remoteSeenAt = null, reportAt = null, fallbackAnswers = 0, peerSentAt = null, goAt = null, idleSince = null, fenceProbeAt = null, fenceProbeDone = false
   const reportPath = join(work, "orchestrator-report.json")
   let attachedNow = attached
   while (Date.now() - since < budgetMs) {
@@ -451,6 +451,26 @@ Steps:
     }
     if (scenario === "messages" && !goAt && orchTurns.length && idleSince && Date.now() - idleSince > 20000) {
       writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { orchestrator_idle: true })
+    }
+    // AO-SA-10: the kernel that runs the remote child restarts while the child works; the person's client on that kernel
+    // may not reach the child by its id. The barrier opens afterwards so the child's finish has to come through the restart.
+    if (scenario === "remote" && s && !bRestartAt) {
+      const child = (s.agents ?? []).find(x => x.alias === "w5")
+      if (idleSince) {
+        remoteSeenAt ??= Date.now()
+        if (Date.now() - remoteSeenAt > 25000) {
+          bRestartAt = Date.now()
+          note("w5-agent", { visible_on_a: !!child, aliases: (s.agents ?? []).map(x => x.alias), keys: child ? Object.keys(child) : null })
+          await restart(b)
+          const probe = async (label, request) => note(label, { answer: await b.rpc(request).then(r => JSON.stringify(r).slice(0, 300), e => `refused: ${String(e.message).slice(0, 300)}`) })
+          await probe("b-probe-session-by-id", { GetSessionState: { session_id: R } })
+          await probe("b-probe-agents-by-room-id", { ListAgents: { session_id: R } })
+          if (child) await probe("b-probe-destroy-child-by-id", { DestroyAgent: { agent_id: child.id } })
+          const rooms = (await b.rpc({ ListSessions: null }).then(r => r.SessionsListed.sessions, () => []))
+          note("b-rooms-after-restart", { rooms: rooms.length, agents: rooms.map(x => (x.agents ?? []).map(y => y.alias)) })
+          writeFileSync(goPath, "go\n"); goAt = Date.now(); note("barrier-released", { after: "b-restart" })
+        }
+      }
     }
     if ((scenario === "restart" || scenario === "ask") && !restarted && hold && orchIdle && Date.now() - hold[1] > 45000) {
       restarted = true
