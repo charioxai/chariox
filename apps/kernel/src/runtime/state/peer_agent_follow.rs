@@ -430,6 +430,12 @@ impl KernelRuntimeState {
             .filter(|owner| !owner.is_empty());
         let store = &self.owned.durable_state_store;
         for registration in store.live_peer_registrations()? {
+            // A follow of a peer in another room here needs no owner to speak for.
+            let other_kernel = peer_source_stamp(&registration.source_id)
+                .is_some_and(|source| source.kernel_id != config.daemon_id);
+            if !other_kernel {
+                continue;
+            }
             let Some(task) = store.agent_task(&registration.task_id)? else {
                 continue;
             };

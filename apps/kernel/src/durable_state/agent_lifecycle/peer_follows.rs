@@ -291,7 +291,7 @@ impl DurableKernelStateStore {
         .transpose()
     }
 
-    /// The live follows held here of agents on other kernels.
+    /// The live follows held here of agents in other rooms, here or on other kernels.
     pub(crate) fn live_peer_registrations(&self) -> Result<Vec<Registration>, DaemonError> {
         let db = self.lock_connection("agent.lifecycle.registration")?;
         let mut q = db
