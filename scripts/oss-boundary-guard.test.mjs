@@ -107,9 +107,9 @@ test('a planted Cloud vocabulary leak is red until it is listed, and a stale ent
   const files = { 'apps/cli/src/plan.ts': 'export const preset = "agents_done" // auto-stop policy\n' }
   assert.equal(problemsOf(files).length, 1)
   assert.match(problemsOf(files)[0], /^auto-stop word: Cloud-only vocabulary in OSS.*: apps\/cli\/src\/plan\.ts$/)
-  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2' }] }), [])
-  assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
-  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts' }] }), ['leak entry: apps/cli/src/plan.ts'])
+  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), [])
+  assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
+  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', row: 'OSB-09', slice: 'B2' }] }), ['leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.test.ts': 'const rent = "auto-stop"' }), [])
 })
 

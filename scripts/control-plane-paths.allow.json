@@ -1,11 +1,43 @@
 [
   {
+    "path": "/browser/agent-trigger-deployments/{}/admission",
+    "callers": [
+      "apps/server/src/hosted-agent-trigger-server.ts"
+    ],
+    "why": "hosted agent-trigger ingress asks the connected service to admit a deployment",
+    "slice": "B1"
+  },
+  {
+    "path": "/browser/focusedElement/field_id",
+    "callers": [
+      "apps/kernel/src/runtime/state/tool_dispatch/slice/controller_browser.rs"
+    ],
+    "why": "JSON pointer into a kernel browser status payload, not a connected-service call",
+    "seam": "kernel browser"
+  },
+  {
+    "path": "/browser/relay-kernel/bootstrap",
+    "callers": [
+      "apps/cli/scripts/live-room-drill-c-setup.mjs"
+    ],
+    "why": "a live drill bootstraps a relay kernel through a connected-service browser-session route",
+    "slice": "B2"
+  },
+  {
     "path": "/control-plane",
     "callers": [
       "apps/kernel/src/runtime/control_plane.rs"
     ],
     "why": "forwards ControlPlane requests to the owner's connected service",
     "seam": "LocalDaemonRequest::ControlPlane"
+  },
+  {
+    "path": "/kernels/active",
+    "callers": [
+      "scripts/e2e-stack/context-switch/handoff-config-live.mjs"
+    ],
+    "why": "a local CHARIOX_HOME directory of kernel presence files, not a connected-service call",
+    "seam": "local kernel presence files"
   },
   {
     "path": "/kernels/gateway-client",
@@ -18,6 +50,8 @@
   {
     "path": "/kernels/presence",
     "callers": [
+      "apps/cli/scripts/lib/live-hosted-cloud-relay-drill-helpers.mjs",
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/kernel/src/runtime/router/cloud_relay_bridge.rs"
     ],
     "why": "hosted relay sign-in, tokens and presence of the owner's connected service; the self-hosted control plane serves the same paths",
@@ -37,55 +71,8 @@
       "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/context-transfer",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/lifecycle",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/reimage",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/reimage/preflight",
-    "callers": [
-      "apps/cli/src/managed-environment-api.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
-  },
-  {
-    "path": "/managed-environments/{}/reimage/stop",
-    "callers": [
-      "apps/cli/src/managed-environment-reimage-stop.ts"
-    ],
-    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
+    "seam": "none; the path goes away",
+    "slice": "B2"
   },
   {
     "path": "/managed-environments/options",
@@ -93,11 +80,67 @@
       "apps/cli/src/managed-environment-api.ts"
     ],
     "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
-    "seam": "none; the path goes away"
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}/context-transfer",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}/lifecycle",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}/reimage",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}/reimage/preflight",
+    "callers": [
+      "apps/cli/src/managed-environment-api.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
+  },
+  {
+    "path": "/managed-environments/{}/reimage/stop",
+    "callers": [
+      "apps/cli/src/managed-environment-reimage-stop.ts"
+    ],
+    "why": "Cloud-only, deleted by OSS-boundary items 2 and 3 (rental plan): the rental API belongs to Cloud web and the Cloud control plane",
+    "seam": "none; the path goes away",
+    "slice": "B2"
   },
   {
     "path": "/relay/targets",
     "callers": [
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/cli/src/cloud-client.ts",
       "apps/kernel/src/runtime/cloud_api_client/http.rs"
     ],
@@ -107,6 +150,8 @@
   {
     "path": "/relay/token",
     "callers": [
+      "apps/cli/scripts/lib/live-cloud-relay-drill-helpers.mjs",
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/cli/src/cloud-client.ts",
       "apps/kernel/src/runtime/cloud_api_client.rs"
     ],
@@ -124,7 +169,9 @@
   {
     "path": "/v1/actions",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/cli/scripts/fixtures/lossy-action-app/lossy-generator.mjs",
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -132,7 +179,8 @@
   {
     "path": "/v1/authorizations",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -148,7 +196,8 @@
   {
     "path": "/v1/connections/inspect",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -157,7 +206,8 @@
     "path": "/v1/connections/query",
     "callers": [
       "apps/kernel/src/runtime/event_catalog_control.rs",
-      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs"
+      "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -165,7 +215,8 @@
   {
     "path": "/v1/connections/reconnect",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -173,7 +224,8 @@
   {
     "path": "/v1/connections/refresh",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -181,7 +233,8 @@
   {
     "path": "/v1/connections/revoke",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -189,9 +242,18 @@
   {
     "path": "/v1/connections/test-event",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/emit",
+    "callers": [
+      "packages/aegs-sdk/src/server.rs"
+    ],
+    "why": "the SDK server side of the event gateway direct emit",
     "seam": "event gateway"
   },
   {
@@ -221,7 +283,8 @@
   {
     "path": "/v1/events/query",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -229,7 +292,8 @@
   {
     "path": "/v1/events/replay",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
@@ -259,30 +323,6 @@
     "seam": "KernelActivityReport"
   },
   {
-    "path": "/v1/managed-kernels/quiescence/ack",
-    "callers": [
-      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
-    ],
-    "why": "kernel quiescence fence polled by the control plane",
-    "seam": "KernelQuiescence"
-  },
-  {
-    "path": "/v1/managed-kernels/quiescence/poll",
-    "callers": [
-      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
-    ],
-    "why": "kernel quiescence fence polled by the control plane",
-    "seam": "KernelQuiescence"
-  },
-  {
-    "path": "/v1/managed-kernels/quiescence/release-ack",
-    "callers": [
-      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
-    ],
-    "why": "kernel quiescence fence polled by the control plane",
-    "seam": "KernelQuiescence"
-  },
-  {
     "path": "/v1/managed-kernels/bootstrap/confirm",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
@@ -309,6 +349,9 @@
   {
     "path": "/v1/managed-kernels/context/ticket",
     "callers": [
+      "apps/cli/scripts/live-byom-account-drill.mjs",
+      "apps/cli/scripts/live-owner-context-refusal-drill.mjs",
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/kernel/src/managed_context/outbound_service.rs",
       "apps/kernel/src/managed_context/owner_authority.rs"
     ],
@@ -316,12 +359,37 @@
     "seam": "context transfer ticket authority"
   },
   {
+    "path": "/v1/managed-kernels/quiescence/ack",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
+    "path": "/v1/managed-kernels/quiescence/poll",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
+    "path": "/v1/managed-kernels/quiescence/release-ack",
+    "callers": [
+      "apps/kernel/src/runtime/managed_kernel_quiescence.rs"
+    ],
+    "why": "kernel quiescence fence polled by the control plane",
+    "seam": "KernelQuiescence"
+  },
+  {
     "path": "/v1/managed-kernels/reimage/runtime-identity",
     "callers": [
       "apps/kernel/src/managed_bootstrap/cloud.rs"
     ],
     "why": "Cloud-only, deleted by OSS-boundary item 3 (rental plan): pre-reimage runtime identity",
-    "seam": "none; the path goes away"
+    "seam": "none; the path goes away",
+    "slice": "B3"
   },
   {
     "path": "/v1/managed-kernels/release-update/artifact",
@@ -329,7 +397,8 @@
       "apps/kernel/src/runtime/managed_release_update.rs"
     ],
     "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
-    "seam": "none; the path goes away"
+    "seam": "none; the path goes away",
+    "slice": "B6"
   },
   {
     "path": "/v1/managed-kernels/release-update/poll",
@@ -337,37 +406,93 @@
       "apps/kernel/src/runtime/managed_release_update.rs"
     ],
     "why": "Cloud-only, deleted by OSS-boundary item 4 (rental plan item 3): in-place release update coordinated by Cloud",
-    "seam": "none; the path goes away"
+    "seam": "none; the path goes away",
+    "slice": "B6"
+  },
+  {
+    "path": "/v1/messages",
+    "callers": [
+      "scripts/claude-root-yolo-drill.mjs"
+    ],
+    "why": "a drill mock of an AI provider messages API, not a connected-service call",
+    "seam": "AI provider API mock"
   },
   {
     "path": "/v1/owner-managed-context-tickets",
     "callers": [
+      "apps/cli/scripts/live-owner-context-refusal-drill.mjs",
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/kernel/src/managed_context/owner_authority.rs"
     ],
     "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
+    "seam": "context transfer ticket authority"
+  },
+  {
+    "path": "/v1/owner-managed-context-tickets/",
+    "callers": [
+      "apps/cli/scripts/live-owner-context-refusal-drill.mjs"
+    ],
+    "why": "the context-transfer ticket routes called from a live drill",
     "seam": "context transfer ticket authority"
   },
   {
     "path": "/v1/owner-managed-context-tickets/peers",
     "callers": [
+      "apps/cli/scripts/live-byom-account-drill.mjs",
+      "apps/cli/scripts/live-owner-context-refusal-drill.mjs",
+      "apps/cli/scripts/live-owner-context-transfer-drill.mjs",
       "apps/kernel/src/managed_context/owner_authority.rs"
     ],
     "why": "transfer tickets issued and completed by the owner's control plane; rename in OSS-boundary item 7",
     "seam": "context transfer ticket authority"
   },
   {
+    "path": "/v1/owners/kernels",
+    "callers": [
+      "packages/aegs-sdk/src/server.rs"
+    ],
+    "why": "the SDK server side of the event gateway owner-kernel listing",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/owners/kernels/revoke",
+    "callers": [
+      "packages/aegs-sdk/src/server.rs"
+    ],
+    "why": "the SDK server side of the event gateway owner-kernel revoke",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/projects/<project",
+    "callers": [
+      "scripts/e2e-stack/vault-autonomy/neon-live.mjs"
+    ],
+    "why": "prompt text naming a database service project API, not a connected-service call",
+    "seam": "drill prompt text"
+  },
+  {
     "path": "/v1/resources/query",
     "callers": [
-      "apps/kernel/src/runtime/event_catalog_control.rs"
+      "apps/kernel/src/runtime/event_catalog_control.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
+    "seam": "event gateway"
+  },
+  {
+    "path": "/v1/subscriptions",
+    "callers": [
+      "packages/aegs-sdk/src/server.rs"
+    ],
+    "why": "the SDK server side of the event gateway subscription API",
     "seam": "event gateway"
   },
   {
     "path": "/v1/subscriptions/reconcile",
     "callers": [
       "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
-      "apps/kernel/src/transport/event_delivery_client.rs"
+      "apps/kernel/src/transport/event_delivery_client.rs",
+      "packages/aegs-sdk/src/server.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
