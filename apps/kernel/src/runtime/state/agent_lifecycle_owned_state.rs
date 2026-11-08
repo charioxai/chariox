@@ -489,7 +489,10 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_session_agents(session_id)
             .into_iter()
-            .filter(|agent| !agent.archived() && agent.owner_user_id() == caller_user_id)
+            .filter(|agent| {
+                !agent.archived()
+                    && self.acts_for_owner(session_id, caller_user_id, agent.owner_user_id())
+            })
             .collect::<Vec<_>>();
         if own_agents.is_empty() {
             return Ok(None);
@@ -497,7 +500,10 @@ impl KernelRuntimeOwnedState {
         let current_focused = self
             .agent_store
             .get_focused_agent(session_id)
-            .filter(|agent| !agent.archived() && agent.owner_user_id() == caller_user_id)
+            .filter(|agent| {
+                !agent.archived()
+                    && self.acts_for_owner(session_id, caller_user_id, agent.owner_user_id())
+            })
             .map(|agent| agent.id().to_string());
         let next_agent_id = if let Some(current_id) = current_focused {
             let current_index = own_agents
