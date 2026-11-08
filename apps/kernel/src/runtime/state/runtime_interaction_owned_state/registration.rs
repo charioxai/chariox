@@ -248,8 +248,11 @@ impl KernelRuntimeOwnedState {
                 return Err(error);
             }
         }
+        // Where the user sees a card is the kernel's: a restored question is the same question
+        // whichever panel lists it.
         if session.active_interactions().iter().any(|existing| {
-            (existing.id() == interaction.id() && existing != &interaction)
+            (existing.id() == interaction.id()
+                && existing.clone().shown_in(None) != interaction.clone().shown_in(None))
                 || (existing.subject() == interaction.subject()
                     && existing.asking_task_id().is_none()
                     && interaction.asking_task_id().is_none())

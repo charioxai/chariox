@@ -84,10 +84,18 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
-        match self.arm(wake) {
-            Ok(()) => Recovery::Reattached,
-            Err(error) => Recovery::Lost(error.to_string()),
+        if let Err(error) = self.arm(wake) {
+            return Recovery::Lost(error.to_string());
         }
+        // The question is back with its holder at raise, which may be parked or ended now.
+        if let Err(error) = self
+            .owned
+            .hand_on_restored_decision(&wake.room_id, &wake.id)
+        {
+            tracing::warn!(interaction_id=%wake.id, error=%crate::secret_redaction::redact_secrets(&error.to_string()),
+                "restored question keeps its holder at raise");
+        }
+        Recovery::Reattached
     }
     fn liveness(&self, wake: &AgentWake) -> Liveness {
         match question(wake) {

@@ -514,37 +514,35 @@ fn child_decision_occurrence(interaction_id: &str, holder: &str, tenure: u32) ->
     format!("child-decision-{interaction_id}-{holder}-{tenure}")
 }
 
-impl KernelRuntimeState {
-    /// Sends the holder agent its urgent `child_decision` event. A decision the user holds
-    /// tells no agent.
-    pub(super) async fn announce_child_decision(
+impl KernelRuntimeOwnedState {
+    /// Records the holder agent's urgent `child_decision` event for its current tenure and returns
+    /// that holder. A decision the user holds tells no agent.
+    pub(super) fn record_child_decision_event(
         &self,
         session_id: &str,
         interaction_id: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<Option<String>, DaemonError> {
         let Some(pending) = self
-            .owned
             .pending_interactions
             .write()
             .get(interaction_id)
             .cloned()
         else {
-            return Ok(());
+            return Ok(None);
         };
-        let DecisionHolder::Agent(holder) = &pending.holder else {
-            return Ok(());
+        let DecisionHolder::Agent(holder) = pending.holder else {
+            return Ok(None);
         };
-        let session = self.owned.session_store.get_session(session_id)?;
+        let session = self.session_store.get_session(session_id)?;
         let Some(interaction) = session
             .active_interactions()
             .iter()
             .find(|interaction| interaction.id() == interaction_id)
         else {
-            return Ok(());
+            return Ok(None);
         };
         let child = subject_agent(interaction).unwrap_or_default();
         let alias = self
-            .owned
             .agent_store
             .get_agent(child)
             .ok()
@@ -557,9 +555,9 @@ impl KernelRuntimeState {
             .collect::<String>();
         let mut event = ledger::occurrence(
             session_id,
-            holder,
+            &holder,
             child,
-            &child_decision_occurrence(interaction_id, holder, pending.holder_tenure),
+            &child_decision_occurrence(interaction_id, &holder, pending.holder_tenure),
             CHILD_DECISION_EVENT,
             serde_json::json!({
                 "interaction_id": interaction_id,
@@ -575,10 +573,112 @@ impl KernelRuntimeState {
             }),
         );
         event.urgent = true;
-        self.owned
-            .durable_state_store
+        self.durable_state_store
             .agent_lifecycle(Operation::Occur(event))?;
-        let holder = holder.clone();
+        Ok(Some(holder))
+    }
+
+    /// Whether `agent`'s last turn ended or parked on its sources: no turn of it is running.
+    fn turn_is_settled(&self, session_id: &str, agent: &str) -> bool {
+        self.durable_state_store
+            .agent_tasks(Some(session_id), Some(agent))
+            .ok()
+            .and_then(|tasks| tasks.last().map(|task| task.state.clone()))
+            .is_some_and(|state| matches!(state, ExecutionState::Waiting | ExecutionState::Done))
+    }
+
+    /// A question restored after a restart is registered again with its holder at raise, which is
+    /// not told again (its event of that tenure was already sent) and may be parked or ended. It
+    /// goes to the nearest ancestor of the asker that may hold it and whose turn is not parked or
+    /// ended, told with a new event, else to the user's card in the top panel. A decision the
+    /// user holds, or one already handed on, stays as it is.
+    pub(super) fn hand_on_restored_decision(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), DaemonError> {
+        let _mutation =
+            self.pending_interactions
+                .mutation
+                .lock()
+                .map_err(|_| DaemonError::LocalTransport {
+                    operation: "runtime interaction",
+                    message: "Interaction store is unavailable".into(),
+                })?;
+        let Some(pending) = self
+            .pending_interactions
+            .write()
+            .get(interaction_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        if pending.holder == DecisionHolder::User || pending.holder_tenure > 0 {
+            return Ok(());
+        }
+        let mut sessions = self.session_store.write();
+        let mut session = sessions.get_session(session_id)?.clone();
+        let Some(interaction) = session
+            .active_interactions()
+            .iter()
+            .find(|interaction| interaction.id() == interaction_id)
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let agents = self.agent_store.get_session_agents(session_id);
+        let holder = subject_agent(&interaction)
+            .and_then(|asker| agents.iter().find(|agent| agent.id() == asker))
+            .and_then(|asker| {
+                ancestors(asker, &agents).into_iter().find(|ancestor| {
+                    self.ancestor_can_hold(&session, ancestor, &agents)
+                        && !self.turn_is_settled(session_id, ancestor.id())
+                })
+            })
+            .map_or(DecisionHolder::User, |ancestor| {
+                DecisionHolder::Agent(ancestor.id().to_owned())
+            });
+        if let Some(entry) = self.pending_interactions.write().get_mut(interaction_id) {
+            entry.hand_to(holder.clone());
+        }
+        if holder != DecisionHolder::User {
+            drop(sessions);
+            return self
+                .record_child_decision_event(session_id, interaction_id)
+                .map(|_| ());
+        }
+        let shown = self.decision_shown_in(session_id, &interaction);
+        session.show_interaction_in(interaction_id, shown.clone());
+        let mut pending = pending;
+        pending.holder = DecisionHolder::User;
+        self.publish_outside_interaction(
+            session_id,
+            &interaction.shown_in(shown),
+            InteractionPhase::Pending(&pending),
+        )?;
+        sessions.restore_session(session);
+        drop(sessions);
+        self.session_snapshot(session_id)?;
+        self.terminal_stream
+            .notify_terminal_projection_change(session_id);
+        Ok(())
+    }
+}
+
+impl KernelRuntimeState {
+    /// Sends the holder agent its urgent `child_decision` event. A decision the user holds
+    /// tells no agent.
+    pub(super) async fn announce_child_decision(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(holder) = self
+            .owned
+            .record_child_decision_event(session_id, interaction_id)?
+        else {
+            return Ok(());
+        };
         Box::pin(self.deliver_agent_inbox(session_id, &holder)).await
     }
 
