@@ -721,7 +721,7 @@ impl OperationalHistoryStore {
         let writer_worker = thread::Builder::new()
             .name("chariox-history-writer".to_string())
             // MP-08 / MP-10 / MP-11: joined messages are re-projected here.
-            .stack_size(2 * 1024 * 1024)
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .spawn(move || {
                 run_operational_history_writer(
                     writer_connection,
