@@ -1445,6 +1445,40 @@ fn owner_factor(f: &Fixture) {
         .unwrap();
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a fill that errors after "Use attempted" closes its attempt in a running kernel.
+#[tokio::test]
+async fn a_browser_fill_that_errors_closes_its_attempt_as_failed() {
+    crate::test_support::isolated_env_test!();
+    let controller = LOGIN_CONTROLLER.replace(
+        " case \"$request\" in",
+        r#" case "$request" in
+  *'"method":"host.secret"'*'"text":'*) printf '{"id":%s,"ok":false,"error":{"code":"browser_action_failed","message":"the tab closed"}}\n' "$id" ;;"#,
+    );
+    let login = login_room_with_controller(fixture(), SITE, &controller).await;
+    let f = &login.f;
+    unlock(f);
+    let handle = generate(f, "signup", SITE).await.unwrap()["credential_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(call(f, PASTE, paste_args(&handle)).await.is_err());
+    let events: Vec<String> = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity(&handle)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.event)
+        .filter(|event| event.starts_with("Use"))
+        .collect();
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(events[0].starts_with("Use attempted in browser by "));
+    assert_eq!(events[1], "Use failed: the action did not finish");
+    assert!(!events.iter().any(|event| event.starts_with("Used")));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 #[tokio::test]
 async fn ordinary_totp_browser_fill_masks_the_computed_code() {
     crate::test_support::isolated_env_test!();
