@@ -612,6 +612,8 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|r| {
             let (seq, source, id, payload) = r.map_err(sql)?;
+            #[cfg(test)]
+            INBOX_ROWS_READ.with(|n| n.set(n.get() + 1));
             decode_inbox(seq, room, agent, &source, &id, &payload)
         })
         .collect()
@@ -766,6 +768,9 @@ thread_local! {
     pub(crate) static VISIBLE_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
     pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
+    /// Inbox rows decoded by the recipient reads on this thread.
+    pub(crate) static INBOX_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
     pub(crate) static INBOX_LOOKUP_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }

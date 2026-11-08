@@ -1326,6 +1326,7 @@ async fn a_holder_that_yields_before_reading_the_decision_keeps_it() {
 }
 
 mod asked_without_waiting;
+mod holder_inbox_reads;
 mod reparent;
 mod restored;
 mod tenure;
