@@ -5,6 +5,7 @@ use crate::provider::AgentPermissionLevel;
 
 mod control;
 mod kernels;
+mod kernels_sender;
 mod messages;
 
 /// Room `home` holds the sender; room `peer_room` holds an ordinary agent and its hidden

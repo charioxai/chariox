@@ -212,8 +212,8 @@ async fn parse_refusals() {
             "--command-id",
         ),
         (
-            format!("agent spawn px --room {room} --kernel somewhere"),
-            "--room",
+            format!("agent spawn px --room {room} --kernel somewhere --no-follow"),
+            "kernel_unreachable",
         ),
         (
             format!("agent spawn px --room {room} --slice new"),
@@ -240,7 +240,7 @@ async fn parse_refusals() {
 fn the_spawn_usage_documents_the_room_option() {
     assert!(
         crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
-            .contains("[--room <room> [--no-follow]]")
+            .contains("[--room <room> [--kernel <kernel-ref>] [--no-follow]]")
     );
 }
 
