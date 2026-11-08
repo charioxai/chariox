@@ -75,6 +75,22 @@ impl KernelRuntimeOwnedState {
                 agent_owner_user_id,
             )
     }
+
+    /// The room's trace rule for `user_id` and an agent owned by `agent_owner_user_id`: their own
+    /// agents, and everyone's with Transparent or Full collaboration.
+    pub(in crate::runtime) fn can_view_agent_trace_owned_by(
+        &self,
+        session: &RuntimeSession,
+        user_id: &str,
+        agent_owner_user_id: &str,
+    ) -> bool {
+        self.acts_for_owner_in(session.owner_user_id(), user_id, agent_owner_user_id)
+            || session
+                .collaboration_level_for_user(
+                    &self.room_member_user_id_in(session.owner_user_id(), user_id),
+                )
+                .is_some_and(|level| level.can_view_agent_trace())
+    }
 }
 
 impl KernelRuntimeState {
@@ -121,6 +137,16 @@ impl KernelRuntimeState {
     ) -> bool {
         self.owned
             .can_prompt_agent_owned_by(session, user_id, agent_owner_user_id)
+    }
+
+    pub(in crate::runtime) fn can_view_agent_trace_owned_by(
+        &self,
+        session: &RuntimeSession,
+        user_id: &str,
+        agent_owner_user_id: &str,
+    ) -> bool {
+        self.owned
+            .can_view_agent_trace_owned_by(session, user_id, agent_owner_user_id)
     }
 
     /// A provider run carries no session scope of its own; it belongs to the room it ran in.

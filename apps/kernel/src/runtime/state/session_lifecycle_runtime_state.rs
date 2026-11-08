@@ -526,15 +526,11 @@ impl KernelRuntimeState {
             let member_user_id = self
                 .owned
                 .room_member_user_id_in(session.owner_user_id(), caller_user_id);
-            let collaboration_level = session
-                .collaboration_level_for_user(&member_user_id)
-                .unwrap_or(crate::session::CollaborationLevel::Private);
-            if !self.owned.acts_for_owner_in(
-                session.owner_user_id(),
+            if !self.owned.can_view_agent_trace_owned_by(
+                &session,
                 caller_user_id,
                 agent.owner_user_id(),
-            ) && !collaboration_level.can_view_agent_trace()
-            {
+            ) {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id.to_string(),
                     owner_user_id: agent.owner_user_id().to_string(),

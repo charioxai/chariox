@@ -3,8 +3,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse};
 use crate::runtime::cloud_relay_executor::execute_cloud_relay_request;
-use crate::runtime::command::{KernelCommand, KernelCommandPriority};
-use crate::runtime::history_executor::execute_history_request;
+use crate::runtime::command::{command_caller_user_id, KernelCommand, KernelCommandPriority};
+use crate::runtime::history_executor::{authorize_history_request, execute_history_request};
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
@@ -180,6 +180,12 @@ impl CommandRouter {
             | LocalDaemonRequest::QueryRecall(_)
             | LocalDaemonRequest::SearchRecall(_)
             | LocalDaemonRequest::SemanticSearchRecall(_)) => boxed_handler(|| async move {
+                let request = authorize_history_request(
+                    &self.runtime_state,
+                    &command_caller_user_id(&command),
+                    request,
+                )
+                .await?;
                 execute_history_request(
                     self.history_store.clone(),
                     self.operational_history_store.clone(),

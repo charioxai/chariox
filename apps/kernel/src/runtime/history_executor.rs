@@ -21,6 +21,68 @@ use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use std::time::Instant;
 
+/// MP-08 / MP-11: an agent's history is its trace, so a room member reads only the agents the
+/// room shows them the trace of (`can_view_agent_trace_owned_by`). An outline keeps the visible
+/// agents (a view lists every agent of the room); blob content of a hidden agent is refused.
+pub(crate) async fn authorize_history_request(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: LocalDaemonRequest,
+) -> Result<LocalDaemonRequest, DaemonError> {
+    let session_id = match &request {
+        LocalDaemonRequest::GetSessionHistoryOutline(outline) => &outline.session_id,
+        LocalDaemonRequest::GetSessionHistoryBlobContent(blob) => &blob.session_id,
+        LocalDaemonRequest::GetSessionHistoryBlobContents(blobs) => &blobs.session_id,
+        _ => return Ok(request),
+    };
+    let session = runtime_state.session_snapshot(session_id).await?;
+    let visible = |agent_id: &str| {
+        session.agents().iter().any(|agent| {
+            agent.id() == agent_id
+                && runtime_state.can_view_agent_trace_owned_by(
+                    &session,
+                    caller_user_id,
+                    agent.owner_user_id(),
+                )
+        })
+    };
+    let hidden_blob_agent = match &request {
+        LocalDaemonRequest::GetSessionHistoryBlobContent(blob) => Some(&blob.agent_id),
+        LocalDaemonRequest::GetSessionHistoryBlobContents(blobs) => Some(&blobs.agent_id),
+        _ => None,
+    }
+    .filter(|agent_id| !visible(agent_id));
+    if let Some(agent_id) = hidden_blob_agent {
+        return Err(DaemonError::OwnershipAccessDenied {
+            user_id: caller_user_id.to_string(),
+            owner_user_id: session.owner_user_id().to_string(),
+            resource: agent_id.clone(),
+            operation: "read agent history",
+        });
+    }
+    let LocalDaemonRequest::GetSessionHistoryOutline(mut outline) = request else {
+        return Ok(request);
+    };
+    let visible_agent_ids = |agent_ids: Vec<String>| {
+        agent_ids
+            .into_iter()
+            .filter(|agent_id| visible(agent_id.trim()))
+            .collect::<Vec<_>>()
+    };
+    outline.agent_ids = match outline.agent_ids.take() {
+        Some(agent_ids) => Some(visible_agent_ids(agent_ids)),
+        None if session.agents().iter().all(|agent| visible(agent.id())) => None,
+        None => Some(visible_agent_ids(
+            session
+                .agents()
+                .iter()
+                .map(|agent| agent.id().to_string())
+                .collect(),
+        )),
+    };
+    Ok(LocalDaemonRequest::GetSessionHistoryOutline(outline))
+}
+
 pub(crate) async fn execute_history_request(
     history_store: SessionHistoryStore,
     operational_history_store: OperationalHistoryStore,
