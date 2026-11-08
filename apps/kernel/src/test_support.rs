@@ -23,12 +23,16 @@ mod runtime_mcp;
 pub(crate) mod secret_scan;
 pub(crate) mod task_delta;
 mod task_subscription;
+#[cfg(target_os = "linux")]
+mod thread_stack;
 pub(crate) use environment::{environment_test_isolated, isolate_environment_test};
 #[cfg(unix)]
 pub(crate) use pre_exec_child::PreExecChild;
 pub(crate) use room_turn::admit_room_test_turn;
 pub(crate) use runtime_mcp::TestRuntimeMcp;
 pub(crate) use task_subscription::mixed_task_subscription_updates;
+#[cfg(target_os = "linux")]
+pub(crate) use thread_stack::{rerun_without_min_stack, spawned_thread_stack_size};
 
 /// Run ambient-environment fixtures outside the parallel test process. A mutex
 /// around writers cannot protect unlocked readers or children inheriting env.

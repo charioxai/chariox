@@ -1473,7 +1473,8 @@ impl DurableStateWriter {
         let agent_faults = agent_lifecycle::faults::AgentFaults::from_env();
         let worker = std::thread::Builder::new()
             .name("chariox-durable-writer".to_string())
-            .stack_size(512 * 1024)
+            // Agent lifecycle operations nest their transition, wake and supervision steps here.
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
             .spawn(move || {
                 run_durable_writer_with(
                     connection,
@@ -2431,6 +2432,32 @@ mod quiescence_snapshot_retention_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sub-agent removal nests the lifecycle transitions, wake and supervision steps on the
+    /// writer, and a debug build overflowed a 512 KiB writer stack there and aborted the kernel.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn durable_writer_runs_on_the_kernel_runtime_stack() {
+        if !crate::test_support::rerun_without_min_stack(
+            "durable_state::tests::durable_writer_runs_on_the_kernel_runtime_stack",
+        ) {
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("chariox-durable-writer-stack-{}", rand_suffix()));
+        std::fs::create_dir(&directory).unwrap();
+        let store = DurableKernelStateStore::open(directory.join("kernel.db")).unwrap();
+        let size = {
+            let worker = store.writer.worker.lock().unwrap();
+            crate::test_support::spawned_thread_stack_size(worker.as_ref().unwrap())
+        };
+        drop(store);
+        std::fs::remove_dir_all(&directory).unwrap();
+        assert!(
+            size >= crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "durable writer stack is {size} bytes"
+        );
+    }
 
     #[test]
     fn durable_write_sync_overrides_weaker_connection_setting() {
