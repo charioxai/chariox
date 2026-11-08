@@ -1,5 +1,6 @@
-//! MP-08 / MP-09 / MP-10 / MP-11: moving an agent re-limits its leased subtree on the worker,
-//! so the next provider turn there launches within the new parent chain.
+//! MP-08 / MP-09 / MP-10 / MP-11: moving an agent re-limits its leased subtree on the worker
+//! and the existing provider runs of its local subtree, so the next provider turn of either
+//! starts within the new parent chain.
 use super::*;
 use crate::provider::{AgentExecutionMode as Mode, AgentPermissionLevel as Level};
 use crate::transport::relay_peer::{RelayPeerRequest, RelayPeerResponse};
@@ -12,7 +13,8 @@ const RELAY_URL: &str = "ws://127.0.0.1:1";
 const WORKER_ID: &str = "worker-leased-limits";
 
 /// Room agents `low` (Required/Plan) and `high` (Yolo/Build); `child` under `high` and
-/// `grandchild` under `child`, both executing on one worker.
+/// `grandchild` under `child`, both executing on one worker. `local` (with `child`'s settings)
+/// under `high` and `local_child` (Yolo/Build) under `local` run here, each with a launched run.
 struct LeasedTree {
     runtime: KernelRuntimeState,
     relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
@@ -25,6 +27,8 @@ struct LeasedTree {
     high: String,
     child: String,
     grandchild: String,
+    local: String,
+    local_child: String,
 }
 
 fn limit(app: &crate::app::DaemonApp, agent: &str, mode: Mode, level: Level) {
@@ -103,9 +107,16 @@ async fn leased_tree_under(
     }
     limit(&app, &child, child_mode, child_level);
     limit(&app, &grandchild, Mode::Build, Level::Yolo);
+    // The local agents launch their runs once their settings are set.
+    let local = spawn(&mut app, "local", Some(&high));
+    limit(&app, &local, child_mode, child_level);
+    let local_child = spawn(&mut app, "local-child", Some(&local));
+    limit(&app, &local_child, Mode::Build, Level::Yolo);
+    crate::test_support::admit_room_test_turn(&mut app, &room, &local_child);
     // The spawning turns end, so the room can raise `high` again.
-    app.complete_active_prompt(&room, &high, None).unwrap();
-    app.complete_active_prompt(&room, &child, None).unwrap();
+    for agent in [&high, &child, &local, &local_child] {
+        app.complete_active_prompt(&room, agent, None).unwrap();
+    }
     lease(&app, &child);
     lease(&app, &grandchild);
     let attachment = crate::app::KernelSessionService::new(&mut app)
@@ -140,6 +151,8 @@ async fn leased_tree_under(
         high,
         child,
         grandchild,
+        local,
+        local_child,
     }
 }
 
@@ -147,11 +160,16 @@ impl LeasedTree {
     /// Places `child` under `parent` while acting as the worker: answers each config update and
     /// returns what the worker was told per leased agent.
     async fn place_child(&mut self, parent: &str) -> BTreeMap<String, (Mode, Level)> {
+        self.place(&self.child.clone(), parent).await
+    }
+
+    /// Places `agent` under `parent` while acting as the worker.
+    async fn place(&mut self, agent: &str, parent: &str) -> BTreeMap<String, (Mode, Level)> {
         let placement = tokio::spawn({
             let runtime = self.runtime.clone();
             let request = crate::local::SetAgentParentRequest {
                 session_id: self.room.clone(),
-                agent_id: self.child.clone(),
+                agent_id: agent.to_string(),
                 parent_agent_id: Some(parent.to_string()),
             };
             async move { runtime.set_agent_parent(USER, request).await.map(drop) }
@@ -305,6 +323,35 @@ impl LeasedTree {
             encrypted,
         )
         .await;
+    }
+
+    /// What the existing provider run of local `agent` starts its next turn with: the Codex
+    /// turn start reads these from the run it reuses.
+    fn next_turn(&self, agent: &str) -> (Mode, Level) {
+        let run = self
+            .runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&self.room, agent)
+            .expect("the local agent keeps its launched provider run");
+        assert_ne!(run.state(), crate::provider::ProviderRunState::Ended);
+        (run.execution_mode(), run.permission_level())
+    }
+
+    /// The settings `agent` asked for itself.
+    fn own_settings(&self, agent: &str) -> (Option<Mode>, Option<Level>) {
+        let agent = self.runtime.owned.agent_store.get_agent(agent).unwrap();
+        (
+            agent.execution_mode_override(),
+            agent.permission_level_override(),
+        )
+    }
+
+    fn local_runs(&self) -> [(Mode, Level); 2] {
+        [
+            self.next_turn(&self.local),
+            self.next_turn(&self.local_child),
+        ]
     }
 
     fn told(&self, plan: [(&str, Mode, Level); 2]) -> BTreeMap<String, (Mode, Level)> {
@@ -485,4 +532,106 @@ async fn a_worker_told_a_limit_that_changed_meanwhile_is_told_the_current_one() 
         ]),
         "the worker must end at what the parent chain allows now, not at a limit computed before"
     );
+}
+
+const LIMITED: (Mode, Level) = (Mode::Plan, Level::Required);
+const OPEN: (Mode, Level) = (Mode::Build, Level::Yolo);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_local_agent_raised_beneath_a_lower_parent_keeps_its_run_at_the_parent_limit() {
+    let mut tree = leased_tree(Mode::Plan, Level::Required).await;
+    let (low, local) = (tree.low.clone(), tree.local.clone());
+    tree.place(&local, &low).await;
+    assert_eq!(tree.local_runs(), [LIMITED, LIMITED]);
+    tree.set_settings(&local, Mode::Build, Level::Yolo).await;
+    assert_eq!(
+        tree.next_turn(&local),
+        LIMITED,
+        "a local agent raised to Yolo/Build beneath a Required/Plan parent must keep running at Required/Plan"
+    );
+    assert_eq!(
+        tree.own_settings(&local),
+        (Some(Mode::Build), Some(Level::Yolo)),
+        "the agent keeps the settings it asked for"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lowering_a_parent_limits_the_existing_runs_of_its_local_team() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let high = tree.high.clone();
+    assert_eq!(tree.local_runs(), [OPEN, OPEN]);
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    assert_eq!(
+        tree.local_runs(),
+        [LIMITED, LIMITED],
+        "the next turns of a local team under a parent lowered to Required/Plan must run at Required/Plan"
+    );
+
+    // Raised again, the team runs at its own settings again.
+    tree.set_settings(&high, Mode::Build, Level::Yolo).await;
+    assert_eq!(tree.local_runs(), [OPEN, OPEN]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lowering_the_room_default_limits_the_runs_of_a_local_team_whose_parent_follows_it() {
+    let mut tree = leased_tree_under(None, Mode::Build, Level::Yolo).await;
+    tree.set_room_default(Mode::Build, Level::Yolo).await;
+    assert_eq!(tree.local_runs(), [OPEN, OPEN]);
+    tree.set_room_default(Mode::Plan, Level::Required).await;
+    assert_eq!(
+        tree.local_runs(),
+        [LIMITED, LIMITED],
+        "a local team under a parent on the lowered room default must run at Required/Plan"
+    );
+
+    tree.set_room_default(Mode::Build, Level::Yolo).await;
+    assert_eq!(tree.local_runs(), [OPEN, OPEN]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_launched_local_team_moved_under_a_lower_root_runs_at_its_limit() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (low, high, local) = (tree.low.clone(), tree.high.clone(), tree.local.clone());
+    tree.place(&local, &low).await;
+    assert_eq!(
+        tree.local_runs(),
+        [LIMITED, LIMITED],
+        "a launched Yolo/Build local team moved under a Required/Plan root must run at Required/Plan"
+    );
+
+    tree.place(&local, &high).await;
+    assert_eq!(tree.local_runs(), [OPEN, OPEN]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_higher_root_never_raises_a_local_run_above_its_agents_own_settings() {
+    let mut tree = leased_tree(Mode::Plan, Level::Required).await;
+    let (low, high, local) = (tree.low.clone(), tree.high.clone(), tree.local.clone());
+    tree.place(&local, &low).await;
+    tree.place(&local, &high).await;
+    assert_eq!(
+        tree.local_runs(),
+        [LIMITED, LIMITED],
+        "a Required/Plan local agent and the team below it stay at Required/Plan under a Yolo/Build root"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_local_and_leased_paths_limit_the_same_tree_alike() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let high = tree.high.clone();
+    let (child, grandchild) = (tree.child.clone(), tree.grandchild.clone());
+    for (mode, level) in [LIMITED, (Mode::Build, Level::Required), OPEN] {
+        let told = tree.set_settings(&high, mode, level).await;
+        // `local` and `local_child` sit where `child` and `grandchild` do, with their settings.
+        assert_eq!(
+            told,
+            tree.told([
+                (&child, tree.local_runs()[0].0, tree.local_runs()[0].1),
+                (&grandchild, tree.local_runs()[1].0, tree.local_runs()[1].1),
+            ]),
+            "a local and a leased agent at one place in the tree must run under one limit"
+        );
+    }
 }
