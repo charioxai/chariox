@@ -25,6 +25,40 @@ fn kernel_unreachable(kernel: &str) -> DaemonError {
     )
 }
 
+fn uncertain(kernel: &str, retry: &str) -> DaemonError {
+    refusal(
+        "uncertain",
+        format!("kernel `{kernel}` may have acted on it before its answer was lost; {retry} and it lands once"),
+    )
+}
+
+/// How the caller repeats `request` so the other kernel takes it once.
+fn retry_hint(request: &RelayPeerRequest) -> String {
+    match request {
+        RelayPeerRequest::PeerAgentMessage { request_id, .. } => {
+            format!("send it again with idempotency_key `{request_id}`")
+        }
+        _ => "make the same call again".into(),
+    }
+}
+
+/// A peer request that got no answer, as its caller can act on it: the other kernel's own
+/// refusal as it is, an answer lost after that kernel took the request as `uncertain`, and
+/// anything else as `kernel_unreachable`.
+fn unanswered(kernel: &str, retry: &str, error: DaemonError) -> DaemonError {
+    match &error {
+        DaemonError::RelayTransport { code, .. } if code == "target_disconnected" => {
+            uncertain(kernel, retry)
+        }
+        DaemonError::RelayTransport { code, .. }
+            if error.is_answered_peer_refusal() && code != "target_not_connected" =>
+        {
+            error
+        }
+        _ => kernel_unreachable(kernel),
+    }
+}
+
 fn room_unavailable(kernel: &str) -> DaemonError {
     refusal(
         "room_unavailable",
@@ -381,32 +415,30 @@ impl KernelRuntimeState {
         })
     }
 
-    /// The one link to a kernel of the same owner. A kernel that is gone before or while it
-    /// answers is unreachable; any answer it gave reaches the caller as it is.
+    /// The one link to a kernel of the same owner. A kernel that is gone before it takes the
+    /// request is unreachable, one gone after it is uncertain; any answer it gave reaches the
+    /// caller as it is.
     pub(super) async fn peer_agent_link(
         &self,
         owner: &str,
         kernel: &str,
         request: RelayPeerRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let retry = retry_hint(&request);
+        // The test link stands for the relay: what it answers is mapped as the relay's would be.
         #[cfg(test)]
         if let Some(link) = peer_agent_link_for_tests::link(kernel) {
             let from = self.owned.config_projection.snapshot().daemon_id;
-            return link(from, owner.to_string(), request).await;
+            return match link(from, owner.to_string(), request).await {
+                Err(error @ DaemonError::RelayTransport { .. }) => {
+                    Err(unanswered(kernel, &retry, error))
+                }
+                answered => answered,
+            };
         }
-        match self
-            .send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
+        self.send_same_owner_peer_request(owner, kernel, request, PEER_AGENT_REQUEST_TIMEOUT)
             .await
-        {
-            Ok(response) => Ok(response),
-            Err(error @ DaemonError::RelayTransport { .. })
-                if error.is_answered_peer_refusal()
-                    && !matches!(&error, DaemonError::RelayTransport { code, .. } if code == "target_not_connected") =>
-            {
-                Err(error)
-            }
-            Err(_) => Err(kernel_unreachable(kernel)),
-        }
+            .map_err(|error| unanswered(kernel, &retry, error))
     }
 }
 
