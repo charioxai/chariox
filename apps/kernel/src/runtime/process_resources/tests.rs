@@ -602,9 +602,12 @@ fn an_owner_without_a_cap_has_no_default_limit() {
     );
 }
 
-/// Samples until `pid` is listed, for up to three seconds.
+/// Samples until `pid` is listed, for up to three seconds. A watch reads a
+/// table the sampler published, and the kernel warms the sampler at startup, so
+/// the first sample here waits for it too instead of failing with `Short`.
 #[cfg(unix)]
 fn sample_until_listed(tree: &mut sampling::ProcessTree, pid: u32) -> Vec<ProcessSample> {
+    sampling::warm_up().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     loop {
         let samples = tree.sample().unwrap();
