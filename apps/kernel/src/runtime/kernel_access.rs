@@ -256,13 +256,15 @@ pub(crate) enum Refusal {
     CoverLimit,
     /// A status request named a pid that is neither the caller nor one of its OS ancestors.
     HolderOutside,
+    /// The caller is a process the kernel launched, a sub-agent: only its parent agent can ask.
+    SubAgent,
     /// The kernel cannot pick which program holds the grant: the caller has no running
     /// grandparent to hold it and no installed Codex, Claude Code or OpenCode above it.
     HolderUnavailable,
 }
 
 impl Refusal {
-    pub(crate) const ALL: [Self; 17] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::HumanOnly,
         Self::NotCovered,
         Self::Ended,
@@ -280,6 +282,7 @@ impl Refusal {
         Self::CoverLimit,
         Self::HolderOutside,
         Self::HolderUnavailable,
+        Self::SubAgent,
     ];
 
     pub(crate) fn code(self) -> &'static str {
@@ -302,6 +305,7 @@ impl Refusal {
             // Same answer as for an uncovered caller: nothing about another process leaks.
             Self::HolderOutside => "kernel_access_not_covered",
             Self::HolderUnavailable => "kernel_access_holder_unavailable",
+            Self::SubAgent => "kernel_access_sub_agent",
         }
     }
 
@@ -323,6 +327,7 @@ impl Refusal {
             Self::CoverOutside => "Only a process your access already reaches can be covered: the agent you approved, the programs it starts, and processes it covered before.",
             Self::CoverLimit => "Access already covers as many background processes as it may. Stop one first.",
             Self::HolderOutside => "That pid is not this process or one of its OS ancestors: `chariox access status` reports only your own access. Run it without --holder-pid.",
+            Self::SubAgent => "A sub-agent cannot ask for kernel access. Ask your parent agent.",
             Self::HolderUnavailable => "The kernel cannot tell which program should hold access: this program has no running parent to hold it, or it runs in a sandbox with no installed Codex, Claude Code or OpenCode. Start it from a shell or agent that keeps running, or pass --holder-pid with the host pid of the program that should hold access.",
         }
     }

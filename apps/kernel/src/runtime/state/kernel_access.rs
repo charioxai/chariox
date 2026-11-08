@@ -604,9 +604,7 @@ impl KernelRuntimeState {
         request: &RequestKernelAccessRequest,
     ) -> Result<AccessSubmission, DaemonError> {
         if process::inspect(std::process::id()).is_ok_and(|(kernel, _)| kernel.contains(peer)) {
-            return Err(error(
-                "kernel-launched processes cannot request external access",
-            ));
+            return Err(Refusal::SubAgent.error());
         }
         let holder = self.access_holder(peer, request.holder_pid)?;
         let daemon_config = self.owned.config_projection.snapshot();
