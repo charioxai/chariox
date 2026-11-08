@@ -1,9 +1,7 @@
 //! Every active route of an installed App is a source on the ordinary notification router: one
 //! occurrence per event the route accepts. An outside agent follows an App's events directly.
 use super::*;
-use crate::durable_state::workflow_notifications::{
-    naming, NotificationOperation, NotificationOutcome, SourceAdmission,
-};
+use crate::durable_state::workflow_notifications::naming;
 use crate::local::{NotificationSourceKind, WorkflowNotificationSource};
 use chariox_app_runtime::app_inbox::InboxRoute;
 
@@ -47,9 +45,11 @@ impl KernelRuntimeOwnedState {
     /// Brings the owner's App event sources in line with the installed Apps: one enabled source
     /// per active route of an active installation, and a disabled one for each that is gone. A
     /// grant keeps following a disabled source's row, flagged unavailable, until it detaches.
+    /// `stored` is the owner's inventory; a source it already holds unchanged is not written.
     pub(super) fn sync_app_event_notification_sources(
         &self,
         owner: &str,
+        stored: &[WorkflowNotificationSource],
     ) -> Result<(), DaemonError> {
         let kernel = self.config_projection.snapshot().daemon_id;
         let routes = self
@@ -62,34 +62,17 @@ impl KernelRuntimeOwnedState {
         for route in &routes {
             let source = source_of(&kernel, route);
             live.insert(source.source_id.clone());
-            self.register_app_event_source(source)?;
+            self.register_notification_source_if_changed(stored, source)?;
         }
-        let (sources, _, _) = self.durable_state_store.notification_inventory(owner)?;
-        for mut gone in sources.into_iter().filter(|source| {
+        for gone in stored.iter().filter(|source| {
             source.kind == NotificationSourceKind::AppEvent
                 && source.enabled
                 && !live.contains(&source.source_id)
         }) {
+            let mut gone = gone.clone();
             gone.enabled = false;
-            self.register_app_event_source(gone)?;
+            self.register_notification_source_if_changed(stored, gone)?;
         }
         Ok(())
-    }
-
-    fn register_app_event_source(
-        &self,
-        source: WorkflowNotificationSource,
-    ) -> Result<(), DaemonError> {
-        match self
-            .durable_state_store
-            .notify(NotificationOperation::Register(SourceAdmission {
-                source,
-                workflow_json: String::new(),
-            }))? {
-            NotificationOutcome::Source(_) => Ok(()),
-            _ => Err(crate::durable_state::workflow_notifications::error(
-                "unexpected notification registration result",
-            )),
-        }
     }
 }

@@ -10,33 +10,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session: &crate::session::RuntimeSession,
     ) -> Result<crate::local::WorkflowNotificationSource, DaemonError> {
-        use sha2::{Digest, Sha256};
-        // Each owner of the Room has their own source: a former owner's row never takes
-        // the current owner's alerts, and Register retires it.
-        let source = crate::local::WorkflowNotificationSource {
-            kind: crate::local::NotificationSourceKind::OwnerAction,
-            source_id: format!(
-                "owner_action_{:x}",
-                Sha256::digest(
-                    serde_json::to_vec(&(
-                        session.host_daemon_id(),
-                        session.id(),
-                        session.owner_user_id()
-                    ))
-                    .expect("identities serialize")
-                )
-            ),
-            owner_user_id: session.owner_user_id().into(),
-            kernel_id: session.host_daemon_id().into(),
-            session_id: session.id().into(),
-            workflow_id: "owner_action".into(),
-            exit_node_id: "blocked".into(),
-            enabled: true,
-            available: session.status() != crate::session::SessionStatus::Ended,
-            name: "Agent needs your action".into(),
-            display_name: "Agent needs your action".into(),
-            exit_ordinal: 0,
-        };
+        let source = owner_action_source(session);
         match self
             .durable_state_store
             .notify(NotificationOperation::Register(SourceAdmission {
@@ -49,7 +23,42 @@ impl KernelRuntimeOwnedState {
             )),
         }
     }
+}
 
+/// The source of a Room's blocked-task alerts for its current owner.
+pub(super) fn owner_action_source(
+    session: &crate::session::RuntimeSession,
+) -> crate::local::WorkflowNotificationSource {
+    use sha2::{Digest, Sha256};
+    // Each owner of the Room has their own source: a former owner's row never takes
+    // the current owner's alerts, and Register retires it.
+    crate::local::WorkflowNotificationSource {
+        kind: crate::local::NotificationSourceKind::OwnerAction,
+        source_id: format!(
+            "owner_action_{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&(
+                    session.host_daemon_id(),
+                    session.id(),
+                    session.owner_user_id()
+                ))
+                .expect("identities serialize")
+            )
+        ),
+        owner_user_id: session.owner_user_id().into(),
+        kernel_id: session.host_daemon_id().into(),
+        session_id: session.id().into(),
+        workflow_id: "owner_action".into(),
+        exit_node_id: "blocked".into(),
+        enabled: true,
+        available: session.status() != crate::session::SessionStatus::Ended,
+        name: "Agent needs your action".into(),
+        display_name: "Agent needs your action".into(),
+        exit_ordinal: 0,
+    }
+}
+
+impl KernelRuntimeOwnedState {
     pub(super) fn emit_task_owner_notification(
         &self,
         task: &AgentTaskExecution,

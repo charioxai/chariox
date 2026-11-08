@@ -4,6 +4,7 @@
 use super::*;
 use crate::durable_state::workflow_notifications::{
     outside_agent::MAX_FOLLOWED_SOURCES, NotificationOperation, NotificationOutcome,
+    SourceAdmission,
 };
 use crate::local::*;
 
@@ -116,19 +117,28 @@ impl KernelRuntimeState {
         &self,
         owner: &str,
     ) -> Result<Vec<WorkflowNotificationSourceSummary>, DaemonError> {
+        let (stored, _, _) = self
+            .owned
+            .durable_state_store
+            .notification_inventory(owner)?;
         for session in self.owned.session_store.list_sessions() {
             if session.owner_user_id() == owner
                 && session.status() != crate::session::SessionStatus::Ended
             {
-                self.owned
-                    .ensure_owner_action_notification_source(&session)?;
+                self.owned.register_notification_source_if_changed(
+                    &stored,
+                    super::owner_action_notifications::owner_action_source(&session),
+                )?;
                 for workflow in session.workflows() {
-                    self.owned
-                        .ensure_run_finished_notification_source(&session, workflow)?;
+                    self.owned.register_notification_source_if_changed(
+                        &stored,
+                        super::run_finished_notifications::run_finished_source(&session, workflow),
+                    )?;
                 }
             }
         }
-        self.owned.sync_app_event_notification_sources(owner)?;
+        self.owned
+            .sync_app_event_notification_sources(owner, &stored)?;
         let home = self.owned.config_projection.snapshot().daemon_id;
         let (mut sources, _, _) = self
             .owned
@@ -278,5 +288,42 @@ impl KernelRuntimeOwnedState {
                     Ok(())
                 })
             });
+    }
+}
+
+impl KernelRuntimeOwnedState {
+    /// Registers `wanted` unless `stored` already holds that row. The durable identity keeps a
+    /// source's first id, so rows are matched by what they follow, not by id.
+    pub(super) fn register_notification_source_if_changed(
+        &self,
+        stored: &[WorkflowNotificationSource],
+        wanted: WorkflowNotificationSource,
+    ) -> Result<(), DaemonError> {
+        let current = stored.iter().any(|row| {
+            row.kind == wanted.kind
+                && row.kernel_id == wanted.kernel_id
+                && row.session_id == wanted.session_id
+                && row.workflow_id == wanted.workflow_id
+                && row.exit_node_id == wanted.exit_node_id
+                && *row
+                    == WorkflowNotificationSource {
+                        source_id: row.source_id.clone(),
+                        ..wanted.clone()
+                    }
+        });
+        if current {
+            return Ok(());
+        }
+        match self
+            .durable_state_store
+            .notify(NotificationOperation::Register(SourceAdmission {
+                source: wanted,
+                workflow_json: String::new(),
+            }))? {
+            NotificationOutcome::Source(_) => Ok(()),
+            _ => Err(crate::durable_state::workflow_notifications::error(
+                "unexpected notification registration result",
+            )),
+        }
     }
 }
