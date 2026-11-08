@@ -151,3 +151,25 @@ async fn only_an_access_grant_lists_notification_sources() {
     drop((router, kernel));
     cleanup(f);
 }
+
+#[tokio::test]
+async fn a_repeated_listing_queues_no_write_on_the_shared_writer() {
+    let mut f = Fixture::new();
+    for name in ["one", "two", "three", "four", "five", "six"] {
+        f.workflow(name);
+    }
+    let router = router(&mut f);
+    let kernel = router.runtime_state();
+    let grant = kernel.insert_access_grant_for_test(&f.session);
+    restore(&kernel, &f);
+    let store = &kernel.owned.durable_state_store;
+    let first = listed(&router, &grant).await.len();
+
+    let before = store.writer_requests_received();
+    assert_eq!(listed(&router, &grant).await.len(), first);
+    // A read that finds every source already registered has nothing to commit: one Register per
+    // Room, workflow and App route on every list call holds the writer for the whole owner.
+    assert_eq!(store.writer_requests_received() - before, 0);
+    drop((router, kernel));
+    cleanup(f);
+}
