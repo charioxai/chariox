@@ -214,6 +214,42 @@ fn an_outcome_owed_to_a_kernel_that_was_away_is_delivered_when_the_relay_reconne
     });
 }
 
+#[test]
+fn follows_of_peers_on_other_kernels_are_lost_when_this_kernel_leaves_their_owner() {
+    run_peer_test("peer-offline-unpaired", || async {
+        let (a, b, _task, follow) = followed("peer-offline-unpaired").await;
+        // As after `/kernels/unlink` or a Cloud answer that the link is gone.
+        crate::runtime::cloud_relay_profile_store::clear_cloud_profile(&a.router.runtime_state)
+            .await
+            .unwrap();
+        a.router
+            .runtime_state
+            .sweep_agent_lifecycle_for_test()
+            .await
+            .unwrap();
+        let events = a.peer_events_after_delivery(1).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
+        assert_eq!(events[0].source_id, source_of(&b));
+        let held = a
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_registration(follow["registration_id"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert!(!held.live, "{held:?}");
+        a.router
+            .runtime_state
+            .sweep_agent_lifecycle_for_test()
+            .await
+            .unwrap();
+        assert_eq!(a.peer_events().await.len(), 1, "once");
+        unlink(&[&a, &b]);
+    });
+}
+
 /// `kernel` creates the spawned peer, whose first turn then ends before the answer is back.
 fn link_ending_the_spawned_turn_before_answering(kernel: &Kernel) {
     let router = kernel.router.clone();
