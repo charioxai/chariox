@@ -1103,7 +1103,9 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
         let router =
             CommandRouter::with_interactive_capacity(Arc::new(tokio::sync::Mutex::new(app)), 2);
         let state = router.runtime_state();
-        state.install_kernel_browser_fixture("alice", &root.0);
+        // Alice is this kernel's Cloud owner; her browser is the kernel owner's.
+        let owner = state.provider_account_authority_owner_user_id("alice");
+        state.install_kernel_browser_fixture(&owner, &root.0);
         let cache = CommandResultCache::default();
         let sequence = AtomicU64::new(1);
         let request = LocalDaemonRequest::KernelBrowser(crate::local::KernelBrowserRequest {
@@ -1131,7 +1133,7 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
             .await,
             RelayDispatchOutcome::Response(_)
         ));
-        state.register_kernel_browser_fixture_value("alice", "MD5-sensitive-fixture");
+        state.register_kernel_browser_fixture_value(&owner, "MD5-sensitive-fixture");
         assert!(
             matches!(
                 dispatch_relay_client_request(
@@ -1147,7 +1149,7 @@ async fn md5_relay_cached_browser_observations_obey_current_vault_policy() {
             ),
             "MD-5: changed Vault protection must reject the old text/pixel receipt"
         );
-        state.fence_kernel_browser_fixture("alice");
+        state.fence_kernel_browser_fixture(&owner);
         assert!(
             matches!(
                 dispatch_relay_client_request(
