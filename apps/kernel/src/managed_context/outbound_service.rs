@@ -450,6 +450,8 @@ impl ManagedContextOutboundOperationStore {
 pub(crate) struct ManagedContextOutboundCaller {
     pub runtime: crate::runtime::state::KernelRuntimeState,
     pub user_id: String,
+    /// The session whose Vault unlock the export may take over.
+    pub session_id: Option<String>,
 }
 
 pub(crate) fn start_managed_context_outbound_operation(
@@ -541,15 +543,16 @@ pub(crate) fn start_managed_context_outbound_operation(
             }
         }
         // The Vault login is read from the Vault, which preflight's unlock may no longer cover.
-        let vault_open = match caller.as_ref().map(|caller| &caller.runtime) {
-            Some(runtime) => match package_export_reads_vault_login(
+        let vault_open = match caller.as_ref() {
+            Some(caller) => match package_export_reads_vault_login(
                 &config,
                 &store,
                 &provider_account_profiles,
                 &authoritative_ticket,
             ) {
-                Ok(true) => runtime
-                    .vault_for_login_export(None)
+                Ok(true) => caller
+                    .runtime
+                    .vault_for_login_export(caller.session_id.as_deref())
                     .await
                     .map(Some)
                     .map_err(|_| vault_login_locked_error()),

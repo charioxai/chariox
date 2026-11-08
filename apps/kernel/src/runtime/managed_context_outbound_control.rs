@@ -18,6 +18,7 @@ pub(crate) fn execute_managed_context_outbound_request(
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     runtime: crate::runtime::state::KernelRuntimeState,
     caller_user_id: &str,
+    session_id: Option<&str>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     authorize_source_user(&config, caller_user_id)?;
@@ -71,6 +72,7 @@ pub(crate) fn execute_managed_context_outbound_request(
                 Some(ManagedContextOutboundCaller {
                     runtime,
                     user_id: caller_user_id.to_string(),
+                    session_id: session_id.map(str::to_owned),
                 }),
                 request.interactive,
             )?;
@@ -218,6 +220,7 @@ mod tests {
                 runtime.provider_account_profile_registry().clone(),
                 runtime.clone(),
                 "owner",
+                None,
                 LocalDaemonRequest::StartManagedContextTransfer(
                     crate::local::StartManagedContextTransferRequest {
                         ticket: None,

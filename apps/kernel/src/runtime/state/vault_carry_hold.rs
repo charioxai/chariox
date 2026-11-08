@@ -2,11 +2,13 @@
 //! Vault at preflight and the export runs later, after Cloud has made the machine. Under "ask
 //! every time" that unlock belongs to one operation, so preflight hands it over here: one use,
 //! held for a bounded time, consumed by the export. A hold that ran out (or was used) makes the
-//! export ask again through the launching session's unlock card.
+//! export ask again through the launching session's unlock card. Holds are kept per Vault path and
+//! launching session, so two launches never take over each other's ask.
 use super::runtime_vault_unlock_state::{expand_vault_path, VaultUnlockGuard};
 use super::*;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -25,14 +27,24 @@ struct Entry {
     /// The launching command, kept so a later export can show the unlock card in its session.
     ask: crate::runtime::command::KernelCommand,
     held: Option<Held>,
+    /// Orders launches, so an export that names no known session takes the latest one.
+    launched: u64,
 }
 
-fn entries() -> &'static Mutex<BTreeMap<PathBuf, Entry>> {
-    static ENTRIES: OnceLock<Mutex<BTreeMap<PathBuf, Entry>>> = OnceLock::new();
+/// A Vault path and the session that launched the machine.
+type EntryKey = (PathBuf, Option<String>);
+
+fn entries() -> &'static Mutex<BTreeMap<EntryKey, Entry>> {
+    static ENTRIES: OnceLock<Mutex<BTreeMap<EntryKey, Entry>>> = OnceLock::new();
     ENTRIES.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn locked_entries() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Entry>> {
+fn next_launch() -> u64 {
+    static LAUNCHES: AtomicU64 = AtomicU64::new(0);
+    LAUNCHES.fetch_add(1, Ordering::Relaxed)
+}
+
+fn locked_entries() -> std::sync::MutexGuard<'static, BTreeMap<EntryKey, Entry>> {
     entries()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -69,13 +81,16 @@ impl KernelRuntimeState {
             return;
         };
         let id = rand::random::<u64>();
+        let key = (path.clone(), command.session_id.clone());
         {
             let mut entries = locked_entries();
-            let entry = entries.entry(path.clone()).or_insert_with(|| Entry {
+            let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
                 ask: command.clone(),
                 held: None,
+                launched: 0,
             });
             entry.ask = command.clone();
+            entry.launched = next_launch();
             let live = entry
                 .held
                 .as_ref()
@@ -104,7 +119,7 @@ impl KernelRuntimeState {
             let lapsed = {
                 let mut entries = locked_entries();
                 entries
-                    .get_mut(&path)
+                    .get_mut(&key)
                     .filter(|entry| entry.held.as_ref().is_some_and(|held| held.id == id))
                     .and_then(|entry| entry.held.take())
             };
@@ -114,18 +129,28 @@ impl KernelRuntimeState {
     }
 
     /// The Vault, open for one export. Takes the unlock preflight held; when that lapsed or was
-    /// used, asks again with the unlock card of the session that launched the machine. Dropping
-    /// the guard ends the use.
+    /// used, asks again with the unlock card of the session that launched the machine. An export
+    /// that names no launch of its own takes the latest one. Dropping the guard ends the use.
     pub(crate) async fn vault_for_login_export(
         &self,
-        _session_id: Option<&str>,
+        session_id: Option<&str>,
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let Some(path) = self.carry_vault_path() else {
             return Ok(VaultUnlockGuard::not_required());
         };
         let (held, ask) = {
             let mut entries = locked_entries();
-            match entries.get_mut(&path) {
+            let own = (path.clone(), session_id.map(str::to_owned));
+            let key = if entries.contains_key(&own) {
+                Some(own)
+            } else {
+                entries
+                    .iter()
+                    .filter(|((entry_path, _), _)| *entry_path == path)
+                    .max_by_key(|(_, entry)| entry.launched)
+                    .map(|(key, _)| key.clone())
+            };
+            match key.and_then(|key| entries.get_mut(&key)) {
                 Some(entry) => (entry.held.take(), Some(entry.ask.clone())),
                 None => (None, None),
             }

@@ -28,6 +28,7 @@ impl CommandRouter {
         &'a self,
         request: &'a LocalDaemonRequest,
         caller_user_id: &'a str,
+        session_id: Option<&'a str>,
     ) -> Option<PreLaneRequestFuture<'a>> {
         match request {
             LocalDaemonRequest::ObserveManagedEnvironmentPreReimage(request) => {
@@ -52,6 +53,7 @@ impl CommandRouter {
                         self.provider_account_profiles.clone(),
                         self.runtime_state.clone(),
                         caller_user_id,
+                        session_id,
                         request.clone(),
                     )
                     .map(Some)

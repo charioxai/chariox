@@ -155,7 +155,9 @@ impl CommandRouter {
         }
         // MP-08 / MP-10 / MP-11: poll only the selected request handler.
         // A missing provider projection still falls through to ordinary dispatch.
-        if let Some(handler) = self.select_pre_lane_request(request, caller_user_id) {
+        if let Some(handler) =
+            self.select_pre_lane_request(request, caller_user_id, command.session_id.as_deref())
+        {
             if let Some(response) = handler.await? {
                 return Ok(Some(response));
             }
