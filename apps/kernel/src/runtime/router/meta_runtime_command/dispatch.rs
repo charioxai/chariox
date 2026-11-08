@@ -614,6 +614,14 @@ impl CommandRouter {
                         .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
                         .await)
                 }
+                Ok(None) if spawn.command_id.is_some() => {
+                    return Ok(meta_command_failure_result(
+                        command,
+                        meta_command_error(
+                            "usage: agent spawn --room does not accept --command-id for a room on this kernel",
+                        ),
+                    ))
+                }
                 Ok(None) => {}
                 Err(error) => return Ok(meta_command_failure_result(command, error)),
             }
@@ -859,17 +867,18 @@ impl CommandRouter {
             permission_level: spawn
                 .permission_level
                 .or(metaagent.permission_level_override()),
+            command_id: spawn.command_id,
         };
         match self
             .runtime_state
             .spawn_room_peer(metaagent, kernel, request)
             .await
         {
-            Ok((agent, alias)) => RuntimeToolResult {
+            Ok(spawned) => RuntimeToolResult {
                 ok: true,
                 payload: serde_json::json!({
                     "command": command,
-                    "response": {"spawned": {"kernel": agent.kernel_id, "room": agent.room_id, "agent": agent.agent_id, "alias": alias}},
+                    "response": {"spawned": {"kernel": spawned.agent.kernel_id, "room": spawned.agent.room_id, "agent": spawned.agent.agent_id, "alias": spawned.alias, "duplicate": spawned.duplicate}},
                 }),
             },
             Err(error) => meta_command_failure_result(command, error),

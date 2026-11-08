@@ -93,6 +93,16 @@ pub(crate) struct RoomPeerSpawn {
     pub(crate) alias: Option<String>,
     pub(crate) prompt: Option<String>,
     pub(crate) permission_level: Option<crate::provider::AgentPermissionLevel>,
+    /// Names the call across turns, as `agent spawn --command-id` does on this kernel.
+    pub(crate) command_id: Option<String>,
+}
+
+/// The peer a spawn on another kernel created; `duplicate` when an earlier attempt of the same
+/// call already had.
+pub(crate) struct RoomPeerSpawned {
+    pub(crate) agent: PeerAgentStamp,
+    pub(crate) alias: String,
+    pub(crate) duplicate: bool,
 }
 
 impl KernelRuntimeState {
@@ -164,20 +174,22 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Creates an ordinary agent in `spawn.room` on `kernel`; answers its stamp and alias.
+    /// Creates an ordinary agent in `spawn.room` on `kernel`. A retry of the same call after a
+    /// lost answer reaches the peer the first attempt created.
     pub(crate) async fn spawn_room_peer(
         &self,
         sender: &crate::agent::AgentInstance,
         kernel: &str,
         spawn: RoomPeerSpawn,
-    ) -> Result<(PeerAgentStamp, String), DaemonError> {
+    ) -> Result<RoomPeerSpawned, DaemonError> {
         if sender.is_sub_agent() {
             return Err(refused(kernel, PeerAgentRefusal::SubAgentCaller));
         }
         let caller = self.peer_agent_caller(sender, kernel)?;
+        let request_id = self.peer_spawn_request_id(sender, &spawn)?;
         let request = RelayPeerRequest::SpawnRoomPeer {
             protocol_version: RELAY_PEER_PROTOCOL_VERSION,
-            request_id: format!("{:032x}", rand::random::<u128>()),
+            request_id,
             sender: caller.stamp,
             room: spawn.room.trim().into(),
             provider: spawn.provider,
@@ -192,10 +204,62 @@ impl KernelRuntimeState {
             follow: None,
         };
         match self.peer_agent_link(&caller.owner, kernel, request).await? {
-            RelayPeerResponse::RoomPeerSpawned { agent, alias, .. } => Ok((agent, alias)),
+            RelayPeerResponse::RoomPeerSpawned {
+                agent,
+                alias,
+                duplicate,
+                ..
+            } => Ok(RoomPeerSpawned {
+                agent,
+                alias,
+                duplicate,
+            }),
             RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
             _ => Err(kernel_unreachable(kernel)),
         }
+    }
+
+    /// One spawn call is one request id, which the receiving kernel remembers with its answer.
+    /// The id is derived from what names the call durably: the command id, or else the
+    /// caller's running turn and the spawn's arguments. Nothing random, so nothing to lose.
+    fn peer_spawn_request_id(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        spawn: &RoomPeerSpawn,
+    ) -> Result<String, DaemonError> {
+        use sha2::{Digest, Sha256};
+        let call = match &spawn.command_id {
+            Some(command_id) => serde_json::json!(["command", command_id]),
+            None => {
+                let session = self.owned.session_store.get_session(sender.session_id())?;
+                let turn = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, sender.id())
+                    .ok_or_else(|| {
+                        crate::durable_state::agent_lifecycle::error(
+                            "agent spawn on another kernel needs a running turn",
+                        )
+                    })?;
+                serde_json::json!([
+                    "turn",
+                    turn.id(),
+                    spawn.room.trim(),
+                    spawn.provider,
+                    spawn.account_profile,
+                    spawn.model,
+                    spawn.effort,
+                    spawn.alias,
+                    spawn.prompt,
+                    spawn.permission_level,
+                ])
+            }
+        };
+        let digest = Sha256::digest(serde_json::json!([sender.id(), call]).to_string());
+        Ok(digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
     }
 
     /// The caller's owner must be the Cloud owner both kernels share, and a guest of a room

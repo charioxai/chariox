@@ -404,7 +404,7 @@ pub(super) fn parse_meta_agent_spawn_args(
                 slice_ref.is_some() || slice_create.is_some() || slice_display_mode.is_some(),
             ),
             ("--deadline", deadline.is_some()),
-            ("--command-id", command_id.is_some()),
+            ("--command-id", command_id.is_some() && kernel_ref.is_none()),
         ];
         if let Some((option, _)) = unsupported.iter().find(|(_, given)| *given) {
             return Err(meta_command_error(format!(
