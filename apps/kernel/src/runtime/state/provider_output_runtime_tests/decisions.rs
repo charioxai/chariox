@@ -469,7 +469,7 @@ async fn a_peer_never_answers_a_decision_in_its_room_or_another() {
             assert!(
                 matches!(
                     status,
-                    ChildDecisionStatus::NotHolder | ChildDecisionStatus::SettledByUser
+                    ChildDecisionStatus::NotHolder | ChildDecisionStatus::UnknownInteraction
                 ),
                 "{status:?}"
             );

@@ -727,8 +727,8 @@ fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed
         .expect("a steer reaches the peer");
         let inbox = b.messages(b.agent.id()).await;
         assert_eq!(inbox.len(), 2, "{inbox:?}");
-        assert!(!inbox[0].urgent && inbox[0].reply_requested);
-        assert!(inbox[1].urgent);
+        assert!(!inbox[0].urgent && inbox[0].payload["no_reply"] == false);
+        assert!(inbox[1].urgent && inbox[1].payload["no_reply"] == true);
         for event in &inbox {
             assert_eq!(event.payload["sender_kernel_id"], a.id.as_str());
             assert_eq!(event.payload["sender_agent_id"], a.agent.id());
