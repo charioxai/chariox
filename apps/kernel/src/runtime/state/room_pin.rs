@@ -12,7 +12,7 @@ impl KernelRuntimeState {
         {
             let mut sessions = self.owned.session_store.write();
             let mut session = sessions.get_session(session_id)?;
-            if session.owner_user_id() != caller_user_id {
+            if !self.acts_for_room_owner(&session, caller_user_id) {
                 return Err(DaemonError::OwnershipAccessDenied {
                     user_id: caller_user_id.to_string(),
                     owner_user_id: session.owner_user_id().to_string(),
