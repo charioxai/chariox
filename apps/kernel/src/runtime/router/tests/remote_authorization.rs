@@ -217,6 +217,7 @@ fn remote_home_invocation_router_with_active_prompt(
     )
 }
 
+mod agent_tree_visibility;
 mod home_extension_credentials;
 mod home_extension_denials;
 mod home_extension_grants;
