@@ -528,7 +528,7 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
 #[tokio::test]
 async fn app_logs_are_owner_scoped_and_page_by_sequence() {
-    use crate::local::{AppRequestErrorCode, GetAppLogsRequest};
+    use crate::local::GetAppLogsRequest;
     let root = TestRoot::new();
     let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
     let store = app.durable_state_store();
@@ -601,7 +601,7 @@ fn app_uninstall_replay_returns_receipt_without_second_generation_change() {
 }
 
 async fn uninstall_replay() {
-    use crate::local::{AppRequestErrorCode, UninstallAppRequest};
+    use crate::local::UninstallAppRequest;
     let root = TestRoot::new();
     let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
     let store = app.durable_state_store();
@@ -704,9 +704,7 @@ fn rejected_app_requests_cannot_exhaust_another_owners_receipts() {
 }
 
 async fn rejected_app_requests() {
-    use crate::local::{
-        AppRequestErrorCode, AppWorkerAction, ControlAppWorkerRequest, UninstallAppRequest,
-    };
+    use crate::local::{AppWorkerAction, ControlAppWorkerRequest, UninstallAppRequest};
     let root = TestRoot::new();
     let app = crate::DaemonApp::bootstrap(root.config()).unwrap();
     crate::durable_state::app_state::fixture_event_catalog(&app.durable_state_store());
