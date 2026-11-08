@@ -1002,6 +1002,7 @@ pub(crate) fn apply_managed_context_package(
                 || {
                     rollback_imported_event_connections(
                         request.event_connection_target.as_ref(),
+                        &request.transfer_id,
                         &event_connections,
                     )
                 },
@@ -1231,7 +1232,7 @@ fn import_event_connections(
             let target = request.event_connection_target.as_ref().ok_or_else(|| {
                 package_error("managed context event connection target is unavailable")
             })?;
-            let connections = event_connections::import(target, records)?;
+            let connections = event_connections::import(target, &request.transfer_id, records)?;
             Ok(ManagedContextImportedEventConnections::Selected { connections })
         }
         _ => Err(package_error(
@@ -1242,6 +1243,7 @@ fn import_event_connections(
 
 fn rollback_imported_event_connections(
     target: Option<&ManagedContextEventConnectionImportTarget>,
+    transfer_id: &str,
     event_connections: &ManagedContextImportedEventConnections,
 ) -> Result<(), DaemonError> {
     let ManagedContextImportedEventConnections::Selected { connections } = event_connections else {
@@ -1250,7 +1252,7 @@ fn rollback_imported_event_connections(
     let target = target.ok_or_else(|| {
         package_error("managed context event connection rollback target is unavailable")
     })?;
-    event_connections::rollback(target, connections)
+    event_connections::rollback(target, transfer_id, connections)
 }
 
 pub(crate) fn rollback_managed_context_package_application(
@@ -1261,9 +1263,11 @@ pub(crate) fn rollback_managed_context_package_application(
     event_connection_target: Option<&ManagedContextEventConnectionImportTarget>,
 ) -> Result<(), DaemonError> {
     let mut failures = Vec::new();
-    if let Err(error) =
-        rollback_imported_event_connections(event_connection_target, &receipt.event_connections)
-    {
+    if let Err(error) = rollback_imported_event_connections(
+        event_connection_target,
+        &receipt.transfer_id,
+        &receipt.event_connections,
+    ) {
         failures.push(error);
     }
     if let Err(error) =

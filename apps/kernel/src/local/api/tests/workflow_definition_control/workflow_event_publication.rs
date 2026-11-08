@@ -790,6 +790,7 @@ fn an_imported_connection_shows_the_sources_state_right_after_the_import() {
             registry: target.runtime_state().event_connection_registry().clone(),
             owner_user_id: local.to_string(),
         },
+        "ctx_event_publication",
         &records,
     )
     .unwrap();
@@ -833,6 +834,7 @@ fn an_unreachable_event_service_leaves_an_imported_connection_as_imported() {
             registry: target.runtime_state().event_connection_registry().clone(),
             owner_user_id: local.to_string(),
         },
+        "ctx_event_publication",
         &records,
     )
     .unwrap();

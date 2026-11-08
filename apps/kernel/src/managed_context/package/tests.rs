@@ -1678,3 +1678,166 @@ fn two_kernel_proof_driver() {
     .expect("write owners");
     fixture.cleanup();
 }
+
+const TRANSFER_A: &str = "ctx_transfer_a";
+const TRANSFER_B: &str = "ctx_transfer_b";
+
+/// Two owner-managed transfers to one kernel that share a connection record.
+struct SharedConnectionTransfers {
+    fixture: PackageFixture,
+    target: crate::event_connection::EventConnectionRegistry,
+    import_target: ManagedContextEventConnectionImportTarget,
+    records: Vec<event_connections::EventConnectionRecord>,
+}
+
+impl SharedConnectionTransfers {
+    fn new(label: &str) -> Self {
+        let fixture = event_connection_fixture(label, &["connection-a"]);
+        let source = event_registry(&fixture.root, "source");
+        let target = event_registry(&fixture.root, "target");
+        seed_connection(
+            &source,
+            SOURCE_OWNER,
+            "connection-a",
+            "event-owner-secret-a",
+            crate::local::EventConnectionStatus::Ready,
+        );
+        let records = event_connections::export_selected(
+            &fixture.binding.plan.event_connections,
+            &source,
+            SOURCE_OWNER,
+        )
+        .expect("export selected connection");
+        let import_target = ManagedContextEventConnectionImportTarget {
+            registry: target.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        };
+        Self {
+            fixture,
+            target,
+            import_target,
+            records,
+        }
+    }
+
+    fn holds_connection(&self) -> bool {
+        self.target
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read target connection")
+            .is_some()
+    }
+}
+
+#[test]
+fn event_connection_rollback_keeps_a_record_a_completed_transfer_reused() {
+    let shared = SharedConnectionTransfers::new("event-shared-rollback");
+
+    // A installs the record and is still importing other components when B
+    // finds the identical record, reuses it and completes.
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+    assert!(transfer_a[0].created);
+    assert!(!transfer_b[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &transfer_a)
+        .expect("transfer A fails");
+
+    assert!(
+        shared.holds_connection(),
+        "B completed with this connection; A's rollback must not remove it"
+    );
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_removes_the_record_once_no_transfer_relies_on_it() {
+    let shared = SharedConnectionTransfers::new("event-shared-both-fail");
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &transfer_a)
+        .expect("transfer A fails");
+    assert!(shared.holds_connection(), "B still relies on the record");
+    event_connections::rollback(&shared.import_target, TRANSFER_B, &transfer_b)
+        .expect("transfer B fails");
+
+    assert!(
+        !shared.holds_connection(),
+        "neither transfer completed, so the record they created must not stay behind"
+    );
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_import_has_one_creator_when_two_transfers_race() {
+    for round in 0..40 {
+        let shared = SharedConnectionTransfers::new(&format!("event-race-{round}"));
+        let barrier = std::sync::Barrier::new(2);
+        let (barrier, shared_ref) = (&barrier, &shared);
+        let receipts = std::thread::scope(|scope| {
+            let imports = [TRANSFER_A, TRANSFER_B].map(|transfer_id| {
+                scope.spawn(move || {
+                    barrier.wait();
+                    event_connections::import(
+                        &shared_ref.import_target,
+                        transfer_id,
+                        &shared_ref.records,
+                    )
+                    .expect("transfer imports")
+                })
+            });
+            imports
+                .into_iter()
+                .map(|import| import.join().expect("import thread"))
+                .collect::<Vec<_>>()
+        });
+        let creators = receipts.iter().filter(|receipt| receipt[0].created).count();
+        assert_eq!(
+            creators, 1,
+            "round {round}: exactly one transfer creates the record"
+        );
+        shared.fixture.cleanup();
+    }
+}
+
+#[test]
+fn event_connection_rollback_removes_a_record_its_own_rerun_still_holds() {
+    let shared = SharedConnectionTransfers::new("event-rerun");
+    let first = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("first run imports");
+    // A retry of the same transfer finds its own record.
+    let rerun = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("rerun reuses the record");
+    assert!(first[0].created);
+    assert!(!rerun[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &rerun).expect("rerun fails");
+
+    assert!(!shared.holds_connection());
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_leaves_a_record_the_owner_already_held() {
+    let shared = SharedConnectionTransfers::new("event-owner-record");
+    seed_connection(
+        &shared.target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let receipts = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("import reuses the owner's record");
+    assert!(!receipts[0].created);
+
+    event_connections::rollback(&shared.import_target, TRANSFER_A, &receipts)
+        .expect("transfer fails");
+
+    assert!(shared.holds_connection());
+    shared.fixture.cleanup();
+}

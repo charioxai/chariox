@@ -8,6 +8,8 @@
 //! The event owner id inside a record is a bearer capability for the
 //! connection, so a record only travels inside the encrypted package and never
 //! appears in `Debug` output, receipts or errors.
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 use super::package::ManagedContextEventConnectionSelection;
@@ -39,7 +41,8 @@ impl std::fmt::Debug for EventConnectionRecord {
 }
 
 /// The ids of the records an import wrote. `created` is false for a record the
-/// target already held, which a rollback must leave alone.
+/// target already held; it says which records to read from the event service
+/// after the import, and a rollback decides from the import ledger instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextEventConnectionReceipt {
@@ -184,13 +187,35 @@ pub(crate) fn receipts_for(
         .collect()
 }
 
+/// The transfers that rely on each record an import wrote, keyed by owner and
+/// connection id. A record absent from the ledger belongs to the owner (or to
+/// an import that is no longer running) and a rollback leaves it alone. The
+/// ledger lives in the registry because overlapping transfers share it; it
+/// holds nothing across a restart, which is when a recovered import leaves its
+/// records anyway.
+#[derive(Default)]
+pub(crate) struct ImportLedger {
+    entries: BTreeMap<(String, String), LedgerEntry>,
+}
+
+struct LedgerEntry {
+    /// An import wrote the record, so it goes when the last transfer that
+    /// relies on it fails.
+    created_by_import: bool,
+    transfers: BTreeSet<String>,
+}
+
 /// Writes the records into the target registry. A record the target already
 /// holds is kept when it is the same connection and refused when it is not;
-/// nothing changes unless every record is acceptable.
+/// nothing changes unless every record is acceptable. The check and the write
+/// run under the ledger lock, so exactly one of two overlapping transfers
+/// creates a shared record and the other reuses it.
 pub(crate) fn import(
     target: &ManagedContextEventConnectionImportTarget,
+    transfer_id: &str,
     records: &[EventConnectionRecord],
 ) -> Result<Vec<ManagedContextEventConnectionReceipt>, DaemonError> {
+    let mut ledger = target.registry.lock_import_ledger()?;
     let mut missing = Vec::with_capacity(records.len());
     for record in records {
         let existing = target
@@ -217,6 +242,7 @@ pub(crate) fn import(
     }
     let mut receipts = Vec::with_capacity(records.len());
     for (record, created) in records.iter().zip(missing) {
+        let key = (target.owner_user_id.clone(), record.connection_id.clone());
         if created {
             if let Err(error) = target.registry.upsert(
                 &target.owner_user_id,
@@ -230,7 +256,9 @@ pub(crate) fn import(
                     updated_at_ms: crate::session::unix_epoch_ms(),
                 },
             ) {
-                if let Err(rollback_error) = rollback(target, &receipts) {
+                if let Err(rollback_error) =
+                    rollback_locked(&mut ledger, target, transfer_id, &receipts)
+                {
                     return Err(DaemonError::ManagedContext {
                         code: "managed_context_unavailable",
                         operation: "import event connections",
@@ -240,6 +268,15 @@ pub(crate) fn import(
                 }
                 return Err(error);
             }
+            ledger.entries.insert(
+                key,
+                LedgerEntry {
+                    created_by_import: true,
+                    transfers: BTreeSet::from([transfer_id.to_string()]),
+                },
+            );
+        } else if let Some(entry) = ledger.entries.get_mut(&key) {
+            entry.transfers.insert(transfer_id.to_string());
         }
         receipts.push(ManagedContextEventConnectionReceipt {
             connection_id: record.connection_id.clone(),
@@ -249,20 +286,44 @@ pub(crate) fn import(
     Ok(receipts)
 }
 
-/// Removes only the records this import created.
+/// Gives up this transfer's claim on its records and removes a record only
+/// when an import wrote it and no other transfer relies on it any more.
 pub(crate) fn rollback(
     target: &ManagedContextEventConnectionImportTarget,
+    transfer_id: &str,
+    receipts: &[ManagedContextEventConnectionReceipt],
+) -> Result<(), DaemonError> {
+    let mut ledger = target.registry.lock_import_ledger()?;
+    rollback_locked(&mut ledger, target, transfer_id, receipts)
+}
+
+fn rollback_locked(
+    ledger: &mut ImportLedger,
+    target: &ManagedContextEventConnectionImportTarget,
+    transfer_id: &str,
     receipts: &[ManagedContextEventConnectionReceipt],
 ) -> Result<(), DaemonError> {
     let mut failures = 0;
-    for receipt in receipts.iter().filter(|receipt| receipt.created) {
-        if target
-            .registry
-            .remove(&target.owner_user_id, &receipt.connection_id)
-            .is_err()
-        {
-            failures += 1;
+    for receipt in receipts {
+        let key = (target.owner_user_id.clone(), receipt.connection_id.clone());
+        let Some(entry) = ledger.entries.get_mut(&key) else {
+            continue;
+        };
+        entry.transfers.remove(transfer_id);
+        if !entry.transfers.is_empty() {
+            continue;
         }
+        if entry.created_by_import
+            && target
+                .registry
+                .remove(&target.owner_user_id, &receipt.connection_id)
+                .is_err()
+        {
+            entry.transfers.insert(transfer_id.to_string());
+            failures += 1;
+            continue;
+        }
+        ledger.entries.remove(&key);
     }
     if failures > 0 {
         return Err(DaemonError::ManagedContext {

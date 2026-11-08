@@ -8,6 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
 use crate::local::{EventConnection, EventConnectionAuthorization};
+use crate::managed_context::event_connections::ImportLedger;
 
 const CONNECTION_UPSERTED: &str = "event_connection.upserted";
 const CONNECTION_REMOVED: &str = "event_connection.removed";
@@ -46,6 +47,7 @@ pub(crate) struct EventConnectionRegistry {
     durable_state: DurableKernelStateStore,
     state: Arc<Mutex<RegistryState>>,
     restore_error: Arc<Mutex<Option<String>>>,
+    import_ledger: Arc<Mutex<ImportLedger>>,
 }
 
 #[derive(Default)]
@@ -89,6 +91,7 @@ impl EventConnectionRegistry {
             durable_state,
             state: Arc::new(Mutex::new(RegistryState::default())),
             restore_error: Arc::new(Mutex::new(None)),
+            import_ledger: Arc::default(),
         };
         match registry.restore() {
             Ok(restored) => {
@@ -686,6 +689,15 @@ impl EventConnectionRegistry {
         let authorization = record.authorization.clone();
         state.authorizations.insert(key, record);
         Ok(authorization)
+    }
+
+    /// Which transfers rely on the records an import wrote. An import holds
+    /// this lock from its check to its write, so two transfers cannot both
+    /// create one record.
+    pub(crate) fn lock_import_ledger(&self) -> Result<MutexGuard<'_, ImportLedger>, DaemonError> {
+        self.import_ledger
+            .lock()
+            .map_err(|error| registry_error(error.to_string()))
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, RegistryState>, DaemonError> {
