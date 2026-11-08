@@ -108,6 +108,7 @@ mod tests {
     mod agent_parent_owner;
     mod agent_utility_owner;
     mod app_notification_access;
+    mod attachment_detach_owner;
     mod history_trace_owner;
     mod metaagent_task_owner;
     mod native_interaction_owner;
