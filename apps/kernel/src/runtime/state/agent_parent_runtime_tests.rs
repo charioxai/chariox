@@ -403,6 +403,43 @@ impl LeasedTree {
         app.providers().get_run(&run_id).unwrap()
     }
 
+    /// Sends `agent` an ordinary prompt through runtime submission and returns the run its turn
+    /// starts on.
+    async fn submit(&self, agent: &str, prompt_id: &str) -> crate::provider::RuntimeProviderRun {
+        let submission = self.submit_prompt(agent, prompt_id).await;
+        assert!(matches!(
+            submission.outcome,
+            crate::session::PromptSubmissionOutcome::Started { .. }
+        ));
+        let run_id = submission
+            .dispatch
+            .expect("a started turn dispatches")
+            .provider_run_id;
+        self.runtime.owned.provider_store.get_run(&run_id).unwrap()
+    }
+
+    async fn submit_prompt(
+        &self,
+        agent: &str,
+        prompt_id: &str,
+    ) -> crate::app::KernelPromptSubmission {
+        self.runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: self.room.clone(),
+                prompt: crate::session::PromptQueueItem::new(
+                    prompt_id,
+                    &self.attachment,
+                    agent,
+                    "continue",
+                    crate::session::PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .unwrap()
+    }
+
     /// The settings `agent` asked for itself.
     fn own_settings(&self, agent: &str) -> (Option<Mode>, Option<Level>) {
         let agent = self.runtime.owned.agent_store.get_agent(agent).unwrap();
@@ -775,4 +812,79 @@ async fn a_running_turn_keeps_its_process_and_the_next_dispatch_moves_the_run() 
     let next = tree.dispatch(&local).await;
     assert_eq!(next.id(), running.id());
     assert_eq!((next.execution_mode(), next.permission_level()), OPEN);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ordinary_prompt_after_a_turn_that_outlived_a_lowered_limit_launches_at_it() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high, claude_like) = (
+        tree.room.clone(),
+        tree.high.clone(),
+        tree.claude_like.clone(),
+    );
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &claude_like);
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    tree.app
+        .lock()
+        .await
+        .complete_active_prompt(&room, &claude_like, None)
+        .unwrap();
+    // No Project environment and no queued successor: only the tree limit is out of date.
+    let next = tree.submit(&claude_like, "after-lowered-limit").await;
+    assert_ne!(
+        next.id(),
+        launched.id(),
+        "an idle Yolo/Build process must not start a turn under a Required/Plan parent"
+    );
+    assert_eq!((next.execution_mode(), next.permission_level()), LIMITED);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ordinary_prompt_after_a_turn_that_outlived_a_raise_takes_it_in_place() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high) = (tree.room.clone(), tree.high.clone());
+    let (local, claude_like) = (tree.local.clone(), tree.claude_like.clone());
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &local);
+    let running = tree.live_run(&local).unwrap();
+    tree.set_settings(&high, Mode::Build, Level::Yolo).await;
+    tree.app
+        .lock()
+        .await
+        .complete_active_prompt(&room, &local, None)
+        .unwrap();
+    // Another agent's turn leaves the run of `local` where it is.
+    tree.submit(&claude_like, "another-agent").await;
+    assert_eq!(tree.next_turn(&local), LIMITED);
+    let next = tree.submit(&local, "after-raise").await;
+    assert_eq!(next.id(), running.id());
+    assert_eq!(
+        (next.execution_mode(), next.permission_level()),
+        OPEN,
+        "the turn after a raise must run at the raised limit"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_prompt_sent_during_a_turn_never_ends_it_for_a_changed_limit() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high, claude_like) = (
+        tree.room.clone(),
+        tree.high.clone(),
+        tree.claude_like.clone(),
+    );
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &claude_like);
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    let queued = tree.submit_prompt(&claude_like, "during-turn").await;
+    assert!(matches!(
+        queued.outcome,
+        crate::session::PromptSubmissionOutcome::Queued { .. }
+    ));
+    assert_eq!(
+        tree.live_run(&claude_like).map(|run| run.id().to_owned()),
+        Some(launched.id().to_owned()),
+        "a prompt queued behind a running turn must never end that turn"
+    );
 }
