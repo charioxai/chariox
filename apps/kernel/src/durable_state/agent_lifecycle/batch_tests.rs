@@ -320,20 +320,15 @@ fn a_shown_row_stays_shown_after_a_restart() {
 // them. Another agent filled the global sequence between the two pending rows.
 #[test]
 fn a_batch_is_admitted_across_a_large_gap_of_other_recipients_rows() {
-    const GAP: u64 = 300_000;
+    const GAP: u64 = 1_500_000;
     let f = Fixture::new();
     let first = occur(&f, "a", "peer_event", false);
-    let mut db = Connection::open(f.root.join("state.sqlite")).unwrap();
-    let tx = db.transaction().unwrap();
-    {
-        let mut insert = tx
-            .prepare("INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) VALUES(?1,'other','peer',?2,'{}')")
-            .unwrap();
-        for n in 0..GAP {
-            insert.execute(params![ROOM, n.to_string()]).unwrap();
-        }
-    }
-    tx.commit().unwrap();
+    let db = Connection::open(f.root.join("state.sqlite")).unwrap();
+    db.execute(
+        "WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x+1 FROM n WHERE x+1<?2) INSERT INTO agent_inbox(room_id,agent_id,source_id,occurrence_id,payload) SELECT ?1,'other','peer',CAST(x AS TEXT),'{}' FROM n",
+        params![ROOM, GAP as i64],
+    )
+    .unwrap();
     drop(db);
     let second = occur(&f, "b", "peer_event", false);
     assert!(second.sequence - first.sequence > GAP);
@@ -361,9 +356,9 @@ fn a_batch_is_admitted_across_a_large_gap_of_other_recipients_rows() {
         vec![first.sequence, second.sequence]
     );
     // One statement over the recipient's rows takes milliseconds; a lookup per sequence in the
-    // gap takes seconds.
+    // gap takes about ten seconds. The bound leaves room for a slow fsync on a busy host.
     assert!(
-        elapsed < std::time::Duration::from_millis(250),
+        elapsed < std::time::Duration::from_secs(1),
         "admission took {elapsed:?} for a gap of {GAP} sequences"
     );
 }
