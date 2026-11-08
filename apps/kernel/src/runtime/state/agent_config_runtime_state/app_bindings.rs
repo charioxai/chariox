@@ -477,7 +477,7 @@ impl KernelRuntimeState {
             .views()
             .forget_installation(owner, installation);
         for agent in self.owned.agent_store.list_agents() {
-            if agent.owner_user_id() != owner
+            if !self.acts_for_owner(agent.session_id(), owner, agent.owner_user_id())
                 || !agent.has_extension_grant(ExtensionKind::App, installation)
             {
                 continue;
