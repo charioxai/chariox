@@ -164,10 +164,8 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
             // prompt and settle together through its receipt. A reply
             // request is answered by its own turn, so it is never batched.
             if !e.reply_requested {
-                for next in e.sequence + 1..=through {
-                    let Some(mut member) = find_event(tx, &room, &agent, next)? else {
-                        continue;
-                    };
+                for mut member in recipient_events_between(tx, &room, &agent, e.sequence, through)?
+                {
                     if member.reply_requested {
                         break;
                     }
@@ -478,6 +476,42 @@ pub(crate) fn batch_member(event: &InboxEvent, steer: bool, work: Option<&str>) 
         && event.kind != "task_cancelled"
         && !(steer && (!event.urgent || event.attempted_at_ms.is_some()))
         && work.is_none_or(|work| super::work_correlated(event, work))
+}
+
+/// The recipient's rows with `after < sequence <= through`, in order. The sequence is global, so
+/// the range is read through the recipient's index, never one lookup per number.
+fn recipient_events_between(
+    tx: &Transaction<'_>,
+    room: &str,
+    agent: &str,
+    after: u64,
+    through: u64,
+) -> Result<Vec<InboxEvent>, DaemonError> {
+    let mut statement = tx
+        .prepare_cached(
+            "SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND sequence<=?4 ORDER BY sequence",
+        )
+        .map_err(sql)?;
+    let rows = statement
+        .query_map(
+            params![room, agent, sql_integer(after)?, sql_integer(through)?],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .map_err(sql)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql)?;
+    rows.into_iter()
+        .map(|(sequence, source, id, payload)| {
+            decode_inbox(sequence, room, agent, &source, &id, &payload)
+        })
+        .collect()
 }
 
 fn find_event(
