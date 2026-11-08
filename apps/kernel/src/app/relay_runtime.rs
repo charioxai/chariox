@@ -3,6 +3,7 @@ use tokio::runtime::{Handle, Runtime, RuntimeFlavor};
 
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
+use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 
 impl DaemonApp {
     pub fn relay_registration(&mut self) -> DaemonRegistration {
@@ -81,15 +82,13 @@ impl DaemonApp {
                     tokio::task::block_in_place(|| handle.block_on(future))
                 }
                 RuntimeFlavor::CurrentThread => std::thread::scope(|scope| {
-                    scope
-                        .spawn(move || {
-                            Runtime::new()
-                                .map_err(|error| DaemonError::LocalTransport {
-                                    operation: "create relay runtime",
-                                    message: error.to_string(),
-                                })?
-                                .block_on(future)
-                        })
+                    std::thread::Builder::new()
+                        .stack_size(KERNEL_RUNTIME_THREAD_STACK_SIZE)
+                        .spawn_scoped(scope, move || relay_runtime()?.block_on(future))
+                        .map_err(|error| DaemonError::LocalTransport {
+                            operation: "start relay runtime worker thread",
+                            message: error.to_string(),
+                        })?
                         .join()
                         .map_err(|_| DaemonError::LocalTransport {
                             operation: "block relay future",
@@ -103,14 +102,21 @@ impl DaemonApp {
                 }),
             }
         } else {
-            Runtime::new()
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "create relay runtime",
-                    message: error.to_string(),
-                })?
-                .block_on(future)
+            relay_runtime()?.block_on(future)
         }
     }
+}
+
+/// Relay futures run peer requests and Vault credential transfers, as deep as kernel work.
+fn relay_runtime() -> Result<Runtime, DaemonError> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(KERNEL_RUNTIME_THREAD_STACK_SIZE)
+        .build()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "create relay runtime",
+            message: error.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -130,5 +136,48 @@ mod tests {
             .block_on(async { app.block_on_relay_future(async { Ok::<_, DaemonError>(()) }) });
 
         result.expect("scoped relay runtime should complete");
+    }
+
+    /// The kernel runs without `RUST_MIN_STACK`: relay futures (peer requests, Vault
+    /// credential transfers) must run on the kernel runtime stack on every path.
+    #[test]
+    fn relay_future_runtimes_use_the_kernel_runtime_stack() {
+        use crate::test_support::stack::{current_thread_stack_size, is_stack_check_child};
+
+        let test = "app::relay_runtime::tests::relay_future_runtimes_use_the_kernel_runtime_stack";
+        if !is_stack_check_child(test) {
+            return;
+        }
+        let app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("test daemon app should bootstrap");
+        let stacks = |app: &DaemonApp| {
+            app.block_on_relay_future(async {
+                let worker = tokio::spawn(async { current_thread_stack_size() })
+                    .await
+                    .expect("worker task should finish");
+                Ok::<_, DaemonError>((current_thread_stack_size(), worker))
+            })
+            .expect("relay future should complete")
+        };
+
+        let (_, worker) = stacks(&app);
+        assert!(
+            worker >= KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "no-runtime worker stack is {worker}"
+        );
+
+        let current = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime should build");
+        let (scoped, worker) = current.block_on(async { stacks(&app) });
+        assert!(
+            scoped >= KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "scoped relay thread stack is {scoped}"
+        );
+        assert!(
+            worker >= KERNEL_RUNTIME_THREAD_STACK_SIZE,
+            "scoped relay worker stack is {worker}"
+        );
     }
 }
