@@ -39,6 +39,54 @@ async fn focus(router: &CommandRouter, session: &str, agent: &str) {
     dispatch.await.unwrap();
 }
 
+/// An input sent without the top-level `document_id` is told which parameter
+/// is missing; it is not a policy refusal that reads as lost browser access.
+#[test]
+fn a_browser_input_without_document_id_names_the_missing_parameter() {
+    run_test(|| Box::pin(missing_document_check()));
+}
+async fn missing_document_check() {
+    let workspace = crate::test_support::TestWorktree::new("md3-browser-missing-document");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+    );
+    let token = run.runtime_mcp_auth_token().unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    focus(&router, session.id(), agent.id()).await;
+    router
+        .dispatch_authenticated_runtime_tool_call(token, "chariox.load_kernel_browser", json!({}))
+        .await
+        .unwrap();
+    let error = router
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "chariox.kernel_browser",
+            json!({"command":{"op":"input","tab_id":"host-tab-a","generation":1,
+                "input":{"kind":"click","x":1,"y":2}}}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        !matches!(error, DaemonError::UserDomainRefused { .. }),
+        "a missing parameter is not a user-domain refusal: {error:?}"
+    );
+    let text = error.to_string();
+    assert!(
+        text.contains("document_id") && text.contains("still"),
+        "the error names the missing parameter and says access is intact: {text}"
+    );
+    router.runtime_state.shutdown_cleanup().await.unwrap();
+}
+
 #[test]
 fn kernel_browser_mcp_focus_load_and_revocation() {
     run_test(|| Box::pin(focus_check()));
