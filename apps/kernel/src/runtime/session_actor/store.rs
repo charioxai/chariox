@@ -578,17 +578,22 @@ impl SessionRuntimeStore {
         self.state.authorize_room_agent_request(actor_id, request)
     }
 
+    /// The caller is an owned agent of this room. The one exception is a room agent creating a
+    /// peer here from another room (M2 P3): `SpawnAgent` only, admitted by the Room fence.
     pub(super) async fn verify_metaagent_caller(
         &self,
         session_id: &str,
         metaagent_id: &str,
         caller_user_id: &str,
+        request: &LocalDaemonRequest,
     ) -> Result<String, DaemonError> {
         let Some(agent) = self.state.list_agents().into_iter().find(|agent| {
             agent.id() == metaagent_id
-                && agent.session_id() == session_id
                 && agent.owner_user_id() == caller_user_id
                 && (agent.is_metaagent() || self.state.room_agent_tools_enabled())
+                && (agent.session_id() == session_id
+                    || (self.state.room_agent_tools_enabled()
+                        && matches!(request, LocalDaemonRequest::SpawnAgent(_))))
         }) else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch session metaagent command",
@@ -597,6 +602,10 @@ impl SessionRuntimeStore {
                 ),
             });
         };
+        if agent.session_id() != session_id {
+            self.state
+                .authorize_room_agent_request(agent.id(), request)?;
+        }
         Ok(agent.id().to_string())
     }
 

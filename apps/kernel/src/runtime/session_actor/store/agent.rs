@@ -285,12 +285,23 @@ impl SessionRuntimeStore {
                     .await;
             }
         }
+        let peer_limit = match caller_metaagent_id
+            .as_deref()
+            .map(|caller| self.state.peer_spawn_limit(caller, &request.session_id))
+            .transpose()
+        {
+            Ok(limit) => limit.flatten(),
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        let is_peer = peer_limit.is_some();
         let (execution_mode, permission_level) = match child_authority(
-            parent_limit(
-                &session,
-                parent.as_ref(),
-                &self.state.session_agents(&request.session_id),
-            ),
+            peer_limit.or_else(|| {
+                parent_limit(
+                    &session,
+                    parent.as_ref(),
+                    &self.state.session_agents(&request.session_id),
+                )
+            }),
             request.execution_mode,
             request.permission_level,
             defaults,
@@ -309,7 +320,7 @@ impl SessionRuntimeStore {
                 .room_member_user_id(&request.session_id, &caller_user_id),
         );
         let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent => {
+            Some(metaagent_id) if !request.metaagent && !is_peer => {
                 create_request.with_parent_agent_id(metaagent_id)
             }
             _ => create_request,

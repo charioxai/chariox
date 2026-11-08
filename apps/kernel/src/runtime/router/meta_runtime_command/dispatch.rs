@@ -688,10 +688,19 @@ impl CommandRouter {
             created_slice = Some(slice);
         }
 
+        let target_room = match spawn.room.as_deref() {
+            Some(room) => match self.runtime_state.resolve_session_ref_id(room, None).await {
+                Ok(room) => Some(room),
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            },
+            None => None,
+        };
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-            no_subscribe: false,
-            session_id: session.id().to_string(),
+            no_subscribe: spawn.no_follow,
+            session_id: target_room
+                .clone()
+                .unwrap_or_else(|| session.id().to_string()),
             alias: spawn.alias,
             provider: spawn
                 .provider
@@ -715,9 +724,12 @@ impl CommandRouter {
             // Omitted, the child takes the parent's effective limit where it is created.
             execution_mode: None,
             permission_level: spawn.permission_level,
-            worktree_id: spawn
-                .worktree_id
-                .or_else(|| metaagent.worktree_id().map(str::to_string)),
+            worktree_id: spawn.worktree_id.or_else(|| {
+                target_room
+                    .is_none()
+                    .then(|| metaagent.worktree_id().map(str::to_string))
+                    .flatten()
+            }),
             kernel_ref: if spawn.slice_ref.is_some() {
                 None
             } else {

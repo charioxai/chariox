@@ -85,6 +85,12 @@ impl KernelRuntimeState {
         if actor.archived() {
             return Err(denied("unarchive this agent before using Room tools"));
         }
+        if let LocalDaemonRequest::SpawnAgent(r) = request {
+            if r.session_id != actor.session_id() {
+                return self.authorize_peer_spawn(&actor, r);
+            }
+            return Ok(());
+        }
         if let Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(
             room,
         )) = crate::runtime::session_membership::scope::request_session_scope(request)
@@ -175,12 +181,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_) => {
                 return Err(denied("agents cannot change user focus"));
             }
-            LocalDaemonRequest::SpawnAgent(r) => {
-                if r.session_id != actor.session_id() {
-                    return Err(denied("spawn target is outside the caller room"));
-                }
-                return Ok(());
-            }
             LocalDaemonRequest::AttachToSession(r) => {
                 if r.session_id != actor.session_id() {
                     return Err(denied("attachment is outside the caller room"));
@@ -217,6 +217,45 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
+    /// M2 P3: a room agent creates an ordinary agent in another room of its owner. The request
+    /// carries no placement: the peer starts in the target room's own folder on this kernel.
+    fn authorize_peer_spawn(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        request: &crate::local::SpawnAgentRequest,
+    ) -> Result<(), DaemonError> {
+        if actor.is_sub_agent() {
+            return Err(denied(
+                "only a room agent creates peers in another room; a sub-agent creates sub-agents of its own",
+            ));
+        }
+        if request.worktree_id.is_some()
+            || request.kernel_ref.is_some()
+            || request.slice_ref.is_some()
+            || request.worktree_placement.is_some()
+        {
+            return Err(denied(
+                "a peer in another room starts in that room's own folder on this kernel",
+            ));
+        }
+        let rooms = &self.owned.session_store;
+        let (Some(own_owner), Some(room_owner)) = (
+            rooms.session_owner_user_id(actor.session_id()),
+            rooms.session_owner_user_id(&request.session_id),
+        ) else {
+            return Err(denied("the room for the peer does not exist"));
+        };
+        if !self
+            .owned
+            .acts_for_owner_in(&room_owner, &own_owner, &room_owner)
+        {
+            return Err(denied(
+                "a peer can only be created in a room of the same owner",
+            ));
+        }
+        Ok(())
+    }
+
     /// A5: moving a sub-agent keeps it inside the folders of its own parent.
     fn keep_configured_folders_inside_parent(
         &self,

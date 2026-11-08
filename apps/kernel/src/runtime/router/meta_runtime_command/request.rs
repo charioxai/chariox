@@ -26,6 +26,11 @@ pub(super) fn meta_agent_request(
                     "agent spawn --slice new requires composed Meta-mode spawn dispatch",
                 ));
             }
+            if spawn.room.is_some() {
+                return Err(meta_command_error(
+                    "agent spawn --room requires composed Meta-mode spawn dispatch",
+                ));
+            }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
                 no_subscribe: false,
                 account_profile: spawn.account_profile,
