@@ -54,14 +54,8 @@ impl KernelRuntimeOwnedState {
                     })
             };
             let (agent, parent) = (find(&request.agent_id)?, find(parent_id)?);
-            // An agent under itself or under its own descendant would make a cycle.
-            if parent.id() == agent.id()
-                || crate::runtime::room_tool_admission::in_subtree(agent, parent, &agents).is_ok()
-            {
-                return Err(crate::runtime::room_tool_admission::denied(
-                    "an agent cannot be placed under itself or under one of its descendants",
-                ));
-            }
+            crate::agent::authority_limit::check_placement(agent, parent, &agents)
+                .map_err(crate::runtime::room_tool_admission::denied)?;
         }
         let agent = self.agent_store.set_parent_agent(
             &request.agent_id,

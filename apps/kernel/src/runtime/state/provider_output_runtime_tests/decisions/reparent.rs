@@ -455,3 +455,58 @@ async fn lowering_the_holders_authority_hands_the_decision_to_the_user_at_once()
     assert_eq!(t.needs().1, 1);
     assert!(answer.try_recv().is_err(), "the asker waits for the user");
 }
+
+/// Review of #1281: each new room agent takes the previous one under it, then the top root is
+/// placed under the oldest leaf, beyond any bounded walk. The depth bound refuses the long chain
+/// calmly, the cycle is refused, and every agent still reaches a room agent.
+#[tokio::test]
+async fn a_move_cannot_exceed_the_tree_depth_or_close_a_cycle() {
+    let t = tree(
+        "reparent-depth",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let mut roots = Vec::new();
+    for n in 0..18 {
+        roots.push(
+            t.agent_at(&format!("r{n}"), None, AgentPermissionLevel::Yolo)
+                .await,
+        );
+    }
+    let place = |agent: &str, parent: &str| {
+        t.runtime.set_agent_parent(
+            USER,
+            crate::local::SetAgentParentRequest {
+                session_id: t.room.clone(),
+                agent_id: agent.into(),
+                parent_agent_id: Some(parent.into()),
+            },
+        )
+    };
+    let mut refused = Vec::new();
+    for pair in roots.windows(2) {
+        if let Err(error) = place(&pair[0], &pair[1]).await {
+            refused.push(error.to_string());
+        }
+    }
+    assert!(
+        !refused.is_empty(),
+        "a chain deeper than the limit is refused"
+    );
+    assert!(
+        refused
+            .iter()
+            .all(|e| e.contains("levels below a room agent")),
+        "{refused:?}"
+    );
+    assert!(place(&roots[17], &roots[0]).await.is_err());
+    let agents = t.runtime.owned.agent_store.get_session_agents(&t.room);
+    for agent in &agents {
+        let above = crate::agent::authority_limit::ancestors(agent, &agents);
+        assert!(above.len() <= 4, "every agent reaches a room agent");
+        assert!(above
+            .last()
+            .is_none_or(|top| top.parent_agent_id().is_none()));
+    }
+}

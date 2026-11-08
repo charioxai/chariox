@@ -50,6 +50,96 @@ pub(crate) fn descendants<'a>(
         .collect()
 }
 
+/// The agents above `agent` up to its root, nearest first, or `None` when the walk meets an
+/// agent twice (a cycle). Unbounded by depth, so a long chain is never taken for a root.
+fn chain_above<'a>(
+    agent: &'a AgentInstance,
+    agents: &'a [AgentInstance],
+) -> Option<Vec<&'a AgentInstance>> {
+    let mut seen = std::collections::HashSet::from([agent.id()]);
+    let mut found = Vec::new();
+    let mut current = agent;
+    while let Some(parent) = current
+        .parent_agent_id()
+        .and_then(|id| agents.iter().find(|candidate| candidate.id() == id))
+    {
+        if !seen.insert(parent.id()) {
+            return None;
+        }
+        found.push(parent);
+        current = parent;
+    }
+    Some(found)
+}
+
+/// Refuses placing `agent` (with its subtree) under `parent` when that closes a cycle or the
+/// moved subtree would exceed the depth, fan-out or team size a spawn is held to.
+pub(crate) fn check_placement(
+    agent: &AgentInstance,
+    parent: &AgentInstance,
+    agents: &[AgentInstance],
+) -> Result<(), String> {
+    let above = chain_above(parent, agents)
+        .ok_or("the agent tree has a cycle; place the agents as room agents first")?;
+    if parent.id() == agent.id() || above.iter().any(|a| a.id() == agent.id()) {
+        return Err(
+            "an agent cannot be placed under itself or under one of its descendants".into(),
+        );
+    }
+    let subtree = descendants(agent.id(), agents)
+        .into_iter()
+        .filter(|a| !a.archived())
+        .collect::<Vec<_>>();
+    let height = subtree
+        .iter()
+        .map(|a| {
+            chain_above(a, agents)
+                .unwrap_or_default()
+                .iter()
+                .position(|b| b.id() == agent.id())
+                .map_or(0, |at| at + 1)
+        })
+        .max()
+        .unwrap_or(0);
+    if above.len() + 1 + height > MAX_DEPTH {
+        return Err(format!(
+            "sub-agents are limited to {MAX_DEPTH} levels below a room agent; place this agent higher or move part of its team first"
+        ));
+    }
+    let children = agents
+        .iter()
+        .filter(|a| {
+            !a.archived() && a.id() != agent.id() && a.parent_agent_id() == Some(parent.id())
+        })
+        .count();
+    if children >= MAX_CHILDREN_PER_PARENT {
+        return Err(format!(
+            "an agent can have at most {MAX_CHILDREN_PER_PARENT} sub-agents; place this agent under another one"
+        ));
+    }
+    let root = above.last().copied().unwrap_or(parent);
+    let moved = std::iter::once(agent.id())
+        .chain(subtree.iter().map(|a| a.id()))
+        .collect::<std::collections::HashSet<_>>();
+    let team = agents
+        .iter()
+        .filter(|a| {
+            !a.archived()
+                && !moved.contains(a.id())
+                && chain_above(a, agents)
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|b| b.id() == root.id())
+        })
+        .count();
+    if team + moved.len() > MAX_AGENTS_PER_TREE {
+        return Err(format!(
+            "a team can have at most {MAX_AGENTS_PER_TREE} sub-agents below its room agent; place this agent under another room agent"
+        ));
+    }
+    Ok(())
+}
+
 /// Refuses a child above its parent's current level or mode, or beyond the fan-out caps.
 /// `agents` are the agents of the parent's room.
 pub(crate) fn check_spawn(
