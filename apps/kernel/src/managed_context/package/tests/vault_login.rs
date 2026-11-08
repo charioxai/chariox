@@ -182,7 +182,7 @@ impl Transfer {
         )
         .expect("export the source Vault");
         let payload = KernelContextPayload {
-            schema_version: 1,
+            schema_version: crate::managed_context::kernel::KERNEL_CONTEXT_SCHEMA_VERSION,
             context_id: context_id.to_string(),
             source_kernel_id: self.fixture.binding.source_kernel_id.clone(),
             source_key_thumbprint: self.source.thumbprint(),
@@ -743,9 +743,14 @@ fn a_failure_after_the_login_import_leaves_neither_the_login_nor_the_transferred
     request.package_path = transfer.fixture.root.join(format!("{context_id}.chariox"));
     let exported = export_managed_context_package(request).expect("export package");
 
-    transfer
+    let error = transfer
         .apply(&exported)
         .expect_err("a development archive that does not open fails the import");
+    let message = format!("{error:?}");
+    assert!(
+        message.contains("development") && !message.contains("schema version"),
+        "the import must fail at the development step, after the login was written: {message}"
+    );
 
     assert!(
         transfer
