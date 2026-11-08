@@ -733,10 +733,22 @@ impl KernelRuntimeOwnedState {
                 return Ok(dispatches);
             }
         }
+        // A limit that changed since the metaagent's last turn applies from this turn on. This
+        // delivery cannot launch a run, so an idle run off its limit leaves the event to the
+        // queue promotion, which moves the run as for any ordinary queued prompt.
+        let session = self.session_store.get_session(session_id)?;
+        let promote_at_limit = !paused
+            && self
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, prompt.target_agent_id())
+                .is_none()
+            && self
+                .local_run_off_limit(session_id, prompt.target_agent_id())?
+                .is_some();
         let prepared = crate::app::KernelPreparedPromptSubmission {
             session_id: session_id.to_string(),
             prompt,
-            force_queue: paused,
+            force_queue: paused || promote_at_limit,
             refresh_projection: true,
         };
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
@@ -784,6 +796,12 @@ impl KernelRuntimeOwnedState {
         }
         if let Some(dispatch) = submission.remote_dispatch.take() {
             dispatches.remote.push(dispatch);
+        }
+        if promote_at_limit {
+            dispatches.project_queue_promotions.push((
+                session_id.to_string(),
+                prepared.prompt.target_agent_id().to_string(),
+            ));
         }
         if matches!(
             submission.outcome,

@@ -129,6 +129,27 @@ impl KernelRuntimeOwnedState {
             })
             .map(|run| run.adapter_key())
             .unwrap_or_else(|| crate::provider::adapter_key_for_provider(provider));
+        // A limit that changed since the agent's last turn applies from this turn on, as for
+        // ordinary prompts: an idle run moves to it, in place or by ending its process so this
+        // prompt launches at it. A running turn and a backlog keep the run as it is.
+        let session = self.session_store.get_session(session_id)?;
+        let mut retired_provider_run_id = None;
+        if self
+            .prompt_state_owner
+            .peek_next_queued_prompt(&session, agent_id)
+            .is_none()
+        {
+            retired_provider_run_id = self
+                .limit_local_runs(
+                    "submit workflow prompt",
+                    session_id,
+                    &[agent_id.to_string()],
+                    "run the workflow again",
+                )?
+                .terminated_run_ids
+                .pop();
+            existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
+        }
         let profile_changed = existing_run.as_ref().is_some_and(|run| {
             run.provider() != provider
                 || run.adapter_key() != adapter_key
@@ -136,7 +157,6 @@ impl KernelRuntimeOwnedState {
                 || run.model() != agent.model().unwrap_or("default")
                 || run.variant() != agent.effort()
         });
-        let mut retired_provider_run_id = None;
         if fresh_context || profile_changed {
             if let Some(run) = existing_run.as_ref() {
                 let session = self.session_store.get_session(session_id)?;

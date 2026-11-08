@@ -229,7 +229,7 @@ impl KernelRuntimeOwnedState {
 
     /// How local `agent_id`'s live provider run differs from its limit; `None` once it runs at
     /// it, has no live run, is controlled by a provider-native TUI or is leased.
-    fn local_run_off_limit(
+    pub(super) fn local_run_off_limit(
         &self,
         session_id: &str,
         agent_id: &str,
@@ -406,7 +406,7 @@ impl KernelRuntimeOwnedState {
 }
 
 /// How a local run off its limit moves.
-enum OffLimitRun {
+pub(super) enum OffLimitRun {
     /// It takes the limit now without ending a turn: in place, or by ending its idle process
     /// so the next turn launches at it.
     MovesNow(crate::session::EffectiveAgentExecutionConfig),
