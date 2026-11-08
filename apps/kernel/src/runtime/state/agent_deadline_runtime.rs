@@ -203,12 +203,15 @@ impl KernelRuntimeState {
     }
 
     /// A deadline ends the agent and every sub-agent below it, depth-first.
+    /// A sub-agent whose cleanup is pending does not keep the others running.
     async fn stop_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
-        self.stop_one_deadline_agent(room, agent).await?;
+        let mut first_error = self.stop_one_deadline_agent(room, agent).await.err();
         for descendant in self.descendants_depth_first(agent) {
-            self.stop_one_deadline_agent(room, descendant.id()).await?;
+            if let Err(error) = self.stop_one_deadline_agent(room, descendant.id()).await {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     async fn stop_one_deadline_agent(&self, room: &str, agent: &str) -> Result<(), DaemonError> {
@@ -218,19 +221,39 @@ impl KernelRuntimeState {
             Err(DaemonError::SessionNotFound { .. }) => return Ok(()),
             Err(error) => return Err(error),
         };
-        if matches!(
-            owned.agent_store.get_agent(agent),
-            Err(DaemonError::AgentNotFound { .. })
-        ) {
-            return Ok(());
-        }
+        let leased = match owned.agent_store.get_agent(agent) {
+            Ok(agent) => agent.remote_execution().is_some(),
+            Err(DaemonError::AgentNotFound { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
         let active = owned
             .prompt_state_owner
             .active_prompt_for_agent(&session, agent);
-        let run = owned.provider_store.get_run_for_agent(room, agent);
         owned
             .prompt_state_owner
             .remove_queued_prompts_for_agent(&session, agent);
+        if let Some(active) = active.as_ref().filter(|_| leased) {
+            // The worker runs this turn: cancel it there, as an explicit cancel does, and
+            // keep the cleanup pending until the worker settles it.
+            Box::pin(self.cancel_remote_agent_prompt_if_matches(
+                room,
+                agent,
+                active.source_attachment_id(),
+                Some(active.id()),
+                None,
+            ))
+            .await?;
+            owned.persist_deadline_prompt_state(&session, agent)?;
+            return Err(refusal(
+                "agent_deadline_cleanup_pending",
+                &format!("deadline reached; the worker has not settled the turn of agent {agent} yet. Cleanup retries"),
+            ));
+        }
+        // A leased agent's provider process lives on its worker.
+        let run = owned
+            .provider_store
+            .get_run_for_agent(room, agent)
+            .filter(|_| !leased);
         if let Some(active) = &active {
             owned.prompt_state_owner.begin_cancelling_prompt_if_matches(
                 &session,
@@ -313,16 +336,24 @@ impl KernelRuntimeState {
                 Err(error) => return Err(error),
             }
         }
-        let (active, queued) = owned.prompt_state_owner.state_parts(&session, agent);
-        let mirrored = owned
-            .session_store
-            .mirror_agent_prompt_state(room, agent, active, queued)?;
-        owned.persist_prompt_session_state(&mirrored, agent)?;
+        owned.persist_deadline_prompt_state(&session, agent)?;
         owned.await_owned_wakes_settled(room, agent).await
     }
 }
 
 impl KernelRuntimeOwnedState {
+    fn persist_deadline_prompt_state(
+        &self,
+        session: &crate::session::RuntimeSession,
+        agent: &str,
+    ) -> Result<(), DaemonError> {
+        let (active, queued) = self.prompt_state_owner.state_parts(session, agent);
+        let mirrored =
+            self.session_store
+                .mirror_agent_prompt_state(session.id(), agent, active, queued)?;
+        self.persist_prompt_session_state(&mirrored, agent)
+    }
+
     /// Wakes (timers, watched processes, terminals, driver sources) that have
     /// not confirmed they stopped. `cancel_owned_agent_wakes` only requests
     /// the stop; a process that ignores SIGTERM stays until SIGKILL.
