@@ -592,3 +592,62 @@ async fn reparented() {
     ));
     assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
 }
+
+#[test]
+fn a_nested_spawn_in_a_bolder_room_takes_the_tree_limit_not_the_room_defaults() {
+    run_large_stack_async_test("authority-room-defaults", room_defaults);
+}
+
+async fn room_defaults() {
+    use crate::provider::AgentExecutionMode::{Build, Plan};
+    let mut world = world("authority-room-defaults").await;
+    let workspace = world._env.root.join("workspace");
+    let (room, root) = {
+        let mut app = world.app.lock().await;
+        let mut sessions = crate::app::KernelSessionService::new(&mut app);
+        let (room, _) = sessions
+            .create_session(
+                CreateSessionRequest::new(workspace.to_string_lossy(), workspace.to_string_lossy())
+                    .with_agent_defaults(
+                        crate::session::SessionAgentDefaults::new("dev-stub")
+                            .with_execution_mode(Build)
+                            .with_permission_level(AgentPermissionLevel::Yolo),
+                    ),
+            )
+            .unwrap();
+        let root = sessions
+            .spawn_agent(
+                CreateAgentRequest::new(room.id(), "dev-stub")
+                    .with_alias("low-root")
+                    .with_permission_level_override(AgentPermissionLevel::Required)
+                    .with_execution_mode_override(Plan),
+            )
+            .unwrap();
+        (room.id().to_owned(), root)
+    };
+    world.room = room;
+    let token = launch(&world.app, &world.room, root.id()).await;
+    world.tokens.insert("low-root", token);
+    let spawned = room_command(&world, "low-root", "agent spawn p --provider dev-stub").await;
+    assert!(spawned.ok, "{spawned:?}");
+    let child = spawned.payload["response"]["agent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // No settings of its own: it runs at the lower of the room defaults and its parent.
+    world
+        .app
+        .lock()
+        .await
+        .agents()
+        .update_agent_config(&child, Some(None), Some(None), None, None)
+        .unwrap();
+    let p = agent_by_alias(&world, "p").await;
+    assert_eq!(
+        (p.execution_mode_override(), p.permission_level_override()),
+        (None, None)
+    );
+    let token = launch(&world.app, &world.room, &child).await;
+    world.tokens.insert("p", token);
+    assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
+}
