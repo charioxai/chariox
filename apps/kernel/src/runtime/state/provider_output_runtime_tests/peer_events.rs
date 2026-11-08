@@ -163,3 +163,110 @@ async fn a_decision_a_peer_raises_never_reaches_its_follower() {
         "the follower's inbox does not name the card: {read}"
     );
 }
+
+/// Three peers end their turns together: the follower's one wake carries all three events and
+/// starts one model turn.
+#[tokio::test]
+async fn three_peers_finishing_together_give_one_wake_and_one_turn() {
+    let team = family("peer-event-batch", 4, None, true).await;
+    let follower = team.kids[0].child.clone();
+    let peers: Vec<String> = team.kids[1..].iter().map(|k| k.child.clone()).collect();
+    let mut registrations = Vec::new();
+    for peer in &peers {
+        let reply = follow(&team, 0, peer).await;
+        registrations.push(reply["registration_id"].as_str().unwrap().to_owned());
+    }
+    let kid = &team.kids[0];
+    let token = team
+        .runtime
+        .owned
+        .provider_store
+        .get_run(&kid.child_run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    let now = crate::session::unix_epoch_ms();
+    team.runtime
+        .dispatch_authenticated_runtime_tool_call(
+            &token,
+            "chariox.events.yield",
+            serde_json::json!({
+                "task_id": kid.task.task_id,
+                "origin_prompt_id": kid.child_prompt.id(),
+                "registration_ids": registrations,
+                "inbox_cursor": 0,
+                "deadline_ms": now + 600_000,
+                "reason": "following three peers",
+            }),
+        )
+        .await
+        .unwrap();
+    let store = &team.runtime.owned.durable_state_store;
+    store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: follower.clone(),
+            prompt: kid.child_prompt.id().into(),
+            run: kid.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 2,
+        })
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &follower, Some(&kid.child_run))
+        .unwrap();
+
+    // The ledger side of three settlements, then the one delivery the sweep makes.
+    for peer in &peers {
+        store
+            .agent_lifecycle(Operation::SourceOutcome {
+                now,
+                public_answer: None,
+                room: team.room.clone(),
+                source: peer.clone(),
+                occurrence: format!("task-terminal-{peer}"),
+                success: true,
+            })
+            .unwrap();
+    }
+    let events = inbox(&team, &follower);
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert!(events.iter().all(|event| event.kind == "peer_event"));
+    team.runtime
+        .deliver_agent_inbox(&team.room, &follower)
+        .await
+        .unwrap();
+
+    let session = team.runtime.owned.session_store.get_session(&team.room).unwrap();
+    let prompt = team
+        .runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&session, &follower)
+        .expect("the wake starts one turn");
+    assert!(
+        prompt.prompt().contains("3 peer event") && prompt.prompt().chars().count() <= 240,
+        "{}",
+        prompt.prompt()
+    );
+    let batch = store
+        .agent_events_for_prompt(&team.room, &follower, prompt.id())
+        .unwrap();
+    assert_eq!(batch.len(), 3, "three events, one prompt id");
+    let read = team
+        .runtime
+        .read_agent_inbox(&team.room, &follower, &serde_json::json!({}))
+        .unwrap();
+    let sources: Vec<&str> = read["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["source"]["id"].as_str().unwrap())
+        .collect();
+    for peer in &peers {
+        assert!(sources.contains(&peer.as_str()), "{sources:?}");
+    }
+}
