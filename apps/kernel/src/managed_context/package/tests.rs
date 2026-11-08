@@ -1875,6 +1875,168 @@ fn event_connection_rollback_removes_a_record_its_own_rerun_still_holds() {
 }
 
 #[test]
+fn event_connection_rollback_keeps_a_record_whose_creating_transfer_completed() {
+    let shared = SharedConnectionTransfers::new("event-completed");
+    let created = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    assert!(created[0].created);
+    event_connections::complete(&shared.import_target, TRANSFER_A).expect("transfer A completes");
+    assert_eq!(
+        shared
+            .target
+            .import_claims(TARGET_OWNER, "connection-a")
+            .expect("read import claims"),
+        None,
+        "a completed transfer leaves no claim on the record it created"
+    );
+
+    // The record is the owner's now, after a restart as before it.
+    let restarted = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: restarted.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    let reused = event_connections::import(&import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+    event_connections::rollback(&import_target, TRANSFER_B, &reused).expect("transfer B fails");
+    event_connections::rollback(&import_target, TRANSFER_A, &created)
+        .expect("a late rollback of the completed transfer");
+
+    assert!(shared.holds_connection());
+    shared.fixture.cleanup();
+}
+
+#[test]
+fn event_connection_rollback_after_a_restart_waits_for_every_sharing_transfer() {
+    let shared = SharedConnectionTransfers::new("event-restart-shared");
+    let transfer_a = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    let transfer_b = event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B reuses the record");
+
+    let restarted = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: restarted.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    event_connections::rollback(&import_target, TRANSFER_A, &transfer_a).expect("transfer A fails");
+    assert!(
+        restarted
+            .get(TARGET_OWNER, "connection-a")
+            .expect("read connection-a")
+            .is_some(),
+        "B still relies on the record after the restart"
+    );
+    event_connections::rollback(&import_target, TRANSFER_B, &transfer_b).expect("transfer B fails");
+
+    assert!(restarted
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_none());
+    shared.fixture.cleanup();
+}
+
+/// A store written before the import ledger existed: the table is missing and
+/// an earlier import left its record without a ledger row.
+#[test]
+fn event_connection_ledger_fills_lazily_on_a_store_from_before_it() {
+    let shared = SharedConnectionTransfers::new("event-ledger-upgrade");
+    seed_connection(
+        &shared.target,
+        TARGET_OWNER,
+        "connection-a",
+        "event-owner-secret-a",
+        crate::local::EventConnectionStatus::Ready,
+    );
+    let state_path = shared.fixture.root.join("target").join("state.sqlite3");
+    rusqlite::Connection::open(&state_path)
+        .expect("open the store directly")
+        .execute_batch("DROP TABLE event_connection_imports;")
+        .expect("remove the ledger table");
+
+    let upgraded = event_registry(&shared.fixture.root, "target");
+    let import_target = ManagedContextEventConnectionImportTarget {
+        registry: upgraded.clone(),
+        owner_user_id: TARGET_OWNER.to_string(),
+    };
+    // The old record has no ledger row, so a rollback leaves it as before.
+    let reused = event_connections::import(&import_target, TRANSFER_A, &shared.records)
+        .expect("import on the upgraded store");
+    assert!(!reused[0].created);
+    event_connections::rollback(&import_target, TRANSFER_A, &reused).expect("rollback");
+    assert!(upgraded
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_some());
+
+    // A record imported after the upgrade is in the ledger and goes with its rollback.
+    upgraded
+        .remove(TARGET_OWNER, "connection-a")
+        .expect("the owner removes the old record");
+    let created = event_connections::import(&import_target, TRANSFER_B, &shared.records)
+        .expect("import after the upgrade");
+    assert!(created[0].created);
+    let restarted = event_registry(&shared.fixture.root, "target");
+    event_connections::rollback(
+        &ManagedContextEventConnectionImportTarget {
+            registry: restarted.clone(),
+            owner_user_id: TARGET_OWNER.to_string(),
+        },
+        TRANSFER_B,
+        &created,
+    )
+    .expect("rollback after a restart");
+    assert!(restarted
+        .get(TARGET_OWNER, "connection-a")
+        .expect("read connection-a")
+        .is_none());
+    shared.fixture.cleanup();
+}
+
+/// The previous release reads the same store back: its records decode without
+/// the ledger, which only adds a table, an event kind and one record field.
+#[test]
+fn event_connection_ledger_store_restores_through_the_record_shape_alone() {
+    let shared = SharedConnectionTransfers::new("event-ledger-rollback");
+    let created = event_connections::import(&shared.import_target, TRANSFER_A, &shared.records)
+        .expect("transfer A imports");
+    event_connections::import(&shared.import_target, TRANSFER_B, &shared.records)
+        .expect("transfer B joins");
+    assert!(created[0].created);
+    let state_path = shared.fixture.root.join("target").join("state.sqlite3");
+    let store = crate::durable_state::DurableKernelStateStore::open(state_path.clone())
+        .expect("reopen the store");
+    let upserted = store
+        .load_events_by_kind("event_connection.upserted")
+        .expect("load connection events");
+    assert!(upserted
+        .iter()
+        .any(|event| event.payload.get("imported_by_transfer_id").is_some()));
+    for event in upserted {
+        let fields = event.payload.as_object().expect("record object");
+        let unknown = fields
+            .keys()
+            .filter(|key| {
+                !matches!(
+                    key.as_str(),
+                    "owner_user_id" | "event_owner_id" | "connection" | "imported_by_transfer_id"
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(unknown.is_empty(), "unexpected record fields {unknown:?}");
+    }
+    drop(store);
+    // The registry restores from the record events alone, as a kernel that
+    // predates the ledger does.
+    let restored = event_registry(&shared.fixture.root, "target");
+    assert!(restored
+        .get(TARGET_OWNER, "connection-a")
+        .expect("records restore")
+        .is_some());
+    shared.fixture.cleanup();
+}
+
+#[test]
 fn event_connection_rollback_leaves_a_record_the_owner_already_held() {
     let shared = SharedConnectionTransfers::new("event-owner-record");
     seed_connection(

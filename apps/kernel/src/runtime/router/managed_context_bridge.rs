@@ -740,6 +740,26 @@ impl CommandRouter {
             }
             return Err(commit_error);
         }
+        if matches!(
+            receipt.event_connections,
+            crate::managed_context::package::ManagedContextImportedEventConnections::Selected { .. }
+        ) {
+            // A ledger row left behind only keeps the records; no rollback of
+            // this committed transfer runs any more.
+            let completed_target = event_connection_target.clone();
+            let completed_transfer_id = transfer_id.clone();
+            if let Err(error) = self
+                .transfer_io(move || {
+                    crate::managed_context::event_connections::complete(
+                        &completed_target,
+                        &completed_transfer_id,
+                    )
+                })
+                .await
+            {
+                tracing::warn!(%error, "complete imported event connections");
+            }
+        }
 
         // Imported profiles start `unknown`, which admits no new work. Refresh
         // native observations independently. Setup-token profiles require an

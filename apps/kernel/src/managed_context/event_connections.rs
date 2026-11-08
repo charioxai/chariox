@@ -8,7 +8,6 @@
 //! The event owner id inside a record is a bearer capability for the
 //! connection, so a record only travels inside the encrypted package and never
 //! appears in `Debug` output, receipts or errors.
-use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -187,23 +186,13 @@ pub(crate) fn receipts_for(
         .collect()
 }
 
-/// The transfers that rely on each record an import wrote, keyed by owner and
-/// connection id. A record absent from the ledger belongs to the owner (or to
-/// an import that is no longer running) and a rollback leaves it alone. The
-/// ledger lives in the registry because overlapping transfers share it; it
-/// holds nothing across a restart, which is when a recovered import leaves its
-/// records anyway.
+/// Held while an import checks and writes, so exactly one of two
+/// overlapping transfers creates a shared record and the other relies on it.
+/// Which transfers rely on which record is durable state
+/// (`event_connection_imports`), so a rollback after a restart still removes
+/// the records its transfer created.
 #[derive(Default)]
-pub(crate) struct ImportLedger {
-    entries: BTreeMap<(String, String), LedgerEntry>,
-}
-
-struct LedgerEntry {
-    /// An import wrote the record, so it goes when the last transfer that
-    /// relies on it fails.
-    created_by_import: bool,
-    transfers: BTreeSet<String>,
-}
+pub(crate) struct ImportLedger;
 
 /// Writes the records into the target registry. A record the target already
 /// holds is kept when it is the same connection and refused when it is not;
@@ -215,7 +204,7 @@ pub(crate) fn import(
     transfer_id: &str,
     records: &[EventConnectionRecord],
 ) -> Result<Vec<ManagedContextEventConnectionReceipt>, DaemonError> {
-    let mut ledger = target.registry.lock_import_ledger()?;
+    let _ledger = target.registry.lock_import_ledger()?;
     let mut missing = Vec::with_capacity(records.len());
     for record in records {
         let existing = target
@@ -242,41 +231,47 @@ pub(crate) fn import(
     }
     let mut receipts = Vec::with_capacity(records.len());
     for (record, created) in records.iter().zip(missing) {
-        let key = (target.owner_user_id.clone(), record.connection_id.clone());
-        if created {
-            if let Err(error) = target.registry.upsert(
-                &target.owner_user_id,
-                &record.event_owner_id,
-                chariox_event_protocol::AegsConnectionSummary {
-                    generator_id: record.generator_id.clone(),
-                    connection_id: record.connection_id.clone(),
-                    status: record.status,
-                    metadata: serde_json::Value::Null,
-                    expires_at_ms: None,
-                    updated_at_ms: crate::session::unix_epoch_ms(),
-                },
-            ) {
-                if let Err(rollback_error) =
-                    rollback_locked(&mut ledger, target, transfer_id, &receipts)
-                {
-                    return Err(DaemonError::ManagedContext {
-                        code: "managed_context_unavailable",
-                        operation: "import event connections",
-                        message: format!("{error}; {rollback_error}"),
-                        retryable: true,
-                    });
-                }
-                return Err(error);
+        let written = if created {
+            target
+                .registry
+                .upsert_imported(
+                    &target.owner_user_id,
+                    &record.event_owner_id,
+                    chariox_event_protocol::AegsConnectionSummary {
+                        generator_id: record.generator_id.clone(),
+                        connection_id: record.connection_id.clone(),
+                        status: record.status,
+                        metadata: serde_json::Value::Null,
+                        expires_at_ms: None,
+                        updated_at_ms: crate::session::unix_epoch_ms(),
+                    },
+                    transfer_id,
+                )
+                .map(|_| ())
+        } else {
+            // Only a record an import wrote is in the ledger; the owner's own stays out of it.
+            target
+                .registry
+                .import_claims(&target.owner_user_id, &record.connection_id)
+                .and_then(|claims| match claims {
+                    Some(_) => target.registry.join_import(
+                        &target.owner_user_id,
+                        &record.connection_id,
+                        transfer_id,
+                    ),
+                    None => Ok(()),
+                })
+        };
+        if let Err(error) = written {
+            if let Err(rollback_error) = rollback_locked(target, transfer_id, &receipts) {
+                return Err(DaemonError::ManagedContext {
+                    code: "managed_context_unavailable",
+                    operation: "import event connections",
+                    message: format!("{error}; {rollback_error}"),
+                    retryable: true,
+                });
             }
-            ledger.entries.insert(
-                key,
-                LedgerEntry {
-                    created_by_import: true,
-                    transfers: BTreeSet::from([transfer_id.to_string()]),
-                },
-            );
-        } else if let Some(entry) = ledger.entries.get_mut(&key) {
-            entry.transfers.insert(transfer_id.to_string());
+            return Err(error);
         }
         receipts.push(ManagedContextEventConnectionReceipt {
             connection_id: record.connection_id.clone(),
@@ -293,37 +288,48 @@ pub(crate) fn rollback(
     transfer_id: &str,
     receipts: &[ManagedContextEventConnectionReceipt],
 ) -> Result<(), DaemonError> {
-    let mut ledger = target.registry.lock_import_ledger()?;
-    rollback_locked(&mut ledger, target, transfer_id, receipts)
+    let _ledger = target.registry.lock_import_ledger()?;
+    rollback_locked(target, transfer_id, receipts)
+}
+
+/// The transfer completed: the records it created are the owner's from now on.
+pub(crate) fn complete(
+    target: &ManagedContextEventConnectionImportTarget,
+    transfer_id: &str,
+) -> Result<(), DaemonError> {
+    let _ledger = target.registry.lock_import_ledger()?;
+    target
+        .registry
+        .complete_import(&target.owner_user_id, transfer_id)
 }
 
 fn rollback_locked(
-    ledger: &mut ImportLedger,
     target: &ManagedContextEventConnectionImportTarget,
     transfer_id: &str,
     receipts: &[ManagedContextEventConnectionReceipt],
 ) -> Result<(), DaemonError> {
     let mut failures = 0;
     for receipt in receipts {
-        let key = (target.owner_user_id.clone(), receipt.connection_id.clone());
-        let Some(entry) = ledger.entries.get_mut(&key) else {
-            continue;
-        };
-        entry.transfers.remove(transfer_id);
-        if !entry.transfers.is_empty() {
-            continue;
-        }
-        if entry.created_by_import
-            && target
+        let released = match target
+            .registry
+            .import_claims(&target.owner_user_id, &receipt.connection_id)
+        {
+            Ok(None) => continue,
+            Ok(Some(claims)) if !claims.transfers.contains(transfer_id) => continue,
+            Ok(Some(claims)) if claims.created_by_import && claims.transfers.len() == 1 => target
                 .registry
                 .remove(&target.owner_user_id, &receipt.connection_id)
-                .is_err()
-        {
-            entry.transfers.insert(transfer_id.to_string());
+                .map(|_| ()),
+            Ok(Some(_)) => target.registry.release_import(
+                &target.owner_user_id,
+                &receipt.connection_id,
+                transfer_id,
+            ),
+            Err(error) => Err(error),
+        };
+        if released.is_err() {
             failures += 1;
-            continue;
         }
-        ledger.entries.remove(&key);
     }
     if failures > 0 {
         return Err(DaemonError::ManagedContext {

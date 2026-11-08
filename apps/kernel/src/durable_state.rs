@@ -55,6 +55,10 @@ pub(crate) mod browser_import;
 mod created_resources;
 mod decision_holders;
 pub(crate) use decision_holders::StoredDecisionHolder;
+mod event_connection_imports;
+pub(crate) use event_connection_imports::{
+    EventConnectionImportChange, EventConnectionImportClaims, IMPORTED_BY_TRANSFER_ID,
+};
 mod owner;
 mod retired_sessions;
 pub(crate) mod room_environment;
@@ -438,6 +442,12 @@ impl DurableKernelStateStore {
         decision_holders::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.decision_holders",
             message: error.to_string(),
+        })?;
+        event_connection_imports::initialize(&connection).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.event_connection_imports",
+                message: error.to_string(),
+            }
         })?;
         retired_sessions::initialize(&connection).map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.retired_sessions",
@@ -1919,6 +1929,7 @@ fn commit_durable_write_batch(
                     let sequence = transaction.last_insert_rowid().max(0) as u64;
                     retired_sessions::apply_event(&transaction, kind, payload_json)?;
                     created_resources::apply_event(&transaction, kind, payload_json)?;
+                    event_connection_imports::apply_event(&transaction, kind, payload_json)?;
                     decision_holders::apply_event(&transaction, kind, payload_json)?;
                     if kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND {
                         workflow_notifications::agent_lineage::record_prompt_state_in(

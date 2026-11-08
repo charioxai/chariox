@@ -234,6 +234,28 @@ impl EventConnectionRegistry {
         event_owner_id: &str,
         summary: chariox_event_protocol::AegsConnectionSummary,
     ) -> Result<EventConnection, DaemonError> {
+        self.upsert_record(owner_user_id, event_owner_id, summary, None)
+    }
+
+    /// Creates the record a transfer imports. The same write records that the
+    /// transfer created it, so a rollback after a restart still removes it.
+    pub(crate) fn upsert_imported(
+        &self,
+        owner_user_id: &str,
+        event_owner_id: &str,
+        summary: chariox_event_protocol::AegsConnectionSummary,
+        transfer_id: &str,
+    ) -> Result<EventConnection, DaemonError> {
+        self.upsert_record(owner_user_id, event_owner_id, summary, Some(transfer_id))
+    }
+
+    fn upsert_record(
+        &self,
+        owner_user_id: &str,
+        event_owner_id: &str,
+        summary: chariox_event_protocol::AegsConnectionSummary,
+        imported_by_transfer_id: Option<&str>,
+    ) -> Result<EventConnection, DaemonError> {
         let now_ms = unix_epoch_ms();
         let key = (owner_user_id.to_string(), summary.connection_id.clone());
         let mut state = self.lock_state()?;
@@ -296,11 +318,23 @@ impl EventConnectionRegistry {
                 test_event_supported: previous.is_some_and(|value| value.test_event_supported),
             },
         };
-        if connection_observation_requires_persistence(&state, &key, &record.connection, now_ms) {
+        if imported_by_transfer_id.is_some()
+            || connection_observation_requires_persistence(&state, &key, &record.connection, now_ms)
+        {
+            let mut payload =
+                serde_json::to_value(&record).map_err(|error| registry_error(error.to_string()))?;
+            if let (Some(transfer_id), Some(fields)) =
+                (imported_by_transfer_id, payload.as_object_mut())
+            {
+                fields.insert(
+                    crate::durable_state::IMPORTED_BY_TRANSFER_ID.to_string(),
+                    transfer_id.into(),
+                );
+            }
             self.append(
                 CONNECTION_UPSERTED,
                 &record.connection.connection_id,
-                &record,
+                &payload,
             )?;
             state
                 .connection_last_persisted_at_ms
@@ -691,9 +725,65 @@ impl EventConnectionRegistry {
         Ok(authorization)
     }
 
-    /// Which transfers rely on the records an import wrote. An import holds
-    /// this lock from its check to its write, so two transfers cannot both
-    /// create one record.
+    /// The transfers that rely on a record an import wrote, as last committed.
+    pub(crate) fn import_claims(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+    ) -> Result<Option<crate::durable_state::EventConnectionImportClaims>, DaemonError> {
+        self.durable_state
+            .event_connection_import_claims(owner_user_id, connection_id)
+    }
+
+    /// Records that another run of a transfer relies on a record an import
+    /// wrote. Nothing is recorded for a record no import wrote.
+    pub(crate) fn join_import(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Joined {
+                owner_user_id: owner_user_id.to_string(),
+                connection_id: connection_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// Gives up one transfer's claim on a record and leaves the record.
+    pub(crate) fn release_import(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Released {
+                owner_user_id: owner_user_id.to_string(),
+                connection_id: connection_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// A completed transfer hands the records it created to their owner.
+    pub(crate) fn complete_import(
+        &self,
+        owner_user_id: &str,
+        transfer_id: &str,
+    ) -> Result<(), DaemonError> {
+        self.durable_state.append_event_connection_import_change(
+            crate::durable_state::EventConnectionImportChange::Completed {
+                owner_user_id: owner_user_id.to_string(),
+                transfer_id: transfer_id.to_string(),
+            },
+        )
+    }
+
+    /// An import holds this lock from its check to its write, so two transfers
+    /// cannot both create one record.
     pub(crate) fn lock_import_ledger(&self) -> Result<MutexGuard<'_, ImportLedger>, DaemonError> {
         self.import_ledger
             .lock()
