@@ -52,6 +52,13 @@ impl TestRoot {
 
     fn config(&self) -> crate::DaemonConfig {
         let mut config = crate::DaemonConfig::for_tests();
+        // MP-08 / MP-10 / MP-11: Alice owns this kernel; Bob is a collaborator over the relay.
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            relay_url: "wss://cloud-relay".into(),
+            user_id: "alice".into(),
+            realm_id: "test".into(),
+            ..Default::default()
+        });
         config.user_config.state.path = Some(self.0.join("state.db").display().to_string());
         config.user_config.history.operational.path =
             Some(self.0.join("history.db").display().to_string());
@@ -103,6 +110,30 @@ async fn dispatch(
     }
 }
 
+/// MP-08 / MP-10 / MP-11: kernel-global requests are the kernel owner's; another relay user (or
+/// one without an identity) is refused before any App rule runs.
+async fn refused(
+    router: &CommandRouter,
+    cache: &CommandResultCache,
+    user: Option<&str>,
+    request: LocalDaemonRequest,
+    command_id: &str,
+) {
+    let outcome = dispatch_relay_client_request(
+        router,
+        &AtomicU64::new(1),
+        KernelCaller::for_relay_request(user.map(caller)),
+        request,
+        Some(command_id.into()),
+        cache,
+    )
+    .await;
+    assert!(
+        matches!(&outcome, RelayDispatchOutcome::RelayError(error) if error.message.contains("outside a room")),
+        "{user:?} was not refused outside a room"
+    );
+}
+
 #[tokio::test]
 async fn app_relay_replays_reauthorize_the_owner_and_read_current_installations() {
     let root = TestRoot::new();
@@ -148,16 +179,8 @@ async fn app_relay_replays_reauthorize_the_owner_and_read_current_installations(
         matches!(current, LocalDaemonResponse::AppInstallationsListed { installations, .. } if installations.len() == 1)
     );
     // Same command ID/body reaches authorization, even after Alice's success.
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), list.clone(), "list").await,
-        empty
-    );
-    assert!(matches!(
-        dispatch(&router, &cache, None, list, "list").await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: crate::local::AppRequestErrorCode::Unauthorized
-        }
-    ));
+    refused(&router, &cache, Some("bob"), list.clone(), "list").await;
+    refused(&router, &cache, None, list, "list").await;
     for request in [
         LocalDaemonRequest::GetAppInstallation(AppInstallationRequest {
             installation_id: "todo-alice".into(),
@@ -168,12 +191,7 @@ async fn app_relay_replays_reauthorize_the_owner_and_read_current_installations(
     ] {
         let own = dispatch(&router, &cache, Some("alice"), request.clone(), "same-id").await;
         assert!(!matches!(own, LocalDaemonResponse::AppRequestFailed { .. }));
-        assert!(matches!(
-            dispatch(&router, &cache, Some("bob"), request, "same-id").await,
-            LocalDaemonResponse::AppRequestFailed {
-                code: crate::local::AppRequestErrorCode::NotFound
-            }
-        ));
+        refused(&router, &cache, Some("bob"), request, "same-id").await;
     }
 }
 
@@ -200,12 +218,7 @@ async fn app_relay_upload_replays_preserve_owner_offset_and_abort_receipt() {
     else {
         panic!("upload should begin")
     };
-    let LocalDaemonResponse::AppPackageUploadStatus { upload: bob } =
-        dispatch(&router, &cache, Some("bob"), begin.clone(), "begin").await
-    else {
-        panic!("Bob has a separate upload")
-    };
-    assert_ne!(alice.handle, bob.handle);
+    refused(&router, &cache, Some("bob"), begin.clone(), "begin").await;
     let status = LocalDaemonRequest::GetAppPackageUpload(AppPackageUploadRequest {
         handle: alice.handle.clone(),
     });
@@ -225,19 +238,9 @@ async fn app_relay_upload_replays_preserve_owner_offset_and_abort_receipt() {
         }
     );
     for request in [status.clone(), chunk.clone(), abort.clone()] {
-        assert_eq!(
-            dispatch(&router, &cache, Some("bob"), request, "foreign").await,
-            LocalDaemonResponse::AppRequestFailed {
-                code: crate::local::AppRequestErrorCode::NotFound
-            }
-        );
+        refused(&router, &cache, Some("bob"), request, "foreign").await;
     }
-    assert_eq!(
-        dispatch(&router, &cache, None, begin.clone(), "begin").await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: crate::local::AppRequestErrorCode::Unauthorized
-        }
-    );
+    refused(&router, &cache, None, begin.clone(), "begin").await;
     let mut complete = alice.clone();
     complete.accepted_bytes = 4;
     let expected = LocalDaemonResponse::AppPackageUploadStatus {
@@ -336,14 +339,8 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
     };
     assert_eq!(status.phase, AppWorkerPhase::NotStarted);
     assert!(status.enabled);
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), worker.clone(), "worker").await,
-        failed(AppRequestErrorCode::NotFound)
-    );
-    assert_eq!(
-        dispatch(&router, &cache, None, worker, "worker").await,
-        failed(AppRequestErrorCode::Unauthorized)
-    );
+    refused(&router, &cache, Some("bob"), worker.clone(), "worker").await;
+    refused(&router, &cache, None, worker, "worker").await;
     // A user stop is recorded without a running worker and disables on-demand use.
     let stop = LocalDaemonRequest::ControlAppWorker(crate::local::ControlAppWorkerRequest {
         installation_id: "installed".into(),
@@ -356,10 +353,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
     };
     assert_eq!(stopped.phase, AppWorkerPhase::Stopped);
     assert!(!stopped.enabled);
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), stop, "stop").await,
-        failed(AppRequestErrorCode::NotFound)
-    );
+    refused(&router, &cache, Some("bob"), stop, "stop").await;
     // Automations are durable configuration: no running worker is needed.
     let list = LocalDaemonRequest::ListAppAutomations(crate::local::ListAppAutomationsRequest {
         session_id: None,
@@ -372,10 +366,7 @@ async fn app_worker_and_automation_requests_are_owner_scoped_and_need_no_worker(
             automations: vec![],
         }
     );
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), list, "list").await,
-        failed(AppRequestErrorCode::NotFound)
-    );
+    refused(&router, &cache, Some("bob"), list, "list").await;
     // Errors keep their meaning instead of collapsing into Conflict.
     let disable = |expected_revision| {
         LocalDaemonRequest::DisableAppAutomation(DisableAppAutomationRequest {
@@ -459,17 +450,14 @@ async fn uninstall_is_owner_scoped_generation_checked_and_deactivates() {
     };
     let uninstall = |expected_generation: &str| uninstall_with(expected_generation, false);
     let failed = |code| LocalDaemonResponse::AppRequestFailed { code };
-    assert_eq!(
-        dispatch(
-            &router,
-            &cache,
-            Some("bob"),
-            uninstall(&generation),
-            "u-bob"
-        )
-        .await,
-        failed(AppRequestErrorCode::NotFound)
-    );
+    refused(
+        &router,
+        &cache,
+        Some("bob"),
+        uninstall(&generation),
+        "u-bob",
+    )
+    .await;
     assert_eq!(
         dispatch(&router, &cache, Some("alice"), uninstall("999"), "u-stale").await,
         failed(AppRequestErrorCode::Conflict)
@@ -593,12 +581,7 @@ async fn app_logs_are_owner_scoped_and_page_by_sequence() {
         rest.iter().map(|e| e.message.as_str()).collect::<Vec<_>>(),
         ["three"]
     );
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), logs(None), "logs-bob").await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: AppRequestErrorCode::NotFound
-        }
-    );
+    refused(&router, &cache, Some("bob"), logs(None), "logs-bob").await;
 }
 
 #[test]
@@ -684,18 +667,8 @@ async fn uninstall_replay() {
         generation
     );
     // Owner authorization still runs before receipt lookup.
-    assert_eq!(
-        dispatch(&router, &cache, None, request.clone(), "uninstall-once").await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: AppRequestErrorCode::Unauthorized
-        }
-    );
-    assert_eq!(
-        dispatch(&router, &cache, Some("bob"), request, "uninstall-once").await,
-        LocalDaemonResponse::AppRequestFailed {
-            code: AppRequestErrorCode::NotFound
-        }
-    );
+    refused(&router, &cache, None, request.clone(), "uninstall-once").await;
+    refused(&router, &cache, Some("bob"), request, "uninstall-once").await;
     let new = LocalDaemonRequest::UninstallApp(UninstallAppRequest {
         installation_id: "todo-alice".into(),
         expected_generation: generation.to_string(),
@@ -753,19 +726,14 @@ async fn rejected_app_requests() {
                 delete_data: false,
             })
         };
-        assert_eq!(
-            dispatch(
-                &router,
-                &cache,
-                Some("bob"),
-                request,
-                &format!("rejected-{n}")
-            )
-            .await,
-            LocalDaemonResponse::AppRequestFailed {
-                code: AppRequestErrorCode::NotFound
-            }
-        );
+        refused(
+            &router,
+            &cache,
+            Some("bob"),
+            request,
+            &format!("rejected-{n}"),
+        )
+        .await;
     }
     let stop = LocalDaemonRequest::ControlAppWorker(ControlAppWorkerRequest {
         installation_id: "installed".into(),
@@ -997,19 +965,14 @@ fn full_receipt_journal_uninstalls_and_fences_replayed_generation() {
                         expected_generation: generation.to_string(),
                         delete_data: false,
                     });
-                    assert_eq!(
-                        dispatch(
-                            &router,
-                            &cache,
-                            Some("bob"),
-                            uninstall.clone(),
-                            "uninstall-full"
-                        )
-                        .await,
-                        LocalDaemonResponse::AppRequestFailed {
-                            code: AppRequestErrorCode::NotFound
-                        }
-                    );
+                    refused(
+                        &router,
+                        &cache,
+                        Some("bob"),
+                        uninstall.clone(),
+                        "uninstall-full",
+                    )
+                    .await;
                     let result = dispatch(
                         &router,
                         &cache,
@@ -1109,9 +1072,10 @@ async fn md3_browser_relay_replay_binds_user_and_rechecks_admission() {
         RelayDispatchOutcome::Response(value) => assert_eq!(value, response),
         _ => panic!("same caller lost its browser retry receipt"),
     }
+    // Another relay user never reaches the owner's browser, cached or not.
     match replay(Some(caller("bob"))).await {
         RelayDispatchOutcome::RelayError(error) => {
-            assert_eq!(error.code, "duplicate_command_conflict")
+            assert!(error.message.contains("outside a room"), "{error:?}")
         }
         _ => panic!("another user received Alice's browser receipt"),
     }

@@ -1072,9 +1072,6 @@ async fn dispatch_relay_client_request(
         None,
         &request,
     );
-    if let Err(error) = router.authorize_relay_collaborator_request(&command, &request) {
-        return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error)));
-    }
     // MD-3: replay must not bypass current terminal admission. Caller identity
     // comes from relay authentication, never the request or command ID.
     if matches!(
@@ -1090,6 +1087,9 @@ async fn dispatch_relay_client_request(
             "MD-3: authenticated terminal required",
             false,
         ));
+    }
+    if let Err(error) = router.authorize_relay_collaborator_request(&command, &request) {
+        return cached_relay_dispatch_outcome(Box::new(None), Some(map_kernel_error(&error)));
     }
     let browser_revision = match router
         .runtime_state()
