@@ -12,18 +12,6 @@
     "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
   },
   {
-    "path": "apps/cli/scripts/path1-host-cloud-correlation.mjs",
-    "row": "OSB-04",
-    "slice": "B0",
-    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
-  },
-  {
-    "path": "apps/cli/scripts/path1-provider-cloud-correlation.mjs",
-    "row": "OSB-04",
-    "slice": "B0",
-    "removedBy": "OSS-boundary item 2 (Cloud rental drills move to the Cloud repo)"
-  },
-  {
     "path": "apps/cli/src/cli-app-root.tsx",
     "row": "OSB-09",
     "slice": "B2",

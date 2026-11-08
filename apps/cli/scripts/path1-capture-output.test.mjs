@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { mkdir, mkdtemp, realpath, rm, stat, symlink } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { writeCaptureOutput } from "./path1-capture-output.mjs"
+import { readCaptureInput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 test("external evidence output is private, exclusive, and rejects symlink and repository paths", async (t) => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "chariox-path1-provider-capture-")))
@@ -26,4 +27,20 @@ test("external evidence output is private, exclusive, and rejects symlink and re
   const parentLink = join(evidence, "repo-alias")
   await symlink(repository, parentLink)
   await assert.rejects(writeCaptureOutput(join(parentLink, "capture.json"), capture, repository), /symlink/)
+})
+
+test("capture inputs bind exact retained bytes and reject symlink and oversized files", async t => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "chariox-path1-capture-input-")))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const file = join(root, "capture.json")
+  const bytes = Buffer.from('{"schema":"example"}\n')
+  await writeFile(file, bytes)
+  const result = await readCaptureInput(file)
+  assert.equal(result.capture.schema, "example")
+  assert.equal(result.evidence.path, file)
+  assert.equal(result.evidence.sha256, `sha256:${createHash("sha256").update(bytes).digest("hex")}`)
+  await symlink(file, join(root, "alias.json"))
+  await assert.rejects(readCaptureInput(join(root, "alias.json")), /bounded regular/)
+  await writeFile(file, Buffer.alloc(1024 * 1024 + 1))
+  await assert.rejects(readCaptureInput(file), /bounded regular/)
 })

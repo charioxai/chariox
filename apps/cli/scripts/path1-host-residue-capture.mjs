@@ -5,7 +5,7 @@ import { lstat, readFile, realpath } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { promisify } from "node:util"
 import { pathToFileURL } from "node:url"
-import { validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
+import { readCaptureInput, validateCaptureOutput, writeCaptureOutput } from "./path1-capture-output.mjs"
 
 const execFile = promisify(execFileCallback)
 const HOST_CAPTURE_SCHEMA = "chariox.path1-host-identity-capture/v1"
@@ -399,11 +399,7 @@ export async function readPath1HostResidueInput(file, readCapture) {
     fail("before_input_unavailable", `retained before capture cannot be resolved (${errorCode(error)})`)
   }
   if (canonicalPath !== requestedPath) fail("before_input_symlink", "retained before capture path must be canonical and contain no symlinks")
-  if (!readCapture) {
-    const correlation = await import("./path1-host-cloud-correlation.mjs")
-    readCapture = correlation.readCorrelationCapture
-  }
-  const input = await readCapture(requestedPath)
+  const input = await (readCapture ?? readCaptureInput)(requestedPath)
   if (!isRecord(input?.capture) || input.capture.schema !== HOST_CAPTURE_SCHEMA) {
     fail("before_input_invalid", "--before must contain a raw Path-1 host identity capture")
   }

@@ -44,10 +44,9 @@ Include selected Apps/native/Chromium Linux/macOS workflows and Cloud checks
 from their real impacted paths; do not infer a universal green result from G2.
 
 ```bash
-# MP-07/MP-10/MP-11: offline fixtures; no actual Cloud/provider capture.
-node --test --test-concurrency=1 \
-  apps/cli/scripts/path1-host-cloud-correlation.test.mjs \
-  apps/cli/scripts/path1-provider-cloud-correlation.test.mjs
+# MP-07/MP-10/MP-11: offline fixtures; no actual Cloud/provider capture. The two correlation
+# drills live in the Cloud repo (deploy/providers/hetzner/drills); run them there with
+# CHARIOX_OSS_ROOT set to the pinned OSS checkout: pnpm test:providers-hetzner
 
 # MP-11: exact-source scan; nonzero exit/unreviewed dispositions remain RED.
 node apps/cli/scripts/managed-parity-source-inventory.mjs \
@@ -138,10 +137,10 @@ own receipt; the following reimage commands apply only to approved reuse.
 node "$OSS_CHECKOUT/apps/cli/scripts/path1-fresh-relay-capture.mjs" \
   --kernel "$HOME_KERNEL_URL" --machine "$MACHINE_REF" \
   --output "$EVIDENCE/fresh-relay.json"
-node "$OSS_CHECKOUT/apps/cli/scripts/path1-host-cloud-correlation.mjs" \
+CHARIOX_OSS_ROOT="$OSS_CHECKOUT" node "$CLOUD_CHECKOUT/deploy/providers/hetzner/drills/path1-host-cloud-correlation.mjs" \
   --before "$EVIDENCE/host-before.json" --after "$EVIDENCE/host-after.json" \
   --cloud "$EVIDENCE/cloud-reimage.json" --output "$EVIDENCE/host-cloud-correlation.json"
-node "$OSS_CHECKOUT/apps/cli/scripts/path1-provider-cloud-correlation.mjs" \
+CHARIOX_OSS_ROOT="$OSS_CHECKOUT" node "$CLOUD_CHECKOUT/deploy/providers/hetzner/drills/path1-provider-cloud-correlation.mjs" \
   --before "$EVIDENCE/provider-before.json" --after "$EVIDENCE/provider-after.json" \
   --cloud "$EVIDENCE/cloud-reimage.json" --output "$EVIDENCE/provider-cloud-correlation.json"
 ```

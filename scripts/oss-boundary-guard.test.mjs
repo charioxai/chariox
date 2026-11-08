@@ -1,7 +1,7 @@
 // OF-18+: OSS product code stays free of compute-provider and Cloud-only business logic.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -175,6 +175,11 @@ test('the leak list may not grow past the recorded total', () => {
   }
   assert.deepEqual(problemsOf(files, { leaks }), ['leak list grew: scripts/oss-boundary-leaks.allow.json'])
   assert.deepEqual(problemsOf(Object.fromEntries(Object.entries(files).slice(1)), { leaks: leaks.slice(1) }), [])
+})
+
+test('the recorded leak ceiling is the current entry count, so deleting entries lowers it', () => {
+  const entries = JSON.parse(readFileSync(resolve(fileURLToPath(import.meta.url), '../oss-boundary-leaks.allow.json'), 'utf8'))
+  assert.ok(entries.length === guard.LEAK_ENTRY_CEILING, `${entries.length} entries but the ceiling is ${guard.LEAK_ENTRY_CEILING}: set LEAK_ENTRY_CEILING to the new total`)
 })
 
 test('the repository has no unlisted provider names, Cloud vocabulary, control-plane paths or Cloud-shaped requests', () => {

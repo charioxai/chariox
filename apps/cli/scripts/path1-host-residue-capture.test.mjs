@@ -2,10 +2,10 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat as statFile, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import test from "node:test"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { offlineCorrelationScript } from "./path1-offline-correlation-test-fixture.mjs"
+import { offlineScriptsDirectory } from "./path1-offline-module-graph-fixture.mjs"
 import {
   capturePath1HostResidue,
   parsePath1HostResidueArguments,
@@ -249,8 +249,7 @@ test("Linux platform is an explicit injectable precondition", async () => {
 test("default CLI reader and output helpers work in the actual offline module graph", async (t) => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "path1-residue-offline-")))
   t.after(() => rm(directory, { recursive: true, force: true }))
-  const correlationScript = await offlineCorrelationScript(directory, "path1-host-cloud-correlation.mjs")
-  const scriptsDirectory = dirname(correlationScript)
+  const scriptsDirectory = await offlineScriptsDirectory(directory)
   const repository = resolve(scriptsDirectory, "../../..")
   const residueScript = join(scriptsDirectory, "path1-host-residue-capture.mjs")
   await copyFile(fileURLToPath(new URL("./path1-host-residue-capture.mjs", import.meta.url)), residueScript)
