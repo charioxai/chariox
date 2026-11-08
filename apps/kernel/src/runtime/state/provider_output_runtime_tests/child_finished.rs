@@ -480,3 +480,39 @@ async fn a_finish_while_the_parents_turn_settles_wakes_the_parent_when_it_ends()
         "the parked parent is woken with its child's finish: {event:?}"
     );
 }
+
+#[tokio::test]
+async fn a_cancelled_child_tells_the_parent_once_whichever_route_ends_it() {
+    let team = team_with("child-finished-cancelled-once", None, false).await;
+    let Outcome::Task(cancelled) = team
+        .runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::CancelTask {
+            task: team.task.task_id.clone(),
+            owner: "local".into(),
+            revision: team.task.revision,
+        })
+        .unwrap()
+    else {
+        panic!("cancelled")
+    };
+    // The cancellation cascade stops the turn; its end then settles the task again.
+    team.runtime
+        .cancel_agent_task_resources(&cancelled)
+        .await
+        .unwrap();
+    team.runtime
+        .owned
+        .complete_local_prompt_without_advance(&team.room, &team.child, Some(&team.child_run))
+        .unwrap();
+    team.runtime
+        .finish_agent_task_settlement(Some((cancelled, false)), &team.child_prompt)
+        .await
+        .unwrap();
+    let events = child_finished(&team);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].payload["success"], false);
+    assert_eq!(events[0].payload["outcome"]["kind"], "cancelled");
+    assert!(events[0].urgent);
+}
