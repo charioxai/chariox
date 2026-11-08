@@ -11,16 +11,23 @@ use crate::managed_context::outbound_service::{
 };
 use crate::transport::relay_client::RelayClientState;
 
+/// Who asked for a transfer, and from which session.
+#[derive(Clone, Copy)]
+pub(crate) struct OutboundRequester<'a> {
+    pub user_id: &'a str,
+    pub session_id: Option<&'a str>,
+}
+
 pub(crate) fn execute_managed_context_outbound_request(
     config: DaemonConfig,
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     runtime: crate::runtime::state::KernelRuntimeState,
-    caller_user_id: &str,
-    session_id: Option<&str>,
+    requester: OutboundRequester<'_>,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let caller_user_id = requester.user_id;
     authorize_source_user(&config, caller_user_id)?;
     match request {
         LocalDaemonRequest::StartManagedContextTransfer(request) => {
@@ -72,7 +79,7 @@ pub(crate) fn execute_managed_context_outbound_request(
                 Some(ManagedContextOutboundCaller {
                     runtime,
                     user_id: caller_user_id.to_string(),
-                    session_id: session_id.map(str::to_owned),
+                    session_id: requester.session_id.map(str::to_owned),
                 }),
                 request.interactive,
             )?;
@@ -219,8 +226,10 @@ mod tests {
                 store.clone(),
                 runtime.provider_account_profile_registry().clone(),
                 runtime.clone(),
-                "owner",
-                None,
+                OutboundRequester {
+                    user_id: "owner",
+                    session_id: None,
+                },
                 LocalDaemonRequest::StartManagedContextTransfer(
                     crate::local::StartManagedContextTransferRequest {
                         ticket: None,
