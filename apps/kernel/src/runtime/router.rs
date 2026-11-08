@@ -113,6 +113,7 @@ mod tests {
     mod history_trace_owner;
     mod metaagent_task_owner;
     mod native_interaction_owner;
+    mod prompt_input_history_owner;
     mod provider_run_read_owner;
     mod provider_run_selection_owner;
     mod room_control_owner;
