@@ -87,6 +87,8 @@ pub(super) struct PendingInteraction {
     pub(super) passkey_prompt: Option<Arc<crate::local::PasskeyPrompt>>,
     /// Who may answer now: kernel state for routing and audit, never projected.
     pub(super) holder: super::DecisionHolder,
+    /// How many times the holder changed: a holder that gets the decision back is told again.
+    pub(super) holder_tenure: u32,
     pub(super) responder: Arc<StdMutex<Option<oneshot::Sender<PendingInteractionResolution>>>>,
     /// A Vault passphrase was answered and is being checked: the card stays open
     /// without a responder until its waiter shows the refusal or closes it.
@@ -113,6 +115,12 @@ pub(super) struct PendingWorkerInteractionLifetime {
 }
 
 impl PendingInteraction {
+    /// Moves the decision to `holder`, which starts a new tenure.
+    pub(super) fn hand_to(&mut self, holder: super::DecisionHolder) {
+        self.holder = holder;
+        self.holder_tenure += 1;
+    }
+
     /// A user-held decision with no owner, for tests that classify it.
     #[cfg(test)]
     pub(super) fn for_test() -> Self {
@@ -129,6 +137,7 @@ impl PendingInteraction {
             kernel_operation_deadline: None,
             passkey_prompt: None,
             holder: super::DecisionHolder::User,
+            holder_tenure: 0,
             responder: Arc::new(StdMutex::new(None)),
             checking_answer: Default::default(),
         }

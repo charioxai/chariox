@@ -339,3 +339,42 @@ async fn an_ineligible_holder_hands_the_decision_to_an_eligible_ancestor() {
     assert_eq!(t.decision_events(&q).len(), 1, "q is told once");
     assert!(t.panels().is_empty(), "an agent holds it");
 }
+
+#[tokio::test]
+async fn a_decision_that_returns_to_a_holder_is_announced_again() {
+    let t = tree(
+        "reparent-return",
+        AgentPermissionLevel::Yolo,
+        AgentPermissionLevel::Yolo,
+    )
+    .await;
+    let q = t.agent_at("q", None, AgentPermissionLevel::Yolo).await;
+    let _open = t.raise(permission("reparent-perm-return", &t.c)).await;
+    assert_eq!(t.decision_events(&t.p).len(), 1);
+
+    t.place(&t.c, Some(&q)).await;
+    assert_eq!(
+        t.holder("reparent-perm-return"),
+        DecisionHolder::Agent(q.clone())
+    );
+    assert!(t.all_closed(&t.p), "p's first event is withdrawn");
+    assert_eq!(t.decision_events(&q).len(), 1);
+
+    t.place(&t.c, Some(&t.p)).await;
+    assert_eq!(
+        t.holder("reparent-perm-return"),
+        DecisionHolder::Agent(t.p.clone())
+    );
+    assert!(t.all_closed(&q), "q's event is withdrawn");
+    let events = t.decision_events(&t.p);
+    assert_eq!(events.len(), 2, "p hears of the decision again");
+    assert_ne!(events[0].occurrence_id, events[1].occurrence_id);
+    assert_ne!(events[1].state, "expired", "the new event is not withdrawn");
+
+    // The same tenure announced again is still one event.
+    t.runtime
+        .announce_child_decision(&t.room, "reparent-perm-return")
+        .await
+        .unwrap();
+    assert_eq!(t.decision_events(&t.p).len(), 2);
+}

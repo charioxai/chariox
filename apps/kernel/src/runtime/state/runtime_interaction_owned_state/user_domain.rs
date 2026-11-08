@@ -60,6 +60,7 @@ impl KernelRuntimeOwnedState {
                 ),
                 passkey_prompt: popup.clone(),
                 holder: super::super::DecisionHolder::User,
+                holder_tenure: 0,
                 kernel_wide_interaction: None,
                 user_domain_interaction: Some(interaction),
                 responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),

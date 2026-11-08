@@ -380,6 +380,7 @@ impl KernelRuntimeOwnedState {
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
             holder: super::super::DecisionHolder::User,
+            holder_tenure: 0,
             responder: std::sync::Arc::new(std::sync::Mutex::new(Some(responder))),
         };
         pending.holder = self.decision_holder_at_raise(&session, &pending, &interaction);

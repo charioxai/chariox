@@ -238,9 +238,10 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         holder: &str,
+        tenure: u32,
         interaction_id: &str,
     ) {
-        let occurrence = child_decision_occurrence(interaction_id, holder);
+        let occurrence = child_decision_occurrence(interaction_id, holder, tenure);
         let mut events = Vec::new();
         if let Err(error) =
             self.durable_state_store
@@ -283,7 +284,12 @@ impl KernelRuntimeOwnedState {
         pending: &PendingInteraction,
     ) {
         if let DecisionHolder::Agent(holder) = &pending.holder {
-            self.withdraw_child_decision_event(session_id, holder, interaction_id);
+            self.withdraw_child_decision_event(
+                session_id,
+                holder,
+                pending.holder_tenure,
+                interaction_id,
+            );
         }
     }
 
@@ -324,8 +330,9 @@ impl KernelRuntimeOwnedState {
                 continue;
             };
             let holder = self.decision_holder_above(&session, &pending, &interaction, agent);
+            let old_tenure = pending.holder_tenure;
             if let Some(entry) = self.pending_interactions.write().get_mut(&id) {
-                entry.holder = holder.clone();
+                entry.hand_to(holder.clone());
             }
             match &holder {
                 DecisionHolder::User => {
@@ -344,7 +351,7 @@ impl KernelRuntimeOwnedState {
                 DecisionHolder::Agent(_) => announce.push(id.clone()),
             }
             drop(sessions);
-            self.withdraw_child_decision_event(session_id, agent, &id);
+            self.withdraw_child_decision_event(session_id, agent, old_tenure, &id);
         }
         Ok((moved, announce))
     }
@@ -390,11 +397,14 @@ impl KernelRuntimeOwnedState {
             match pending.holder.clone() {
                 DecisionHolder::Agent(holder) if may_still_hold(&holder) => {}
                 DecisionHolder::Agent(holder) => {
-                    withdraw.push((holder, id.clone()));
-                    pending.holder =
-                        self.decision_holder_at_raise(&session, &pending, &interaction);
+                    withdraw.push((holder, pending.holder_tenure, id.clone()));
+                    pending.hand_to(self.decision_holder_at_raise(
+                        &session,
+                        &pending,
+                        &interaction,
+                    ));
                     if let Some(entry) = self.pending_interactions.write().get_mut(&id) {
-                        entry.holder = pending.holder.clone();
+                        entry.hand_to(pending.holder.clone());
                     }
                     match pending.holder {
                         DecisionHolder::Agent(_) => announce.push(id),
@@ -409,7 +419,7 @@ impl KernelRuntimeOwnedState {
             .filter_map(|(interaction, pending)| {
                 let shown = self.decision_shown_in(session_id, &interaction);
                 let changed = shown.as_deref() != interaction.shown_in_agent_id()
-                    || withdraw.iter().any(|(_, id)| id == interaction.id());
+                    || withdraw.iter().any(|(_, _, id)| id == interaction.id());
                 changed.then(|| {
                     session.show_interaction_in(interaction.id(), shown.clone());
                     (interaction.shown_in(shown), pending)
@@ -418,8 +428,8 @@ impl KernelRuntimeOwnedState {
             .collect::<Vec<_>>();
         sessions.restore_session(session);
         drop(sessions);
-        for (holder, id) in &withdraw {
-            self.withdraw_child_decision_event(session_id, holder, id);
+        for (holder, tenure, id) in &withdraw {
+            self.withdraw_child_decision_event(session_id, holder, *tenure, id);
         }
         // The follower hears of each card where it is now listed.
         for (interaction, pending) in &publish {
@@ -441,8 +451,10 @@ fn log_withdraw_failure(interaction_id: &str, error: &DaemonError) {
     );
 }
 
-fn child_decision_occurrence(interaction_id: &str, holder: &str) -> String {
-    format!("child-decision-{interaction_id}-{holder}")
+/// One event per holder tenure: the same holder announced again is one event, a holder that
+/// gets the decision back after another one held it is a new one.
+fn child_decision_occurrence(interaction_id: &str, holder: &str, tenure: u32) -> String {
+    format!("child-decision-{interaction_id}-{holder}-{tenure}")
 }
 
 impl KernelRuntimeState {
@@ -490,7 +502,7 @@ impl KernelRuntimeState {
             session_id,
             holder,
             child,
-            &child_decision_occurrence(interaction_id, holder),
+            &child_decision_occurrence(interaction_id, holder, pending.holder_tenure),
             CHILD_DECISION_EVENT,
             serde_json::json!({
                 "interaction_id": interaction_id,

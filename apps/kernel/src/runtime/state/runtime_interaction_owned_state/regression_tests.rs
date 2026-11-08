@@ -275,6 +275,7 @@ async fn pruning_dead_store_tokens_closes_only_kernel_operation_responders() {
                 kernel_operation_deadline: None,
                 passkey_prompt: None,
                 holder: super::super::DecisionHolder::User,
+                holder_tenure: 0,
                 responder: Arc::new(std::sync::Mutex::new(Some(sender))),
             },
         );
