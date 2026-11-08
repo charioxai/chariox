@@ -98,3 +98,25 @@ fn the_enrolled_owner_terminal_controls_a_goal_of_a_room_made_before_enrollment(
     assert!(!refused("kernel-owner"));
     assert!(refused("guest"));
 }
+
+#[test]
+fn the_enrolled_owner_grants_and_revokes_extensions_of_an_agent_made_before_enrollment() {
+    let room = enrolled_owner_room("enrolled-owner-extension");
+    let refused = |user: &str| {
+        let request = crate::local::RevokeAgentExtensionRequest {
+            agent_ref: room.agent_id.clone(),
+            kind: crate::local::ExtensionKind::Script,
+            name: "missing-script".into(),
+        };
+        let result = room.harness.block_on_test_task(
+            crate::runtime::agent_control_executor::execute_revoke_agent_extension_request(
+                &room.state,
+                user,
+                request,
+            ),
+        );
+        matches!(result, Err(DaemonError::OwnershipAccessDenied { .. }))
+    };
+    assert!(!refused("kernel-owner"));
+    assert!(refused("guest"));
+}
