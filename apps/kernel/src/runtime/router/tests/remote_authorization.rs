@@ -219,6 +219,7 @@ fn remote_home_invocation_router_with_active_prompt(
 
 mod agent_deadline_visibility;
 mod agent_tree_visibility;
+mod enrolled_owner_room_requests;
 mod home_extension_credentials;
 mod home_extension_denials;
 mod home_extension_grants;
