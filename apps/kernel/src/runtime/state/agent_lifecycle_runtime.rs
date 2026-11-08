@@ -662,7 +662,7 @@ impl KernelRuntimeState {
         if request_id.trim().is_empty() || request_id.len() > 128 {
             return Err(ledger::error("invalid message occurrence"));
         }
-        let target = self
+        let (target, duplicate) = self
             .relay_peer_agent(
                 sender,
                 kernel,
@@ -678,7 +678,7 @@ impl KernelRuntimeState {
             .await?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
-            payload: serde_json::json!({"status":"delivered","kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
+            payload: serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
         })
     }
     /// Native TUI turns end at the provider Stop event, which completes the prompt without the

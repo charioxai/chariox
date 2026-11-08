@@ -18,6 +18,24 @@ fn refused(refusal: PeerAgentRefusal) -> RelayPeerResponse {
     }
 }
 
+/// The inbox source of a message from an agent on another kernel.
+fn peer_message_source(kernel: &str, agent: &str) -> String {
+    format!("peer:{kernel}:{agent}")
+}
+
+/// The stamp back out of such a source, for its inbox view; the sender's room is in its payload.
+pub(crate) fn peer_message_stamp(
+    source: &str,
+    payload: &serde_json::Value,
+) -> Option<PeerAgentStamp> {
+    let (kernel, agent) = source.strip_prefix("peer:")?.split_once(':')?;
+    Some(PeerAgentStamp {
+        kernel_id: kernel.into(),
+        room_id: payload["sender_room_id"].as_str()?.into(),
+        agent_id: agent.into(),
+    })
+}
+
 impl KernelRuntimeState {
     /// `kernel` is the authenticated sending kernel, `owner` the owner both kernels share.
     pub(crate) async fn receive_peer_agent_request(
@@ -211,7 +229,7 @@ impl KernelRuntimeState {
             return Err(ledger::error("invalid message occurrence"));
         }
         let room = target.session_id();
-        let source = format!("peer:{kernel}:{}", sender.agent_id);
+        let source = peer_message_source(kernel, &sender.agent_id);
         let occurrence = format!("{kernel}:{request_id}");
         let duplicate = self.owned.durable_state_store.agent_inbox_has_occurrence(
             room,

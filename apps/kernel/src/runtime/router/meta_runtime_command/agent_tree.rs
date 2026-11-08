@@ -209,7 +209,7 @@ impl CommandRouter {
         room: &str,
         reference: &str,
     ) -> Result<serde_json::Value, DaemonError> {
-        let target = self
+        let (target, _) = self
             .runtime_state
             .relay_peer_agent(
                 parent,

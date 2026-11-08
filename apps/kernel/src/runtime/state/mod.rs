@@ -1573,6 +1573,7 @@ impl KernelRuntimeState {
 mod peer_agent_follow;
 pub(crate) use peer_agent_follow::peer_source_stamp;
 mod peer_agent_inbound;
+pub(crate) use peer_agent_inbound::peer_message_stamp;
 pub(crate) mod peer_agent_outbound;
 mod peer_rooms;
 mod room_agent_admission;

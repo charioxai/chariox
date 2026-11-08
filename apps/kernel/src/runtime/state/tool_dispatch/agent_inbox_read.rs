@@ -106,9 +106,12 @@ impl KernelRuntimeState {
         // A followed peer on another kernel is named by where it runs there.
         let remote = agent
             .is_none()
-            .then(|| super::super::peer_source_stamp(&event.source_id))
-            .flatten()
-            .filter(|_| event.kind == "peer_event");
+            .then(|| match event.kind.as_str() {
+                "peer_event" => super::super::peer_source_stamp(&event.source_id),
+                "message" => super::super::peer_message_stamp(&event.source_id, &event.payload),
+                _ => None,
+            })
+            .flatten();
         let source_kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {

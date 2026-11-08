@@ -194,7 +194,8 @@ impl KernelRuntimeState {
         }
     }
 
-    /// Messages, steers or cancels `agent` of `room` on `kernel`; answers the target's stamp.
+    /// Messages, steers or cancels `agent` of `room` on `kernel`; answers the target's stamp and
+    /// whether the other kernel had already seen this request.
     pub(crate) async fn relay_peer_agent(
         &self,
         sender: &crate::agent::AgentInstance,
@@ -203,7 +204,7 @@ impl KernelRuntimeState {
         agent: &str,
         call: PeerAgentCall,
         request_id: String,
-    ) -> Result<PeerAgentStamp, DaemonError> {
+    ) -> Result<(PeerAgentStamp, bool), DaemonError> {
         let caller = self.peer_agent_caller(sender, kernel)?;
         let target = PeerAgentAddress {
             room: room.trim().into(),
@@ -233,7 +234,9 @@ impl KernelRuntimeState {
             },
         };
         match self.peer_agent_link(&caller.owner, kernel, request).await? {
-            RelayPeerResponse::PeerAgentAccepted { target, .. } => Ok(target),
+            RelayPeerResponse::PeerAgentAccepted {
+                target, duplicate, ..
+            } => Ok((target, duplicate)),
             RelayPeerResponse::PeerAgentRefused { refusal, .. } => Err(refused(kernel, refusal)),
             _ => Err(kernel_unreachable(kernel)),
         }
