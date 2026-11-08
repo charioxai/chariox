@@ -166,6 +166,51 @@ impl Transfer {
 
     /// The package the source kernel composes for `profile_ids`, as the outbound service does.
     fn export(&self, context_id: &str, profile_ids: &[&str]) -> ManagedContextPackageExportResult {
+        self.export_with_kernel(context_id, profile_ids, ManagedContextPackageKernel::Empty)
+    }
+
+    /// The source kernel's own Vault, sealed for the target as a managed kernel context carries it.
+    fn kernel_context_with_vault(&self, context_id: &str) -> ManagedContextPackageKernel {
+        self.source.enter();
+        let vault = crate::secret::export_transferred_vault_snapshot(
+            &self.source.config.user_config.credential_vault.path,
+            context_id,
+            &self.fixture.binding.source_kernel_id,
+            &self.source.config.relay_private_key,
+            &self.fixture.binding.target_kernel_id,
+            &self.target.config.relay_public_key,
+        )
+        .expect("export the source Vault");
+        let payload = KernelContextPayload {
+            schema_version: 1,
+            context_id: context_id.to_string(),
+            source_kernel_id: self.fixture.binding.source_kernel_id.clone(),
+            source_key_thumbprint: self.source.thumbprint(),
+            target_kernel_id: self.fixture.binding.target_kernel_id.clone(),
+            target_key_thumbprint: self.target.thumbprint(),
+            compatibility: KernelContextCompatibility {
+                source_kernel_version: "0.1.0".to_string(),
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                relay_peer_protocol_version:
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            },
+            extensions: Vec::new(),
+            dependencies: Vec::new(),
+            vault: Some(vault),
+        };
+        let snapshot_sha256 = sha256_bytes(&serde_json::to_vec(&payload).unwrap());
+        ManagedContextPackageKernel::FromKernel(Box::new(KernelContextSnapshot {
+            payload,
+            snapshot_sha256,
+        }))
+    }
+
+    fn export_with_kernel(
+        &self,
+        context_id: &str,
+        profile_ids: &[&str],
+        kernel_context: ManagedContextPackageKernel,
+    ) -> ManagedContextPackageExportResult {
         self.source.enter();
         let mut ids = profile_ids.to_vec();
         ids.sort_unstable();
@@ -184,9 +229,7 @@ impl Transfer {
                     .expect("export Vault login")
             })
             .collect();
-        let mut request = self
-            .fixture
-            .export_request(ManagedContextPackageKernel::Empty);
+        let mut request = self.fixture.export_request(kernel_context);
         request.plan.context_id = context_id.to_string();
         request.plan.development = ManagedContextDevelopmentSelection::Empty;
         request.development = ManagedContextPackageDevelopment::Empty;
@@ -610,4 +653,126 @@ fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() 
     );
     assert!(!format!("{receipt:?}").contains(FIRST_TOKEN));
     assert!(plain_files_containing(&transfer.fixture.root, FIRST_TOKEN).is_empty());
+}
+
+/// A Path 1 target whose configured Vault is where the package's transferred Vault lands.
+fn managed_target_without_vault(label: &str) -> Transfer {
+    let transfer = Transfer::with_unopened_target(label);
+    let home = transfer.fixture.root.join("target-home");
+    fs::create_dir_all(home.join(".chariox")).expect("create target home");
+    std::env::set_var("HOME", &home);
+    std::env::set_var("CHARIOX_MANAGED_PROVIDER_TOPOLOGY", "path1");
+    std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+    std::env::set_var(
+        "CHARIOX_MANAGED_VAULT_PATH",
+        &transfer.target.config.user_config.credential_vault.path,
+    );
+    transfer
+}
+
+#[test]
+fn a_transferred_vault_is_installed_before_the_login_is_written_into_it() {
+    crate::test_support::isolated_env_test!();
+    let transfer = managed_target_without_vault("vault-login-transferred");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let exported = transfer.export_with_kernel(
+        "context-transferred",
+        &[&profile_id],
+        transfer.kernel_context_with_vault("context-transferred"),
+    );
+
+    let receipt = transfer
+        .apply(&exported)
+        .expect("the import completes on a machine whose Vault arrives in the package");
+
+    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    else {
+        panic!("the selection stays recorded");
+    };
+    assert_eq!(accounts.len(), 1, "the login is carried");
+    let imported = transfer
+        .target
+        .registry
+        .get(OWNER, "claude", &profile_id)
+        .expect("the profile is registered on the new machine");
+    assert_eq!(imported.auth_state, ProviderAccountAuthState::Authenticated);
+    assert_eq!(
+        transfer.target.vault_token(&profile_id).as_deref(),
+        Some(FIRST_TOKEN),
+        "the token reads back from the installed Vault"
+    );
+    assert!(!format!("{receipt:?}").contains(FIRST_TOKEN));
+}
+
+#[test]
+fn a_failure_after_the_login_import_leaves_neither_the_login_nor_the_transferred_vault() {
+    crate::test_support::isolated_env_test!();
+    let transfer = managed_target_without_vault("vault-login-transferred-rollback");
+    let profile_id = transfer
+        .source
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let context_id = "context-transferred-rollback";
+    let kernel_context = transfer.kernel_context_with_vault(context_id);
+    transfer.source.enter();
+    let vault_logins = vec![transfer
+        .source
+        .registry
+        .export_vault_login(
+            &transfer.source.config,
+            OWNER,
+            "claude",
+            &profile_id,
+            &transfer.seal(context_id),
+        )
+        .expect("export Vault login")];
+    // The development archive is not an archive, so the last component fails.
+    let mut request = transfer.fixture.export_request(kernel_context);
+    request.plan.context_id = context_id.to_string();
+    request.plan.provider_accounts = ManagedContextProviderAccountSelection::Selected {
+        accounts: vec![ManagedContextProviderAccount {
+            provider: "claude".to_string(),
+            account_profile: profile_id.clone(),
+        }],
+    };
+    request.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
+        materializations: Vec::new(),
+        vault_logins,
+    };
+    request.package_path = transfer.fixture.root.join(format!("{context_id}.chariox"));
+    let exported = export_managed_context_package(request).expect("export package");
+
+    transfer
+        .apply(&exported)
+        .expect_err("a development archive that does not open fails the import");
+
+    assert!(
+        transfer
+            .target
+            .registry
+            .get(OWNER, "claude", &profile_id)
+            .is_err(),
+        "the login's profile is rolled back"
+    );
+    let target_vault = PathBuf::from(&transfer.target.config.user_config.credential_vault.path);
+    assert!(!target_vault.exists(), "the transferred Vault is removed");
+    assert_eq!(
+        fs::read_dir(target_vault.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("vault"))
+            .map(|entry| entry.file_name())
+            .collect::<Vec<_>>(),
+        Vec::<std::ffi::OsString>::new(),
+        "no Vault file or key envelope is left half-installed"
+    );
+    assert!(
+        !transfer
+            .fixture
+            .root
+            .join("target-home/.chariox/managed-context/kernel-context")
+            .exists(),
+        "the kernel context is rolled back"
+    );
 }
