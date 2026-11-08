@@ -333,14 +333,13 @@ impl KernelRuntimeState {
                     None => service,
                 };
                 service.validate_http_request_target(&args.credential_id, &args.url)?;
-                service.record_vault_activity(
+                let attempt = service.begin_vault_use(
                     &args.credential_id,
                     &format!(
                         "Use attempted over HTTP by {}",
                         provider_run.agent_instance_id().unwrap_or("agent")
                     ),
                 )?;
-                let audit_id = args.credential_id.clone();
                 let request = crate::secret::CredentialHttpRequest {
                     credential_id: args.credential_id,
                     method: args.method,
@@ -371,13 +370,10 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_http_request_with_credential",
                     message: error.to_string(),
                 })??;
-                self.home_runtime_secret_service()?.record_vault_activity(
-                    &audit_id,
-                    &format!(
-                        "Used over HTTP by {}",
-                        provider_run.agent_instance_id().unwrap_or("agent")
-                    ),
-                )?;
+                attempt.finish(&format!(
+                    "Used over HTTP by {}",
+                    provider_run.agent_instance_id().unwrap_or("agent")
+                ))?;
                 Ok(crate::transport::runtime_tools::RuntimeToolResult {
                     ok: true,
                     payload: serde_json::to_value(response).map_err(|error| {

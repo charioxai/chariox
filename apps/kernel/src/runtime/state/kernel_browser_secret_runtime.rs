@@ -318,7 +318,7 @@ impl KernelRuntimeState {
             .await?;
         check_authority()?;
         service.validate_browser_secret_input_for_target_url(&args.credential_id, &url)?;
-        service.record_vault_activity(
+        let attempt = service.begin_vault_use(
             &args.credential_id,
             &format!("Use attempted in browser by {}", agent.id()),
         )?;
@@ -336,10 +336,7 @@ impl KernelRuntimeState {
                 },
             )
             .await?;
-        service.record_vault_activity(
-            &args.credential_id,
-            &format!("Used in browser by {}", agent.id()),
-        )?;
+        attempt.finish(&format!("Used in browser by {}", agent.id()))?;
         // A submit that left the page is the submit working: say where it went.
         let mut payload = json!({"inserted":true});
         if let Some(submitted) = inserted.get("submitted") {
@@ -440,7 +437,8 @@ impl KernelRuntimeState {
                 true,
             )
             .await?;
-        service.record_vault_activity(&args.credential_id, "Use attempted in browser by owner")?;
+        let attempt =
+            service.begin_vault_use(&args.credential_id, "Use attempted in browser by owner")?;
         self.insert_kernel_browser_secret(
             &user,
             &admission,
@@ -454,7 +452,7 @@ impl KernelRuntimeState {
             },
         )
         .await?;
-        service.record_vault_activity(&args.credential_id, "Used in browser by owner")?;
+        attempt.finish("Used in browser by owner")?;
         Ok(json!({"inserted":true}))
     }
 

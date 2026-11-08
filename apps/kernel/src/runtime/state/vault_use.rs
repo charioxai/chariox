@@ -170,7 +170,7 @@ impl KernelRuntimeState {
         let service = self
             .home_runtime_secret_service()?
             .with_vault_use_approval(approval);
-        service.record_vault_activity(
+        let attempt = service.begin_vault_use(
             id,
             &format!(
                 "Use attempted at {} by {}",
@@ -179,14 +179,11 @@ impl KernelRuntimeState {
             ),
         )?;
         let value = zeroize::Zeroizing::new(service.workspace_secret_input_for_target(id, target)?);
-        service.record_vault_activity(
-            id,
-            &format!(
-                "Used at {} by {}",
-                vault_use_destination(target),
-                context.agent_id
-            ),
-        )?;
+        attempt.finish(&format!(
+            "Used at {} by {}",
+            vault_use_destination(target),
+            context.agent_id
+        ))?;
         Ok(value)
     }
 

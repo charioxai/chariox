@@ -8,6 +8,34 @@ static ACTIVITY_LOCK: Mutex<()> = Mutex::new(());
 static PROCESS_STARTED_AT_MS: std::sync::LazyLock<u64> =
     std::sync::LazyLock::new(crate::session::unix_epoch_ms);
 const UNFINISHED_USE: &str = "Use failed: the kernel stopped before it finished";
+const ABANDONED_USE: &str = "Use failed: the action did not finish";
+
+/// An open "Use attempted" row of this kernel process. `finish` writes the
+/// result; a drop without it (the call errored, the turn was cancelled, the
+/// tab closed) closes the attempt as failed instead of leaving it open.
+pub(crate) struct VaultUseAttempt {
+    service: RuntimeSecretService,
+    id: String,
+    open: bool,
+}
+
+impl VaultUseAttempt {
+    pub(crate) fn finish(mut self, used: &str) -> Result<(), DaemonError> {
+        self.service.record_vault_activity(&self.id, used)?;
+        self.open = false;
+        Ok(())
+    }
+}
+
+impl Drop for VaultUseAttempt {
+    fn drop(&mut self) {
+        if self.open {
+            if let Err(error) = self.service.record_vault_activity(&self.id, ABANDONED_USE) {
+                tracing::warn!(%error, "Vault Activity could not close an unfinished use");
+            }
+        }
+    }
+}
 
 /// A kernel that stops between "Use attempted" and its result row cannot write
 /// the result; the attempt then reads as failed closed instead of staying open.
@@ -64,6 +92,19 @@ impl RuntimeSecretService {
         })?;
         let events = self.read_vault_activity()?.remove(id).unwrap_or_default();
         Ok(close_unfinished_attempts(events, *PROCESS_STARTED_AT_MS))
+    }
+
+    pub(crate) fn begin_vault_use(
+        &self,
+        id: &str,
+        attempted: &str,
+    ) -> Result<VaultUseAttempt, DaemonError> {
+        self.record_vault_activity(id, attempted)?;
+        Ok(VaultUseAttempt {
+            service: self.clone(),
+            id: id.into(),
+            open: true,
+        })
     }
 
     pub(crate) fn record_vault_activity(&self, id: &str, event: &str) -> Result<(), DaemonError> {
