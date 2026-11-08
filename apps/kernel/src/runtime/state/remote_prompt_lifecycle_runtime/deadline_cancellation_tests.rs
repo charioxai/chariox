@@ -205,11 +205,14 @@ async fn parent_deadline_cancels_running_leased_child_on_its_worker() {
 
     let deadline_ms = crate::session::unix_epoch_ms() + 200;
     runtime
-        .set_agent_deadline(crate::local::SetAgentDeadlineRequest {
-            session_id: session.id().into(),
-            agent_id: parent.id().into(),
-            deadline_ms,
-        })
+        .set_agent_deadline(
+            session.owner_user_id(),
+            crate::local::SetAgentDeadlineRequest {
+                session_id: session.id().into(),
+                agent_id: parent.id().into(),
+                deadline_ms,
+            },
+        )
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let first = runtime.tick_agent_deadlines(deadline_ms + 1).await;
