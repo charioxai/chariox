@@ -39,6 +39,43 @@ async fn focus(router: &CommandRouter, session: &str, agent: &str) {
     dispatch.await.unwrap();
 }
 
+// MP-08: the loader advertises lifetime_hours; an agent that already has
+// browser access must get its tools, not a refusal that ends its turn.
+#[test]
+fn mp08_granted_agent_loads_browser_tools_with_lifetime_hours() {
+    run_test(|| Box::pin(granted_lifetime_check()));
+}
+async fn granted_lifetime_check() {
+    let workspace = crate::test_support::TestWorktree::new("mp08-browser-lifetime");
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).unwrap();
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(workspace.session_request())
+        .unwrap();
+    let run = launch_test_provider(
+        &mut app,
+        session.id(),
+        agent.id(),
+        "dev-stub",
+        "dev-stub",
+        "default",
+    );
+    let token = run.runtime_mcp_auth_token().unwrap();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
+    focus(&router, session.id(), agent.id()).await;
+    router
+        .dispatch_authenticated_runtime_tool_call(
+            token,
+            "chariox.load_kernel_browser",
+            json!({"lifetime_hours": 2}),
+        )
+        .await
+        .unwrap();
+    assert!(router
+        .runtime_tool_specs_for_auth_token(token)
+        .iter()
+        .any(|tool| tool.name == "chariox.kernel_browser"));
+}
+
 /// An input sent without the top-level `document_id` is told which parameter
 /// is missing; it is not a policy refusal that reads as lost browser access.
 #[test]
