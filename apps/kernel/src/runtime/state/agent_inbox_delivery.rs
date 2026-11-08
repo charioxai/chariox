@@ -275,6 +275,35 @@ impl KernelRuntimeState {
                 return Ok(());
             }
 
+            // The provider reads the wake as a user message of its running
+            // turn. Recorded before the write, the way a queued steer is, the
+            // transcript observer knows the message as kernel-owned instead of
+            // importing it, and the answer after it, as an external turn.
+            if let Some(active_prompt_id) = dispatch.target_active_prompt_id.as_deref() {
+                let sequence = self.owned.append_steering_prompt_history(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    active_prompt_id,
+                    &dispatch.source_attachment_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.prompt,
+                    &dispatch.attachments,
+                    dispatch.prompt_origin,
+                )?;
+                self.owned.echo_steering_prompt_to_other_attachments(
+                    &dispatch.session_id,
+                    &dispatch.provider_run_id,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.source_attachment_id,
+                    &dispatch.source_attachment_id,
+                    &dispatch.prompt,
+                    &dispatch.attachments,
+                    dispatch.prompt_origin,
+                    Some(sequence),
+                );
+            }
             let result = self
                 .enqueue_prompt_dispatch_with_acceptance(&dispatch)
                 .await;

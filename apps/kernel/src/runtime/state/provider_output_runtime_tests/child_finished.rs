@@ -303,6 +303,46 @@ async fn a_finish_steers_a_running_parent() {
     );
 }
 
+/// The steered wake reaches the provider as a user message of the running turn.
+/// The kernel must own it in history: otherwise the transcript observer imports
+/// that message as an external turn and stores the turn's answer a second time.
+#[tokio::test]
+async fn a_steering_finish_is_recorded_as_a_kernel_owned_prompt() {
+    let team = team("child-finished-steer-history", false, true).await;
+    team.runtime
+        .finish_agent_task_settlement(
+            Some((team.task.clone(), team.correction)),
+            &team.child_prompt,
+        )
+        .await
+        .unwrap();
+    let event = &child_finished(&team)[0];
+    let prompt_id = event.prompt_id.clone().expect("the wake prompt");
+    let entries = team
+        .runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(&team.room, Some(&team.parent))
+        .unwrap();
+    let steer = entries
+        .iter()
+        .find(|entry| {
+            entry.kind == crate::history::SessionHistoryEntryKind::UserPrompt
+                && entry.merge_key.as_deref()
+                    == Some(crate::history::steering_prompt_merge_key(&prompt_id).as_str())
+        })
+        .unwrap_or_else(|| panic!("the steered wake has no kernel-owned prompt row: {entries:?}"));
+    assert!(
+        steer.text.starts_with("Inbox: at least 1 new event"),
+        "{steer:?}"
+    );
+    assert_ne!(
+        steer.prompt_origin,
+        Some(crate::session::PromptOrigin::External),
+        "{steer:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_deadline_that_stops_a_working_child_tells_the_parent() {
     let team = team_with("child-finished-deadline-stop", None, false).await;
