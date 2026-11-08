@@ -1305,6 +1305,60 @@ async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
     assert!(result.is_err());
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: an HTTP use that fails after "Use attempted" closes its attempt as failed.
+#[tokio::test]
+async fn an_http_use_that_fails_closes_its_attempt_as_failed() {
+    crate::test_support::isolated_env_test!();
+    let f = fixture();
+    unlock(&f);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let credential: UserCredentialConfig = serde_json::from_value(json!({
+        "id":"http-secret", "source":{"type":"vault","key":"http-secret"},
+        "allowed_hosts":[origin], "allowed_uses":["http"],
+        "injection":{"kind":"header","name":"Authorization","value":"Bearer ${secret}"},
+        "metadata":{"use_binding": {"target":{"kind":"site", "origin":origin}}}
+    }))
+    .unwrap();
+    let registry = crate::credential::CharioxCredentialRegistry::user().unwrap();
+    f.state
+        .home_runtime_secret_service()
+        .unwrap()
+        .upsert_vault_backed_credential_with_secret(
+            &registry,
+            credential,
+            "fixture-http-secret",
+            false,
+        )
+        .unwrap();
+    let result = call(
+        &f,
+        "chariox.http_request_with_credential",
+        json!({"credential_id":"http-secret", "url":origin, "timeout_ms":2000}),
+    )
+    .await;
+    assert!(result.is_err(), "nothing listens, so the request must fail");
+    let events = f
+        .state
+        .home_runtime_secret_service()
+        .unwrap()
+        .vault_activity("http-secret")
+        .unwrap();
+    let uses: Vec<&str> = events
+        .iter()
+        .map(|row| row.event.as_str())
+        .filter(|event| event.starts_with("Use"))
+        .collect();
+    assert_eq!(uses.len(), 2, "{uses:?}");
+    assert!(uses[0].starts_with("Use attempted over HTTP by "));
+    assert_eq!(uses[1], "Use failed: the action did not finish");
+    assert!(!serde_json::to_string(&events)
+        .unwrap()
+        .contains("fixture-http-secret"));
+    f.state.shutdown_cleanup().await.unwrap();
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: owner New secret and ordinary agent use share the actual routers.
 #[tokio::test]
 async fn vrec_owner_created_entry_fills_and_audits_refusal_without_sudo() {
