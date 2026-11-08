@@ -73,6 +73,15 @@ impl KernelRuntimeState {
         if self.owned.config_projection.snapshot().room_agent_tools {
             return self.send_durable_agent_message(session, sender, args).await;
         }
+        if args
+            .room
+            .as_deref()
+            .is_some_and(|room| room != session.id())
+        {
+            return Ok(agent_message_failure(
+                "messages to another room need Room agent tools",
+            ));
+        }
         let message = args.message.trim();
         if message.is_empty() && args.attachments.is_empty() {
             return Ok(agent_message_failure(

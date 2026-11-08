@@ -34,6 +34,8 @@ pub(crate) mod outside;
 #[cfg(test)]
 mod outside_tests;
 #[cfg(test)]
+mod peer_room_reply_tests;
+#[cfg(test)]
 mod plain_tests;
 mod quarantine;
 mod replies;

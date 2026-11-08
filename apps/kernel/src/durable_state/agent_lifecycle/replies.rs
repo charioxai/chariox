@@ -35,6 +35,42 @@ pub(super) fn bind(
     }
     Ok(())
 }
+/// A message to another room lives in the recipient's room, so its reply outcome is recorded
+/// there; the sender's task waits on the same source in the sender's own room.
+pub(super) fn forward_to_sender_room(
+    tx: &Transaction<'_>,
+    room: &str,
+    source: &str,
+    occurrence: &str,
+    success: bool,
+    public_answer: Option<serde_json::Value>,
+    now: u64,
+) -> Result<(), DaemonError> {
+    let sender_room: Option<String> = tx
+        .query_row(
+            "SELECT json_extract(payload,'$.payload.sender_room_id') FROM agent_inbox WHERE room_id=?1 AND json_extract(payload,'$.kind')='message' AND 'agent-event-'||agent_id||'-'||sequence=?2",
+            params![room, source],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .flatten();
+    match sender_room {
+        Some(sender_room) if sender_room != room => super::supervision::apply(
+            tx,
+            Operation::SourceOutcome {
+                now,
+                room: sender_room,
+                source: source.into(),
+                occurrence: occurrence.into(),
+                success,
+                public_answer,
+            },
+        )
+        .map(|_| ()),
+        _ => Ok(()),
+    }
+}
 pub(super) fn reconcile_source(
     tx: &Transaction<'_>,
     room: &str,

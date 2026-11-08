@@ -5,6 +5,9 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendAgentMessageArgs {
     pub agent: String,
+    /// Another room of the same owner on this kernel; the sender's room when absent.
+    #[serde(default)]
+    pub room: Option<String>,
     pub message: String,
     pub origin_prompt_id: String,
     #[serde(default)]
@@ -57,7 +60,11 @@ pub fn agent_messaging_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Unique agent alias (with or without @), agent ref, or agent id in the current session."
+                        "description": "Unique agent alias (with or without @), agent ref, or agent id in the current session, or in `room` when given."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Optional id of another room of the same owner on this kernel. Its ordinary agents are addressable; sub-agents are not."
                     },
                     "message": {
                         "type": "string",

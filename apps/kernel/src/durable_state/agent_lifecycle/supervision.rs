@@ -202,6 +202,15 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     save(tx, &t)?;
                 }
             }
+            replies::forward_to_sender_room(
+                tx,
+                &room,
+                &source,
+                &id,
+                success,
+                public_answer.clone(),
+                now,
+            )?;
             replies::reconcile_source(tx, &room, &source)?;
             if !success {
                 replies::recipient_lost(tx, &room, &source, now, public_answer.as_ref())?;

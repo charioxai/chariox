@@ -1561,6 +1561,7 @@ impl KernelRuntimeState {
     }
 }
 
+mod peer_rooms;
 mod room_agent_admission;
 
 mod agent_assessment_result;

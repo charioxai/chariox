@@ -76,7 +76,9 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
         } => {
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
-            if e.source_id != t.agent_id || e.room_id != t.room_id || e.kind != "message" {
+            // A message to another room lives in the recipient's room and names the sender's.
+            let sender_room = e.payload["sender_room_id"].as_str().unwrap_or(&e.room_id);
+            if e.source_id != t.agent_id || sender_room != t.room_id || e.kind != "message" {
                 return Err(error("message source binding invalid"));
             }
             let admitted = event(tx, e)?;

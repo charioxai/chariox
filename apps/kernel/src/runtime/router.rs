@@ -262,6 +262,7 @@ mod tests {
     mod agent_workflow;
     mod dictation;
     mod outside_events;
+    mod peer_rooms;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;

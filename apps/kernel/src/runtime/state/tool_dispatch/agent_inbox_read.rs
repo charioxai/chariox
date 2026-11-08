@@ -124,6 +124,14 @@ impl KernelRuntimeState {
             .and_then(|fields| fields.remove("attachments"))
             .unwrap_or_else(|| serde_json::json!([]));
         let (payload, truncated) = bounded_payload(&payload);
+        // The kernel stamps an agent sender with where it runs; a peer may be in another room.
+        let (kernel_id, sender_room) = match &agent {
+            Some(agent) => (
+                Some(self.owned.config_projection.snapshot().daemon_id),
+                Some(agent.session_id().to_owned()),
+            ),
+            None => (None, None),
+        };
         let view = serde_json::json!({
             "sequence": event.sequence,
             "kind": event.kind,
@@ -134,7 +142,8 @@ impl KernelRuntimeState {
                 "kind": source_kind,
                 "id": event.source_id,
                 "alias": alias,
-                "kernel_id": serde_json::Value::Null,
+                "kernel_id": kernel_id,
+                "room": sender_room,
                 "relation": relation.name(),
             },
             "guidance": relation.guidance(name),

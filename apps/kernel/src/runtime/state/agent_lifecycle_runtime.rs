@@ -520,12 +520,9 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("stale sender turn"));
         }
-        let agents = self.session_agents(session.id());
-        let target = crate::runtime::room_tool_admission::resolve_agent(
-            &agents,
-            session.id(),
-            args.agent.trim_start_matches('@'),
-        )?;
+        let target =
+            &self.resolve_message_target(session, sender, args.room.as_deref(), &args.agent)?;
+        let target_room = target.session_id();
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
         }
@@ -544,7 +541,7 @@ impl KernelRuntimeState {
             )?;
             return Err(error);
         }
-        // Room admission precedes resource lookup; no cross-room discovery.
+        // Admission precedes resource lookup; another room reveals only its ordinary agents.
         let id = args
             .idempotency_key
             .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
@@ -552,12 +549,12 @@ impl KernelRuntimeState {
             return Err(ledger::error("invalid message occurrence"));
         }
         let mut event = ledger::occurrence(
-            session.id(),
+            target_room,
             target.id(),
             sender.id(),
             &format!("{}:{id}", current.id()),
             "message",
-            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
+            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
         event.urgent = args.urgent;
         event.reply_requested = args.reply_requested;
@@ -602,12 +599,12 @@ impl KernelRuntimeState {
             );
         }
         self.owned.record_notice_for_agent(
-            session.id(),
+            target_room,
             None,
             Some(target.id()),
             self.owned
                 .attachment_store
-                .list_session_attachment_ids(session.id()),
+                .list_session_attachment_ids(target_room),
             format!(
                 "Agent inbox: event {} from {} ({})",
                 event.sequence,
@@ -615,14 +612,14 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(session.id(), target.id())).await {
+        if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
             self.owned.record_notice_for_agent(
-                session.id(),
+                target_room,
                 None,
                 Some(target.id()),
                 self.owned
                     .attachment_store
-                    .list_session_attachment_ids(session.id()),
+                    .list_session_attachment_ids(target_room),
                 format!(
                     "Event {} is durable and pending: {}",
                     event.sequence,
