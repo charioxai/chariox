@@ -112,3 +112,36 @@ async fn a_private_member_cannot_reconfigure_the_owners_room() {
         "a Private member reconfigured the room owner's Room: {updated:?}"
     );
 }
+
+// A Project holds only its owner's Rooms, so archiving or deleting it stays with the owner.
+#[tokio::test]
+async fn a_private_member_cannot_archive_or_delete_the_owners_project() {
+    let (router, session_id, _) = room_with_private_member();
+    let project_id = {
+        let app = router.app.lock().await;
+        app.session_state_store()
+            .get_session(&session_id)
+            .unwrap()
+            .project_id()
+            .to_string()
+    };
+    assert!(!project_id.is_empty());
+
+    for request in [
+        LocalDaemonRequest::ArchiveProject(crate::local::ArchiveProjectRequest {
+            project_id: project_id.clone(),
+        }),
+        LocalDaemonRequest::DeleteProject(crate::local::DeleteProjectRequest {
+            project_id: project_id.clone(),
+        }),
+    ] {
+        let result = dispatch_as_private_member(&router, request.clone()).await;
+        assert!(
+            result.is_err(),
+            "a Private member changed the room owner's Project with {request:?}: {result:?}"
+        );
+    }
+    let app = router.app.lock().await;
+    let room = app.session_state_store().get_session(&session_id).unwrap();
+    assert_ne!(room.status(), crate::session::SessionStatus::Ended);
+}
