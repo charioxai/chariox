@@ -618,3 +618,33 @@ fn a_claude_account_with_a_running_agent_is_read_every_five_minutes() {
     f.running.store(false, Ordering::SeqCst);
     assert!(f.refresher.due_accounts(f.at(60.0)).is_empty());
 }
+
+#[test]
+fn an_attached_claude_run_without_prompt_work_is_not_probed() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![]);
+    let runs = crate::runtime::projection::ProviderRunProjectionStore::default();
+    let refresher = ProviderUsageRefresher::for_kernel(
+        f.registry.clone(),
+        runs.clone(),
+        crate::runtime::projection::DaemonConfigProjectionStore::new(
+            crate::config::DaemonConfig::for_tests(),
+        ),
+    );
+    // A completed prompt leaves the focused run Running and attached.
+    let run = crate::provider::RuntimeProviderRun::from_control_capability_inference(
+        "attached-run",
+        "room".into(),
+        Some("agent".into()),
+        "claude".into(),
+    );
+    let mut value = serde_json::to_value(run).unwrap();
+    value["account_profile"] = serde_json::json!(f.key.profile_id);
+    let mut run: crate::provider::RuntimeProviderRun = serde_json::from_value(value).unwrap();
+    run.mark_running();
+    runs.update(run);
+
+    let now = f.at(30.0);
+    assert!(refresher.due_accounts(now).is_empty());
+    assert!(refresher.stale_accounts("local", Some("claude"), now).is_empty());
+}
