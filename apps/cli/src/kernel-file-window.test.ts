@@ -118,6 +118,21 @@ test("a slow link keeps the window at its floor so replies do not queue behind e
   assert.equal(kernel.stats.peakInFlight, MIN_WINDOW)
 })
 
+test("replies that arrive in a burst on a slow link do not open the window", async () => {
+  const sim = simulation()
+  const slow = link(sim, 600 * 1000 / 8, 60)
+  let carried = 0
+  // The first replies of a transfer land a millisecond apart after a stall: a rate measured over
+  // that gap is the speed of the burst, not of the link.
+  const carry = async (bytes: number) => {
+    const turn = carried++
+    if (turn < MIN_WINDOW) return sim.sleep(500 + turn)
+    return slow(bytes)
+  }
+  const { kernel } = await pull(sim, source(2 * MIB), carry)
+  assert.ok(kernel.stats.peakInFlight <= 2 * MIN_WINDOW, `${kernel.stats.peakInFlight} requests were in flight at once on a 600 kbit/s link`)
+})
+
 test("what waits to be written never passes the memory bound, however long and fast the link", async () => {
   const sim = simulation()
   const bytes = source(256 * MIB)
