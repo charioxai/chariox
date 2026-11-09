@@ -40,6 +40,6 @@ let post;const marks={};for(let i=0;i<240;i++){await sleep(500);const el=Date.no
   for(const m of [5000,30000,90000])if(el>=m&&!marks[m]){marks[m]=post.codex;say('codex at +'+m/1000+'s',JSON.stringify(post.codex))}
   if(cancel!=='pending'&&el>=(+process.env.HOLD_MS||8000))break}
 say('POST',JSON.stringify(post));
-const ok=answerMs!==null&&answerMs<=2000&&post.orphanDeferred===0&&post.handoffs<=1&&post.runs.every(r=>/^(Stopped|Completed|Failed|Cancelled)/.test(r))&&post.tasks.every(x=>/cancel|complet|failed|stopped/i.test(x));
+const ok=answerMs!==null&&answerMs<=2000&&post.orphanDeferred===0&&post.handoffs<=1&&post.runs.every(r=>/^(Stopped|Completed|Failed|Cancelled)/.test(r))&&post.tasks.every(x=>/cancel|done|failed/i.test(x));
 rec('real-agent-cancel-'+(NODE_CODEX?'codexnode-':'stubnode-')+(GATED?'gated':'ungated'),{result:ok?'PASS':'FAIL',pre,post,marks});
 await rig.stop();process.exit(ok?0:3);
