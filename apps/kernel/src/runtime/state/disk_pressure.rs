@@ -4,6 +4,7 @@
 //! disk space: what fills a disk is often outside every agent.
 use super::*;
 use crate::runtime::process_resources;
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 const CHECK_EVERY: Duration = Duration::from_secs(5);
@@ -11,10 +12,19 @@ const TRIM_EVERY: Duration = Duration::from_secs(60);
 /// Under pressure an item nothing wrote for this long goes, however long the
 /// usual window is.
 const PRESSURE_IDLE: Duration = Duration::from_secs(60);
+/// A volume that stays below its floor is logged at most this often.
+const LOG_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 struct Pace {
     trimmed: Option<Instant>,
+    logged: Option<Instant>,
+}
+
+/// A volume below its floor: free bytes against the floor.
+struct ShortVolume {
+    free: u64,
+    floor: u64,
 }
 
 /// A blocking syscall already in progress may finish after shutdown; it must
@@ -63,24 +73,45 @@ impl KernelRuntimeState {
         // periodic trims cannot overlap the pressure scan or another pass.
         let scan = tokio::task::spawn_blocking(move || {
             if cancelled.load(Ordering::Acquire) {
-                return;
+                return Vec::new();
             }
+            let mut freed = 0;
             if trim {
-                Self::trim_temp(agent_temp_idle());
+                freed += Self::trim_temp(agent_temp_idle()).bytes;
             }
             let volume_floor = state.disk_volume_floor();
-            let pressured = state.volumes_below_floor(|path| {
+            let short = state.volumes_below_floor(|path| {
                 (!cancelled.load(Ordering::Acquire))
                     .then(|| volume_floor(path))
                     .flatten()
             });
-            if !cancelled.load(Ordering::Acquire) && pressured {
-                Self::trim_temp(PRESSURE_IDLE);
+            if cancelled.load(Ordering::Acquire) || short.is_empty() {
+                return Vec::new();
+            }
+            freed += Self::trim_temp(PRESSURE_IDLE).bytes;
+            if freed > 0 {
+                Vec::new()
+            } else {
+                short
             }
         })
         .await;
-        if let Err(error) = scan {
-            tracing::warn!(%error, "disk maintenance scan failed; retrying next pass");
+        match scan {
+            Ok(short) if !short.is_empty() && due(&mut pace.logged, LOG_EVERY) => {
+                for volume in short {
+                    // The kernel asks no agent about disk space; this is the
+                    // only trace of a volume the trim could not help.
+                    tracing::warn!(
+                        free_bytes = volume.free,
+                        floor_bytes = volume.floor,
+                        "a volume is below its free-space floor and trimming idle scratch freed nothing"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "disk maintenance scan failed; retrying next pass")
+            }
         }
     }
 
@@ -92,34 +123,33 @@ impl KernelRuntimeState {
         crate::agent_temp::trim(&root, std::time::SystemTime::now(), idle, &held)
     }
 
-    /// Whether a volume holding a live agent's workspace or scratch is below
-    /// its floor.
+    /// The volumes holding a live agent's workspace or scratch that are below
+    /// their floor, each once.
     fn volumes_below_floor(
         &self,
         volume_floor: impl Fn(&std::path::Path) -> Option<(u64, u64, u64)>,
-    ) -> bool {
-        // Processes and scratch belong to the agent even after a run ends.
-        self.owned
-            .agent_store
-            .list_agents()
-            .into_iter()
-            .any(|agent| {
-                if agent.archived() || agent.remote_execution().is_some() {
-                    return false;
-                }
-                let Ok(session) = self.owned.session_store.get_session(agent.session_id()) else {
-                    return false;
-                };
-                let workspace =
-                    std::path::PathBuf::from(agent.worktree_id().unwrap_or(session.worktree_id()));
-                let temp = crate::agent_temp::dir(session.id(), agent.id());
-                let short = [Some(workspace), temp]
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|path| volume_floor(&path))
-                    .any(|(_, free, floor)| free < floor);
-                short
-            })
+    ) -> Vec<ShortVolume> {
+        let mut short = BTreeMap::new();
+        for agent in self.owned.agent_store.list_agents() {
+            if agent.archived() || agent.remote_execution().is_some() {
+                continue;
+            }
+            let Ok(session) = self.owned.session_store.get_session(agent.session_id()) else {
+                continue;
+            };
+            let workspace =
+                std::path::PathBuf::from(agent.worktree_id().unwrap_or(session.worktree_id()));
+            let temp = crate::agent_temp::dir(session.id(), agent.id());
+            for (volume, free, floor) in [Some(workspace), temp]
+                .into_iter()
+                .flatten()
+                .filter_map(|path| volume_floor(&path))
+                .filter(|(_, free, floor)| free < floor)
+            {
+                short.insert(volume, ShortVolume { free, floor });
+            }
+        }
+        short.into_values().collect()
     }
 }
 
