@@ -31,6 +31,12 @@ Variants (`--variant`, comma separated):
 - `stalled`: one transfer, and after 10 s the client kernel is frozen with `SIGSTOP` (exact PID) for 20 s while the
   serving kernel is probed on its own socket every second; then `SIGCONT`.
 
+Packet timing (`--packet-timing 1`, a diagnostic: never in measured cells): the kernels and the relay log
+`MP-10-PACKET-TIMING` lines for each request, joined by a digest of its ciphertext: `kernel_gateway_enqueue` and
+`kernel_gateway_written` on the client kernel's gateway link, `relay_read` (a whole frame) or `relay_reassembled`
+(a chunked upload) on the relay, `kernel_receive` and `kernel_write_start` on the serving kernel. Round 3 used them to
+find where a small request waited during `files put`: on the gateway link, behind every upload request queued ahead of it.
+
 Heartbeat gaps: the serving kernel logs `kernel cloud presence visible` for each presence publish; the harness
 lists their timestamps (the relay does not log heartbeats). At a 35 s cadence the 8m runs show a few lines.
 
