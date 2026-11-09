@@ -30,7 +30,7 @@ mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{
-    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex, HistoryTurnOrigin,
+    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex,
 };
 pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,
@@ -227,6 +227,35 @@ pub struct HistoryEventQuery {
 }
 
 impl HistoryEvent {
+    /// Takes `origin`'s turn, prompt, workflow and workspace attribution.
+    fn keep_attribution_of(&mut self, origin: &HistoryEvent) {
+        self.workspace_id.clone_from(&origin.workspace_id);
+        self.agent_alias.clone_from(&origin.agent_alias);
+        self.turn_id.clone_from(&origin.turn_id);
+        self.prompt_id.clone_from(&origin.prompt_id);
+        self.workflow_id.clone_from(&origin.workflow_id);
+        self.workflow_run_id.clone_from(&origin.workflow_run_id);
+        self.workflow_node_id.clone_from(&origin.workflow_node_id);
+        self.machine_id.clone_from(&origin.machine_id);
+        self.repo_root.clone_from(&origin.repo_root);
+        self.worktree_path.clone_from(&origin.worktree_path);
+        self.caused_by_event_id
+            .clone_from(&origin.caused_by_event_id);
+        for key in ["prompt_origin", "source_attachment_id"] {
+            match origin.metadata.get(key) {
+                Some(value) => self.metadata.insert(key.to_string(), value.clone()),
+                None => self.metadata.remove(key),
+            };
+        }
+        self.candidate_agent_ids
+            .clone_from(&origin.candidate_agent_ids);
+        self.candidate_prompt_ids
+            .clone_from(&origin.candidate_prompt_ids);
+        self.candidate_turn_ids
+            .clone_from(&origin.candidate_turn_ids);
+        self.attribution_confidence = origin.attribution_confidence;
+    }
+
     pub fn transcript(
         sequence: u64,
         entry: &SessionHistoryEntry,
@@ -846,7 +875,8 @@ impl OperationalHistoryStore {
     }
 
     /// Replaces the newest row of `merge_key` in place: the row keeps its
-    /// sequence, so it stays in the turn it was written in.
+    /// sequence and attribution, so it stays in the turn, prompt and workflow
+    /// it was written in.
     pub fn replace_latest_transcript_by_merge_key(
         &self,
         session_id: &str,
@@ -921,6 +951,9 @@ impl OperationalHistoryStore {
         let mut replacement = HistoryEvent::transcript(existing.sequence, entry, context);
         replacement.event_id = existing.event_id.clone();
         replacement.sequence = existing.sequence;
+        if newest {
+            replacement.keep_attribution_of(&existing);
+        }
         let event_json = serde_json::to_string(&replacement).map_err(|error| {
             DaemonError::SessionHistoryFailed {
                 session_id: replacement.session_id.clone(),

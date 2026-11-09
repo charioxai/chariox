@@ -1280,7 +1280,7 @@ async fn structured_output_and_completion_fanout_respect_collaborator_trace_visi
                 kind: crate::terminal::TerminalOutputKind::ProviderTerminal,
                 merge_key: Some("collaborator-raw-terminal".to_string()),
                 sequence: None,
-                prompt_id: None,
+                prompt: None,
                 bytes: b"raw terminal paint".to_vec(),
             },
         ],
