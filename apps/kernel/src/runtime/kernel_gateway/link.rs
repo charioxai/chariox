@@ -851,6 +851,118 @@ mod tests {
         assert_eq!(arrived[0], "list", "arrival order {arrived:?}");
     }
 
+    /// A relay that answers like a target kernel and, when the client offers binary
+    /// frames, sends each answer as a CXR2 frame like the real relay does. Reports the
+    /// bytes it put on the socket for each answer.
+    async fn binary_relay() -> (String, mpsc::UnboundedReceiver<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (sent, sizes) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut binary = false;
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    let header = chariox_relay::binary_event::VERSION_HEADER;
+                    binary = request.headers().get(header).is_some_and(|v| v == "98");
+                    if binary {
+                        response.headers_mut().insert(header, "98".parse().unwrap());
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            let RelayEnvelope::ClientConnect { target, .. } = serde_json::from_str(&text).unwrap()
+            else {
+                return;
+            };
+            let (private, public) = keys();
+            let connected = RelayEnvelope::ClientConnected {
+                target,
+                daemon_public_key: public,
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&connected).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let Ok(RelayEnvelope::ClientRequest {
+                    request_id,
+                    encrypted_request,
+                    ..
+                }) = serde_json::from_str(&text)
+                else {
+                    continue;
+                };
+                let request =
+                    relay_crypto::decrypt_payload_for_private_key(&private, &encrypted_request)
+                        .unwrap();
+                let answer = RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: Some(
+                        relay_crypto::encrypt_payload_for_peer(
+                            &private,
+                            &request.sender_public_key,
+                            &request.plaintext,
+                        )
+                        .unwrap(),
+                    ),
+                    error: None,
+                };
+                let frame = match binary {
+                    true => Message::Binary(
+                        chariox_relay::binary_response::from_envelope(&answer)
+                            .unwrap()
+                            .unwrap()
+                            .into(),
+                    ),
+                    false => Message::Text(serde_json::to_string(&answer).unwrap().into()),
+                };
+                let _ = sent.send(frame.len());
+                socket.send(frame).await.unwrap();
+            }
+        });
+        (url, sizes)
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): a 64 KiB file chunk of `files get` came
+    // back as base64 ciphertext inside a JSON envelope: 1.78 times its size on the link
+    // with the base64 inside the plaintext. The link takes the relay's existing binary
+    // answer frames (CXR2), so the ciphertext travels as bytes.
+    #[tokio::test]
+    async fn an_answer_travels_as_binary_ciphertext() {
+        let (url, mut sizes) = binary_relay().await;
+        let link = Link::open(LinkParams {
+            relay_url: url,
+            auth_token: "token".into(),
+            target_kernel_id: "target".into(),
+            target_public_key: None,
+            client_private_key: relay_crypto::generate_private_key_base64(),
+        })
+        .await
+        .ok()
+        .expect("link opens");
+        let chunk = vec![7u8; 64 * 1024];
+        let answer = link
+            .request("chunk".into(), &chunk, Duration::from_secs(5))
+            .await;
+        assert!(answer.ok() == Some(chunk.clone()), "the answer decrypts");
+        let wire = sizes.recv().await.unwrap();
+        assert!(
+            wire <= chunk.len() + 1024,
+            "{wire} bytes on the link for a {} byte answer",
+            chunk.len()
+        );
+    }
+
     async fn open(url: String, target_private_key: &str) -> Result<Link, LinkFailure> {
         Link::open(LinkParams {
             relay_url: url,
