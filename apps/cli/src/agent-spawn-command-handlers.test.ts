@@ -697,6 +697,38 @@ test("agent spawn footer states the options the kernel applied, not the ones ask
   )
 })
 
+test("agent spawn footer states the deadline and the branch the kernel answered with", async () => {
+  let currentSession = session()
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => providerRun({ agent_instance_id: agentId }),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      const nextAgent = agent({ id: "agent-timed", agent_ref: "agent-timed", alias: "builder" })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession, deadline_ms: 1_800_000_000_000, branch: "feature-x" }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4"])
+
+  assert.equal(
+    flashedMessage,
+    "spawned builder · local · effort medium · deadline 2027-01-15T08:00:00Z · worktree worktree-1 · branch feature-x",
+  )
+})
+
 test("agent spawn command targets an exact kernel without machine resolution", async () => {
   let currentSession = session()
   const calls: string[] = []
