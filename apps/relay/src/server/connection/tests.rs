@@ -1819,8 +1819,8 @@ async fn mp11_initial535_pin_is_checked_at_the_subscription_sender_transaction()
 
 #[tokio::test]
 async fn delivering_to_a_backlogged_receiver_drops_counts_and_closes_it_once() {
-    let (control_tx, mut control_rx) = mpsc::channel(8);
-    let (receiver, rx) = RelaySender::channel(2, control_tx);
+    let (receiver, rx) = RelaySender::channel(2);
+    let queue = receiver.queue();
     let envelope = RelayEnvelope::Close {
         reason: "reply".to_string(),
         kernel_reload: false,
@@ -1830,11 +1830,15 @@ async fn delivering_to_a_backlogged_receiver_drops_counts_and_closes_it_once() {
     assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverBacklogged);
     assert_eq!(deliver(&receiver, &envelope), Delivery::ReceiverBacklogged);
 
-    let Ok(Message::Close(Some(frame))) = control_rx.try_recv() else {
-        panic!("the backlogged receiver should be asked to close");
-    };
-    assert_eq!(u16::from(frame.code), 1013);
-    assert!(control_rx.try_recv().is_err(), "closed once, not per reply");
+    tokio::time::timeout(Duration::from_secs(1), queue.close_requested())
+        .await
+        .expect("the backlogged receiver should be asked to close");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), queue.close_requested())
+            .await
+            .is_err(),
+        "closed once, not per reply"
+    );
     let stats = receiver.queue().stats();
     assert_eq!(stats.dropped_replies, 2);
     assert!(stats.backlog_closed);

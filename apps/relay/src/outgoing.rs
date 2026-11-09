@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
@@ -53,6 +53,9 @@ pub(crate) struct OutgoingQueue {
     high_water: AtomicUsize,
     dropped_replies: AtomicU64,
     backlog_closed: AtomicBool,
+    /// Wakes the writer when the receiver is to be closed; the permit is kept, so a request
+    /// made while the writer is busy with the socket is not lost.
+    close_requested: Notify,
 }
 
 impl OutgoingQueue {
@@ -65,6 +68,7 @@ impl OutgoingQueue {
             high_water: AtomicUsize::new(0),
             dropped_replies: AtomicU64::new(0),
             backlog_closed: AtomicBool::new(false),
+            close_requested: Notify::new(),
         }
     }
 
@@ -108,6 +112,11 @@ impl OutgoingQueue {
         self.backlog_closed.load(Ordering::Relaxed)
     }
 
+    /// Resolves once `close_backlogged` has asked for the receiver's connection to end.
+    pub(crate) async fn close_requested(&self) {
+        self.close_requested.notified().await;
+    }
+
     pub(crate) fn stats(&self) -> QueueStats {
         QueueStats {
             queued_bytes_high_water: self.high_water.load(Ordering::Relaxed),
@@ -121,7 +130,6 @@ impl OutgoingQueue {
 #[derive(Debug, Clone)]
 pub(crate) struct RelaySender {
     tx: mpsc::Sender<Message>,
-    control: mpsc::Sender<Message>,
     queue: Arc<OutgoingQueue>,
 }
 
@@ -129,22 +137,16 @@ pub(crate) struct RelaySender {
 #[derive(Debug, Clone)]
 pub(crate) struct WeakRelaySender {
     tx: mpsc::WeakSender<Message>,
-    control: mpsc::WeakSender<Message>,
     queue: Arc<OutgoingQueue>,
 }
 
 impl RelaySender {
     /// A queue of at most `max_messages` messages, and the receiver its writer drains.
-    /// `control` is the writer's control lane, which `close_backlogged` uses.
-    pub(crate) fn channel(
-        max_messages: usize,
-        control: mpsc::Sender<Message>,
-    ) -> (Self, mpsc::Receiver<Message>) {
+    pub(crate) fn channel(max_messages: usize) -> (Self, mpsc::Receiver<Message>) {
         let (tx, rx) = mpsc::channel(max_messages);
         (
             Self {
                 tx,
-                control,
                 queue: Arc::new(OutgoingQueue::new(max_messages)),
             },
             rx,
@@ -154,11 +156,9 @@ impl RelaySender {
     /// A sender whose connection nobody closes, for tests that read its queue directly.
     #[cfg(test)]
     pub(crate) fn detached(tx: mpsc::Sender<Message>) -> Self {
-        let (control, _closed) = mpsc::channel(1);
         Self {
             queue: Arc::new(OutgoingQueue::new(tx.max_capacity())),
             tx,
-            control,
         }
     }
 
@@ -201,7 +201,6 @@ impl RelaySender {
     pub(crate) fn downgrade(&self) -> WeakRelaySender {
         WeakRelaySender {
             tx: self.tx.downgrade(),
-            control: self.control.downgrade(),
             queue: self.queue.clone(),
         }
     }
@@ -211,15 +210,14 @@ impl RelaySender {
     }
 
     /// Asks the receiver's connection to end with "try again later". Once is enough; the
-    /// writer sends the close ahead of everything still queued. True the first time.
+    /// writer sends the close ahead of everything still queued. True the first time. The
+    /// request does not travel through a lane that could be full: the writer reads it from
+    /// the queue.
     pub(crate) fn close_backlogged(&self) -> bool {
         if self.queue.backlog_closed.swap(true, Ordering::Relaxed) {
             return false;
         }
-        let _ = self.control.try_send(Message::Close(Some(CloseFrame {
-            code: CloseCode::Again,
-            reason: "try again later".into(),
-        })));
+        self.queue.close_requested.notify_one();
         true
     }
 }
@@ -228,10 +226,17 @@ impl WeakRelaySender {
     pub(crate) fn upgrade(&self) -> Option<RelaySender> {
         Some(RelaySender {
             tx: self.tx.upgrade()?,
-            control: self.control.upgrade()?,
             queue: self.queue.clone(),
         })
     }
+}
+
+/// The frame that ends a backlogged receiver's connection.
+pub(crate) fn backlog_close_frame() -> Message {
+    Message::Close(Some(CloseFrame {
+        code: CloseCode::Again,
+        reason: "try again later".into(),
+    }))
 }
 
 /// What stands in for a writer in tests: a message leaves the queue when it is received.

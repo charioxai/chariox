@@ -227,8 +227,7 @@ pub(crate) async fn handle_connection(
     }
     let (writer, mut reader) = socket.split();
     let (control_tx, control_rx) = mpsc::channel(8);
-    let (outgoing_tx, outgoing_rx) =
-        RelaySender::channel(relay_outgoing_queue_capacity(), control_tx.clone());
+    let (outgoing_tx, outgoing_rx) = RelaySender::channel(relay_outgoing_queue_capacity());
     let routes = registry.read().await.route_index();
     let (receipt_tx, receipt_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let usage_routes = routes.clone();

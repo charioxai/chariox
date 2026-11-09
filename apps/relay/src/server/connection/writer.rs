@@ -7,7 +7,7 @@ use crate::frame_transport::{
     MAX_ASSEMBLY_BYTES, MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::outgoing::OutgoingQueue;
+use crate::outgoing::{backlog_close_frame, OutgoingQueue};
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -399,6 +399,11 @@ where
     let mut receipts_open = true;
     let mut controls_open = true;
     loop {
+        // A receiver too far behind is closed before anything else is written to it.
+        if usage.queue.backlog_closed() {
+            let _ = write(&mut writer, backlog_close_frame()).await;
+            return "receiver_backlogged";
+        }
         while let Ok(message) = controls.try_recv() {
             let terminal = matches!(message, Message::Close(_));
             if !write(&mut writer, message).await || terminal {
@@ -605,6 +610,7 @@ where
             return "receipts_closed";
         }
         tokio::select! {
+            () = usage.queue.close_requested() => {}
             message=controls.recv(),if controls_open=>{
                 if let Some(message)=message {let terminal=matches!(message,Message::Close(_));if !write(&mut writer,message).await||terminal{return "control_write";}}else{controls_open=false;}
             }
@@ -948,8 +954,8 @@ mod tests {
                 Ok::<_, std::convert::Infallible>(())
             },
         ));
-        let (control, controls) = mpsc::channel(8);
-        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
         let (_ack_tx, ack_rx) = mpsc::channel(16);
         let queue = sender.queue();
         let task = tokio::spawn(run_writer(
@@ -999,7 +1005,7 @@ mod tests {
             },
         ));
         let (control, controls) = mpsc::channel(8);
-        let (sender, outgoing) = RelaySender::channel(64, control.clone());
+        let (sender, outgoing) = RelaySender::channel(64);
         let (_ack_tx, ack_rx) = mpsc::channel(16);
         for n in 0..20 {
             let bulk = serde_json::json!({"kind":"client_response","request_id":format!("bulk-{n}"),"payload":"y".repeat(300_000)});
@@ -1064,8 +1070,8 @@ mod tests {
                 Ok::<_, std::convert::Infallible>(tx)
             },
         ));
-        let (control, controls) = mpsc::channel(8);
-        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
         let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
         let queue = sender.queue();
         let task = tokio::spawn(run_writer(
@@ -1162,8 +1168,8 @@ mod tests {
                 });
             }
         });
-        let (control, controls) = mpsc::channel(8);
-        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (_control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024);
         let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
         let task = tokio::spawn(run_writer(
             sink,
@@ -1824,6 +1830,60 @@ mod tests {
                 "drained"
             );
         }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r4): the eight-entry control lane carries the
+    // peer's upload receipts, so a slow bidirectional receiver can fill it while the writer waits
+    // on the socket. A backlogged receiver must still be closed then, and closed by the writer.
+    #[tokio::test]
+    async fn a_backlogged_receiver_is_closed_while_the_control_lane_is_full() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            (wire_tx, gate.clone()),
+            |(tx, gate), message: Message| async move {
+                gate.acquire().await.unwrap().forget();
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>((tx, gate))
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(64);
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        let queue = sender.queue();
+        let small = serde_json::json!({"kind":"client_response","request_id":"r","payload":"ok"});
+        sender
+            .try_send(Message::Text(small.to_string().into()))
+            .unwrap();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue),
+        ));
+        // The writer is stuck in the socket write of the first message.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        for _ in 0..8 {
+            control.try_send(Message::Ping(Vec::new().into())).unwrap();
+        }
+        assert!(sender.close_backlogged());
+        gate.add_permits(1_000);
+        let mut closed = false;
+        while let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(500), wire.recv()).await
+        {
+            closed |=
+                matches!(message, Message::Close(Some(frame)) if u16::from(frame.code) == 1013);
+        }
+        let ended = tokio::time::timeout(Duration::from_millis(500), task).await;
+        assert!(closed, "the receiver was never told to try again later");
+        assert!(
+            ended.is_ok(),
+            "the writer kept running after the close was due"
+        );
     }
 }
 

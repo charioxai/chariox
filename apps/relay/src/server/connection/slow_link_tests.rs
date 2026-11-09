@@ -27,8 +27,8 @@ fn link(rate: f64, rtt: Duration) -> Link {
             Ok::<_, std::convert::Infallible>(tx)
         },
     ));
-    let (control, controls) = mpsc::channel(8);
-    let (sender, outgoing) = RelaySender::channel(1024, control);
+    let (_control, controls) = mpsc::channel(8);
+    let (sender, outgoing) = RelaySender::channel(1024);
     let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let queue = sender.queue();
     tokio::spawn(run_writer(
@@ -290,8 +290,8 @@ async fn unthrottled_in_process_throughput() {
             Ok::<_, std::convert::Infallible>(tx)
         },
     ));
-    let (control, controls) = mpsc::channel(8);
-    let (sender, outgoing) = RelaySender::channel(1024, control);
+    let (_control, controls) = mpsc::channel(8);
+    let (sender, outgoing) = RelaySender::channel(1024);
     let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
     let queue = sender.queue();
     tokio::spawn(run_writer(
