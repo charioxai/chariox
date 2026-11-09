@@ -675,6 +675,8 @@ impl KernelBrowserHost {
                             | "snapshot"
                             | "popup_region"
                             | "screenshot"
+                            | "save"
+                            | "wait"
                             | "unsubscribe"
                             | "display_subscribe"
                             | "display_attach"

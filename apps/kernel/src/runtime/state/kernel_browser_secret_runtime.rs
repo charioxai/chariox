@@ -164,6 +164,7 @@ impl KernelRuntimeState {
                         | "input"
                         | "dialog"
                         | "cancel_download"
+                        | "wait"
                         | "stop"
                 )
             );
