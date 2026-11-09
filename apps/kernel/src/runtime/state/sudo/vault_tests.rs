@@ -1533,7 +1533,7 @@ async fn owner_replaces_card(f: &Fixture) {
     use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
     let request = LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Replace {
         id: "saved-card".into(),
-        value: VaultPassphrase::new(&other_card()),
+        value: VaultPassphrase::new(other_card()),
     });
     let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
         .with_connection_class(crate::local::KernelConnectionClass::Terminal);
