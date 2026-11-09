@@ -628,6 +628,23 @@ pub(crate) fn refuse_peer_attachments(
 /// Two kernels in one test process: a request to a registered kernel id reaches its router as
 /// the relay would deliver it, after the same-owner admission.
 #[cfg(test)]
+mod retry_flag_tests {
+    use super::*;
+    use crate::transport::kernel_protocol::map_kernel_error;
+
+    /// An offline kernel or a lost answer comes back; the caller is told to repeat the call.
+    #[test]
+    fn a_peer_that_may_answer_on_a_retry_is_reported_as_retryable() {
+        for error in [
+            kernel_unreachable("builder"),
+            uncertain("builder", "make the same call again"),
+        ] {
+            assert!(map_kernel_error(&error).retryable, "{error}");
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod peer_agent_link_for_tests {
     use super::*;
     use std::collections::HashMap;
