@@ -169,6 +169,7 @@ mod large_codex_resume;
 mod leased_output;
 mod mcp_catalog_reload;
 mod peer_events;
+mod background_tool_settlement;
 mod process_tool_settlement;
 #[cfg(unix)]
 mod project_environment_shell;

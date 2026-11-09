@@ -111,8 +111,59 @@ impl KernelRuntimeOwnedState {
                 .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
             ending,
         );
+        self.append_ended_provider_tool_rows(session_id, provider_run_id, agent_id, rows);
+        Ok(())
+    }
+
+    /// Ends the background commands of a run whose provider process is gone
+    /// (see `crate::app::ended_background_provider_tool_rows`).
+    pub(super) fn end_background_provider_tools(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let rows = crate::app::ended_background_provider_tool_rows(
+            self.operational_history_store
+                .load_provider_tool_entries_for_run(session_id, provider_run_id)?,
+            crate::session::unix_epoch_ms(),
+        );
+        self.append_ended_provider_tool_rows(session_id, provider_run_id, agent_id, rows);
+        Ok(())
+    }
+
+    /// The run's provider process stopped with it; failing to settle its
+    /// background rows must not undo the stop, so the failure is logged.
+    pub(super) fn end_background_provider_tools_of_ended_run(
+        &self,
+        run: &crate::provider::RuntimeProviderRun,
+    ) {
+        let Some(agent_id) = run.agent_instance_id() else {
+            return;
+        };
+        if let Err(error) = self.end_background_provider_tools(run.session_id(), run.id(), agent_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to end background provider tools of an ended run",
+                serde_json::json!({
+                    "session_id": run.session_id(),
+                    "provider_run_id": run.id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
+    fn append_ended_provider_tool_rows(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        agent_id: &str,
+        rows: Vec<crate::app::EndedProviderToolRow>,
+    ) {
         if rows.is_empty() {
-            return Ok(());
+            return;
         }
         let metadata = self.active_prompt_transcript_metadata_for_agent(session_id, Some(agent_id));
         let outputs = rows
@@ -142,7 +193,6 @@ impl KernelRuntimeOwnedState {
             })
             .collect();
         self.append_history_and_fan_out(session_id, None, outputs);
-        Ok(())
     }
 
     pub(super) fn record_failed_provider_tools(
