@@ -366,10 +366,21 @@ mod tests {
             "durable_workflow_runs",
             "retired_sessions",
         ];
+        // Kept under the identity a Room made before enrollment keeps for its owner
+        // (`local`): the enrolled owner reaches them as that Room's owner
+        // (`acts_for_room_owner`, `room_member_user_id_in`), so they are not re-owned.
+        const KEPT_FOR_ROOM: &[&str] = &[
+            "workflow_notification_exit_sources",
+            "workflow_notification_generations",
+            "workflow_notification_grants",
+            "workflow_notification_remote_installs",
+            "workflow_notification_source_cache",
+            "workflow_notification_source_fence",
+        ];
         // User-keyed and NOT adopted by enrollment today: App installations,
         // consents, grants and publisher trust stay with the consenting owner,
-        // and notification grants/created resources follow them. Known gap,
-        // reported for an owner decision; not silently exempt.
+        // and created resources follow them. Known gap, reported for an owner
+        // decision; not silently exempt.
         const NOT_ADOPTED: &[&str] = &[
             "app_automations",
             "app_connection_grants",
@@ -397,16 +408,11 @@ mod tests {
             "app_wakes",
             "app_worker_lifecycle",
             "created_resources",
-            "workflow_notification_exit_sources",
-            "workflow_notification_generations",
-            "workflow_notification_grants",
-            "workflow_notification_remote_installs",
-            "workflow_notification_source_cache",
-            "workflow_notification_source_fence",
         ];
         let classified = ADOPTED
             .iter()
             .chain(KERNEL_KEYED)
+            .chain(KEPT_FOR_ROOM)
             .chain(NOT_ADOPTED)
             .map(|t| t.to_string())
             .collect::<std::collections::BTreeSet<_>>();
