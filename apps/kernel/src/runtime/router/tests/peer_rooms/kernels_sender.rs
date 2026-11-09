@@ -22,6 +22,17 @@ struct Kernel {
 }
 
 fn kernel(id: &str, level: AgentPermissionLevel, signed_in: bool) -> Kernel {
+    kernel_with_room_of(id, level, signed_in, OWNER)
+}
+
+/// A kernel signed in as `OWNER` (or not) whose room and agent are `room_owner`'s: `local` for
+/// a room made before the kernel was enrolled.
+fn kernel_with_room_of(
+    id: &str,
+    level: AgentPermissionLevel,
+    signed_in: bool,
+    room_owner: &str,
+) -> Kernel {
     let mut config = DaemonConfig::for_tests();
     config.room_agent_tools = true;
     config.daemon_id = id.into();
@@ -33,8 +44,8 @@ fn kernel(id: &str, level: AgentPermissionLevel, signed_in: bool) -> Kernel {
         });
     }
     let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-    let room = create_room(&mut app, &format!("{id}-room"), Some(OWNER));
-    let agent = owned_agent(&mut app, &room, "worker", OWNER, level);
+    let room = create_room(&mut app, &format!("{id}-room"), Some(room_owner));
+    let agent = owned_agent(&mut app, &room, "worker", room_owner, level);
     let (token, prompt) = running_turn(&mut app, &room, agent.id());
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(app.clone(), 4);

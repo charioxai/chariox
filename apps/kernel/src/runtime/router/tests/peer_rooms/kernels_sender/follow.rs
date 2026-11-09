@@ -9,13 +9,14 @@ use crate::transport::relay_peer::{
 use crate::transport::relay_peer_agents::PeerEventKind;
 
 mod offline;
+mod pre_enrollment;
 
 /// A's room agent gets a durable task for its running turn, as an admitted turn has.
 async fn with_task(kernel: &Kernel) -> String {
     let app = kernel.app.lock().await;
     app.durable_state_store()
         .agent_lifecycle(Operation::Begin {
-            owner: OWNER.into(),
+            owner: kernel.agent.owner_user_id().into(),
             room: kernel.room.clone(),
             agent: kernel.agent.id().into(),
             prompt: kernel.prompt.clone(),
