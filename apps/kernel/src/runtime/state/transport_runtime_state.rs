@@ -82,9 +82,9 @@ impl KernelRuntimeState {
             now,
             crate::durable_state::agent_lifecycle::SWEEP_MS,
         ) {
-            if let Err(error) = self.sweep_agent_lifecycle().await {
-                tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11: agent lifecycle sweep failed; retained intents need reconciliation");
-            }
+            // The sweep waits on workers and peers that may not answer, and every other step of
+            // this pump comes after it: ask for it, as every other trigger does, and go on.
+            self.schedule_agent_lifecycle_sweep();
         }
         self.owned.sweep_kernel_operation_interactions(false);
         self.owned.withdraw_stale_agent_interactions();
