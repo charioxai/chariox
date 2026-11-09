@@ -33,12 +33,16 @@ const PROFILES = { "8m": { down: 8000, up: 2000, queueKiB: 256 }, "1m": { down: 
   "600k": { down: 600, up: 600, queueKiB: 1024 },
   // The same links with a bottleneck buffer near the bandwidth-delay product: the bulk that does not fit waits in the
   // sender's socket buffer (visible as Send-Q on the relay), where only the sender can order it.
+  "8m-sym": { down: 8000, up: 8000, queueKiB: 256 }, // client uplink as fast as the downlink, for `files put`
+  "8m-sym-bdp": { down: 8000, up: 8000, queueKiB: 64 }, "8m-sym-deep": { down: 8000, up: 8000, queueKiB: 1024 },
   "8m-bdp": { down: 8000, up: 2000, queueKiB: 64 }, "1m-bdp": { down: 1000, up: 1000, queueKiB: 16 } }
 const profileName = flags.get("--profile") ?? "8m"
 const profile = PROFILES[profileName]
 assert(profile, `--profile is one of ${Object.keys(PROFILES)}`)
 const rttMs = Number(flags.get("--rtt-ms") ?? 60), jitterMs = Number(flags.get("--jitter-ms") ?? 6)
 const fullSizeBytes = Math.round(Number(flags.get("--size-mb") ?? 100) * 1024 * 1024)
+const direction = flags.get("--direction") ?? "get" // "get": relay -> client link carries the file; "put": client -> relay link
+assert(["get", "put"].includes(direction), "--direction is get or put")
 const variants = (flags.get("--variant") ?? "single,three,stalled").split(",")
 const stallSeconds = Number(flags.get("--stall-seconds") ?? 20)
 // The frozen-reader variant moves less data (the transfer has to resume after the thaw) and queues a burst of replies for the frozen client.
@@ -161,7 +165,7 @@ async function runVariant(variant) {
   })
 
   const sizeBytes = variant === "stalled" ? Math.min(stalledSizeBytes, fullSizeBytes) : fullSizeBytes
-  const result = { label, profile: profileName, link: { ...profile, rttMs, jitterMs }, variant, sizeBytes, startedAt: new Date().toISOString(), errors: [], notes: [] }
+  const result = { label, profile: profileName, link: { ...profile, rttMs, jitterMs }, variant, direction, sizeBytes, startedAt: new Date().toISOString(), errors: [], notes: [] }
   const filesToRemove = []
   try {
     const relayPort = await freePort()
@@ -211,15 +215,15 @@ async function runVariant(variant) {
     for (let i = 0; i < 20; i++) { await timed(smallClient, small, probes.idleSmall); await timed(listClient, listBody, probes.idleList); await delay(PROBE_INTERVAL_MS) }
 
     const idleTo = await proxyBytes()
-    const probeWireDown = (idleTo.down - idleFrom.down) / 20 // bytes the relay sends per probe pair (small request + kernel list)
+    const probeWireDown = (idleTo[direction === "put" ? "up" : "down"] - idleFrom[direction === "put" ? "up" : "down"]) / 20 // bytes the relay sends per probe pair (small request + kernel list)
     // The data: a file of random bytes on the serving kernel.
-    const bigPath = join(worker.dir, "work", "big.bin")
+    const bigPath = join(direction === "put" ? home.dir : worker.dir, "work", "big.bin")
     filesToRemove.push(bigPath)
     const fd = openSync(bigPath, "w", 0o600), block = Buffer.alloc(1024 * 1024)
     for (let written = 0; written < sizeBytes; written += block.length) { randomFillSync(block); writeSync(fd, block, 0, Math.min(block.length, sizeBytes - written)) }
     closeSync(fd)
     const transferCount = variant === "three" ? 3 : 1
-    const destinations = Array.from({ length: transferCount }, (_, i) => join(home.dir, "work", `got-${i}.bin`))
+    const destinations = Array.from({ length: transferCount }, (_, i) => join(direction === "put" ? worker.dir : home.dir, "work", `got-${i}.bin`))
     filesToRemove.push(...destinations, ...destinations.map(d => `${d}.chariox-partial`))
 
     result.relayRssKib = { before: rssKib(relay.pid), max: rssKib(relay.pid) }
@@ -241,7 +245,7 @@ async function runVariant(variant) {
         await delay(PROBE_INTERVAL_MS)
       }
     })()
-    const downloads = transfers.map(t => cli(home, ["files", "get", "--kernel", target, bigPath, t.dest, "--overwrite", ...(variant === "stalled" ? ["--timeout", "120"] : [])]).then(res => {
+    const downloads = transfers.map(t => cli(home, ["files", direction, "--kernel", target, bigPath, t.dest, "--overwrite", ...(variant === "stalled" ? ["--timeout", "120"] : [])]).then(res => {
       t.done = true; t.code = res.code; t.elapsedMs = res.ms; t.error = res.code === 0 ? null : res.err; t.finishedAt = Date.now(); t.cliPid = res.pid
       try { t.bytes = statSync(t.dest).size } catch { t.bytes = 0 }
     }))
@@ -282,7 +286,7 @@ async function runVariant(variant) {
       for (const [hash, path] of [[want, bigPath], [got, t.dest]]) { const f = openSync(path, "r"); const b = Buffer.alloc(4 << 20); let n; while ((n = readSync(f, b, 0, b.length, null)) > 0) hash.update(b.subarray(0, n)); closeSync(f) }
       result.transfers[transfers.indexOf(t)].hashOk = want.digest("hex") === got.digest("hex")
     }
-    const bytesPerSecondLink = profile.down * 1000 / 8
+    const bytesPerSecondLink = (direction === "put" ? profile.up : profile.down) * 1000 / 8
     result.windowMs = windowMs
     result.idealSeconds = sizeBytes * transferCount / bytesPerSecondLink
     result.payloadRate = result.transfers.map(t => t.code === 0 ? sizeBytes / (t.elapsedMs / 1000) / bytesPerSecondLink : 0)
@@ -316,7 +320,7 @@ async function runVariant(variant) {
     result.presence = { lines: presence.length, maxGapS: times.length > 1 ? Math.max(...times.slice(1).map((t, i) => (t - times[i]) / 1000)) : null }
     // The probes themselves cost the downlink bytes (a kernel-list renewal is a whole relay exchange): take their idle cost off.
     const probePairs = Math.min(probes.small.length, probes.list.length)
-    result.wire = { downBytes: wireTo.down - wireFrom.down, probePairBytes: Math.round(probeWireDown), probePairs }
+    result.wire = { direction, downBytes: wireTo[direction === "put" ? "up" : "down"] - wireFrom[direction === "put" ? "up" : "down"], probePairBytes: Math.round(probeWireDown), probePairs }
     result.wireDownRateRaw = result.wire.downBytes / (windowMs / 1000) / bytesPerSecondLink
     result.wireDownRate = (result.wire.downBytes - probeWireDown * probePairs) / (windowMs / 1000) / bytesPerSecondLink
   } catch (error) {
