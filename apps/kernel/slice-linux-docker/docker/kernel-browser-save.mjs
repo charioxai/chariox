@@ -82,9 +82,11 @@ export async function saveResource(host, tab, command) {
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
   const url = command.node_ref !== undefined ? await nodeUrl(host, connection, sessionId, command.node_ref) : command.url;
   if (typeof url !== 'string' || url.length > 8 * 1024 * 1024) throw new AgentToolRefusal('save_url_unsupported');
-  let scheme;
-  try { scheme = new URL(url).protocol; } catch { throw new AgentToolRefusal('save_url_unsupported'); }
-  if (!['http:', 'https:', 'data:'].includes(scheme)) throw new AgentToolRefusal('save_url_unsupported');
+  let parsed;
+  try { parsed = new URL(url); } catch { throw new AgentToolRefusal('save_url_unsupported'); }
+  // The same address rule a navigation has: http(s), no credentials in the URL.
+  if (!['http:', 'https:', 'data:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new AgentToolRefusal('save_url_unsupported');
+  const scheme = parsed.protocol;
   const { bytes, mime } = scheme === 'data:' ? decodeDataUrl(url) : await fetchWithPageSession(connection, sessionId, url);
   await assertCurrentDocument(connection, sessionId, tab.target_id, tab.document_id);
   const saved = await plan.commit(bytes);
