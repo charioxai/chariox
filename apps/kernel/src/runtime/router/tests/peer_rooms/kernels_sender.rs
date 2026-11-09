@@ -821,8 +821,21 @@ fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed
             AgentPermissionLevel::Yolo,
             AgentPermissionLevel::Yolo,
         );
+        let refused = a
+            .command(format!(
+                "agent message worker \"parser.rs is mine\" --room {} --kernel {} --reply-requested",
+                b.room, b.name
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains(
+                "a reply to a message on another kernel is not supported yet: ask the agent there to message you back"
+            ),
+            "{refused}"
+        );
         a.command(format!(
-            "agent message worker \"parser.rs is mine\" --room {} --kernel {} --reply-requested",
+            "agent message worker \"parser.rs is mine\" --room {} --kernel {}",
             b.room, b.name
         ))
         .await
@@ -835,7 +848,7 @@ fn the_message_and_steer_room_commands_reach_a_peer_on_another_kernel_with_typed
         .expect("a steer reaches the peer");
         let inbox = b.messages(b.agent.id()).await;
         assert_eq!(inbox.len(), 2, "{inbox:?}");
-        assert!(!inbox[0].urgent && inbox[0].payload["no_reply"] == false);
+        assert!(!inbox[0].urgent && inbox[0].payload["no_reply"] == true);
         assert!(inbox[1].urgent && inbox[1].payload["no_reply"] == true);
         for event in &inbox {
             assert_eq!(event.payload["sender_kernel_id"], a.id.as_str());
