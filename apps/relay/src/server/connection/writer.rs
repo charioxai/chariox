@@ -1128,6 +1128,101 @@ mod tests {
             "the small reply waited {delay:?}, bound {bound:?}"
         );
     }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): on a 1 Mbit/s link with a 60 ms round
+    // trip, a small reply queued behind bulk waits for what the window keeps in the
+    // bottleneck queue. Frames sized to the measured rate (about 25 ms each, at least 4 KiB)
+    // and a floor of two such frames keep that near one frame; 16 KiB frames and a 32 KiB
+    // floor kept about 200 ms queued (the bar is RTT + 100 ms).
+    #[tokio::test(start_paused = true)]
+    async fn a_small_reply_waits_one_short_frame_on_a_1_mbit_link() {
+        const RATE: f64 = 125_000.0;
+        const ONE_WAY: Duration = Duration::from_millis(30);
+        // The socket takes every frame at once; the bottleneck sends them in order at RATE.
+        let (wire_tx, mut wire_rx) = mpsc::unbounded_channel::<Message>();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (arrived_tx, mut arrived) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut free_at = tokio::time::Instant::now();
+            while let Some(message) = wire_rx.recv().await {
+                free_at = free_at.max(tokio::time::Instant::now())
+                    + Duration::from_secs_f64(message.len() as f64 / RATE);
+                tokio::time::sleep_until(free_at).await;
+                let arrived_tx = arrived_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = arrived_tx.send((tokio::time::Instant::now(), message));
+                });
+            }
+        });
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(false, sender.queue()),
+        ));
+        let bulk = serde_json::json!({"kind":"client_response","request_id":"bulk","payload":"y".repeat(2 * 1024 * 1024)});
+        sender
+            .try_send(Message::Text(bulk.to_string().into()))
+            .unwrap();
+        let start = tokio::time::Instant::now();
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        // Eight small replies, 300 ms apart once the window has measured the path.
+        let mut next_small = start + Duration::from_secs(3);
+        let (mut sent_small_at, mut delays) = (None, Vec::new());
+        while delays.len() < 8 {
+            let (at, message) = arrived.recv().await.expect("the writer ended");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            if text.contains("small-reply") {
+                delays.push(at.duration_since(sent_small_at.take().unwrap()));
+            }
+            let (_, receipt) = receiver.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                let ack_tx = ack_tx.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(ONE_WAY).await;
+                    let _ = ack_tx.send((transfer_id, offset)).await;
+                });
+            }
+            if sent_small_at.is_none() && at >= next_small {
+                let small = serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+                sender
+                    .try_send(Message::Text(small.to_string().into()))
+                    .unwrap();
+                sent_small_at = Some(tokio::time::Instant::now());
+                next_small = at + Duration::from_millis(300);
+            }
+        }
+        task.abort();
+        // One way (30 ms), the frame on the wire and what the window keeps queued.
+        let bound = Duration::from_millis(30 + 100);
+        let worst = delays.iter().max().unwrap();
+        assert!(
+            *worst <= bound,
+            "the small replies waited {delays:?}, bound {bound:?}"
+        );
+    }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
     // (appsfix r14: packets 2-3 of one click arrived one RTT apart).
