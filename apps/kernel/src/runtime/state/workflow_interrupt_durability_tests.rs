@@ -3582,3 +3582,75 @@ async fn output_settlement_of_a_stopped_turn_cancels_its_workflow_run_outside_th
     drop(pump_lane);
     assert_workflow_run_stops(&fixture, &session).await;
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: cancelling a workflow run takes every run lane in the
+// Room and cancels the tasks of its nodes. A node task that owns another workflow run
+// cancels that run too, which takes every run lane in the Room again.
+#[tokio::test]
+async fn cancelling_a_workflow_cancels_the_run_its_node_task_owns_outside_the_lanes() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("nested-workflow-lanes"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let (_creator_run, session, prompt, task) =
+        creator_turn_owning_the_workflow_run(&fixture, "nested-run-creator");
+    let outer_run_id = {
+        let endpoint = session
+            .workflow(&fixture.workflow_id)
+            .expect("fixture workflow")
+            .endpoints()[0]
+            .id()
+            .to_string();
+        let mut sessions = owned.session_store.write();
+        let queued = sessions
+            .enqueue_workflow_prompt_by_agent(
+                &fixture.session_id,
+                &fixture.workflow_id,
+                &endpoint,
+                Some("outer invocation".into()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+                None,
+                Some(&fixture.unrelated_agent_id),
+            )
+            .unwrap();
+        sessions
+            .remove_queued_workflow_prompt(&fixture.session_id, queued.id())
+            .unwrap();
+        sessions
+            .invoke_queued_workflow_endpoint(&fixture.session_id, &queued)
+            .expect("outer workflow run")
+            .id()
+            .to_string()
+    };
+    // The creator's turn is a node of the outer run.
+    owned
+        .durable_state_store
+        .agent_lifecycle(Operation::BindWorkflow {
+            task: task.task_id.clone(),
+            prompt: prompt.id().into(),
+            run: outer_run_id.clone(),
+            node: "outer-node-run".into(),
+        })
+        .unwrap();
+
+    let (result, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.runtime.execute_workflow_cancel_run_request(
+            crate::local::CancelWorkflowRunRequest {
+                session_id: fixture.session_id.clone(),
+                workflow_run_ref: outer_run_id,
+            },
+        ),
+    )
+    .await
+    .expect("cancelling a workflow must not wait for the run lanes it already holds");
+    result.expect("the outer workflow run is cancelled");
+    assert_workflow_run_stops(&fixture, &session).await;
+}
