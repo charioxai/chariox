@@ -8,11 +8,18 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::runtime::projection::{ActorQueueSnapshot, ProviderRunActorHealthSnapshot};
 
+#[cfg(debug_assertions)]
+mod wait_trace;
+#[cfg(all(test, debug_assertions))]
+mod wait_trace_tests;
+
 #[derive(Clone)]
 pub(crate) struct ProviderRunOperationLanes {
     pub(super) lanes:
         Arc<crate::runtime::checked_lock::CheckedMutex<BTreeMap<String, Arc<Semaphore>>>>,
     health: Arc<ProviderRunActorHealthCounters>,
+    #[cfg(debug_assertions)]
+    wait_trace: Arc<wait_trace::LaneWaitTrace>,
     #[cfg(test)]
     acquire_probes: Arc<Mutex<BTreeMap<String, Arc<tokio::sync::Notify>>>>,
 }
@@ -25,6 +32,8 @@ impl Default for ProviderRunOperationLanes {
                 BTreeMap::new(),
             )),
             health: Default::default(),
+            #[cfg(debug_assertions)]
+            wait_trace: Arc::new(wait_trace::LaneWaitTrace::from_env()),
             #[cfg(test)]
             acquire_probes: Default::default(),
         }
@@ -44,6 +53,14 @@ struct ProviderRunActorHealthCounters {
 }
 
 impl ProviderRunOperationLanes {
+    #[cfg(all(test, debug_assertions))]
+    fn with_wait_trace_for_tests() -> Self {
+        Self {
+            wait_trace: Arc::new(wait_trace::LaneWaitTrace::enabled_for_tests()),
+            ..Self::default()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn notify_on_next_acquire_for_tests(
         &self,
@@ -78,10 +95,11 @@ impl ProviderRunOperationLanes {
         {
             probe.notify_one();
         }
-        let permit = semaphore
-            .acquire_owned()
-            .await
-            .expect("provider run operation lane semaphore closed");
+        #[cfg(debug_assertions)]
+        let permit = self.wait_trace.acquire(provider_run_id, semaphore).await;
+        #[cfg(not(debug_assertions))]
+        let permit = semaphore.acquire_owned().await;
+        let permit = permit.expect("provider run operation lane semaphore closed");
         ProviderRunOperationPermit {
             permit: Some(permit),
             lanes: self.clone(),
@@ -102,6 +120,8 @@ impl ProviderRunOperationLanes {
             )
         };
         let permit = semaphore.try_acquire_owned().ok()?;
+        #[cfg(debug_assertions)]
+        self.wait_trace.record_holder(provider_run_id);
         Some(ProviderRunOperationPermit {
             permit: Some(permit),
             lanes: self.clone(),
