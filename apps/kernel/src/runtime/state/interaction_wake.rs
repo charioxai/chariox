@@ -361,6 +361,7 @@ impl KernelRuntimeOwnedState {
                 end: Some(WakeEnd::Succeeded),
                 now: crate::session::unix_epoch_ms(),
             })?;
+        self.settle_vault_payment(interaction, resolution);
         Ok(())
     }
 
@@ -371,6 +372,7 @@ impl KernelRuntimeOwnedState {
             .lock()
             .map_err(|_| ledger::error("interaction store unavailable"))?;
         self.pending_interactions.write().remove(&wake.id);
+        self.forget_vault_payment_ask(&wake.id);
         let mut sessions = self.session_store.write();
         let Ok(mut session) = sessions.get_session(&wake.room_id) else {
             return Ok(());
