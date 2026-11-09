@@ -221,6 +221,11 @@ pub(crate) fn launched_task_id(structured: Option<&Value>, output: &str) -> Opti
         .filter(|id| id.len() <= IDENTITY_BYTES)
 }
 
+/// The tools whose result can say a background command has ended.
+pub(crate) fn ends_background_commands(name: &str) -> bool {
+    matches!(name, "TaskStop" | "KillShell" | "TaskOutput" | "BashOutput")
+}
+
 /// The background task a stop or output-poll call is about, when its result
 /// says that task has ended.
 pub(crate) fn ended_task_of_result(name: &str, input: &Value, output: &str) -> Option<String> {
