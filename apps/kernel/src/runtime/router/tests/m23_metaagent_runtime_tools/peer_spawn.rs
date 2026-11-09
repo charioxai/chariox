@@ -237,6 +237,28 @@ async fn parse_refusals() {
 }
 
 #[test]
+fn a_sub_agent_spawn_on_an_unknown_machine_is_refused_and_creates_nothing() {
+    run_large_stack_async_test("peer-spawn-unknown-machine", unknown_machine_refused);
+}
+
+async fn unknown_machine_refused() {
+    let world = world("peer-spawn-unknown-machine").await;
+    for flag in ["--machine", "--kernel"] {
+        let refused = room_command(
+            &world,
+            "a",
+            &format!("agent spawn sx --provider dev-stub {flag} unknown-xyz"),
+        )
+        .await;
+        assert!(!refused.ok, "{flag}: {refused:?}");
+    }
+    assert!(agents_of(&world, &world.room)
+        .await
+        .iter()
+        .all(|agent| agent.alias() != Some("sx")));
+}
+
+#[test]
 fn the_spawn_usage_documents_the_room_option() {
     assert!(
         crate::runtime::metaagent_command_registry::AGENT_SPAWN_USAGE
