@@ -2,8 +2,8 @@ import { CommandFailure } from "./agent-command-table.js"
 
 // Chunk size of a file transfer, on both ends. One reply is one indivisible relay message: at
 // 64 KiB it is about 117 KB on the wire, a hundred milliseconds of an 8 Mbit/s link, where a
-// 256 KiB chunk held it for half a second. It is also the smallest size the kernel still queues as
-// bulk (a reply of about 36 KiB or less goes on the priority lane, outside the per-client bound).
+// 256 KiB chunk held it for half a second. Do not go much lower: the kernel queues a reply as bulk
+// only above about 36 KiB of data; a smaller one goes on the priority lane, outside the per-client bound.
 export const FILE_CHUNK_BYTES = 64 * 1024
 // Requests in flight at the start, and the least ever: a transfer on a slow link stays here.
 export const MIN_WINDOW = 4
