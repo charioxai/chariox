@@ -239,8 +239,12 @@ Payment cards retain one owner interaction per payment, including under sudo.
 Its Allow always needs the typed Vault passphrase (the Chariox passkey) from a
 Chariox terminal: a remember window, an unlocked Vault or a sudo window never
 stands in for it, and a payment answer never starts a remember window. The
-decision is a card in the asking agent's pane; the agent's fill returns at once
-and the agent keeps working until the answer reaches its inbox.
+decision is a card in the asking agent's pane and a passkey popup on every
+terminal of the Room's owner, both for as long as the card waits (24 hours at
+most); the agent's fill returns at once and the agent keeps working until the
+answer reaches its inbox. What a card approves lives only in kernel memory, so
+a card still waiting when the kernel restarts is withdrawn and the agent's
+inbox says to fill again to ask again.
 Browser captures similarly declare at most one exact destination origin, and
 issuer-free auth.md credentials bind to the issued resource origin.
 
