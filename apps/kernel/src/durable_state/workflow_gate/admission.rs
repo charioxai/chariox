@@ -17,9 +17,8 @@ impl Admission {
         &self.session_id
     }
 }
-pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
-    retention::sweep(tx, crate::session::unix_epoch_ms())?;
-    a.definition.validate().map_err(|e| error(e.to_string()))?;
+/// Binds a dedupe id to its occurrence: a retry with other content conflicts.
+pub(super) fn content_digest(a: &Admission) -> Result<String> {
     let content = serde_json::json!([
         a.owner,
         a.session_id,
@@ -42,9 +41,20 @@ pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
         )),
         a.source_receipt.as_ref().map(|_| a.deadline_ms)
     ]);
-    let digest = gate::sha256(
+    Ok(gate::sha256(
         &gate::canonical_json(&content, gate::INPUT_BYTES).map_err(|e| error(e.to_string()))?,
-    );
+    ))
+}
+/// The caller identity a gate sees: the invoking user and the creating agent.
+pub(crate) fn caller_sha256(user: &str, creator: Option<&str>) -> Result<String> {
+    Ok(gate::sha256(
+        encode(&serde_json::json!([user, creator]))?.as_bytes(),
+    ))
+}
+pub(crate) fn accept_in(tx: &Transaction<'_>, a: Admission) -> Result<Entry> {
+    retention::sweep(tx, crate::session::unix_epoch_ms())?;
+    a.definition.validate().map_err(|e| error(e.to_string()))?;
+    let digest = content_digest(&a)?;
     if let Some((id,existing))=tx.query_row("SELECT entry_id,content_digest FROM workflow_gate_entries WHERE owner_id=?1 AND session_id=?2 AND workflow_id=?3 AND binding_id=?4 AND dedupe_id=?5",params![a.owner,a.session_id,a.workflow_id,a.binding_id,a.dedupe_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).optional().map_err(sql)? {
         // Queue IDs/timestamps are authority-allocated on retries. The immutable
         // source identity binds content instead of that freshly prepared template.
@@ -180,13 +190,7 @@ impl Admission {
                 .ok_or_else(|| error("gate not configured"))?,
             binding_id,
             dedupe_id: occurrence_id.clone(),
-            caller_sha256: gate::sha256(
-                encode(&serde_json::json!([
-                    endpoint.owner_user_id(),
-                    template.created_by_agent_id()
-                ]))?
-                .as_bytes(),
-            ),
+            caller_sha256: caller_sha256(endpoint.owner_user_id(), template.created_by_agent_id())?,
             deadline_ms,
             trigger: gate::Trigger {
                 kind,

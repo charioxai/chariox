@@ -1027,18 +1027,11 @@ impl KernelRuntimeOwnedState {
                             schema,
                             None,
                         )?;
-                    admission.caller_sha256 = chariox_app_runtime::workflow_gate::sha256(
-                        serde_json::to_string(&serde_json::json!([
+                    admission.caller_sha256 =
+                        crate::durable_state::workflow_gate::admission::caller_sha256(
                             invoking_user.unwrap_or(endpoint.owner_user_id()),
-                            creator
-                        ]))
-                        .map_err(|_| {
-                            crate::durable_state::workflow_gate::error(
-                                "gate caller encoding failed",
-                            )
-                        })?
-                        .as_bytes(),
-                    );
+                            creator,
+                        )?;
                     self.accept_gate_prompt(admission)
                 })?;
             return Ok((

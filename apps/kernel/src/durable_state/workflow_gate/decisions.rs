@@ -249,6 +249,26 @@ pub(super) fn complete(
     Ok(s.entry)
 }
 
+/// Members join one open batch only with the same owner, caller and source.
+pub(super) fn batch_scope(s: &Stored, key: &str) -> Result<String> {
+    Ok(gate::sha256(
+        encode(&serde_json::json!([
+            s.admission.owner,
+            s.admission.session_id,
+            s.admission.workflow_id,
+            s.entry.workflow_revision,
+            s.admission.binding_id,
+            s.admission.caller_sha256,
+            s.source_authority,
+            s.entry.module_sha256,
+            s.admission.template.endpoint_id(),
+            s.admission.template.queue_id(),
+            key
+        ]))
+        .map_err(|_| error("gate batch identity"))?
+        .as_bytes(),
+    ))
+}
 fn batch(
     tx: &Transaction<'_>,
     s: &mut Stored,
@@ -257,23 +277,7 @@ fn batch(
     payload: &serde_json::Value,
 ) -> std::result::Result<(), gate::Failure> {
     let result = (|| -> Result<()> {
-        let scope = gate::sha256(
-            encode(&serde_json::json!([
-                s.admission.owner,
-                s.admission.session_id,
-                s.admission.workflow_id,
-                s.entry.workflow_revision,
-                s.admission.binding_id,
-                s.admission.caller_sha256,
-                s.source_authority,
-                s.entry.module_sha256,
-                s.admission.template.endpoint_id(),
-                s.admission.template.queue_id(),
-                key
-            ]))
-            .map_err(|_| error("gate batch identity"))?
-            .as_bytes(),
-        );
+        let scope = batch_scope(s, key)?;
         let existing: Option<(String, String, i64)> = tx
             .query_row(
                 "SELECT group_id,entry_id,flush_at_ms FROM workflow_gate_batches WHERE scope_sha256=?1 AND closed=0",

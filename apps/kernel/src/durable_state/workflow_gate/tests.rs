@@ -552,3 +552,165 @@ fn cancelling_a_batch_member_cancels_its_pending_aggregate_and_members() {
         assert!(f.claim(due).is_none());
     }
 }
+#[test]
+fn enrollment_reowns_every_gate_entry_state_and_module_in_place() {
+    let local = crate::session::DEFAULT_LOCAL_USER_ID;
+    let mut f = Fixture::new();
+    f.admission.caller_sha256 = admission::caller_sha256(local, None).unwrap();
+    let deferred = f.accept();
+    let c = f.claim(f.now + 1).unwrap();
+    f.complete(
+        c,
+        gate::Decision::DeferUntil {
+            at_ms: f.now + 60_000,
+        },
+    );
+    f.admission.dedupe_id = "batched".into();
+    f.admission.trigger.occurrence_id = "batched".into();
+    let batched = f.accept();
+    let c = f.claim(f.now + 2).unwrap();
+    let flush = f.now + 50_000;
+    f.complete(
+        c,
+        gate::Decision::Batch {
+            key: "digest".into(),
+            flush_at_ms: flush,
+            payload: json!({"id":1}),
+        },
+    );
+    f.admission.dedupe_id = "evaluating".into();
+    f.admission.trigger.occurrence_id = "evaluating".into();
+    let evaluating = f.accept();
+    let running = f.claim(f.now + 3).unwrap();
+    assert_eq!(running.stored.entry.entry_id, evaluating.entry_id);
+    let mut collaborator = f.admission.clone();
+    collaborator.dedupe_id = "ready".into();
+    collaborator.trigger.occurrence_id = "ready".into();
+    collaborator.caller_sha256 = admission::caller_sha256("collaborator", None).unwrap();
+    let tx = f.db.transaction().unwrap();
+    let ready = admission::accept_in(&tx, collaborator).unwrap();
+    tx.commit().unwrap();
+    let rows = |db: &Connection| -> Vec<(String, i64, String, i64, i64)> {
+        let mut q = db.prepare("SELECT entry_id,sequence,disposition,due_at_ms,deadline_ms FROM workflow_gate_entries ORDER BY sequence").unwrap();
+        q.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap()
+    };
+    let state_revision = |db: &Connection| -> i64 {
+        db.query_row(
+            "SELECT revision FROM workflow_gate_state WHERE binding_id=''",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let before = rows(&f.db);
+    let revision = state_revision(&f.db);
+    assert_eq!(
+        before.len(),
+        5,
+        "deferred, batched, aggregate, evaluating, ready"
+    );
+
+    // Enrollment moves the workflow endpoint owner and the gate rows together.
+    let mut workflow: WorkflowDefinition = decode(&f.db.query_row("SELECT payload_json FROM durable_workflow_hot_entities WHERE entity_kind='workflow'",[],|r|r.get::<_,String>(0)).unwrap()).unwrap();
+    workflow.enroll_local_owner("enrolled");
+    f.db.execute(
+        "UPDATE durable_workflow_hot_entities SET payload_json=?1 WHERE entity_kind='workflow'",
+        [encode(&workflow).unwrap()],
+    )
+    .unwrap();
+    let tx = f.db.transaction().unwrap();
+    enrollment::enroll_owner_in(&tx, "session", local, "enrolled").unwrap();
+    tx.commit().unwrap();
+
+    assert_eq!(
+        rows(&f.db),
+        before,
+        "order, dispositions and expiry are kept"
+    );
+    assert_eq!(state_revision(&f.db), revision);
+    for table in [
+        "workflow_gate_modules",
+        "workflow_gate_lanes",
+        "workflow_gate_state",
+        "workflow_gate_entries",
+    ] {
+        let left: i64 =
+            f.db.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE owner_id=?1"),
+                [local],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0, "{table} still holds the local owner");
+    }
+    let stored = load(&f.db, &deferred.entry_id).unwrap().unwrap();
+    assert_eq!(stored.admission.owner, "enrolled");
+    assert_eq!(
+        stored.admission.caller_sha256,
+        admission::caller_sha256("enrolled", None).unwrap()
+    );
+    assert_eq!(
+        load(&f.db, &ready.entry_id)
+            .unwrap()
+            .unwrap()
+            .admission
+            .caller_sha256,
+        admission::caller_sha256("collaborator", None).unwrap()
+    );
+    let aggregate: (String, String) =
+        f.db.query_row(
+            "SELECT entry_id,scope_sha256 FROM workflow_gate_batches WHERE closed=0",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let member = load(&f.db, &batched.entry_id).unwrap().unwrap();
+    assert_eq!(
+        aggregate.1,
+        decisions::batch_scope(&member, "digest").unwrap()
+    );
+
+    // The running evaluation completes under its claim.
+    f.complete(running, gate::Decision::Drop);
+    // The enrolled owner reads, cancels and admits; a retry still dedupes.
+    let store_entries = |db: &Connection, owner: &str| -> i64 {
+        db.query_row(
+            "SELECT count(*) FROM workflow_gate_entries WHERE owner_id=?1 AND session_id='session' AND workflow_id='workflow'",
+            [owner],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(store_entries(&f.db, "enrolled"), 5);
+    let (response, rx) = mpsc::channel();
+    execute(
+        &mut f.db,
+        Request {
+            operation: Operation::Cancel {
+                owner: "enrolled".into(),
+                id: deferred.entry_id.clone(),
+                reason: "owner".into(),
+            },
+            response,
+        },
+    );
+    match rx.recv().unwrap().unwrap() {
+        Outcome::Entry(entry) => assert_eq!(entry.disposition, Disposition::Cancelled),
+        _ => panic!("cancel returns the entry"),
+    }
+    f.admission.owner = "enrolled".into();
+    f.admission.caller_sha256 = admission::caller_sha256("enrolled", None).unwrap();
+    f.admission.dedupe_id = "batched".into();
+    f.admission.trigger.occurrence_id = "batched".into();
+    assert_eq!(f.accept().entry_id, batched.entry_id);
+    f.admission.dedupe_id = "fresh".into();
+    f.admission.trigger.occurrence_id = "fresh".into();
+    let fresh = f.accept();
+    assert_eq!(fresh.disposition, Disposition::Ready);
+    assert_eq!(store_entries(&f.db, "enrolled"), 6);
+}

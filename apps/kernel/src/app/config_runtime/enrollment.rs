@@ -181,4 +181,242 @@ mod tests {
         assert_eq!(restored.owner_user_id(), "enrolled-person");
         assert_eq!(restored.agent_triggers().len(), 1);
     }
+
+    fn gated_admission(
+        app: &DaemonApp,
+        session_id: &str,
+        workflow_id: &str,
+        occurrence: &str,
+    ) -> crate::durable_state::workflow_gate::Admission {
+        let session = app.sessions.get_session(session_id).unwrap();
+        let workflow = session
+            .workflows()
+            .iter()
+            .find(|w| w.id() == workflow_id)
+            .unwrap()
+            .clone();
+        let queue = session
+            .workflow_prompt_queues()
+            .iter()
+            .find(|q| q.workflow_id() == workflow_id)
+            .unwrap()
+            .id()
+            .to_string();
+        let template =
+            crate::session::WorkflowQueuedPrompt::new(crate::session::WorkflowQueuedPromptInput {
+                id: format!("queued-{occurrence}"),
+                queue_id: queue,
+                workflow_id: workflow_id.into(),
+                endpoint_id: "endpoint".into(),
+                prompt: Some("gated".into()),
+                publication_invocation: None,
+                source: crate::session::WorkflowQueuedPromptSource::Manual,
+                schedule_id: None,
+            });
+        crate::durable_state::workflow_gate::Admission::from_prompt(
+            &session,
+            &workflow,
+            template,
+            "binding".into(),
+            chariox_app_runtime::workflow_gate::TriggerKind::Manual,
+            occurrence.into(),
+            crate::session::unix_epoch_ms() + 120_000,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn cloud_enrollment_reowns_gate_entries_and_admits_for_the_enrolled_owner() {
+        use crate::durable_state::workflow_gate::{Operation, Outcome};
+        use chariox_app_runtime::workflow_gate as gate;
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("enrollment-gate-owner");
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.user_config.state.path =
+            Some(root.path().join("kernel/state.db").display().to_string());
+        let mut app = DaemonApp::bootstrap(config).unwrap();
+        let (session, _) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(root.session_request())
+            .unwrap();
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("gated".into()))
+            .unwrap();
+        let component = b"gate-component".to_vec();
+        let definition = gate::Definition {
+            abi: gate::ABI.into(),
+            module_sha256: gate::sha256(&component),
+            config: Default::default(),
+            config_sha256: gate::sha256(b"{}"),
+        };
+        let mut gated = app.sessions.get_session(session.id()).unwrap();
+        let w = gated.workflow_mut(workflow.id()).unwrap();
+        w.add_endpoint(crate::session::WorkflowEndpointDefinition::new(
+            "endpoint", None, "triage",
+        ));
+        w.set_gate(Some(definition.clone()));
+        let gated = app.sessions.write().restore_session(gated);
+        app.durable_state
+            .persist_workflow_runtime_transition(&gated, "test_gate")
+            .unwrap();
+        app.durable_state
+            .gate(Operation::Put {
+                owner: DEFAULT_LOCAL_USER_ID.into(),
+                digest: definition.module_sha256.clone(),
+                component,
+            })
+            .unwrap();
+        let accept = |app: &DaemonApp, occurrence: &str| match app.durable_state.gate(
+            Operation::Accept(Box::new(gated_admission(
+                app,
+                session.id(),
+                workflow.id(),
+                occurrence,
+            ))),
+        ) {
+            Ok(Outcome::Entry(entry)) => Ok(entry),
+            Ok(_) => panic!("accept returns an entry"),
+            Err(error) => Err(error.to_string()),
+        };
+        let first = accept(&app, "first").unwrap();
+        accept(&app, "second").unwrap();
+        app.config
+            .persist_cloud_relay_profile(Some(crate::config::PersistedCloudRelayProfile {
+                user_id: "enrolled-person".into(),
+                realm_id: "realm".into(),
+                kernel_id: Some(app.config.daemon_id.clone()),
+                ..Default::default()
+            }))
+            .unwrap();
+        let config = app.config.clone();
+        drop(app);
+        let app = DaemonApp::bootstrap(config).unwrap();
+        let entries = |app: &DaemonApp, owner: &str| {
+            app.durable_state
+                .gate_entries(owner, session.id(), workflow.id(), None, 100)
+                .unwrap()
+                .0
+                .len()
+        };
+        assert_eq!(entries(&app, "enrolled-person"), 2);
+        assert_eq!(entries(&app, DEFAULT_LOCAL_USER_ID), 0);
+        match app
+            .durable_state
+            .gate(Operation::Cancel {
+                owner: "enrolled-person".into(),
+                id: first.entry_id.clone(),
+                reason: "owner".into(),
+            })
+            .unwrap()
+        {
+            Outcome::Entry(entry) => assert_eq!(
+                entry.disposition,
+                crate::durable_state::workflow_gate::Disposition::Cancelled
+            ),
+            _ => panic!("cancel returns the entry"),
+        }
+        accept(&app, "after-enrollment").unwrap();
+        // The enrolled endpoint owner is durable, not only in this process.
+        let config = app.config.clone();
+        drop(app);
+        let app = DaemonApp::bootstrap(config).unwrap();
+        accept(&app, "after-restart").unwrap();
+        assert_eq!(entries(&app, "enrolled-person"), 4);
+    }
+
+    /// Every owner-keyed table is either adopted by enrollment or named here
+    /// with the reason it is not. A new owner-keyed table fails until classified.
+    #[test]
+    fn every_owner_keyed_table_is_classified_for_enrollment() {
+        crate::test_support::isolated_env_test!();
+        let root = crate::test_support::TestWorktree::new("enrollment-owner-tables");
+        let path = root.path().join("kernel/state.db");
+        let store = crate::durable_state::DurableKernelStateStore::open(path.clone()).unwrap();
+        drop(store);
+        let db = rusqlite::Connection::open(path).unwrap();
+        let mut q = db
+            .prepare("SELECT m.name FROM sqlite_master m JOIN pragma_table_info(m.name) c WHERE m.type='table' AND c.name='owner_id' ORDER BY m.name")
+            .unwrap();
+        let tables = q
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()
+            .unwrap();
+        // Adopted by `enroll_gate_owner`.
+        const ADOPTED: &[&str] = &[
+            "workflow_gate_entries",
+            "workflow_gate_lanes",
+            "workflow_gate_modules",
+            "workflow_gate_state",
+        ];
+        // owner_id is the kernel (host daemon) id, which enrollment keeps.
+        const KERNEL_KEYED: &[&str] = &[
+            "durable_event_delivery_receipts",
+            "durable_room_environments",
+            "durable_state_metadata",
+            "durable_state_owner_checkpoint_entities",
+            "durable_state_owner_checkpoint_manifest",
+            "durable_workflow_dispatch_intents",
+            "durable_workflow_hot_entities",
+            "durable_workflow_runs",
+            "retired_sessions",
+        ];
+        // User-keyed and NOT adopted by enrollment today: App installations,
+        // consents, grants and publisher trust stay with the consenting owner,
+        // and notification grants/created resources follow them. Known gap,
+        // reported for an owner decision; not silently exempt.
+        const NOT_ADOPTED: &[&str] = &[
+            "app_automations",
+            "app_connection_grants",
+            "app_deployment_consents",
+            "app_dev_identities",
+            "app_file_exports",
+            "app_file_grants",
+            "app_file_picks",
+            "app_host_actions",
+            "app_inbox",
+            "app_inbox_routes",
+            "app_installation_deployments",
+            "app_installation_operations",
+            "app_installation_stage_trust",
+            "app_installations",
+            "app_logs",
+            "app_outbox",
+            "app_outbox_replay_floors",
+            "app_publisher_decisions",
+            "app_publisher_keys",
+            "app_publisher_operations",
+            "app_release_versions",
+            "app_restore_receipts",
+            "app_validations",
+            "app_wakes",
+            "app_worker_lifecycle",
+            "created_resources",
+            "workflow_notification_exit_sources",
+            "workflow_notification_generations",
+            "workflow_notification_grants",
+            "workflow_notification_remote_installs",
+            "workflow_notification_source_cache",
+            "workflow_notification_source_fence",
+        ];
+        let classified = ADOPTED
+            .iter()
+            .chain(KERNEL_KEYED)
+            .chain(NOT_ADOPTED)
+            .map(|t| t.to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            tables.difference(&classified).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "classify each new owner_id table for Cloud enrollment"
+        );
+        assert_eq!(
+            classified.difference(&tables).collect::<Vec<_>>(),
+            Vec::<&String>::new(),
+            "drop classifications for tables that no longer exist"
+        );
+    }
 }

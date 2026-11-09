@@ -2,6 +2,7 @@
 //! only this journal can advance state or authorize an ordinary queue handoff.
 pub(crate) mod admission;
 mod decisions;
+mod enrollment;
 mod retention;
 pub(crate) mod schedule;
 mod state;
@@ -173,6 +174,10 @@ pub(crate) enum Operation {
         id: String,
         reason: String,
     },
+    EnrollOwner {
+        old: String,
+        session: Box<RuntimeSession>,
+    },
 }
 #[allow(
     clippy::large_enum_variant,
@@ -328,6 +333,14 @@ impl DurableKernelStateStore {
         let db = self.lock_connection("workflow.gate.run")?;
         let row:Option<String>=db.query_row("SELECT r.payload_json FROM workflow_gate_entries e JOIN durable_workflow_runs r ON r.owner_id=?1 AND r.session_id=e.session_id AND json_extract(r.payload_json,'$.queue_item_id')=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id') WHERE e.session_id=?2 AND e.entry_id=?3",params![kernel,session,id],|r|r.get(0)).optional().map_err(sql)?;
         row.map(|json| decode(&json)).transpose()
+    }
+    /// Re-own an enrolled Room's gate work and persist its enrolled workflows.
+    pub(crate) fn enroll_gate_owner(&self, old: &str, session: &RuntimeSession) -> Result<()> {
+        self.gate(Operation::EnrollOwner {
+            old: old.into(),
+            session: Box::new(session.clone()),
+        })
+        .map(|_| ())
     }
     pub(crate) fn gate_module(&self, owner: &str, digest: &str) -> Result<Vec<u8>> {
         let db = self.lock_connection("workflow.gate.module")?;
@@ -500,6 +513,10 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
             } => Outcome::Entry(decisions::complete(&tx, &id, &token, report, now)?),
             Operation::Release { id, before, after } => {
                 decisions::release(&tx, &id, &before, &after)?;
+                Outcome::Unit
+            }
+            Operation::EnrollOwner { old, session } => {
+                enrollment::enroll_owner_in(&tx, session.id(), &old, session.owner_user_id())?;
                 Outcome::Unit
             }
             Operation::Cancel { owner, id, reason } => {
