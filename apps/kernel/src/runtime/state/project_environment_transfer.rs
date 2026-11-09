@@ -193,6 +193,10 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let project = self.owned_project(&request.project_id, caller_user_id)?;
         let checkout = self.project_checkout(&project, request.checkout_path.as_deref())?;
+        crate::managed_context::target_vault::require_open_vault_for_secret_entries(
+            &self.owned.config_projection.snapshot(),
+            request.entries.as_deref(),
+        )?;
         let view = EnvironmentOperationView {
             operation_id: request.operation_id,
             project_id: project.id().into(),

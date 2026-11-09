@@ -58,6 +58,20 @@ fn lane_refusals_have_safe_actionable_codes_through_external_projection() {
     }
 }
 
+#[test]
+fn a_locked_receiving_vault_keeps_its_code_and_remediation_for_a_granted_agent() {
+    use crate::transport::kernel_protocol::map_kernel_error;
+    let protected = protect_error(crate::managed_context::target_vault::secret_import_refused());
+    let mapped = map_kernel_error(&protected);
+    assert_eq!(mapped.code, "target_vault_locked");
+    assert!(mapped.retryable);
+    assert!(
+        mapped.message.contains("Vault is locked") && mapped.message.contains("repeat"),
+        "{}",
+        mapped.message
+    );
+}
+
 // MP-08 / MP-10 / MP-11: notification metadata remains usable through both
 // the typed executor and cached wire boundary for grants and sudo callers.
 #[test]

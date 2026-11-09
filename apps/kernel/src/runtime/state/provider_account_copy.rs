@@ -158,7 +158,10 @@ impl KernelRuntimeState {
             RelayPeerResponse::ProviderAccountCopyFailed { code } => {
                 Err(failure(match code.as_str() {
                     "provider_account_copy_unauthorized" => "provider_account_copy_unauthorized",
-                    "provider_account_copy_vault_locked" => "provider_account_copy_vault_locked",
+                    // The target answered, so the Vault that is closed is the receiving one.
+                    "provider_account_copy_vault_locked" => {
+                        "provider_account_copy_target_vault_locked"
+                    }
                     "provider_account_copy_conflict" => "provider_account_copy_conflict",
                     "provider_account_copy_rejected" => "provider_account_copy_rejected",
                     "provider_account_copy_verification_failed" => {

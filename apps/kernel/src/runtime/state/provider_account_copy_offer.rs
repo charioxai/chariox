@@ -340,6 +340,9 @@ fn copy_peer_failure(code: &str) -> DaemonError {
         "provider_account_copy_unauthorized" => failure("provider_account_copy_unauthorized"),
         "provider_account_copy_profile" => failure("provider_account_copy_profile"),
         "provider_account_copy_vault_locked" => failure("provider_account_copy_vault_locked"),
+        "provider_account_copy_target_vault_locked" => {
+            failure("provider_account_copy_target_vault_locked")
+        }
         "provider_account_copy_conflict" => failure("provider_account_copy_conflict"),
         "provider_account_copy_rejected" => failure("provider_account_copy_rejected"),
         "provider_account_copy_verification_failed" => {
