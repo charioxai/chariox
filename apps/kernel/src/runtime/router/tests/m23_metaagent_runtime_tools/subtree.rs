@@ -50,11 +50,19 @@ pub(super) async fn launch(app: &Arc<Mutex<DaemonApp>>, room: &str, agent: &str)
 }
 
 pub(super) async fn world(label: &str) -> World {
+    world_with_config(label, |_| {}).await
+}
+
+pub(super) async fn world_with_config(
+    label: &str,
+    configure: impl FnOnce(&mut DaemonConfig),
+) -> World {
     let env = TestMetaRuntimeEnv::new(label);
     let workspace = env.root.join("workspace");
     std::fs::create_dir_all(&workspace).unwrap();
     let mut config = DaemonConfig::for_tests();
     config.room_agent_tools = true;
+    configure(&mut config);
     let mut app = DaemonApp::bootstrap(config).unwrap();
     let (room, a) = crate::app::KernelSessionService::new(&mut app)
         .create_session(CreateSessionRequest::new(
