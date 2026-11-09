@@ -518,6 +518,18 @@ fn the_agent_reads_work_through_the_kernel_on_a_real_chromium() {
                     .unwrap()
                     .payload,
             );
+            // A screenshot never moves the page: the off-screen node is refused until the agent's admitted scroll.
+            assert!(call(json!({"op":"screenshot","node_ref":far}))
+                .await
+                .is_err());
+            let document = snapshot["snapshot"]["document_id"].as_str().unwrap();
+            tool(
+                &browser.router,
+                &browser.token,
+                json!({"document_id":document,"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"scroll","target":far}}}),
+            )
+            .await
+            .unwrap();
             let element = image(
                 call(json!({"op":"screenshot","node_ref":far}))
                     .await
@@ -558,14 +570,6 @@ fn the_agent_reads_work_through_the_kernel_on_a_real_chromium() {
             )
             .await
             .is_err());
-            let document = snapshot["snapshot"]["document_id"].as_str().unwrap();
-            tool(
-                &browser.router,
-                &browser.token,
-                json!({"document_id":document,"command":{"op":"input","tab_id":tab,"generation":generation,"input":{"kind":"scroll","target":far}}}),
-            )
-            .await
-            .unwrap();
             let later = call(json!({"op":"wait","text":"appeared LATER","timeout_ms":5000}))
                 .await
                 .unwrap()

@@ -3434,15 +3434,23 @@ test('browsertools: a clip outside the viewport, several region keys or a non-ag
   assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').length, 0);
 }));
 
-test('browsertools: a node_ref is scrolled into view, measured and cut out', () => using(async ({ host, connection, sent }) => {
+// Review r1 P2: an element screenshot is an observation, so it never moves the page. Scrolling is the admitted input op.
+test('browsertools: a node_ref inside the viewport is measured and cut out without scrolling', () => using(async ({ host, connection, sent }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });
   withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [100, 200.4, 300, 200.4, 300, 260.2, 100, 260.2] } } : undefined);
   const shot = await host.request(agentShot(opened, { node_ref: 'backend:7' }));
   assert.deepEqual(shot.clip, { x: 100, y: 200, width: 200, height: 61 });
   assert.deepEqual(pngSize(shot.data_base64), { width: 200, height: 61 });
-  const methods = sent.map(call => call.method);
-  assert(methods.indexOf('DOM.scrollIntoViewIfNeeded') !== -1 && methods.indexOf('DOM.scrollIntoViewIfNeeded') < methods.indexOf('Page.captureScreenshot'));
-  assert.equal(sent.find(call => call.method === 'DOM.scrollIntoViewIfNeeded').params.backendNodeId, 7);
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0);
+}));
+
+test('browsertools: an element screenshot of an off-screen node never scrolls, even right after the person typed, and says to scroll first', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.notePersonInput({ op: 'input', tab_id: opened.tab_id, input: { kind: 'key', key: 'a' } });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [100, 2000, 300, 2000, 300, 2080, 100, 2080] } } : undefined);
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:7' })), error => error.reason === 'node_off_screen' && /scroll/.test(error.message));
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0, 'the page did not move');
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').length, 0);
 }));
 
 test('browsertools: a node_ref that is not a top-level snapshot ref, is gone or is off screen fails plainly', () => using(async ({ host, connection, sent }) => {
@@ -3453,7 +3461,7 @@ test('browsertools: a node_ref that is not a top-level snapshot ref, is gone or 
   withCdp(connection, method => { if (method === 'DOM.getBoxModel') throw Object.assign(new Error('Could not compute box model'), { code: 'browser_cdp_command_failed' }); });
   await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:7' })), { reason: 'node_unavailable' });
   withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [0, 0, 0, 0, 0, 0, 0, 0] } } : undefined);
-  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:8' })), { reason: 'node_not_visible' });
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:8' })), { reason: 'node_off_screen' });
 }));
 
 test('browsertools: full_page captures beyond the viewport at one pixel per CSS pixel and reports a cut page', () => using(async ({ host, connection, sent }) => {

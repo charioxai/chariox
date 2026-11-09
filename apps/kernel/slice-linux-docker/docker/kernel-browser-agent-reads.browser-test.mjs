@@ -57,8 +57,11 @@ test('native region screenshot, save, scroll to node and wait on a real page', a
     // 1: region, element, full page.
     const clip = await host.request({ op: 'screenshot', ...binding, ...agent, clip: { x: 0, y: 0, width: 200, height: 100 } });
     assert.deepEqual(sizeOf(clip.data_base64), { width: 200 * scale, height: 100 * scale });
+    // An element screenshot only looks: an off-screen node is refused and the page stays put until the agent scrolls.
+    await assert.rejects(host.request({ op: 'screenshot', ...binding, ...agent, node_ref: node('far') }), { reason: 'node_off_screen' });
+    assert.equal(await evaluate('Math.round(scrollY)'), 0, 'the screenshot did not scroll the page');
+    await host.request({ op: 'input', ...binding, ...agent, document_id: snapshot.document_id, input: { kind: 'scroll', target: node('far') } });
     const element = await host.request({ op: 'screenshot', ...binding, ...agent, node_ref: node('far') });
-    assert.equal(await evaluate('Math.round(scrollY)') > 1000, true, 'the element was scrolled into view');
     assert.deepEqual(element.clip.height, 80);
     assert.deepEqual(sizeOf(element.data_base64).height, 80 * scale);
     const page = await host.request({ op: 'screenshot', ...binding, ...agent, full_page: true });

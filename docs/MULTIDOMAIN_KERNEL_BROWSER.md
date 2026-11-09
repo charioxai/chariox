@@ -295,7 +295,9 @@ its commands and no protocol number changed. They are the reach for what an agen
 (a Chrome of the owner's, a native Save dialog):
 
 - `screenshot` with one of `node_ref`, `clip {x,y,width,height}` (CSS px inside the viewport) or `full_page: true`.
-  An element or region is cut from the same masked viewport capture a plain screenshot returns. A page is captured at
+  An element or region is cut from the same masked viewport capture a plain screenshot returns. A screenshot never
+  moves the page: an element outside the viewport is refused (`node_off_screen`) until the agent scrolls to it with the
+  admitted `input` scroll below, so the handoff, takeover and person-idle fences hold. A page is captured at
   one image pixel per CSS pixel, cut at 16000 px (`truncated`, `page_height`), and refused (`user_domain_not_granted`)
   while a protected Vault-filled field is on the page, since page-sized pixels have no mask geometry. The image reaches
   the model as an image part under the same 8 MiB cap.
