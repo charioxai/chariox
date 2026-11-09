@@ -56,6 +56,8 @@ mod wake_tests;
 mod wakeable;
 mod wakes;
 mod workflow_tasks;
+#[cfg(test)]
+mod yield_settled_tests;
 use super::{DurableKernelStateStore, DurableWriterRequest};
 use crate::error::DaemonError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};

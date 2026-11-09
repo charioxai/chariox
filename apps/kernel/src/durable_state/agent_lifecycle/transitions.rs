@@ -443,6 +443,11 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 ));
             }
             let regs = registrations(tx, &task)?;
+            if ids.iter().any(|id| !regs.iter().any(|r| &r.id == id)) {
+                return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
+            }
+            // A source that already ended is not something to wait on: its outcome is in the
+            // inbox and the kernel delivers it. Naming it is harmless, so it is dropped.
             let mut selected = vec![];
             for r in regs.iter().filter(|r| ids.contains(&r.id)) {
                 let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event')",params![t.room_id,t.agent_id,r.source_id,sql_integer(cursor)?],|row|row.get(0)).map_err(sql)?;
@@ -450,18 +455,25 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     selected.push(r);
                 }
             }
-            if selected.len() != ids.len()
-                || t.obligations
-                    .iter()
-                    .filter(|o| o.requires_resolution())
-                    .any(|o| {
-                        !selected
-                            .iter()
-                            .any(|r| r.obligation_id.as_deref() == Some(&o.id))
-                    })
+            // Only work still running needs a source: once an obligation has an outcome (done,
+            // failed, cancelled or its child deleted) that outcome reaches the agent by itself.
+            if t.obligations
+                .iter()
+                .filter(|o| o.status == "open" && o.requires_resolution())
+                .any(|o| {
+                    !selected
+                        .iter()
+                        .any(|r| r.obligation_id.as_deref() == Some(&o.id))
+                })
             {
                 return Err(error(yield_refusal(tx, &t, &ids, &regs)?));
             }
+            if selected.is_empty() {
+                return Err(error(
+                    "nothing to wait on: every source you named has ended and its outcome is in your inbox; read it and reply with the final answer",
+                ));
+            }
+            let ids: Vec<String> = selected.iter().map(|r| r.id.clone()).collect();
             // Goal check-ins have a separate clock. Preserve the admitted wait
             // deadline so an early check-in cannot turn a live source into a timeout.
             t.wait = Some(AgentWait {
