@@ -473,11 +473,7 @@ fn code_of(failure: &crate::error::DaemonError) -> &str {
 }
 
 // The `exec place` command: a Room is made on the target, then the held launch runs there.
-fn placement<'a>(
-    second: &'a SecondKernel,
-    id: &'a str,
-    directory: Option<&'a str>,
-) -> Placement<'a> {
+fn placement<'a>(id: &'a str, directory: Option<&'a str>) -> Placement<'a> {
     Placement {
         session_id: "room",
         exec_id: id,
@@ -501,7 +497,7 @@ async fn the_owning_agent_places_its_held_launch_into_a_room_made_on_the_target(
 
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, Some(&directory)),
+        placement(&id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -542,7 +538,7 @@ async fn a_person_places_the_launch_of_an_agent() {
     let directory = target_directory(&second);
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, Some(&directory)),
+        placement(&id, Some(&directory)),
         &Requester::Person,
         second.clone(),
     )
@@ -565,7 +561,7 @@ async fn another_agent_cannot_place_the_launch_and_nothing_is_sent() {
     for id in [&by_agent, &by_person] {
         let refused = crate::room_exec::run_on_kernel(
             &home,
-            placement(&second, id, Some(&directory)),
+            placement(id, Some(&directory)),
             &Requester::Agent("agent-2".into()),
             second.clone(),
         )
@@ -593,7 +589,7 @@ async fn a_started_launch_is_not_placed() {
     let directory = target_directory(&second);
     let refused = crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, Some(&directory)),
+        placement(&id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -616,7 +612,7 @@ async fn a_target_that_cannot_make_the_room_leaves_the_launch_held() {
     let directory = target_directory(&second);
     let failed = crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, Some(&directory)),
+        placement(&id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -704,7 +700,7 @@ async fn a_launch_placed_without_a_directory_gets_the_targets_own_default_room()
 
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, None),
+        placement(&id, None),
         &Requester::Person,
         second.clone(),
     )
@@ -721,7 +717,8 @@ async fn a_launch_placed_without_a_directory_gets_the_targets_own_default_room()
         .filter(|session| session.id != second.session_id)
         .collect::<Vec<_>>();
     assert_eq!(made.len(), 1, "one Room made for the launch");
-    assert_eq!(made[0].workspace_id, default.workspace_id);
+    // The kernel may name the repository root as the Room's workspace; the checkout is the
+    // directory the launch runs in.
     assert_eq!(made[0].worktree_id, default.worktree_id);
 }
 
@@ -736,7 +733,7 @@ async fn a_given_directory_is_used_and_the_target_default_is_not_read() {
     let directory = target_directory(&second);
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, Some(&directory)),
+        placement(&id, Some(&directory)),
         &Requester::Person,
         second.clone(),
     )

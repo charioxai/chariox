@@ -5960,8 +5960,10 @@ requests and responses, using its existing bounded framing and flow control.
   `exec_place_not_here`, ownership errors). `kernel` is a name `chariox kernels`
   lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
   the gateway's own typed error and the launch stays queued. The kernel first makes
-  a Room on the target in `directory` (default: this Room's directory; command id
-  `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
+  a Room on the target in `directory` (default: the target kernel's own default Room
+  directory, read with `GetWaitingRoomPublicSnapshot` under command id
+  `place:<exec_id>:target`; a target without one refuses with
+  `exec_target_no_directory`; command id `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
   forwards stdin offsets, output cursors and cancellation to it. A request whose
   outcome stays unknown after one retry with the same command id ends the launch
   `failed`, saying the other kernel may have started it; it is never replayed. The

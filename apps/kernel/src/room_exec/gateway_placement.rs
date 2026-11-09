@@ -120,8 +120,12 @@ pub(crate) async fn create_target_room(
     exec_id: &str,
     directory: Option<&str>,
 ) -> Result<String, DaemonError> {
-    let directory = directory.unwrap_or_default();
-    let mut create = crate::session::CreateSessionRequest::new(directory, directory);
+    let launch_target = match directory {
+        Some(_) => None,
+        None => target_launch_target(grant, exec_id).await?,
+    };
+    let (workspace_id, worktree_id) = room_location(directory, launch_target)?;
+    let mut create = crate::session::CreateSessionRequest::new(workspace_id, worktree_id);
     create.no_subscribe = true;
     let request = LocalDaemonRequest::CreateSession(create);
     let sent = &request;
@@ -139,12 +143,46 @@ pub(crate) async fn create_target_room(
     }
 }
 
-/// The workspace and worktree of a Room made without a directory.
+/// Where the other kernel makes a Room when asked for none: the same default its own clients
+/// offer, read from its public snapshot.
+async fn target_launch_target(
+    grant: &dyn GrantedSend,
+    exec_id: &str,
+) -> Result<Option<crate::local::WaitingRoomLaunchTarget>, DaemonError> {
+    let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+        crate::local::GetWaitingRoomPublicSnapshotRequest,
+    );
+    let sent = &request;
+    let answer = forward_with_retry(format!("place:{exec_id}:target"), move |id| {
+        grant.send(id, sent)
+    })
+    .await
+    .map_err(|failure| error(failure.code(), failure.transport_error().message))?;
+    match serde_json::from_value(answer) {
+        Ok(LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot }) => {
+            Ok(snapshot.launch_target)
+        }
+        _ => Err(error(
+            "exec_target_unreadable",
+            "the other kernel answered with something that is not its default Room directory",
+        )),
+    }
+}
+
+/// The workspace and worktree of the Room made on the other kernel: the directory given, else
+/// that kernel's own default. The home Room's path is never assumed to exist there.
 pub(crate) fn room_location(
-    _directory: Option<&str>,
-    _launch_target: Option<crate::local::WaitingRoomLaunchTarget>,
+    directory: Option<&str>,
+    launch_target: Option<crate::local::WaitingRoomLaunchTarget>,
 ) -> Result<(String, String), DaemonError> {
-    Err(error("exec_target_no_directory", "not implemented"))
+    match (directory, launch_target) {
+        (Some(directory), _) => Ok((directory.to_owned(), directory.to_owned())),
+        (None, Some(target)) => Ok((target.workspace_id, target.worktree_id)),
+        (None, None) => Err(error(
+            "exec_target_no_directory",
+            "the other kernel has no default Room directory; name one with --directory",
+        )),
+    }
 }
 
 fn unexpected() -> DaemonError {

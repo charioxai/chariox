@@ -32,7 +32,7 @@ pub enum RoomTerminalOperation {
         exec_id: String,
     },
     /// Run a launch that is still held on another of the owner's kernels. The
-    /// target Room is made in `directory` there, else in this Room's directory.
+    /// target Room is made in `directory` there, else in that kernel's own default Room directory.
     ExecPlace {
         exec_id: String,
         kernel: String,
