@@ -51,6 +51,36 @@ struct Handover {
     listeners: BTreeMap<String, i32>,
 }
 
+impl Handover {
+    fn with_terminals(terminals: Vec<TerminalHandover>) -> Self {
+        Self {
+            format: HANDOVER_FORMAT,
+            terminals,
+            providers: Vec::new(),
+            attachments: Vec::new(),
+            released_jobs: Vec::new(),
+            admission: Vec::new(),
+            user_domain: Default::default(),
+            revoked_reach_runs: Vec::new(),
+            credentials_fd: None,
+            vault_fd: None,
+            listeners: lock(&LISTENERS).clone(),
+        }
+    }
+
+    /// The descriptors the handover names, which the next program inherits.
+    fn inherited_fds(&self) -> Vec<i32> {
+        self.terminals
+            .iter()
+            .map(TerminalHandover::master_fd)
+            .chain(self.providers.iter().flat_map(ProviderHandover::fds))
+            .chain(self.credentials_fd)
+            .chain(self.vault_fd)
+            .chain(self.listeners.values().copied())
+            .collect()
+    }
+}
+
 /// A client's attachment to a session: the client resumes its subscription on
 /// it after the swap. (`RuntimeAttachment` leaves its owner out of what it
 /// serializes for clients.)
@@ -599,6 +629,28 @@ impl PreparedForTests {
         Self
     }
 
+    /// A swap prepared as on a SIGUSR2, with the running terminals of `terminals`.
+    pub(crate) fn with_terminals(terminals: &RoomTerminalService) -> Self {
+        let handover = terminals
+            .hand_over()
+            .expect("the terminals are handed over");
+        *lock(&PREPARED) = Some(Prepared {
+            handover: Handover::with_terminals(handover),
+            path: PathBuf::new(),
+            offered_ptys: BTreeMap::new(),
+        });
+        Self
+    }
+
+    /// The descriptors the swap names for the next program to inherit.
+    pub(crate) fn inherited_fds(&self) -> Vec<i32> {
+        lock(&PREPARED)
+            .as_ref()
+            .expect("a prepared swap")
+            .handover
+            .inherited_fds()
+    }
+
     /// What the next program receives of this swap, as it reads it from the handover file.
     pub(crate) fn reload(&self) {
         let prepared = lock(&PREPARED);
@@ -758,19 +810,7 @@ async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
     verify(start).await?;
     let handing = terminals.clone();
     match tokio::task::spawn_blocking(move || handing.hand_over()).await {
-        Ok(Ok(terminals)) => Ok(Handover {
-            format: HANDOVER_FORMAT,
-            terminals,
-            providers: Vec::new(),
-            attachments: Vec::new(),
-            released_jobs: Vec::new(),
-            admission: Vec::new(),
-            user_domain: Default::default(),
-            revoked_reach_runs: Vec::new(),
-            credentials_fd: None,
-            vault_fd: None,
-            listeners: lock(&LISTENERS).clone(),
-        }),
+        Ok(Ok(terminals)) => Ok(Handover::with_terminals(terminals)),
         Ok(Err(error)) => {
             terminals.release_handover();
             Err(error.to_string())
@@ -832,19 +872,8 @@ fn replace_program() -> Option<String> {
     }
     let inherited: Vec<i32> = prepared
         .handover
-        .terminals
-        .iter()
-        .map(TerminalHandover::master_fd)
-        .chain(
-            prepared
-                .handover
-                .providers
-                .iter()
-                .flat_map(ProviderHandover::fds),
-        )
-        .chain(prepared.handover.credentials_fd)
-        .chain(prepared.handover.vault_fd)
-        .chain(prepared.handover.listeners.values().copied())
+        .inherited_fds()
+        .into_iter()
         .chain(crate::slice::hand_over_managed_docker_broker())
         .collect();
     crate::logging::info_with_fields(

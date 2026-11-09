@@ -578,6 +578,52 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
     assert_eq!(submissions["jobs"][pid.to_string()], false, "{submissions}");
 }
 
+/// The PTY a master descriptor refers to, or `None` when the descriptor is not an open PTY master.
+fn pty_number(fd: i32) -> Option<libc::c_uint> {
+    let mut number: libc::c_uint = 0;
+    (unsafe { libc::ioctl(fd, libc::TIOCGPTN, &mut number) } == 0).then_some(number)
+}
+
+#[tokio::test]
+async fn a_hot_reload_owns_every_descriptor_it_names_while_the_kernel_stops() {
+    let root = TempDir::new();
+    let service = service(root.path());
+    let id = open(&service, root.path()).terminal_id;
+    let prepared = crate::hot_reload::PreparedForTests::with_terminals(&service);
+    let named = prepared.inherited_fds();
+    let ptys: Vec<_> = named.iter().map(|fd| pty_number(*fd)).collect();
+    assert!(
+        ptys.iter().all(Option::is_some),
+        "{named:?} are not all PTY masters"
+    );
+    let mut distinct = named.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        named.len(),
+        "{named:?} names a descriptor twice"
+    );
+    let shell = unsafe { libc::tcgetpgrp(named[0]) };
+    // The kernel stops before `exec`: the terminal's owner drops its PTY.
+    let owner = service.terminal_for_test(&id);
+    drop(std::mem::replace(
+        &mut owner.lock_open().unwrap().pty,
+        crate::pty::PtyManager::new(),
+    ));
+    let after: Vec<_> = named.iter().map(|fd| pty_number(*fd)).collect();
+    drop(prepared);
+    if shell > 1 {
+        // SAFETY: the positive PID of the shell this test started; never a group.
+        unsafe { libc::kill(shell, libc::SIGKILL) };
+        unsafe { libc::waitpid(shell, std::ptr::null_mut(), 0) };
+    }
+    assert_eq!(
+        after, ptys,
+        "the swap names {named:?}, which closed or changed while the kernel stopped"
+    );
+}
+
 /// A command that records its pid, then sleeps as that same process.
 const SLEEPER: &str = "sh -c 'echo $$ > {dir}/sleeper; exec sleep 120'";
 
