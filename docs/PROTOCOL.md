@@ -6988,3 +6988,20 @@ authority rule (level and mode at least the target's) runs. A message is an inbo
 with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The client
 minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.
+
+### Chunked kernel uploads and the measured window — relay peer 441
+
+MP-08 / MP-09 / MP-10 / MP-11: a small or control frame waits about a round trip behind bulk on a
+slow link, whatever the transfer size. A kernel offers the request header `x-chariox-upload:
+chunks-v2` on its relay socket; a relay that reassembles kernel uploads answers with the same
+header. The kernel then sends every message above 16 KiB in the existing chunks-v2 frames
+(`transport_chunk`, or `CXB1` binary chunks) and the relay acknowledges each chunk with
+`transport_ack`, written ahead of anything queued for the kernel. Each writer lane sends one message
+at a time, and the priority lane passes event bulk between any two chunks. Without the answer (a
+peer 440 relay) the kernel writes whole messages; the relay keeps reading whole messages from
+kernels that do not offer (peer 440). Both writers (relay to any peer, kernel to relay) bound the
+unacknowledged bulk by a window sized from the receipts: twice the measured delivery rate times
+the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs`). The relay
+writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
+checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
+`cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.
