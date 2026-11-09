@@ -5,6 +5,7 @@ use super::gateway_placement::{self, GatewayExecPlacement, GrantedSend};
 use super::{error, ExecState, ExecSummary, RoomExecService};
 use crate::error::DaemonError;
 use crate::local::{GatewayKernel, GatewayKernelStatus};
+use crate::runtime::process_resources::SessionProcessOwner;
 
 /// Who asks: a person, or an agent that may place only what it started itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,16 +58,35 @@ pub(crate) async fn run_on_kernel(
 
 /// The kernels a held launch could be placed on: the owner's other kernels that are online
 /// and speak the gateway contract.
-pub(crate) fn destinations(_kernels: Vec<GatewayKernel>, _own_kernel_id: &str) -> Vec<String> {
-    Vec::new()
+pub(crate) fn destinations(kernels: Vec<GatewayKernel>, own_kernel_id: &str) -> Vec<String> {
+    kernels
+        .into_iter()
+        .filter(|kernel| {
+            kernel.status == GatewayKernelStatus::Online
+                && kernel.gateway_ready
+                && kernel.kernel_id != own_kernel_id
+        })
+        .map(|kernel| kernel.name)
+        .collect()
 }
 
 /// Names `kernels` on each held launch that `requester` may place.
 pub(crate) fn offer_placement(
-    _execs: &mut [ExecSummary],
-    _requester: &Requester,
-    _kernels: &[String],
+    execs: &mut [ExecSummary],
+    requester: &Requester,
+    kernels: &[String],
 ) {
+    for exec in execs {
+        let launch_agent = match &exec.owner {
+            SessionProcessOwner::Agent(id) => Some(id.as_str()),
+            SessionProcessOwner::Terminal(_) => None,
+        };
+        if matches!(exec.state, ExecState::Queued { .. })
+            && requester.ensure_owns(launch_agent).is_ok()
+        {
+            exec.placeable_on = kernels.to_vec();
+        }
+    }
 }
 
 #[cfg(test)]
