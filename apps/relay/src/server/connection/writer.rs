@@ -1034,6 +1034,89 @@ mod tests {
             "{bulk_frames_before} bulk frames before the small reply"
         );
     }
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): on a 256 KiB/s link carrying three bulk transfers
+    // a small reply is delayed only by what the writer already put on the wire, never by the
+    // bulk still queued behind the credit window.
+    #[tokio::test]
+    async fn a_small_reply_waits_only_for_the_window_on_a_slow_link() {
+        const RATE: usize = 256 * 1024;
+        let start = tokio::time::Instant::now();
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                tokio::time::sleep(Duration::from_secs_f64(message.len() as f64 / RATE as f64))
+                    .await;
+                let _ = tx.send((tokio::time::Instant::now(), message));
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(false, queue),
+        ));
+        let bulk = |kind: &str, n: usize| {
+            let message = serde_json::json!({"kind":kind,"request_id":format!("bulk-{n}"),"payload":"y".repeat(20 * 1024 * 1024)});
+            Message::Text(message.to_string().into())
+        };
+        for (n, kind) in ["client_response", "daemon_request", "client_event"]
+            .into_iter()
+            .enumerate()
+        {
+            while sender.try_send(bulk(kind, n)).is_err() {
+                tokio::task::yield_now().await;
+            }
+        }
+        // The peer reads each frame, then returns its receipt.
+        let mut receiver = crate::frame_transport::FrameReceiver::default();
+        let mut sent_small_at = None;
+        let mut small_delay = None;
+        while small_delay.is_none() {
+            let (arrived, message) = wire.recv().await.expect("the writer ended");
+            let Message::Text(text) = message else {
+                continue;
+            };
+            let (_, receipt) = receiver.receive(&text).unwrap();
+            if let Some(receipt) = receipt {
+                let TransportFrame::TransportAck {
+                    transfer_id,
+                    offset,
+                } = serde_json::from_str(&receipt).unwrap()
+                else {
+                    panic!("receipt expected")
+                };
+                ack_tx.send((transfer_id, offset)).await.unwrap();
+            }
+            if sent_small_at.is_none() && arrived.duration_since(start) > Duration::from_secs(2) {
+                let small = serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+                sender
+                    .try_send(Message::Text(small.to_string().into()))
+                    .unwrap();
+                sent_small_at = Some(tokio::time::Instant::now());
+            }
+            if text.contains("small-reply") {
+                small_delay = Some(arrived.duration_since(sent_small_at.unwrap()));
+            }
+        }
+        task.abort();
+        let delay = small_delay.unwrap();
+        let bound = Duration::from_secs_f64(
+            (WINDOW_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5,
+        );
+        assert!(
+            delay <= bound,
+            "the small reply waited {delay:?}, bound {bound:?}"
+        );
+    }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
     // (appsfix r14: packets 2-3 of one click arrived one RTT apart).
