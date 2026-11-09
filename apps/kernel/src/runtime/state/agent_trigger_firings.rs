@@ -3,6 +3,7 @@
 //! only its own trigger, whose claim already keeps it from being fired twice.
 use super::*;
 use crate::session::AgentTriggerDispatch;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::AtomicUsize;
 
 /// How many firings are admitted at once; a due trigger beyond that waits for a free place.
@@ -16,6 +17,7 @@ pub(super) struct TriggerFirings {
     places: Arc<tokio::sync::Semaphore>,
     running: Arc<AtomicUsize>,
     idle: Arc<Notify>,
+    queues: Arc<std::sync::Mutex<HashMap<String, VecDeque<(AgentTriggerDispatch, u64)>>>>,
 }
 
 impl Default for TriggerFirings {
@@ -24,6 +26,24 @@ impl Default for TriggerFirings {
             places: Arc::new(tokio::sync::Semaphore::new(FIRINGS_AT_ONCE)),
             running: Arc::default(),
             idle: Arc::default(),
+            queues: Arc::default(),
+        }
+    }
+}
+
+/// The one task that fires the triggers of one agent, from the first claim to the last that is
+/// waiting. Dropping it before the queue is empty (a panic) frees the agent for a new runner.
+struct AgentRunner {
+    agent_id: String,
+    firings: TriggerFirings,
+    _running: RunningFiring,
+    drained: bool,
+}
+
+impl Drop for AgentRunner {
+    fn drop(&mut self) {
+        if !self.drained {
+            self.firings.lock_queues().remove(&self.agent_id);
         }
     }
 }
@@ -43,6 +63,43 @@ impl Drop for RunningFiring {
 }
 
 impl TriggerFirings {
+    fn lock_queues(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, VecDeque<(AgentTriggerDispatch, u64)>>> {
+        self.queues
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Appends `dispatch` to the queue of its agent, which is shared by every pump. The agent
+    /// gets a runner only when none is running, so its triggers never fire out of claim order.
+    fn enqueue(&self, dispatch: AgentTriggerDispatch, now_ms: u64) -> Option<AgentRunner> {
+        let agent_id = dispatch.agent_id.clone();
+        let mut queues = self.lock_queues();
+        if let Some(queue) = queues.get_mut(&agent_id) {
+            queue.push_back((dispatch, now_ms));
+            return None;
+        }
+        queues.insert(agent_id.clone(), VecDeque::from([(dispatch, now_ms)]));
+        Some(AgentRunner {
+            agent_id,
+            firings: self.clone(),
+            _running: self.begin(),
+            drained: false,
+        })
+    }
+
+    /// The next waiting firing of the runner's agent; the agent has no queue once none is left.
+    fn next(&self, runner: &mut AgentRunner) -> Option<(AgentTriggerDispatch, u64)> {
+        let mut queues = self.lock_queues();
+        let next = queues.get_mut(&runner.agent_id)?.pop_front();
+        if next.is_none() {
+            queues.remove(&runner.agent_id);
+            runner.drained = true;
+        }
+        next
+    }
+
     fn begin(&self) -> RunningFiring {
         self.running.fetch_add(1, Ordering::AcqRel);
         RunningFiring {
@@ -76,25 +133,17 @@ impl TriggerFirings {
 impl KernelRuntimeState {
     /// Fires the claimed `dispatches` as work of their own and settles each trigger with its
     /// result. The claim stays until then, so a trigger is neither fired again nor lost. The
-    /// triggers of one agent fire one after another in the order they were claimed, because a
-    /// steer needs its prompt at the head of that agent's queue; other agents do not wait for them.
+    /// triggers of one agent fire one after another in the order they were claimed, across pumps
+    /// too, because a steer needs its prompt at the head of that agent's queue; other agents do
+    /// not wait for them.
     pub(super) fn spawn_trigger_firings(&self, dispatches: Vec<AgentTriggerDispatch>, now_ms: u64) {
-        let mut by_agent: Vec<Vec<AgentTriggerDispatch>> = Vec::new();
         for dispatch in dispatches {
-            match by_agent
-                .iter_mut()
-                .find(|group| group[0].agent_id == dispatch.agent_id)
-            {
-                Some(group) => group.push(dispatch),
-                None => by_agent.push(vec![dispatch]),
-            }
-        }
-        for group in by_agent {
-            let running = self.trigger_firings.begin();
+            let Some(mut runner) = self.trigger_firings.enqueue(dispatch, now_ms) else {
+                continue;
+            };
             let state = self.clone();
             tokio::spawn(async move {
-                let _running = running;
-                for dispatch in group {
+                while let Some((dispatch, now_ms)) = state.trigger_firings.next(&mut runner) {
                     state.fire_and_settle_agent_trigger(&dispatch, now_ms).await;
                 }
             });
