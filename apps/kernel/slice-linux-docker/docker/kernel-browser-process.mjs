@@ -38,6 +38,31 @@ export async function executable(environment = process.env, platform = process.p
   throw new Error("MD-2: install native Chromium or set CHARIOX_KERNEL_BROWSER_EXECUTABLE");
 }
 
+// RULE: no launch flag and no injected script may change what a page can observe unless a test lists it.
+// Pages (Google sign-in, Cloudflare, reCAPTCHA, Turnstile, BotD, BrowserScan) read the browser's identity and its
+// automation markers, so every flag below states what, if anything, a page can see of it. The signal probe
+// (kernel-browser-signals.mjs, asserted by kernel-browser-standard-chrome.browser-test.mjs against a stock Chrome of the
+// same build) covers each visible effect, and kernel-browser-process.test.mjs fails for a flag missing from this table.
+// Manual external check before every staging: scripts in kernel-browser-probe.mjs (BrowserScan, Google email step, ...).
+export const launchFlagVisibility = {
+  '--user-data-dir': 'none',
+  // The CDP pipe marks the browser automation-controlled: navigator.webdriver true. Countered by the Blink feature flag below.
+  '--remote-debugging-pipe': 'navigator.webdriver (countered)',
+  '--no-first-run': 'none', '--no-default-browser-check': 'none', '--hide-crash-restore-bubble': 'none', '--disable-background-networking': 'none',
+  '--enable-unsafe-extension-debugging': 'none (the tab-groups component extension is not reachable from a page)',
+  '--disable-blink-features': 'navigator.webdriver is false like a Chrome a person starts',
+  '--enable-unsafe-swiftshader': 'WebGL exists on a host without a GPU (SwiftShader); a real GPU still wins (listed: webgl)',
+  '--enable-features': 'media capabilities: hardware video decode where VA-API exists',
+  '--window-size': 'window and screen geometry (listed: screen, window.size)',
+  '--headless': 'headless Chrome: HeadlessChrome User-Agent and no pointer; countered by --user-agent and --blink-settings',
+  '--user-agent': 'the User-Agent a headed Chrome of the same build and platform sends; drops high-entropy client hints (listed: uad.high)',
+  '--blink-settings': 'pointer: fine and hover: hover media queries, as on a desktop with a mouse',
+  '--disable-lcd-text': 'text anti-aliasing of the remote panel (canvas text pixels)',
+  '--force-device-scale-factor': 'devicePixelRatio, the viewer\'s',
+  '--disable-renderer-backgrounding': 'none', '--disable-background-timer-throttling': 'none', '--disable-backgrounding-occluded-windows': 'none',
+  '--disable-features': 'none (Chrome\'s own sign-in chip in the band)',
+};
+
 // MP-08/MP-10: a private owned window renders at the viewer's device scale
 // natively (emulated view scaling renders text differently from CDP).
 export function launchArguments(profile, headless, display = false, scale = 1, videoDecode = [], identity = []) {
