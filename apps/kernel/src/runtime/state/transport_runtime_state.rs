@@ -107,7 +107,7 @@ impl KernelRuntimeState {
             self,
         )
         .await;
-        self.retry_due_provider_launch_failures(now_ms).await;
+        self.schedule_due_provider_launch_failure_retries(now_ms);
         if self.claim_provider_process_gc(now_ms) {
             if let Err(error) = self.reap_idle_provider_processes(now_ms).await {
                 crate::logging::warn_with_fields(

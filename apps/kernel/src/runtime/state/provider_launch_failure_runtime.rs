@@ -5,6 +5,9 @@
 
 use super::*;
 
+/// How long the retry of a failed launch waits for the lane of its run.
+const PROVIDER_LANE_WAIT: Duration = Duration::from_secs(30);
+
 impl KernelRuntimeState {
     pub(crate) async fn fail_provider_launch(
         &self,
@@ -31,25 +34,69 @@ impl KernelRuntimeState {
             .await;
     }
 
-    pub(super) async fn retry_due_provider_launch_failures(&self, now_ms: u64) {
+    /// Starts the cleanup of every launch failure whose retry is due, each as work of its own for
+    /// its run, so a run whose lane is held holds neither the pump nor the retry of another run.
+    pub(super) fn schedule_due_provider_launch_failure_retries(&self, now_ms: u64) {
         for provider_run_id in self
             .owned
             .provider_launch_failure_retries
             .due_provider_run_ids(now_ms)
         {
-            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
-            let Some(retry) = self
-                .owned
-                .provider_launch_failure_retries
-                .take_due_for(&provider_run_id, now_ms)
-            else {
-                continue;
-            };
-            let started = retry.started.clone();
-            let error = retry.error();
-            self.settle_provider_launch_failure_in_lane(&started, &error, Some(retry))
-                .await;
+            self.spawn_task_work(
+                format!("provider-launch-retry:{provider_run_id}"),
+                move |state| async move {
+                    state
+                        .retry_provider_launch_failure(&provider_run_id, now_ms)
+                        .await
+                },
+            );
         }
+    }
+
+    async fn retry_provider_launch_failure(
+        &self,
+        provider_run_id: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        // The retry is taken only once the lane is held, so a run whose lane stays busy keeps
+        // its retry for the next pump.
+        let Ok(permit) = tokio::time::timeout(
+            PROVIDER_LANE_WAIT,
+            self.provider_runtime_lanes.acquire(provider_run_id),
+        )
+        .await
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "retry provider launch failure",
+                message: format!(
+                    "the lane of provider run `{provider_run_id}` stayed busy for {} s; the retry stays scheduled",
+                    PROVIDER_LANE_WAIT.as_secs()
+                ),
+            });
+        };
+        let Some(retry) = self
+            .owned
+            .provider_launch_failure_retries
+            .take_due_for(provider_run_id, now_ms)
+        else {
+            return Ok(());
+        };
+        let started = retry.started.clone();
+        let error = retry.error();
+        // The retry is out of the store now: its cleanup runs to its end, whatever the time limit
+        // of the work that started it.
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _permit = permit;
+            state
+                .settle_provider_launch_failure_in_lane(&started, &error, Some(retry))
+                .await;
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "retry provider launch failure",
+            message: error.to_string(),
+        })
     }
 
     async fn settle_provider_launch_failure_in_lane(
