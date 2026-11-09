@@ -625,6 +625,7 @@ impl PreparedForTests {
         *lock(&PREPARED) = Some(Prepared {
             handover: Handover::default(),
             masters: Vec::new(),
+            kernel: None,
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
         });
@@ -667,8 +668,12 @@ impl Drop for PreparedForTests {
 }
 
 /// Takes the stopped kernel's state when its run returns, before `finish`.
+/// A prepared swap keeps it until `exec`: the PTY processes it hands over
+/// would end with it.
 pub(crate) fn keep_until_exec(kernel: Box<dyn std::any::Any + Send>) {
-    drop(kernel);
+    if let Some(prepared) = lock(&PREPARED).as_mut() {
+        prepared.kernel = Some(kernel);
+    }
 }
 
 /// Keeps a running Claude turn for the next program.
@@ -774,6 +779,8 @@ struct Prepared {
     // `exec`: the terminals and runs that handed them over close their own
     // descriptors whenever the kernel's stop drops them.
     masters: Vec<OwnedFd>,
+    // The stopped kernel's state, which owns the handed-over PTY processes.
+    kernel: Option<Box<dyn std::any::Any + Send>>,
     path: PathBuf,
     offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
 }
@@ -784,6 +791,7 @@ impl Prepared {
         Self {
             handover: Handover::with_terminals(terminals),
             masters,
+            kernel: None,
             path,
             offered_ptys: BTreeMap::new(),
         }
