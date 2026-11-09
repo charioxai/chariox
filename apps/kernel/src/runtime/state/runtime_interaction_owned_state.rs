@@ -93,9 +93,17 @@ impl KernelRuntimeOwnedState {
                 p.kernel_operation_deadline
                     .is_none_or(|d| std::time::Instant::now() < d)
             })?;
+        // A card payment asked by an agent in its Room is its owner's decision like a kernel operation.
+        let payment = super::vault_use::is_vault_payment_decision(interaction_id);
         let owner = pending
             .kernel_operation_owner
             .clone()
+            .or_else(|| {
+                payment
+                    .then(|| self.session_store.get_session(session_id).ok())
+                    .flatten()
+                    .map(|session| session.owner_user_id().to_owned())
+            })
             .filter(|owner| self.is_decision_owner(session_id, caller_user_id, owner))?;
         let interaction = if let Some(interaction) = pending
             .kernel_wide_interaction
@@ -114,7 +122,12 @@ impl KernelRuntimeOwnedState {
         interaction
             .choice(choice_id)
             .filter(|choice| choice.requires_passkey())?;
-        Some((owner, interaction.kernel_operation_id()?.to_owned()))
+        let operation = match interaction.kernel_operation_id() {
+            Some(operation) => operation,
+            None if payment => interaction.id(),
+            None => return None,
+        };
+        Some((owner, operation.to_owned()))
     }
 
     pub(super) fn update_provider_login_interaction(

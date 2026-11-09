@@ -58,7 +58,7 @@ pub(crate) fn user_only(
         Some(UserOnly::Sudo)
     } else if operation.starts_with("access-") {
         Some(UserOnly::AccessGrant)
-    } else if interaction.id().starts_with("vault-card-") {
+    } else if super::vault_use::is_vault_payment_decision(interaction.id()) {
         Some(UserOnly::Payment)
     } else if pending.passkey_prompt.is_some()
         || interaction
