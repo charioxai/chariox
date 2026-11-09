@@ -135,6 +135,17 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
         "the binding holds the worker's folder"
     );
     assert_eq!(answer["worktree"], worker_folder, "{answer}");
+    let facts = fixture
+        .home
+        .runtime_state
+        .spawned_agent_facts(&stored)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(facts.worktree),
+        worker_folder,
+        "the facts the local answer and the footer read name the worker's folder"
+    );
     assert_eq!(answer["branch"], serde_json::Value::Null, "{answer}");
 }
 
@@ -167,5 +178,16 @@ async fn check_created_checkout_answer(fixture: &LiveWorker, checkout: &str) {
         "the binding holds the checkout the worker created, not the folder it started from"
     );
     assert_eq!(answer["worktree"], checkout, "{answer}");
+    let facts = fixture
+        .home
+        .runtime_state
+        .spawned_agent_facts(&stored)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(facts.worktree),
+        checkout,
+        "the facts the local answer and the footer read name the checkout the worker created"
+    );
     assert_eq!(answer["branch"], serde_json::Value::Null, "{answer}");
 }

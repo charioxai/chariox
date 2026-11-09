@@ -293,7 +293,7 @@ test("agent spawn command can create and start a new slice", async () => {
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · slice slice-created · effort medium · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-created · effort medium · worker machine-slice")
 })
 
 test("agent spawn command creates a new slice on an exact kernel without also spawning on the kernel", async () => {
@@ -449,7 +449,7 @@ test("agent spawn command reuses resolved slice id after validating scope", asyn
     "rebuild",
     "repaint",
   ])
-  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · effort medium · worktree worktree-1 · worker machine-slice")
+  assert.equal(flashedMessage, "spawned builder · slice slice-resolved · effort medium · worker machine-slice")
 })
 
 test("agent spawn command reuses a running slice without starting it again", async () => {
@@ -695,6 +695,101 @@ test("agent spawn footer states the options the kernel applied, not the ones ask
     flashedMessage,
     "spawned builder · local · profile team-b · effort xhigh · permission required · worktree /workspace-applied",
   )
+})
+
+test("agent spawn footer states the deadline and the branch the kernel answered with", async () => {
+  let currentSession = session()
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => providerRun({ agent_instance_id: agentId }),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      const nextAgent = agent({ id: "agent-timed", agent_ref: "agent-timed", alias: "builder" })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession, deadline_ms: 1_800_000_000_000, branch: "feature-x" }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4"])
+
+  assert.equal(
+    flashedMessage,
+    "spawned builder · local · effort medium · deadline 2027-01-15T08:00:00Z · worktree worktree-1 · branch feature-x",
+  )
+})
+
+/** The footer of `agent spawn --kernel`, for an agent the home room also lists under its own folder. */
+async function remoteSpawnFooter(workerWorktreeId: string | null | undefined): Promise<string> {
+  let currentSession = session()
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async () => {
+      throw new Error("kernel-targeted spawn should not launch locally")
+    },
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async (_provider, alias) => {
+      const nextAgent = agent({
+        id: "agent-worker",
+        agent_ref: "agent-worker",
+        alias: alias ?? null,
+        worktree_id: "worktree-1",
+        remote_execution: {
+          worker_kernel_id: "kernel-worker",
+          worker_machine_id: "machine-worker",
+          execution_lease_id: "lease-1",
+          leased_agent_id: "leased-agent-1",
+          ...(workerWorktreeId === undefined ? {} : { worker_worktree_id: workerWorktreeId }),
+        },
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4", "--kernel", "kernel-worker"])
+  return flashedMessage
+}
+
+test("agent spawn footer names the worker folder of a remote agent, not the home room's", async () => {
+  assert.equal(
+    await remoteSpawnFooter("/srv/worker/workspace"),
+    "spawned builder · remote machine-worker · effort medium · worktree /srv/worker/workspace",
+  )
+})
+
+test("agent spawn footer names the checkout the worker created for a --worktree spawn", async () => {
+  assert.equal(
+    await remoteSpawnFooter("/srv/worker/checkouts/kid"),
+    "spawned builder · remote machine-worker · effort medium · worktree /srv/worker/checkouts/kid",
+  )
+})
+
+test("agent spawn footer leaves the worktree out when the worker folder is unknown", async () => {
+  for (const unknown of [undefined, null]) {
+    assert.equal(await remoteSpawnFooter(unknown), "spawned builder · remote machine-worker · effort medium")
+  }
 })
 
 test("agent spawn command targets an exact kernel without machine resolution", async () => {

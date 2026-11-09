@@ -945,7 +945,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     undoTurn: (agentRef, turnRef) => undoTurnApi(client, sessionState().id, agentRef, turnRef),
     forkAgent: (sourceAgentRef, alias) => forkAgentApi(client, sessionState().id, sourceAgentRef, alias),
     spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, accountProfile) => {
-      const agent = await spawnAgentApi(
+      const spawned = await spawnAgentApi(
         client,
         sessionState().id,
         {
@@ -961,7 +961,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         },
       )
       return {
-        agent,
+        ...spawned,
         session: await getSessionState(client, sessionState().id),
       }
     },
