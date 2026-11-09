@@ -26,6 +26,15 @@ fn kernel_unreachable(kernel: &str) -> DaemonError {
     )
 }
 
+const AMBIGUOUS_MACHINE: &str = "kernel_ambiguous";
+
+fn ambiguous_machine(kernel_ref: &str) -> DaemonError {
+    refusal(
+        AMBIGUOUS_MACHINE,
+        format!("machine `{kernel_ref}` runs several kernels; name one with --kernel"),
+    )
+}
+
 fn uncertain(kernel: &str, retry: &str) -> DaemonError {
     refusal(
         "uncertain",
@@ -171,8 +180,10 @@ impl KernelRuntimeState {
             return Ok(None);
         }
         #[cfg(test)]
-        if let Some(kernel) = peer_agent_link_for_tests::resolve(kernel_ref) {
-            return Ok((kernel != config.daemon_id).then_some(kernel));
+        match peer_agent_link_for_tests::resolve(kernel_ref).as_slice() {
+            [] => {}
+            [kernel] => return Ok((*kernel != config.daemon_id).then(|| kernel.clone())),
+            _ => return Err(ambiguous_machine(kernel_ref)),
         }
         if let Ok(presence) =
             crate::transport::relay_discovery::get_live_kernel(&config, kernel_ref).await
@@ -188,10 +199,25 @@ impl KernelRuntimeState {
             [] => Err(kernel_unreachable(kernel_ref)),
             [kernel] if kernel.kernel_id == config.daemon_id => Ok(None),
             [kernel] => Ok(Some(kernel.kernel_id.clone())),
-            _ => Err(refusal(
-                "kernel_ambiguous",
-                format!("machine `{kernel_ref}` runs several kernels; name one with --kernel"),
-            )),
+            _ => Err(ambiguous_machine(kernel_ref)),
+        }
+    }
+
+    /// The kernel reference of a request to create something, settled before it is placed: this
+    /// kernel by id, alias or machine name keeps the work here (`None`); a machine that runs
+    /// several kernels is refused; any other reference stays for placement, which also refuses an
+    /// unknown one.
+    pub(crate) async fn settle_kernel_ref(
+        &self,
+        kernel_ref: Option<String>,
+    ) -> Result<Option<String>, DaemonError> {
+        let Some(name) = kernel_ref.as_deref() else {
+            return Ok(None);
+        };
+        match self.resolve_peer_kernel(name).await {
+            Ok(None) => Ok(None),
+            Err(error) if error.to_string().contains(AMBIGUOUS_MACHINE) => Err(error),
+            Ok(Some(_)) | Err(_) => Ok(kernel_ref),
         }
     }
 
@@ -627,13 +653,14 @@ pub(crate) mod peer_agent_link_for_tests {
         LINKS.lock().unwrap().remove(kernel);
     }
 
-    pub(super) fn resolve(kernel_ref: &str) -> Option<String> {
+    pub(super) fn resolve(kernel_ref: &str) -> Vec<String> {
         LINKS
             .lock()
             .unwrap()
             .iter()
-            .find(|(id, (name, _))| *id == kernel_ref || name == kernel_ref)
+            .filter(|(id, (name, _))| *id == kernel_ref || name == kernel_ref)
             .map(|(id, _)| id.clone())
+            .collect()
     }
 
     pub(super) fn link(kernel: &str) -> Option<Link> {

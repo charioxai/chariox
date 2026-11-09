@@ -605,15 +605,6 @@ impl CommandRouter {
             Ok(spawn) => spawn,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        // The own kernel, by machine name too, is no other kernel: the spawn stays here. An
-        // unknown name stays for the placement below to refuse.
-        if spawn.room.is_none() {
-            if let Some(kernel) = spawn.kernel_ref.as_deref() {
-                if let Ok(None) = self.runtime_state.resolve_peer_kernel(kernel).await {
-                    spawn.kernel_ref = None;
-                }
-            }
-        }
         // `--room` with `--kernel` names a room on that kernel; this kernel's own name keeps the
         // spawn here. Without `--room` another kernel's reference stays: a sub-agent runs there.
         if let Some(room) = spawn.room.clone() {

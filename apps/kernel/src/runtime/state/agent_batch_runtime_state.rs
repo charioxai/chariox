@@ -16,7 +16,7 @@ impl KernelRuntimeState {
             });
         }
         for request in &mut requests {
-            self.normalize_local_kernel_ref(request);
+            request.kernel_ref = self.settle_kernel_ref(request.kernel_ref.take()).await?;
         }
         if requests.iter().all(|request| request.kernel_ref.is_none()) {
             let prepared = requests
