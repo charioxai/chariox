@@ -104,15 +104,18 @@ impl KernelRuntimeState {
         })
     }
 
-    /// A client's read: the deadline says when another user's work stops, so only who acts for
-    /// the agent's owner reads it.
+    /// A client's read: the deadline says when the agent's work stops, so whoever may view the
+    /// agent's trace reads it. Arming one stays with who acts for its owner.
     pub(crate) fn read_agent_deadline(
         &self,
         caller_user_id: &str,
         request: GetAgentDeadlineRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        self.owned
-            .ensure_agent_owner(&request.agent_id, caller_user_id, "read agent deadline")?;
+        self.owned.ensure_agent_trace_access(
+            &request.agent_id,
+            caller_user_id,
+            "read agent deadline",
+        )?;
         self.get_agent_deadline(request)
     }
 
