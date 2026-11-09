@@ -431,3 +431,44 @@ async fn a_tree_change_reaches_exactly_the_members_whose_listing_shows_the_tree(
         }
     }
 }
+
+// A client reads the settings a child really runs with through `ListDescendants`, and a change
+// of the child's settings moves the revision followers are told about.
+#[tokio::test]
+async fn a_node_reports_the_settings_it_runs_with_and_a_change_moves_the_revision() {
+    let team = team_with("tree-settings", None, true).await;
+    let before = read(&team);
+    assert_eq!(
+        (
+            before.nodes[0].execution_mode,
+            before.nodes[0].permission_level
+        ),
+        (
+            Some(crate::provider::AgentExecutionMode::Build),
+            Some(crate::provider::AgentPermissionLevel::Yolo)
+        )
+    );
+    team.runtime
+        .owned
+        .agent_store
+        .update_agent_config(
+            &team.child,
+            Some(Some(crate::provider::AgentExecutionMode::Plan)),
+            Some(Some(crate::provider::AgentPermissionLevel::Required)),
+            None,
+            None,
+        )
+        .unwrap();
+    let after = read(&team);
+    assert_eq!(
+        (
+            after.nodes[0].execution_mode,
+            after.nodes[0].permission_level
+        ),
+        (
+            Some(crate::provider::AgentExecutionMode::Plan),
+            Some(crate::provider::AgentPermissionLevel::Required)
+        )
+    );
+    assert!(after.rev > before.rev, "{} > {}", after.rev, before.rev);
+}

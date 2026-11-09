@@ -38,6 +38,15 @@ pub struct AgentTreeNode {
     pub alias: Option<String>,
     pub provider: String,
     pub model: Option<String>,
+    /// The mode this node really runs in, after the limit of its parent chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<crate::provider::AgentExecutionMode>,
+    /// The permission level this node's approvals really use, after the limit of its parent chain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_level: Option<crate::provider::AgentPermissionLevel>,
+    /// The node's effective variant; omitted when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     pub depth: u32,
     pub state: AgentTreeState,
     pub outcome: Option<crate::provider::TurnOutcomeKind>,

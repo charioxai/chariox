@@ -59,6 +59,11 @@ fn totals_of(nodes: &[AgentTreeNode]) -> AgentTreeTotals {
     }
 }
 
+fn redact_parameters(node: &mut AgentTreeNode) {
+    node.provider = "redacted".to_owned();
+    node.model = None;
+}
+
 /// What the viewer reads of `tree`, by the rule the session projection applies to agents: an agent
 /// of the viewer is whole; another user's agent shows only to a collaborator who may view traces
 /// and then without provider and model unless the collaborator may view parameters.
@@ -92,8 +97,7 @@ pub(crate) fn tree_for_viewer(
     if !level.can_view_agent_parameters() {
         for node in &mut tree.nodes {
             if !viewers_agent(&node.agent_id) {
-                node.provider = "redacted".to_owned();
-                node.model = None;
+                redact_parameters(node);
             }
         }
     }
@@ -161,6 +165,9 @@ pub(crate) fn project_agent_tree(
             alias: agent.alias().map(str::to_owned),
             provider: agent.provider().to_owned(),
             model: agent.model().map(str::to_owned),
+            execution_mode: None,
+            permission_level: None,
+            effort: None,
             depth,
             state,
             outcome: turn.and_then(|turn| turn.outcome),
@@ -183,6 +190,7 @@ pub(crate) fn project_agent_tree(
 mod tests {
     use super::*;
     use crate::agent::{AgentRef, GridPosition};
+    use crate::provider::{AgentExecutionMode, AgentPermissionLevel};
 
     fn agent(id: &str, parent: Option<&str>, at: u64) -> AgentInstance {
         let mut agent = AgentInstance::new(
@@ -489,6 +497,183 @@ mod tests {
             ]
         );
         assert_eq!(tree.totals.live, 1);
+    }
+
+    fn settings_child(
+        id: &str,
+        parent: &str,
+        at: u64,
+        mode: Option<AgentExecutionMode>,
+        level: Option<AgentPermissionLevel>,
+        effort: Option<&str>,
+    ) -> AgentInstance {
+        let mut child = AgentInstance::new(
+            id,
+            id,
+            "room",
+            Some(id.to_owned()),
+            "codex",
+            None,
+            effort.map(str::to_owned),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        child.set_parent_agent(Some(AgentRef::local(parent)));
+        child.set_created_at_ms_for_test(at);
+        child.set_execution_mode_override(mode);
+        child.set_permission_level_override(level);
+        child
+    }
+
+    fn settings_of(
+        tree: &AgentTree,
+    ) -> Vec<(&str, AgentExecutionMode, AgentPermissionLevel, Option<&str>)> {
+        tree.nodes
+            .iter()
+            .map(|node| {
+                (
+                    node.agent_id.as_str(),
+                    node.execution_mode.expect("the kernel reports the mode"),
+                    node.permission_level
+                        .expect("the kernel reports the permission level"),
+                    node.effort.as_deref(),
+                )
+            })
+            .collect()
+    }
+
+    fn read_tree(session: &RuntimeSession) -> AgentTree {
+        project_agent_tree(
+            session,
+            session.agents(),
+            "root",
+            &|_| false,
+            &|_| None,
+            &|_| None,
+        )
+        .unwrap()
+    }
+
+    // A child shows the mode, permission level and variant it really runs with, not a default.
+    #[test]
+    fn a_node_reports_its_mode_permission_level_and_effort() {
+        let session = session(vec![
+            agent("root", None, 1),
+            settings_child(
+                "plan",
+                "root",
+                2,
+                Some(AgentExecutionMode::Plan),
+                Some(AgentPermissionLevel::Required),
+                Some("high"),
+            ),
+            settings_child("plain", "root", 3, None, None, None),
+        ]);
+        let tree = read_tree(&session);
+        assert_eq!(
+            settings_of(&tree),
+            vec![
+                (
+                    "plan",
+                    AgentExecutionMode::Plan,
+                    AgentPermissionLevel::Required,
+                    Some("high")
+                ),
+                (
+                    "plain",
+                    AgentExecutionMode::Build,
+                    AgentPermissionLevel::Yolo,
+                    None
+                ),
+            ]
+        );
+        let wire = serde_json::to_value(&tree.nodes[1]).unwrap();
+        assert!(
+            wire.get("effort").is_none(),
+            "no effort is no field: {wire}"
+        );
+        assert_eq!(wire["execution_mode"], "build");
+        assert_eq!(wire["permission_level"], "yolo");
+        let wire = serde_json::to_value(&tree.nodes[0]).unwrap();
+        assert_eq!(
+            (
+                &wire["execution_mode"],
+                &wire["permission_level"],
+                &wire["effort"]
+            ),
+            (&"plan".into(), &"required".into(), &"high".into())
+        );
+    }
+
+    // The value is the one approval gating uses: a child above its parent chain shows the cap.
+    #[test]
+    fn a_node_shows_the_level_its_parent_chain_caps_it_to() {
+        let mut capped_root = agent("root", None, 1);
+        capped_root.set_execution_mode_override(Some(AgentExecutionMode::Plan));
+        capped_root.set_permission_level_override(Some(AgentPermissionLevel::Required));
+        let session = session(vec![
+            capped_root,
+            settings_child(
+                "raised",
+                "root",
+                2,
+                Some(AgentExecutionMode::Build),
+                Some(AgentPermissionLevel::Yolo),
+                None,
+            ),
+            settings_child("unset", "root", 3, None, None, None),
+            settings_child(
+                "grand",
+                "raised",
+                4,
+                Some(AgentExecutionMode::Build),
+                Some(AgentPermissionLevel::Yolo),
+                None,
+            ),
+        ]);
+        let tree = read_tree(&session);
+        for node in &tree.nodes {
+            let agent = session
+                .agents()
+                .iter()
+                .find(|agent| agent.id() == node.agent_id)
+                .unwrap();
+            let gated = crate::session::effective_agent_execution_config_in_tree(
+                &session,
+                agent,
+                session.agents(),
+            );
+            assert_eq!(
+                (node.execution_mode, node.permission_level),
+                (Some(gated.mode), Some(gated.permission_level)),
+                "{}",
+                node.agent_id
+            );
+            assert_eq!(node.execution_mode, Some(AgentExecutionMode::Plan));
+            assert_eq!(node.permission_level, Some(AgentPermissionLevel::Required));
+        }
+    }
+
+    // A collaborator who may not view parameters reads no settings either.
+    #[test]
+    fn settings_follow_the_parameters_redaction() {
+        let mut node_tree = read_tree(&session(vec![
+            agent("root", None, 1),
+            settings_child("c", "root", 2, None, None, None),
+        ]));
+        let node = &mut node_tree.nodes[0];
+        node.execution_mode = Some(AgentExecutionMode::Plan);
+        node.permission_level = Some(AgentPermissionLevel::Required);
+        node.effort = Some("high".to_owned());
+        redact_parameters(node);
+        assert_eq!(
+            (
+                node.execution_mode,
+                node.permission_level,
+                node.effort.as_deref()
+            ),
+            (None, None, None)
+        );
     }
 
     // The client controller tests read this file as the kernel's answer once every child finished.
