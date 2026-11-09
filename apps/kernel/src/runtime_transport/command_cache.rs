@@ -21,6 +21,7 @@ pub(crate) use at_most_once::{is_receipt_capacity_error, is_receipt_expired_erro
 use receipt_retention::ReceiptRetention;
 
 pub(crate) const COMMAND_RESULT_CACHE_LIMIT: usize = 512;
+const RETRY_ANSWER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 const COMMAND_RESULT_CACHE_MAX_MEMORY_BYTES: u64 = 128 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_BYTES: u64 = 50 * 1024 * 1024;
 const COMMAND_RESULT_CACHE_MAX_AGE_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -303,6 +304,8 @@ pub(crate) struct CommandResultCache {
     retention: CommandResultRetentionPolicy,
     receipt_retention: Mutex<ReceiptRetention>,
     persistence: Option<CommandResultPersistence>,
+    /// When each retried command id was last answered with its full result.
+    retried_answers: std::sync::Mutex<BTreeMap<String, tokio::time::Instant>>,
     #[cfg(test)]
     fail_settlement_sync: AtomicBool,
     #[cfg(test)]
@@ -317,6 +320,7 @@ impl Default for CommandResultCache {
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention: CommandResultRetentionPolicy::memory(),
             receipt_retention: Mutex::new(ReceiptRetention::default()),
+            retried_answers: std::sync::Mutex::default(),
             persistence: None,
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
@@ -405,6 +409,7 @@ impl CommandResultCache {
             memory_accounting: Mutex::new(CommandResultMemoryAccounting::default()),
             retention,
             receipt_retention: Mutex::new(ReceiptRetention::default()),
+            retried_answers: std::sync::Mutex::default(),
             #[cfg(test)]
             fail_settlement_sync: AtomicBool::new(false),
             #[cfg(test)]
@@ -461,6 +466,23 @@ impl CommandResultCache {
         cache.order = Mutex::new(order);
         cache.memory_accounting = Mutex::new(memory_accounting);
         Ok(cache)
+    }
+
+    /// Whether a retry of `command_id` may be answered with the full result now: once per
+    /// `RETRY_ANSWER_INTERVAL`. A caller that retries faster than it reads would otherwise
+    /// receive the same large answer again and again.
+    pub(crate) fn may_answer_retry(&self, command_id: &str) -> bool {
+        let now = tokio::time::Instant::now();
+        let mut answered = self
+            .retried_answers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        answered.retain(|_, at| now.duration_since(*at) < RETRY_ANSWER_INTERVAL);
+        if answered.contains_key(command_id) {
+            return false;
+        }
+        answered.insert(command_id.to_string(), now);
+        true
     }
 
     pub(crate) async fn reserve(
