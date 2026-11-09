@@ -38,6 +38,8 @@ struct HostState {
     stopped: bool,
     /// Users whose browser a `stop` ended: only an explicit start brings it back.
     stopped_by_request: BTreeSet<String>,
+    /// Users whose last attempt to start the browser failed; a start that works clears it.
+    start_failed: BTreeSet<String>,
     mutation_lanes: BTreeMap<String, Arc<Mutex<()>>>,
     display_gates: BTreeMap<String, Arc<super::kernel_browser_display_gate::DisplayGate>>,
     #[cfg(test)]
@@ -275,6 +277,22 @@ impl KernelBrowserHost {
             && state
                 .loaded
                 .contains(&(user.into(), agent.into(), capability))
+    }
+    /// Whether the user's browser failed its last start: access exists, the browser does not run.
+    pub(crate) fn start_failed(&self, user: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .start_failed
+            .contains(user)
+    }
+    fn note_start(&self, user: &str, started: bool) {
+        let mut state = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if started {
+            state.start_failed.remove(user);
+        } else {
+            state.start_failed.insert(user.into());
+        }
     }
     pub(crate) fn load(&self, user: &str, agent: &str) -> Result<(), String> {
         self.load_for(user, agent, KernelBrowserCapability::Browser)
@@ -684,7 +702,9 @@ impl KernelBrowserHost {
             }
             implicit_start = agent_read;
             self.check_admission(admission)?;
-            backend.start().map_err(crate::error::HostFailure::Other)?;
+            let started = backend.start();
+            self.note_start(user, started.is_ok());
+            started.map_err(crate::error::HostFailure::Other)?;
             self.check_admission(admission)?;
             self.inner
                 .lock()
@@ -716,10 +736,12 @@ impl KernelBrowserHost {
         backend.protect_host(policy)?;
         self.check_admission(admission)?;
         if implicit_start {
-            backend.host_request_classified(
+            let started = backend.host_request_classified(
                 "host.browser",
                 serde_json::json!({"op":"start","focused_agent":true,"observed_by":params["observed_by"]}),
-            )?;
+            );
+            self.note_start(user, started.is_ok());
+            started?;
             self.check_admission(admission)?;
         }
         let model = self.actor_model(user)?;

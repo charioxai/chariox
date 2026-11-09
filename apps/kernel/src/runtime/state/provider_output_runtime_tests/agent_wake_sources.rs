@@ -2037,14 +2037,8 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 #[path = "async_popup.rs"]
 mod async_popup;
 
-/// A browser that failed to start is not a permission question: while the agent still holds its
-/// grant the "allow browser access" card is refused, with what to do instead.
-#[tokio::test]
-async fn blocked_for_browser_access_is_refused_while_the_grant_is_held() {
-    let f = fixture("owner-browser-card-granted", true).await;
-    let task = f.begin(&f.prompt_id);
-    let token = f
-        .app
+async fn run_token(f: &Fixture) -> String {
+    f.app
         .lock()
         .await
         .providers
@@ -2052,30 +2046,52 @@ async fn blocked_for_browser_access_is_refused_while_the_grant_is_held() {
         .unwrap()
         .runtime_mcp_auth_token()
         .unwrap()
-        .to_owned();
+        .to_owned()
+}
+
+/// A browser that failed to start is not a permission question: the "allow browser access" card
+/// is refused until a start succeeds again, with what to do instead.
+#[tokio::test]
+async fn blocked_for_browser_access_is_refused_after_a_failed_browser_start() {
+    let f = fixture("owner-browser-card-start-failed", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = run_token(&f).await;
     let host = &f.runtime.owned.kernel_browser_host;
     host.set_focus("local", Some(&f.agent));
     host.load("local", &f.agent).unwrap();
-    let error = call(
-        &f,
-        &token,
-        "chariox.events.blocked",
-        &task,
-        serde_json::json!({
-            "reason":"The browser did not start.", "owner_action":"browser_access"
-        }),
+    let root = std::env::temp_dir().join(format!(
+        "chariox-start-failed-{:032x}",
+        rand::random::<u128>()
+    ));
+    std::fs::create_dir(&root).unwrap();
+    let broken = root.join("broken.sh");
+    std::fs::write(&broken, "exit 1\n").unwrap();
+    host.install_fixture_backend("local", &broken, &root);
+    let admission = host.admit("local", &f.agent).unwrap();
+    host.protected_request_admitted(
+        "local",
+        Some(&admission),
+        "host.browser",
+        serde_json::json!({"op":"start"}),
+        serde_json::Value::Null,
     )
-    .await
-    .unwrap_err();
-    let message = error.to_string();
+    .expect_err("the controller never comes up");
+    assert!(host.start_failed("local"));
+    let args = serde_json::json!({
+        "reason":"The browser did not start.", "owner_action":"browser_access"
+    });
+    let error = call(&f, &token, "chariox.events.blocked", &task, args.clone())
+        .await
+        .unwrap_err()
+        .to_string();
     assert!(
-        message.contains("not revoked") && message.contains("call start once more"),
-        "{message}"
+        error.contains("did not start") && error.contains("start once more"),
+        "{error}"
     );
     let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
     assert!(
         session.active_interactions().is_empty(),
-        "no card for an access nobody revoked"
+        "no card for a browser that failed to start"
     );
     assert!(!matches!(
         f.task(&task.task_id).state,
@@ -2091,6 +2107,69 @@ async fn blocked_for_browser_access_is_refused_while_the_grant_is_held() {
     )
     .await
     .unwrap();
+    // A start that works clears the failure: the card is a question about access again.
+    f.runtime
+        .install_unstarted_kernel_browser_fixture("local", &root);
+    host.protected_request_admitted(
+        "local",
+        Some(&host.admit("local", &f.agent).unwrap()),
+        "host.browser",
+        serde_json::json!({"op":"start"}),
+        serde_json::Value::Null,
+    )
+    .unwrap();
+    assert!(!host.start_failed("local"));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A loaded grant that does not hold the tab the task needs is a missing resource, not a browser
+/// that failed to start: the owner can still approve it.
+#[tokio::test]
+async fn blocked_for_browser_access_is_offered_when_a_loaded_grant_lacks_the_tab() {
+    let f = fixture("owner-browser-card-partial", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = run_token(&f).await;
+    let host = &f.runtime.owned.kernel_browser_host;
+    host.request_grant(
+        "local",
+        &f.agent,
+        &f.prompt_id,
+        Duration::from_secs(600),
+        None,
+        &f.room,
+    )
+    .unwrap();
+    let admission = host.admit("local", &f.agent).unwrap();
+    let tab = crate::local::UserDomainResource::BrowserTab {
+        tab_id: "existing-signed-in-tab".into(),
+    };
+    let refusal = host
+        .claim_resource(Some(&admission), tab, false)
+        .unwrap_err();
+    assert!(refusal.contains("not_focused_agent"), "{refusal}");
+    call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({
+            "reason":"I need the signed-in tab.", "owner_action":"browser_access"
+        }),
+    )
+    .await
+    .expect("the owner can approve the missing tab");
+    assert!(matches!(
+        f.task(&task.task_id).state,
+        ExecutionState::Blocked
+    ));
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(session
+        .active_interactions()
+        .last()
+        .unwrap()
+        .choices()
+        .iter()
+        .any(|choice| choice.id() == "allow_browser"));
 }
 
 #[tokio::test]

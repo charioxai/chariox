@@ -69,9 +69,10 @@ impl KernelRuntimeState {
         })
     }
 
-    /// The "allow browser access" card asks for consent; an agent that still holds its
-    /// grant has nothing to ask for, so a browser that fails to start never becomes one.
-    pub(super) fn refuse_browser_access_card_while_granted(
+    /// The "allow browser access" card asks for consent. A browser that failed to start is not a
+    /// consent question: nothing the owner could allow brings it up, so that never becomes a card.
+    /// A grant that merely lacks the resource the task needs still can: approval widens it.
+    pub(super) fn refuse_browser_access_card_after_start_failure(
         &self,
         room: &str,
         actor: &str,
@@ -84,12 +85,11 @@ impl KernelRuntimeState {
             return Ok(());
         };
         let user = self.provider_account_authority_owner_user_id(agent.owner_user_id());
-        if self.owned.kernel_browser_host.is_loaded(&user, agent.id()) {
+        if self.owned.kernel_browser_host.start_failed(&user) {
             return Err(crate::durable_state::agent_lifecycle::error(
-                "Browser access is not revoked: you still hold it, so the owner has nothing to allow. \
-                 If the browser did not start, call start once more; if it still fails, tell the owner \
-                 in plain words that the browser did not start (include the reason class from the error) \
-                 and do not use blocked.",
+                "The browser did not start, and that is not something the owner can allow. \
+                 Call start once more; if it still fails, tell the owner in plain words that the \
+                 browser did not start (include the reason class from the error) and do not use blocked.",
             ));
         }
         Ok(())
