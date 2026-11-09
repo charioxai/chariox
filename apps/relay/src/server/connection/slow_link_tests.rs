@@ -19,11 +19,11 @@ struct Link {
 /// reassembles each frame half a round trip after it leaves the queue, and its
 /// receipt reaches the writer half a round trip later.
 fn link(rate: f64, rtt: Duration) -> Link {
-    let (wire_tx, mut wire) = mpsc::unbounded_channel::<Message>();
+    let (wire_tx, mut wire) = mpsc::unbounded_channel::<(Instant, Message)>();
     let sink = Box::pin(futures_util::sink::unfold(
         wire_tx,
         |tx, message: Message| async move {
-            let _ = tx.send(message);
+            let _ = tx.send((Instant::now(), message));
             Ok::<_, std::convert::Infallible>(tx)
         },
     ));
@@ -42,9 +42,12 @@ fn link(rate: f64, rtt: Duration) -> Link {
     ));
     let (arrive_tx, mut arrive) = mpsc::unbounded_channel::<(Instant, Message)>();
     tokio::spawn(async move {
-        while let Some(message) = wire.recv().await {
-            tokio::time::sleep(Duration::from_secs_f64(message.len() as f64 / rate)).await;
-            let _ = arrive_tx.send((Instant::now() + rtt / 2, message));
+        // Absolute deadlines: per-frame sleeps would round each frame up to the timer tick.
+        let mut free_at = Instant::now();
+        while let Some((queued_at, message)) = wire.recv().await {
+            free_at = free_at.max(queued_at) + Duration::from_secs_f64(message.len() as f64 / rate);
+            tokio::time::sleep_until(free_at).await;
+            let _ = arrive_tx.send((free_at + rtt / 2, message));
         }
     });
     let (receipt_tx, mut receipts) = mpsc::unbounded_channel::<(Instant, (u32, u32))>();
@@ -169,10 +172,16 @@ async fn a_small_reply_waits_about_a_round_trip_behind_any_bulk_on_a_slow_link()
     const RATE: f64 = 64_000.0;
     const RTT: Duration = Duration::from_millis(40);
     let messages = vec![
-        ("bulk-reply".into(), bulk("client_response", "bulk-reply", 20 * MB)),
+        (
+            "bulk-reply".into(),
+            bulk("client_response", "bulk-reply", 20 * MB),
+        ),
         ("s1".into(), bulk("client_event", "s1", 2 * MB)),
         ("s2".into(), bulk("client_event", "s2", 2 * MB)),
-        ("bulk-request".into(), bulk("daemon_request", "bulk-request", 2 * MB)),
+        (
+            "bulk-request".into(),
+            bulk("daemon_request", "bulk-request", 2 * MB),
+        ),
     ];
     let outcome = run(RATE, RTT, messages).await;
     let bound = 2 * RTT
@@ -203,7 +212,10 @@ async fn one_transfer_uses_the_whole_slow_link() {
     let outcome = run(
         RATE,
         Duration::from_millis(40),
-        vec![("bulk-reply".into(), bulk("client_response", "bulk-reply", 20 * MB))],
+        vec![(
+            "bulk-reply".into(),
+            bulk("client_response", "bulk-reply", 20 * MB),
+        )],
     )
     .await;
     let rate = 20.0 * MB as f64 / outcome.finished[0].1.as_secs_f64();
@@ -222,7 +234,10 @@ async fn one_transfer_fills_a_fast_long_link() {
     let outcome = run(
         RATE,
         Duration::from_millis(90),
-        vec![("bulk-reply".into(), bulk("client_response", "bulk-reply", 50 * MB))],
+        vec![(
+            "bulk-reply".into(),
+            bulk("client_response", "bulk-reply", 50 * MB),
+        )],
     )
     .await;
     let rate = 50.0 * MB as f64 / outcome.finished[0].1.as_secs_f64();
