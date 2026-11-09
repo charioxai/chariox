@@ -21,7 +21,8 @@ and unsafe fallback flags are rejected. The launcher uses a private profile,
 a dynamic loopback CDP port, and no provider credentials. Production is headed;
 explicit headless mode exists for disposable drills. On macOS the same launcher
 selects native Chromium/Chrome from Applications (or an explicit executable),
-with the same separate profile. Windows is deferred.
+with the same separate profile. The Mac launch is always headless, so the host gives that browser the User-Agent and pointer of the headed Chrome
+(`kernel-browser-identity.mjs`): headless Chrome announces itself and Google sign-in refuses it. Windows is deferred.
 
 The host needs Node 22+ and a native Chromium installation; shared controller
 assets are embedded in the kernel and materialized under its private state.
