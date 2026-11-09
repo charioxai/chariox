@@ -131,3 +131,32 @@ fn managed_context_omitted_logins_1000_snapshot_and_hash() {
     .unwrap();
     assert!(full_local.get("omittedProviderAccounts").is_none());
 }
+
+// A transfer into a kernel whose Vault is closed is refused with a reason class the UI words
+// itself. Both strings are wire values: peers and clients match them exactly.
+#[test]
+fn the_closed_receiving_vault_reason_classes_are_wire_stable() {
+    let refused = crate::transport::relay_peer::RelayPeerResponse::ManagedContextImportFailed {
+        code: crate::managed_context::target_vault::TARGET_VAULT_LOCKED.into(),
+        retryable: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&refused).unwrap(),
+        serde_json::json!({
+            "kind": "managed_context_import_failed",
+            "code": "target_vault_locked",
+            "retryable": true
+        })
+    );
+    assert!(crate::provider_account_copy::is_public_code(
+        "provider_account_copy_target_vault_locked"
+    ));
+    assert!(matches!(
+        crate::provider_account_copy::failure("provider_account_copy_target_vault_locked"),
+        crate::error::DaemonError::ProviderAccountCopy {
+            code: "provider_account_copy_target_vault_locked",
+            retryable: true,
+            ..
+        }
+    ));
+}
