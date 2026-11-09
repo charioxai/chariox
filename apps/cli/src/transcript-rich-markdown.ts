@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it"
-import { normalizeMarkdownFenceInfoStrings } from "./transcript-markdown.js"
+import { normalizeMarkdownFenceInfoStrings, replaceVisualizeLines } from "./transcript-markdown.js"
 import { renderTranscriptMath } from "./transcript-math.js"
 
 // MP-08 / MP-10 (PANE-09): terminal equivalents for rich Markdown that
@@ -10,8 +10,6 @@ const markdown = new MarkdownIt({ html: false })
 const taskMarkerPattern = /^(\s*(?:[-*+]|\d{1,9}[.)])[ \t]+)\[([ xX])\](?=[ \t])/gm
 const imagePattern = /!\[([^\]\n]*)\]\(\s*<?([^\s)>]+)>?(?:\s+"[^"\n]*")?\s*\)/g
 const dataImagePattern = /^data:image\/([a-z0-9.+-]+);base64,([a-z0-9+/=]+)$/i
-// Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
-const visualizePattern = /^[ \t]{0,3}visualize(\{.*\})[ \t]*$/gm
 
 export function prepareTranscriptMarkdown(text: string): string {
   return mapMarkdownProse(normalizeMarkdownFenceInfoStrings(text), (prose) => (
@@ -38,12 +36,9 @@ function renderImages(prose: string): string {
 
 // The web pane draws the page; a terminal names it, like a picture.
 function renderVisualizeLines(prose: string): string {
-  return prose.replace(visualizePattern, (line, json: string) => {
-    let path: unknown
-    try { path = (JSON.parse(json) as { path?: unknown }).path } catch { return line }
-    if (typeof path !== "string" || !path.trim()) return line
-    return `▣ visual: ${escapeLinkText(path.trim().split("/").pop() || path.trim())} · ${escapeLinkText(path.trim())} (open in the web app)`
-  })
+  return replaceVisualizeLines(prose, (path) => (
+    `▣ visual: ${escapeLinkText(path.split("/").pop() || path)} · ${escapeLinkText(path)} (open in the web app)`
+  ))
 }
 
 function renderTaskMarkers(prose: string): string {
