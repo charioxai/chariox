@@ -895,6 +895,36 @@ impl KernelRuntimeState {
         }
         Ok(())
     }
+    /// Every transition is a notice so attached clients refresh the projection.
+    fn record_task_transition_notices(&self, tasks: impl IntoIterator<Item = AgentTaskExecution>) {
+        for task in tasks {
+            self.owned.record_notice_for_agent(
+                &task.room_id,
+                None,
+                Some(&task.agent_id),
+                self.owned
+                    .attachment_store
+                    .list_session_attachment_ids(&task.room_id),
+                if task.state == ExecutionState::Blocked {
+                    format!(
+                        "{}: Needs your help. {}",
+                        self.agent_notice_name(&task.agent_id),
+                        task.reason
+                    )
+                } else if task.state == ExecutionState::Cancelled {
+                    format!(
+                        "{}: Stopped. Its provider turn ended without an answer.",
+                        self.agent_notice_name(&task.agent_id)
+                    )
+                } else {
+                    format!(
+                        "{}: Waiting for 15 minutes without progress.",
+                        self.agent_notice_name(&task.agent_id)
+                    )
+                },
+            );
+        }
+    }
     pub(super) fn schedule_agent_lifecycle_sweep(&self) {
         // Output settlement may hold one or every provider lane. Dispatch
         // completion wakes after it returns so a recipient cannot reacquire
@@ -1460,34 +1490,7 @@ impl KernelRuntimeState {
         let Outcome::Swept(changed) = swept else {
             unreachable!()
         };
-        // Every transition is a notice so attached clients refresh the projection.
-        for task in blocked.into_iter().chain(changed) {
-            self.owned.record_notice_for_agent(
-                &task.room_id,
-                None,
-                Some(&task.agent_id),
-                self.owned
-                    .attachment_store
-                    .list_session_attachment_ids(&task.room_id),
-                if task.state == ExecutionState::Blocked {
-                    format!(
-                        "{}: Needs your help. {}",
-                        self.agent_notice_name(&task.agent_id),
-                        task.reason
-                    )
-                } else if task.state == ExecutionState::Cancelled {
-                    format!(
-                        "{}: Stopped. Its provider turn ended without an answer.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                } else {
-                    format!(
-                        "{}: Waiting for 15 minutes without progress.",
-                        self.agent_notice_name(&task.agent_id)
-                    )
-                },
-            );
-        }
+        self.record_task_transition_notices(blocked.into_iter().chain(changed));
         let tasks = self.owned.durable_state_store.agent_tasks_to_sweep()?;
         self.owned
             .human_control_task_waits
