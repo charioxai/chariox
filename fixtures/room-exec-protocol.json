@@ -250,6 +250,73 @@
         }
       },
       "sha256": "ff603e110abc73fc50f14fb30004f68c8b5dfe6a0f60bf0cd7ed1d45abb69586"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_place",
+            "exec_id": "exec-held",
+            "kernel": "b3",
+            "directory": "/srv/work"
+          }
+        }
+      },
+      "sha256": "089772898846897fbbdf6b20b4a1202864ea20c6a22e13acb2e544020068814e"
+    },
+    {
+      "kind": "request",
+      "wire": {
+        "RoomTerminal": {
+          "session_id": "room-1",
+          "operation": {
+            "operation": "exec_place",
+            "exec_id": "exec-held",
+            "kernel": "mac/dev"
+          }
+        }
+      },
+      "sha256": "8f8477cdff41178d0fbc069bb397de0735e0c0749b4109393d218360c3f9d3a3"
+    },
+    {
+      "kind": "response",
+      "wire": {
+        "RoomTerminal": {
+          "result": {
+            "result": "exec_listed",
+            "execs": [
+              {
+                "exec_id": "exec-held",
+                "state": {
+                  "kind": "queued",
+                  "wait": {
+                    "reason": "memory",
+                    "need_bytes": 1024,
+                    "free_bytes": 0
+                  }
+                },
+                "age_ms": 1250,
+                "buffered_bytes": 0,
+                "command": [
+                  "/bin/cat"
+                ],
+                "owner": {
+                  "kind": "agent",
+                  "id": "agent-1"
+                },
+                "command_line": "/bin/cat",
+                "placeable_on": [
+                  "b3",
+                  "mac/dev"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "sha256": "72f692f3d9a97d3f5599deaec898d209874624395c41026f76db6fcae27fe12f"
     }
   ]
 }

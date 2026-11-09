@@ -5947,9 +5947,31 @@ requests and responses, using its existing bounded framing and flow control.
 - Observed process `held` and `paused` states still describe programs that have
   already executed. Their existing Run anyway control continues the same
   process. They cannot be converted into new launch intents or placed elsewhere.
-  Selected-kernel placement, VM acquisition, verified context transfer and
-  durable remote claim/results remain separate unfinished work; this protocol
-  change does not advertise them.
+  VM acquisition, verified context transfer and durable remote claim/results
+  remain separate unfinished work; this protocol change does not advertise them.
+- `exec_place { exec_id, kernel, directory? }` runs a launch that is still
+  `queued` on another of the owner's kernels and answers `exec_opened { exec_id }`
+  (the same ID stays the handle on this kernel). A started or finished exec is
+  refused `exec_not_queued`; the launch then keeps running where it is. The caller
+  is the owner's person (under the owner's own gateway grant, `owner:<user>`) or
+  the agent that started the launch (under its own live reach, so ending the run
+  ends the placement); another agent, a stranger, a worker host (`host_agent`) and a
+  request that arrives through a gateway are refused (`exec_not_yours`,
+  `exec_place_not_here`, ownership errors). `kernel` is a name `chariox kernels`
+  lists; an unknown, ambiguous, offline, unpaired or too old kernel is refused with
+  the gateway's own typed error and the launch stays queued. The kernel first makes
+  a Room on the target in `directory` (default: this Room's directory; command id
+  `place:<exec_id>:room`), then opens the command there (`place:<exec_id>:open`) and
+  forwards stdin offsets, output cursors and cancellation to it. A request whose
+  outcome stays unknown after one retry with the same command id ends the launch
+  `failed`, saying the other kernel may have started it; it is never replayed. The
+  target labels the process `<origin kernel>/<agent>`; the holding kernel keeps its
+  own agent as the owner of the row. The Room made on the target is not removed
+  when the command ends.
+- `exec_listed` rows may carry `placeable_on: [kernel name]` on a `queued` row:
+  the owner's other online, gateway-ready kernels, for a caller that may place that
+  launch (the owner's person, or the agent that started it). Absent otherwise,
+  and when the kernel list cannot be had; clients offer placement only from it.
 - `exec_list {}` returns `exec_listed { execs }` for this Room only. Each entry
   has `exec_id`, tagged `state`, `age_ms`, `buffered_bytes`, `command` and `owner`.
   It uses the same Room authority and worker forwarding as all exec operations.

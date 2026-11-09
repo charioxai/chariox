@@ -18,6 +18,12 @@ const HOST_AGENT: Flag = { name: "--host-agent", value: "AGENT_ID" }
 export const COMMANDS: readonly CommandSpec[] = [
   { name: "exec", flags: [KERNEL, SESSION, { name: "--workspace", value: "PATH" }, HOST_AGENT, SOCKET],
     summary: "run argv after -- without a PTY; streams binary stdin/stdout/stderr live, returns the command exit code; --workspace makes a temporary Room" },
+  {
+    name: "exec place",
+    flags: [SESSION, { name: "--kernel", value: "NAME", required: true }, { name: "--directory", value: "PATH" }, SOCKET],
+    args: ["EXEC_ID"],
+    summary: "run a command exec still holds (queued) on another of your kernels; a started command cannot move",
+  },
   { name: "guide", flags: [], summary: "print this guide" },
   {
     name: "access request",
@@ -201,13 +207,11 @@ export function guideText(): string {
     "2. List kernels: chariox kernels (a name is the machine name, or <machine>/<label> when the machine runs several of your kernels)",
     "3. Send a request (one JSON object on stdin): chariox request --kernel NAME < request.json",
     "   Always pass --kernel for another kernel; without it the request runs on this one.",
-    "4. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID",
-    "   After kernel_connection_lost run it again with --from N, the N in the message.",
+    "4. Watch events on a kernel: chariox watch --kernel NAME --session ID --attachment ID (after kernel_connection_lost run it again with --from N, the N in the message)",
     "5. Move files: chariox files put|get|stat|ls --kernel NAME ...",
     "   put and get resume after an interruption: run the same command again.",
     "6. Run long commands: chariox terminal open|send|read|wait|close --kernel NAME --session ID ...",
-    "   Terminals belong to the Room and keep running if you disconnect; read them later with --since.",
-    "   They need a session: take one from ListSessions or make one with CreateSession (see Requests below).",
+    "   Terminals belong to the Room and keep running if you disconnect; read them later with --since. They need a session (ListSessions, or CreateSession: see Requests below).",
     "",
     "Follow sessions or single agents with chariox events subscribe. Use chariox events wait --timeout 540",
     "in the foreground or your harness background option, or poll chariox events list. Keep next_cursor.",
