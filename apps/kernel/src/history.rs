@@ -30,7 +30,7 @@ mod session_log;
 
 pub use operational_archive::HistoryArchiveOutboxItem;
 pub use operational_session::{
-    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex,
+    CharioxOwnedPrompt, ExternalImportHistoryEntry, ExternalImportHistoryIndex, HistoryTurnOrigin,
 };
 pub use session_log::{
     external_provider_observed_merge_key, external_provider_observed_merge_key_prefix,

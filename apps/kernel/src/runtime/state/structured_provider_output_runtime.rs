@@ -769,6 +769,7 @@ impl KernelRuntimeState {
                         kind: chunk.kind,
                         merge_key: chunk.merge_key,
                         sequence: None,
+                        prompt_id: None,
                         bytes: chunk.bytes,
                     },
                     history_entry,
@@ -790,6 +791,7 @@ impl KernelRuntimeState {
             .prepare_history_entries(session_id, history_entries.into_iter().flatten().collect());
         for item in &prepared {
             terminal_outputs[positions[item.position]].sequence = Some(item.sequence);
+            terminal_outputs[positions[item.position]].prompt_id = item.kept_in_prompt.clone();
         }
         // A view attached from here on reads these rows from history; one that
         // attached earlier is a recipient now, whatever the pump saw before it
