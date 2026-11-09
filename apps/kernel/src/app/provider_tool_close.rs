@@ -27,12 +27,12 @@ impl ProviderToolEnding {
 /// A row that ends one open tool: its merge key and JSON bytes.
 pub(crate) type EndedProviderToolRow = (Option<String>, Vec<u8>);
 
-/// For every tool in `entries` (one run's tool rows, oldest first) whose latest
-/// status is still open, the same row with the same id and merge key, ended.
-pub(crate) fn ended_open_provider_tool_rows(
+/// The latest record with a known status of every tool in `entries` (one
+/// run's tool rows, oldest first), with the merge key its rows carry.
+fn latest_provider_tool_records(
     entries: Vec<SessionHistoryEntry>,
-    ending: ProviderToolEnding,
-) -> Vec<EndedProviderToolRow> {
+) -> std::collections::BTreeMap<String, (Option<String>, serde_json::Map<String, serde_json::Value>)>
+{
     let mut latest = std::collections::BTreeMap::new();
     for entry in entries {
         let Ok(serde_json::Value::Object(record)) =
@@ -48,24 +48,89 @@ pub(crate) fn ended_open_provider_tool_rows(
         }) else {
             continue;
         };
-        let Some(phase) = provider_tool_record_status(&record)
+        if provider_tool_record_status(&record)
             .as_deref()
             .and_then(provider_tool_phase)
-        else {
+            .is_none()
+        {
             continue;
-        };
-        latest.insert(key, (entry.merge_key, record, phase));
+        }
+        latest.insert(key, (entry.merge_key, record));
     }
     latest
+}
+
+/// A command the provider left running in the background whose end nobody
+/// has reported yet.
+fn is_running_background_record(record: &serde_json::Map<String, serde_json::Value>) -> bool {
+    record.get("background") == Some(&serde_json::Value::Bool(true))
+        && record
+            .get("finished_at_ms")
+            .is_some_and(serde_json::Value::is_null)
+}
+
+fn ended_row(
+    merge_key: Option<String>,
+    record: serde_json::Map<String, serde_json::Value>,
+) -> EndedProviderToolRow {
+    (
+        merge_key,
+        serde_json::Value::Object(record).to_string().into_bytes(),
+    )
+}
+
+/// For every tool in `entries` (one run's tool rows, oldest first) whose latest
+/// status is still open, the same row with the same id and merge key, ended.
+/// A background command among them ended with it.
+pub(crate) fn ended_open_provider_tool_rows(
+    entries: Vec<SessionHistoryEntry>,
+    ending: ProviderToolEnding,
+) -> Vec<EndedProviderToolRow> {
+    let ended_at_ms = crate::session::unix_epoch_ms();
+    latest_provider_tool_records(entries)
         .into_values()
-        .filter(|(_, _, phase)| *phase == ProviderToolPhase::Open)
-        .map(|(merge_key, mut record, _)| {
+        .filter(|(_, record)| {
+            provider_tool_record_status(record)
+                .as_deref()
+                .and_then(provider_tool_phase)
+                == Some(ProviderToolPhase::Open)
+        })
+        .map(|(merge_key, mut record)| {
             record.insert("status".to_string(), ending.status().into());
             if let Some(serde_json::Value::Object(state)) = record.get_mut("state") {
                 state.insert("status".to_string(), ending.status().into());
             }
-            let bytes = serde_json::Value::Object(record).to_string().into_bytes();
-            (merge_key, bytes)
+            if is_running_background_record(&record) {
+                record.insert("finished_at_ms".to_string(), ended_at_ms.into());
+            }
+            ended_row(merge_key, record)
+        })
+        .collect()
+}
+
+/// The run's provider process is gone, so every background command it still
+/// ran ended no later than `ended_at_ms`, the moment the kernel learned it.
+/// One still open reads as cancelled: nobody reported how it ended.
+pub(crate) fn ended_background_provider_tool_rows(
+    entries: Vec<SessionHistoryEntry>,
+    ended_at_ms: u64,
+) -> Vec<EndedProviderToolRow> {
+    latest_provider_tool_records(entries)
+        .into_values()
+        .filter(|(_, record)| is_running_background_record(record))
+        .map(|(merge_key, mut record)| {
+            record.insert("finished_at_ms".to_string(), ended_at_ms.into());
+            let open = provider_tool_record_status(&record)
+                .as_deref()
+                .and_then(provider_tool_phase)
+                == Some(ProviderToolPhase::Open);
+            if open {
+                record.insert(
+                    "status".to_string(),
+                    ProviderToolEnding::Cancelled.status().into(),
+                );
+            }
+            ended_row(merge_key, record)
         })
         .collect()
 }
@@ -102,6 +167,61 @@ impl DaemonApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tool_rows(snapshots: &[serde_json::Value]) -> Vec<SessionHistoryEntry> {
+        snapshots
+            .iter()
+            .map(|snapshot| {
+                SessionHistoryEntry::provider_output(
+                    "session",
+                    "run",
+                    Some("agent"),
+                    TerminalOutputKind::ProviderTool,
+                    snapshot["id"].as_str().map(str::to_string),
+                    snapshot.to_string(),
+                )
+            })
+            .collect()
+    }
+
+    fn ended(rows: Vec<EndedProviderToolRow>) -> Vec<serde_json::Value> {
+        rows.into_iter()
+            .map(|(_, bytes)| serde_json::from_slice(&bytes).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn a_gone_process_ends_only_the_background_commands_still_running() {
+        let rows = tool_rows(&[
+            serde_json::json!({"id":"fg","tool":"Read","status":"completed","started_at_ms":1}),
+            serde_json::json!({"id":"claude","tool":"Bash","status":"running","started_at_ms":1,"background":true,"finished_at_ms":null}),
+            serde_json::json!({"id":"claude","tool":"Bash","status":"completed","started_at_ms":1,"background":true,"finished_at_ms":null}),
+            serde_json::json!({"id":"codex","tool":"bash","status":"running","started_at_ms":2,"background":true,"finished_at_ms":null}),
+            serde_json::json!({"id":"done","tool":"Bash","status":"completed","started_at_ms":3,"background":true,"finished_at_ms":9}),
+        ]);
+        let ended = ended(ended_background_provider_tool_rows(rows, 50));
+        assert_eq!(ended.len(), 2, "{ended:?}");
+        assert_eq!(ended[0]["id"], "claude");
+        assert_eq!(ended[0]["status"], "completed");
+        assert_eq!(ended[0]["finished_at_ms"], 50);
+        assert_eq!(ended[1]["id"], "codex");
+        assert_eq!(ended[1]["status"], "cancelled");
+        assert_eq!(ended[1]["finished_at_ms"], 50);
+        assert_eq!(ended[1]["started_at_ms"], 2);
+    }
+
+    #[test]
+    fn an_abnormal_run_end_also_ends_an_open_background_command() {
+        let rows = tool_rows(&[
+            serde_json::json!({"id":"codex","tool":"bash","status":"running","started_at_ms":2,"background":true,"finished_at_ms":null}),
+            serde_json::json!({"id":"open","tool":"bash","status":"running","started_at_ms":3}),
+        ]);
+        let ended = ended(ended_open_provider_tool_rows(rows, ProviderToolEnding::Cancelled));
+        assert_eq!(ended[0]["status"], "cancelled");
+        assert!(ended[0]["finished_at_ms"].as_u64().unwrap() > 2);
+        assert_eq!(ended[1]["status"], "cancelled");
+        assert!(ended[1].get("finished_at_ms").is_none());
+    }
     use crate::app::RemoteLeaseRuntime;
     use crate::config::DaemonConfig;
     use crate::git_observer::CompletedTurnSettlementStatus;

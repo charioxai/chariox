@@ -488,6 +488,38 @@ impl OperationalHistoryStore {
             .collect())
     }
 
+    /// The provider runs, with their agents, that wrote a tool row which may
+    /// mark a background command; the caller reads their rows to decide.
+    pub fn provider_runs_with_background_tools(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<(String, String)>, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT provider_run_id, agent_id FROM history_events
+                 WHERE session_id = ?1 AND kind = 'provider_tool'
+                   AND provider_run_id IS NOT NULL AND agent_id IS NOT NULL
+                   AND instr(event_json, 'background') > 0",
+            )
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "prepare background provider tool run lookup",
+                message: error.to_string(),
+            })?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .and_then(|rows| rows.collect::<Result<Vec<_>, _>>())
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load background provider tool runs",
+                message: error.to_string(),
+            })?;
+        Ok(rows)
+    }
+
     pub fn load_session_history_entries(
         &self,
         session_id: &str,
