@@ -1646,6 +1646,8 @@ mod lifecycle_sweep_flight;
 #[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
+mod pump_stall_tests;
+#[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
 mod task_work_flight;
