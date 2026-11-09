@@ -8,21 +8,28 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Two chunks: one drains while the next already waits behind it, so a slow
-/// link never idles for a receipt, and a small frame waits at most two chunk
-/// times behind bulk (0.5 s at 64 KB/s).
+/// Two chunks before a rate is measured: one drains while the next already
+/// waits behind it, so a slow link never idles for a receipt. Once the rate is
+/// known the floor is two frames of `chunk_bytes`.
 pub const FLOOR_BYTES: usize = 2 * CHUNK_BYTES;
+/// The smallest bulk text frame: its header and its receipt stay a few percent of it.
+pub const MIN_CHUNK_BYTES: usize = 4 * 1024;
+/// A bulk frame takes about this long on the measured link, so a small frame
+/// queued behind one waits about this long (16 KiB take 131 ms at 1 Mbit/s).
+const FRAME_TIME: Duration = Duration::from_millis(25);
 /// Fills 90 Mbit/s at a 90 ms round trip, and bounds what one socket keeps in
 /// flight if the estimate is ever wrong.
 pub const CEILING_BYTES: usize = 1024 * 1024;
 /// Until the pipe is full, twice what one round trip delivered: the window
 /// doubles every round trip.
 const STARTUP_GAIN: f64 = 2.0;
-/// Once the rate stops growing, a quarter more than the measured
-/// bandwidth-delay product keeps the pipe full through receipt jitter while
-/// the queue it builds ahead of a small frame stays a quarter of a round trip
-/// (a gain of 2 kept a whole round trip queued: +150 ms at a 150 ms path).
-const STEADY_GAIN: f64 = 1.25;
+/// Once the rate stops growing, half again the measured bandwidth-delay
+/// product keeps the pipe full although the window holds whole frames and the
+/// minimum round trip is measured on the smallest one (1.25 left a 16 KiB frame
+/// of a 60 ms path unsent: 86 % link use), while the queue it builds ahead of a
+/// small frame stays under half a round trip (a gain of 2 kept a whole round
+/// trip queued: +150 ms at a 150 ms path).
+const STEADY_GAIN: f64 = 1.5;
 /// The pipe is full when three round trips in a row did not raise the rate by
 /// a quarter (BBR's full-pipe test).
 const FULL_GROWTH: f64 = 1.25;
@@ -73,17 +80,27 @@ impl DrainWindow {
         }
     }
 
-    /// The bulk bytes allowed unacknowledged now.
+    /// The size of the next bulk text frame: about FRAME_TIME at the measured
+    /// rate, within MIN_CHUNK_BYTES..=CHUNK_BYTES; CHUNK_BYTES until a rate is known.
+    pub fn chunk_bytes(&self) -> usize {
+        self.max_rate().map_or(CHUNK_BYTES, |rate| {
+            ((rate * FRAME_TIME.as_secs_f64()) as usize).clamp(MIN_CHUNK_BYTES, CHUNK_BYTES)
+        })
+    }
+
+    /// The bulk bytes allowed unacknowledged now. A sender always may write one
+    /// frame when nothing is unacknowledged, whatever its size.
     pub fn bytes(&self) -> usize {
+        let floor = 2 * self.chunk_bytes();
         let (Some(rtt), Some(rate)) = (self.min_rtt, self.max_rate()) else {
-            return FLOOR_BYTES;
+            return floor;
         };
         let gain = if self.filled {
             STEADY_GAIN
         } else {
             STARTUP_GAIN
         };
-        ((rate * rtt.as_secs_f64() * gain).round() as usize).clamp(FLOOR_BYTES, CEILING_BYTES)
+        ((rate * rtt.as_secs_f64() * gain).round() as usize).clamp(floor, CEILING_BYTES)
     }
 
     /// Stamp a frame as it is written. `idle` is true when nothing was
@@ -183,26 +200,31 @@ mod tests {
     fn simulate(rate: f64, rtt: Duration, seconds: u64) -> (f64, Duration) {
         let start = Instant::now();
         let mut window = DrainWindow::new(start);
-        let serialize = Duration::from_secs_f64(CHUNK_BYTES as f64 / rate);
         let (mut now, mut link_free_at) = (start, start);
-        let mut in_flight: VecDeque<(Instant, SendStamp)> = VecDeque::new();
+        let mut in_flight: VecDeque<(Instant, usize, SendStamp)> = VecDeque::new();
         let measure_from = start + Duration::from_secs(seconds / 2);
         let (mut sent, mut waits, mut wait_total) = (0usize, 0u32, Duration::ZERO);
         while now < start + Duration::from_secs(seconds) {
-            while (in_flight.len() + 1) * CHUNK_BYTES <= window.bytes() {
+            loop {
+                let frame = window.chunk_bytes();
+                let unacknowledged: usize = in_flight.iter().map(|(_, bytes, _)| bytes).sum();
+                if unacknowledged > 0 && unacknowledged + frame > window.bytes() {
+                    break;
+                }
                 let stamp = window.sent(now, in_flight.is_empty());
                 if now >= measure_from {
                     // What a small frame written now waits behind at the bottleneck.
                     wait_total += link_free_at.saturating_duration_since(now);
                     waits += 1;
-                    sent += CHUNK_BYTES;
+                    sent += frame;
                 }
-                link_free_at = link_free_at.max(now) + serialize;
-                in_flight.push_back((link_free_at + rtt, stamp));
+                link_free_at =
+                    link_free_at.max(now) + Duration::from_secs_f64(frame as f64 / rate);
+                in_flight.push_back((link_free_at + rtt, frame, stamp));
             }
-            let (receipt_at, stamp) = in_flight.pop_front().unwrap();
+            let (receipt_at, frame, stamp) = in_flight.pop_front().unwrap();
             now = receipt_at;
-            window.received(now, CHUNK_BYTES, stamp, true);
+            window.received(now, frame, stamp, true);
         }
         let measured = now.saturating_duration_since(measure_from).as_secs_f64();
         (sent as f64 / (rate * measured), wait_total / waits.max(1))
@@ -218,7 +240,7 @@ mod tests {
             let (link_use, wait) = simulate(rate, rtt, 30);
             assert!(link_use >= 0.95, "{rate} B/s, {rtt:?}: link use {link_use}");
             assert!(
-                wait <= rtt / 2 + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / rate),
+                wait <= rtt / 2 + 2 * FRAME_TIME,
                 "{rate} B/s, {rtt:?}: a small frame waits {wait:?} behind bulk"
             );
         }

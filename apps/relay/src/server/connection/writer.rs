@@ -109,7 +109,8 @@ struct Transfer {
     waiting: usize,
 }
 impl Transfer {
-    fn next_chunk(&self) -> Option<(Message, usize)> {
+    /// The next frame; a text frame stays within `limit` bytes.
+    fn next_chunk(&self, limit: usize) -> Option<(Message, usize)> {
         if let Some(Message::Binary(binary)) = &self.binary {
             if binary.len() > CHUNK_BYTES {
                 if self.offset == binary.len() {
@@ -138,7 +139,7 @@ impl Transfer {
             .ok()?;
             return Some((Message::Text(checkpoint.into()), 0));
         }
-        text_chunk(self.id, &self.text, self.offset)
+        text_chunk(self.id, &self.text, self.offset, limit)
             .map(|(frame, end)| (Message::Text(frame.into()), end))
     }
     fn finished(&self) -> bool {
@@ -530,7 +531,7 @@ where
                     };
                     transfer.id = id;
                 }
-                if let Some((message, end)) = transfer.next_chunk() {
+                if let Some((message, end)) = transfer.next_chunk(credit.drain.chunk_bytes()) {
                     let small_binary = transfer
                         .binary
                         .as_ref()
@@ -552,7 +553,7 @@ where
                                 && (active.iter().all(|t| t.small)
                                     || credit.small + bytes <= SMALL_RESERVE_BYTES)
                         } else {
-                            credit.bytes + bytes <= window
+                            credit.bytes == 0 || credit.bytes + bytes <= window
                         };
                     if fits {
                         if starting {

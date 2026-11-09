@@ -41,9 +41,10 @@ struct Upload {
 }
 
 impl Upload {
-    fn next_chunk(&self, id: u32) -> Option<(Message, usize)> {
+    /// A text frame stays within `limit`; a binary frame is always one full chunk.
+    fn next_chunk(&self, id: u32, limit: usize) -> Option<(Message, usize)> {
         match &self.message {
-            Message::Text(text) => text_chunk(id, text, self.offset)
+            Message::Text(text) => text_chunk(id, text, self.offset, limit)
                 .map(|(frame, end)| (Message::Text(frame.into()), end)),
             Message::Binary(bytes) if self.offset < bytes.len() => {
                 let end = (self.offset + BINARY_CHUNK_PAYLOAD_BYTES).min(bytes.len());
@@ -103,21 +104,31 @@ impl Uploads {
         }
     }
 
-    /// True when the lane has a chunk the window has room for.
+    /// True when the lane has a chunk the window has room for; one chunk always
+    /// fits when nothing is unacknowledged.
     pub(crate) fn ready(&self, lane: Lane) -> bool {
         let upload = match lane {
             Lane::Priority => &self.priority,
             Lane::Event => &self.event,
         };
-        upload.is_some() && self.bytes + CHUNK_BYTES <= self.window.bytes()
+        let frame = match upload {
+            Some(Upload {
+                message: Message::Text(_),
+                ..
+            }) => self.window.chunk_bytes(),
+            Some(_) => CHUNK_BYTES,
+            None => return false,
+        };
+        self.bytes == 0 || self.bytes + frame <= self.window.bytes()
     }
 
     /// The lane's next chunk; the lane is free again after its last one.
     pub(crate) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
         let next_id = self.last_id.checked_add(1)?;
+        let limit = self.window.chunk_bytes();
         let upload = self.slot(lane).as_mut()?;
         let id = if upload.id == 0 { next_id } else { upload.id };
-        let (chunk, end) = upload.next_chunk(id)?;
+        let (chunk, end) = upload.next_chunk(id, limit)?;
         upload.id = id;
         upload.offset = end;
         if end == upload.message.len() {
