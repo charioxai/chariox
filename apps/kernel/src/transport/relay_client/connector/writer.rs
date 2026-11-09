@@ -6,7 +6,7 @@ use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::super::reply_notes::ReplyNotes;
-use super::upload::{Lane as UploadLane, Uploads};
+use crate::transport::relay_upload::{Lane as UploadLane, Uploads};
 
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;

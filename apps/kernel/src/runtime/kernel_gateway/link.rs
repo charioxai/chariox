@@ -5,12 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use chariox_relay::frame_transport::CHUNK_BYTES;
 use chariox_relay::protocol::{ClientTarget, RelayEnvelope, RelayError};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::transport::relay_crypto;
+use crate::transport::relay_upload::{self, Lane, Uploads};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
@@ -54,6 +56,9 @@ pub(super) struct LinkParams {
 
 pub(super) struct Link {
     outgoing: mpsc::UnboundedSender<Message>,
+    /// Requests above one chunk (file chunks of `files put`): everything on
+    /// `outgoing` passes them at the next chunk.
+    bulk: mpsc::UnboundedSender<Message>,
     pending: Pending,
     subscriptions: Subscriptions,
     alive: Arc<AtomicBool>,
@@ -72,13 +77,17 @@ impl Link {
     }
 
     pub(super) async fn open(params: LinkParams) -> Result<Self, LinkFailure> {
-        let (mut socket, _) = tokio::time::timeout(
+        let (mut socket, handshake) = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            crate::transport::relay_socket_connect::connect(&params.relay_url),
+            crate::transport::relay_socket_connect::connect_with_upload_chunks(&params.relay_url),
         )
         .await
         .map_err(|_| LinkFailure::TimedOut)?
         .map_err(|error| relay_failure("connect_failed", error.to_string()))?;
+        // A relay that reassembles chunked uploads answers the offer; toward an
+        // older one a bulk request still goes out whole, after everything queued.
+        let upload_chunks =
+            crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
         let target = ClientTarget {
             daemon_id: Some(params.target_kernel_id.clone()),
             daemon_alias: None,
@@ -136,19 +145,22 @@ impl Link {
         }
 
         let (mut sink, mut stream) = socket.split();
-        let (outgoing, mut outgoing_rx) = mpsc::unbounded_channel::<Message>();
+        let (outgoing, outgoing_rx) = mpsc::unbounded_channel::<Message>();
+        let (bulk, bulk_rx) = mpsc::unbounded_channel::<Message>();
+        let (receipts, receipts_rx) = mpsc::unbounded_channel::<(u32, u32)>();
         let pending: Pending = Arc::default();
         let subscriptions: Subscriptions = Arc::default();
         let alive = Arc::new(AtomicBool::new(true));
         tokio::spawn({
             let alive = Arc::clone(&alive);
             async move {
-                while let Some(message) = outgoing_rx.recv().await {
-                    let closing = matches!(message, Message::Close(_));
-                    if sink.send(message).await.is_err() || closing {
-                        break;
-                    }
-                }
+                write(
+                    &mut sink,
+                    outgoing_rx,
+                    bulk_rx,
+                    upload_chunks.then_some(receipts_rx),
+                )
+                .await;
                 alive.store(false, Ordering::SeqCst);
                 let _ = sink.close().await;
             }
@@ -181,6 +193,12 @@ impl Link {
                         Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => break,
                         Ok(Some(Ok(message))) => message,
                     };
+                    if let Message::Text(text) = &message {
+                        if let Some(receipt) = upload_chunks.then(|| relay_upload::receipt(text)).flatten() {
+                            let _ = receipts.send(receipt);
+                            continue;
+                        }
+                    }
                     match message {
                         Message::Text(text) => match frames.receive(&text) {
                             Ok((text, receipt)) => {
@@ -222,6 +240,7 @@ impl Link {
                 .map_err(|error| relay_failure("encrypt_failed", error.to_string()))?;
         Ok(Self {
             outgoing,
+            bulk,
             pending,
             subscriptions,
             alive,
@@ -261,8 +280,17 @@ impl Link {
             target: self.target.clone(),
             encrypted_request,
         };
+        chariox_relay::transport_timing::record(
+            "kernel_gateway_enqueue",
+            chariox_relay::transport_timing::envelope_signature(&envelope),
+        );
         let text = serde_json::to_string(&envelope).expect("envelope serializes");
-        if self.outgoing.send(Message::Text(text.into())).is_err() {
+        let lane = if text.len() > CHUNK_BYTES {
+            &self.bulk
+        } else {
+            &self.outgoing
+        };
+        if lane.send(Message::Text(text.into())).is_err() {
             self.pending
                 .lock()
                 .expect("pending poisoned")
@@ -385,6 +413,58 @@ impl Link {
 /// The link a request runs on once `previous` is due for replacement. `MAX_LINK_AGE` only
 /// replaces a link early: until the relay ends its token it still carries requests, so a few
 /// seconds of Cloud refusing new tokens do not cut a kernel that is connected.
+/// MP-08 / MP-09 / MP-10 / MP-11: the link's socket writer. Everything on
+/// `outgoing` (small requests, renewals, receipts, Close) goes first; a bulk
+/// request goes out one chunk at a time within the drain window when the relay
+/// reassembles uploads (`receipts` is Some), so it never holds a small request
+/// for longer than one chunk. Ends at Close or when the socket fails.
+async fn write<S>(
+    sink: &mut S,
+    mut outgoing: mpsc::UnboundedReceiver<Message>,
+    mut bulk: mpsc::UnboundedReceiver<Message>,
+    mut receipts: Option<mpsc::UnboundedReceiver<(u32, u32)>>,
+) where
+    S: Sink<Message> + Unpin,
+{
+    let chunked = receipts.is_some();
+    let mut uploads = Uploads::new();
+    loop {
+        let chunk_ready = uploads.ready(Lane::Event);
+        let take_bulk = !uploads.busy(Lane::Event);
+        let message = tokio::select! {
+            biased;
+            receipt = async { receipts.as_mut()?.recv().await }, if chunked => match receipt {
+                Some((id, offset)) if uploads.receipt(id, offset) => continue,
+                // An out-of-order receipt means the two sides disagree about the stream.
+                _ => break,
+            },
+            message = outgoing.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
+            _ = std::future::ready(()), if chunk_ready => match uploads.next_chunk(Lane::Event) {
+                Some(chunk) => chunk,
+                None => break,
+            },
+            message = bulk.recv(), if take_bulk => match message {
+                Some(message) if chunked => match uploads.start(Lane::Event, message) {
+                    Some(whole) => whole,
+                    None => continue,
+                },
+                Some(message) => message,
+                None => break,
+            },
+        };
+        let closing = matches!(message, Message::Close(_));
+        // A chunk has no signature; a bulk request is timed at its enqueue and the relay's reassembly.
+        let packet = chariox_relay::transport_timing::message_signature(&message);
+        if sink.send(message).await.is_err() || closing {
+            break;
+        }
+        chariox_relay::transport_timing::record("kernel_gateway_written", packet);
+    }
+}
+
 pub(super) fn replacement_or_previous<E>(
     opened: Result<Arc<Link>, E>,
     previous: Option<Arc<Link>>,

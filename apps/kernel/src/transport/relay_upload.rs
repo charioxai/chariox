@@ -1,20 +1,35 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: toward a relay that reassembles them, the
-//! kernel sends messages above one chunk as chunks-v2 frames. A priority frame
-//! then waits for at most one chunk instead of a whole reply, and the chunks in
-//! flight follow the drain rate the relay's receipts show.
+//! kernel sends messages above one chunk as chunks-v2 frames, on its own relay
+//! connection and on the gateway's client links. A priority frame then waits
+//! for at most one chunk instead of a whole message, and the chunks in flight
+//! follow the drain rate the relay's receipts show.
 use std::collections::VecDeque;
 
 use chariox_relay::drain_window::{DrainWindow, SendStamp};
 use chariox_relay::frame_transport::{
-    binary_chunk, text_chunk, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
+    binary_chunk, text_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES,
 };
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(super) enum Lane {
+pub(crate) enum Lane {
     Priority,
     Event,
+}
+
+/// The relay's receipt for one of this connection's upload chunks.
+pub(crate) fn receipt(payload: &str) -> Option<(u32, u32)> {
+    if !payload.starts_with("{\"kind\":\"transport_ack\"") {
+        return None;
+    }
+    match serde_json::from_str(payload).ok()? {
+        TransportFrame::TransportAck {
+            transfer_id,
+            offset,
+        } => Some((transfer_id, offset)),
+        _ => None,
+    }
 }
 
 /// One message being sent in chunks.
@@ -42,7 +57,7 @@ impl Upload {
 
 /// The message each lane is sending in chunks, and the chunks the relay has
 /// not acknowledged yet, in wire order.
-pub(super) struct Uploads {
+pub(crate) struct Uploads {
     priority: Option<Upload>,
     event: Option<Upload>,
     pending: VecDeque<(u32, u32, usize, SendStamp)>,
@@ -52,7 +67,7 @@ pub(super) struct Uploads {
 }
 
 impl Uploads {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             priority: None,
             event: None,
@@ -65,7 +80,7 @@ impl Uploads {
 
     /// Small frames go out whole; a larger one is returned to the caller only
     /// when it was not taken for chunking.
-    pub(super) fn start(&mut self, lane: Lane, message: Message) -> Option<Message> {
+    pub(crate) fn start(&mut self, lane: Lane, message: Message) -> Option<Message> {
         if message.len() <= CHUNK_BYTES || !matches!(message, Message::Text(_) | Message::Binary(_))
         {
             return Some(message);
@@ -81,7 +96,7 @@ impl Uploads {
     }
 
     /// True while the lane is still sending a message; it takes no other until then.
-    pub(super) fn busy(&self, lane: Lane) -> bool {
+    pub(crate) fn busy(&self, lane: Lane) -> bool {
         match lane {
             Lane::Priority => self.priority.is_some(),
             Lane::Event => self.event.is_some(),
@@ -89,7 +104,7 @@ impl Uploads {
     }
 
     /// True when the lane has a chunk the window has room for.
-    pub(super) fn ready(&self, lane: Lane) -> bool {
+    pub(crate) fn ready(&self, lane: Lane) -> bool {
         let upload = match lane {
             Lane::Priority => &self.priority,
             Lane::Event => &self.event,
@@ -98,7 +113,7 @@ impl Uploads {
     }
 
     /// The lane's next chunk; the lane is free again after its last one.
-    pub(super) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
+    pub(crate) fn next_chunk(&mut self, lane: Lane) -> Option<Message> {
         let next_id = self.last_id.checked_add(1)?;
         let upload = self.slot(lane).as_mut()?;
         let id = if upload.id == 0 { next_id } else { upload.id };
@@ -117,7 +132,7 @@ impl Uploads {
 
     /// The relay acknowledges chunks in the order they were written; anything
     /// else means the two sides disagree about the stream.
-    pub(super) fn receipt(&mut self, id: u32, offset: u32) -> bool {
+    pub(crate) fn receipt(&mut self, id: u32, offset: u32) -> bool {
         match self.pending.front() {
             Some(&(expected_id, expected_offset, bytes, stamp))
                 if (expected_id, expected_offset) == (id, offset) =>
@@ -142,7 +157,7 @@ impl Uploads {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chariox_relay::frame_transport::{FrameReceiver, TransportFrame};
+    use chariox_relay::frame_transport::FrameReceiver;
 
     // The relay's own reassembly accepts what the kernel sends, text and binary,
     // with a small frame between chunks, and its receipts release the window.
