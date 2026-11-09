@@ -34,6 +34,10 @@ impl KernelRuntimeState {
             .map_err(|error| slice_development_io_error("resolve", &storage_parent, error))
     }
 
+    pub(crate) fn slices_usable_by_room(&self, session_id: &str) -> Vec<crate::slice::SliceRecord> {
+        self.owned.slice_store.list_usable_by_room(session_id)
+    }
+
     pub(crate) fn resolve_spawn_slice(
         &self,
         reference: &str,

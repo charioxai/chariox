@@ -33,6 +33,40 @@ impl KernelRuntimeState {
         self.resolve_peer_agent(sender.owner_user_id(), room, reference)
     }
 
+    /// The rooms `--room` accepts for `caller` on this kernel: its own, marked current, and the
+    /// other rooms of its owner. A guest of a room reaches no other room.
+    pub(crate) fn reachable_rooms(
+        &self,
+        session: &crate::session::RuntimeSession,
+        caller: &crate::agent::AgentInstance,
+    ) -> Vec<serde_json::Value> {
+        let guest = self.drives_as_room_guest(session, caller);
+        let mut rooms = self
+            .owned
+            .session_store
+            .list_sessions()
+            .into_iter()
+            .filter(|room| {
+                room.id() == session.id()
+                    || (!guest
+                        && !room.is_hidden()
+                        && room.status() != crate::session::SessionStatus::Ended
+                        && self.same_owner(room.owner_user_id(), caller.owner_user_id()))
+            })
+            .collect::<Vec<_>>();
+        rooms.sort_by(|a, b| a.id().cmp(b.id()));
+        rooms
+            .iter()
+            .map(|room| {
+                serde_json::json!({
+                    "id": room.id(),
+                    "name": room.alias(),
+                    "current": room.id() == session.id(),
+                })
+            })
+            .collect()
+    }
+
     /// A guest of a room is a member that is not its owner under any identity: it owns the
     /// agent, or it started the agent's running turn. What a guest drives reaches only the agents
     /// of that room.

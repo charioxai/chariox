@@ -17,6 +17,9 @@ impl CommandRouter {
         command: &str,
         tokens: &[String],
     ) -> Result<Option<RuntimeToolResult>, DaemonError> {
+        if let Some(listed) = self.reach_list_result(session, caller, command, tokens) {
+            return Ok(Some(listed));
+        }
         if tokens.first().map(String::as_str) != Some("agent") {
             return Ok(None);
         }

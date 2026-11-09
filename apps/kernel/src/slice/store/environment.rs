@@ -165,6 +165,24 @@ impl SliceStore {
         Ok(guard)
     }
 
+    /// The slices `agent spawn --slice` admits for a Room: none reserved for another Room and none
+    /// whose worker is shared with another slice, the two checks `guard_environment_use` makes.
+    pub(crate) fn list_usable_by_room(&self, session_id: &str) -> Vec<SliceRecord> {
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .records
+            .values()
+            .filter(|slice| {
+                require_environment_session(slice, Some(session_id)).is_ok()
+                    && !has_shared_worker(slice, &state)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Admit a command that may overlap other controller commands: it checks
     /// the same binding as `guard_environment_use` without taking the slice's
     /// operation slot. It still yields to lifecycle operations (start, stop,
