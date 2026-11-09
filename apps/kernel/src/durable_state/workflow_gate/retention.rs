@@ -89,8 +89,11 @@ pub(super) fn body_capacity(db: &Connection, a: &Admission, extra: i64) -> Resul
         && local + extra <= 16 * 1024 * 1024
         && retained_bytes(db)? + extra + pending * 4096 + 2 * 1024 * 1024 <= 256 * 1024 * 1024)
 }
+/// A passed entry is the proof `require_queue_pass_in` loads when its prompt
+/// starts, so it stays whole for as long as that prompt waits in a queue.
+const NOT_HELD_IN_QUEUE: &str = "NOT EXISTS(SELECT 1 FROM durable_workflow_hot_entities h WHERE h.session_id=e.session_id AND h.entity_kind='queued_prompt' AND h.entity_id=json_extract(coalesce(e.summary_json,json_extract(nullif(e.body_json,''),'$.entry')),'$.queued_prompt_id'))";
 pub(super) fn sweep(tx: &Transaction<'_>, now: u64) -> Result<()> {
-    for id in ids(tx,"SELECT entry_id FROM workflow_gate_entries WHERE terminal_at_ms IS NOT NULL AND summary_json IS NULL AND (terminal_at_ms<=?1 OR deadline_ms<=?2) ORDER BY sequence LIMIT 16",params![now.saturating_sub(7*DAY) as i64,now as i64])? {
+    for id in ids(tx,&format!("SELECT entry_id FROM workflow_gate_entries e WHERE terminal_at_ms IS NOT NULL AND summary_json IS NULL AND (terminal_at_ms<=?1 OR deadline_ms<=?2) AND {NOT_HELD_IN_QUEUE} ORDER BY sequence LIMIT 16"),params![now.saturating_sub(7*DAY) as i64,now as i64])? {
         let mut e=entry(tx,&id)?.ok_or_else(||error("gate retention entry missing"))?;
         e.replay_compacted_at_ms=Some(now);
         let mut q=tx.prepare("SELECT evaluation_number,body_json FROM workflow_gate_decisions WHERE entry_id=?1 ORDER BY evaluation_number").map_err(sql)?;
@@ -103,7 +106,7 @@ pub(super) fn sweep(tx: &Transaction<'_>, now: u64) -> Result<()> {
         tx.execute("DELETE FROM workflow_gate_members WHERE entry_id=?1",[&id]).map_err(sql)?;
         tx.execute("DELETE FROM workflow_gate_batches WHERE entry_id=?1 AND closed=1",[&id]).map_err(sql)?;
     }
-    for id in ids(tx,"SELECT entry_id FROM workflow_gate_entries WHERE terminal_at_ms<=?1 AND deadline_ms<=?1 ORDER BY sequence LIMIT 16",[now.saturating_sub(30*DAY) as i64])? {
+    for id in ids(tx,&format!("SELECT entry_id FROM workflow_gate_entries e WHERE terminal_at_ms<=?1 AND deadline_ms<=?1 AND {NOT_HELD_IN_QUEUE} ORDER BY sequence LIMIT 16"),[now.saturating_sub(30*DAY) as i64])? {
         tx.execute("DELETE FROM workflow_gate_decisions WHERE entry_id=?1",[&id]).map_err(sql)?;
         tx.execute("DELETE FROM workflow_gate_members WHERE entry_id=?1",[&id]).map_err(sql)?;
         tx.execute("DELETE FROM workflow_gate_batches WHERE entry_id=?1 AND closed=1",[&id]).map_err(sql)?;

@@ -354,6 +354,52 @@ fn terminal_replay_compacts_without_losing_decisions_or_dedupe_and_pending_survi
 }
 
 #[test]
+fn retention_keeps_the_proof_of_a_prompt_still_held_in_the_queue() {
+    let mut f = Fixture::new();
+    let accepted = f.accept();
+    let claim = f.claim(f.now).unwrap();
+    f.complete(
+        claim,
+        gate::Decision::Run {
+            targets: vec![gate::Route {
+                node_id: "triage".into(),
+                payload: json!({}),
+                prompt: None,
+            }],
+        },
+    );
+    let mut stored = load(&f.db, &accepted.entry_id).unwrap().unwrap();
+    let queued = stored
+        .admission
+        .template
+        .clone()
+        .with_gate_pass(accepted.entry_id.clone(), stored.routes.clone());
+    stored.entry.queued_prompt_id = Some(queued.id().into());
+    terminal(&f.db, &mut stored, Disposition::Queued, None).unwrap();
+    f.db.execute(
+        "INSERT INTO durable_workflow_hot_entities VALUES('kernel','session','queued_prompt',?1,?2)",
+        params![queued.id(), encode(&queued).unwrap()],
+    )
+    .unwrap();
+    for days in [8, 31] {
+        let tx = f.db.transaction().unwrap();
+        retention::sweep(&tx, f.now + days * 86_400_000).unwrap();
+        tx.commit().unwrap();
+        let tx = f.db.transaction().unwrap();
+        require_queue_pass_in(&tx, &queued).unwrap();
+    }
+    f.db.execute(
+        "DELETE FROM durable_workflow_hot_entities WHERE entity_kind='queued_prompt'",
+        [],
+    )
+    .unwrap();
+    let tx = f.db.transaction().unwrap();
+    retention::sweep(&tx, f.now + 31 * 86_400_000).unwrap();
+    tx.commit().unwrap();
+    assert!(entry(&f.db, &accepted.entry_id).unwrap().is_none());
+}
+
+#[test]
 fn admission_charges_batch_payload_copies_to_workflow_body_budget() {
     let mut f = Fixture::new();
     let original = f.accept();
