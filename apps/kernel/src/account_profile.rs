@@ -6676,6 +6676,136 @@ mod tests {
     }
 
     #[test]
+    fn a_window_unobserved_for_a_day_past_its_reset_is_retired() {
+        let now_ms = crate::session::unix_epoch_ms();
+        let day = PROVIDER_USAGE_STALE_AFTER_MS;
+        // Claude no longer reports a 5-hour window: this reading is days old.
+        let mut retired = usage_meter(now_ms - 3 * day);
+        retired.resets_at_ms = Some(now_ms - 3 * day + 60_000);
+        // A 5-hour window Claude still sends stays, whatever its percent.
+        let mut current = usage_meter(now_ms - 60_000);
+        current.resets_at_ms = Some(now_ms + 60 * 60 * 1000);
+        let mut weekly = usage_meter(now_ms - 2 * day);
+        weekly.meter_id = "rate_limit/seven_day".to_string();
+        weekly.resets_at_ms = Some(now_ms + 3 * day);
+
+        let usage = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![retired.clone(), weekly],
+            now_ms - 60_000,
+        )
+        .reconciled_freshness(now_ms);
+        assert_eq!(usage.meters.len(), 1, "{:?}", usage.meters);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
+
+        let usage = capacity_snapshot(
+            "claude",
+            ProviderAccountUsageAvailability::Available,
+            vec![current],
+            now_ms - 60_000,
+        )
+        .reconciled_freshness(now_ms);
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(21.0));
+    }
+
+    #[test]
+    fn a_retired_window_is_not_stored_again_by_the_next_reading() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "claude", "Work")
+            .unwrap();
+        let now_ms = crate::session::unix_epoch_ms();
+        let day = PROVIDER_USAGE_STALE_AFTER_MS;
+        let mut old_five_hour = usage_meter(now_ms - 3 * day);
+        old_five_hour.resets_at_ms = Some(now_ms - 3 * day + 60_000);
+        let mut weekly = usage_meter(now_ms);
+        weekly.meter_id = "rate_limit/seven_day".to_string();
+        weekly.used_percent = Some(18.0);
+        weekly.resets_at_ms = Some(now_ms + 3 * day);
+        registry
+            .update_usage(
+                "owner-a",
+                "claude",
+                &profile.profile_id,
+                capacity_snapshot(
+                    "claude",
+                    ProviderAccountUsageAvailability::Available,
+                    vec![old_five_hour],
+                    now_ms - 3 * day,
+                ),
+            )
+            .unwrap();
+
+        registry
+            .update_usage(
+                "owner-a",
+                "claude",
+                &profile.profile_id,
+                capacity_snapshot(
+                    "claude",
+                    ProviderAccountUsageAvailability::Available,
+                    vec![weekly],
+                    now_ms,
+                ),
+            )
+            .unwrap();
+
+        let stored = registry
+            .get_raw_for_test("owner-a", "claude", &profile.profile_id)
+            .unwrap()
+            .usage;
+        let ids: Vec<_> = stored.meters.iter().map(|m| m.meter_id.as_str()).collect();
+        assert_eq!(ids, ["rate_limit/seven_day"]);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn each_reading_while_a_session_runs_refreshes_the_weekly_meter() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "claude", "Work")
+            .unwrap();
+        let now_ms = crate::session::unix_epoch_ms();
+        let reading = |observed_at_ms: u64, percent: f64| {
+            let mut weekly = usage_meter(observed_at_ms);
+            weekly.meter_id = "rate_limit/seven_day".to_string();
+            weekly.used_percent = Some(percent);
+            weekly.resets_at_ms = Some(now_ms + 3 * PROVIDER_USAGE_STALE_AFTER_MS);
+            capacity_snapshot(
+                "claude",
+                ProviderAccountUsageAvailability::Available,
+                vec![weekly],
+                observed_at_ms,
+            )
+        };
+
+        registry.record_observed_usage(
+            "owner-a",
+            "claude",
+            &profile.profile_id,
+            reading(now_ms - 240_000, 18.0),
+        );
+        registry.record_observed_usage(
+            "owner-a",
+            "claude",
+            &profile.profile_id,
+            reading(now_ms, 19.0),
+        );
+
+        let usage = registry
+            .get("owner-a", "claude", &profile.profile_id)
+            .unwrap()
+            .usage;
+        assert_eq!(usage.availability, ProviderAccountUsageAvailability::Available);
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(19.0));
+        assert_eq!(usage.meters[0].observed_at_ms, now_ms);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn readings_from_provider_output_are_stamped_as_events() {
         let (root, registry) = fixture();
         let profile = registry
