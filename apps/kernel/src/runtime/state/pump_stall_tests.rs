@@ -326,3 +326,89 @@ async fn due_triggers_wait_for_a_place_when_every_place_is_taken() {
     assert_eq!(fired.fired(), 1);
     assert_eq!(firings_of(&runtime, &session_id, &agent_id, "waiting"), 1);
 }
+
+/// Prompts of `agent_id` waiting in its queue that came from a trigger, in queue order.
+fn queued_trigger_ids(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+) -> Vec<String> {
+    let session = runtime.owned.session_store.get_session(session_id).unwrap();
+    let (_, queued) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, agent_id);
+    queued
+        .iter()
+        .filter_map(|prompt| prompt.agent_trigger_id().map(str::to_owned))
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn triggers_of_one_agent_fire_in_claim_order_across_pumps() {
+    let (_worktree, runtime, session_id, agent_id, _, _, run_id) =
+        runtime_with_active_prompt().await;
+    // `first` and `second` are due at the first pump, `third` only at the second one.
+    for (id, busy_policy, created_ms) in [
+        ("first", AgentTriggerBusyPolicy::Steer, 1),
+        ("second", AgentTriggerBusyPolicy::Queue, 1),
+        ("third", AgentTriggerBusyPolicy::Queue, 1_000_000),
+    ] {
+        let mut session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .unwrap();
+        session.add_agent_trigger(AgentTrigger::schedule(
+            id,
+            &agent_id,
+            "owner",
+            60,
+            AgentTriggerRepeat::Every,
+            busy_policy,
+            format!("fire {id}"),
+            created_ms,
+        ));
+        runtime.owned.session_store.restore_session(session);
+    }
+    // The steer of `first` waits for the lane of the running turn.
+    let held = runtime.provider_runtime_lanes.acquire(&run_id).await;
+
+    runtime.dispatch_due_agent_triggers(100_000);
+    until(|| firings_of(&runtime, &session_id, &agent_id, "first") == 1)
+        .await
+        .expect("the first trigger is fired");
+    runtime.dispatch_due_agent_triggers(2_000_000);
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        firings_of(&runtime, &session_id, &agent_id, "third"),
+        0,
+        "a trigger claimed later is fired before the one claimed before it"
+    );
+    assert_eq!(firings_of(&runtime, &session_id, &agent_id, "second"), 0);
+
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .unwrap();
+    runtime
+        .owned
+        .prompt_state_owner
+        .complete_active_prompt_only(&session, &agent_id)
+        .unwrap();
+    drop(held);
+    tokio::time::timeout(PUMP_BOUND, runtime.trigger_firings_settled())
+        .await
+        .expect("the firings never end");
+    assert_eq!(
+        queued_trigger_ids(&runtime, &session_id, &agent_id)
+            .into_iter()
+            .filter(|id| id != "first")
+            .collect::<Vec<_>>(),
+        ["second", "third"],
+        "the prompts reach the agent's queue in the order the triggers were claimed"
+    );
+}
