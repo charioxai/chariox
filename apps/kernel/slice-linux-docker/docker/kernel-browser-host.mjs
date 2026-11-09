@@ -6,6 +6,7 @@ import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-brows
 import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
 import {REGION_KEYS,regionScreenshot} from './kernel-browser-screenshot-region.mjs';
+import {saveResource} from './kernel-browser-save.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
@@ -90,7 +91,7 @@ const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '�
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
 const SPINNER_LINGER_MS = 1500;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'save', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -942,7 +943,7 @@ export class KernelBrowserHost {
   async request(command, options) {
     const person = !command._agent_input && !command.focused_agent;
     if (person) this.notePersonInput(command);
-    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'resize'].includes(command.op) ? command.tab_id : null;
+    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'save', 'resize'].includes(command.op) ? command.tab_id : null;
     if (acting) this.noteAgentBusy(acting, 1);
     try {
       return await (command.op === "input" && person
@@ -1033,7 +1034,7 @@ export class KernelBrowserHost {
       return result;
     }
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
+    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "save", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -1244,6 +1245,10 @@ export class KernelBrowserHost {
       const page = this.pageSize(tab.tab_id);
       if (!Number.isSafeInteger(command.x) || !Number.isSafeInteger(command.y) || command.x < 0 || command.y < 0 || command.x >= page.width || command.y >= page.height) throw new Error("MP-08: pointer cursor point outside the page");
       return { generation: this.generation, cursor: await this.browser.pointerCursor({ ...binding, x: command.x, y: command.y }) };
+    }
+    if (command.op === "save") {
+      if (!agentRequest) throw new UserDomainRefusal("not_granted");
+      return this.observe(await saveResource(this, tab, command), tab, scope);
     }
     if (command.op === "snapshot") {
       const snapshot = await this.browser.snapshot(binding);
