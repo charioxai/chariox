@@ -1,3 +1,4 @@
+use super::agent_tree::PEER_LIFETIME;
 use super::request::*;
 use super::result::*;
 use super::spawn_args::*;
@@ -826,6 +827,7 @@ impl CommandRouter {
         );
         if target_room.is_some() {
             if let Some(payload) = result.payload.as_object_mut() {
+                payload.insert("lifetime".to_string(), PEER_LIFETIME.into());
                 let (registration, refused) = match followed {
                     Some(Ok(registration)) => (Some(registration), None),
                     Some(Err(refused)) => (None, Some(refused)),
@@ -891,6 +893,7 @@ impl CommandRouter {
                     "command": command,
                     "response": {"spawned": {"kernel": spawned.agent.kernel_id, "room": spawned.agent.room_id, "agent": spawned.agent.agent_id, "alias": spawned.alias, "duplicate": spawned.duplicate}},
                     "follow_registration_id": spawned.follow_registration_id,
+                    "lifetime": PEER_LIFETIME,
                 }),
             },
             Err(error) => meta_command_failure_result(command, error),
