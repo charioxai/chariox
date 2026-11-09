@@ -175,6 +175,13 @@ fn apply_stream_event(
 }
 
 fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) {
+    merge_claude_account_usage(&mut batch.account_usage, claude_rate_limit_snapshot(value));
+}
+
+/// The account windows one `rate_limit_event` reports.
+pub(crate) fn claude_rate_limit_snapshot(
+    value: &Value,
+) -> crate::account_profile::ProviderAccountUsageSnapshot {
     use crate::account_profile::{
         ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
         ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
@@ -300,7 +307,7 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
             window_duration_minutes(window_id),
         ));
     }
-    let snapshot = ProviderAccountUsageSnapshot {
+    ProviderAccountUsageSnapshot {
         // The run-owning kernel replaces this placeholder with the selected
         // stable profile ID before persisting it.
         profile_id: String::new(),
@@ -310,8 +317,7 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         observed_at_ms: Some(observed_at_ms),
         source: "claude.rate_limit_event".to_string(),
         management_url: Some("https://claude.ai/settings/usage".to_string()),
-    };
-    merge_claude_account_usage(&mut batch.account_usage, snapshot);
+    }
 }
 
 fn apply_assistant_message(
