@@ -651,3 +651,63 @@ async fn room_defaults() {
     world.tokens.insert("p", token);
     assert_spawn_takes_the_tree_limit(&world, "p", "helper").await;
 }
+
+#[test]
+fn children_that_finished_do_not_count_against_the_sixteen_a_parent_runs() {
+    run_large_stack_async_test("authority-finished-children", finished_children);
+}
+
+async fn finished_children() {
+    let world = world("authority-finished-children").await;
+    let s = world.ids["s"].clone();
+    let token = launch(&world.app, &world.room, &s).await;
+    let mut world = world;
+    world.tokens.insert("s", token);
+    let mut children = Vec::new();
+    for index in 0..16 {
+        children.push(spawn_under(&world, &s, &format!("done-{index}")).await);
+    }
+    // A child that was never prompted is a prepared agent, not a finished one.
+    let waiting = room_command(&world, "s", "agent spawn waiting --provider dev-stub").await;
+    assert!(
+        !waiting.ok && error_text(&waiting).contains("at most 16"),
+        "{waiting:?}"
+    );
+    // Once each child has had its turn and is idle again, none of them is running.
+    {
+        let app = world.app.lock().await;
+        for child in &children {
+            app.agents().note_prompt_sent_at(child, 1).unwrap();
+        }
+    }
+    let next = room_command(&world, "s", "agent spawn next --provider dev-stub").await;
+    assert!(
+        next.ok,
+        "finished children must not block a spawn: {next:?}"
+    );
+    // Children that are working do count.
+    {
+        let app = world.app.lock().await;
+        for child in &children {
+            app.agents()
+                .set_agent_state(child, crate::agent::AgentState::Working)
+                .unwrap();
+        }
+    }
+    let over = room_command(&world, "s", "agent spawn over --provider dev-stub").await;
+    assert!(
+        !over.ok && error_text(&over).contains("at most 16"),
+        "sixteen working children are the cap: {over:?}"
+    );
+}
+
+fn git(workspace: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
