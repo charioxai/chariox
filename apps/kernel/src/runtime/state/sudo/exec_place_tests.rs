@@ -43,7 +43,15 @@ async fn a_person_and_the_launching_agent_are_authorized_and_nobody_else() {
     let f = fixture();
     running(&f);
     let session = f.request.session_id.clone();
-    let reach = f.state.reach_for_auth_token("sudo-fixture-bearer").unwrap();
+    let runs = f
+        .state
+        .owned
+        .provider_store
+        .get_runs_by_runtime_mcp_auth_token("sudo-fixture-bearer");
+    let reach = f
+        .state
+        .reach_for_id(&format!("reach:{}", runs[0].id()))
+        .unwrap();
 
     // The owner's person acts under the owner's grant on this kernel.
     let person = KernelCaller::for_source(&KernelCommandSource::LocalCli);
