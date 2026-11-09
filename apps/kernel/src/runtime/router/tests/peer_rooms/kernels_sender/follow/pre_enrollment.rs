@@ -48,6 +48,14 @@ async fn reaches_a_peer_across_kernels(
         "a follow of the same owner's kernel is kept"
     );
 
+    b.end_turn(false).await;
+    let events = a.peer_events_after_delivery(1).await;
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].source_id, source_of(&b));
+    assert_eq!(events[0].payload["event"], "turn_ended", "{:?}", events[0]);
+
+    running_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+    assert!(b.turn_running(b.agent.id()).await);
     a.command(format!(
         "agent cancel worker --room {} --kernel {}",
         b.room, b.name
@@ -55,10 +63,6 @@ async fn reaches_a_peer_across_kernels(
     .await
     .expect("the peer's turn is cancelled");
     assert!(!b.turn_running(b.agent.id()).await);
-    let events = a.peer_events_after_delivery(1).await;
-    assert_eq!(events.len(), 1, "{events:?}");
-    assert_eq!(events[0].source_id, source_of(&b));
-    assert_ne!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
 
     let spawned = a
         .command(format!(

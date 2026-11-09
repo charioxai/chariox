@@ -65,7 +65,7 @@ impl KernelRuntimeState {
             .session_store
             .get_session(room)
             .map_err(|_| unavailable())?;
-        if other.owner_user_id() != owner {
+        if !self.same_owner(other.owner_user_id(), owner) {
             return Err(unavailable());
         }
         let agents = self.session_agents(room);
@@ -154,7 +154,7 @@ impl KernelRuntimeState {
             .session_store
             .get_session(target.session_id())
             .map_err(|_| unavailable())?;
-        if target_session.owner_user_id() != actor.owner_user_id()
+        if !self.same_owner(target_session.owner_user_id(), actor.owner_user_id())
             || (target.session_id() != actor.session_id() && target.parent_agent_id().is_some())
         {
             return Err(unavailable());

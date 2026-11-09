@@ -154,7 +154,7 @@ impl KernelRuntimeState {
             .owned
             .session_store
             .get_session(&task.room_id)
-            .is_ok_and(|room| room.owner_user_id() == owner);
+            .is_ok_and(|room| self.acts_for_room_owner(&room, owner));
         // A follow whose answer is still on its way names only the kernel it follows.
         let followed_kernel = peer_source_stamp(&registration.source_id)
             .is_some_and(|followed| followed.kernel_id == kernel);
@@ -457,7 +457,11 @@ impl KernelRuntimeState {
                     .owned
                     .session_store
                     .get_session(&task.room_id)
-                    .is_ok_and(|room| owner.as_deref() == Some(room.owner_user_id()));
+                    .is_ok_and(|room| {
+                        owner
+                            .as_deref()
+                            .is_some_and(|owner| self.acts_for_room_owner(&room, owner))
+                    });
             if paired {
                 continue;
             }

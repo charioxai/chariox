@@ -244,7 +244,7 @@ impl KernelRuntimeState {
             .read()
             .resolve_session_ref(room, None)
             .map_err(|_| PeerAgentRefusal::RoomUnavailable)?;
-        if room.owner_user_id() != owner {
+        if !self.acts_for_room_owner(&room, owner) {
             return Err(PeerAgentRefusal::RoomUnavailable);
         }
         Ok(room)

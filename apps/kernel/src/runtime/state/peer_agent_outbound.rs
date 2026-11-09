@@ -509,7 +509,7 @@ impl KernelRuntimeState {
             .cloud_relay
             .as_ref()
             .map(|profile| profile.user_id.clone())
-            .filter(|owner| !owner.is_empty() && owner == session.owner_user_id())
+            .filter(|owner| !owner.is_empty() && self.acts_for_room_owner(&session, owner))
         else {
             return Err(refusal(
                 "owner_unverified",
