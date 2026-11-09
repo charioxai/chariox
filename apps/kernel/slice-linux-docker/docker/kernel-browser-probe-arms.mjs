@@ -75,6 +75,7 @@ async function withStock({ mode, executable, scratch, extraArgs }, run) {
   const childEnv = { ...process.env };
   let xvfb;
   if (mode === 'headless') args.push('--headless=new');
+  else if (process.platform === 'darwin') {} // a Mac has its own window server
   else {
     const display = await freeDisplay();
     xvfb = spawn('Xvfb', [display, '-screen', '0', '1920x1080x24'], { stdio: 'ignore' }); await delay(1500); childEnv.DISPLAY = display;
