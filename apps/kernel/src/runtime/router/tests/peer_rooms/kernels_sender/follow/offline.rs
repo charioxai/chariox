@@ -30,6 +30,19 @@ fn link_stopped(kernel: &Kernel) {
     );
 }
 
+/// `kernel` is connected but never answers: every request to it waits for good.
+fn link_never_answering(kernel: &Kernel) {
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            |_from: String, _owner: String, _request: RelayPeerRequest| {
+                Box::pin(std::future::pending())
+            },
+        ),
+    );
+}
+
 /// `kernel` acts on its first message, then drops off before the answer is back.
 fn link_dropping_after_the_first_message(kernel: &Kernel) {
     let router = kernel.router.clone();
@@ -364,6 +377,50 @@ fn an_outcome_owed_to_a_kernel_that_was_away_is_delivered_when_the_relay_reconne
         b.router.runtime_state.peer_links_restored().await;
         assert_eq!(a.peer_events().await.len(), 1, "delivered on reconnect");
         assert!(b.outbox().await.is_empty());
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_follower_that_never_answers_does_not_hold_the_lifecycle_sweep_of_unrelated_tasks() {
+    run_peer_test("peer-offline-unanswered", || async {
+        let (a, b, _task, _follow) = followed("peer-offline-unanswered").await;
+        link_never_answering(&a);
+        b.end_turn(false).await;
+        // An unrelated task on B: a spawn of an agent that is gone is released by the sweep.
+        let store = b.app.lock().await.durable_state_store();
+        store
+            .agent_lifecycle(Operation::RegisterObligation {
+                owner: b.agent.owner_user_id().into(),
+                room: b.room.clone(),
+                agent: "bystander".into(),
+                prompt: "bystander-turn".into(),
+                run: None,
+                id: "bystander-spawn".into(),
+                kind: "delegate".into(),
+                resource: Some("gone-child".into()),
+                now: crate::session::unix_epoch_ms(),
+            })
+            .unwrap();
+        let sweep = b.router.runtime_state.sweep_agent_lifecycle_for_test();
+        tokio::time::timeout(std::time::Duration::from_secs(10), sweep)
+            .await
+            .expect("the sweep does not wait on a follower that never answers")
+            .unwrap();
+        let bystander = store
+            .agent_tasks(Some(&b.room), Some("bystander"))
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            bystander.obligations[0].status, "cancelled",
+            "{bystander:?}"
+        );
+        assert_eq!(
+            b.outbox().await.len(),
+            1,
+            "still owed to the silent follower"
+        );
         unlink(&[&a, &b]);
     });
 }
