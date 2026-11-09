@@ -6,6 +6,7 @@ mod access;
 mod capability_grants;
 mod computer;
 mod focus_authority;
+mod screenshot;
 mod state_wait;
 
 fn run_test(test: fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>) {

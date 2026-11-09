@@ -227,12 +227,7 @@ impl KernelRuntimeState {
             }
         }
         // MCP receives one native image content block, with no base64 text copy.
-        if let Some(data) = payload
-            .as_object_mut()
-            .and_then(|o| o.remove("data_base64"))
-        {
-            payload["image_base64"] = data;
-        }
+        super::kernel_browser_runtime::image_for_mcp(&mut payload);
         Ok(RuntimeToolResult { ok: true, payload })
     }
 }
