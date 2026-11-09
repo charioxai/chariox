@@ -596,6 +596,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .app
             .sessions
             .environment_project_for_checkout(&lease.owner_user_id, &source_checkout)?;
+        let mut created_worktree_id = None;
         let worktree = if let Some(placement) = worktree_placement {
             let worktree = crate::git_worktree_placement::prepare_git_worktree(
                 &placement,
@@ -611,6 +612,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 base_directory,
                 Path::new(&worktree),
             )?;
+            created_worktree_id = Some(worktree.clone());
             worktree
         } else {
             match worktree_id {
@@ -743,7 +745,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 break candidate;
             }
         };
-        let agent = LeasedAgent::new(
+        let mut agent = LeasedAgent::new(
             agent_id.clone(),
             lease_id.to_string(),
             lease.home_agent_id.clone(),
@@ -757,6 +759,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             backing_agent.id().to_string(),
             attachment.id().to_string(),
         );
+        agent.created_worktree_id = created_worktree_id;
         let caller = self.app.execution_lease_callers.get(lease_id).cloned();
         if let Some(caller) = caller.as_ref() {
             self.app

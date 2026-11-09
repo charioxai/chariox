@@ -640,6 +640,53 @@ async fn local_spawn_branch() {
 }
 
 #[test]
+fn the_spawn_facts_of_a_remote_agent_name_its_worker_folder_and_none_when_unknown() {
+    run_large_stack_async_test("subtree-remote-spawn-facts", remote_spawn_facts);
+}
+
+async fn remote_spawn_facts() {
+    let world = world("subtree-remote-spawn-facts").await;
+    let local = local_spawn_answer(&world, None).await;
+    let mut agent: crate::agent::AgentInstance =
+        serde_json::from_value(local["agent"].clone()).unwrap();
+    let mut bind = |worker_worktree_id: Option<&str>| {
+        agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+            worker_kernel_id: "worker-1".to_string(),
+            worker_machine_id: "machine-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "leased-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: None,
+            worker_worktree_id: worker_worktree_id.map(str::to_string),
+        }));
+        agent.clone()
+    };
+    let known = bind(Some("/srv/worker/workspace"));
+    let facts = world
+        .router
+        .runtime_state
+        .spawned_agent_facts(&known)
+        .await
+        .unwrap();
+    assert_eq!(serde_json::json!(facts.worktree), "/srv/worker/workspace");
+    let unknown = bind(None);
+    let facts = world
+        .router
+        .runtime_state
+        .spawned_agent_facts(&unknown)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(facts.worktree),
+        serde_json::Value::Null,
+        "a worker folder nobody named is not the home room's"
+    );
+    assert_eq!(serde_json::json!(facts.branch), serde_json::Value::Null);
+}
+
+#[test]
 fn the_local_spawn_answer_carries_the_deadline_armed_on_the_agent() {
     run_large_stack_async_test("subtree-local-spawn-deadline", local_spawn_deadline);
 }

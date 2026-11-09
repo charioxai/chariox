@@ -548,6 +548,7 @@ fn leased_agent(id: &str, mode: Mode, level: Level) -> crate::execution_lease::L
         backing_session_id: "worker-session".to_string(),
         backing_agent_id: format!("worker-{id}"),
         backing_attachment_id: "worker-attachment".to_string(),
+        created_worktree_id: None,
         projected_prompt_ids: Vec::new(),
         projected_completion_keys: Vec::new(),
         projected_output_history_keys: Vec::new(),

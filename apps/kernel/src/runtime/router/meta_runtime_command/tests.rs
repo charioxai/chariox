@@ -203,3 +203,36 @@ fn metaagent_commands_carry_the_kernel_agent_connection_class() {
         );
     }
 }
+
+/// What the kernel read for a spawn; the answer states it as it is.
+fn spawn_facts(worktree: Option<&str>) -> crate::runtime::state::SpawnedAgentFacts {
+    crate::runtime::state::SpawnedAgentFacts {
+        worktree: worktree.map(str::to_string),
+        branch: None,
+        deadline_ms: None,
+    }
+}
+
+fn spawned_agent() -> crate::agent::AgentInstance {
+    crate::agent::AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    )
+}
+
+#[test]
+fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_none() {
+    let named =
+        super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(Some("/workspace")));
+    assert_eq!(named["worktree"], "/workspace");
+
+    let unnamed = super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(None));
+    assert_eq!(unnamed["worktree"], serde_json::Value::Null);
+}
