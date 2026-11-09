@@ -3358,19 +3358,17 @@ async fn typed_remote_workflow_failure_without_output_settles_home_ownership() {
     );
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11: a native Stop settles while its abort holds the
-// agent's run lane. Cancelling the stopped task's workflow run takes every run lane
-// in the Room, so the settlement must not wait for that lane inside the abort.
-#[tokio::test]
-async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
+/// The creator's running turn owns the fixture's workflow run as a task obligation.
+fn creator_turn_owning_the_workflow_run(
+    fixture: &InterruptFixture,
+    label: &str,
+) -> (
+    crate::provider::RuntimeProviderRun,
+    crate::session::RuntimeSession,
+    crate::session::PromptQueueItem,
+    crate::durable_state::agent_lifecycle::AgentTaskExecution,
+) {
     use crate::durable_state::agent_lifecycle::{Operation, Outcome};
-    let mut config = crate::config::DaemonConfig::for_tests();
-    config.room_agent_tools = true;
-    let fixture = interrupt_fixture_with_creator(
-        crate::test_support::TestWorktree::new("native-stop-workflow-lane"),
-        config,
-        true,
-    );
     let owned = &fixture.runtime.owned;
     let creator = fixture.unrelated_agent_id.clone();
     let launch_request = crate::provider::LaunchProviderRequest::new(
@@ -3378,15 +3376,16 @@ async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
         "dev-stub",
         "dev-stub",
         "default",
-        "native-stop-creator",
+        label,
     )
     .with_agent_id(&creator);
+    let run_id = format!("{label}-run");
     let mut creator_run = crate::provider::RuntimeProviderRun::new(
-        "native-stop-creator-run",
+        &run_id,
         &launch_request,
         crate::provider::ProviderLaunchResult {
             endpoint_mode: crate::provider::AgentEndpointMode::External,
-            process_label: "native-stop-creator-run".to_string(),
+            process_label: run_id.clone(),
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
@@ -3424,6 +3423,7 @@ async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
     else {
         panic!("creator task");
     };
+    let obligation = format!("{label}-workflow-obligation");
     owned
         .durable_state_store
         .agent_lifecycle(Operation::RegisterObligation {
@@ -3432,7 +3432,7 @@ async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
             agent: creator.clone(),
             prompt: prompt.id().into(),
             run: None,
-            id: "native-stop-workflow-obligation".into(),
+            id: obligation.clone(),
             kind: "workflow_run".into(),
             resource: Some(fixture.workflow_run_id.clone()),
             now,
@@ -3441,11 +3441,59 @@ async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
     owned
         .durable_state_store
         .agent_lifecycle(Operation::DispatchReceipt {
-            id: "native-stop-workflow-obligation".into(),
+            id: obligation,
             accepted: true,
             resource: Some(fixture.workflow_run_id.clone()),
         })
         .unwrap();
+    (creator_run, session, prompt, task)
+}
+
+async fn assert_workflow_run_stops(
+    fixture: &InterruptFixture,
+    session: &crate::session::RuntimeSession,
+) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let status = fixture
+            .runtime
+            .owned
+            .durable_state_store
+            .resolve_workflow_run(
+                session.host_daemon_id(),
+                &fixture.session_id,
+                &fixture.workflow_run_id,
+            )
+            .unwrap()
+            .map(|run| run.status());
+        if status == Some(crate::session::WorkflowRunStatus::Stopped) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stopped task's workflow run must still be cancelled, got {status:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: a native Stop settles while its abort holds the
+// agent's run lane. Cancelling the stopped task's workflow run takes every run lane
+// in the Room, so the settlement must not wait for that lane inside the abort.
+#[tokio::test]
+async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
+    use crate::durable_state::agent_lifecycle::Operation;
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("native-stop-workflow-lane"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let creator = fixture.unrelated_agent_id.clone();
+    let (creator_run, session, prompt, task) =
+        creator_turn_owning_the_workflow_run(&fixture, "native-stop-creator");
     let dispatch = owned
         .cancel_local_prompt_if_matches(
             &fixture.session_id,
@@ -3484,25 +3532,53 @@ async fn stopped_native_task_cancels_its_workflow_run_outside_the_abort_lane() {
     .await
     .expect("a native Stop must settle without waiting for the run lane its abort holds");
     drop(abort_lane);
+    assert_workflow_run_stops(&fixture, &session).await;
+}
 
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let status = owned
-            .durable_state_store
-            .resolve_workflow_run(
-                session.host_daemon_id(),
-                &fixture.session_id,
-                &fixture.workflow_run_id,
-            )
-            .unwrap()
-            .map(|run| run.status());
-        if status == Some(crate::session::WorkflowRunStatus::Stopped) {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the stopped task's workflow run must still be cancelled, got {status:?}"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+// MP-08 / MP-09 / MP-10 / MP-11: the output pump holds a run's lane while it settles
+// the run's turn. A Stopped (cancelling) turn ends its task cancelled, and cancelling
+// the task's workflow run takes every run lane in the Room, this one included.
+#[tokio::test]
+async fn output_settlement_of_a_stopped_turn_cancels_its_workflow_run_outside_the_lane() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("pump-stop-workflow-lane"),
+        config,
+        true,
+    );
+    let owned = &fixture.runtime.owned;
+    let creator = fixture.unrelated_agent_id.clone();
+    let (creator_run, session, prompt, _task) =
+        creator_turn_owning_the_workflow_run(&fixture, "pump-stop-creator");
+    owned
+        .cancel_local_prompt_if_matches(
+            &fixture.session_id,
+            &creator,
+            prompt.source_attachment_id(),
+            Some(prompt.id()),
+        )
+        .unwrap()
+        .expect("the Stop marks the creator's turn cancelling");
+
+    let pump_lane = fixture
+        .runtime
+        .provider_runtime_lanes
+        .acquire(creator_run.id())
+        .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.runtime.settle_owned_provider_prompt(
+            &fixture.session_id,
+            creator_run.id(),
+            true,
+            false,
+            true,
+        ),
+    )
+    .await
+    .expect("output settlement must not wait for the run lane the pump holds")
+    .expect("the stopped turn settles");
+    drop(pump_lane);
+    assert_workflow_run_stops(&fixture, &session).await;
 }
