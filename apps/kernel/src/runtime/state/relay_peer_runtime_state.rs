@@ -216,6 +216,10 @@ impl KernelRuntimeState {
         self.with_app_side_effect(move |app| {
             let mut runtime = RemoteLeaseRuntime::new(app);
             runtime.consume_execution_lease_authorization(&lease_id)?;
+            let worktree_id = match (worktree_id, &worktree_placement) {
+                (None, None) => Some(runtime.fresh_leased_agent_folder(&lease_id)?),
+                (worktree_id, _) => worktree_id,
+            };
             runtime.create_leased_agent(
                 &lease_id,
                 &provider,

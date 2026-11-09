@@ -166,6 +166,7 @@ mod focus_recovery_tests;
 mod history_projection;
 mod inbox_sender;
 mod large_codex_resume;
+mod leased_folder;
 mod leased_output;
 mod mcp_catalog_reload;
 mod peer_events;
