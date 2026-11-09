@@ -1,7 +1,10 @@
 //! MP-08 / MP-10 / MP-11: bounded opaque multiplexing (532 / peer 140).
+#[cfg(test)]
+use crate::drain_window::FLOOR_BYTES;
+use crate::drain_window::{DrainWindow, SendStamp};
 use crate::frame_transport::{
     binary_chunk, TransportFrame, BINARY_CHUNK_PAYLOAD_BYTES, CHUNK_BYTES, MAX_ASSEMBLY_BYTES,
-    MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
+    MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
 use crate::outgoing::OutgoingQueue;
@@ -9,6 +12,7 @@ use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
 enum Stream {
@@ -167,16 +171,33 @@ impl Transfer {
 }
 // Receipts follow wire order, including across transfer IDs. A later transfer's
 // receipt cannot forge credit for earlier chunks or binary envelopes.
-#[derive(Default)]
 struct WireCredit {
-    pending: VecDeque<(u32, u32, usize, bool)>,
+    pending: VecDeque<(u32, u32, usize, bool, SendStamp)>,
     bytes: usize,
     // Bytes of `bytes` held by single-chunk messages.
     small: usize,
+    drain: DrainWindow,
 }
 impl WireCredit {
+    fn new() -> Self {
+        Self {
+            pending: VecDeque::new(),
+            bytes: 0,
+            small: 0,
+            drain: DrainWindow::new(Instant::now()),
+        }
+    }
+    fn sent(&mut self, id: u32, end: u32, bytes: usize, small: bool) {
+        let stamp = self.drain.sent(Instant::now(), self.pending.is_empty());
+        self.bytes += bytes;
+        if small {
+            self.small += bytes;
+        }
+        self.pending.push_back((id, end, bytes, small, stamp));
+    }
     fn receipt(&mut self, id: u32, offset: u32, active: &mut VecDeque<Transfer>) -> bool {
-        let Some(&(expected_id, expected_offset, bytes, small)) = self.pending.front() else {
+        let Some(&(expected_id, expected_offset, bytes, small, stamp)) = self.pending.front()
+        else {
             return false;
         };
         if (id, offset) != (expected_id, expected_offset) {
@@ -195,6 +216,7 @@ impl WireCredit {
         if small {
             self.small -= bytes;
         }
+        self.drain.received(Instant::now(), bytes, stamp, !small);
         true
     }
 }
@@ -359,13 +381,14 @@ fn eligible(pending: &VecDeque<Queued>, index: usize, active: &VecDeque<Transfer
             .any(|m| matches!(m.lane, Lane::Ordered) || same(m.lane, &m.key))
 }
 // Bulk transfers leave the last slot of each idle control lane (requests,
-// correlated replies) free, so display bulk can never hold every receiver slot.
+// correlated replies) free, so display bulk can never hold every receiver slot,
+// and always one slot, so a small frame never waits for a whole bulk transfer.
 fn leaves_control_slots(lane: Lane, active: &VecDeque<Transfer>) -> bool {
     let idle = [Lane::Reply, Lane::Request]
         .into_iter()
         .filter(|&l| l != lane && !active.iter().any(|t| t.lane == l))
         .count();
-    MAX_TRANSFERS - active.len() > idle
+    MAX_TRANSFERS - active.len() > idle.max(1)
 }
 // Consecutive small sends allowed while a bulk transfer waits for its turn.
 const SMALL_STREAK: usize = 4;
@@ -384,7 +407,7 @@ where
     let capacity = outgoing.max_capacity();
     let mut pending = VecDeque::new();
     let mut active = VecDeque::<Transfer>::new();
-    let mut credit = WireCredit::default();
+    let mut credit = WireCredit::new();
     let mut next_id = 0u32;
     let mut small_streak = 0;
     let mut open = true;
@@ -536,25 +559,22 @@ where
                         };
                     // While bulk is active, small traffic may hold only its reserve,
                     // so it can never keep the window above what a bulk chunk needs.
+                    // The bulk window follows the measured drain rate, so bulk
+                    // never queues more than about two round trips ahead of a small frame.
+                    let window = credit.drain.bytes();
                     let fits = credit.pending.len() < PEER_RECEIPT_FRAMES
                         && if transfer.small {
-                            credit.bytes + bytes <= WINDOW_BYTES + SMALL_RESERVE_BYTES
+                            credit.bytes + bytes <= window + SMALL_RESERVE_BYTES
                                 && (active.iter().all(|t| t.small)
                                     || credit.small + bytes <= SMALL_RESERVE_BYTES)
                         } else {
-                            credit.bytes + bytes <= WINDOW_BYTES
+                            credit.bytes + bytes <= window
                         };
                     if fits {
                         if starting {
                             next_id = transfer.id;
                         }
-                        credit.bytes += bytes;
-                        if transfer.small {
-                            credit.small += bytes;
-                        }
-                        credit
-                            .pending
-                            .push_back((transfer.id, end as u32, bytes, transfer.small));
+                        credit.sent(transfer.id, end as u32, bytes, transfer.small);
                         small_streak = if transfer.small { small_streak + 1 } else { 0 };
                         transfer.offset = end;
                         transfer.waiting += 1;
@@ -756,11 +776,9 @@ mod tests {
                 waiting: 1,
             },
         ]);
-        let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 1, 100, false), (2, 1, 200, false)]),
-            bytes: 300,
-            small: 0,
-        };
+        let mut credit = WireCredit::new();
+        credit.sent(1, 1, 100, false);
+        credit.sent(2, 1, 200, false);
         assert!(!credit.receipt(2, 1, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(credit.receipt(1, 1, &mut active));
@@ -805,7 +823,7 @@ mod tests {
         {
             wire += message.len();
             assert!(
-                wire <= WINDOW_BYTES + SMALL_RESERVE_BYTES,
+                wire <= FLOOR_BYTES + SMALL_RESERVE_BYTES,
                 "combined byte credit exceeded"
             );
             match message {
@@ -826,7 +844,7 @@ mod tests {
             "small messages stalled on receipt/assembly slots: {ids:?}"
         );
         assert!(
-            ids.len() < (WINDOW_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
+            ids.len() < (FLOOR_BYTES + SMALL_RESERVE_BYTES) / 4096 + 2,
             "byte window must stop an unacknowledged stream"
         );
         assert_eq!(ids, (1..=ids.len() as u64).collect::<Vec<_>>());
@@ -866,8 +884,9 @@ mod tests {
             "{frames} unacknowledged frames exceed the peer receipt queue"
         );
     }
-    // S1: a large message waits one round trip per window. 480 KB (a mirror
-    // first packet) must need at most two flights, not one per 64 KiB.
+    // S1: a large message waits one round trip per window. On a connection
+    // whose window has measured the path, 480 KB (a mirror first packet) must
+    // need at most two flights, not one per 64 KiB.
     #[tokio::test]
     async fn s1_large_message_completes_in_two_round_trips() {
         let (wire_tx, mut wire) = mpsc::unbounded_channel();
@@ -881,8 +900,6 @@ mod tests {
         let (tx, rx) = mpsc::channel(4);
         let (ack_tx, ack_rx) = mpsc::channel(crate::frame_transport::MAX_UNACKED_FRAMES);
         let (_ct, cr) = mpsc::channel(8);
-        let reply = serde_json::json!({"kind":"client_response","request_id":"mirror","payload":"y".repeat(480_000)}).to_string();
-        tx.send(Message::Text(reply.clone().into())).await.unwrap();
         let task = tokio::spawn(run_writer(
             sink,
             rx,
@@ -893,37 +910,44 @@ mod tests {
             WriterUsage::fixture(true),
         ));
         let mut receiver = crate::frame_transport::FrameReceiver::default();
-        let (mut flights, mut done) = (0, None);
-        loop {
-            // A flight is everything the writer sends before it must wait for receipts.
-            let mut flight = Vec::new();
-            while let Ok(Some(message)) =
-                tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
-            {
-                flight.push(message);
+        let mut flights_for = async |id: &str, bytes: usize| {
+            let reply = serde_json::json!({"kind":"client_response","request_id":id,"payload":"y".repeat(bytes)}).to_string();
+            tx.send(Message::Text(reply.clone().into())).await.unwrap();
+            let (mut flights, mut done) = (0, None);
+            loop {
+                // A flight is everything the writer sends before it must wait for receipts.
+                let mut flight = Vec::new();
+                while let Ok(Some(message)) =
+                    tokio::time::timeout(Duration::from_millis(40), wire.recv()).await
+                {
+                    flight.push(message);
+                }
+                if flight.is_empty() {
+                    break;
+                }
+                flights += 1;
+                for message in flight {
+                    let Message::Text(text) = message else {
+                        panic!("unexpected frame")
+                    };
+                    let (complete, receipt) = receiver.receive(&text).unwrap();
+                    done = done.or(complete);
+                    let TransportFrame::TransportAck {
+                        transfer_id,
+                        offset,
+                    } = serde_json::from_str(&receipt.unwrap()).unwrap()
+                    else {
+                        panic!("receipt expected")
+                    };
+                    ack_tx.send((transfer_id, offset)).await.unwrap();
+                }
             }
-            if flight.is_empty() {
-                break;
-            }
-            flights += 1;
-            for message in flight {
-                let Message::Text(text) = message else {
-                    panic!("unexpected frame")
-                };
-                let (complete, receipt) = receiver.receive(&text).unwrap();
-                done = done.or(complete);
-                let TransportFrame::TransportAck {
-                    transfer_id,
-                    offset,
-                } = serde_json::from_str(&receipt.unwrap()).unwrap()
-                else {
-                    panic!("receipt expected")
-                };
-                ack_tx.send((transfer_id, offset)).await.unwrap();
-            }
-        }
+            assert_eq!(done, Some(reply));
+            flights
+        };
+        flights_for("warm-up", 2_000_000).await;
+        let flights = flights_for("mirror", 480_000).await;
         task.abort();
-        assert_eq!(done, Some(reply));
         assert!(flights <= 2, "480 KB needed {flights} round trips");
     }
     // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a receiver that cannot write holds at most
@@ -1113,9 +1137,8 @@ mod tests {
         }
         task.abort();
         let delay = small_delay.unwrap();
-        let bound = Duration::from_secs_f64(
-            (WINDOW_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5,
-        );
+        let bound =
+            Duration::from_secs_f64((FLOOR_BYTES + SMALL_RESERVE_BYTES) as f64 / RATE as f64 + 0.5);
         assert!(
             delay <= bound,
             "the small reply waited {delay:?}, bound {bound:?}"
@@ -1162,11 +1185,9 @@ mod tests {
     #[test]
     fn mp08_mp10_mp11_retired_writes_keep_exact_ordered_byte_credit() {
         let mut active = VecDeque::new();
-        let mut credit = WireCredit {
-            pending: VecDeque::from([(1, 10, 100, false), (2, 0, 200, false)]),
-            bytes: 300,
-            small: 0,
-        };
+        let mut credit = WireCredit::new();
+        credit.sent(1, 10, 100, false);
+        credit.sent(2, 0, 200, false);
         assert!(!credit.receipt(2, 0, &mut active));
         assert_eq!(credit.bytes, 300);
         assert!(!credit.receipt(1, 11, &mut active));
@@ -1223,7 +1244,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(80), client.next()).await
         {
             total += message.len();
-            assert!(total <= WINDOW_BYTES);
+            assert!(total <= FLOOR_BYTES);
             match message {
                 Message::Binary(b) => {
                     assert_eq!(&b[..], &binary);
@@ -1460,7 +1481,7 @@ mod tests {
             wire += message.len();
         }
         assert!(
-            wire >= WINDOW_BYTES - CHUNK_BYTES,
+            wire >= FLOOR_BYTES - CHUNK_BYTES,
             "bulk must fill the window first"
         );
         tx.send(display_event("band", 1, "band".into()))

@@ -35,7 +35,7 @@ fn mp08_mp10_mp11_relay_transport_532_140_snapshot() {
     // The old byte window is historical; new senders retain its receipt-count bound.
     let historical_window = snapshot["window_bytes"].as_u64().unwrap() as usize;
     assert_eq!(historical_window, 64 * 1024);
-    assert!(WINDOW_BYTES >= historical_window);
+    assert!(chariox_relay::drain_window::CEILING_BYTES >= historical_window);
     assert_eq!(
         PEER_RECEIPT_FRAMES,
         (historical_window + SMALL_RESERVE_BYTES) / MIN_FRAME_BYTES
