@@ -8,6 +8,8 @@ export const PASSKEY_REMEMBER_MINUTES = [0, 5, 15] as const
 export const SUDO_WINDOW_MINUTES = [60, 120, 240, 480] as const
 const PASSKEY_MAX_LENGTH = 512
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/
+/** A card payment's Allow always needs the typed passkey, never a remembered one. */
+export const isCardPayment = (prompt: PasskeyPrompt | null) => prompt?.kind === "critical_approval" && prompt.interaction_id.startsWith("vault-card-")
 const pasteRefused = (prompt: PasskeyPrompt | null) => prompt?.kind === "vault_secret"
   ? `Paste not added: a value is one line of at most ${VAULT_SECRET_MAX_LENGTH} characters, without control characters.`
   : `Paste not added: a passkey is one line of at most ${PASSKEY_MAX_LENGTH} characters, without control characters.`
@@ -256,12 +258,12 @@ export function createPasskeyPopupController(deps: {
     }
     // Another terminal may have opened the owner's remember window. Ordinary
     // approvals always let the kernel check it; new authority needs fresh proof.
-    if (!typed && prompt.kind !== "critical_approval") {
+    if (!typed && (prompt.kind !== "critical_approval" || isCardPayment(prompt))) {
       error = PASSKEY_REFUSALS.PASSKEY_REQUIRED!
       render()
       return
     }
-    const minutes = prompt.kind === "critical_approval" ? remember : 0
+    const minutes = prompt.kind === "critical_approval" && !isCardPayment(prompt) ? remember : 0
     value = ""
     await send(prompt, prompt.approve_choice_id,
       typed ? { passkey: typed, rememberMinutes: minutes || null, ...(["access_grant", "access_extension", "sudo"].includes(prompt.kind) ? { accessLifetime: accessLifetime ?? startingLifetime(prompt) } : {}) } : undefined)
@@ -275,6 +277,7 @@ export function createPasskeyPopupController(deps: {
   const cycleRemember = () => {
     if (!open || pending) return
     const prompt = current()
+    if (isCardPayment(prompt)) return
     if (prompt && prompt.kind !== "critical_approval") {
       const max = prompt.max_lifetime_minutes
       const start = startingLifetime(prompt)

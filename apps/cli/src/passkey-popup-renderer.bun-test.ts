@@ -429,3 +429,21 @@ test("a Vault value request shows its words, a masked field and Send/Cancel", as
     assert.doesNotMatch(frame, /Passkey:|Remember for|Access for|Approve|Refuse/)
   } finally { harness.renderer.destroy() }
 })
+
+test("MP-08/MP-09/MP-10/MP-11 a card payment's popup offers no remember window", async () => {
+  const harness = await createTestRenderer({ width: 90, height: 30, useThread: false })
+  const box = new BoxRenderable(harness.renderer, { position: "absolute", left: 0, top: 0 })
+  harness.renderer.root.add(box)
+  const surface = createPasskeyPopupRenderer(harness.renderer, noActions)
+  surface.assign(box)
+  try {
+    const payment = { ...prompt, interaction_id: "vault-card-0000000000000001", title: "Use payment card" }
+    surface.render({ ...view, prompt: payment }, { width: 90, height: 30 })
+    await harness.renderOnce()
+    const frame = harness.captureCharFrame()
+    assert.match(frame, /Use payment card/)
+    assert.match(frame, /Passkey: ••••••▏/)
+    assert.match(frame, /Enter approves · Ctrl\+R refuses/)
+    assert.doesNotMatch(frame, /Remember for|Tab remember/)
+  } finally { harness.renderer.destroy() }
+})
