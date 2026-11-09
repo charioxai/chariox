@@ -769,7 +769,7 @@ impl KernelRuntimeState {
                         kind: chunk.kind,
                         merge_key: chunk.merge_key,
                         sequence: None,
-                        prompt_id: None,
+                        prompt: None,
                         bytes: chunk.bytes,
                     },
                     history_entry,
@@ -793,7 +793,7 @@ impl KernelRuntimeState {
             let output = &mut terminal_outputs[positions[item.position]];
             // A row that took an earlier one's place keeps that row's turn.
             output.sequence = (!item.replaced_in_place).then_some(item.sequence);
-            output.prompt_id = item.kept_in_prompt.clone();
+            output.prompt = item.kept_in_prompt.clone();
         }
         prepared.retain(|item| !item.replaced_in_place);
         // A view attached from here on reads these rows from history; one that

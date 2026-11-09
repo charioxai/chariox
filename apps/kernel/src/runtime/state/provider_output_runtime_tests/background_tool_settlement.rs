@@ -20,12 +20,87 @@ fn tool_chunk(payload: &serde_json::Value) -> ProviderPromptChunk {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Submitter {
+    Person,
+    /// A one-node workflow of the agent, named by the given label.
+    Workflow(&'static str),
+}
+
+impl Submitter {
+    /// Starts a prompt on the idle agent; its workflow id when a workflow sent it.
+    fn submit(
+        self,
+        app: &mut DaemonApp,
+        session: &str,
+        attachment: &str,
+        agent: &str,
+        text: &str,
+    ) -> Option<String> {
+        let Submitter::Workflow(name) = self else {
+            app.submit_prompt(session, attachment, Some(agent), text, Vec::new())
+                .unwrap();
+            return None;
+        };
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session, Some(name.to_string()))
+            .unwrap();
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session, workflow.id(), agent)
+            .unwrap();
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(session, workflow.id(), node.id(), Some(name.to_string()))
+            .unwrap();
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session,
+                workflow.id(),
+                endpoint.id(),
+                Some(text.to_string()),
+            )
+            .unwrap();
+        let node_run_id = run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .start_workflow_node_run(session, run.id(), &node_run_id)
+            .unwrap();
+        let prompt = crate::session::PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(run.id()),
+            agent,
+            text.to_string(),
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(run.id(), &node_run_id);
+        let crate::session::PromptSubmissionOutcome::Started { .. } = app
+            .prompt_owner_submit_prepared_prompt(session, prompt, false)
+            .unwrap()
+        else {
+            panic!("the workflow prompt starts on the idle agent");
+        };
+        Some(workflow.id().to_string())
+    }
+}
+
+/// How a provider's tool snapshots reach the kernel.
+#[derive(Clone, Copy)]
+enum OutputPath {
+    /// A structured run's adapter batch.
+    Structured,
+    /// The native Claude bridge's transcript drain, one row at a time.
+    NativeTranscript,
+}
+
 struct BackgroundTurn {
     runtime: KernelRuntimeState,
     session: String,
     agent: String,
     attachment: String,
     run: String,
+    path: OutputPath,
 }
 
 impl BackgroundTurn {
@@ -37,6 +112,10 @@ impl BackgroundTurn {
 
     /// The same turn on a provider whose output the kernel pumps itself.
     async fn start_on(provider: &str) -> Self {
+        Self::start_with(provider, Submitter::Person, OutputPath::Structured).await
+    }
+
+    async fn start_with(provider: &str, submitter: Submitter, path: OutputPath) -> Self {
         let worktree = crate::test_support::TestWorktree::new("background-tool-settlement");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -61,14 +140,13 @@ impl BackgroundTurn {
                 .with_agent_id(agent.id()),
             )
             .unwrap();
-        app.submit_prompt(
+        submitter.submit(
+            &mut app,
             session.id(),
             attachment.id(),
-            Some(agent.id()),
+            agent.id(),
             "start the server in the background",
-            Vec::new(),
-        )
-        .unwrap();
+        );
         let app = Arc::new(Mutex::new(app));
         let turn = Self {
             runtime: owned_runtime_state(&app).await,
@@ -76,6 +154,7 @@ impl BackgroundTurn {
             agent: agent.id().to_string(),
             attachment: attachment.id().to_string(),
             run: run.id().to_string(),
+            path,
         };
         let mut launching = lifecycle("claude_background_launched");
         launching["status"] = serde_json::json!("running");
@@ -90,7 +169,31 @@ impl BackgroundTurn {
         turn
     }
 
+    /// The merge key the call's rows are stored under on this turn's path.
+    fn merge_key(&self, tool_id: &str) -> String {
+        match self.path {
+            OutputPath::Structured => tool_id.to_string(),
+            OutputPath::NativeTranscript => {
+                format!("claude-transcript:{}:tool:{tool_id}", self.run)
+            }
+        }
+    }
+
     async fn apply(&self, chunks: Vec<ProviderPromptChunk>) {
+        if let OutputPath::NativeTranscript = self.path {
+            let mut app = self.runtime.app.lock().await;
+            for chunk in chunks {
+                app.fan_out_output(
+                    &self.session,
+                    &self.run,
+                    chunk.kind,
+                    chunk.merge_key.map(|id| self.merge_key(&id)),
+                    vec![self.attachment.clone()],
+                    &chunk.bytes,
+                );
+            }
+            return;
+        }
         self.runtime
             .apply_owned_structured_output_batch(
                 &self.session,
@@ -435,4 +538,199 @@ async fn a_background_finish_under_a_newer_prompt_stays_in_the_turn_that_started
     let stored = turn.stored_tools().await;
     assert!(stored["toolu_bg"]["finished_at_ms"].is_u64());
     assert!(stored["call_sleep"]["finished_at_ms"].is_u64());
+}
+
+impl BackgroundTurn {
+    /// The stored rows of a tool call, oldest first.
+    async fn stored_events_of(&self, tool_id: &str) -> Vec<crate::history::HistoryEvent> {
+        let merge_key = self.merge_key(tool_id);
+        self.runtime
+            .flush_provider_history(&self.run)
+            .await
+            .unwrap();
+        self.runtime
+            .owned
+            .operational_history_store
+            .load_session_events_for_agent_sequence_range(
+                &self.session,
+                &self.agent,
+                0,
+                i64::MAX as u64,
+            )
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event
+                    .to_session_history_entry()
+                    .is_some_and(|entry| entry.merge_key.as_deref() == Some(merge_key.as_str()))
+            })
+            .collect()
+    }
+
+    /// The launch settles; `later` sends the next prompt, under which the
+    /// background command ends.
+    async fn finish_under(&self, later: Submitter) -> Option<String> {
+        self.runtime
+            .owned
+            .complete_local_prompt_without_advance(&self.session, &self.agent, Some(&self.run))
+            .unwrap();
+        let later_workflow = later.submit(
+            &mut *self.runtime.app.lock().await,
+            &self.session,
+            &self.attachment,
+            &self.agent,
+            "and now something else",
+        );
+        self.apply(vec![tool_chunk(&lifecycle("claude_background_finished"))])
+            .await;
+        later_workflow
+    }
+}
+
+/// A late finish keeps every attribution of the row it replaces: its turn,
+/// prompt, workflow, and the prompt origin and source live records carry.
+async fn a_late_finish_keeps_the_provenance_of_its_launch(
+    launch: Submitter,
+    later: Submitter,
+    path: OutputPath,
+) {
+    let turn = BackgroundTurn::start_with("claude-code", launch, path).await;
+    turn.live_tools();
+    let launch_row = turn.stored_events_of("toolu_bg").await.pop().unwrap();
+    let launch_workflow = launch_row.workflow_id.clone();
+    assert_eq!(
+        launch_workflow.is_some(),
+        matches!(launch, Submitter::Workflow(_))
+    );
+    let later_workflow = turn.finish_under(later).await;
+
+    let live = turn
+        .runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&turn.session, &turn.attachment)
+        .into_iter()
+        .filter(|record| record.kind == TerminalOutputKind::ProviderTool)
+        .collect::<Vec<_>>();
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0].prompt_id, launch_row.prompt_id);
+    assert_eq!(
+        live[0]
+            .prompt_origin
+            .map(|origin| serde_json::to_value(origin).unwrap()),
+        launch_row.metadata.get("prompt_origin").cloned()
+    );
+    assert_eq!(
+        live[0].source_attachment_id.as_deref(),
+        launch_row
+            .metadata
+            .get("source_attachment_id")
+            .and_then(serde_json::Value::as_str)
+    );
+
+    let rows = turn.stored_events_of("toolu_bg").await;
+    let finished = rows.last().unwrap();
+    assert!(finished
+        .content
+        .as_deref()
+        .is_some_and(|content| content.contains("finished_at_ms\":1")));
+    assert_eq!(finished.sequence, launch_row.sequence);
+    for (field, kept, launched) in [
+        ("turn_id", &finished.turn_id, &launch_row.turn_id),
+        ("prompt_id", &finished.prompt_id, &launch_row.prompt_id),
+        (
+            "workflow_id",
+            &finished.workflow_id,
+            &launch_row.workflow_id,
+        ),
+        (
+            "workflow_run_id",
+            &finished.workflow_run_id,
+            &launch_row.workflow_run_id,
+        ),
+        (
+            "workflow_node_id",
+            &finished.workflow_node_id,
+            &launch_row.workflow_node_id,
+        ),
+    ] {
+        assert_eq!(kept, launched, "{field}");
+    }
+    for key in ["prompt_origin", "source_attachment_id"] {
+        assert_eq!(
+            finished.metadata.get(key),
+            launch_row.metadata.get(key),
+            "{key}"
+        );
+    }
+
+    for workflow in launch_workflow.iter().chain(later_workflow.iter()) {
+        let shown = turn
+            .runtime
+            .owned
+            .operational_history_store
+            .query_events(crate::history::HistoryEventQuery {
+                session_id: Some(turn.session.clone()),
+                workflow_id: Some(workflow.clone()),
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .any(|event| event.event_id == launch_row.event_id);
+        assert_eq!(
+            shown,
+            Some(workflow) == launch_workflow.as_ref(),
+            "workflow {workflow}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_workflow_launched_background_finish_under_a_person_prompt_stays_with_the_workflow() {
+    a_late_finish_keeps_the_provenance_of_its_launch(
+        Submitter::Workflow("workflow-a"),
+        Submitter::Person,
+        OutputPath::Structured,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_workflow_launched_background_finish_under_another_workflow_stays_with_its_own() {
+    a_late_finish_keeps_the_provenance_of_its_launch(
+        Submitter::Workflow("workflow-a"),
+        Submitter::Workflow("workflow-b"),
+        OutputPath::Structured,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_person_launched_background_finish_under_a_workflow_stays_out_of_that_workflow() {
+    a_late_finish_keeps_the_provenance_of_its_launch(
+        Submitter::Person,
+        Submitter::Workflow("workflow-b"),
+        OutputPath::Structured,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_native_claude_background_finish_under_another_workflow_stays_with_its_own() {
+    a_late_finish_keeps_the_provenance_of_its_launch(
+        Submitter::Workflow("workflow-a"),
+        Submitter::Workflow("workflow-b"),
+        OutputPath::NativeTranscript,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn a_native_claude_background_finish_under_a_workflow_stays_in_its_person_turn() {
+    a_late_finish_keeps_the_provenance_of_its_launch(
+        Submitter::Person,
+        Submitter::Workflow("workflow-b"),
+        OutputPath::NativeTranscript,
+    )
+    .await;
 }

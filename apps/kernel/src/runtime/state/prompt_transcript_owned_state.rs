@@ -16,7 +16,7 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) merge_key: Option<String>,
     pub(super) sequence: Option<u64>,
     /// The prompt this output belongs to when that is not the active one.
-    pub(super) prompt_id: Option<String>,
+    pub(super) prompt: Option<ActivePromptTranscriptMetadata>,
     pub(super) bytes: Vec<u8>,
 }
 
@@ -27,7 +27,7 @@ pub(super) struct PreparedHistoryEntry {
     pub(super) sequence: u64,
     /// The earlier prompt whose turn this row stays in (see
     /// `keep_background_tool_in_its_turn`).
-    pub(super) kept_in_prompt: Option<String>,
+    pub(super) kept_in_prompt: Option<ActivePromptTranscriptMetadata>,
     /// That row already took the place of the call's newest stored row, so it
     /// is not appended again.
     pub(super) replaced_in_place: bool,
@@ -194,7 +194,7 @@ impl KernelRuntimeOwnedState {
                         kind: crate::terminal::TerminalOutputKind::ProviderTool,
                         merge_key,
                         sequence: None,
-                        prompt_id: None,
+                        prompt: None,
                         bytes,
                     },
                     Some(entry),
@@ -234,7 +234,7 @@ impl KernelRuntimeOwnedState {
                         kind: chunk.kind,
                         merge_key: chunk.merge_key,
                         sequence: None,
-                        prompt_id: None,
+                        prompt: None,
                         bytes: chunk.bytes,
                     },
                     Some(entry),
@@ -338,7 +338,7 @@ impl KernelRuntimeOwnedState {
                     kind: crate::terminal::TerminalOutputKind::ProviderError,
                     merge_key: None,
                     sequence: None,
-                    prompt_id: None,
+                    prompt: None,
                     bytes: message.into_bytes(),
                 },
                 Some(history_entry),
@@ -366,7 +366,7 @@ impl KernelRuntimeOwnedState {
         for (position, appended) in positions.into_iter().zip(appended) {
             if let Some((sequence, kept_in_prompt)) = appended {
                 outputs[position].sequence = sequence;
-                outputs[position].prompt_id = kept_in_prompt;
+                outputs[position].prompt = kept_in_prompt;
             }
         }
         match recipient_attachment_ids {
@@ -483,15 +483,18 @@ impl KernelRuntimeOwnedState {
             if bounded_bytes.is_empty() {
                 continue;
             }
-            let prompt_metadata = prompt_metadata_cache
-                .entry(agent_id.clone())
-                .or_insert_with(|| {
-                    self.active_prompt_transcript_metadata_for_agent(
-                        session_id,
-                        agent_id.as_deref(),
-                    )
-                })
-                .clone();
+            let prompt_metadata = match output.prompt {
+                Some(prompt) => prompt,
+                None => prompt_metadata_cache
+                    .entry(agent_id.clone())
+                    .or_insert_with(|| {
+                        self.active_prompt_transcript_metadata_for_agent(
+                            session_id,
+                            agent_id.as_deref(),
+                        )
+                    })
+                    .clone(),
+            };
             let provider_terminal =
                 output.kind == crate::terminal::TerminalOutputKind::ProviderTerminal;
             let scoped_recipient_attachment_ids = if provider_terminal {
@@ -541,7 +544,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
-                prompt_id: output.prompt_id.or(prompt_metadata.prompt_id),
+                prompt_id: prompt_metadata.prompt_id,
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
@@ -822,14 +825,14 @@ impl KernelRuntimeOwnedState {
                     .provider_run_id
                     .as_deref()
                     .and_then(|id| active_turns.get(id));
-                let mut context = self.operational_history_context_with_active_turn(
+                let context = self.operational_history_context_with_active_turn(
                     &entry,
                     None,
                     None,
                     None,
                     active_turn,
                 );
-                let kept_in_prompt = self.keep_background_tool_in_its_turn(&entry, &mut context);
+                let kept_in_prompt = self.keep_background_tool_in_its_turn(&entry, &context);
                 Some(PreparedHistoryEntry {
                     position,
                     entry,
@@ -860,7 +863,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
-    ) -> Vec<Option<(Option<u64>, Option<String>)>> {
+    ) -> Vec<Option<(Option<u64>, Option<ActivePromptTranscriptMetadata>)>> {
         let mut appended = vec![None; entries.len()];
         let (replaced, to_append): (Vec<_>, Vec<_>) = self
             .prepare_history_entries(session_id, entries)
@@ -882,54 +885,33 @@ impl KernelRuntimeOwnedState {
         appended
     }
 
-    /// A background command's later rows (it ended, or its provider process
-    /// did) belong to the turn that started it, not to the prompt that happens
-    /// to be active when the kernel learns of the end. Turns are sequence
-    /// ranges, so the row takes the place of the call's newest stored row.
+    /// The launching prompt of a background tool row that took the place of
+    /// its call's newest stored row (see
+    /// `OperationalHistoryStore::keep_background_tool_row_in_its_turn`).
     fn keep_background_tool_in_its_turn(
         &self,
         entry: &SessionHistoryEntry,
-        context: &mut crate::history::HistoryEventTurnContext,
-    ) -> Option<String> {
-        if entry.kind != crate::history::SessionHistoryEntryKind::ProviderTool
-            || !entry.text.contains("\"background\":true")
-        {
-            return None;
-        }
-        let (merge_key, provider_run_id) = entry
-            .merge_key
-            .as_deref()
-            .zip(entry.provider_run_id.as_deref())?;
-        let origin = self
-            .operational_history_store
-            .first_turn_of_provider_tool(&entry.session_id, provider_run_id, merge_key)
-            .ok()
-            .flatten()?;
-        let prompt_id = origin.prompt_id?;
-        if context.prompt_id.as_deref() == Some(prompt_id.as_str()) {
-            return None;
-        }
-        let mut kept = context.clone();
-        kept.turn_id = origin.turn_id.or_else(|| Some(prompt_id.clone()));
-        kept.prompt_id = Some(prompt_id.clone());
+        context: &crate::history::HistoryEventTurnContext,
+    ) -> Option<ActivePromptTranscriptMetadata> {
         match self
             .operational_history_store
-            .replace_latest_transcript_by_merge_key(
-                &entry.session_id,
-                entry.agent_id.as_deref(),
-                merge_key,
-                entry,
-                kept,
-            ) {
-            Ok(Some(_)) => Some(prompt_id),
-            Ok(None) => None,
+            .keep_background_tool_row_in_its_turn(entry, context)
+        {
+            Ok(kept) => kept.map(|kept| {
+                let launch = kept.to_session_history_entry();
+                ActivePromptTranscriptMetadata {
+                    prompt_id: kept.prompt_id,
+                    prompt_origin: launch.as_ref().and_then(|entry| entry.prompt_origin),
+                    source_attachment_id: launch.and_then(|entry| entry.source_attachment_id),
+                }
+            }),
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.history",
                     "failed to keep a background tool row in its turn",
                     serde_json::json!({
                         "session_id": entry.session_id,
-                        "merge_key": merge_key,
+                        "merge_key": entry.merge_key,
                         "error": error.to_string(),
                     }),
                 );

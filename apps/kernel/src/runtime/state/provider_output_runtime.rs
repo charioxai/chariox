@@ -249,7 +249,7 @@ impl KernelRuntimeState {
                         },
                         merge_key: None,
                         sequence: None,
-                        prompt_id: None,
+                        prompt: None,
                         bytes: chunk.bytes,
                     };
                     (output, history_entry)

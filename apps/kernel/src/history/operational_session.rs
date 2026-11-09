@@ -9,16 +9,9 @@ use crate::session::PromptOrigin;
 use super::session_log::external_provider_observed_merge_key_with_prefix_is_state_signal;
 use super::STEERING_PROMPT_MERGE_KEY_PREFIX;
 use super::{
-    HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
-    SessionHistoryEntrySource,
+    HistoryEvent, HistoryEventTurnContext, OperationalHistoryStore, SessionHistoryEntry,
+    SessionHistoryEntryKind, SessionHistoryEntrySource,
 };
-
-/// Where a tool call first appeared in the transcript.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HistoryTurnOrigin {
-    pub turn_id: Option<String>,
-    pub prompt_id: Option<String>,
-}
 
 /// A prompt the kernel sent, with the local files it attached: the provider may echo it behind an
 /// `@path` mention of each of them.
@@ -497,31 +490,67 @@ impl OperationalHistoryStore {
 
     /// The turn and prompt a tool call first appeared in: later rows of the
     /// same call (a background command ending) stay in that turn.
-    pub fn first_turn_of_provider_tool(
+    /// A background command's later rows (it ended, or its provider process
+    /// did) belong to the turn that started it, not to the prompt active when
+    /// the kernel learns of the end. Turns are sequence ranges, so such a row
+    /// takes the place of the call's newest stored row and keeps its
+    /// attribution. Returns that row; none means `entry` is appended as usual.
+    pub fn keep_background_tool_row_in_its_turn(
+        &self,
+        entry: &SessionHistoryEntry,
+        context: &HistoryEventTurnContext,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        if entry.kind != SessionHistoryEntryKind::ProviderTool
+            || !entry.text.contains("\"background\":true")
+        {
+            return Ok(None);
+        }
+        let Some((merge_key, provider_run_id)) = entry
+            .merge_key
+            .as_deref()
+            .zip(entry.provider_run_id.as_deref())
+        else {
+            return Ok(None);
+        };
+        let Some(prompt_id) =
+            self.first_prompt_of_provider_tool(&entry.session_id, provider_run_id, merge_key)?
+        else {
+            return Ok(None);
+        };
+        if context.prompt_id.as_deref() == Some(prompt_id.as_str()) {
+            return Ok(None);
+        }
+        self.replace_latest_transcript_by_merge_key(
+            &entry.session_id,
+            entry.agent_id.as_deref(),
+            merge_key,
+            entry,
+            context.clone(),
+        )
+    }
+
+    /// The prompt whose turn a tool call first appeared in.
+    fn first_prompt_of_provider_tool(
         &self,
         session_id: &str,
         provider_run_id: &str,
         merge_key: &str,
-    ) -> Result<Option<HistoryTurnOrigin>, DaemonError> {
+    ) -> Result<Option<String>, DaemonError> {
         let connection = self.lock_read_connection(Some(session_id))?;
         connection
             .query_row(
-                "SELECT turn_id, prompt_id FROM history_events
+                "SELECT prompt_id FROM history_events
                  WHERE session_id = ?1 AND provider_run_id = ?2 AND kind = 'provider_tool'
                    AND merge_key = ?3
                  ORDER BY sequence ASC LIMIT 1",
                 params![session_id, provider_run_id, merge_key],
-                |row| {
-                    Ok(HistoryTurnOrigin {
-                        turn_id: row.get(0)?,
-                        prompt_id: row.get(1)?,
-                    })
-                },
+                |row| row.get::<_, Option<String>>(0),
             )
             .optional()
+            .map(Option::flatten)
             .map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: Some(session_id.to_string()),
-                operation: "load the first turn of a provider tool",
+                operation: "load the first prompt of a provider tool",
                 message: error.to_string(),
             })
     }

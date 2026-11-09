@@ -30,6 +30,15 @@ pub(crate) struct ProviderOutputFanout {
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
 }
 
+/// Where `ProviderOutputFanout::append_history_entry` stored a row.
+enum StoredHistoryRow {
+    Appended(u64),
+    /// It took the place of a background call's row in this earlier prompt's
+    /// turn (see `OperationalHistoryStore::keep_background_tool_row_in_its_turn`).
+    KeptInTurnOf(ActivePromptTranscriptMetadata),
+    NotStored,
+}
+
 #[derive(Debug, Clone, Default)]
 struct ActivePromptTranscriptMetadata {
     prompt_id: Option<String>,
@@ -179,7 +188,7 @@ impl ProviderOutputFanout {
             );
             self.with_metaagent_trace_recipient_ids(session_id, agent_id, recipient_attachment_ids)
         };
-        let prompt_metadata =
+        let mut prompt_metadata =
             self.active_prompt_transcript_metadata_for_agent(session_id, agent_id);
         // History first, so the live record carries its history sequence.
         let mut sequence = None;
@@ -195,7 +204,7 @@ impl ProviderOutputFanout {
                     );
                 }
             }
-            sequence = self.append_history_entry(
+            match self.append_history_entry(
                 session_id,
                 SessionHistoryEntry::provider_output(
                     session_id,
@@ -207,7 +216,12 @@ impl ProviderOutputFanout {
                 )
                 .with_prompt_origin(prompt_metadata.prompt_origin)
                 .with_source_attachment_id(prompt_metadata.source_attachment_id.clone()),
-            );
+            ) {
+                StoredHistoryRow::Appended(appended) => sequence = Some(appended),
+                // The row stays in its launching prompt's turn, and so does the live record.
+                StoredHistoryRow::KeptInTurnOf(launch) => prompt_metadata = launch,
+                StoredHistoryRow::NotStored => {}
+            }
         }
         let notify_trace = kind != TerminalOutputKind::ProviderTerminal;
         let record = self
@@ -469,8 +483,14 @@ impl ProviderOutputFanout {
     }
 
     /// Returns the history sequence of the stored row.
-    fn append_history_entry(&self, session_id: &str, entry: SessionHistoryEntry) -> Option<u64> {
-        let entry = bounded_history_entry(entry)?;
+    fn append_history_entry(
+        &self,
+        session_id: &str,
+        entry: SessionHistoryEntry,
+    ) -> StoredHistoryRow {
+        let Some(entry) = bounded_history_entry(entry) else {
+            return StoredHistoryRow::NotStored;
+        };
         if let Err(error) = self.session_store.get_session(session_id) {
             crate::logging::warn_with_fields(
                 "daemon.history",
@@ -480,7 +500,7 @@ impl ProviderOutputFanout {
                     "error": error.to_string(),
                 }),
             );
-            return None;
+            return StoredHistoryRow::NotStored;
         }
         let context = crate::app::HistoryEventContextResolver::new(
             self.provider_store.clone(),
@@ -491,6 +511,29 @@ impl ProviderOutputFanout {
             self.provider_run_projection.clone(),
         )
         .resolve(&entry);
+        match self
+            .operational_history_store
+            .keep_background_tool_row_in_its_turn(&entry, &context)
+        {
+            Ok(Some(kept)) => {
+                let launch = kept.to_session_history_entry();
+                return StoredHistoryRow::KeptInTurnOf(ActivePromptTranscriptMetadata {
+                    prompt_id: kept.prompt_id,
+                    prompt_origin: launch.as_ref().and_then(|entry| entry.prompt_origin),
+                    source_attachment_id: launch.and_then(|entry| entry.source_attachment_id),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to keep a background tool row in its turn",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "merge_key": entry.merge_key,
+                    "error": error.to_string(),
+                }),
+            ),
+        }
         match self
             .operational_history_store
             .append_transcript(&entry, context)
@@ -520,7 +563,7 @@ impl ProviderOutputFanout {
                         );
                     }
                 }
-                Some(event.sequence)
+                StoredHistoryRow::Appended(event.sequence)
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -531,7 +574,7 @@ impl ProviderOutputFanout {
                         "error": error.to_string(),
                     }),
                 );
-                None
+                StoredHistoryRow::NotStored
             }
         }
     }

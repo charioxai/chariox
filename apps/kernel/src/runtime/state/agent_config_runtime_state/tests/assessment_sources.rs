@@ -214,7 +214,7 @@ async fn a12_assessment_unique_live_prefix_crosses_the_protected_boundary() {
         vec![
             crate::runtime::state::prompt_transcript_owned_state::TerminalOutputBatchAppend {
                 sequence: None,
-                prompt_id: None,
+                prompt: None,
                 provider_run_id: "run".into(),
                 agent_id: Some(agent.clone()),
                 kind: TerminalOutputKind::ProviderOutput,
