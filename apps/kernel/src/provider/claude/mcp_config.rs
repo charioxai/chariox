@@ -447,6 +447,15 @@ mod tests {
             payload.pointer("/mcpServers/chariox/timeout"),
             Some(&serde_json::json!(super::CLAUDE_RUNTIME_MCP_TIMEOUT_MS))
         );
+        // The reach passthrough is retired (docs/design/sub-agents.md 7.2).
+        assert_eq!(
+            payload["mcpServers"]
+                .as_object()
+                .expect("mcp servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["chariox"]
+        );
 
         drop(root);
         assert!(!root_path.exists());
