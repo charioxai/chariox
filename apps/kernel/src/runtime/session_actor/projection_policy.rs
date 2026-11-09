@@ -251,6 +251,7 @@ pub(super) fn session_id_for_projection_refresh(
         Ok(LocalDaemonResponse::AgentSpawned {
             agent,
             event_subscription_error: None,
+            ..
         })
         | Ok(LocalDaemonResponse::AgentAliased { agent, .. })
         | Ok(LocalDaemonResponse::AgentConfigUpdated { agent, .. })

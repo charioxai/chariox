@@ -278,6 +278,8 @@ fn secret_responses() -> Vec<LocalDaemonResponse> {
         LocalDaemonResponse::AgentSpawned {
             agent,
             event_subscription_error: None,
+            deadline_ms: None,
+            branch: None,
         },
         LocalDaemonResponse::McpServer { mcp: http },
         LocalDaemonResponse::CredentialRegistered {

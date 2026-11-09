@@ -64,6 +64,17 @@ impl CommandRouter {
                 }
             }
         }
+        if let Ok(LocalDaemonResponse::AgentSpawned {
+            agent,
+            deadline_ms,
+            branch,
+            ..
+        }) = &mut response
+        {
+            let facts = router.runtime_state.spawned_agent_facts(agent).await?;
+            *deadline_ms = facts.deadline_ms;
+            *branch = facts.branch;
+        }
         crate::runtime::external_response::finish_response(&response_command, response)
     }
 

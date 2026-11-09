@@ -283,6 +283,8 @@ impl SessionRuntimeStore {
                     .with_session_projection_action_result(Ok(LocalDaemonResponse::AgentSpawned {
                         agent,
                         event_subscription_error: None,
+                        deadline_ms: None,
+                        branch: None,
                     }))
                     .await;
             }
@@ -454,6 +456,8 @@ impl SessionRuntimeStore {
                         LocalDaemonResponse::AgentSpawned {
                             agent,
                             event_subscription_error: None,
+                            deadline_ms: None,
+                            branch: None,
                         }
                     }),
                     Err(error) => Err(error),

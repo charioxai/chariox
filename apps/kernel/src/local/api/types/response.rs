@@ -458,7 +458,14 @@ pub enum LocalDaemonResponse {
     SessionAliased { session: RuntimeSession, },
     AgentAliased { agent: AgentInstance, session: RuntimeSession, },
     AgentProfileUpdated { agent: AgentInstance, session: RuntimeSession, },
-    AgentSpawned { agent: AgentInstance, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
+    AgentSpawned {
+        agent: AgentInstance,
+        #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>,
+        /// When the agent's deadline ends its work; absent without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")] deadline_ms: Option<u64>,
+        /// The branch checked out in the agent's folder; absent without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")] branch: Option<String>,
+    },
     AgentsSpawned { agents: Vec<AgentInstance>, #[serde(default, skip_serializing_if = "Option::is_none")] event_subscription_error: Option<EventKernelIssue>, },
     TurnUndone { result: TurnUndoResult, },
     AgentForked {

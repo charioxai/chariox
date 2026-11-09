@@ -264,6 +264,8 @@ fn created_work_keeps_its_ids_and_separate_event_failure_on_the_wire() {
         LocalDaemonResponse::AgentSpawned {
             agent: agent.clone(),
             event_subscription_error: None,
+            deadline_ms: None,
+            branch: None,
         },
         LocalDaemonResponse::AgentsSpawned {
             agents: vec![agent],
