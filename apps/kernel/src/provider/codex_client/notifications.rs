@@ -59,6 +59,9 @@ pub enum CodexNotification {
         item_id: String,
         delta: String,
     },
+    TerminalInteraction {
+        item_id: String,
+    },
     FileChangeOutputDelta {
         item_id: String,
         delta: String,
@@ -227,6 +230,13 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                         "completed"
                     },
                 ),
+            })
+        }
+        // The agent wrote to or polled a command's terminal after its call
+        // returned: the command is running in the background.
+        "item/commandExecution/terminalInteraction" => {
+            Some(CodexNotification::TerminalInteraction {
+                item_id: params.get("itemId").and_then(Value::as_str)?.to_string(),
             })
         }
         "item/commandExecution/outputDelta" => {

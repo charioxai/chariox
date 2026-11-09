@@ -120,6 +120,7 @@ mod room_workflows;
 mod screenshot;
 mod waiting_room_workspace;
 
+mod provider_tool_background_lifecycle;
 mod provider_tool_images;
 mod remote_agent_binding_worktree;
 mod room_pin;
