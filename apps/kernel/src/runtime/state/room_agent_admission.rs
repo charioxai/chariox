@@ -268,10 +268,7 @@ impl KernelRuntimeState {
         ) else {
             return Err(denied("the room for the peer does not exist"));
         };
-        if !self
-            .owned
-            .acts_for_owner_in(&room_owner, &own_owner, &room_owner)
-        {
+        if !self.same_owner(&own_owner, &room_owner) {
             return Err(denied(
                 "a peer can only be created in a room of the same owner",
             ));
