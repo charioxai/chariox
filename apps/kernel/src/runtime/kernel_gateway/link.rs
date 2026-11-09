@@ -796,6 +796,10 @@ mod tests {
     /// A relay that reassembles chunked uploads like the real one (it answers the
     /// offer in its handshake and acknowledges each chunk) and reports the id of
     /// each request in the order the requests arrive complete.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the tungstenite handshake callback fixes its error type"
+    )]
     async fn chunked_relay() -> (String, mpsc::UnboundedReceiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -897,6 +901,10 @@ mod tests {
     /// A relay that answers like a target kernel and, when the client offers binary
     /// frames, sends each answer as a CXR2 frame like the real relay does. Reports the
     /// bytes it put on the socket for each answer.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the tungstenite handshake callback fixes its error type"
+    )]
     async fn binary_relay() -> (String, mpsc::UnboundedReceiver<usize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
