@@ -1183,17 +1183,40 @@ async fn owner_vault_saves_a_payment_card_and_lists_only_its_summary() {
             "security_code": CODE, "name": "Ada Lovelace"})
         .to_string()
     };
-    let create = |kind: &str, value: String| Request::Create {
-        name: "Travel card".into(),
-        kind: kind.into(),
-        use_binding: crate::config::VaultUseBinding {
-            target: crate::config::VaultUseTarget::Site {
-                origin: "https://shop.example".into(),
-            },
-            value_kind: crate::config::VaultValueKind::PaymentCard,
+    // One card serves every site: it is saved with no site, and each payment asks the owner.
+    let any_site: crate::config::VaultUseBinding = serde_json::from_value(
+        serde_json::json!({"target": {"kind": "any_site"}, "value_kind": "payment_card"}),
+    )
+    .unwrap();
+    let create_for =
+        |kind: &str, use_binding: crate::config::VaultUseBinding, value: String| Request::Create {
+            name: "Travel card".into(),
+            kind: kind.into(),
+            use_binding,
+            value: VaultPassphrase::new(value),
+        };
+    let create = |kind: &str, value: String| create_for(kind, any_site.clone(), value);
+    // A card is not tied to one merchant, and only a card is usable at any site.
+    let site_card = crate::config::VaultUseBinding {
+        target: crate::config::VaultUseTarget::Site {
+            origin: "https://shop.example".into(),
         },
-        value: VaultPassphrase::new(value),
+        value_kind: crate::config::VaultValueKind::PaymentCard,
     };
+    assert!(
+        send(create_for("Payment card", site_card, card(NUMBER, 2099)))
+            .await
+            .is_err()
+    );
+    let any_site_secret: crate::config::VaultUseBinding = serde_json::from_value(
+        serde_json::json!({"target": {"kind": "any_site"}, "value_kind": "secret"}),
+    )
+    .unwrap();
+    assert!(
+        send(create_for("Password", any_site_secret, "fixture".into()))
+            .await
+            .is_err()
+    );
     // Refusals are calm fixed sentences that never echo what was typed.
     for bad in [
         card("4242424242424241", 2099),
@@ -1236,9 +1259,12 @@ async fn owner_vault_saves_a_payment_card_and_lists_only_its_summary() {
             "name": "Ada Lovelace", "brand": "Visa"})
     );
     assert_eq!(
-        entry["metadata"]["use_binding"]["value_kind"],
-        "payment_card"
+        entry["metadata"]["use_binding"],
+        serde_json::json!({"target": {"kind": "any_site"}, "value_kind": "payment_card"})
     );
+    assert!(entry
+        .get("allowed_hosts")
+        .is_none_or(|hosts| hosts == &serde_json::json!([])));
     assert_eq!(entry["metadata"]["created_by_kind"], "owner_payment_card");
     // Agents see the entry, never its card details.
     let handles = serde_json::to_value(
@@ -1272,18 +1298,25 @@ async fn owner_vault_saves_a_payment_card_and_lists_only_its_summary() {
     })
     .await
     .is_err());
+    // The name on the card is optional.
     send(Request::Replace {
         id,
-        value: VaultPassphrase::new(card(OTHER, 2098)),
+        value: VaultPassphrase::new(
+            serde_json::json!({"number": OTHER, "expiry_month": 12, "expiry_year": 2098,
+                "security_code": CODE})
+            .to_string(),
+        ),
     })
     .await
     .unwrap();
     let listed = list().await;
     no_card_data(&listed);
     let summary = &listed["CredentialsListed"]["credentials"][0]["metadata"]["payment_card"];
-    assert_eq!(summary["last4"], "4444");
-    assert_eq!(summary["expiry_year"], 2098);
-    assert_eq!(summary["brand"], "Mastercard");
+    assert_eq!(
+        summary,
+        &serde_json::json!({"last4": "4444", "expiry_month": 12, "expiry_year": 2098,
+            "brand": "Mastercard"})
+    );
 }
 
 #[tokio::test]

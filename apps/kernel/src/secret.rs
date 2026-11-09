@@ -992,7 +992,15 @@ impl RuntimeSecretService {
                     "this payment card has expired or its saved details are incomplete; the owner can replace it".into(),
                 )
             })?;
-        Ok(card.field(field).to_string())
+        card.field(field)
+            .map(|text| text.to_string())
+            .ok_or_else(|| {
+                secret_error(
+                    "vault_card",
+                    "this payment card was saved without a name; type the name on the card instead"
+                        .into(),
+                )
+            })
     }
 
     /// A card value needs the owner's approval for this operation; a structured
@@ -1136,7 +1144,8 @@ impl RuntimeSecretService {
                     crate::config::VaultUseTarget::Site { .. },
                     UserCredentialUse::Browser | UserCredentialUse::Http | UserCredentialUse::Mcp
                 ) | (
-                    crate::config::VaultUseTarget::Totp { .. },
+                    crate::config::VaultUseTarget::Totp { .. }
+                        | crate::config::VaultUseTarget::AnySite,
                     UserCredentialUse::Browser
                 ) | (
                     crate::config::VaultUseTarget::CommandEnvironment { .. }

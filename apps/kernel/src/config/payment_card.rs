@@ -14,7 +14,8 @@ pub(crate) struct PaymentCard {
     expiry_month: u8,
     expiry_year: u16,
     security_code: String,
-    name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 impl std::fmt::Debug for PaymentCard {
@@ -30,7 +31,8 @@ pub struct PaymentCardSummary {
     pub last4: String,
     pub expiry_month: u8,
     pub expiry_year: u16,
-    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brand: Option<String>,
 }
@@ -80,7 +82,7 @@ impl PaymentCard {
     /// Parses the owner's card. `now_ms` decides whether it has expired.
     pub(crate) fn parse(value: &str, now_ms: u64) -> Result<Self, DaemonError> {
         let card: Self = serde_json::from_str(value)
-            .map_err(|_| invalid("Enter the card number, expiry, security code and name."))?;
+            .map_err(|_| invalid("Enter the card number, expiry and security code."))?;
         if !digits(&card.number, 12..=19) || !luhn(&card.number) {
             return Err(invalid("Enter a valid card number."));
         }
@@ -101,10 +103,11 @@ impl PaymentCard {
         if !digits(&card.security_code, 3..=4) {
             return Err(invalid("Enter the 3 or 4 digit security code."));
         }
-        if card.name.trim().is_empty()
-            || card.name.chars().count() > 100
-            || card.name.chars().any(char::is_control)
-        {
+        if card.name.as_deref().is_some_and(|name| {
+            name.trim().is_empty()
+                || name.chars().count() > 100
+                || name.chars().any(char::is_control)
+        }) {
             return Err(invalid("Enter the name on the card."));
         }
         Ok(card)
@@ -136,9 +139,9 @@ impl PaymentCard {
         }
     }
 
-    /// The text one checkout field receives.
-    pub(crate) fn field(&self, field: PaymentCardField) -> Zeroizing<String> {
-        Zeroizing::new(match field {
+    /// The text one checkout field receives; none for a name the card was saved without.
+    pub(crate) fn field(&self, field: PaymentCardField) -> Option<Zeroizing<String>> {
+        Some(Zeroizing::new(match field {
             PaymentCardField::Number => self.number.clone(),
             PaymentCardField::Expiry => {
                 format!("{:02}/{:02}", self.expiry_month, self.expiry_year % 100)
@@ -146,8 +149,8 @@ impl PaymentCard {
             PaymentCardField::ExpiryMonth => format!("{:02}", self.expiry_month),
             PaymentCardField::ExpiryYear => self.expiry_year.to_string(),
             PaymentCardField::SecurityCode => self.security_code.clone(),
-            PaymentCardField::Name => self.name.clone(),
-        })
+            PaymentCardField::Name => self.name.clone()?,
+        }))
     }
 }
 
@@ -207,7 +210,7 @@ mod tests {
             serde_json::json!({"last4": "4242", "expiry_month": 6, "expiry_year": 2030,
                 "name": "Ada", "brand": "Visa"})
         );
-        let field = |field| parsed.field(field).to_string();
+        let field = |field| parsed.field(field).unwrap().to_string();
         assert_eq!(field(PaymentCardField::Number), VISA);
         assert_eq!(field(PaymentCardField::Expiry), "06/30");
         assert_eq!(field(PaymentCardField::ExpiryMonth), "06");
@@ -223,5 +226,21 @@ mod tests {
         assert_eq!(brand(AMEX).as_deref(), Some("American Express"));
         assert_eq!(brand(MASTERCARD_2).as_deref(), Some("Mastercard"));
         assert_eq!(brand("6011111111111117"), None);
+    }
+
+    #[test]
+    fn the_name_on_the_card_is_optional() {
+        let unnamed = serde_json::json!({"number": VISA, "expiry_month": 6,
+            "expiry_year": 2030, "security_code": "123"})
+        .to_string();
+        let parsed = PaymentCard::parse(&unnamed, NOW_MS).unwrap();
+        assert_eq!(
+            serde_json::to_value(parsed.summary()).unwrap(),
+            serde_json::json!({"last4": "4242", "expiry_month": 6, "expiry_year": 2030,
+                "brand": "Visa"})
+        );
+        let again = PaymentCard::parse(&parsed.canonical(), NOW_MS).unwrap();
+        assert_eq!(again.summary(), parsed.summary());
+        assert!(parsed.field(PaymentCardField::Name).is_none());
     }
 }
