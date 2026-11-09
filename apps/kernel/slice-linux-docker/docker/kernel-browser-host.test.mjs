@@ -3409,3 +3409,75 @@ for (const word of ['generation', 'cursor', 'pointer', 'width', 'height']) {
     }
   }));
 }
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 1. An agent's screenshot of an element, a viewport region or the whole page.
+const pngSize = data => { const header = Buffer.from(data.slice(0, 44), 'base64'); return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }; };
+const agentShot = (opened, extra) => ({ op: 'screenshot', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, ...extra });
+const withCdp = (connection, answer) => { const send = connection.send; connection.send = async (method, params, session) => answer(method, params, session) ?? send(method, params, session); };
+
+test('browsertools: a clip is cut from the masked viewport capture and echoed in CSS pixels', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const shot = await host.request(agentShot(opened, { clip: { x: 10, y: 20, width: 100, height: 50 } }));
+  assert.deepEqual(pngSize(shot.data_base64), { width: 100, height: 50 });
+  assert.deepEqual(shot.clip, { x: 10, y: 20, width: 100, height: 50 });
+  const captures = sent.filter(call => call.method === 'Page.captureScreenshot');
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].params.clip, undefined, 'the whole viewport is captured and masked first, then cut');
+}));
+
+test('browsertools: a clip outside the viewport, several region keys or a non-agent are refused before any capture', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  for (const clip of [{ x: 1200, y: 0, width: 100, height: 10 }, { x: 0, y: 0, width: 0, height: 10 }, { x: 1.5, y: 0, width: 10, height: 10 }, { x: 0, y: 0, width: 10 }])
+    await assert.rejects(host.request(agentShot(opened, { clip })), { reason: 'clip_invalid' });
+  await assert.rejects(host.request(agentShot(opened, { clip: { x: 0, y: 0, width: 5, height: 5 }, full_page: true })), { reason: 'region_conflict' });
+  await assert.rejects(host.request({ ...agentShot(opened, { clip: { x: 0, y: 0, width: 5, height: 5 } }), focused_agent: undefined }), { code: 'user_domain_not_granted' });
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').length, 0);
+}));
+
+test('browsertools: a node_ref is scrolled into view, measured and cut out', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [100, 200.4, 300, 200.4, 300, 260.2, 100, 260.2] } } : undefined);
+  const shot = await host.request(agentShot(opened, { node_ref: 'backend:7' }));
+  assert.deepEqual(shot.clip, { x: 100, y: 200, width: 200, height: 61 });
+  assert.deepEqual(pngSize(shot.data_base64), { width: 200, height: 61 });
+  const methods = sent.map(call => call.method);
+  assert(methods.indexOf('DOM.scrollIntoViewIfNeeded') !== -1 && methods.indexOf('DOM.scrollIntoViewIfNeeded') < methods.indexOf('Page.captureScreenshot'));
+  assert.equal(sent.find(call => call.method === 'DOM.scrollIntoViewIfNeeded').params.backendNodeId, 7);
+}));
+
+test('browsertools: a node_ref that is not a top-level snapshot ref, is gone or is off screen fails plainly', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  for (const node_ref of ['frame:a:b:backend:7', 'backend:0', '7', 'backend:1e3'])
+    await assert.rejects(host.request(agentShot(opened, { node_ref })), { reason: 'node_ref_invalid' });
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0);
+  withCdp(connection, method => { if (method === 'DOM.getBoxModel') throw Object.assign(new Error('Could not compute box model'), { code: 'browser_cdp_command_failed' }); });
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:7' })), { reason: 'node_unavailable' });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [0, 0, 0, 0, 0, 0, 0, 0] } } : undefined);
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:8' })), { reason: 'node_not_visible' });
+}));
+
+test('browsertools: full_page captures beyond the viewport at one pixel per CSS pixel and reports a cut page', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let height = 3000;
+  withCdp(connection, method => method === 'Page.getLayoutMetrics' ? { cssVisualViewport: { pageX: 0, pageY: 0 }, cssContentSize: { width: 1280, height } } : undefined);
+  const page = await host.request(agentShot(opened, { full_page: true }));
+  const capture = sent.filter(call => call.method === 'Page.captureScreenshot').at(-1).params;
+  assert.equal(capture.captureBeyondViewport, true);
+  assert.deepEqual(capture.clip, { x: 0, y: 0, width: 1280, height: 3000, scale: 1 });
+  assert.deepEqual([page.width, page.height, page.page_height, page.mime_type, page.truncated], [1280, 3000, 3000, 'image/png', undefined]);
+  height = 40000;
+  const tall = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([tall.height, tall.page_height, tall.truncated], [16000, 40000, true]);
+}));
+
+test('browsertools: full_page falls back to JPEG for a page whose PNG is too large, and refuses a protected page', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, (method, params) => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 5000 } }
+    : method === 'Page.captureScreenshot' ? { data: params.format === 'png' ? 'A'.repeat(4 * 1024 * 1024 + 4) : 'QUJD' } : undefined);
+  const page = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([page.mime_type, page.data_base64], ['image/jpeg', 'QUJD']);
+  const before = sent.length;
+  host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
+  await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
+  assert.equal(sent.slice(before).filter(call => call.method === 'Page.captureScreenshot').length, 0, 'no unmasked pixels are captured');
+}));

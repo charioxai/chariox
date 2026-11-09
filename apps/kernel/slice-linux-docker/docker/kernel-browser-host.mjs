@@ -5,6 +5,7 @@ import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
+import {REGION_KEYS,regionScreenshot} from './kernel-browser-screenshot-region.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
@@ -12,7 +13,7 @@ import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
-import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { AgentToolRefusal, CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -1349,6 +1350,10 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
+      if (REGION_KEYS.some(key => command[key] !== undefined)) {
+        if (!agentRequest) throw new UserDomainRefusal("not_granted");
+        return this.observe(await regionScreenshot(this, tab, command), tab, scope);
+      }
       // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
       const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
       const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
@@ -1583,6 +1588,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: false, error: { code: 'browser_unavailable', message: 'MP-08: browser disconnected; interrupted action was not replayed' } };
       }
       if (error instanceof UserDomainRefusal || error instanceof CaptureRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
+      if (error instanceof AgentToolRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       const uploadFailure = request.params?.input?.kind === 'upload' ? publicUploadFailure(error) : null;
       if (uploadFailure) return { id: request.id, ok: false, error: uploadFailure };
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
