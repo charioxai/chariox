@@ -302,12 +302,6 @@ impl KernelRuntimeState {
         reason: &str,
         keep_for_restart: bool,
     ) -> Result<usize, DaemonError> {
-        // A stop is not a revoke: the runs a hot reload hands over keep their reach.
-        let reach_count = if keep_for_restart {
-            0
-        } else {
-            self.revoke_reach_access(owner, id)
-        };
         let sudo_result = self.revoke_sudo(owner, id, reason);
         let sudo_count = sudo_result.as_ref().copied().unwrap_or(0);
         let mut state = self
@@ -355,11 +349,6 @@ impl KernelRuntimeState {
         }
         drop(state);
         let mut audit_error = sudo_result.err();
-        if reach_count > 0 {
-            if let Err(error) = self.end_dead_reach_subscriptions() {
-                audit_error.get_or_insert(error);
-            }
-        }
         let (settled, owed_error) = self.settle_owed_ends(owner, id);
         if audit_error.is_none() {
             audit_error = owed_error;
@@ -406,7 +395,7 @@ impl KernelRuntimeState {
         if let Some(error) = audit_error {
             return Err(error);
         }
-        Ok(count + sudo_count + reach_count + settled)
+        Ok(count + sudo_count + settled)
     }
 
     fn cancel_access_prompt(&self, grant: &KernelAccessGrant, action: &str) {
@@ -984,7 +973,27 @@ impl KernelRuntimeState {
 
 mod cover;
 mod policy;
-pub(crate) mod reach;
+impl KernelRuntimeState {
+    /// `<room>/<agent> (Chariox agent)`: how another kernel's audit and paired
+    /// clients name an agent of this kernel.
+    pub(crate) fn agent_harness_name(&self, session_id: &str, agent_id: &str) -> Option<String> {
+        let session = self.owned.session_store.get_session(session_id).ok()?;
+        let agent = self.owned.agent_store.get_agent(agent_id).ok()?;
+        let room = session.alias().unwrap_or_else(|| session.id());
+        let name = agent.alias().unwrap_or_else(|| agent.agent_ref());
+        Some(format!("{room}/{name} (Chariox agent)"))
+    }
+
+    /// Who owns an event inbox: the access grant that subscribed.
+    pub(crate) fn event_source_owner(&self, id: &str) -> Option<String> {
+        Some(self.access_grant_summary(id)?.owner_user_id)
+    }
+
+    /// Whether the grant an inbox belongs to still lives; an ended one ends its subscription.
+    pub(crate) fn event_source_alive(&self, id: &str) -> bool {
+        self.event_source_owner(id).is_some()
+    }
+}
 #[cfg(test)]
 pub(super) mod test_support;
 

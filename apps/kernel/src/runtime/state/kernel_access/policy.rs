@@ -70,21 +70,6 @@ impl KernelRuntimeState {
         if carries_passkey(request) {
             return Err(Refusal::HumanOnly.error());
         }
-        if grant_id.starts_with(super::reach::REACH_PREFIX) {
-            let caller = self
-                .reach_for_id(grant_id)
-                .ok_or_else(|| error("reach ended: the agent's run is no longer live"))?;
-            return match super::reach::reach_need(request) {
-                super::reach::ReachNeed::Room => Ok(()),
-                super::reach::ReachNeed::HumanOnly => {
-                    self.audit_human_only_denial(grant_id, &caller.owner_user_id);
-                    Err(Refusal::HumanOnly.error())
-                }
-                super::reach::ReachNeed::Sudo | super::reach::ReachNeed::Excluded => {
-                    Err(error("this request needs the owner's /sudo for this agent"))
-                }
-            };
-        }
         let owner = if grant_id.starts_with("sudo:") {
             self.sudo_window_bound(grant_id)?.owner_user_id
         } else {
@@ -104,9 +89,7 @@ impl KernelRuntimeState {
         id: &str,
     ) -> Option<crate::runtime::kernel_gateway::Origin> {
         self.sweep_kernel_access();
-        let harness = if id.starts_with(super::reach::REACH_PREFIX) {
-            self.reach_for_id(id)?.harness
-        } else if id.starts_with("sudo:") {
+        let harness = if id.starts_with("sudo:") {
             let turn = self.sudo_window_bound(id).ok()?;
             self.agent_harness_name(&turn.session_id, &turn.agent_id)
                 .unwrap_or_else(|| "Chariox agent".to_string())

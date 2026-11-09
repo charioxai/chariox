@@ -26,8 +26,7 @@
     "start:shell": "pnpm --filter @chariox/shell run start",
     "test:review-regressions": "node --test --test-concurrency=1 deploy/managed-kernel/managed-update-recovery.test.mjs apps/kernel/managed-upgrade-protocol-transitions.test.mjs apps/cli/scripts/lib/drill-turn-admission.test.mjs apps/cli/scripts/lib/native-permission-workspace.test.mjs",
     "protocol:generate": "node scripts/generate-protocol-versions.mjs",
-    "protocol:check": "node scripts/generate-protocol-versions.mjs --check",
-    "reach:generate": "node scripts/generate-reach-tools.mjs"
+    "protocol:check": "node scripts/generate-protocol-versions.mjs --check"
   },
   "devDependencies": {
     "typescript": "^5.6.3",

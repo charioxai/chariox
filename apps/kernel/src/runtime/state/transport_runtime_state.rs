@@ -433,7 +433,6 @@ impl KernelRuntimeState {
             crate::hot_reload::hand_over_user_domain(
                 self.owned.kernel_browser_host.hand_over_access(),
             );
-            self.hand_over_reach_revocations();
         }
         self.owned.room_execs.shutdown();
         self.owned.room_terminals.shutdown();

@@ -273,17 +273,6 @@ fn claude_mcp_config(
                 "timeout": CLAUDE_RUNTIME_MCP_TIMEOUT_MS,
             }),
         );
-        mcp_servers.insert(
-            "chariox-reach".to_string(),
-            serde_json::json!({
-                "type": "http",
-                "url": crate::provider::reach_mcp_url(url),
-                "headers": {
-                    "Authorization": format!("Bearer {token}"),
-                },
-                "timeout": CLAUDE_RUNTIME_MCP_TIMEOUT_MS,
-            }),
-        );
     }
     if mcp_servers.is_empty() {
         return Ok(None);
@@ -446,6 +435,15 @@ mod tests {
         assert_eq!(
             payload.pointer("/mcpServers/chariox/timeout"),
             Some(&serde_json::json!(super::CLAUDE_RUNTIME_MCP_TIMEOUT_MS))
+        );
+        // The reach passthrough is retired (docs/design/sub-agents.md 7.2).
+        assert_eq!(
+            payload["mcpServers"]
+                .as_object()
+                .expect("mcp servers")
+                .keys()
+                .collect::<Vec<_>>(),
+            ["chariox"]
         );
 
         drop(root);

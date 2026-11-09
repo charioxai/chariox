@@ -19,8 +19,6 @@ pub(crate) async fn execute(
     let grant = command.external_grant_id();
     if let Some(grant) = &grant {
         state.authorize_external_request(grant, &request_shape)?;
-    } else if let Some(reach) = command.reach_caller_id() {
-        state.authorize_gateway_request(&reach, &request_shape)?;
     } else if !capabilities
         || !crate::runtime::cloud_relay_authorization::kernel_cloud_owner(config, command)
     {
@@ -110,7 +108,7 @@ pub(crate) async fn execute(
         *access_state = "pending".into();
         *access_reason = None;
         if let Some(target) = kernel_target.as_ref().filter(|_| machine_state == "ready") {
-            let grant = grant.or_else(|| command.reach_caller_id()).ok_or_else(|| {
+            let grant = grant.ok_or_else(|| {
                 unavailable(
                     "control_plane_grant_required",
                     "Machine attachment requires the owner's Chariox access grant",
@@ -144,10 +142,10 @@ pub(crate) fn service_request(
 ) -> serde_json::Value {
     let mut value = serde_json::json!(request);
     if matches!(request, ControlPlaneRequest::Acquire { .. }) {
-        let caller = command
+        if let Some(origin) = command
             .external_grant_id()
-            .or_else(|| command.reach_caller_id());
-        if let Some(origin) = caller.and_then(|id| state.gateway_origin(&id)) {
+            .and_then(|id| state.gateway_origin(&id))
+        {
             value["requested_by"] = origin.harness.into();
         }
     }

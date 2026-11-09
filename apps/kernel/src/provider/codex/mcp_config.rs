@@ -75,21 +75,6 @@ pub(super) fn runtime_mcp_config(
             "-c".to_string(),
             "mcp_servers.chariox.tool_timeout_sec=300".to_string(),
         ]);
-        args.extend([
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.transport=\"streamable_http\"".to_string(),
-            "-c".to_string(),
-            format!(
-                "mcp_servers.chariox-reach.url={:?}",
-                crate::provider::reach_mcp_url(&binding.server_url)
-            ),
-            "-c".to_string(),
-            format!("mcp_servers.chariox-reach.bearer_token_env_var={CODEX_MCP_TOKEN_ENV:?}"),
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.startup_timeout_sec=30".to_string(),
-            "-c".to_string(),
-            "mcp_servers.chariox-reach.tool_timeout_sec=300".to_string(),
-        ]);
         env.insert(CODEX_MCP_TOKEN_ENV.to_string(), binding.auth_token.clone());
     }
     Ok((args, env))
@@ -295,4 +280,27 @@ fn write_workspace_live_sync_model_catalog(model: &str) -> Result<PathBuf, Daemo
         message: format!("failed to write workspace live sync Codex model catalog: {error}"),
     })?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
+
+    // The reach passthrough is retired (docs/design/sub-agents.md 7.2): a Room agent
+    // reaches other rooms and kernels only through its own `chariox` room tools.
+    #[test]
+    fn a_room_agent_gets_only_the_chariox_mcp_server() {
+        let request = LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt")
+            .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                "http://127.0.0.1:43120/mcp",
+                "private-token",
+            ));
+        let (args, _) = super::runtime_mcp_config(Some(&request)).expect("config");
+        let servers: std::collections::BTreeSet<_> = args
+            .iter()
+            .filter_map(|arg| arg.strip_prefix("mcp_servers."))
+            .filter_map(|arg| arg.split('.').next())
+            .collect();
+        assert_eq!(servers.into_iter().collect::<Vec<_>>(), ["chariox"]);
+    }
 }
