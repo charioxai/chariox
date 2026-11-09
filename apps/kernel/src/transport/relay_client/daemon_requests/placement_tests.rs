@@ -437,7 +437,6 @@ async fn an_ended_agent_grant_sends_nothing_and_the_launch_does_not_start() {
     let caller = crate::runtime::state::reach::ReachCaller {
         id: "reach:ended-run".into(),
         run_id: "ended-run".into(),
-        session_id: "room".into(),
         agent_id: "agent-1".into(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.into(),
         harness: "claude".into(),

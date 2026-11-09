@@ -19,7 +19,6 @@ pub(crate) const OWNER_GRANT_PREFIX: &str = "owner:";
 pub(crate) struct ReachCaller {
     pub(crate) id: String,
     pub(crate) run_id: String,
-    pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) owner_user_id: String,
     /// What the target's audit and paired-clients list call the agent.
@@ -162,7 +161,6 @@ impl KernelRuntimeState {
         Ok(ReachCaller {
             id: format!("{REACH_PREFIX}{run_id}"),
             run_id: run_id.to_owned(),
-            session_id: run.session_id().to_owned(),
             agent_id: agent_id.to_owned(),
             owner_user_id: owner.to_owned(),
             harness: self

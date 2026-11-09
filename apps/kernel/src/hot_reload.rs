@@ -649,15 +649,6 @@ impl PreparedForTests {
             .handover
             .inherited_fds()
     }
-
-    /// What the next program receives of this swap, as it reads it from the handover file.
-    pub(crate) fn reload(&self) {
-        let prepared = lock(&PREPARED);
-        let body = serde_json::to_vec(&prepared.as_ref().expect("a prepared swap").handover)
-            .expect("the handover serializes");
-        let handover: Handover = serde_json::from_slice(&body).expect("the handover reads back");
-        *lock(&RECEIVED_REVOKED_REACH_RUNS) = handover.revoked_reach_runs;
-    }
 }
 
 #[cfg(test)]
