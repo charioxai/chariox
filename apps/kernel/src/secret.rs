@@ -190,6 +190,8 @@ pub(crate) struct VaultUseApproval {
     binding: crate::config::VaultUseBinding,
     /// The one checkout field a structured payment card fills under this approval.
     card_field: Option<crate::config::PaymentCardField>,
+    /// The saved card the owner approved; a replaced value fills nothing.
+    card_revision: Option<VaultCardRevision>,
 }
 
 impl VaultUseApproval {
@@ -197,12 +199,39 @@ impl VaultUseApproval {
         credential_id: String,
         binding: crate::config::VaultUseBinding,
         card_field: Option<crate::config::PaymentCardField>,
+        card_revision: Option<VaultCardRevision>,
     ) -> Self {
         Self {
             credential_id,
             binding,
             card_field,
+            card_revision,
         }
+    }
+}
+
+/// One saved payment-card value under one binding. Replacing either gives another revision.
+/// Keyed per kernel process so a card number cannot be recovered from it. Kernel memory only.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VaultCardRevision([u8; 32]);
+
+impl VaultCardRevision {
+    fn of(binding: &crate::config::VaultUseBinding, value: &str) -> Result<Self, DaemonError> {
+        static KEY: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+        let binding = serde_json::to_vec(binding)
+            .map_err(|error| secret_error("vault_card_revision", error.to_string()))?;
+        let mut mac = HmacSha256::new_from_slice(KEY.get_or_init(rand::random))
+            .map_err(|error| secret_error("vault_card_revision", error.to_string()))?;
+        mac.update(&(binding.len() as u64).to_be_bytes());
+        mac.update(&binding);
+        mac.update(value.as_bytes());
+        Ok(Self(mac.finalize().into_bytes().into()))
+    }
+}
+
+impl std::fmt::Debug for VaultCardRevision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("VaultCardRevision(..)")
     }
 }
 
@@ -978,13 +1007,42 @@ impl RuntimeSecretService {
             .ok_or_else(|| secret_error("credential_lookup", format!("unknown credential `{id}`")))
     }
 
+    /// The registered entry and the revision of its saved payment-card value now.
+    pub(crate) fn vault_card_revision(
+        &self,
+        id: &str,
+    ) -> Result<(&UserCredentialConfig, VaultCardRevision), DaemonError> {
+        let credential = self.credential(id)?;
+        let binding = credential
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.use_binding.as_ref())
+            .filter(|binding| binding.value_kind == crate::config::VaultValueKind::PaymentCard)
+            .ok_or_else(|| {
+                secret_error(
+                    "vault_card_revision",
+                    format!("credential `{id}` is not a payment card"),
+                )
+            })?;
+        let value = Zeroizing::new(self.resolve_source(credential)?);
+        Ok((credential, VaultCardRevision::of(binding, &value)?))
+    }
+
     fn resolve_secret(&self, credential: &UserCredentialConfig) -> Result<String, DaemonError> {
-        let card_field = self.approved_card_field(credential)?;
-        let value = self.resolve_source(credential)?;
-        let Some(field) = card_field else {
-            return Ok(value);
+        let Some(approval) = self.card_approval(credential)? else {
+            return self.resolve_source(credential);
         };
-        let value = Zeroizing::new(value);
+        let mut value = Zeroizing::new(self.resolve_source(credential)?);
+        // The value read now must be the card the owner approved.
+        if approval.card_revision != Some(VaultCardRevision::of(&approval.binding, &value)?) {
+            return Err(secret_error(
+                "vault_card_approval",
+                "this payment card was replaced after the owner approved it; nothing was filled. Fill again to ask the owner".into(),
+            ));
+        }
+        let Some(field) = Self::approved_card_field(credential, approval)? else {
+            return Ok(std::mem::take(&mut *value));
+        };
         let card = crate::config::PaymentCard::parse(&value, crate::session::unix_epoch_ms())
             .map_err(|_| {
                 secret_error(
@@ -1003,35 +1061,43 @@ impl RuntimeSecretService {
             })
     }
 
-    /// A card value needs the owner's approval for this operation; a structured
-    /// card yields only the one field that approval names.
-    fn approved_card_field(
+    /// A card value needs the owner's approval for this operation.
+    fn card_approval(
         &self,
         credential: &UserCredentialConfig,
-    ) -> Result<Option<crate::config::PaymentCardField>, DaemonError> {
-        let Some(metadata) = credential.metadata.as_ref() else {
-            return Ok(None);
-        };
-        let Some(binding) = metadata
-            .use_binding
+    ) -> Result<Option<&VaultUseApproval>, DaemonError> {
+        let Some(binding) = credential
+            .metadata
             .as_ref()
+            .and_then(|metadata| metadata.use_binding.as_ref())
             .filter(|binding| binding.value_kind == crate::config::VaultValueKind::PaymentCard)
         else {
             return Ok(None);
         };
-        let approval = self
-            .vault_use_approval
+        self.vault_use_approval
             .as_ref()
             .filter(|approval| {
                 approval.credential_id == credential.id && &approval.binding == binding
             })
+            .map(Some)
             .ok_or_else(|| {
                 secret_error(
                     "vault_card_approval",
                     "payment card use requires the owner's approval for this operation".into(),
                 )
-            })?;
-        match (metadata.payment_card.is_some(), approval.card_field) {
+            })
+    }
+
+    /// A structured card yields only the one field its approval names.
+    fn approved_card_field(
+        credential: &UserCredentialConfig,
+        approval: &VaultUseApproval,
+    ) -> Result<Option<crate::config::PaymentCardField>, DaemonError> {
+        let structured = credential
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.payment_card.is_some());
+        match (structured, approval.card_field) {
             (true, Some(field)) => Ok(Some(field)),
             (false, None) => Ok(None),
             _ => Err(secret_error(

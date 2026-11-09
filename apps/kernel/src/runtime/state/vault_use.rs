@@ -20,6 +20,8 @@ pub(super) struct VaultUseAsk<'a> {
 pub(super) struct VaultPaymentGrant {
     actor: String,
     credential_id: String,
+    /// The saved card value and binding the owner approved.
+    revision: crate::secret::VaultCardRevision,
     /// The site the kernel observed when the owner approved.
     target: VaultUseTarget,
     claim: crate::local::VaultPaymentClaim,
@@ -259,17 +261,35 @@ impl KernelRuntimeState {
         if let Some(claim) = ask.claim {
             claim.validate()?;
         }
+        if binding.value_kind != VaultValueKind::PaymentCard {
+            return Ok(crate::secret::VaultUseApproval::new(
+                credential.id.clone(),
+                binding.clone(),
+                None,
+                None,
+            ));
+        }
+        let revision = {
+            let _lifecycle = self.vault_lifecycle_read_guard().await;
+            self.vault_card_revision(credential)?
+        };
         let approval = crate::secret::VaultUseApproval::new(
             credential.id.clone(),
             binding.clone(),
             ask.card_field,
+            Some(revision),
         );
         let turn = card
             .and(ask.session_id)
             .and_then(|session| self.live_vault_turn(session, actor));
-        if binding.value_kind != VaultValueKind::PaymentCard
-            || self.vault_payment_approved(actor, credential, target, ask.claim, turn.as_deref())
-        {
+        if self.vault_payment_approved(
+            actor,
+            credential,
+            revision,
+            target,
+            ask.claim,
+            turn.as_deref(),
+        ) {
             return Ok(approval);
         }
         let id = format!("vault-card-{:016x}", rand::random::<u64>());
@@ -317,6 +337,13 @@ impl KernelRuntimeState {
         if resolution.choice_id.as_deref() != Some("allow") {
             return Err(error("payment card use was not approved"));
         }
+        // The owner approved the card on the decision; a replacement since then is another card.
+        let _lifecycle = self.vault_lifecycle_read_guard().await;
+        if self.vault_card_revision(credential)? != revision {
+            return Err(error(
+                "this payment card was replaced while the owner decided; nothing was filled. Fill again to ask the owner",
+            ));
+        }
         // A turn that ended during the decision keeps nothing for later fills.
         if let (Some(claim), Some(prompt_id)) = (ask.claim, turn) {
             if card.is_some()
@@ -329,6 +356,7 @@ impl KernelRuntimeState {
                 self.vault_payment_grants().push(VaultPaymentGrant {
                     actor: actor.to_owned(),
                     credential_id: credential.id.clone(),
+                    revision,
                     target: target.clone(),
                     claim: claim.clone(),
                     prompt_id,
@@ -337,6 +365,32 @@ impl KernelRuntimeState {
             }
         }
         Ok(approval)
+    }
+
+    /// The saved card's revision, if the registered entry still shows what `shown` shows.
+    /// Call under the Vault lifecycle guard.
+    fn vault_card_revision(
+        &self,
+        shown: &UserCredentialConfig,
+    ) -> Result<crate::secret::VaultCardRevision, DaemonError> {
+        let service = self.home_runtime_secret_service()?;
+        let (current, revision) = service.vault_card_revision(&shown.id)?;
+        let summary = |entry: &UserCredentialConfig| {
+            (
+                entry.description.clone(),
+                entry.source.clone(),
+                entry
+                    .metadata
+                    .as_ref()
+                    .map(|m| (m.use_binding.clone(), m.payment_card.clone())),
+            )
+        };
+        if summary(current) != summary(shown) {
+            return Err(error(
+                "this payment card changed; nothing was filled. Fill again to ask the owner",
+            ));
+        }
+        Ok(revision)
     }
 
     fn vault_payment_grants(&self) -> std::sync::MutexGuard<'_, Vec<VaultPaymentGrant>> {
@@ -368,11 +422,12 @@ impl KernelRuntimeState {
     }
 
     /// Whether the owner approved this payment for this agent in its current turn: the same
-    /// card, observed site and claimed merchant, amount and currency, not yet expired.
+    /// saved card value, observed site and claimed merchant, amount and currency, not yet expired.
     fn vault_payment_approved(
         &self,
         actor: &str,
         credential: &UserCredentialConfig,
+        revision: crate::secret::VaultCardRevision,
         target: &VaultUseTarget,
         claim: Option<&crate::local::VaultPaymentClaim>,
         turn: Option<&str>,
@@ -383,6 +438,7 @@ impl KernelRuntimeState {
         self.vault_payment_grants().iter().any(|grant| {
             grant.actor == actor
                 && grant.credential_id == credential.id
+                && grant.revision == revision
                 && &grant.target == target
                 && &grant.claim == claim
                 && grant.prompt_id == turn

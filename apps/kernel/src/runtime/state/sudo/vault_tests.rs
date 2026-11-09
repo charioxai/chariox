@@ -1518,6 +1518,165 @@ async fn vopen_a_card_pays_at_any_site_and_another_site_asks_again() {
     assert!(result.is_err());
 }
 
+const OTHER_CARD_NUMBER: &str = "5555555555554444";
+const OTHER_CARD_CODE: &str = "9081";
+
+fn other_card() -> String {
+    json!({"number": OTHER_CARD_NUMBER, "expiry_month": 11, "expiry_year": 2098,
+        "security_code": OTHER_CARD_CODE, "name": "Grace Hopper"})
+    .to_string()
+}
+
+/// The owner replaces the saved card through their Vault window.
+async fn owner_replaces_card(f: &Fixture) {
+    use crate::local::{LocalDaemonRequest, OwnerVaultRequest, VaultPassphrase};
+    use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+    let request = LocalDaemonRequest::OwnerVault(OwnerVaultRequest::Replace {
+        id: "saved-card".into(),
+        value: VaultPassphrase::new(&other_card()),
+    });
+    let caller = KernelCaller::for_source(&KernelCommandSource::LocalCli)
+        .with_connection_class(crate::local::KernelConnectionClass::Terminal);
+    let command = KernelCommand::from_local_request_with_caller(
+        "owner-replace",
+        KernelCommandSource::LocalCli,
+        caller,
+        None,
+        None,
+        &request,
+    );
+    f.router.dispatch(command, request).await.unwrap();
+}
+
+fn no_card_number(login: &Login) {
+    let filled = inserted(login);
+    assert!(
+        !matches!(
+            filled.as_deref(),
+            Some(CARD_NUMBER | OTHER_CARD_NUMBER | OTHER_CARD_CODE)
+        ),
+        "a card value was filled"
+    );
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the owner's decision is about the card it shows. When that card
+// is replaced while the decision is open, Allow fills nothing (neither card) and keeps no
+// approval for the replacement: its next fill asks again.
+#[tokio::test]
+async fn vopen_a_card_replaced_during_its_decision_fills_nothing() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    let payment = payment();
+    let replace_then_allow = async {
+        let decision = card_decision(f).await;
+        assert_eq!(
+            decision.payment().unwrap().card_last4.as_deref(),
+            Some("4242")
+        );
+        owner_replaces_card(f).await;
+        answer_card(f, decision.id(), "allow", Some(PASSKEY))
+            .await
+            .unwrap();
+    };
+    let (result, ()) = tokio::join!(
+        call(f, PASTE, card_fill("number", Some(&payment))),
+        replace_then_allow
+    );
+    assert!(result.is_err(), "the replaced card was filled");
+    no_card_number(&login);
+    for field in ["number", "security_code"] {
+        let (asked, result) = card_use(
+            f,
+            "cancel",
+            None,
+            call(f, PASTE, card_fill(field, Some(&payment))),
+        )
+        .await;
+        let asked = asked.expect("the replacement needs its own decision");
+        assert_eq!(asked.payment().unwrap().card_last4.as_deref(), Some("4444"));
+        assert!(result.is_err(), "{field}");
+        no_card_number(&login);
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: an approved payment belongs to the saved card it was approved
+// for. Once that value is replaced, by the owner or by any other Vault write, the payment fills
+// nothing more and the next fill asks again.
+#[tokio::test]
+async fn vopen_a_payment_approved_before_a_card_replacement_fills_nothing_after_it() {
+    crate::test_support::isolated_env_test!();
+    let login = login_room().await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    let payment = payment();
+    let echo = login.root.path().join("echo");
+    let (asked, result) = card_use(
+        f,
+        "allow",
+        Some(PASSKEY),
+        call(f, PASTE, card_fill("number", Some(&payment))),
+    )
+    .await;
+    assert!(asked.is_some());
+    result.unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
+    // A Vault write that is not the owner's Replace: the same entry, another card.
+    let service = f.state.home_runtime_secret_service().unwrap();
+    let mut credential = service.credential("saved-card").unwrap().clone();
+    let card =
+        crate::config::PaymentCard::parse(&other_card(), crate::session::unix_epoch_ms()).unwrap();
+    credential.metadata.as_mut().unwrap().payment_card = Some(card.summary());
+    service
+        .upsert_vault_backed_credential_with_secret(
+            &crate::credential::CharioxCredentialRegistry::user().unwrap(),
+            credential,
+            &card.canonical(),
+            true,
+        )
+        .unwrap();
+    for field in ["security_code", "number"] {
+        let _ = std::fs::remove_file(&echo);
+        let (asked, result) = card_use(
+            f,
+            "cancel",
+            None,
+            call(f, PASTE, card_fill(field, Some(&payment))),
+        )
+        .await;
+        assert!(
+            asked.is_some(),
+            "{field} filled under the old card's approval"
+        );
+        assert!(result.is_err() && inserted(&login).is_none(), "{field}");
+    }
+    // The owner's Replace ends it too.
+    let (_, result) = card_use(
+        f,
+        "allow",
+        Some(PASSKEY),
+        call(f, PASTE, card_fill("number", Some(&payment))),
+    )
+    .await;
+    result.unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(OTHER_CARD_NUMBER));
+    owner_replaces_card(f).await;
+    let _ = std::fs::remove_file(&echo);
+    let (asked, result) = card_use(
+        f,
+        "cancel",
+        None,
+        call(f, PASTE, card_fill("security_code", Some(&payment))),
+    )
+    .await;
+    assert!(asked.is_some() && result.is_err() && inserted(&login).is_none());
+}
+
 // MP-08 / MP-09 / MP-10 / MP-11: an approval lasts at most 15 minutes; one that ran out, or a
 // decision that timed out, fills nothing.
 #[tokio::test]
