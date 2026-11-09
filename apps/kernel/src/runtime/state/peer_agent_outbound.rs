@@ -172,7 +172,7 @@ impl KernelRuntimeState {
         }
         #[cfg(test)]
         if let Some(kernel) = peer_agent_link_for_tests::resolve(kernel_ref) {
-            return Ok(Some(kernel));
+            return Ok((kernel != config.daemon_id).then_some(kernel));
         }
         if let Ok(presence) =
             crate::transport::relay_discovery::get_live_kernel(&config, kernel_ref).await
