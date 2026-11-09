@@ -3493,3 +3493,22 @@ test('browsertools: save writes into the workspace for an agent and is refused f
   assert.equal(await readFile(path.join(workspace, 'notes/hi.txt'), 'utf8'), 'hi');
   await assert.rejects(host.request(save({ path: 'other.txt' })), { code: 'user_domain_not_granted' });
 }));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 3. Scroll a snapshot node into view.
+test('browsertools: scroll with a target node_ref scrolls that node into view and moves no pointer', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const scroll = input => ({ op: 'input', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, document_id: opened.tabs[0].document_id, input: { kind: 'scroll', ...input } });
+  await host.request(scroll({ target: 'backend:7' }));
+  const scrolled = sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded');
+  assert.equal(scrolled.length, 1);
+  assert.equal(scrolled[0].params.backendNodeId, 7);
+  assert(!sent.some(call => call.method.startsWith('Input.')), 'no wheel or pointer event');
+  for (const bad of [{ target: 'frame:a:backend:7' }, { target: 'backend:7', x: 1, y: 1, delta_x: 0, delta_y: 50 }, { target: 'backend:7', delta_y: 50 }])
+    await assert.rejects(host.request(scroll(bad)), error => ['node_ref_invalid', 'scroll_target_conflict'].includes(error.reason), JSON.stringify(bad));
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 1);
+  withCdp(connection, method => { if (method === 'DOM.scrollIntoViewIfNeeded') throw Object.assign(new Error('Could not find node with given id'), { code: 'browser_cdp_command_failed' }); });
+  await assert.rejects(host.request(scroll({ target: 'backend:9' })), { reason: 'node_unavailable' });
+  // The coordinate wheel keeps working beside it.
+  await host.request(scroll({ x: 10, y: 10, delta_x: 0, delta_y: 120 }));
+  assert(sent.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseWheel'));
+}));
