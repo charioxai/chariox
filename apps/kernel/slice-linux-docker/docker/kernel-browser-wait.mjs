@@ -32,6 +32,12 @@ function snapshotMatches(snapshot, { kind, value }) {
   return nodes.some(node => mentions(node.name, needle) || mentions(node.description, needle) || mentions(node.value, needle) || mentions(node.text, needle));
 }
 
+// The target's own URL follows same-document changes (pushState, hash) that the stored Tab list learns later.
+async function liveUrl(host, tab) {
+  try { return (await host.browser.connection.send('Target.getTargetInfo', { targetId: tab.target_id }))?.targetInfo?.url ?? tab.url; }
+  catch { return tab.url; }
+}
+
 export async function waitForPage(host, command, scope, signal) {
   const wanted = condition(command);
   const started = Date.now(), deadline = started + wanted.timeout;
@@ -40,7 +46,7 @@ export async function waitForPage(host, command, scope, signal) {
     assertNotCancelled(signal);
     const tab = await host.displayTarget({ generation: command.generation, tab_id: command.tab_id });
     let matched;
-    if (wanted.kind === 'url_contains') matched = mentions(redactObservation(tab.url, secrets), wanted.value.toLowerCase());
+    if (wanted.kind === 'url_contains') matched = mentions(redactObservation(await liveUrl(host, tab), secrets), wanted.value.toLowerCase());
     else matched = snapshotMatches(redactSnapshot(await host.browser.snapshot({ target_id: tab.target_id, document_id: tab.document_id }), secrets), wanted);
     const last = Date.now() >= deadline;
     if (matched || last) {
