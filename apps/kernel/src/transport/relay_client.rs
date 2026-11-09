@@ -51,11 +51,13 @@ mod envelope_io;
 mod events;
 mod incoming_envelopes;
 mod local_browser;
+mod metadata_client;
 mod peer_client;
 mod peer_events;
 mod peer_requests;
 mod peer_trace;
 mod remote_inventory;
+mod reply_notes;
 mod request_errors;
 mod request_timing;
 mod sender_identity;
@@ -78,6 +80,7 @@ use envelope_io::{
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 use local_browser::LocalBrowserDirect;
+pub(crate) use metadata_client::MainConnection;
 #[cfg(test)]
 pub(crate) use peer_client::relay_peer_response_timed_out;
 #[cfg(test)]
@@ -180,6 +183,8 @@ pub(crate) struct RelayOutgoingSender {
     priority_tx: mpsc::Sender<RelayEnvelope>,
     event_tx: mpsc::Sender<RelayEnvelope>,
     closing: Arc<AtomicBool>,
+    /// Who each queued reply answers; the writer reads it.
+    notes: Arc<reply_notes::ReplyNotes>,
 }
 
 impl RelayOutgoingSender {
@@ -206,6 +211,7 @@ impl RelayOutgoingSender {
             priority_tx,
             event_tx,
             closing: Arc::new(AtomicBool::new(false)),
+            notes: Arc::default(),
         }
     }
 
@@ -242,6 +248,23 @@ impl RelayOutgoingSender {
     ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
+    }
+
+    /// A reply to a client's request: the writer names `origin` in its diagnostics, and a bulk
+    /// reply waits while the client already has its share queued.
+    async fn send_reply(&self, envelope: RelayEnvelope, origin: reply_notes::ReplyOrigin) -> bool {
+        let bulk = relay_envelope_uses_event_lane(&envelope);
+        // The replies that hold the bulk slots are dropped with the writer's lanes and never
+        // release them, so a reply waiting for a slot ends with the writer instead.
+        let noted = tokio::select! {
+            noted = self.notes.note(&envelope, origin, bulk) => noted,
+            () = self.event_tx.closed() => return false,
+        };
+        let sent = self.send(envelope).await;
+        if let (false, Some(key)) = (sent, noted) {
+            self.notes.forget(&key);
+        }
+        sent
     }
 
     /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.
@@ -285,10 +308,12 @@ fn relay_envelope_should_write(envelope: &RelayEnvelope, closing: bool) -> bool 
 
 fn relay_envelope_uses_event_lane(envelope: &RelayEnvelope) -> bool {
     // MP-08 / MP-10 / MP-11: bulk encrypted replies (catalogues, history,
-    // captures) must not fill the priority queue ahead of Computer control.
+    // captures) and bulk peer requests (file chunks) must not fill the priority
+    // queue ahead of Computer control and small requests.
     // The relay remains opaque; classify size without inspecting the payload.
     if matches!(envelope, RelayEnvelope::DaemonResponse { encrypted_response: Some(payload), .. }
         | RelayEnvelope::DaemonIncomingPeerResponse { encrypted_response: Some(payload), .. }
+        | RelayEnvelope::DaemonPeerRequest { encrypted_request: payload, .. }
         if payload.ciphertext.len() > 64 * 1024)
     {
         return true;

@@ -19,6 +19,7 @@ use chariox_relay::protocol::{
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
+use crate::transport::relay_client::MainConnection;
 
 mod credentials;
 pub(crate) use credentials::{metadata_discovery_config, with_metadata_token};
@@ -280,7 +281,15 @@ fn record_relay_discovery_test_trace(
 pub async fn list_live_machines(
     config: &DaemonConfig,
 ) -> Result<Vec<RelayMachinePresence>, DaemonError> {
-    let response = query_relay(config, RelayMetadataQuery::ListLiveMachines).await?;
+    list_live_machines_over(config, None).await
+}
+
+/// `list_live_machines` over the connection `main` holds, when it holds one.
+pub(crate) async fn list_live_machines_over(
+    config: &DaemonConfig,
+    main: Option<&MainConnection>,
+) -> Result<Vec<RelayMachinePresence>, DaemonError> {
+    let response = query_relay(config, main, RelayMetadataQuery::ListLiveMachines).await?;
     match response {
         RelayEnvelope::ClientMetadataResponse {
             machines: Some(machines),
@@ -304,8 +313,18 @@ pub async fn list_live_kernels_for_machine(
     config: &DaemonConfig,
     machine_ref: &str,
 ) -> Result<Vec<RelayKernelPresence>, DaemonError> {
+    list_live_kernels_for_machine_over(config, None, machine_ref).await
+}
+
+/// `list_live_kernels_for_machine` over the connection `main` holds, when it holds one.
+pub(crate) async fn list_live_kernels_for_machine_over(
+    config: &DaemonConfig,
+    main: Option<&MainConnection>,
+    machine_ref: &str,
+) -> Result<Vec<RelayKernelPresence>, DaemonError> {
     let response = query_relay(
         config,
+        main,
         RelayMetadataQuery::ListLiveKernelsForMachine {
             machine_ref: machine_ref.to_string(),
         },
@@ -436,6 +455,7 @@ pub(crate) async fn find_live_kernel_once(
 ) -> Result<Option<RelayKernelPresence>, DaemonError> {
     let response = query_relay_once(
         config,
+        None,
         RelayMetadataQuery::GetLiveKernel {
             kernel_ref: kernel_ref.to_string(),
         },
@@ -495,11 +515,12 @@ async fn find_live_kernel_once_with_test_trace(
 
 async fn query_relay(
     config: &DaemonConfig,
+    main: Option<&MainConnection>,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
     let relay = backoff_key(config);
     admit_or_back_off(&relay)?;
-    let result = query_relay_attempts(config, query).await;
+    let result = query_relay_attempts(config, main, query).await;
     record_dial_outcome(&relay, &result);
     result
 }
@@ -555,11 +576,12 @@ fn unreachable_failure(error: &DaemonError) -> Option<backoff::Failure> {
 
 async fn query_relay_attempts(
     config: &DaemonConfig,
+    main: Option<&MainConnection>,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
     let mut last_error = None;
     for attempt in 0..RELAY_METADATA_ATTEMPTS {
-        match query_relay_once(config, query.clone()).await {
+        match query_relay_once(config, main, query.clone()).await {
             Ok(response) => return Ok(response),
             Err(error) if relay_metadata_error_is_retryable(&error) => {
                 crate::logging::warn_with_fields(
@@ -591,12 +613,13 @@ async fn query_relay_attempts(
 
 async fn query_relay_once(
     config: &DaemonConfig,
+    main: Option<&MainConnection>,
     query: RelayMetadataQuery,
 ) -> Result<RelayEnvelope, DaemonError> {
     #[cfg(test)]
-    return query_relay_once_inner(config, query, None).await;
+    return query_relay_once_inner(config, main, query, None).await;
     #[cfg(not(test))]
-    query_relay_once_inner(config, query).await
+    query_relay_once_inner(config, main, query).await
 }
 
 #[cfg(test)]
@@ -605,7 +628,7 @@ async fn query_relay_once_with_test_trace(
     query: RelayMetadataQuery,
     trace: &mut TemporaryPeerTestTrace,
 ) -> Result<RelayEnvelope, DaemonError> {
-    query_relay_once_inner(config, query, Some(trace)).await
+    query_relay_once_inner(config, None, query, Some(trace)).await
 }
 
 // MP-08 / MP-10 / MP-11: keep relay TLS discovery out of every caller's
@@ -617,24 +640,26 @@ type RelayMetadataFuture<'a> = std::pin::Pin<
 #[inline(never)]
 fn query_relay_once_inner<'a>(
     config: &'a DaemonConfig,
+    main: Option<&'a MainConnection>,
     query: RelayMetadataQuery,
     #[cfg(test)] trace: Option<&'a mut TemporaryPeerTestTrace>,
 ) -> RelayMetadataFuture<'a> {
     #[cfg(test)]
-    let pending = query_relay_once_body(config, query, trace);
+    let pending = query_relay_once_body(config, main, query, trace);
     #[cfg(not(test))]
-    let pending = query_relay_once_body(config, query);
+    let pending = query_relay_once_body(config, main, query);
     Box::pin(pending)
 }
 
 async fn query_relay_once_body(
     config: &DaemonConfig,
+    main: Option<&MainConnection>,
     query: RelayMetadataQuery,
     #[cfg(test)] mut trace: Option<&mut TemporaryPeerTestTrace>,
 ) -> Result<RelayEnvelope, DaemonError> {
     let discovery_config = metadata_discovery_config(config).await?;
     if discovery_config.cloud_relay.is_some() {
-        return inventory_batches::query(&discovery_config, query).await;
+        return inventory_batches::query(&discovery_config, main, query).await;
     }
     let config = &discovery_config;
     let relay_url = config
@@ -646,6 +671,26 @@ async fn query_relay_once_body(
         })?;
     let relay_token = authorization::metadata_token(config).await?;
     let request_timeout = Duration::from_millis(config.relay_request_timeout_ms);
+    let request_id = format!(
+        "relay-meta-{}-{}",
+        std::process::id(),
+        RELAY_METADATA_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
+    );
+    let request = RelayEnvelope::ClientMetadataRequest {
+        request_id: request_id.clone(),
+        auth_token: relay_token,
+        query,
+    };
+    // The connection the kernel already holds answers without a new handshake; only a kernel
+    // with no connection to this relay opens a socket of its own.
+    if let Some(main) = main {
+        if let Some(response) = main
+            .query(&relay_url, request.clone(), request_timeout)
+            .await?
+        {
+            return Ok(response);
+        }
+    }
     #[cfg(test)]
     if let Some(trace) = trace.as_deref_mut() {
         trace.record("discovery_connect_started", None);
@@ -691,16 +736,6 @@ async fn query_relay_once_body(
             socket_trace.set_local_addr(local_addr);
         }
     }
-    let request_id = format!(
-        "relay-meta-{}-{}",
-        std::process::id(),
-        RELAY_METADATA_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) + 1
-    );
-    let request = RelayEnvelope::ClientMetadataRequest {
-        request_id: request_id.clone(),
-        auth_token: relay_token,
-        query,
-    };
     let response = async {
         #[cfg(test)]
         if let Some(trace) = trace.as_deref_mut() {
@@ -894,7 +929,7 @@ mod tests {
         config.relay_url = Some(format!("ws://{addr}"));
         config.relay_token = Some("metadata-fixture-token".to_string());
         config.relay_request_timeout_ms = 1_000;
-        let error = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+        let error = query_relay_once(&config, None, RelayMetadataQuery::ListLiveMachines)
             .await
             .expect_err("a refused metadata request is an error");
         server.await.unwrap();
@@ -1001,7 +1036,7 @@ mod tests {
         config.relay_url = Some(format!("ws://{addr}"));
         config.relay_token = Some("metadata-fixture-token".to_string());
         config.relay_request_timeout_ms = 1_000;
-        let response = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines).await;
+        let response = query_relay_once(&config, None, RelayMetadataQuery::ListLiveMachines).await;
         server.await.unwrap();
         assert!(
             response.is_err(),
@@ -1062,7 +1097,7 @@ mod tests {
         config.relay_token = Some("metadata-test-token".to_string());
         config.relay_request_timeout_ms = 1_000;
 
-        let response = query_relay_once(&config, RelayMetadataQuery::ListLiveMachines)
+        let response = query_relay_once(&config, None, RelayMetadataQuery::ListLiveMachines)
             .await
             .expect("metadata query should succeed");
         assert!(matches!(

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::outgoing::QueueStats;
 use crate::protocol::RelayConnectionRole;
 use crate::registry::{
     DaemonKey, DisplayStreamSender, PendingRequestKind, RelayRegistry, RelayRouteIndex, RelaySender,
@@ -20,8 +21,10 @@ pub(in crate::server::connection) async fn remove_peer(
     peer_addr: SocketAddr,
     daemon_key: Option<&DaemonKey>,
     relay_request_counter: &AtomicU64,
+    queue: QueueStats,
 ) -> (ReleasedDaemon, usize, usize) {
     let mut guard = registry.write().await;
+    guard.record_connection_queue(queue);
     let removed_peer = guard.peers.remove(&peer_addr);
     let active_client_subscriptions = guard
         .subscriptions

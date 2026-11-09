@@ -28,7 +28,7 @@ use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
 
-pub const CHUNK_BYTES: usize = crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize;
+pub const CHUNK_BYTES: usize = 256 * 1024;
 const MAX_PER_ROOM: usize = 16;
 const MAX_PER_KERNEL: usize = 64;
 

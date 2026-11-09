@@ -5,12 +5,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use chariox_relay::frame_transport::CHUNK_BYTES;
 use chariox_relay::protocol::{ClientTarget, RelayEnvelope, RelayError};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::transport::relay_crypto;
+use crate::transport::relay_upload::{self, Lane, Uploads};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const IDLE_CLOSE: Duration = Duration::from_secs(5 * 60);
@@ -54,6 +56,9 @@ pub(super) struct LinkParams {
 
 pub(super) struct Link {
     outgoing: mpsc::UnboundedSender<Message>,
+    /// Requests above one chunk (file chunks of `files put`): everything on
+    /// `outgoing` passes them at the next chunk.
+    bulk: mpsc::UnboundedSender<Message>,
     pending: Pending,
     subscriptions: Subscriptions,
     alive: Arc<AtomicBool>,
@@ -72,13 +77,21 @@ impl Link {
     }
 
     pub(super) async fn open(params: LinkParams) -> Result<Self, LinkFailure> {
-        let (mut socket, _) = tokio::time::timeout(
+        let (mut socket, handshake) = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            crate::transport::relay_socket_connect::connect(&params.relay_url),
+            crate::transport::relay_socket_connect::connect_binary_events(&params.relay_url),
         )
         .await
         .map_err(|_| LinkFailure::TimedOut)?
         .map_err(|error| relay_failure("connect_failed", error.to_string()))?;
+        // A relay that reassembles chunked uploads answers the offer; toward an
+        // older one a bulk request still goes out whole, after everything queued.
+        let upload_chunks =
+            crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
+        // A relay that takes binary frames sends answers and events with their
+        // ciphertext as bytes (CXR2 / CXR1) instead of base64 inside JSON.
+        let binary_events =
+            crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
         let target = ClientTarget {
             daemon_id: Some(params.target_kernel_id.clone()),
             daemon_alias: None,
@@ -136,19 +149,22 @@ impl Link {
         }
 
         let (mut sink, mut stream) = socket.split();
-        let (outgoing, mut outgoing_rx) = mpsc::unbounded_channel::<Message>();
+        let (outgoing, outgoing_rx) = mpsc::unbounded_channel::<Message>();
+        let (bulk, bulk_rx) = mpsc::unbounded_channel::<Message>();
+        let (receipts, receipts_rx) = mpsc::unbounded_channel::<(u32, u32)>();
         let pending: Pending = Arc::default();
         let subscriptions: Subscriptions = Arc::default();
         let alive = Arc::new(AtomicBool::new(true));
         tokio::spawn({
             let alive = Arc::clone(&alive);
             async move {
-                while let Some(message) = outgoing_rx.recv().await {
-                    let closing = matches!(message, Message::Close(_));
-                    if sink.send(message).await.is_err() || closing {
-                        break;
-                    }
-                }
+                write(
+                    &mut sink,
+                    outgoing_rx,
+                    bulk_rx,
+                    upload_chunks.then_some(receipts_rx),
+                )
+                .await;
                 alive.store(false, Ordering::SeqCst);
                 let _ = sink.close().await;
             }
@@ -181,25 +197,57 @@ impl Link {
                         Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => break,
                         Ok(Some(Ok(message))) => message,
                     };
+                    if let Message::Text(text) = &message {
+                        if let Some(receipt) =
+                            upload_chunks.then(|| relay_upload::receipt(text)).flatten()
+                        {
+                            let _ = receipts.send(receipt);
+                            continue;
+                        }
+                    }
                     match message {
                         Message::Text(text) => match frames.receive(&text) {
                             Ok((text, receipt)) => {
                                 if let Some(receipt) = receipt {
                                     let _ = outgoing.send(Message::Text(receipt.into()));
                                 }
-                                if let Some(text) = text {
+                                let envelope =
+                                    text.and_then(|text| serde_json::from_str(&text).ok());
+                                if let Some(envelope) = envelope {
                                     last_activity = Instant::now();
                                     route(
                                         &pending,
                                         &subscriptions,
                                         &client_private_key,
                                         &target_public_key,
-                                        &text,
+                                        envelope,
                                     );
                                 }
                             }
                             Err(_) => break,
                         },
+                        Message::Binary(bytes) if binary_events => {
+                            match frames.receive_binary(&bytes) {
+                                Ok((bytes, receipt)) => {
+                                    if let Some(receipt) = receipt {
+                                        let _ = outgoing.send(Message::Text(receipt.into()));
+                                    }
+                                    if let Some(envelope) =
+                                        bytes.and_then(|bytes| binary_envelope(&bytes))
+                                    {
+                                        last_activity = Instant::now();
+                                        route(
+                                            &pending,
+                                            &subscriptions,
+                                            &client_private_key,
+                                            &target_public_key,
+                                            envelope,
+                                        );
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         Message::Ping(payload) => {
                             let _ = outgoing.send(Message::Pong(payload));
                         }
@@ -222,6 +270,7 @@ impl Link {
                 .map_err(|error| relay_failure("encrypt_failed", error.to_string()))?;
         Ok(Self {
             outgoing,
+            bulk,
             pending,
             subscriptions,
             alive,
@@ -261,8 +310,17 @@ impl Link {
             target: self.target.clone(),
             encrypted_request,
         };
+        chariox_relay::transport_timing::record(
+            "kernel_gateway_enqueue",
+            chariox_relay::transport_timing::envelope_signature(&envelope),
+        );
         let text = serde_json::to_string(&envelope).expect("envelope serializes");
-        if self.outgoing.send(Message::Text(text.into())).is_err() {
+        let lane = if text.len() > CHUNK_BYTES {
+            &self.bulk
+        } else {
+            &self.outgoing
+        };
+        if lane.send(Message::Text(text.into())).is_err() {
             self.pending
                 .lock()
                 .expect("pending poisoned")
@@ -385,6 +443,58 @@ impl Link {
 /// The link a request runs on once `previous` is due for replacement. `MAX_LINK_AGE` only
 /// replaces a link early: until the relay ends its token it still carries requests, so a few
 /// seconds of Cloud refusing new tokens do not cut a kernel that is connected.
+/// MP-08 / MP-09 / MP-10 / MP-11: the link's socket writer. Everything on
+/// `outgoing` (small requests, renewals, receipts, Close) goes first; a bulk
+/// request goes out one chunk at a time within the drain window when the relay
+/// reassembles uploads (`receipts` is Some), so it never holds a small request
+/// for longer than one chunk. Ends at Close or when the socket fails.
+async fn write<S>(
+    sink: &mut S,
+    mut outgoing: mpsc::UnboundedReceiver<Message>,
+    mut bulk: mpsc::UnboundedReceiver<Message>,
+    mut receipts: Option<mpsc::UnboundedReceiver<(u32, u32)>>,
+) where
+    S: Sink<Message> + Unpin,
+{
+    let chunked = receipts.is_some();
+    let mut uploads = Uploads::new();
+    loop {
+        let chunk_ready = uploads.ready(Lane::Event);
+        let take_bulk = !uploads.busy(Lane::Event);
+        let message = tokio::select! {
+            biased;
+            receipt = async { receipts.as_mut()?.recv().await }, if chunked => match receipt {
+                Some((id, offset)) if uploads.receipt(id, offset) => continue,
+                // An out-of-order receipt means the two sides disagree about the stream.
+                _ => break,
+            },
+            message = outgoing.recv() => match message {
+                Some(message) => message,
+                None => break,
+            },
+            _ = std::future::ready(()), if chunk_ready => match uploads.next_chunk(Lane::Event) {
+                Some(chunk) => chunk,
+                None => break,
+            },
+            message = bulk.recv(), if take_bulk => match message {
+                Some(message) if chunked => match uploads.start(Lane::Event, message) {
+                    Some(whole) => whole,
+                    None => continue,
+                },
+                Some(message) => message,
+                None => break,
+            },
+        };
+        let closing = matches!(message, Message::Close(_));
+        // A chunk has no signature; a bulk request is timed at its enqueue and the relay's reassembly.
+        let packet = chariox_relay::transport_timing::message_signature(&message);
+        if sink.send(message).await.is_err() || closing {
+            break;
+        }
+        chariox_relay::transport_timing::record("kernel_gateway_written", packet);
+    }
+}
+
 pub(super) fn replacement_or_previous<E>(
     opened: Result<Arc<Link>, E>,
     previous: Option<Arc<Link>>,
@@ -419,19 +529,28 @@ impl Drop for Link {
     }
 }
 
+/// An answer (CXR2) or an event (CXR1) the relay sent as a binary frame.
+fn binary_envelope(bytes: &[u8]) -> Option<RelayEnvelope> {
+    if bytes.starts_with(b"CXR2") {
+        chariox_relay::binary_response::into_envelope(bytes).ok()
+    } else {
+        chariox_relay::binary_event::legacy_client_envelope(bytes).ok()
+    }
+}
+
 fn route(
     pending: &Pending,
     subscriptions: &Subscriptions,
     client_private_key: &str,
     target_public_key: &str,
-    text: &str,
+    envelope: RelayEnvelope,
 ) {
-    match serde_json::from_str::<RelayEnvelope>(text) {
-        Ok(RelayEnvelope::ClientEvent {
+    match envelope {
+        RelayEnvelope::ClientEvent {
             subscription_id,
             event_id,
             encrypted_event,
-        }) => {
+        } => {
             let Ok(decrypted) =
                 relay_crypto::decrypt_payload_for_private_key(client_private_key, &encrypted_event)
             else {
@@ -445,11 +564,11 @@ fn route(
                 let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
             }
         }
-        Ok(RelayEnvelope::ClientResponse {
+        RelayEnvelope::ClientResponse {
             request_id,
             encrypted_response,
             error,
-        }) => settle(
+        } => settle(
             pending,
             client_private_key,
             target_public_key,
@@ -672,6 +791,227 @@ mod tests {
             }
         });
         (url, observed)
+    }
+
+    /// A relay that reassembles chunked uploads like the real one (it answers the
+    /// offer in its handshake and acknowledges each chunk) and reports the id of
+    /// each request in the order the requests arrive complete.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the tungstenite handshake callback fixes its error type"
+    )]
+    async fn chunked_relay() -> (String, mpsc::UnboundedReceiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (arrived, order) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    if let Some(offer) =
+                        request.headers().get(chariox_relay::frame_transport::UPLOAD_HEADER)
+                    {
+                        response.headers_mut().insert(
+                            chariox_relay::frame_transport::UPLOAD_HEADER,
+                            offer.clone(),
+                        );
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            let RelayEnvelope::ClientConnect { target, .. } = serde_json::from_str(&text).unwrap()
+            else {
+                return;
+            };
+            let (private, _) = keys();
+            let connected = RelayEnvelope::ClientConnected {
+                target,
+                daemon_public_key: relay_crypto::public_key_from_private_key_base64(&private)
+                    .unwrap(),
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&connected).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let (complete, receipt) = frames.receive(&text).unwrap();
+                if let Some(receipt) = receipt {
+                    socket.send(Message::Text(receipt.into())).await.unwrap();
+                }
+                if let Some(Ok(RelayEnvelope::ClientRequest { request_id, .. })) =
+                    complete.map(|text| serde_json::from_str(&text))
+                {
+                    let _ = arrived.send(request_id);
+                }
+            }
+        });
+        (url, order)
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): `files put` forwards each 64 KiB file
+    // chunk as one request of about 117 KB on this link. A session list or kernel renewal
+    // queued behind the uploads in flight was written after all of them (0.4 s at
+    // 8 Mbit/s, 3.8 s at 1 Mbit/s, 13 s with three puts); it now passes them.
+    #[tokio::test]
+    async fn a_small_request_passes_the_uploads_queued_ahead_of_it() {
+        let (url, mut order) = chunked_relay().await;
+        let target_private = relay_crypto::generate_private_key_base64();
+        let link = Link::open(LinkParams {
+            relay_url: url,
+            auth_token: "token".into(),
+            target_kernel_id: "target".into(),
+            target_public_key: None,
+            client_private_key: target_private,
+        })
+        .await
+        .ok()
+        .expect("link opens");
+        let chunk = vec![7u8; 64 * 1024];
+        let deadline = Duration::from_millis(500);
+        // Every request is queued before the writer runs: join polls them in order.
+        let _ = tokio::join!(
+            link.request("upload-0".into(), &chunk, deadline),
+            link.request("upload-1".into(), &chunk, deadline),
+            link.request("upload-2".into(), &chunk, deadline),
+            link.request("upload-3".into(), &chunk, deadline),
+            link.request("list".into(), b"{}", deadline),
+        );
+        let mut arrived = Vec::new();
+        while arrived.len() < 5 {
+            let next = tokio::time::timeout(Duration::from_secs(5), order.recv()).await;
+            arrived.push(
+                next.ok()
+                    .flatten()
+                    .expect("every request reaches the relay"),
+            );
+        }
+        assert_eq!(arrived[0], "list", "arrival order {arrived:?}");
+    }
+
+    /// A relay that answers like a target kernel and, when the client offers binary
+    /// frames, sends each answer as a CXR2 frame like the real relay does. Reports the
+    /// bytes it put on the socket for each answer.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the tungstenite handshake callback fixes its error type"
+    )]
+    async fn binary_relay() -> (String, mpsc::UnboundedReceiver<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (sent, sizes) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut binary = false;
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    let header = chariox_relay::binary_event::VERSION_HEADER;
+                    binary = request.headers().get(header).is_some_and(|v| v == "98");
+                    if binary {
+                        response.headers_mut().insert(header, "98".parse().unwrap());
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            let RelayEnvelope::ClientConnect { target, .. } = serde_json::from_str(&text).unwrap()
+            else {
+                return;
+            };
+            let (private, public) = keys();
+            let connected = RelayEnvelope::ClientConnected {
+                target,
+                daemon_public_key: public,
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&connected).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let Ok(RelayEnvelope::ClientRequest {
+                    request_id,
+                    encrypted_request,
+                    ..
+                }) = serde_json::from_str(&text)
+                else {
+                    continue;
+                };
+                let request =
+                    relay_crypto::decrypt_payload_for_private_key(&private, &encrypted_request)
+                        .unwrap();
+                let answer = RelayEnvelope::ClientResponse {
+                    request_id,
+                    encrypted_response: Some(
+                        relay_crypto::encrypt_payload_for_peer(
+                            &private,
+                            &request.sender_public_key,
+                            &request.plaintext,
+                        )
+                        .unwrap(),
+                    ),
+                    error: None,
+                };
+                let frame = match binary {
+                    true => Message::Binary(
+                        chariox_relay::binary_response::from_envelope(&answer)
+                            .unwrap()
+                            .unwrap()
+                            .into(),
+                    ),
+                    false => Message::Text(serde_json::to_string(&answer).unwrap().into()),
+                };
+                let _ = sent.send(frame.len());
+                socket.send(frame).await.unwrap();
+            }
+        });
+        (url, sizes)
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): a 64 KiB file chunk of `files get` came
+    // back as base64 ciphertext inside a JSON envelope: 1.78 times its size on the link
+    // with the base64 inside the plaintext. The link takes the relay's existing binary
+    // answer frames (CXR2), so the ciphertext travels as bytes.
+    #[tokio::test]
+    async fn an_answer_travels_as_binary_ciphertext() {
+        let (url, mut sizes) = binary_relay().await;
+        let link = Link::open(LinkParams {
+            relay_url: url,
+            auth_token: "token".into(),
+            target_kernel_id: "target".into(),
+            target_public_key: None,
+            client_private_key: relay_crypto::generate_private_key_base64(),
+        })
+        .await
+        .ok()
+        .expect("link opens");
+        let chunk = vec![7u8; 64 * 1024];
+        let answer = link
+            .request("chunk".into(), &chunk, Duration::from_secs(5))
+            .await;
+        assert!(answer.ok() == Some(chunk.clone()), "the answer decrypts");
+        let wire = sizes.recv().await.unwrap();
+        assert!(
+            wire <= chunk.len() + 1024,
+            "{wire} bytes on the link for a {} byte answer",
+            chunk.len()
+        );
     }
 
     async fn open(url: String, target_private_key: &str) -> Result<Link, LinkFailure> {

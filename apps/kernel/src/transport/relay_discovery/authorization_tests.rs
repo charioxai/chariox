@@ -128,7 +128,7 @@ async fn require_scoped_metadata_grant(query: RelayMetadataQuery) {
     let (relay_url, relay, _) = metadata_relay(&query, "synthetic-metadata-grant").await;
     let config = hosted_config(api_url, relay_url);
     let original_profile = config.cloud_relay.clone();
-    query_relay_once(&config, query).await.unwrap();
+    query_relay_once(&config, None, query).await.unwrap();
     assert!(
         relay.await.unwrap(),
         "hosted metadata used the machine runtime grant"
@@ -178,7 +178,7 @@ async fn denied_metadata_issuance_never_falls_back_to_runtime_grant() {
     let query = RelayMetadataQuery::ListLiveMachines;
     let (relay_url, relay, accepted) = metadata_relay(&query, "synthetic-metadata-grant").await;
     let config = hosted_config(api_url, relay_url);
-    let result = query_relay_once(&config, query).await;
+    let result = query_relay_once(&config, None, query).await;
     assert!(result.is_err(), "denied metadata issuance must fail closed");
     issuer.await.unwrap();
     assert!(
@@ -195,7 +195,7 @@ async fn self_hosted_metadata_keeps_its_grant_with_an_unrelated_cloud_profile() 
     let (relay_url, relay, _) = metadata_relay(&query, "synthetic-machine-runtime-grant").await;
     let mut config = hosted_config(api_url, relay_url);
     config.cloud_relay.as_mut().unwrap().relay_url = "wss://unrelated-cloud.example/relay".into();
-    query_relay_once(&config, query).await.unwrap();
+    query_relay_once(&config, None, query).await.unwrap();
     assert!(relay.await.unwrap());
     assert!(!issuer.is_finished());
     issuer.abort();
@@ -279,7 +279,7 @@ async fn enrolled_metadata_queries_bind_owner_targets_and_kernel_key() {
         let profile = config.cloud_relay.as_mut().unwrap();
         profile.kernel_credential = Some("synthetic-kernel-credential".into());
         profile.kernel_public_key_thumbprint = Some("synthetic-kernel-key".into());
-        query_relay_once(&config, query).await.unwrap();
+        query_relay_once(&config, None, query).await.unwrap();
         assert!(relay.await.unwrap());
         issuer.await.unwrap();
     }

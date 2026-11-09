@@ -24,3 +24,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "chariox-relay"
 path = "src/main.rs"
+
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["test-util"] }

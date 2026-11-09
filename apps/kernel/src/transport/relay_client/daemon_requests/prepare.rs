@@ -10,6 +10,21 @@ pub(in crate::transport::relay_client) struct PreparedDaemonRequest {
     pub(super) request_memory: request_limits::RequestMemoryGuard,
 }
 impl PreparedDaemonRequest {
+    /// Who the reply to this request is for, named in write diagnostics and traffic counters.
+    pub(in crate::transport::relay_client) fn reply_origin(
+        &self,
+    ) -> super::super::reply_notes::ReplyOrigin {
+        let request_kind = match &self.message {
+            ParsedRelayClientMessage::Request(request) => relay_request_kind(&request.request),
+            ParsedRelayClientMessage::BrowserImportDelivery(_) => "browser_import_delivery",
+            ParsedRelayClientMessage::LocalBrowserConnect(_) => "local_browser_connect",
+            ParsedRelayClientMessage::LocalBrowserRenew(_) => "local_browser_renew",
+            ParsedRelayClientMessage::LocalTerminalConnect(_) => "local_terminal_connect",
+            ParsedRelayClientMessage::LocalTerminalRenew(_) => "local_terminal_renew",
+        };
+        super::super::reply_notes::ReplyOrigin::new(request_kind, &self.client_public_key)
+    }
+
     /// MP-08/MP-10/MP-11: the order key of a viewer's browser input. `true` marks a
     /// mirror read: it observes after that viewer's earlier input and holds none of
     /// its later input, so a read sent right behind a key carries that key's echo.

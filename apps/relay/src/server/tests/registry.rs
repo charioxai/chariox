@@ -2,10 +2,8 @@ use super::*;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use tokio::sync::mpsc;
-
 use crate::protocol::RelayConnectionRole;
-use crate::registry::PeerHandle;
+use crate::registry::{PeerHandle, RelaySender};
 use crate::revocation_sync::apply_revocations_document;
 
 fn peer_addr(port: u16) -> SocketAddr {
@@ -20,7 +18,7 @@ fn insert_live_registration(
 ) -> DaemonKey {
     let key = DaemonKey::new(realm_id, registration.daemon_id.clone());
     let addr = peer_addr(port);
-    let (sender, _receiver) = mpsc::channel::<Message>(1);
+    let (sender, _receiver) = RelaySender::detached_channel(1);
     registry.daemons.insert(key.clone(), registration.clone());
     registry.peers.insert(
         addr,

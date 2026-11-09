@@ -105,6 +105,7 @@ impl KernelGateway {
         runtime_state: KernelRuntimeState,
         config: DaemonConfigProjectionStore,
         projection: RemoteRelayInventoryProjectionStore,
+        relay_state: Arc<tokio::sync::RwLock<crate::transport::relay_client::RelayClientState>>,
     ) -> Self {
         let paired = Arc::new(paired::PairedKernels::new(
             config
@@ -115,6 +116,7 @@ impl KernelGateway {
         let source = Arc::new(RelayInventory {
             config: config.clone(),
             projection,
+            relay_state,
         });
         Self {
             directory: Directory::new(source),

@@ -5207,9 +5207,9 @@ authority for its own sessions, agents, terminals and files.
 - Kernel files (kernel API requests, any kernel, owner only: a Chariox terminal or a local grant holder, or the
   gateway acting for one): `StatKernelFile { path, with_sha256 }` -> `KernelFileStat { stat: {path, exists, kind,
   size, modified_ms, sha256, partial_size} }`; `ListKernelDirectory { path }` -> `KernelDirectoryListed { path,
-  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 256 KiB) ->
+  entries, truncated }` (2000 entries); `ReadKernelFile { path, offset, length }` (length <= 64 KiB) ->
   `KernelFileChunk { path, offset, data_base64, size, eof }`; `WriteKernelFile { path, offset, data_base64,
-  total_size, sha256?, overwrite }` (chunk <= 256 KiB, in order) -> `KernelFileWritten { path, received, complete,
+  total_size, sha256?, overwrite }` (chunk <= 64 KiB; chunks may be sent without waiting for each answer, and one that arrives ahead of the staged bytes waits up to 2 s for them) -> `KernelFileWritten { path, received, complete,
   sha256 }`. Paths are absolute or `~/`. An upload lives in `<path>.chariox-partial` and the file appears at `path`
   only when `total_size` is reached and `sha256`, if sent, matches (otherwise `file_hash_mismatch` and nothing is
   kept); a chunk at the wrong offset is `file_offset_mismatch` and the message names the offset to continue at.
@@ -6988,3 +6988,20 @@ authority rule (level and mode at least the target's) runs. A message is an inbo
 with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The client
 minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
 Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.
+
+### Chunked kernel uploads and the measured window — relay peer 441
+
+MP-08 / MP-09 / MP-10 / MP-11: a small or control frame waits about a round trip behind bulk on a
+slow link, whatever the transfer size. A kernel offers the request header `x-chariox-upload:
+chunks-v2` on its relay socket; a relay that reassembles kernel uploads answers with the same
+header. The kernel then sends every message above 16 KiB in the existing chunks-v2 frames
+(`transport_chunk`, or `CXB1` binary chunks) and the relay acknowledges each chunk with
+`transport_ack`, written ahead of anything queued for the kernel. Each writer lane sends one message
+at a time, and the priority lane passes event bulk between any two chunks. Without the answer (a
+peer 440 relay) the kernel writes whole messages; the relay keeps reading whole messages from
+kernels that do not offer (peer 440). Both writers (relay to any peer, kernel to relay) bound the
+unacknowledged bulk by a window sized from the receipts: twice the measured delivery rate times
+the lowest round trip, between 32 KiB and 1 MiB (`apps/relay/src/drain_window.rs`). The relay
+writer also keeps one transfer slot free for small frames. No client minimum changes. Focused
+checks: `cargo test -p chariox-relay -- upload slow_link_tests drain_window` and
+`cargo test -p chariox-kernel --lib -- connector::upload connector::writer`.

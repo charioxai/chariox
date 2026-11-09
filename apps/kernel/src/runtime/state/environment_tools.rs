@@ -269,6 +269,7 @@ impl KernelRuntimeState {
         let refresh = crate::transport::relay_client::refresh_remote_inventory_projection(
             self.owned.config_projection.clone(),
             self.owned.notification_inventory_projection.clone(),
+            Some(std::sync::Arc::clone(&self.owned.relay_state)),
         );
         match tokio::time::timeout(std::time::Duration::from_secs(5), refresh).await {
             Ok(Ok(())) => {}
