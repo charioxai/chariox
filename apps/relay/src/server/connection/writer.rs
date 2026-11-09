@@ -4,7 +4,7 @@ use crate::frame_transport::{
     MAX_MESSAGE_BYTES, MAX_TRANSFERS, PEER_RECEIPT_FRAMES, SMALL_RESERVE_BYTES, WINDOW_BYTES,
 };
 use crate::meter::{ConnectionMeter, Direction, CONTROL_SCOPE, DISPLAY_TUNNEL_SCOPE};
-use crate::outgoing::{OutgoingQueue, RelaySender};
+use crate::outgoing::OutgoingQueue;
 use futures_util::{Sink, SinkExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -282,7 +282,10 @@ impl WriterUsage {
     /// A writer without a meter whose every subscription is (or is not) a display one.
     #[cfg(test)]
     fn fixture(display: bool) -> Self {
-        Self::fixture_with_queue(display, RelaySender::detached(mpsc::channel(1).0).queue())
+        Self::fixture_with_queue(
+            display,
+            crate::outgoing::RelaySender::detached(mpsc::channel(1).0).queue(),
+        )
     }
     #[cfg(test)]
     fn fixture_with_queue(display: bool, queue: Arc<OutgoingQueue>) -> Self {
@@ -614,6 +617,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outgoing::RelaySender;
     use futures_util::StreamExt;
     use std::time::Duration;
     async fn sockets() -> (
