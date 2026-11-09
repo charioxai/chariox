@@ -106,10 +106,15 @@ where
     }
 }
 
+/// Renews the kernel list over the relay connection `relay_state` holds; with none (first
+/// start, relay down) it asks over a socket of its own.
 pub(crate) async fn refresh_remote_inventory_projection(
     config_projection: DaemonConfigProjectionStore,
     projection: RemoteRelayInventoryProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
 ) -> Result<(), DaemonError> {
+    let main = relay_state.map(MainConnection::new);
+    let main = main.as_ref();
     let mut runtime_config = config_projection.snapshot();
     if runtime_config.relay_url.is_none() || runtime_config.relay_token.is_none() {
         projection.clear();
@@ -126,7 +131,7 @@ pub(crate) async fn refresh_remote_inventory_projection(
     } else {
         None
     };
-    let live_machines = relay_discovery::list_live_machines(&runtime_config).await?;
+    let live_machines = relay_discovery::list_live_machines_over(&runtime_config, main).await?;
     let mut remote_machines = crate::local::provider_requests::remote_machine_records(
         live_machines,
         &runtime_config.host_machine_id,
@@ -141,9 +146,12 @@ pub(crate) async fn refresh_remote_inventory_projection(
         .iter()
         .filter(|machine| machine.online && machine.kernel_count > 0)
     {
-        let kernels =
-            relay_discovery::list_live_kernels_for_machine(&runtime_config, &machine.machine_id)
-                .await?;
+        let kernels = relay_discovery::list_live_kernels_for_machine_over(
+            &runtime_config,
+            main,
+            &machine.machine_id,
+        )
+        .await?;
         let kernels = kernels
             .into_iter()
             .filter(|k| {
@@ -239,6 +247,7 @@ mod tests {
             refresh_remote_inventory_projection(
                 DaemonConfigProjectionStore::new(config),
                 RemoteRelayInventoryProjectionStore::default(),
+                None,
             ),
         )
         .await;

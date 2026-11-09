@@ -136,7 +136,7 @@ pub(super) async fn refresh_remote_inventory_projection_for_app_with_relay_state
             app.remote_relay_inventory_projection_store(),
         )
     };
-    refresh_remote_inventory_projection(config_projection, remote_inventory_projection).await
+    refresh_remote_inventory_projection(config_projection, remote_inventory_projection, None).await
 }
 
 pub(super) async fn wait_for_daemon_registration(

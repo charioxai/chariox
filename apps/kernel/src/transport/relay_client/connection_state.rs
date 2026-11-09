@@ -37,6 +37,8 @@ pub struct RelayClientState {
     pub(super) connected_relay_url: Option<String>,
     pub(super) outgoing_tx: Option<RelayOutgoingSender>,
     pub(super) pending_peer_requests: BTreeMap<String, oneshot::Sender<RelayPeerResponseEnvelope>>,
+    /// Kernel-list questions sent over this connection, by request id.
+    pub(super) pending_metadata_requests: BTreeMap<String, oneshot::Sender<RelayEnvelope>>,
     pub(super) next_peer_request_id: u64,
     pinned_peer_public_keys: BTreeMap<String, String>,
     peer_public_keys: BTreeMap<String, String>,
@@ -740,6 +742,8 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         guard.peer_public_keys.clear();
         guard.managed_slice_activation_expectations.clear();
         guard.display_streams.clear();
+        // Dropping the senders ends each waiting question; its caller asks again.
+        guard.pending_metadata_requests.clear();
         (
             std::mem::take(&mut guard.pending_peer_requests),
             std::mem::take(&mut guard.pending_display_tunnel_registrations),
