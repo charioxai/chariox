@@ -123,9 +123,8 @@ fn the_enrolled_machine_name_is_the_name_the_relay_knows() {
     );
 
     config.relay_url = Some("ws://127.0.0.1:1".to_string());
-    let mut private = DaemonApp::bootstrap(config).expect("kernel bootstraps");
     assert_eq!(
-        private.relay_registration().machine_alias.as_deref(),
+        config.relay_machine_alias().as_deref(),
         Some("ao-b-machine")
     );
 }
