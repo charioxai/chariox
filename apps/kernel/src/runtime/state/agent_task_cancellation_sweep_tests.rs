@@ -43,11 +43,13 @@ async fn second_sweep_writes(cancelled: usize) -> u64 {
         assert_eq!(task.state, ExecutionState::Cancelled);
     }
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     for task in store.agent_tasks(Some(room.id()), None).unwrap() {
         assert!(store.agent_task_terminal_recorded(&task).unwrap());
     }
     let before = store.writer_requests_received();
     runtime.sweep_agent_lifecycle().await.unwrap();
+    runtime.task_work_settled().await;
     store.writer_requests_received() - before
 }
 

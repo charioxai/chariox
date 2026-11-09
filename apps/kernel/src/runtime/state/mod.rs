@@ -241,6 +241,8 @@ pub(crate) struct KernelRuntimeState {
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
     peer_outcomes_owed_now: Arc<std::sync::atomic::AtomicBool>,
+    /// The work the lifecycle sweep started for a task and does not wait for, once per task and kind.
+    task_work: task_work_flight::TaskWorkFlight,
     /// One settlement pass over the follows of peers this kernel no longer pairs with at a time,
     /// apart from the lifecycle sweep.
     unpaired_peer_follow_settlements: lifecycle_sweep_flight::SweepFlight,
@@ -1105,6 +1107,7 @@ impl KernelRuntimeState {
             lifecycle_sweeps: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
+            task_work: Default::default(),
             unpaired_peer_follow_settlements: Default::default(),
             task_work: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
@@ -1650,6 +1653,7 @@ mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
+mod task_work_flight;
 #[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]

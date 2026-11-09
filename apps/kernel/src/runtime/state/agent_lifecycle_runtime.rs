@@ -1189,9 +1189,15 @@ impl KernelRuntimeState {
                     .durable_state_store
                     .agent_task_terminal_recorded(&task)?
             {
-                if let Err(error) = Box::pin(self.cancel_agent_task_resources(&task)).await {
-                    tracing::warn!(%error,"MP-08/MP-09/MP-10/MP-11 A02: cancellation remains supervised");
-                }
+                // The worker that holds the run may be gone: a cancellation that is not confirmed
+                // stays unsettled and is started again by the next sweep, apart from this one.
+                let cancelled = task.clone();
+                self.spawn_task_work(
+                    format!("cancel:{}", task.task_id),
+                    move |state| async move {
+                        Box::pin(state.cancel_agent_task_resources(&cancelled)).await
+                    },
+                );
             }
             for obligation in task.obligations.iter().filter(|o| o.status == "open") {
                 let Some(source) = obligation.resource_id.as_ref() else {
