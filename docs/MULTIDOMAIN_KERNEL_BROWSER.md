@@ -305,7 +305,9 @@ its commands and no protocol number changed. They are the reach for what an agen
   included) and writes it to `path` inside the Room workspace, with the containment the upload path applies (no `..`,
   no path outside the workspace, no symlink on the way or at the end). The answer is `{path, bytes, mime_type, sha256}`;
   at most 25 MiB; `http(s):` and `data:` URLs, or the image, media, link or canvas a snapshot node shows. A canvas is
-  refused while a protected field is on the page. No URL is logged or echoed.
+  refused while a protected field is on the page. No URL is logged or echoed. The fetch holds neither the host's
+  barrier nor the kernel's controller lock; a save whose authority ends, or whose document or browser changes, before
+  the final rename writes nothing.
 - `input` with `kind: "scroll"` and `target: node_ref` scrolls that node into view.
 - `wait {text | node_ref | url_contains, timeout_ms <= 30000}` compares the page on the host and answers
   `{matched, waited_ms}` with the tab state. The comparison reads the redacted snapshot the model would see, so a
