@@ -181,10 +181,9 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
         .entry(item_id.clone())
         .or_insert_with(|| CodexToolTranscriptState::new(item.clone(), now_ms));
     entry.item = item.clone();
-    if entry.background
-        && entry.finished_at_ms.is_none()
-        && lifecycle == CodexItemLifecycle::Completed
-    {
+    // Only the command's own end finishes it: a completed turn that still
+    // lists the command in progress leaves it running.
+    if entry.background && entry.finished_at_ms.is_none() && command_ended(item) {
         entry.finished_at_ms = Some(now_ms);
     }
     if entry.pictures.is_none() && is_completed_image_view(item) {
@@ -207,6 +206,13 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     }
     super::output_window::trim(&mut entry.streamed_output);
     render_tool_chunk_if_changed(&item_id, entry, remote_extension_manifest)
+}
+
+fn command_ended(item: &Value) -> bool {
+    matches!(
+        item.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "declined" | "cancelled" | "canceled" | "interrupted")
+    )
 }
 
 fn is_completed_image_view(item: &Value) -> bool {
@@ -641,5 +647,49 @@ mod view_image_tests {
         std::fs::write(scratch.workspace().join("fits.png"), &large).unwrap();
         let fits = completed_view(&scratch.workspace().join("fits.png"), &scratch.workspace());
         assert_eq!(fits["images"].as_array().map(Vec::len), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod background_command_tests {
+    use super::*;
+
+    #[test]
+    fn a_background_command_is_finished_only_by_its_own_exit_never_by_a_completed_turn() {
+        let manifest = RemoteExtensionManifest::default();
+        let running = json!({"id":"bg", "type":"commandExecution", "status":"inProgress", "command":"sleep 40"});
+        let mut tools = BTreeMap::new();
+        sync_tool_item_with_manifest(
+            &mut tools,
+            &running,
+            CodexItemLifecycle::Started,
+            &manifest,
+            None,
+        );
+        mark_background_command(&mut tools, "bg").unwrap();
+        // A completed turn's item list, or its read-back, still holds the running command.
+        sync_tool_item_with_manifest(
+            &mut tools,
+            &running,
+            CodexItemLifecycle::Completed,
+            &manifest,
+            None,
+        );
+        assert!(tools["bg"].finished_at_ms.is_none());
+        assert!(is_running_background_command(&tools, "bg"));
+        // Its own exit finishes it.
+        let exited =
+            json!({"id":"bg", "type":"commandExecution", "status":"completed", "exitCode":0});
+        let chunk = sync_tool_item_with_manifest(
+            &mut tools,
+            &exited,
+            CodexItemLifecycle::Completed,
+            &manifest,
+            None,
+        )
+        .unwrap();
+        let rendered: Value = serde_json::from_slice(&chunk.bytes).unwrap();
+        assert!(rendered["finished_at_ms"].is_u64(), "{rendered}");
+        assert!(!is_running_background_command(&tools, "bg"));
     }
 }
