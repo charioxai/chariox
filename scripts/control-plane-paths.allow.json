@@ -492,7 +492,8 @@
     "callers": [
       "apps/kernel/src/runtime/state/app_event_path_tests/services.rs",
       "apps/kernel/src/transport/event_delivery_client.rs",
-      "packages/aegs-sdk/src/server.rs"
+      "packages/aegs-sdk/src/server.rs",
+      "packages/aegs-sdk/src/server/mp11_delivery_http_tests/polling.rs"
     ],
     "why": "agent event gateway and delivery service contract (chariox-aeds, chariox-aegs); not the Cloud control plane",
     "seam": "event gateway"
