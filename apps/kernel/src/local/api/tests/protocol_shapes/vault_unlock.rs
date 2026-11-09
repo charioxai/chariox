@@ -91,4 +91,22 @@ fn unlock_credential_vault_912_363_shapes_are_pinned() {
             "action": "unlocked"
         }})
     );
+    // Local 1002: a Just this once unlock says so; the next Vault read ends it.
+    let single_use = crate::secret::CharioxVaultUnlockStatus {
+        path: "/vault.json".into(),
+        unlocked: true,
+        expires_at_ms: None,
+        single_use: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&single_use).unwrap(),
+        serde_json::json!({"path": "/vault.json", "unlocked": true, "single_use": true})
+    );
+    assert_eq!(
+        serde_json::from_value::<crate::secret::CharioxVaultUnlockStatus>(
+            serde_json::json!({"path": "/vault.json", "unlocked": true, "single_use": true})
+        )
+        .unwrap(),
+        single_use
+    );
 }
