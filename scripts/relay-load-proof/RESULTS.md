@@ -48,3 +48,23 @@ The experiment row patched the CLI chunk size to 16 KiB in a throwaway `dist` co
    with three transfers). The frozen-reader variant's CLI transfer ended with `kernel_connection_lost` on both builds when the
    client kernel was thawed, and none of the 3000 queued small requests was answered within 30 s after the thaw on either build.
 6. Not run: release builds, a hosted relay path (TLS), a transfer with a longer-lived frozen reader.
+
+# Round 2 (2026-11-09): relay window + chunking and the transfer window, combined
+
+Debug builds, RTT 60 ms unless stated, several harness instances at once on a shared host (load average 8 to 12).
+Head = relaychunk `91022ec905` + the filepipe commits + a fix of the transfer window (burst of replies opened it to 64
+requests, past the 32 a kernel admits per connection) + a 30 s wait for an upload chunk that lands behind a later one.
+`--direction put` runs `files put` (profile `8m-sym` = 8 Mbit/s both ways). Wire = bytes through the shaped link / link rate;
+payload = file bytes / link rate: the wire carries 1.79 x the payload (base64 of the chunk, then base64 of the sealed
+message), so 99 % of the wire is 55 % of the payload.
+
+| run | result |
+|---|---|
+| get 100 MiB, 8m | 191 s (ideal 105), wire 99 %, payload 55 %; small 137/147/296 ms (bar 160); list p95 148 ms |
+| put 100 MiB, 8m-sym | 189 s, wire 99 %, payload 55 %; small 403/457/476 ms: FAIL (the small request waits behind the upload window) |
+| get 3 x 8 MiB, 1m | 376 s (ideal 201), wire 97 %; small 181/217/249 ms: FAIL (bar 160); list p95 223 ms, none timed out |
+| put 3 x 8 MiB, 1m | 366 s, hash ok; small p50 10.6 s, 502 of 1500 ran out of 15 s; list probe 5.0 s: FAIL |
+| get 3 x 6 MiB, 600k | 483 s, wire 94 %; small 320/378/463 ms: FAIL (was p50 8.7 s, 654 of 1923 timed out in round 1) |
+| put 3 x 4 MiB, 600k | all three `kernel_request_timeout` (30 s): FAIL |
+| get / put 50 MiB, 8m, RTT 150 | get 97 s small 318/331 ms (bar 250); put 95 s small 521/573 ms |
+| frozen reader, 30 MiB, 8m | serving kernel connected for the whole 20 s freeze (slowest answer 9 ms), relay RSS 13.9 -> 16.2 MiB: PASS |
