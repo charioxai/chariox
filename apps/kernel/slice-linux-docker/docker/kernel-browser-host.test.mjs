@@ -1,7 +1,7 @@
 // MD-2/MD-4: focused adapter tests, not native-browser acceptance.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -3480,4 +3480,16 @@ test('browsertools: full_page falls back to JPEG for a page whose PNG is too lar
   host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
   await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
   assert.equal(sent.slice(before).filter(call => call.method === 'Page.captureScreenshot').length, 0, 'no unmasked pixels are captured');
+}));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 2 through the host: agents save, nobody else does.
+test('browsertools: save writes into the workspace for an agent and is refused for anyone else', () => using(async ({ host }, root) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const workspace = path.join(root, 'room');
+  await mkdir(workspace);
+  const save = extra => ({ op: 'save', tab_id: opened.tab_id, generation: opened.generation, url: 'data:text/plain;base64,aGk=', path: 'notes/hi.txt', _save_roots: [workspace], ...extra });
+  const saved = await host.request(save({ focused_agent: true }));
+  assert.deepEqual([saved.path, saved.bytes, saved.mime_type], ['notes/hi.txt', 2, 'text/plain']);
+  assert.equal(await readFile(path.join(workspace, 'notes/hi.txt'), 'utf8'), 'hi');
+  await assert.rejects(host.request(save({ path: 'other.txt' })), { code: 'user_domain_not_granted' });
 }));

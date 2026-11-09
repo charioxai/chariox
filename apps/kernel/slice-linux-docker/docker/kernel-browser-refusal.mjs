@@ -32,6 +32,13 @@ const toolReasons = new Map([
   ['node_not_visible', 'the node has no visible area in the viewport'],
   ['clip_invalid', 'clip needs integers x, y >= 0 and width, height >= 1 inside the state viewport (css_width x css_height)'],
   ['image_too_large', 'the image is too large to deliver; use a clip or node_ref'],
+  ['save_source_conflict', 'save takes a node_ref or a url, not both'],
+  ['save_path_invalid', 'save needs a file path inside the Room workspace that is not a directory'],
+  ['workspace_unavailable', 'the Room workspace is unavailable'],
+  ['save_url_unsupported', 'save needs an http(s) or data URL, or the node_ref of an image, link, media or canvas element'],
+  ['save_fetch_failed', 'the page session could not fetch the resource'],
+  ['save_too_large', 'the resource is larger than 25 MiB'],
+  ['save_canvas_unavailable', 'the canvas cannot be read (cross-origin content) or the page holds a protected field'],
 ]);
 export class AgentToolRefusal extends Error {
   constructor(reason) {
