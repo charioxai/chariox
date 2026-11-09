@@ -221,6 +221,61 @@ fn a_peer_on_another_kernel_steers_and_cancels_with_equal_authority() {
     });
 }
 
+#[test]
+fn a_retried_cancel_after_a_lost_answer_returns_its_receipt_and_spares_a_later_turn() {
+    run_peer_test("peer-kernel-cancel-retry", || async {
+        let rooms = Rooms::new(
+            AgentPermissionLevel::Required,
+            AgentPermissionLevel::Required,
+        );
+        let first = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                first,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: false,
+                    ..
+                }
+            ),
+            "{first:?}"
+        );
+        assert!(!rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+        // The answer to kernel A was lost; meanwhile the cancelled turn settles and the peer
+        // starts its next turn.
+        rooms
+            .router
+            .runtime_state
+            .end_agent_turn_for_tests(&rooms.peer_room, rooms.peer.id(), true)
+            .await
+            .expect("the cancelled turn settles");
+        crate::test_support::admit_room_test_turn(
+            &mut *rooms.app.lock().await,
+            &rooms.peer_room,
+            rooms.peer.id(),
+        );
+        assert!(rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await);
+        let retry = rooms
+            .request_from_kernel_a(cancel(&rooms, AgentExecutionMode::Build))
+            .await;
+        assert!(
+            matches!(
+                retry,
+                RelayPeerResponse::PeerAgentAccepted {
+                    duplicate: true,
+                    ..
+                }
+            ),
+            "the retry answers the first cancel's receipt: {retry:?}"
+        );
+        assert!(
+            rooms.turn_running(&rooms.peer_room, rooms.peer.id()).await,
+            "a retried cancel never reaches a later turn"
+        );
+    });
+}
+
 fn spawn(request_id: &str, room: &str) -> RelayPeerRequest {
     RelayPeerRequest::SpawnRoomPeer {
         protocol_version: RELAY_PEER_PROTOCOL_VERSION,

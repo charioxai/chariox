@@ -54,6 +54,30 @@ fn link_dropping_after_the_first_message(kernel: &Kernel) {
     );
 }
 
+/// `kernel` acts on its first cancel, then drops off before the answer is back.
+fn link_dropping_after_the_first_cancel(kernel: &Kernel) {
+    let router = kernel.router.clone();
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    peer_agent_link_for_tests::register(
+        &kernel.id,
+        &kernel.name,
+        Arc::new(
+            move |from: String, owner: String, request: RelayPeerRequest| {
+                let router = router.clone();
+                let dropped = dropped.clone();
+                Box::pin(async move {
+                    let cancel = matches!(request, RelayPeerRequest::PeerAgentCancel { .. });
+                    let answer = router.relay_peer_agent(&from, &owner, request).await;
+                    if cancel && !dropped.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                        return Err(relay_error("target_disconnected"));
+                    }
+                    answer
+                })
+            },
+        ),
+    );
+}
+
 /// `kernel` acts on its first message, but its answer is not back before the caller stops waiting.
 fn link_timing_out_after_the_first_message(kernel: &Kernel) {
     let router = kernel.router.clone();
@@ -189,6 +213,42 @@ fn a_message_whose_answer_was_lost_is_uncertain_and_its_retry_is_one_delivery() 
             b.messages(b.agent.id()).await.len(),
             1,
             "an uncertain send and its retry are one delivery"
+        );
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
+fn a_cancel_whose_answer_was_lost_is_retried_without_cancelling_the_next_turn() {
+    run_peer_test("peer-offline-cancel", || async {
+        let (a, b) = two_kernels(
+            "peer-offline-cancel",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        link_dropping_after_the_first_cancel(&b);
+        let command = format!("agent cancel worker --room {} --kernel {}", b.room, b.name);
+        let uncertain = a.command(command.clone()).await.unwrap_err();
+        assert!(uncertain.contains("uncertain"), "{uncertain}");
+        assert!(uncertain.contains("same call again"), "{uncertain}");
+        assert!(
+            !b.turn_running(b.agent.id()).await,
+            "the first cancel acted"
+        );
+        b.end_turn(true).await;
+        crate::test_support::admit_room_test_turn(&mut *b.app.lock().await, &b.room, b.agent.id());
+        assert!(
+            b.turn_running(b.agent.id()).await,
+            "the peer's next turn runs"
+        );
+        let retry = a
+            .command(command)
+            .await
+            .expect("the retry is answered with the first cancel's receipt");
+        assert_eq!(retry["response"]["duplicate"], true, "{retry}");
+        assert!(
+            b.turn_running(b.agent.id()).await,
+            "the retry leaves the peer's next turn running"
         );
         unlink(&[&a, &b]);
     });
