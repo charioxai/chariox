@@ -657,6 +657,46 @@ test("agent spawn command treats --slice off as normal local placement", async (
   assert.equal(flashedMessage, "spawned builder · local · worktree worktree-1")
 })
 
+test("agent spawn footer states the options the kernel applied, not the ones asked for", async () => {
+  let currentSession = session()
+  let flashedMessage = ""
+
+  await handleAgentSpawnCommand({
+    currentWorkspaceTarget: () => "/workspace",
+    currentWorktreeTarget: () => "/workspace",
+    currentModelId: () => "codex/gpt-5.4",
+    currentVariantId: () => "high",
+    currentProviderId: () => "codex",
+    flashFooter: (message) => { flashedMessage = message },
+    formatError: (error) => error instanceof Error ? error.message : String(error),
+    applySessionState: (nextSession) => { currentSession = nextSession },
+    refreshAgentPanes: async () => {},
+    rebuildTranscript: () => {},
+    launchAgentProviderRun: async (_provider, _model, _variant, agentId) => providerRun({ agent_instance_id: agentId }),
+    setProviderRunState: () => {},
+    refreshSessionState: async () => currentSession,
+    spawnAgent: async () => {
+      const nextAgent = agent({
+        id: "agent-applied",
+        agent_ref: "agent-applied",
+        alias: "builder",
+        account_profile: "team-b",
+        effort: "xhigh",
+        permission_level_override: "required",
+        worktree_id: "/workspace-applied",
+      })
+      currentSession = session({ focused_agent_id: nextAgent.id, agents: [...currentSession.agents, nextAgent] })
+      return { agent: nextAgent, session: currentSession }
+    },
+    refreshSplitPaneFocusRepaint: () => {},
+  }, ["builder", "codex/gpt-5.4", "--account", "team-a", "--worktree", "/workspace-asked"])
+
+  assert.equal(
+    flashedMessage,
+    "spawned builder · local · profile team-b · effort xhigh · permission required · worktree /workspace-applied",
+  )
+})
+
 test("agent spawn command targets an exact kernel without machine resolution", async () => {
   let currentSession = session()
   const calls: string[] = []
