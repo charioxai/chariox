@@ -674,6 +674,103 @@ mod tests {
         (url, observed)
     }
 
+    /// A relay that reassembles chunked uploads like the real one (it answers the
+    /// offer in its handshake and acknowledges each chunk) and reports the id of
+    /// each request in the order the requests arrive complete.
+    async fn chunked_relay() -> (String, mpsc::UnboundedReceiver<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let (arrived, order) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                    if let Some(offer) =
+                        request.headers().get(chariox_relay::frame_transport::UPLOAD_HEADER)
+                    {
+                        response.headers_mut().insert(
+                            chariox_relay::frame_transport::UPLOAD_HEADER,
+                            offer.clone(),
+                        );
+                    }
+                    Ok(response)
+                },
+            )
+            .await
+            .unwrap();
+            let Some(Ok(Message::Text(text))) = socket.next().await else {
+                return;
+            };
+            let RelayEnvelope::ClientConnect { target, .. } = serde_json::from_str(&text).unwrap()
+            else {
+                return;
+            };
+            let (private, _) = keys();
+            let connected = RelayEnvelope::ClientConnected {
+                target,
+                daemon_public_key: relay_crypto::public_key_from_private_key_base64(&private)
+                    .unwrap(),
+            };
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&connected).unwrap().into(),
+                ))
+                .await
+                .unwrap();
+            let mut frames = chariox_relay::frame_transport::FrameReceiver::default();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let (complete, receipt) = frames.receive(&text).unwrap();
+                if let Some(receipt) = receipt {
+                    socket.send(Message::Text(receipt.into())).await.unwrap();
+                }
+                if let Some(Ok(RelayEnvelope::ClientRequest { request_id, .. })) =
+                    complete.map(|text| serde_json::from_str(&text))
+                {
+                    let _ = arrived.send(request_id);
+                }
+            }
+        });
+        (url, order)
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): `files put` forwards each 64 KiB file
+    // chunk as one request of about 117 KB on this link. A session list or kernel renewal
+    // queued behind the uploads in flight was written after all of them (0.4 s at
+    // 8 Mbit/s, 3.8 s at 1 Mbit/s, 13 s with three puts); it now passes them.
+    #[tokio::test]
+    async fn a_small_request_passes_the_uploads_queued_ahead_of_it() {
+        let (url, mut order) = chunked_relay().await;
+        let target_private = relay_crypto::generate_private_key_base64();
+        let link = Link::open(LinkParams {
+            relay_url: url,
+            auth_token: "token".into(),
+            target_kernel_id: "target".into(),
+            target_public_key: None,
+            client_private_key: target_private,
+        })
+        .await
+        .ok()
+        .expect("link opens");
+        let chunk = vec![7u8; 64 * 1024];
+        let deadline = Duration::from_millis(500);
+        // Every request is queued before the writer runs: join polls them in order.
+        let _ = tokio::join!(
+            link.request("upload-0".into(), &chunk, deadline),
+            link.request("upload-1".into(), &chunk, deadline),
+            link.request("upload-2".into(), &chunk, deadline),
+            link.request("upload-3".into(), &chunk, deadline),
+            link.request("list".into(), b"{}", deadline),
+        );
+        let mut arrived = Vec::new();
+        while arrived.len() < 5 {
+            let next = tokio::time::timeout(Duration::from_secs(5), order.recv()).await;
+            arrived.push(next.ok().flatten().expect("every request reaches the relay"));
+        }
+        assert_eq!(arrived[0], "list", "arrival order {arrived:?}");
+    }
+
     async fn open(url: String, target_private_key: &str) -> Result<Link, LinkFailure> {
         Link::open(LinkParams {
             relay_url: url,
