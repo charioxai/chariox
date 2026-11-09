@@ -149,3 +149,78 @@ async fn idle_scratch_is_still_trimmed_with_and_without_pressure() {
     );
     assert!(pressed_fresh.exists(), "fresh scratch stays under pressure");
 }
+
+/// Collects the messages of warnings logged on the current thread.
+#[derive(Clone, Default)]
+struct Warnings(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl tracing::Subscriber for Warnings {
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        if *event.metadata().level() == tracing::Level::WARN {
+            self.0.lock().unwrap().push(message.0);
+        }
+    }
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+}
+
+/// A volume below its floor that the trim cannot help leaves one log line,
+/// at most once a minute, and no line while the trim still frees something.
+#[tokio::test]
+async fn a_volume_below_its_floor_that_the_trim_cannot_help_is_logged_once_a_minute() {
+    if crate::test_support::isolate_environment_test() {
+        return;
+    }
+    let mut state = crate::test_support::allocation::runtime_with_rooms(1);
+    state.disk_volume_probe = Some(|_| Some((1, GIB, 10 * GIB)));
+    let warnings = Warnings::default();
+    let _logging = tracing::subscriber::set_default(warnings.clone());
+    let lines = || {
+        warnings
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|line| line.contains("free-space floor"))
+            .count()
+    };
+    let (room, agent) = busy_holder(&state, 0, 1);
+    let mut pace = Pace::default();
+    state.tend_disk(&mut pace).await;
+    state.tend_disk(&mut pace).await;
+    assert_eq!(lines(), 1, "one line, however often the disk is checked");
+    pace.logged = Instant::now().checked_sub(LOG_EVERY + Duration::from_secs(1));
+    state.tend_disk(&mut pace).await;
+    assert_eq!(lines(), 2, "a minute later the volume is logged again");
+    let environment = crate::agent_temp::environment(&room, &agent);
+    let stale = PathBuf::from(&environment[0].1).join("stale");
+    std::fs::write(&stale, b"disposable").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&stale)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(2 * 3600))
+        .unwrap();
+    pace.logged = Instant::now().checked_sub(LOG_EVERY + Duration::from_secs(1));
+    state.tend_disk(&mut pace).await;
+    assert!(!stale.exists());
+    assert_eq!(lines(), 2, "no line when the trim freed something");
+}
