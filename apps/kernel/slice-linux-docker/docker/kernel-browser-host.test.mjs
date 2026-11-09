@@ -3646,6 +3646,63 @@ test('browsertools: a wait still ends with an error when its Tab is closed, the 
   await assert.rejects(host.request(waitFor(third, { text: 'x', timeout_ms: 2000 }), { signal: authority.signal }), { code: 'browser_action_cancelled' });
 }));
 
+// Review r2 P2: target acquisition (loader read, Target.getTargetInfo, host.save) sits inside the same transient-document retry.
+// A frame owner stands in for the live CDP frame; replacing it is what a navigation does to the one displayTarget captured.
+function replaceableFrame(host, opened) {
+  const state = { number: 0, frame: null };
+  const make = () => ({ connection: host.browser.connection, sessionId: `session-${host.tabs.get(opened.tab_id).target_id}`, frame: { id: 'frame', loaderId: `doc-nav-${++state.number}` } });
+  state.frame = make();
+  host.browser.currentPageFrame = () => state.frame;
+  state.navigate = () => { state.frame = make(); };
+  return state;
+}
+
+for (const seam of ['Target.getTargetInfo', 'host.save']) {
+  test(`browsertools: a wait whose target is replaced during ${seam} keeps looking until the text shows`, () => using(async ({ host }) => {
+    const opened = await host.request({ op: 'open', url: 'about:blank' });
+    const live = replaceableFrame(host, opened);
+    let replaced = false;
+    const once = () => { if (!replaced) { replaced = true; live.navigate(); } };
+    if (seam === 'host.save') { const save = host.save.bind(host); host.save = async () => { once(); return save(); }; }
+    else host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') once(); };
+    host.browser.snapshot = async () => pageWith('Order confirmed');
+    const done = await host.request(waitFor(opened, { text: 'Order confirmed', timeout_ms: 5000 }));
+    assert.equal(replaced, true);
+    assert.equal(done.matched, true);
+  }));
+}
+
+test('browsertools: a wait whose target acquisition meets a retired Tab, a restarted browser or a cancel still ends with an error', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const live = replaceableFrame(host, opened);
+  host.browser.snapshot = async () => pageWith('x');
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live.navigate(); host.tabs.delete(opened.tab_id); } };
+  await assert.rejects(host.request(waitFor(opened, { text: 'never', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const again = await host.request({ op: 'open', url: 'about:blank' });
+  const live2 = replaceableFrame(host, again);
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live2.navigate(); host.generation++; } };
+  await assert.rejects(host.request(waitFor(again, { text: 'never', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const third = await host.request({ op: 'open', url: 'about:blank' });
+  const live3 = replaceableFrame(host, third);
+  const authority = new AbortController();
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live3.navigate(); authority.abort(); } };
+  await assert.rejects(host.request(waitFor(third, { text: 'never', timeout_ms: 2000 }), { signal: authority.signal }), { code: 'browser_action_cancelled' });
+}));
+
+test('browsertools: a wait past its deadline still reports once the target can be read, and gives up on a target that never settles', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const live = replaceableFrame(host, opened);
+  host.browser.snapshot = async () => pageWith('Loading');
+  let replacements = 0;
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo' && ++replacements <= 2) live.navigate(); };
+  const done = await host.request(waitFor(opened, { text: 'never', timeout_ms: 0 }));
+  assert.equal(done.matched, false);
+  assert.equal(replacements, 3);
+  live.navigate();
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') live.navigate(); };
+  await assert.rejects(host.request(waitFor(opened, { text: 'never', timeout_ms: 0 })), { code: 'stale_document_reference' });
+}));
+
 test('browsertools: wait does not hold the host mutation lane', () => {
   assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
 });
