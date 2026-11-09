@@ -13,6 +13,26 @@ async function loginPage(page, url, field, wait = 8) {
   return { outcome: `${classify(url, body)}${hasField === null ? '' : hasField ? ' first-field-present' : ' first-field-missing'}`, detail: (await page.evaluate('document.title')).slice(0, 80) };
 }
 
+// Both pages list their tests in a table whose result cells start empty or with a placeholder and are filled by the page's
+// script. A challenge or error page, or a script that has not finished, has no complete table: that is not "no failed row".
+const intoliResults = ['user-agent', 'webdriver', 'chrome', 'permissions', 'plugins-length', 'languages'].map(name => `${name}-result`);
+const sannysoftResults = ['user-agent', 'webdriver', 'advanced-webdriver', 'chrome', 'permissions', 'plugins-length', 'plugins-type', 'languages'].map(name => `${name}-result`);
+const rowsExpression = "JSON.stringify([...document.querySelectorAll('tr')].map(r => ({name: (r.cells[0]?.innerText ?? '').trim(), id: r.cells[1]?.id ?? '', text: (r.cells[1]?.innerText ?? '').trim(), failed: /failed/.test(r.innerHTML)})))";
+
+// Rows of the results table once every expected result cell holds text; throws when the table is still incomplete after the attempts.
+export async function readDetectionRows(page, expectedIds, { attempts = 20, interval = 500 } = {}) {
+  let missing = expectedIds;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt) await delay(interval);
+    const rows = JSON.parse(await page.evaluate(rowsExpression));
+    missing = expectedIds.filter(id => !rows.some(row => row.id === id && row.text !== ''));
+    if (!missing.length) return rows;
+  }
+  throw new Error(`incomplete results, missing ${missing.join(', ')}`);
+}
+
+const failedRows = rows => rows.filter(row => row.failed).map(row => row.name);
+
 export const googleEmail = 'chariox.browsercheck.nobody.847261@gmail.com'; // does not exist; never a real account, never a password
 
 export const checks = [
@@ -36,17 +56,16 @@ export const checks = [
     const result = /Test Results:\s*(\w+)/.exec(body)?.[1] ?? 'no result';
     return { outcome: result, detail: body.slice(body.indexOf('Test Results'), body.indexOf('Test Results') + 80) };
   } },
-  { id: 'sannysoft', title: 'bot.sannysoft.com failed rows', external: true, async run(page) {
-    await page.navigate('https://bot.sannysoft.com/', 6000);
-    const failed = JSON.parse(await page.evaluate("JSON.stringify([...document.querySelectorAll('tr')].filter(r => /failed/.test(r.innerHTML)).map(r => r.cells[0].innerText.trim()))"));
+  { id: 'sannysoft', title: 'bot.sannysoft.com failed rows', external: true, async run(page, settle) {
+    await page.navigate('https://bot.sannysoft.com/', 2000);
+    const failed = failedRows(await readDetectionRows(page, sannysoftResults, settle));
     // A host without a GPU has no WebGL in stock Chrome and SwiftShader in the kernel browser: not a bot signal.
     const bot = failed.filter(name => !/^WebGL/.test(name));
     return { outcome: bot.join(', ') || 'none', detail: failed.filter(name => /^WebGL/.test(name)).join(', ') };
   } },
-  { id: 'intoli', title: 'Intoli headless test failed rows', external: true, async run(page) {
-    await page.navigate('https://intoli.com/blog/not-possible-to-block-chrome-headless/chrome-headless-test.html', 6000);
-    const failed = JSON.parse(await page.evaluate("JSON.stringify([...document.querySelectorAll('tr')].filter(r => /failed/.test(r.innerHTML)).map(r => r.cells[0].innerText.trim()))"));
-    return { outcome: failed.join(', ') || 'none', detail: '' };
+  { id: 'intoli', title: 'Intoli headless test failed rows', external: true, async run(page, settle) {
+    await page.navigate('https://intoli.com/blog/not-possible-to-block-chrome-headless/chrome-headless-test.html', 2000);
+    return { outcome: failedRows(await readDetectionRows(page, intoliResults, settle)).join(', ') || 'none', detail: '' };
   } },
   { id: 'botd', title: 'FingerprintJS BotD (the library behind its demo)', external: true, async run(page) {
     await page.navigate('https://example.com/', 2000);
