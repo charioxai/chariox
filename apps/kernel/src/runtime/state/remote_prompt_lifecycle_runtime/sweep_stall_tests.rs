@@ -6,6 +6,8 @@ use crate::durable_state::agent_lifecycle::{
     AgentTaskExecution, ExecutionState, Operation, Outcome, Registration,
 };
 
+#[path = "sweep_stall_tests/pump.rs"]
+mod pump;
 #[path = "sweep_stall_tests/whole_sweep.rs"]
 mod whole_sweep;
 
