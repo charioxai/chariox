@@ -68,3 +68,26 @@ message), so 99 % of the wire is 55 % of the payload.
 | put 3 x 4 MiB, 600k | all three `kernel_request_timeout` (30 s): FAIL |
 | get / put 50 MiB, 8m, RTT 150 | get 97 s small 318/331 ms (bar 250); put 95 s small 521/573 ms |
 | frozen reader, 30 MiB, 8m | serving kernel connected for the whole 20 s freeze (slowest answer 9 ms), relay RSS 13.9 -> 16.2 MiB: PASS |
+
+# Round 3 (2026-11-09): upload isolation, window gain, rate-sized frames, binary answers
+
+Same matrix, debug builds, three harness instances at a time (load average 6 to 8). Changes since round 2: the kernel
+gateway's relay link (where `files put` waited: a small request was written after every upload request queued ahead of it)
+sends requests above one chunk on a bulk lane in chunks within the drain window, so a small request passes at the next
+chunk; the window keeps 1.5 x the bandwidth-delay product once the pipe is full (was 2 x); bulk text frames take about
+25 ms at the measured rate (4 to 16 KiB) with a two-frame floor; the gateway link takes the relay's binary answer frames,
+so a `files get` chunk crosses the link as ciphertext bytes (1.33 x the file bytes instead of 1.78 x). Uploads still
+carry base64 twice (no binary request frame exists).
+
+| run | result (round 2 in brackets) |
+|---|---|
+| get 100 MiB, 8m | 142 s (191), wire 99 %, payload 74 % (55 %); small 88/105/169 ms (137/147/296), bar 160 |
+| put 100 MiB, 8m-sym | 192 s (189), payload 55 %; small 95/111/130 ms (403/457/476) |
+| get 3 x 8 MiB, 1m | 275 s (376), payload 25 % each (18 %); small 74/134/338 ms (181/217/249) |
+| put 3 x 8 MiB, 1m | 382 s (366), 3/3; small 74/94/227 ms, 0 timeouts (p50 10.6 s, 502 timeouts) |
+| get 1 x 8 MiB, 1m | 94 s (129), payload 71 % (52 %); small 75/140/312 ms (179/217/237) |
+| put 1 x 8 MiB, 1m | 131 s (125); small 81/101/412 ms (3 372/3 835/3 886) |
+| get 3 x 6 MiB, 600k | 352 s (483); small 118/222/309 ms (320/378/463): p95 still above 160 |
+| put 3 x 4 MiB, 600k | 3/3 in 338 s (0/3, `kernel_request_timeout`); small 71/120/357 ms (14 328/14 795) |
+| get / put 50 MiB, 8m, RTT 150 | get 72 s (97) small 229/246 ms (318/331), bar 250; put 96 s (95) small 224/243 ms (521/573) |
+| frozen reader, 30 MiB, 8m | serving kernel connected all 20 samples, slowest answer 2 ms; relay RSS 13.5 -> 15.5 MiB; the frozen client's own transfer still ends `kernel_connection_lost` after the thaw (as before) |
