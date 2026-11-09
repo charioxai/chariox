@@ -339,3 +339,96 @@ async fn the_output_pump_seeing_a_dead_provider_without_an_active_prompt_ends_it
     turn.assert_background_commands_ended_at_or_after(before)
         .await;
 }
+
+impl BackgroundTurn {
+    /// The prompt each stored row of a tool call belongs to, oldest row first.
+    async fn stored_prompts_of(&self, tool_id: &str) -> Vec<Option<String>> {
+        self.runtime
+            .flush_provider_history(&self.run)
+            .await
+            .unwrap();
+        self.runtime
+            .owned
+            .operational_history_store
+            .load_session_events_for_agent_sequence_range(
+                &self.session,
+                &self.agent,
+                0,
+                i64::MAX as u64,
+            )
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event
+                    .to_session_history_entry()
+                    .is_some_and(|entry| entry.merge_key.as_deref() == Some(tool_id))
+            })
+            .map(|event| event.prompt_id)
+            .collect()
+    }
+}
+
+#[tokio::test]
+async fn a_background_finish_under_a_newer_prompt_stays_in_the_turn_that_started_it() {
+    let turn = BackgroundTurn::start().await;
+    turn.live_tools();
+    let launch_prompt = turn.stored_prompts_of("toolu_bg").await[0]
+        .clone()
+        .expect("the launch row belongs to its prompt");
+    turn.runtime
+        .owned
+        .complete_local_prompt_without_advance(&turn.session, &turn.agent, Some(&turn.run))
+        .unwrap();
+    turn.runtime
+        .app
+        .lock()
+        .await
+        .submit_prompt(
+            &turn.session,
+            &turn.attachment,
+            Some(&turn.agent),
+            "and now something else",
+            Vec::new(),
+        )
+        .unwrap();
+    let mut newer = lifecycle("claude_foreground_completed");
+    newer["id"] = serde_json::json!("toolu_newer");
+    turn.apply(vec![tool_chunk(&newer)]).await;
+    turn.apply(vec![
+        tool_chunk(&lifecycle("claude_background_finished")),
+        tool_chunk(&lifecycle("codex_background_finished")),
+    ])
+    .await;
+
+    // Live: the finish reaches clients as part of the launching prompt.
+    let live = turn
+        .runtime
+        .owned
+        .terminal_stream
+        .drain_output_records(&turn.session, &turn.attachment)
+        .into_iter()
+        .filter(|record| record.kind == TerminalOutputKind::ProviderTool)
+        .map(|record| {
+            let tool: serde_json::Value = serde_json::from_slice(&record.bytes).unwrap();
+            (tool["id"].as_str().unwrap().to_string(), record.prompt_id)
+        })
+        .collect::<Vec<_>>();
+    for (id, prompt) in &live {
+        if id == "toolu_newer" {
+            assert_ne!(prompt.as_deref(), Some(launch_prompt.as_str()), "{live:?}");
+        } else {
+            assert_eq!(prompt.as_deref(), Some(launch_prompt.as_str()), "{live:?}");
+        }
+    }
+    // In history: every row of the two background calls is in that turn.
+    for id in ["toolu_bg", "call_sleep"] {
+        let prompts = turn.stored_prompts_of(id).await;
+        assert!(prompts.len() >= 2, "{id}: {prompts:?}");
+        assert!(
+            prompts
+                .iter()
+                .all(|prompt| prompt.as_deref() == Some(launch_prompt.as_str())),
+            "{id}: {prompts:?}"
+        );
+    }
+}

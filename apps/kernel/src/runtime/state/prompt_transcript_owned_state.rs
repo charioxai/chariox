@@ -15,6 +15,8 @@ pub(super) struct TerminalOutputBatchAppend {
     pub(super) kind: crate::terminal::TerminalOutputKind,
     pub(super) merge_key: Option<String>,
     pub(super) sequence: Option<u64>,
+    /// The prompt this output belongs to when that is not the active one.
+    pub(super) prompt_id: Option<String>,
     pub(super) bytes: Vec<u8>,
 }
 
@@ -23,6 +25,9 @@ pub(super) struct PreparedHistoryEntry {
     pub(super) entry: SessionHistoryEntry,
     pub(super) context: crate::history::HistoryEventTurnContext,
     pub(super) sequence: u64,
+    /// The earlier prompt whose turn this row stays in (see
+    /// `keep_background_tool_in_its_turn`).
+    pub(super) kept_in_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -186,6 +191,7 @@ impl KernelRuntimeOwnedState {
                         kind: crate::terminal::TerminalOutputKind::ProviderTool,
                         merge_key,
                         sequence: None,
+                        prompt_id: None,
                         bytes,
                     },
                     Some(entry),
@@ -225,6 +231,7 @@ impl KernelRuntimeOwnedState {
                         kind: chunk.kind,
                         merge_key: chunk.merge_key,
                         sequence: None,
+                        prompt_id: None,
                         bytes: chunk.bytes,
                     },
                     Some(entry),
@@ -328,6 +335,7 @@ impl KernelRuntimeOwnedState {
                     kind: crate::terminal::TerminalOutputKind::ProviderError,
                     merge_key: None,
                     sequence: None,
+                    prompt_id: None,
                     bytes: message.into_bytes(),
                 },
                 Some(history_entry),
@@ -350,10 +358,13 @@ impl KernelRuntimeOwnedState {
             .enumerate()
             .filter_map(|(position, entry)| entry.as_ref().map(|_| position))
             .collect::<Vec<_>>();
-        let sequences =
-            self.append_history_entries(session_id, entries.into_iter().flatten().collect());
-        for (position, sequence) in positions.into_iter().zip(sequences) {
-            outputs[position].sequence = sequence;
+        let appended = self
+            .append_history_entries_in_turns(session_id, entries.into_iter().flatten().collect());
+        for (position, appended) in positions.into_iter().zip(appended) {
+            if let Some((sequence, kept_in_prompt)) = appended {
+                outputs[position].sequence = Some(sequence);
+                outputs[position].prompt_id = kept_in_prompt;
+            }
         }
         match recipient_attachment_ids {
             Some(recipient_attachment_ids) => self.fan_out_terminal_outputs_to_recipients(
@@ -527,7 +538,7 @@ impl KernelRuntimeOwnedState {
                 session_id: session_id.to_string(),
                 provider_run_id: output.provider_run_id,
                 agent_id,
-                prompt_id: prompt_metadata.prompt_id,
+                prompt_id: output.prompt_id.or(prompt_metadata.prompt_id),
                 prompt_origin: prompt_metadata.prompt_origin,
                 source_attachment_id: prompt_metadata.source_attachment_id,
                 kind: output.kind,
@@ -808,18 +819,20 @@ impl KernelRuntimeOwnedState {
                     .provider_run_id
                     .as_deref()
                     .and_then(|id| active_turns.get(id));
-                let context = self.operational_history_context_with_active_turn(
+                let mut context = self.operational_history_context_with_active_turn(
                     &entry,
                     None,
                     None,
                     None,
                     active_turn,
                 );
+                let kept_in_prompt = self.keep_background_tool_in_its_turn(&entry, &mut context);
                 Some(PreparedHistoryEntry {
                     position,
                     entry,
                     context,
                     sequence: self.operational_history_store.reserve_sequence(),
+                    kept_in_prompt,
                 })
             })
             .collect()
@@ -830,19 +843,62 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
     ) -> Vec<Option<u64>> {
-        let mut sequences = vec![None; entries.len()];
+        self.append_history_entries_in_turns(session_id, entries)
+            .into_iter()
+            .map(|appended| appended.map(|(sequence, _)| sequence))
+            .collect()
+    }
+
+    /// The sequence of each appended row, and the earlier prompt it stays in.
+    fn append_history_entries_in_turns(
+        &self,
+        session_id: &str,
+        entries: Vec<SessionHistoryEntry>,
+    ) -> Vec<Option<(u64, Option<String>)>> {
+        let mut appended = vec![None; entries.len()];
         let prepared = self.prepare_history_entries(session_id, entries);
         let positions = prepared
             .iter()
-            .map(|item| item.position)
+            .map(|item| (item.position, item.kept_in_prompt.clone()))
             .collect::<Vec<_>>();
-        for (position, sequence) in positions
+        for ((position, kept_in_prompt), sequence) in positions
             .into_iter()
             .zip(self.append_prepared_history_entries(prepared))
         {
-            sequences[position] = Some(sequence);
+            appended[position] = Some((sequence, kept_in_prompt));
         }
-        sequences
+        appended
+    }
+
+    /// A background command's later rows (it ended, or its provider process
+    /// did) belong to the turn that started it, not to the prompt that happens
+    /// to be active when the kernel learns of the end.
+    fn keep_background_tool_in_its_turn(
+        &self,
+        entry: &SessionHistoryEntry,
+        context: &mut crate::history::HistoryEventTurnContext,
+    ) -> Option<String> {
+        if entry.kind != crate::history::SessionHistoryEntryKind::ProviderTool
+            || !entry.text.contains("\"background\":true")
+        {
+            return None;
+        }
+        let (merge_key, provider_run_id) = entry
+            .merge_key
+            .as_deref()
+            .zip(entry.provider_run_id.as_deref())?;
+        let origin = self
+            .operational_history_store
+            .first_turn_of_provider_tool(&entry.session_id, provider_run_id, merge_key)
+            .ok()
+            .flatten()?;
+        let prompt_id = origin.prompt_id?;
+        if context.prompt_id.as_deref() == Some(prompt_id.as_str()) {
+            return None;
+        }
+        context.turn_id = origin.turn_id.or_else(|| Some(prompt_id.clone()));
+        context.prompt_id = Some(prompt_id.clone());
+        Some(prompt_id)
     }
 
     pub(super) fn append_operational_history_entry(

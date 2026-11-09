@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::MutexGuard;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 
 use crate::error::DaemonError;
 use crate::session::PromptOrigin;
@@ -12,6 +12,13 @@ use super::{
     HistoryEvent, OperationalHistoryStore, SessionHistoryEntry, SessionHistoryEntryKind,
     SessionHistoryEntrySource,
 };
+
+/// Where a tool call first appeared in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryTurnOrigin {
+    pub turn_id: Option<String>,
+    pub prompt_id: Option<String>,
+}
 
 /// A prompt the kernel sent, with the local files it attached: the provider may echo it behind an
 /// `@path` mention of each of them.
@@ -486,6 +493,37 @@ impl OperationalHistoryStore {
             .into_iter()
             .filter_map(|event| event.to_session_history_entry())
             .collect())
+    }
+
+    /// The turn and prompt a tool call first appeared in: later rows of the
+    /// same call (a background command ending) stay in that turn.
+    pub fn first_turn_of_provider_tool(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        merge_key: &str,
+    ) -> Result<Option<HistoryTurnOrigin>, DaemonError> {
+        let connection = self.lock_read_connection(Some(session_id))?;
+        connection
+            .query_row(
+                "SELECT turn_id, prompt_id FROM history_events
+                 WHERE session_id = ?1 AND provider_run_id = ?2 AND kind = 'provider_tool'
+                   AND merge_key = ?3
+                 ORDER BY sequence ASC LIMIT 1",
+                params![session_id, provider_run_id, merge_key],
+                |row| {
+                    Ok(HistoryTurnOrigin {
+                        turn_id: row.get(0)?,
+                        prompt_id: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| DaemonError::SessionHistoryFailed {
+                session_id: Some(session_id.to_string()),
+                operation: "load the first turn of a provider tool",
+                message: error.to_string(),
+            })
     }
 
     /// The provider runs, with their agents, that wrote a tool row which may
