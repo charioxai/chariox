@@ -12,6 +12,8 @@ mod cancel;
 mod pump;
 #[path = "sweep_stall_tests/whole_sweep.rs"]
 mod whole_sweep;
+#[path = "sweep_stall_tests/workflow.rs"]
+mod workflow;
 
 /// A sweep that waits on nothing returns in well under a second; this is the room for a slow builder.
 const SWEEP_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
