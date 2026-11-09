@@ -99,7 +99,7 @@ mod app_view_runtime;
 mod computer_secret_input_runtime_state;
 mod config_runtime_state;
 mod critical_approval_passkey;
-mod kernel_access;
+pub(in crate::runtime) mod kernel_access;
 pub(crate) use kernel_access::reach;
 pub(crate) use kernel_access::AccessSubmission;
 mod outside_events;
