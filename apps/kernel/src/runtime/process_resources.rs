@@ -51,7 +51,7 @@ pub(crate) use session_sweep::SessionSweep;
 pub(crate) use submissions::Submissions;
 #[cfg(test)]
 pub(crate) use waits::push_for_tests as push_wait_event;
-pub(crate) use waits::{size, take_wait_events, WaitChange, WaitEvent};
+pub(crate) use waits::{take_wait_events, WaitChange, WaitEvent};
 #[cfg(test)]
 mod admission_tests;
 #[cfg(target_os = "linux")]
