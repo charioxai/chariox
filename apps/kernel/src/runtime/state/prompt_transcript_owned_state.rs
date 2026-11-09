@@ -28,6 +28,9 @@ pub(super) struct PreparedHistoryEntry {
     /// The earlier prompt whose turn this row stays in (see
     /// `keep_background_tool_in_its_turn`).
     pub(super) kept_in_prompt: Option<String>,
+    /// That row already took the place of the call's newest stored row, so it
+    /// is not appended again.
+    pub(super) replaced_in_place: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -362,7 +365,7 @@ impl KernelRuntimeOwnedState {
             .append_history_entries_in_turns(session_id, entries.into_iter().flatten().collect());
         for (position, appended) in positions.into_iter().zip(appended) {
             if let Some((sequence, kept_in_prompt)) = appended {
-                outputs[position].sequence = Some(sequence);
+                outputs[position].sequence = sequence;
                 outputs[position].prompt_id = kept_in_prompt;
             }
         }
@@ -832,12 +835,14 @@ impl KernelRuntimeOwnedState {
                     entry,
                     context,
                     sequence: self.operational_history_store.reserve_sequence(),
+                    replaced_in_place: kept_in_prompt.is_some(),
                     kept_in_prompt,
                 })
             })
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn append_history_entries(
         &self,
         session_id: &str,
@@ -845,34 +850,42 @@ impl KernelRuntimeOwnedState {
     ) -> Vec<Option<u64>> {
         self.append_history_entries_in_turns(session_id, entries)
             .into_iter()
-            .map(|appended| appended.map(|(sequence, _)| sequence))
+            .map(|appended| appended.and_then(|(sequence, _)| sequence))
             .collect()
     }
 
-    /// The sequence of each appended row, and the earlier prompt it stays in.
+    /// The sequence of each appended row (none for a row that replaced an
+    /// earlier one), and the earlier prompt it stays in.
     fn append_history_entries_in_turns(
         &self,
         session_id: &str,
         entries: Vec<SessionHistoryEntry>,
-    ) -> Vec<Option<(u64, Option<String>)>> {
+    ) -> Vec<Option<(Option<u64>, Option<String>)>> {
         let mut appended = vec![None; entries.len()];
-        let prepared = self.prepare_history_entries(session_id, entries);
-        let positions = prepared
-            .iter()
-            .map(|item| (item.position, item.kept_in_prompt.clone()))
-            .collect::<Vec<_>>();
-        for ((position, kept_in_prompt), sequence) in positions
+        let (replaced, to_append): (Vec<_>, Vec<_>) = self
+            .prepare_history_entries(session_id, entries)
             .into_iter()
-            .zip(self.append_prepared_history_entries(prepared))
+            .partition(|item| item.replaced_in_place);
+        for item in replaced {
+            appended[item.position] = Some((None, item.kept_in_prompt));
+        }
+        let positions = to_append
+            .iter()
+            .map(|item| item.position)
+            .collect::<Vec<_>>();
+        for (position, sequence) in positions
+            .into_iter()
+            .zip(self.append_prepared_history_entries(to_append))
         {
-            appended[position] = Some((sequence, kept_in_prompt));
+            appended[position] = Some((Some(sequence), None));
         }
         appended
     }
 
     /// A background command's later rows (it ended, or its provider process
     /// did) belong to the turn that started it, not to the prompt that happens
-    /// to be active when the kernel learns of the end.
+    /// to be active when the kernel learns of the end. Turns are sequence
+    /// ranges, so the row takes the place of the call's newest stored row.
     fn keep_background_tool_in_its_turn(
         &self,
         entry: &SessionHistoryEntry,
@@ -896,9 +909,33 @@ impl KernelRuntimeOwnedState {
         if context.prompt_id.as_deref() == Some(prompt_id.as_str()) {
             return None;
         }
-        context.turn_id = origin.turn_id.or_else(|| Some(prompt_id.clone()));
-        context.prompt_id = Some(prompt_id.clone());
-        Some(prompt_id)
+        let mut kept = context.clone();
+        kept.turn_id = origin.turn_id.or_else(|| Some(prompt_id.clone()));
+        kept.prompt_id = Some(prompt_id.clone());
+        match self
+            .operational_history_store
+            .replace_latest_transcript_by_merge_key(
+                &entry.session_id,
+                entry.agent_id.as_deref(),
+                merge_key,
+                entry,
+                kept,
+            ) {
+            Ok(Some(_)) => Some(prompt_id),
+            Ok(None) => None,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to keep a background tool row in its turn",
+                    serde_json::json!({
+                        "session_id": entry.session_id,
+                        "merge_key": merge_key,
+                        "error": error.to_string(),
+                    }),
+                );
+                None
+            }
+        }
     }
 
     pub(super) fn append_operational_history_entry(

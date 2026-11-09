@@ -420,10 +420,11 @@ async fn a_background_finish_under_a_newer_prompt_stays_in_the_turn_that_started
             assert_eq!(prompt.as_deref(), Some(launch_prompt.as_str()), "{live:?}");
         }
     }
-    // In history: every row of the two background calls is in that turn.
-    for id in ["toolu_bg", "call_sleep"] {
+    // In history: the finish took the place of each call's newest row, so
+    // every row of the two background calls is still in that turn.
+    for (id, rows) in [("toolu_bg", 2), ("call_sleep", 1)] {
         let prompts = turn.stored_prompts_of(id).await;
-        assert!(prompts.len() >= 2, "{id}: {prompts:?}");
+        assert_eq!(prompts.len(), rows, "{id}: {prompts:?}");
         assert!(
             prompts
                 .iter()
@@ -431,4 +432,7 @@ async fn a_background_finish_under_a_newer_prompt_stays_in_the_turn_that_started
             "{id}: {prompts:?}"
         );
     }
+    let stored = turn.stored_tools().await;
+    assert!(stored["toolu_bg"]["finished_at_ms"].is_u64());
+    assert!(stored["call_sleep"]["finished_at_ms"].is_u64());
 }
