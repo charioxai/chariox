@@ -393,6 +393,9 @@ fn status_response(
 }
 
 fn target_import_failure(code: String, retryable: bool) -> DaemonError {
+    if code == crate::managed_context::target_vault::TARGET_VAULT_LOCKED {
+        return crate::managed_context::target_vault::target_vault_locked();
+    }
     DaemonError::ManagedContext {
         code: "target_import_failed",
         operation: "send managed context",
@@ -1022,6 +1025,40 @@ mod tests {
                 message,
                 retryable: true,
             } if message == "target kernel rejected managed context with `authorization_failed`"
+        ));
+        std::fs::remove_dir_all(fixture_root).expect("fixture cleanup");
+    }
+
+    #[tokio::test]
+    async fn reports_a_closed_receiving_vault_as_its_own_reason_class() {
+        let fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        let transport =
+            FakeTransport::new(vec![Ok(RelayPeerResponse::ManagedContextImportFailed {
+                code: "target_vault_locked".to_string(),
+                retryable: true,
+            })]);
+        let error = transfer_managed_context_package(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".to_string(),
+                target_kernel_id: "target-kernel".to_string(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability: RelayManagedContextCapability::new("capability".to_string()),
+            },
+            |_| {},
+        )
+        .await
+        .expect_err("a closed receiving Vault refuses the transfer");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "target_vault_locked",
+                retryable: true,
+                ..
+            }
         ));
         std::fs::remove_dir_all(fixture_root).expect("fixture cleanup");
     }
