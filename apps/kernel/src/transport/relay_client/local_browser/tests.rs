@@ -1398,15 +1398,12 @@ fn mp11_admitted_direct_command_settles_once_after_disconnect_and_relay_retry() 
             Some(&kernel.direct),
         )
         .await;
-        let second = relay_crypto::decrypt_payload_for_private_key(
-            &browser.private_key,
-            &replay.encrypted_response.unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            first.plaintext, second.plaintext,
-            "relay retry duplicated the mutation"
-        );
+        // A second retry within ten seconds is not answered with the result again (nor run
+        // again): it is told the answer was already given and may ask later.
+        let refused = replay.error.expect("a second retry waits out the window");
+        assert_eq!(refused.code, "duplicate_command_unavailable");
+        assert!(refused.retryable && replay.encrypted_response.is_none());
+        drop(first);
         let sessions = relay_crypto::encrypt_payload_for_peer(
             &browser.private_key,
             &kernel.daemon_public_key,
