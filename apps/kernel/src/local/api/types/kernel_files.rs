@@ -2,9 +2,11 @@ use super::*;
 
 /// Protocol 568: one file is at most this large.
 pub const KERNEL_FILE_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Protocol 568: one read or write request moves at most this many bytes. A write chunk
-/// travels base64 inside one relayed request, which the target accepts up to 768 KiB.
-pub const KERNEL_FILE_MAX_CHUNK_BYTES: u64 = 256 * 1024;
+/// Protocol 568: one read or write request moves at most this many bytes. One reply is one
+/// indivisible relay message, about 117 KB on the wire at this size, so it never holds the link
+/// for long. Smaller than this a reply would ride the priority lane, which the per-client bound on
+/// bulk replies does not cover; the CLI downloads with several of these in flight.
+pub const KERNEL_FILE_MAX_CHUNK_BYTES: u64 = 64 * 1024;
 
 /// Protocol 568: what a path is on this machine. `path` is absolute or starts
 /// with `~/`; a directory listing is `ListKernelDirectory`.
