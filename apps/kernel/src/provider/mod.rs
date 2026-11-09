@@ -9,6 +9,7 @@ mod account_credential;
 mod account_endpoints;
 mod claude;
 mod claude_runtime;
+pub(crate) use claude_runtime::claude_rate_limit_snapshot;
 pub(crate) use claude_runtime::usage::{
     claude_status_line_context_usage, claude_status_line_usage_snapshot,
 };
@@ -83,7 +84,8 @@ pub(crate) use claude::{
 };
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude::{
-    verify_claude_account_credential, verify_claude_setup_token, ClaudeCredentialCheckError,
+    read_claude_rate_limits, verify_claude_account_credential, verify_claude_setup_token,
+    ClaudeCredentialCheckError,
 };
 #[cfg(test)]
 pub(crate) use claude_runtime::claude_runtime_tool_wait_pending;

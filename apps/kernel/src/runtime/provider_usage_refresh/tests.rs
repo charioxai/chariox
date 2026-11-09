@@ -581,3 +581,34 @@ fn a_window_past_its_reset_reads_as_not_measured_yet_until_a_new_reading() {
     let renewed = f.registry.get("local", "codex", &f.key.profile_id).unwrap();
     assert_eq!(renewed.usage.meters[0].used_percent, Some(2.0));
 }
+
+#[test]
+fn a_claude_account_with_a_running_agent_is_read_every_five_minutes() {
+    crate::test_support::isolated_env_test!();
+    let f = Fixture::for_provider("claude", vec![Ok(18.0), Ok(19.0)]);
+    assert!(f.refresher.due_accounts(f.at(0.0)).is_empty());
+    assert!(f
+        .refresher
+        .stale_accounts("local", Some("claude"), f.at(0.0))
+        .is_empty());
+
+    f.running.store(true, Ordering::SeqCst);
+    assert_eq!(f.refresher.due_accounts(f.at(0.0)), vec![f.key.clone()]);
+    assert_eq!(
+        f.refresher
+            .stale_accounts("local", Some("claude"), f.at(0.0)),
+        vec![f.key.clone()]
+    );
+    f.refresher.refresh_account(&f.key, f.at(0.0));
+    let usage = f.usage();
+    assert_eq!(usage.meters[0].used_percent, Some(18.0));
+    assert_eq!(usage.meters[0].source, "refresh");
+
+    assert!(f.refresher.due_accounts(f.at(4.0)).is_empty());
+    assert_eq!(f.refresher.due_accounts(f.at(5.0)), vec![f.key.clone()]);
+    f.refresher.refresh_account(&f.key, f.at(5.0));
+    assert_eq!(f.usage().meters[0].used_percent, Some(19.0));
+
+    f.running.store(false, Ordering::SeqCst);
+    assert!(f.refresher.due_accounts(f.at(60.0)).is_empty());
+}

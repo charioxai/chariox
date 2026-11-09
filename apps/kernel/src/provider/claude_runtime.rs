@@ -34,6 +34,7 @@ pub(crate) mod usage;
 mod watchdog;
 
 use events::apply_claude_message;
+pub(crate) use events::claude_rate_limit_snapshot;
 pub(crate) use handover::ClaudeHandover;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};

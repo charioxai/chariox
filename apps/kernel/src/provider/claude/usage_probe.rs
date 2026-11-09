@@ -157,6 +157,13 @@ pub(super) fn verify_claude_account_credential_with_timeout(
     }
 }
 
+pub(crate) fn read_claude_rate_limits(
+    _executable: &Path,
+    _environment: &BTreeMap<String, String>,
+) -> Result<crate::account_profile::ProviderAccountUsageSnapshot, DaemonError> {
+    Err(probe_error("not implemented".into()))
+}
+
 /// Runs one bounded, tool-less `claude -p <args[0]> ... <args[1..]>` in a
 /// private scratch directory and returns its exit status and JSON result.
 fn run_claude_print(
@@ -844,6 +851,49 @@ process.stdout.write(JSON.stringify({
         assert!(
             matches!(error, ClaudeCredentialCheckError::Inconclusive(ref message) if message.contains("credential check timed out") && !message.contains("usage"))
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    // The stream a live Claude Code 2.1.296 printed for an account at 18%.
+    #[cfg(unix)]
+    #[test]
+    fn rate_limit_read_returns_the_weekly_percent_of_a_minimal_turn() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile_fixture_root();
+        let executable = root.join("claude");
+        let args = root.join("args.txt");
+        let event = serde_json::json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": {
+                "status": "allowed", "resetsAt": 1_794_758_400, "rateLimitType": "seven_day",
+                "overageStatus": "rejected", "isUsingOverage": false,
+                "unifiedWindows": { "seven_day": { "utilization": 0.18, "resetsAt": 1_794_758_400 } }
+            }
+        });
+        fs::write(
+            &executable,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" > '{}'\nprintf '%s\\n' '{{\"type\":\"system\"}}' '{}' '{{\"type\":\"result\",\"is_error\":false}}'\n",
+                args.display(),
+                event
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let environment = BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".into(),
+            root.join("profile").display().to_string(),
+        )]);
+
+        let usage = read_claude_rate_limits(&executable, &environment).unwrap();
+
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/seven_day");
+        assert_eq!(usage.meters[0].used_percent, Some(18.0));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(1_794_758_400_000));
+        let args = fs::read_to_string(args).unwrap();
+        assert!(args.contains("--output-format stream-json"), "{args}");
+        assert!(args.contains("--max-turns 1"), "{args}");
         fs::remove_dir_all(root).unwrap();
     }
 
