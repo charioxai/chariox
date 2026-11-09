@@ -130,6 +130,20 @@ fn an_agent_of_a_room_made_before_enrollment_reaches_the_owners_other_rooms_here
                 .await;
             assert!(sent.is_ok(), "urgent {urgent}: {sent:?}");
         }
+        let spawned = a
+            .command(format!("agent spawn peer --room {other}"))
+            .await
+            .expect("a `local` agent creates a peer in the owner's enrolled room");
+        let peer = a
+            .app
+            .lock()
+            .await
+            .agents()
+            .get_session_agents(&other)
+            .into_iter()
+            .find(|agent| agent.alias() == Some("peer"))
+            .unwrap_or_else(|| panic!("the peer lives in the enrolled room: {spawned}"));
+        assert_eq!(peer.owner_user_id(), OWNER, "it belongs to the room's owner");
     });
 }
 
