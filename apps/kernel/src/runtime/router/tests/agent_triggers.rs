@@ -75,7 +75,7 @@ async fn wait_schedule_triggers_start_queue_recur_and_delete() {
     let due_at_ms = once_schedule
         .next_run_at_ms()
         .max(recurring_schedule.next_run_at_ms());
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms)).await;
 
     let snapshot = router
         .runtime_state
@@ -112,7 +112,7 @@ async fn wait_schedule_triggers_start_queue_recur_and_delete() {
 
     for tick in 1..=43 {
         let now_ms = due_at_ms + tick * 60_000;
-        boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(now_ms)).await;
+        boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(now_ms)).await;
         let snapshot = router
             .runtime_state
             .session_snapshot(session.id())
@@ -205,7 +205,7 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
         .map(|schedule| schedule.next_run_at_ms())
         .max()
         .unwrap();
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms)).await;
     let (active, queued) = prompt_owner.state_parts(&session, agent.id());
     assert_eq!(
         active.as_ref().unwrap().agent_trigger_id(),
@@ -257,7 +257,7 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
 
     for tick in 1..=43 {
         let now_ms = due_at_ms + tick * 60_000;
-        boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(now_ms)).await;
+        boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(now_ms)).await;
         let (active, queued) = prompt_owner.state_parts(&session, agent.id());
         assert_eq!(
             active.as_ref().unwrap().agent_trigger_id(),
@@ -291,7 +291,7 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(due_at_ms + 44 * 60_000)
+            .fire_due_agent_triggers(due_at_ms + 44 * 60_000)
     })
     .await;
     let (active, queued) = prompt_owner.state_parts(&session, agent.id());
@@ -322,7 +322,7 @@ async fn schedule_triggers_coalesce_active_and_restored_occurrences() {
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(due_at_ms + 100 * 60_000)
+            .fire_due_agent_triggers(due_at_ms + 100 * 60_000)
     })
     .await;
     assert_eq!(
@@ -411,7 +411,7 @@ async fn busy_policy_steers_or_queues_each_trigger_on_a_running_agent() {
         triggers.push(trigger);
     }
     let due_at_ms = triggers.iter().map(|t| t.next_run_at_ms()).max().unwrap();
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms)).await;
 
     let (active, queued) = prompt_owner.state_parts(&session, agent.id());
     assert_eq!(
@@ -552,7 +552,7 @@ async fn a_refused_steer_leaves_the_firing_queued_and_says_why() {
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
     })
     .await;
 
@@ -644,7 +644,7 @@ async fn archiving_an_agent_removes_its_triggers_and_unarchive_starts_nothing() 
     }
 
     archive_test_agent(&router, session.id(), agent.id(), true).await;
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms)).await;
     let snapshot = router
         .runtime_state
         .session_snapshot(session.id())
@@ -660,12 +660,7 @@ async fn archiving_an_agent_removes_its_triggers_and_unarchive_starts_nothing() 
     );
 
     archive_test_agent(&router, session.id(), agent.id(), false).await;
-    boxed_schedule_future(|| {
-        router
-            .runtime_state
-            .dispatch_due_agent_triggers(due_at_ms + 1)
-    })
-    .await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms + 1)).await;
     let snapshot = router
         .runtime_state
         .session_snapshot(session.id())
@@ -717,7 +712,7 @@ async fn a_firing_seen_while_its_agent_is_archived_releases_its_claim() {
             .set_agent_archived_without_cleanup_for_test(agent.id(), archived)
     };
     set_archived(true);
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due_at_ms)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due_at_ms)).await;
     set_archived(false);
     let deferred = router
         .runtime_state
@@ -735,7 +730,7 @@ async fn a_firing_seen_while_its_agent_is_archived_releases_its_claim() {
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(deferred.next_run_at_ms())
+            .fire_due_agent_triggers(deferred.next_run_at_ms())
     })
     .await;
     let snapshot = router
@@ -918,7 +913,7 @@ async fn a_steer_the_provider_refuses_after_the_mailbox_accepted_it_leaves_the_f
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
     })
     .await;
 
@@ -989,7 +984,7 @@ async fn a_steer_whose_acknowledgement_is_lost_is_not_replayed_when_the_turn_end
     boxed_schedule_future(|| {
         router
             .runtime_state
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
     })
     .await;
 
@@ -1096,7 +1091,7 @@ async fn restart_with_pending_steer(
     let dispatching = {
         let runtime_state = router.runtime_state.clone();
         tokio::spawn(async move {
-            boxed_schedule_future(|| runtime_state.dispatch_due_agent_triggers(due)).await;
+            boxed_schedule_future(|| runtime_state.fire_due_agent_triggers(due)).await;
         })
     };
 
@@ -1173,7 +1168,7 @@ async fn restart_with_pending_steer(
 
     // The occurrence the provider may already hold is settled: the scheduler
     // must not admit it a second time once the fence is gone.
-    boxed_schedule_future(|| router.runtime_state.dispatch_due_agent_triggers(due)).await;
+    boxed_schedule_future(|| router.runtime_state.fire_due_agent_triggers(due)).await;
     let (active, queued) = prompt_owner.state_parts(&restored_session, agent.id());
     assert!(
         active.is_none() && queued.is_empty(),
@@ -1238,7 +1233,7 @@ async fn a_steered_firing_stays_queued_until_the_provider_acknowledges_it() {
             boxed_schedule_future(|| {
                 router
                     .runtime_state
-                    .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+                    .fire_due_agent_triggers(trigger.next_run_at_ms())
             })
             .await;
             firing_settled.store(true, std::sync::atomic::Ordering::SeqCst);
