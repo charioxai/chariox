@@ -1,5 +1,6 @@
 // wfreal control: a real Codex profile on a throwaway kernel. Steps (argv): plain | direct | roomtool | f2real
 import {Rig,sleep,runs,wfSource,recorder} from './lib.mjs';
+import {execFileSync} from 'node:child_process';
 const TREE=new URL('../../',import.meta.url).pathname.replace(/\/$/,'');
 const requests=await import(TREE+'/packages/kernel-client/dist/ipc-requests.js');
 const step=process.argv[2]||'plain';const rec=recorder('wfreal-'+step);
@@ -32,8 +33,11 @@ if(step==='direct'||step==='f2real'){
   const rep=await rig.apply(src);say('applied',JSON.stringify(rep).slice(0,160));rig.alias='gw';rig.module=module;rig.config=config;rig.nodes=['entry'];
   const e=await rig.invoke('gw','entry','run');say('invoked',JSON.stringify(e).slice(0,200));
   if(process.env.CANCEL_RUN==='1'){const codexKids=()=>rig.kids().filter(k=>/codex/i.test(k.comm)).map(k=>k.pid+':'+k.comm);let rs0;for(let i=0;i<120;i++){rs0=await runs(rig);if(rs0[0]?.node_runs?.some(n=>n.status==='Running'))break;await sleep(200)}
-    say('CANCEL_RUN at',JSON.stringify(rs0.map(snap)),'codex',JSON.stringify(codexKids()));const tc=Date.now();let ans='pending';rig.send({CancelWorkflowRun:{session_id:rig.sessionId,workflow_run_ref:rs0[0].id}}).then(r=>{ans='ANSWER';say('cancel run answered after',Date.now()-tc,'ms',JSON.stringify(r).slice(0,160))},e=>{ans='ERR';say('cancel run error after',Date.now()-tc,'ms',String(e).slice(0,200))});
-    for(let i=0;i<120;i++){await sleep(500);const rs1=await runs(rig);if(i%4===0)say('after cancel',JSON.stringify(rs1.map(snap)),'codex',JSON.stringify(codexKids()),ans);if(ans!=='pending'&&i>4&&codexKids().length<=1)break}
+    say('TREE before cancel',JSON.stringify((()=>{const ids=rig.kids().map(k=>String(k.pid));return ids.length?execFileSync('ps',['-o','pid=,ppid=,etimes=,stat=,args=','-p',ids.join(',')],{encoding:'utf8'}).trim().split('\n').map(l=>l.trim().replace(/\s+/g,' ').slice(0,160)):[]})()));say('CANCEL_RUN at',JSON.stringify(rs0.map(snap)),'codex',JSON.stringify(codexKids()));const tc=Date.now();let ans='pending';rig.send({CancelWorkflowRun:{session_id:rig.sessionId,workflow_run_ref:rs0[0].id}}).then(r=>{ans='ANSWER';say('cancel run answered after',Date.now()-tc,'ms',JSON.stringify(r).slice(0,160))},e=>{ans='ERR';say('cancel run error after',Date.now()-tc,'ms',String(e).slice(0,200))});
+    const OBS=+(process.env.OBSERVE_MS||0);const tree=()=>{const ids=rig.kids().map(k=>String(k.pid));return ids.length?execFileSync('ps',['-o','pid=,ppid=,etimes=,stat=,args=','-p',ids.join(',')],{encoding:'utf8'}).trim().split('\n').map(l=>l.trim().replace(/\s+/g,' ').slice(0,160)):[]};const marks=[5000,30000,90000];
+    for(let i=0;i<(OBS?OBS/500:120);i++){await sleep(500);const rs1=await runs(rig);if(i%4===0)say('after cancel',JSON.stringify(rs1.map(snap)),'codex',JSON.stringify(codexKids()),ans);while(marks.length&&Date.now()-tc>=marks[0])say('TREE +'+marks.shift()/1000+'s',JSON.stringify(tree()));if(!OBS&&ans!=='pending'&&i>4&&codexKids().length<=1)break}
+    for(let r=2;r<=(+process.env.REPEAT||1);r++){const e2=await rig.invoke('gw','entry','run');say('invoked again',r,JSON.stringify(e2).slice(0,80));let rs2;for(let i=0;i<120;i++){rs2=await runs(rig);if(rs2.some(x=>x.status==='Running'&&x.node_runs?.some(n=>n.status==='Running')))break;await sleep(200)}
+      const live=rs2.find(x=>x.status==='Running');say('TREE before cancel',r,JSON.stringify(tree()));await rig.send({CancelWorkflowRun:{session_id:rig.sessionId,workflow_run_ref:live.id}});say('cancelled',r);await sleep(+process.env.REPEAT_OBS_MS||20000);say('TREE after cancel',r,JSON.stringify(tree()),'runs',JSON.stringify((await runs(rig)).map(snap)))}
     rec('cancel-run-real-codex',{result:ans==='ANSWER'?'INFO-answered':'INFO-pending',afterMs:Date.now()-tc});await rig.stop();process.exit(0)}
   const rs=await watch(+(process.env.WAIT||150000),rs=>rs.length>=1&&rs.every(r=>['Completed','Failed','Stopped'].includes(r.status)));
   rec('final',{result:'INFO',runs:rs.map(snap)});
