@@ -616,11 +616,18 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                DaemonError::ManagedContext { code: "target_vault_locked", retryable: true, .. }
+                DaemonError::ManagedContext {
+                    code: "target_vault_locked",
+                    retryable: true,
+                    ..
+                }
             ),
             "{error:?}"
         );
-        assert!(!request.destination_root.exists(), "nothing was materialized");
+        assert!(
+            !request.destination_root.exists(),
+            "nothing was materialized"
+        );
 
         crate::secret::unlock_chariox_encrypted_vault(
             &target.user_config.credential_vault.path,

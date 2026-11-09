@@ -62,8 +62,10 @@ mod tests {
     const PASSPHRASE: &str = "target-vault-test-passphrase";
 
     fn kernel(label: &str) -> (DaemonConfig, std::path::PathBuf) {
-        let root =
-            std::env::temp_dir().join(format!("target-vault-{label}-{:032x}", rand::random::<u128>()));
+        let root = std::env::temp_dir().join(format!(
+            "target-vault-{label}-{:032x}",
+            rand::random::<u128>()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let mut config = DaemonConfig::new(label, label, "owner");
         config.user_config.credential_vault.backend = CredentialVaultBackend::CharioxEncrypted;
@@ -92,7 +94,11 @@ mod tests {
         assert!(
             matches!(
                 &error,
-                DaemonError::VaultUnlock { code: "target_vault_locked", retryable: true, .. }
+                DaemonError::VaultUnlock {
+                    code: "target_vault_locked",
+                    retryable: true,
+                    ..
+                }
             ),
             "{error:?}"
         );
