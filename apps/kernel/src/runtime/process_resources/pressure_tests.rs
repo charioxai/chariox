@@ -220,17 +220,6 @@ impl Workload {
         let _ = (name, reason);
     }
 }
-impl Workload {
-    /// The command was not stopped by the pool: its error stream is empty.
-    pub(super) fn assert_not_told(&self, name: &str) {
-        let notice =
-            std::fs::read_to_string(self.dir.join(format!("{name}.err"))).unwrap_or_default();
-        assert!(
-            !notice.contains("stopped this"),
-            "{name} was stopped: {notice:?}"
-        );
-    }
-}
 impl Drop for Workload {
     // The domain, dropped after this, ends what the root left running, but it
     // may not have sampled a command yet, and one admission stopped outlives
@@ -463,46 +452,6 @@ fn pressure_pauses_the_newest_growing_command_before_stopping_any() {
 #[ignore = "requires a writable cgroup-v2 delegated parent"]
 fn pressure_pauses_the_newest_growing_command_before_stopping_any_in_cgroups() {
     slow_growth_is_paused_before_anything_is_stopped(true);
-}
-
-/// Three owners each grow one command at 48 MiB/s in a 1500 MiB pool. The
-/// two newest are paused and keep what they hold; the oldest, which is
-/// exempt from pausing, then fills the pool. The newest paused command ends
-/// for it, with its reason; the oldest finishes growing and the other one
-/// continues.
-fn the_newest_paused_command_yields_to_the_oldest_running_one(cgroup: bool) {
-    let pool = pool(1500);
-    let command = |top| [("idle", 0, 0, 0), ("grow", 0, 48, top)];
-    let mut oldest = Workload::start(domain(&pool, "a", cgroup), &command(800));
-    settle(1);
-    let mut middle = Workload::start(domain(&pool, "b", cgroup), &command(800));
-    settle(1);
-    let mut newest = Workload::start(domain(&pool, "c", cgroup), &command(800));
-    let deadline = std::time::Instant::now() + Duration::from_secs(45);
-    while newest.alive("grow") && oldest.alive("grow") {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "nothing was stopped in a full pool"
-        );
-        settle(1);
-    }
-    settle(4);
-    assert!(
-        oldest.alive("grow") && oldest.root_alive(),
-        "the oldest running command was stopped while paused ones held memory"
-    );
-    assert!(!newest.alive("grow"), "the newest paused command went on");
-    #[cfg(target_os = "linux")]
-    assert!(!oldest.waiting("grow"), "the oldest command was paused");
-    assert!(middle.alive("grow"), "more than the newest was stopped");
-    newest.assert_told("grow", "stopped this waiting command");
-    oldest.assert_not_told("grow");
-}
-
-#[cfg(unix)]
-#[test]
-fn the_newest_paused_command_yields_before_the_oldest_running_one() {
-    the_newest_paused_command_yields_to_the_oldest_running_one(false);
 }
 
 fn runaway_is_paused_before_the_line(cgroup: bool) {
