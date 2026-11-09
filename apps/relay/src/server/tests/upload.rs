@@ -4,7 +4,8 @@
 //! A kernel without the offer (peer 440) keeps writing whole messages.
 use super::*;
 use crate::frame_transport::{
-    read_message, text_chunk, FrameReceiver, TransportFrame, TRANSPORT_QUERY, UPLOAD_CHUNKS,
+    read_message, text_chunk, FrameReceiver, TransportFrame, CHUNK_BYTES, TRANSPORT_QUERY,
+    UPLOAD_CHUNKS,
     UPLOAD_HEADER,
 };
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -209,7 +210,7 @@ async fn a_small_reply_overtakes_a_chunked_kernel_upload_and_every_chunk_is_ackn
     let bulk = reply(&ids[0], BULK_PAYLOAD_BYTES);
     let mut chunks = Vec::new();
     let mut offset = 0;
-    while let Some((frame, end)) = text_chunk(1, &bulk, offset) {
+    while let Some((frame, end)) = text_chunk(1, &bulk, offset, CHUNK_BYTES) {
         chunks.push(frame);
         offset = end;
     }
@@ -249,7 +250,7 @@ async fn a_small_reply_overtakes_a_chunked_kernel_upload_and_every_chunk_is_ackn
     }
     let mut expected = Vec::new();
     let mut offset = 0;
-    while let Some((_, end)) = text_chunk(1, &bulk, offset) {
+    while let Some((_, end)) = text_chunk(1, &bulk, offset, CHUNK_BYTES) {
         expected.push((1, end));
         offset = end;
     }

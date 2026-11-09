@@ -51,12 +51,19 @@ pub const MAX_TRANSFERS: usize = 4;
 pub const MAX_ASSEMBLY_BYTES: usize = 128 * 1024 * 1024;
 
 /// The chunk frame of `text` that starts at `offset`, and the offset after it.
-/// Frames stay within CHUNK_BYTES after JSON escaping and split on characters.
-pub fn text_chunk(transfer_id: u32, text: &str, offset: usize) -> Option<(String, usize)> {
+/// Frames stay within `limit` (at most CHUNK_BYTES) after JSON escaping and
+/// split on characters; receivers take any frame up to CHUNK_BYTES.
+pub fn text_chunk(
+    transfer_id: u32,
+    text: &str,
+    offset: usize,
+    limit: usize,
+) -> Option<(String, usize)> {
     if offset == text.len() {
         return None;
     }
-    let mut end = (offset + CHUNK_BYTES).min(text.len());
+    let limit = limit.min(CHUNK_BYTES);
+    let mut end = (offset + limit).min(text.len());
     loop {
         while !text.is_char_boundary(end) {
             end -= 1;
@@ -68,7 +75,7 @@ pub fn text_chunk(transfer_id: u32, text: &str, offset: usize) -> Option<(String
             payload: text[offset..end].to_string(),
         })
         .ok()?;
-        if frame.len() <= CHUNK_BYTES {
+        if frame.len() <= limit {
             return Some((frame, end));
         }
         end = offset + (end - offset) / 2;
