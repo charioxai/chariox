@@ -44,19 +44,6 @@ pub(super) fn runtime_mcp_env(
                 }
             }),
         );
-        mcp.insert(
-            "chariox-reach".to_string(),
-            serde_json::json!({
-                "type": "remote",
-                "url": crate::provider::reach_mcp_url(&binding.server_url),
-                "enabled": true,
-                "oauth": false,
-                "timeout": 300_000,
-                "headers": {
-                    "Authorization": format!("Bearer {}", binding.auth_token),
-                }
-            }),
-        );
     }
     if !mcp.is_empty() {
         config.insert("mcp".to_string(), serde_json::Value::Object(mcp));

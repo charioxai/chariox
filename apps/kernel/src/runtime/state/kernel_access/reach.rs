@@ -94,45 +94,7 @@ pub(crate) fn reach_need(request: &LocalDaemonRequest) -> ReachNeed {
     ReachNeed::Sudo
 }
 
-/// The machine requests an owner may want to confirm: acquiring or starting a machine.
-pub(crate) fn acquires_machine(request: &LocalDaemonRequest) -> bool {
-    matches!(
-        request,
-        LocalDaemonRequest::ControlPlane(
-            ControlPlaneRequest::Acquire { .. }
-                | ControlPlaneRequest::Start { .. }
-                | ControlPlaneRequest::StartSavedState { .. }
-        )
-    )
-}
-
 impl KernelRuntimeState {
-    /// The reach caller behind a runtime MCP bearer: one live run of an agent
-    /// the kernel owner owns. A guest's agent in a shared room is refused.
-    pub(crate) fn reach_for_auth_token(&self, token: &str) -> Result<ReachCaller, DaemonError> {
-        self.reach_for_token(token, true)
-    }
-
-    /// Who asks for the tools of a bearer. OpenCode lists its MCP tools while its run is
-    /// still starting and keeps the answer, so listing needs the owner's agent, not a live run.
-    pub(crate) fn reach_listing_for_auth_token(
-        &self,
-        token: &str,
-    ) -> Result<ReachCaller, DaemonError> {
-        self.reach_for_token(token, false)
-    }
-
-    fn reach_for_token(&self, token: &str, live: bool) -> Result<ReachCaller, DaemonError> {
-        let runs = self
-            .owned
-            .provider_store
-            .get_runs_by_runtime_mcp_auth_token(token);
-        let [run] = runs.as_slice() else {
-            return Err(reach_error("reach needs one active provider run"));
-        };
-        self.reach_for_run(run.id(), live)
-    }
-
     /// The live caller of a `reach:<run>` id, for the gateway and the control plane.
     pub(crate) fn reach_for_id(&self, id: &str) -> Option<ReachCaller> {
         self.reach_for_run(id.strip_prefix(REACH_PREFIX)?, true)
@@ -248,65 +210,6 @@ impl KernelRuntimeState {
         Some(format!("{room}/{name} (Chariox agent)"))
     }
 
-    /// Whether the owner accepts this acquisition. One decision in the agent's room, shown to every
-    /// client, unless this turn already has a live /sudo window or the owner turned
-    /// `agents.ask_before_acquiring_machines` off.
-    pub(crate) async fn confirm_machine_acquisition(
-        &self,
-        caller: &ReachCaller,
-        offer: Option<&crate::local::MachineAcquisitionOffer>,
-    ) -> Result<bool, DaemonError> {
-        if self.reach_sudo_turn(caller).is_some() {
-            return Ok(true);
-        }
-        let config = self.owned.config_projection.snapshot();
-        if !config
-            .user_config
-            .agents
-            .ask_before_acquiring_machines
-            .unwrap_or(true)
-        {
-            return Ok(true);
-        }
-        let run = self.owned.provider_store.get_run(&caller.run_id)?;
-        let choice =
-            |id: &str, label: &str| crate::transport::runtime_tools::RequestPopupChoiceArgs {
-                id: id.into(),
-                label: label.into(),
-                reply: id.into(),
-                style: None,
-            };
-        let answer = self
-            .dispatch_popup_for_agent(
-                &caller.session_id,
-                &caller.agent_id,
-                Some(&run),
-                crate::transport::runtime_tools::RequestPopupArgs {
-                    view: None,
-                    wait: None,
-                    message: match offer {
-                        Some(offer) => format!(
-                            "Let {} acquire a machine?\n\n{} · {} vCPU · {} GB RAM · {} GB disk · {} · {} {}/{}",
-                            caller.harness, offer.machine_type, offer.vcpu, offer.ram_gb,
-                            offer.disk_gb, offer.location, offer.terms.currency, offer.terms.amount,
-                            match offer.terms.period { crate::local::MachineAcquisitionPeriod::Hour => "hour", crate::local::MachineAcquisitionPeriod::Month => "month" },
-                        ),
-                        None => format!("Let {} acquire a machine?", caller.harness),
-                    },
-                    choices: vec![choice("accept", "Accept")],
-                    custom_choice: None,
-                    title: None,
-                    level: None,
-                    timeout_sec: Some(900),
-                    default_on_timeout: None,
-                    until: None,
-                    action: None,
-                },
-            )
-            .await?;
-        Ok(answer.payload["choice_id"] == "accept")
-    }
-
     /// Who owns an event inbox: the access grant or the live reach caller that subscribed.
     pub(crate) fn event_source_owner(&self, id: &str) -> Option<String> {
         if id.starts_with(REACH_PREFIX) {
@@ -339,11 +242,6 @@ impl KernelRuntimeState {
             }
         }
         Ok(())
-    }
-
-    /// What a /sudo window of this caller's own turn adds; `None` without one.
-    pub(crate) fn reach_sudo_turn(&self, caller: &ReachCaller) -> Option<KernelSudoTurn> {
-        self.sudo_for_run(&caller.run_id).ok()
     }
 }
 
