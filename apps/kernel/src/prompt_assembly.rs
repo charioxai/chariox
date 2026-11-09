@@ -1464,6 +1464,37 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    // MP-08: as T3 Code tells every provider about its HTML render tool, an agent knows the pane draws an HTML page
+    // it names with Codex's visualize line, and what such a page may load.
+    #[test]
+    fn mp08_runtime_instructions_offer_html_visuals_through_the_visualize_line() {
+        let root = temp_prompt_root("pane-visual-instructions");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.materialize_bundled_defaults().unwrap();
+        let envelope = PromptAssemblyService::new(registry)
+            .assemble_provider_turn(
+                &test_run(false),
+                "Make an interactive chart",
+                None,
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .unwrap();
+        for expected in [
+            "self-contained HTML page",
+            r#"`visualize{"path":"<full path to the .html file>"}`"#,
+            "cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com or esm.sh",
+            "cannot fetch data",
+        ] {
+            assert!(
+                envelope.hidden_system_context.contains(expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!envelope.visible_user_prompt.contains("visualize{"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
     // MP-08 / MP-10 / MP-11 (review 914 P3): room-mode sends report durable
     // inbox admission and request no reply unless asked.
     #[test]
