@@ -382,8 +382,11 @@ impl KernelRuntimeOwnedState {
             user_domain_interaction: None,
             kernel_operation_owner: kernel_operation_owner.map(str::to_owned),
             terminal_credential_owner: terminal_credential_owner.map(str::to_owned),
-            kernel_operation_deadline: kernel_operation_owner
-                .and_then(|_| interaction.timeout_sec())
+            // A card payment ends at its own deadline like a kernel operation; its popup lives as
+            // long as the card.
+            kernel_operation_deadline: (kernel_operation_owner.is_some() || payment)
+                .then(|| interaction.timeout_sec())
+                .flatten()
                 .map(|seconds| std::time::Instant::now() + std::time::Duration::from_secs(seconds)),
             passkey_prompt: passkey_prompt.clone(),
             holder: super::super::DecisionHolder::User,

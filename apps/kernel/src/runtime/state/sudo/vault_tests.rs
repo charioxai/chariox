@@ -3144,3 +3144,45 @@ async fn vflag_capture_cursor_and_resize_schema_preserves_outer_runtime_results(
     }
     f.state.shutdown_cleanup().await.unwrap();
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: the owner types the passkey for a payment in the passkey popup
+// every owner terminal gets. The card asked in the agent's Room is in its Room owner's popup feed,
+// for as long as the card waits, and in no other owner's.
+#[tokio::test]
+async fn vopen_a_payment_card_is_its_room_owners_passkey_popup_while_it_waits() {
+    use crate::local::KernelConnectionClass::Terminal;
+    crate::test_support::isolated_env_test!();
+    let login = card_room(SITE).await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    asking_task(f);
+    assert!(call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .is_err());
+    let decision = card_decision(f).await;
+    let prompts = f.state.passkey_prompts_for("local");
+    let prompt = prompts
+        .iter()
+        .find(|prompt| prompt.interaction_id == decision.id())
+        .expect("the owner's passkey popup shows the payment");
+    assert_eq!(prompt.session_id, f.request.session_id);
+    assert_eq!(prompt.approve_choice_id, "allow");
+    let day_ms = 24 * 60 * 60 * 1000;
+    let now_ms = crate::session::unix_epoch_ms();
+    assert!(
+        prompt.expires_at_ms > now_ms + day_ms - 60_000 && prompt.expires_at_ms <= now_ms + day_ms,
+        "the popup lives as long as the card"
+    );
+    assert!(f.state.passkey_prompts_for("guest").is_empty());
+    // The popup's typed passkey approves it, and the popup closes.
+    allow_card(f, &prompt.interaction_id, Some(PASSKEY), None, Terminal)
+        .await
+        .unwrap();
+    assert!(f.state.passkey_prompts_for("local").is_empty());
+    call(f, PASTE, card_fill("number", Some(&payment())))
+        .await
+        .unwrap();
+    assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
+}

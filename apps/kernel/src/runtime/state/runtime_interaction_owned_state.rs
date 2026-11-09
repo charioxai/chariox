@@ -73,6 +73,22 @@ impl KernelRuntimeOwnedState {
         })
     }
 
+    /// Who owns a kernel decision: its operation owner, or for a card payment an agent asked in
+    /// its Room, that Room's owner. The passkey popup and the answer read this one rule.
+    pub(super) fn kernel_decision_owner(
+        &self,
+        session_id: &str,
+        interaction_id: &str,
+        kernel_operation_owner: Option<&str>,
+    ) -> Option<String> {
+        kernel_operation_owner.map(str::to_owned).or_else(|| {
+            super::vault_use::is_vault_payment_decision(interaction_id)
+                .then(|| self.session_store.get_session(session_id).ok())
+                .flatten()
+                .map(|session| session.owner_user_id().to_owned())
+        })
+    }
+
     /// The owner and operation of a pending decision whose chosen choice needs
     /// the passkey, when the caller owns that decision and it has not expired
     /// (its popup is closed then, so no passkey is checked for it).
@@ -93,17 +109,13 @@ impl KernelRuntimeOwnedState {
                 p.kernel_operation_deadline
                     .is_none_or(|d| std::time::Instant::now() < d)
             })?;
-        // A card payment asked by an agent in its Room is its owner's decision like a kernel operation.
         let payment = super::vault_use::is_vault_payment_decision(interaction_id);
-        let owner = pending
-            .kernel_operation_owner
-            .clone()
-            .or_else(|| {
-                payment
-                    .then(|| self.session_store.get_session(session_id).ok())
-                    .flatten()
-                    .map(|session| session.owner_user_id().to_owned())
-            })
+        let owner = self
+            .kernel_decision_owner(
+                session_id,
+                interaction_id,
+                pending.kernel_operation_owner.as_deref(),
+            )
             .filter(|owner| self.is_decision_owner(session_id, caller_user_id, owner))?;
         let interaction = if let Some(interaction) = pending
             .kernel_wide_interaction

@@ -184,18 +184,31 @@ impl KernelRuntimeOwnedState {
             .lock()
             .expect("interaction mutation poisoned");
         let now = std::time::Instant::now();
-        let mut prompts = self
+        let live = self
             .pending_interactions
             .write()
-            .values()
-            .filter(|pending| pending.belongs_to(&self.session_store))
-            .filter(|pending| pending.kernel_operation_owner.as_deref() == Some(user_id))
-            .filter(|pending| {
+            .iter()
+            .filter(|(_, pending)| pending.belongs_to(&self.session_store))
+            .filter(|(_, pending)| {
                 pending
                     .kernel_operation_deadline
                     .is_some_and(|deadline| now < deadline)
             })
-            .filter_map(|pending| pending.passkey_prompt.as_deref().cloned())
+            .filter_map(|(id, pending)| {
+                let prompt = pending.passkey_prompt.clone()?;
+                Some((id.clone(), pending.kernel_operation_owner.clone(), prompt))
+            })
+            .collect::<Vec<_>>();
+        // Read Room owners only after releasing the pending set: registration takes the session
+        // store before it.
+        let mut prompts = live
+            .into_iter()
+            .filter(|(id, owner, prompt)| {
+                self.kernel_decision_owner(&prompt.session_id, id, owner.as_deref())
+                    .as_deref()
+                    == Some(user_id)
+            })
+            .map(|(_, _, prompt)| (*prompt).clone())
             .collect::<Vec<_>>();
         drop(_mutation); // Never hold interaction mutation while taking the access-grant lock.
         let access = self.kernel_access.lock().expect("access state poisoned");
