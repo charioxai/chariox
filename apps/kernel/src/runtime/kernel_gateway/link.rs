@@ -79,7 +79,7 @@ impl Link {
     pub(super) async fn open(params: LinkParams) -> Result<Self, LinkFailure> {
         let (mut socket, handshake) = tokio::time::timeout(
             CONNECT_TIMEOUT,
-            crate::transport::relay_socket_connect::connect_with_upload_chunks(&params.relay_url),
+            crate::transport::relay_socket_connect::connect_binary_events(&params.relay_url),
         )
         .await
         .map_err(|_| LinkFailure::TimedOut)?
@@ -88,6 +88,10 @@ impl Link {
         // older one a bulk request still goes out whole, after everything queued.
         let upload_chunks =
             crate::transport::relay_socket_connect::upload_chunks_accepted(&handshake);
+        // A relay that takes binary frames sends answers and events with their
+        // ciphertext as bytes (CXR2 / CXR1) instead of base64 inside JSON.
+        let binary_events =
+            crate::transport::relay_socket_connect::binary_events_accepted(&handshake);
         let target = ClientTarget {
             daemon_id: Some(params.target_kernel_id.clone()),
             daemon_alias: None,
@@ -194,7 +198,9 @@ impl Link {
                         Ok(Some(Ok(message))) => message,
                     };
                     if let Message::Text(text) = &message {
-                        if let Some(receipt) = upload_chunks.then(|| relay_upload::receipt(text)).flatten() {
+                        if let Some(receipt) =
+                            upload_chunks.then(|| relay_upload::receipt(text)).flatten()
+                        {
                             let _ = receipts.send(receipt);
                             continue;
                         }
@@ -205,19 +211,43 @@ impl Link {
                                 if let Some(receipt) = receipt {
                                     let _ = outgoing.send(Message::Text(receipt.into()));
                                 }
-                                if let Some(text) = text {
+                                let envelope =
+                                    text.and_then(|text| serde_json::from_str(&text).ok());
+                                if let Some(envelope) = envelope {
                                     last_activity = Instant::now();
                                     route(
                                         &pending,
                                         &subscriptions,
                                         &client_private_key,
                                         &target_public_key,
-                                        &text,
+                                        envelope,
                                     );
                                 }
                             }
                             Err(_) => break,
                         },
+                        Message::Binary(bytes) if binary_events => {
+                            match frames.receive_binary(&bytes) {
+                                Ok((bytes, receipt)) => {
+                                    if let Some(receipt) = receipt {
+                                        let _ = outgoing.send(Message::Text(receipt.into()));
+                                    }
+                                    if let Some(envelope) =
+                                        bytes.and_then(|bytes| binary_envelope(&bytes))
+                                    {
+                                        last_activity = Instant::now();
+                                        route(
+                                            &pending,
+                                            &subscriptions,
+                                            &client_private_key,
+                                            &target_public_key,
+                                            envelope,
+                                        );
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
                         Message::Ping(payload) => {
                             let _ = outgoing.send(Message::Pong(payload));
                         }
@@ -499,19 +529,28 @@ impl Drop for Link {
     }
 }
 
+/// An answer (CXR2) or an event (CXR1) the relay sent as a binary frame.
+fn binary_envelope(bytes: &[u8]) -> Option<RelayEnvelope> {
+    if bytes.starts_with(b"CXR2") {
+        chariox_relay::binary_response::into_envelope(bytes).ok()
+    } else {
+        chariox_relay::binary_event::legacy_client_envelope(bytes).ok()
+    }
+}
+
 fn route(
     pending: &Pending,
     subscriptions: &Subscriptions,
     client_private_key: &str,
     target_public_key: &str,
-    text: &str,
+    envelope: RelayEnvelope,
 ) {
-    match serde_json::from_str::<RelayEnvelope>(text) {
-        Ok(RelayEnvelope::ClientEvent {
+    match envelope {
+        RelayEnvelope::ClientEvent {
             subscription_id,
             event_id,
             encrypted_event,
-        }) => {
+        } => {
             let Ok(decrypted) =
                 relay_crypto::decrypt_payload_for_private_key(client_private_key, &encrypted_event)
             else {
@@ -525,11 +564,11 @@ fn route(
                 let _ = channel.send((event_id, decrypted.plaintext.to_vec()));
             }
         }
-        Ok(RelayEnvelope::ClientResponse {
+        RelayEnvelope::ClientResponse {
             request_id,
             encrypted_response,
             error,
-        }) => settle(
+        } => settle(
             pending,
             client_private_key,
             target_public_key,
@@ -846,7 +885,11 @@ mod tests {
         let mut arrived = Vec::new();
         while arrived.len() < 5 {
             let next = tokio::time::timeout(Duration::from_secs(5), order.recv()).await;
-            arrived.push(next.ok().flatten().expect("every request reaches the relay"));
+            arrived.push(
+                next.ok()
+                    .flatten()
+                    .expect("every request reaches the relay"),
+            );
         }
         assert_eq!(arrived[0], "list", "arrival order {arrived:?}");
     }
