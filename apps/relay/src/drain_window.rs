@@ -134,4 +134,51 @@ mod tests {
             );
         }
     }
+
+    /// Drives the window over a simulated bottleneck of `rate` bytes/s and round trip
+    /// `rtt` for `seconds`, and returns (link use, mean wait of a small frame behind
+    /// queued bulk at the bottleneck) over the second half.
+    fn simulate(rate: f64, rtt: Duration, seconds: u64) -> (f64, Duration) {
+        let start = Instant::now();
+        let mut window = DrainWindow::new(start);
+        let serialize = Duration::from_secs_f64(CHUNK_BYTES as f64 / rate);
+        let (mut now, mut link_free_at) = (start, start);
+        let mut in_flight: VecDeque<(Instant, SendStamp)> = VecDeque::new();
+        let measure_from = start + Duration::from_secs(seconds / 2);
+        let (mut sent, mut waits, mut wait_total) = (0usize, 0u32, Duration::ZERO);
+        while now < start + Duration::from_secs(seconds) {
+            while (in_flight.len() + 1) * CHUNK_BYTES <= window.bytes() {
+                let stamp = window.sent(now, in_flight.is_empty());
+                if now >= measure_from {
+                    // What a small frame written now waits behind at the bottleneck.
+                    wait_total += link_free_at.saturating_duration_since(now);
+                    waits += 1;
+                    sent += CHUNK_BYTES;
+                }
+                link_free_at = link_free_at.max(now) + serialize;
+                in_flight.push_back((link_free_at + rtt, stamp));
+            }
+            let (receipt_at, stamp) = in_flight.pop_front().unwrap();
+            now = receipt_at;
+            window.received(now, CHUNK_BYTES, stamp, true);
+        }
+        let measured = now.saturating_duration_since(measure_from).as_secs_f64();
+        (sent as f64 / (rate * measured), wait_total / waits.max(1))
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayproof r3): at 8 Mbit/s and a 150 ms round trip the
+    // link stays full while a small frame waits well under half a round trip behind bulk;
+    // a gain of 2 kept a whole round trip (150 ms) queued ahead of it.
+    #[tokio::test(start_paused = true)]
+    async fn the_window_fills_a_long_path_with_a_short_standing_queue() {
+        for (rate, rtt) in [(1_000_000.0, 150), (1_000_000.0, 60), (125_000.0, 150)] {
+            let rtt = Duration::from_millis(rtt);
+            let (link_use, wait) = simulate(rate, rtt, 30);
+            assert!(link_use >= 0.95, "{rate} B/s, {rtt:?}: link use {link_use}");
+            assert!(
+                wait <= rtt / 2 + Duration::from_secs_f64(2.0 * CHUNK_BYTES as f64 / rate),
+                "{rate} B/s, {rtt:?}: a small frame waits {wait:?} behind bulk"
+            );
+        }
+    }
 }
