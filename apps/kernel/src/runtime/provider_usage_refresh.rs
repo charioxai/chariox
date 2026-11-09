@@ -1,10 +1,12 @@
-//! Keeps Codex account usage current through its official app-server without a turn.
+//! Keeps account usage current through the providers' official tools.
 //!
-//! Reads every 15 minutes, every 5 minutes while an agent runs on the account,
-//! and on request when a reading is older than 5 minutes. Reads run outside
-//! turns, are single-flight per account and back off after a failure, preserving
-//! the last observation. Claude windows come only from official turn output;
-//! its enrolled setup tokens have no supported idle usage read.
+//! Codex reads its app-server without a turn every 15 minutes, every 5 minutes
+//! while an agent runs on the account, and on request when a reading is older
+//! than 5 minutes. Claude has no usage read without a model turn, so it is read
+//! (one minimal turn) only while an agent runs on the account, at most every 5
+//! minutes; an idle Claude account keeps its last observation from turn output.
+//! Reads run outside turns, are single-flight per account and back off after a
+//! failure, preserving the last observation.
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -105,6 +107,7 @@ impl ProviderUsageRefresher {
         &self,
         owner_user_id: Option<&str>,
         provider: Option<&str>,
+        running_accounts: &HashSet<(String, String)>,
     ) -> Vec<ProviderAccountProfile> {
         let provider = provider.and_then(crate::provider::canonical_provider_family);
         self.registry
@@ -113,7 +116,13 @@ impl ProviderUsageRefresher {
             .into_iter()
             .filter(|profile| {
                 owner_user_id.is_none_or(|owner| profile.owner_user_id == owner)
-                    && profile.provider == "codex"
+                    && match profile.provider.as_str() {
+                        "codex" => true,
+                        // Every Claude read costs a model turn.
+                        "claude" => running_accounts
+                            .contains(&(profile.provider.clone(), profile.profile_id.clone())),
+                        _ => false,
+                    }
                     && provider.is_none_or(|provider| profile.provider == provider)
                     && match profile.auth_state {
                         ProviderAccountAuthState::Authenticated => true,
@@ -135,10 +144,10 @@ impl ProviderUsageRefresher {
 
     /// Accounts whose reading has reached the interval of their state.
     pub(crate) fn due_accounts(&self, now_ms: u64) -> Vec<UsageAccountKey> {
-        let enrolled = self.enrolled(None, None);
         // Read external projections before locking refresh bookkeeping so a
         // contended source cannot delay account requests waiting on this lock.
         let running_accounts = (self.running_accounts)();
+        let enrolled = self.enrolled(None, None, &running_accounts);
         let mut schedules = self.lock();
         enrolled
             .into_iter()
@@ -165,7 +174,7 @@ impl ProviderUsageRefresher {
         provider: Option<&str>,
         now_ms: u64,
     ) -> Vec<UsageAccountKey> {
-        let enrolled = self.enrolled(Some(owner_user_id), provider);
+        let enrolled = self.enrolled(Some(owner_user_id), provider, &(self.running_accounts)());
         let mut schedules = self.lock();
         enrolled
             .into_iter()

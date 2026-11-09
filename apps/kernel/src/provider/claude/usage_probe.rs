@@ -14,6 +14,7 @@ use super::mcp_config::create_claude_runtime_files_root;
 
 const CLAUDE_PROBE_OUTPUT_BYTES: u64 = 1024 * 1024;
 const CLAUDE_CREDENTIAL_CHECK_TIMEOUT: Duration = Duration::from_secs(90);
+const CLAUDE_RATE_LIMIT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 /// Oldest Claude Code whose `haiku` alias answers the credential check with
 /// the marker: 2.1.212 resolves it to Haiku 4.5, which replies with prose and
 /// leaves every Vault-backed login "inconclusive". The managed image pin
@@ -157,11 +158,44 @@ pub(super) fn verify_claude_account_credential_with_timeout(
     }
 }
 
+/// Reads the account windows Claude reports for one minimal model turn. A
+/// long-lived stream-json session reports its `rate_limit_event` only once, so
+/// a fresh percent needs a fresh process; `-p` never runs the status line.
 pub(crate) fn read_claude_rate_limits(
-    _executable: &Path,
-    _environment: &BTreeMap<String, String>,
+    executable: &Path,
+    environment: &BTreeMap<String, String>,
 ) -> Result<crate::account_profile::ProviderAccountUsageSnapshot, DaemonError> {
-    Err(probe_error("not implemented".into()))
+    let (_, output) = run_claude_capture(
+        executable,
+        environment,
+        &[
+            "-p",
+            "Reply with exactly OK.",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--no-chrome",
+            "--tools",
+            "",
+            "--model",
+            "haiku",
+            "--max-turns",
+            "1",
+            "--system-prompt",
+            "Reply only with the requested marker.",
+        ],
+        None,
+        CLAUDE_RATE_LIMIT_READ_TIMEOUT,
+        "Claude usage read",
+    )?;
+    output
+        .split(|byte| *byte == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .filter(|value| value["type"] == "rate_limit_event")
+        .map(|value| crate::provider::claude_rate_limit_snapshot(&value))
+        .next_back()
+        .ok_or_else(|| probe_error("Claude reported no account usage windows".into()))
 }
 
 /// Runs one bounded, tool-less `claude -p <args[0]> ... <args[1..]>` in a
