@@ -7012,9 +7012,9 @@ admit 1000 and 1001.
 Landing 7 carries local daemon protocol 1002 (temporary number). It adds the owner's `WorkflowGate`
 control (`put_module`, `state`, `reset_state`, `entry`, `cancel`, `entries`) with gated entry
 acceptance and typed event data, `exec_place` and `placeable_on` on a held launch (above), and the
-optional `execution_mode`, `permission_level` and `effort` of an `AgentTreeNode`. Relay peer 440 is
-unchanged: placement travels over the owner's local API and the existing kernel gateway. Managed
-upgrades admit 1000 and 1002. Snapshots: `protocol_shapes/workflow-gate-1002.json`,
+optional `execution_mode`, `permission_level` and `effort` of an `AgentTreeNode`. Placement travels
+over the owner's local API and the existing kernel gateway. Relay peer 441 (temporary number) is the
+pair's peer number for chunked kernel uploads. Managed upgrades admit 1000 and 1001. Snapshots: `protocol_shapes/workflow-gate-1002.json`,
 `fixtures/room-exec-protocol.json`, `fixtures/agent-tree-finished.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- workflow_gate exec_place placeable_on agent_tree protocol_shapes`.
 
