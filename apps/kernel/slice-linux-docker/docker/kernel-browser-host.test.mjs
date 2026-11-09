@@ -1,7 +1,7 @@
 // MD-2/MD-4: focused adapter tests, not native-browser acceptance.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -3409,3 +3409,300 @@ for (const word of ['generation', 'cursor', 'pointer', 'width', 'height']) {
     }
   }));
 }
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 1. An agent's screenshot of an element, a viewport region or the whole page.
+const pngSize = data => { const header = Buffer.from(data.slice(0, 44), 'base64'); return { width: header.readUInt32BE(16), height: header.readUInt32BE(20) }; };
+const agentShot = (opened, extra) => ({ op: 'screenshot', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, ...extra });
+const withCdp = (connection, answer) => { const send = connection.send; connection.send = async (method, params, session) => answer(method, params, session) ?? send(method, params, session); };
+
+test('browsertools: a clip is cut from the masked viewport capture and echoed in CSS pixels', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const shot = await host.request(agentShot(opened, { clip: { x: 10, y: 20, width: 100, height: 50 } }));
+  assert.deepEqual(pngSize(shot.data_base64), { width: 100, height: 50 });
+  assert.deepEqual(shot.clip, { x: 10, y: 20, width: 100, height: 50 });
+  const captures = sent.filter(call => call.method === 'Page.captureScreenshot');
+  assert.equal(captures.length, 1);
+  assert.equal(captures[0].params.clip, undefined, 'the whole viewport is captured and masked first, then cut');
+}));
+
+test('browsertools: a clip outside the viewport, several region keys or a non-agent are refused before any capture', () => using(async ({ host, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  for (const clip of [{ x: 1200, y: 0, width: 100, height: 10 }, { x: 0, y: 0, width: 0, height: 10 }, { x: 1.5, y: 0, width: 10, height: 10 }, { x: 0, y: 0, width: 10 }])
+    await assert.rejects(host.request(agentShot(opened, { clip })), { reason: 'clip_invalid' });
+  await assert.rejects(host.request(agentShot(opened, { clip: { x: 0, y: 0, width: 5, height: 5 }, full_page: true })), { reason: 'region_conflict' });
+  await assert.rejects(host.request({ ...agentShot(opened, { clip: { x: 0, y: 0, width: 5, height: 5 } }), focused_agent: undefined }), { code: 'user_domain_not_granted' });
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').length, 0);
+}));
+
+// Review r1 P2: an element screenshot is an observation, so it never moves the page. Scrolling is the admitted input op.
+test('browsertools: a node_ref inside the viewport is measured and cut out without scrolling', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [100, 200.4, 300, 200.4, 300, 260.2, 100, 260.2] } } : undefined);
+  const shot = await host.request(agentShot(opened, { node_ref: 'backend:7' }));
+  assert.deepEqual(shot.clip, { x: 100, y: 200, width: 200, height: 61 });
+  assert.deepEqual(pngSize(shot.data_base64), { width: 200, height: 61 });
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0);
+}));
+
+test('browsertools: an element screenshot of an off-screen node never scrolls, even right after the person typed, and says to scroll first', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.notePersonInput({ op: 'input', tab_id: opened.tab_id, input: { kind: 'key', key: 'a' } });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [100, 2000, 300, 2000, 300, 2080, 100, 2080] } } : undefined);
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:7' })), error => error.reason === 'node_off_screen' && /scroll/.test(error.message));
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0, 'the page did not move');
+  assert.equal(sent.filter(call => call.method === 'Page.captureScreenshot').length, 0);
+}));
+
+test('browsertools: a node_ref that is not a top-level snapshot ref, is gone or is off screen fails plainly', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  for (const node_ref of ['frame:a:b:backend:7', 'backend:0', '7', 'backend:1e3'])
+    await assert.rejects(host.request(agentShot(opened, { node_ref })), { reason: 'node_ref_invalid' });
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 0);
+  withCdp(connection, method => { if (method === 'DOM.getBoxModel') throw Object.assign(new Error('Could not compute box model'), { code: 'browser_cdp_command_failed' }); });
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:7' })), { reason: 'node_unavailable' });
+  withCdp(connection, method => method === 'DOM.getBoxModel' ? { model: { border: [0, 0, 0, 0, 0, 0, 0, 0] } } : undefined);
+  await assert.rejects(host.request(agentShot(opened, { node_ref: 'backend:8' })), { reason: 'node_off_screen' });
+}));
+
+test('browsertools: full_page captures beyond the viewport at one pixel per CSS pixel and reports a cut page', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let height = 3000;
+  withCdp(connection, method => method === 'Page.getLayoutMetrics' ? { cssVisualViewport: { pageX: 0, pageY: 0 }, cssContentSize: { width: 1280, height } } : undefined);
+  const page = await host.request(agentShot(opened, { full_page: true }));
+  const capture = sent.filter(call => call.method === 'Page.captureScreenshot').at(-1).params;
+  assert.equal(capture.captureBeyondViewport, true);
+  assert.deepEqual(capture.clip, { x: 0, y: 0, width: 1280, height: 3000, scale: 1 });
+  assert.deepEqual([page.width, page.height, page.page_height, page.mime_type, page.truncated], [1280, 3000, 3000, 'image/png', undefined]);
+  height = 40000;
+  const tall = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([tall.height, tall.page_height, tall.truncated], [16000, 40000, true]);
+}));
+
+test('browsertools: full_page falls back to JPEG for a page whose PNG is too large, and refuses a protected page', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  withCdp(connection, (method, params) => method === 'Page.getLayoutMetrics' ? { cssContentSize: { width: 1280, height: 5000 } }
+    : method === 'Page.captureScreenshot' ? { data: params.format === 'png' ? 'A'.repeat(4 * 1024 * 1024 + 4) : 'QUJD' } : undefined);
+  const page = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([page.mime_type, page.data_base64], ['image/jpeg', 'QUJD']);
+  // A page too big even as a JPEG is encoded smaller, and says so.
+  withCdp(connection, (method, params) => method === 'Page.captureScreenshot' && (params.format === 'png' || params.clip.scale === 1) ? { data: 'A'.repeat(4 * 1024 * 1024 + 4) } : undefined);
+  const small = await host.request(agentShot(opened, { full_page: true }));
+  assert.deepEqual([small.mime_type, small.scale, small.width, small.height], ['image/jpeg', 0.6, 768, 3000]);
+  const before = sent.length;
+  host.browser.fillTargets = new Map([['field', { kind: 'browser' }]]);
+  await assert.rejects(host.request(agentShot(opened, { full_page: true })), { code: 'user_domain_not_granted' });
+  assert.equal(sent.slice(before).filter(call => call.method === 'Page.captureScreenshot').length, 0, 'no unmasked pixels are captured');
+}));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 2 through the host: agents save, nobody else does.
+test('browsertools: save writes into the workspace for an agent and is refused for anyone else', () => using(async ({ host }, root) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const workspace = path.join(root, 'room');
+  await mkdir(workspace);
+  const save = extra => ({ op: 'save', tab_id: opened.tab_id, generation: opened.generation, url: 'data:text/plain;base64,aGk=', path: 'notes/hi.txt', _save_roots: [workspace], ...extra });
+  const saved = await host.request(save({ focused_agent: true }));
+  assert.deepEqual([saved.path, saved.bytes, saved.mime_type], ['notes/hi.txt', 2, 'text/plain']);
+  assert.equal(await readFile(path.join(workspace, 'notes/hi.txt'), 'utf8'), 'hi');
+  await assert.rejects(host.request(save({ path: 'other.txt' })), { code: 'user_domain_not_granted' });
+}));
+
+// Review r1 P2: a slow save fetch holds no shared barrier; input and state reads of other Tabs finish meanwhile.
+test('browsertools: a held save fetch lets input and a state read finish through the scheduled host path', { timeout: 8000 }, () => using(async ({ host, connection }, root) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const other = (await host.request({ op: 'open', url: 'https://example.com/b' })).tabs.find(tab => tab.tab_id !== opened.tab_id);
+  const workspace = path.join(root, 'room');
+  await mkdir(workspace);
+  const fetching = Promise.withResolvers(), release = Promise.withResolvers();
+  withCdp(connection, method => method === 'Network.loadNetworkResource' ? (fetching.resolve(), release.promise) : undefined);
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method: "host.browser", params })}\n`);
+    return result.promise;
+  };
+  const limit = promise => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(null), 3000))]);
+  try {
+    const saving = rpc(1, { op: 'save', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, url: 'https://img.example/a.png', path: 'a.png', _save_roots: [workspace] });
+    await limit(fetching.promise);
+    const typed = await limit(rpc(2, { op: 'input', tab_id: other.tab_id, generation: opened.generation, document_id: other.document_id, input: { kind: 'text', text: 'a' } }));
+    assert.ok(typed?.ok, 'input queued behind the held save: ' + JSON.stringify(typed));
+    const state = await limit(rpc(3, { op: 'state' }));
+    assert.ok(state?.ok, 'a state read queued behind the held save: ' + JSON.stringify(state));
+    release.resolve({ resource: { success: false } });
+    const saved = await limit(saving);
+    assert.equal(saved?.ok, false, 'the save still ends with its own answer');
+  } finally { release.resolve({ resource: { success: false } }); input.end(); await running; lines.close(); output.end(); }
+}));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 3. Scroll a snapshot node into view.
+test('browsertools: scroll with a target node_ref scrolls that node into view and moves no pointer', () => using(async ({ host, connection, sent }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const scroll = input => ({ op: 'input', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, document_id: opened.tabs[0].document_id, input: { kind: 'scroll', ...input } });
+  await host.request(scroll({ target: 'backend:7' }));
+  const scrolled = sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded');
+  assert.equal(scrolled.length, 1);
+  assert.equal(scrolled[0].params.backendNodeId, 7);
+  assert(!sent.some(call => call.method.startsWith('Input.')), 'no wheel or pointer event');
+  for (const bad of [{ target: 'frame:a:backend:7' }, { target: 'backend:7', x: 1, y: 1, delta_x: 0, delta_y: 50 }, { target: 'backend:7', delta_y: 50 }])
+    await assert.rejects(host.request(scroll(bad)), error => ['node_ref_invalid', 'scroll_target_conflict'].includes(error.reason), JSON.stringify(bad));
+  assert.equal(sent.filter(call => call.method === 'DOM.scrollIntoViewIfNeeded').length, 1);
+  withCdp(connection, method => { if (method === 'DOM.scrollIntoViewIfNeeded') throw Object.assign(new Error('Could not find node with given id'), { code: 'browser_cdp_command_failed' }); });
+  await assert.rejects(host.request(scroll({ target: 'backend:9' })), { reason: 'node_unavailable' });
+  // The coordinate wheel keeps working beside it.
+  await host.request(scroll({ x: 10, y: 10, delta_x: 0, delta_y: 120 }));
+  assert(sent.some(call => call.method === 'Input.dispatchMouseEvent' && call.params.type === 'mouseWheel'));
+}));
+
+// MP-08/MP-09/MP-10/MP-11: browsertools r1 op 4. Wait for text, a node or a URL part, compared on the host.
+const waitFor = (opened, extra) => ({ op: 'wait', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, ...extra });
+const pageWith = (...texts) => ({ accessibility_nodes: texts.map((name, index) => ({ node_ref: `backend:${10 + index}`, role: 'text', name })), dom_nodes: texts.map((text, index) => ({ node_ref: `backend:${10 + index}`, node_name: 'P', text, attributes: {} })) });
+
+test('browsertools: wait returns matched as soon as the text shows, without the agent polling', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => pageWith(++reads < 3 ? 'Loading' : 'Order confirmed');
+  const done = await host.request(waitFor(opened, { text: 'order CONFIRMED', timeout_ms: 5000 }));
+  assert.equal(done.matched, true);
+  assert.equal(reads, 3);
+  assert.equal(done.generation, opened.generation);
+  assert(Array.isArray(done.tabs), 'the final state comes with the answer');
+  assert(done.waited_ms >= 0 && done.waited_ms < 5000);
+}));
+
+test('browsertools: wait that never matches ends at its timeout with matched false and the final state', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => pageWith('Loading');
+  const started = Date.now();
+  const done = await host.request(waitFor(opened, { text: 'Never shown', timeout_ms: 600 }));
+  assert.equal(done.matched, false);
+  assert(Date.now() - started >= 550 && Date.now() - started < 3000);
+  assert(Array.isArray(done.tabs));
+}));
+
+test('browsertools: wait on a node_ref matches while that node is on the page', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => pageWith('a', 'b');
+  assert.equal((await host.request(waitFor(opened, { node_ref: 'backend:11', timeout_ms: 300 }))).matched, true);
+  assert.equal((await host.request(waitFor(opened, { node_ref: 'backend:99', timeout_ms: 300 }))).matched, false);
+}));
+
+test('browsertools: wait on url_contains follows the tab to its new address without a snapshot', () => using(async ({ host, pages }) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/cart' });
+  let snapshots = 0;
+  host.browser.snapshot = async () => { snapshots++; return pageWith('x'); };
+  const target = host.tabs.get(opened.tab_id).target_id;
+  setTimeout(() => pages.set(target, { url: 'https://example.com/checkout/done', document_id: 'doc-next' }), 150);
+  const done = await host.request(waitFor(opened, { url_contains: '/checkout/', timeout_ms: 3000 }));
+  assert.equal(done.matched, true);
+  assert.equal(snapshots, 0);
+}));
+
+test('browsertools: wait compares what the model would see, so a protected value is no oracle', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  await host.protect({ unknown: false, values: ['hunter2-secret'], targets: [] });
+  host.browser.snapshot = async () => pageWith('Your password is hunter2-secret');
+  const done = await host.request(waitFor(opened, { text: 'hunter2-secret', timeout_ms: 300 }));
+  assert.equal(done.matched, false, 'the protected value is redacted before the comparison');
+}));
+
+test('browsertools: wait refuses several conditions, none, a bad timeout and a non-agent before reading the page', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => { reads++; return pageWith('x'); };
+  for (const bad of [{}, { text: 'a', node_ref: 'backend:1' }, { text: '' }, { text: 'a', timeout_ms: 30001 }, { text: 'a', timeout_ms: -1 }, { text: 'a', timeout_ms: 1.5 }, { url_contains: 'a'.repeat(513), timeout_ms: 10 }, { node_ref: 'frame:a:backend:1' }])
+    await assert.rejects(host.request(waitFor(opened, bad)), error => ['wait_condition_invalid', 'node_ref_invalid'].includes(error.reason), JSON.stringify(bad));
+  await assert.rejects(host.request({ ...waitFor(opened, { text: 'a', timeout_ms: 10 }), focused_agent: undefined }), { code: 'user_domain_not_granted' });
+  assert.equal(reads, 0);
+}));
+
+// Review r1 P2: a navigation that replaces the document while a wait reads it is one unmatched look, not the end of the wait.
+test('browsertools: a wait whose first snapshot sees the document replaced keeps looking until the text shows', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  let reads = 0;
+  host.browser.snapshot = async () => {
+    if (++reads === 1) throw Object.assign(new Error('the frame navigated while it was captured'), { code: 'stale_document_reference' });
+    return pageWith('Order confirmed');
+  };
+  const done = await host.request(waitFor(opened, { text: 'Order confirmed', timeout_ms: 5000 }));
+  assert.equal(done.matched, true);
+  assert.equal(reads, 2);
+}));
+
+test('browsertools: a wait still ends with an error when its Tab is closed, the browser restarts or the agent cancels', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => { host.tabs.delete(opened.tab_id); throw Object.assign(new Error('gone'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(opened, { text: 'x', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const again = await host.request({ op: 'open', url: 'about:blank' });
+  host.browser.snapshot = async () => { host.generation++; throw Object.assign(new Error('moved'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(again, { text: 'x', timeout_ms: 2000 })), { code: 'user_domain_stale_epoch' });
+  const third = await host.request({ op: 'open', url: 'about:blank' });
+  const authority = new AbortController();
+  host.browser.snapshot = async () => { authority.abort(); throw Object.assign(new Error('moved'), { code: 'stale_document_reference' }); };
+  await assert.rejects(host.request(waitFor(third, { text: 'x', timeout_ms: 2000 }), { signal: authority.signal }), { code: 'browser_action_cancelled' });
+}));
+
+// Review r2 P2: target acquisition (loader read, Target.getTargetInfo, host.save) sits inside the same transient-document retry.
+// A frame owner stands in for the live CDP frame; replacing it is what a navigation does to the one displayTarget captured.
+function replaceableFrame(host, opened) {
+  const state = { number: 0, frame: null };
+  const make = () => ({ connection: host.browser.connection, sessionId: `session-${host.tabs.get(opened.tab_id).target_id}`, frame: { id: 'frame', loaderId: `doc-nav-${++state.number}` } });
+  state.frame = make();
+  host.browser.currentPageFrame = () => state.frame;
+  state.navigate = () => { state.frame = make(); };
+  return state;
+}
+
+for (const seam of ['Target.getTargetInfo', 'host.save']) {
+  test(`browsertools: a wait whose target is replaced during ${seam} keeps looking until the text shows`, () => using(async ({ host }) => {
+    const opened = await host.request({ op: 'open', url: 'about:blank' });
+    const live = replaceableFrame(host, opened);
+    let replaced = false;
+    const once = () => { if (!replaced) { replaced = true; live.navigate(); } };
+    if (seam === 'host.save') { const save = host.save.bind(host); host.save = async () => { once(); return save(); }; }
+    else host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') once(); };
+    host.browser.snapshot = async () => pageWith('Order confirmed');
+    const done = await host.request(waitFor(opened, { text: 'Order confirmed', timeout_ms: 5000 }));
+    assert.equal(replaced, true);
+    assert.equal(done.matched, true);
+  }));
+}
+
+test('browsertools: a wait whose target acquisition meets a retired Tab, a restarted browser or a cancel still ends with an error', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const live = replaceableFrame(host, opened);
+  host.browser.snapshot = async () => pageWith('x');
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live.navigate(); host.tabs.delete(opened.tab_id); } };
+  await assert.rejects(host.request(waitFor(opened, { text: 'never', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const again = await host.request({ op: 'open', url: 'about:blank' });
+  const live2 = replaceableFrame(host, again);
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live2.navigate(); host.generation++; } };
+  await assert.rejects(host.request(waitFor(again, { text: 'never', timeout_ms: 2000 })), { code: 'user_domain_stale_reference' });
+  const third = await host.request({ op: 'open', url: 'about:blank' });
+  const live3 = replaceableFrame(host, third);
+  const authority = new AbortController();
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') { live3.navigate(); authority.abort(); } };
+  await assert.rejects(host.request(waitFor(third, { text: 'never', timeout_ms: 2000 }), { signal: authority.signal }), { code: 'browser_action_cancelled' });
+}));
+
+test('browsertools: a wait past its deadline still reports once the target can be read, and gives up on a target that never settles', () => using(async ({ host }) => {
+  const opened = await host.request({ op: 'open', url: 'about:blank' });
+  const live = replaceableFrame(host, opened);
+  host.browser.snapshot = async () => pageWith('Loading');
+  let replacements = 0;
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo' && ++replacements <= 2) live.navigate(); };
+  const done = await host.request(waitFor(opened, { text: 'never', timeout_ms: 0 }));
+  assert.equal(done.matched, false);
+  assert.equal(replacements, 3);
+  live.navigate();
+  host.browser.connection.beforeSend = async method => { if (method === 'Target.getTargetInfo') live.navigate(); };
+  await assert.rejects(host.request(waitFor(opened, { text: 'never', timeout_ms: 0 })), { code: 'stale_document_reference' });
+}));
+
+test('browsertools: wait does not hold the host mutation lane', () => {
+  assert.equal(scheduleHostRequest({ method: 'host.browser', params: { op: 'wait', text: 'a' } }, null, { device_scale_factor: 1 }).kind, 'bridge');
+});

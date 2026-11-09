@@ -24,6 +24,15 @@ pub(super) fn public_reason(error: &serde_json::Error) -> String {
         "after_sequence",
         "wait_ms",
         "device_scale_factor",
+        "node_ref",
+        "clip",
+        "full_page",
+        "width",
+        "height",
+        "path",
+        "target",
+        "url_contains",
+        "timeout_ms",
     ];
     let message = error.to_string();
     for field in FIELDS {

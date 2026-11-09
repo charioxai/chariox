@@ -278,7 +278,12 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-page-permissions.mjs \
      apps/kernel/slice-linux-docker/docker/browser-page-permission-shim.mjs \
      apps/kernel/slice-linux-docker/docker/kernel-browser-downloads.mjs \
-     apps/kernel/slice-linux-docker/docker/kernel-browser-upload.mjs /opt/chariox-slice/
+     apps/kernel/slice-linux-docker/docker/kernel-browser-upload.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-node-ref.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-screenshot-region.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-save.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-workspace-file.mjs \
+     apps/kernel/slice-linux-docker/docker/kernel-browser-wait.mjs /opt/chariox-slice/
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-artifacts.mjs /opt/chariox-slice/browser-controller-artifacts.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-image.mjs /opt/chariox-slice/browser-controller-image.mjs

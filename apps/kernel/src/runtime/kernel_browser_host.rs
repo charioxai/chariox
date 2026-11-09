@@ -675,6 +675,8 @@ impl KernelBrowserHost {
                             | "snapshot"
                             | "popup_region"
                             | "screenshot"
+                            | "save"
+                            | "wait"
                             | "unsubscribe"
                             | "display_subscribe"
                             | "display_attach"
@@ -909,6 +911,8 @@ impl KernelBrowserHost {
         let display = method == "host.browser"
             && params["op"] == "screenshot"
             && params["display_subscription_id"].is_string();
+        // An agent's save waits on the page session's fetch: other Tabs' input, state reads and stop proceed meanwhile.
+        let save = method == "host.browser" && params["op"] == "save";
         // MP-08/MP-10: an idle App drain waits for page enqueue. Keep its
         // existing admission/cancellation, but release the controller mutex
         // while waiting so input, observations and App replies can proceed.
@@ -945,6 +949,7 @@ impl KernelBrowserHost {
             || display_subscribe
             || note
             || display_release
+            || save
             || method == "browser.app.calls"
             || state
             || (method == "host.browser" && params["op"] == "input")

@@ -1,7 +1,8 @@
 import {displayGeometry as geometry} from './kernel-browser-geometry.mjs';
 import { uploadHostFiles } from './kernel-browser-upload.mjs';
 // MD-3: document-bound physical input, sharing Room cancellation and document checks.
-import { PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { AgentToolRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { topLevelNodeId, withLiveNode } from "./kernel-browser-node-ref.mjs";
 import { BrowserActionError, assertCurrentDocument, assertNotCancelled } from "./browser-controller-actions.mjs";
 // A definitive text refusal holds no keys/buttons and needs no browser reset.
 export class TextInsertionRefused extends BrowserActionError {
@@ -217,6 +218,15 @@ export async function inputHostTab(browser, tab, input, { viewport=canonicalView
           if (failed) throw failed.reason;
           assertNotCancelled(signal);
         } finally { endDispatch?.(); }
+      } else if (input.kind === "scroll" && input.target !== undefined) {
+        // MP-08/MP-09/MP-10/MP-11: scroll a snapshot node into view; the page decides the offset, so no pointer position is involved.
+        if (["x", "y", "delta_x", "delta_y"].some(key => input[key] !== undefined)) throw new AgentToolRefusal("scroll_target_conflict");
+        const backendNodeId = topLevelNodeId(input.target);
+        // A node the page dropped is a refusal, not a dispatched input: it must not reset the browser.
+        await admitInput();
+        await withLiveNode(() => connection.send("DOM.scrollIntoViewIfNeeded", { backendNodeId }, sessionId));
+        assertNotCancelled(signal);
+        onDispatch?.()?.();
       } else {
         if (!Number.isInteger(input.x) || input.x < 0 || input.x >= viewport.css_width || !Number.isInteger(input.y) || input.y < 0 || input.y >= viewport.css_height) throw new PointerOutsideViewport();
         // Protocol 530: middle/right buttons are the band's (Chrome's own UI), never a page click.

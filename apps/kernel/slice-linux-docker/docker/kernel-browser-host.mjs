@@ -5,6 +5,9 @@ import { BrowserHeaderState } from "./kernel-browser-header.mjs";
 import {resolveDisplayTarget,nativeStateObservationOptions} from './kernel-browser-display-document.mjs';
 import { rememberCardReferences, resolveCardRegion, forgetCardAnchor } from './kernel-browser-card-region.mjs';
 import {capturePageScreenshot} from './kernel-browser-screenshot.mjs';
+import {REGION_KEYS,regionScreenshot} from './kernel-browser-screenshot-region.mjs';
+import {saveResource} from './kernel-browser-save.mjs';
+import {waitForPage} from './kernel-browser-wait.mjs';
 import { mirror2ObserverExpression } from './kernel-browser-mirror2-observer.mjs';
 import {captureVisiblePage,pngFallbackCommand,subscribeVisiblePage,visiblePageInputSource,viewerPageInputActive,nativeInputDocumentTarget} from './kernel-browser-page-display.mjs';
 import {reserveDisplay,maxDisplays} from './kernel-browser-display-admission.mjs';
@@ -12,7 +15,7 @@ import { appRestoreOrigin } from "./browser-app-restore.mjs";
 import { DesktopDisplay } from './kernel-desktop-display.mjs';
 import {displayGeometry as geometry,hostViewport,featureOn} from './kernel-browser-geometry.mjs';
 // MD-2: sessionless host adapter over the shared controller/CDP implementation.
-import { CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
+import { AgentToolRefusal, CaptureRefusal, PointerOutsideViewport, UserDomainRefusal } from "./kernel-browser-refusal.mjs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -70,7 +73,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
-    request.params?.op === 'state_signal' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
+    // An agent's save waits on the page session's fetch: it resolves only its own Tab and checks its authority before writing.
+    request.params?.op === 'state_signal' || request.params?.op === 'wait' || request.params?.op === 'save' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
     ['chrome_window_follow', 'note_selection', 'pointer_cursor', 'popup_region'].includes(request.params?.op) ||
     // Releasing a display's compositor takes seconds; the person's input and resize must not queue behind it.
     request.method === 'host.browser' && request.params?.op === 'unsubscribe')
@@ -89,7 +93,7 @@ const SPINNER = ['◐', '◓', '◑', '◒'], IDLE_MARK = '●', NEEDS_MARK = '�
 // How long a spinner stays after an agent's last action in a Tab, so a short action is still seen.
 const SPINNER_LINGER_MS = 1500;
 // Read-only host operations: they never dispatch input into a page.
-const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
+const OBSERVATION_OPS = new Set(['chrome_window_follow', 'state', 'snapshot', 'screenshot', 'save', 'wait', 'unsubscribe', 'note_selection', 'mirror_subscribe', 'mirror_next', 'mirror_close', 'display_subscribe', 'display_attach', 'display_suspend', 'display_resume', 'display_input_target', 'pointer_cursor', 'popup_region']);
 // MP-08/MP-10: opt-in timing names Tab lifecycle ops (fixed labels, never page values).
 const SLOW_OP_MS = 1000;
 const POST_INPUT_OBSERVE_MS = 500;
@@ -941,7 +945,7 @@ export class KernelBrowserHost {
   async request(command, options) {
     const person = !command._agent_input && !command.focused_agent;
     if (person) this.notePersonInput(command);
-    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'resize'].includes(command.op) ? command.tab_id : null;
+    const acting = !person && typeof command.tab_id === 'string' && ['input', 'navigate', 'snapshot', 'screenshot', 'save', 'wait', 'resize'].includes(command.op) ? command.tab_id : null;
     if (acting) this.noteAgentBusy(acting, 1);
     try {
       return await (command.op === "input" && person
@@ -1032,7 +1036,7 @@ export class KernelBrowserHost {
       return result;
     }
     // MP-11: observation never launches/relaunches the browser.
-    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
+    await this.start({ signal, allowStart: !["cancel_download", "dialog", "state", "snapshot", "screenshot", "save", "wait", "unsubscribe", "display_subscribe", "display_attach", "display_suspend", "display_resume", "display_park", "display_input_target", "resize", "note_selection", "pointer_cursor", "mirror_subscribe", "mirror_next", "mirror_close", "chrome_window_follow", "popup_region"].includes(command.op) });
     assertNotCancelled(signal);
     const browserAtStart = this.browser;
     if (this.protection.unknown) throw new Error("MD-5: observation registry unavailable");
@@ -1142,7 +1146,12 @@ export class KernelBrowserHost {
     // Per-dispatch document/cancellation and secret-focus checks remain below.
     // MP-08/MP-10: a navigation or a selection note reads only its own Tab's live document: a full
     // all-tab reconcile waits for busy (loading) pages and held the mutation lane.
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor'].includes(command.op)
+    // The wait re-reads its Tab on every look, so it follows a navigation instead of binding to one document.
+    if (command.op === "wait") {
+      if (!agentRequest) throw new UserDomainRefusal("not_granted");
+      return waitForPage(this, command, scope, signal);
+    }
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor', 'save'].includes(command.op)
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS))
       : command.op === 'show_tab' ? this.ownedTab(command) : await this.target(command);
     assertNotCancelled(signal);
@@ -1243,6 +1252,10 @@ export class KernelBrowserHost {
       const page = this.pageSize(tab.tab_id);
       if (!Number.isSafeInteger(command.x) || !Number.isSafeInteger(command.y) || command.x < 0 || command.y < 0 || command.x >= page.width || command.y >= page.height) throw new Error("MP-08: pointer cursor point outside the page");
       return { generation: this.generation, cursor: await this.browser.pointerCursor({ ...binding, x: command.x, y: command.y }) };
+    }
+    if (command.op === "save") {
+      if (!agentRequest) throw new UserDomainRefusal("not_granted");
+      return this.observe(await saveResource(this, tab, command, signal), tab, scope);
     }
     if (command.op === "snapshot") {
       const snapshot = await this.browser.snapshot(binding);
@@ -1349,6 +1362,10 @@ export class KernelBrowserHost {
       return result;
     }
     if (command.op === "screenshot") {
+      if (REGION_KEYS.some(key => command[key] !== undefined)) {
+        if (!agentRequest) throw new UserDomainRefusal("not_granted");
+        return this.observe(await regionScreenshot(this, tab, command), tab, scope);
+      }
       // A frame laid out at the viewer's size (protocol 560/168) is the whole page; any other size is a crop of it.
       const hint=command._capture_viewport,scale=this.scales.get(tab.tab_id)??this.viewport().device_scale_factor,page=this.layouts.get(tab.tab_id)??geometry;
       const crop=hint&&(hint.width!==page.width*scale||hint.height!==page.height*scale);
@@ -1583,6 +1600,7 @@ export class KernelBrowserHost {
         return { id: request.id, ok: false, error: { code: 'browser_unavailable', message: 'MP-08: browser disconnected; interrupted action was not replayed' } };
       }
       if (error instanceof UserDomainRefusal || error instanceof CaptureRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
+      if (error instanceof AgentToolRefusal) return {id:request.id,ok:false,error:{code:error.code,message:error.message}};
       const uploadFailure = request.params?.input?.kind === 'upload' ? publicUploadFailure(error) : null;
       if (uploadFailure) return { id: request.id, ok: false, error: uploadFailure };
       if (isTrustedStaleReferenceError(error)) return {id:request.id,ok:false,error:{code:"user_domain_stale_reference",message:"User-domain request refused"}};
