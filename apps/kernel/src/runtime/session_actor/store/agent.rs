@@ -268,13 +268,15 @@ impl SessionRuntimeStore {
                 .into_iter()
                 .find(|agent| agent.id() == id)
         });
-        if let (Some(parent), Some(key)) = (&parent, idempotency_key.as_deref()) {
+        // A parent's command id, or a peer spawn's request from another kernel, names one agent.
+        if let Some(key) = idempotency_key.as_deref() {
+            let parent_id = parent.as_ref().map(|parent| parent.id());
             let existing = self
                 .state
                 .session_agents(&request.session_id)
                 .into_iter()
                 .find(|agent| {
-                    agent.parent_agent_id() == Some(parent.id()) && agent.spawn_key() == Some(key)
+                    agent.parent_agent_id() == parent_id && agent.spawn_key() == Some(key)
                 });
             if let Some(agent) = existing {
                 return self
@@ -326,8 +328,8 @@ impl SessionRuntimeStore {
             _ => create_request,
         };
         let create_request = match idempotency_key {
-            Some(key) if parent.is_some() => create_request.with_spawn_key(key),
-            _ => create_request,
+            Some(key) => create_request.with_spawn_key(key),
+            None => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)

@@ -36,6 +36,31 @@ pub(crate) fn peer_message_stamp(
     })
 }
 
+pub(crate) type PeerSpawnsInFlight =
+    Arc<std::sync::Mutex<BTreeMap<String, tokio::sync::watch::Sender<()>>>>;
+
+/// A peer spawn request this kernel life is acting on, or the first attempt a retry waits for.
+pub(crate) enum PeerSpawnClaim {
+    Claimed(PeerSpawnInFlight),
+    /// Closes once the attempt holding the claim ends, with or without an answer.
+    Busy(tokio::sync::watch::Receiver<()>),
+}
+
+/// Held while a peer spawn creates its agent; dropping it lets a waiting retry look again.
+pub(crate) struct PeerSpawnInFlight {
+    spawns: PeerSpawnsInFlight,
+    identity: String,
+}
+
+impl Drop for PeerSpawnInFlight {
+    fn drop(&mut self) {
+        self.spawns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.identity);
+    }
+}
+
 impl KernelRuntimeState {
     /// `kernel` is the authenticated sending kernel, `owner` the owner both kernels share.
     pub(crate) async fn receive_peer_agent_request(
@@ -174,6 +199,23 @@ impl KernelRuntimeState {
             protocol_version: VERSION,
             duplicate,
             target: self.peer_agent_stamp(target),
+        })
+    }
+
+    /// One attempt at a time acts on one spawn request of one sending kernel.
+    pub(crate) fn claim_peer_spawn(&self, kernel: &str, request_id: &str) -> PeerSpawnClaim {
+        let identity = format!("{kernel}:{request_id}");
+        let mut spawns = self
+            .peer_spawns_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(first) = spawns.get(&identity) {
+            return PeerSpawnClaim::Busy(first.subscribe());
+        }
+        spawns.insert(identity.clone(), tokio::sync::watch::channel(()).0);
+        PeerSpawnClaim::Claimed(PeerSpawnInFlight {
+            spawns: self.peer_spawns_in_flight.clone(),
+            identity,
         })
     }
 

@@ -4,6 +4,7 @@ use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{LocalDaemonRequest, LocalDaemonResponse, SpawnAgentRequest};
 use crate::runtime::command::{KernelCaller, KernelCommand, KernelCommandSource};
+use crate::runtime::state::peer_agent_inbound::PeerSpawnClaim;
 use crate::transport::relay_peer::{
     PeerAgentRefusal, RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
@@ -17,7 +18,9 @@ fn refused(refusal: PeerAgentRefusal) -> RelayPeerResponse {
 
 impl CommandRouter {
     /// One `request_id` of one sending kernel creates at most one agent: a retry gets the
-    /// first answer back, marked as a duplicate.
+    /// first answer back, marked as a duplicate. A retry that overlaps the first attempt waits
+    /// for it, and the new agent carries the request as its spawn key, so a retry after a
+    /// restart that lost the answer finds that agent instead of creating another.
     pub(super) async fn spawn_room_peer(
         &self,
         kernel: &str,
@@ -58,6 +61,15 @@ impl CommandRouter {
             ));
         }
         let store = self.runtime_state.durable_state_store();
+        let _in_flight = loop {
+            match self.runtime_state.claim_peer_spawn(kernel, &request_id) {
+                PeerSpawnClaim::Claimed(in_flight) => break in_flight,
+                PeerSpawnClaim::Busy(mut first) => {
+                    // Closed when the first attempt ends; its answer, if any, is kept by then.
+                    let _ = first.changed().await;
+                }
+            }
+        };
         if let Some(answer) = store.peer_agent_request_answer(kernel, &request_id)? {
             let mut answer: RelayPeerResponse = serde_json::from_str(&answer)
                 .map_err(|error| crate::durable_state::agent_lifecycle::error(error.to_string()))?;
@@ -76,6 +88,12 @@ impl CommandRouter {
             Ok(authority) => authority,
             Err(refusal) => return Ok(refused(refusal)),
         };
+        let spawn_key = format!("peer-spawn-{kernel}-{request_id}");
+        let created_before = self
+            .runtime_state
+            .session_agents(&room)
+            .iter()
+            .any(|agent| agent.spawn_key() == Some(spawn_key.as_str()));
         let spawn = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
             no_subscribe: true,
             session_id: room,
@@ -98,14 +116,15 @@ impl CommandRouter {
             user_id: Some(owner.to_string()),
             ..KernelCaller::for_source(&source)
         };
-        let command = KernelCommand::from_local_request_with_caller(
-            format!("peer-spawn-{kernel}-{request_id}"),
+        let mut command = KernelCommand::from_local_request_with_caller(
+            spawn_key.clone(),
             source,
             caller,
             None,
             None,
             &spawn,
         );
+        command.idempotency_key = Some(spawn_key);
         let agent = match Box::pin(self.dispatch(command, spawn)).await {
             Ok(LocalDaemonResponse::AgentSpawned { agent, .. }) => agent,
             Ok(_) => {
@@ -122,19 +141,8 @@ impl CommandRouter {
             self.runtime_state
                 .follow_spawned_room_peer(kernel, owner, follow, &agent)?;
         }
-        let answer = RelayPeerResponse::RoomPeerSpawned {
-            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
-            duplicate: false,
-            agent: self.runtime_state.peer_agent_stamp(&agent),
-            alias: agent.alias().unwrap_or(agent.agent_ref()).to_string(),
-        };
-        store.remember_peer_agent_request_answer(
-            kernel,
-            &request_id,
-            &serde_json::to_string(&answer)
-                .map_err(|error| crate::durable_state::agent_lifecycle::error(error.to_string()))?,
-        )?;
-        // The first task reaches the new peer as a message from its creator, never as a prompt.
+        // The first task reaches the new peer as a message from its creator, never as a prompt;
+        // it lands before the answer is kept, so a retry after a lost answer delivers it once.
         if let Some(prompt) = prompt.filter(|prompt| !prompt.trim().is_empty()) {
             self.runtime_state
                 .admit_peer_agent_message(
@@ -147,6 +155,22 @@ impl CommandRouter {
                     false,
                 )
                 .await?;
+        }
+        let mut answer = RelayPeerResponse::RoomPeerSpawned {
+            protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            duplicate: false,
+            agent: self.runtime_state.peer_agent_stamp(&agent),
+            alias: agent.alias().unwrap_or(agent.agent_ref()).to_string(),
+        };
+        store.remember_peer_agent_request_answer(
+            kernel,
+            &request_id,
+            &serde_json::to_string(&answer)
+                .map_err(|error| crate::durable_state::agent_lifecycle::error(error.to_string()))?,
+        )?;
+        // An agent a lost answer left behind is this request's earlier attempt.
+        if let RelayPeerResponse::RoomPeerSpawned { duplicate, .. } = &mut answer {
+            *duplicate = created_before;
         }
         Ok(answer)
     }
