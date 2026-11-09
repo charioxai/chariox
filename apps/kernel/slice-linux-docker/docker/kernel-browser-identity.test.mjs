@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { browserMajor, headlessIdentityArguments, readBrowserMajor } from './kernel-browser-identity.mjs';
+import { browserMajor, headlessIdentityArguments, headlessUserAgent, readBrowserMajor } from './kernel-browser-identity.mjs';
 import { launchArguments } from './kernel-browser-process.mjs';
 
 test('MP-08/10/11 the browser major comes from the version line of every build the kernel launches', () => {
@@ -30,4 +30,15 @@ test('MP-08/10/11 the identity arguments reach the launch line before the start 
   assert.ok(args.includes('--headless=new'));
   assert.ok(args.findIndex(a => a.startsWith('--user-agent=')) < args.indexOf('about:blank'));
   assert.ok(!launchArguments('/private', false, true).some(a => a.startsWith('--user-agent=')), 'a headed browser keeps Chrome\'s own identity');
+});
+
+// The regression suite asserts the User-Agent for the platform it runs on; this proves both tokens are chosen by platform
+// (the macOS branch cannot run on the Linux builder, only this unit check covers it there).
+test('MP-08/10/11 the expected headless User-Agent follows the platform the launcher uses', () => {
+  const ua = token => `Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36`;
+  assert.equal(headlessUserAgent('linux', 155), ua('X11; Linux x86_64'));
+  assert.equal(headlessUserAgent('darwin', 155), ua('Macintosh; Intel Mac OS X 10_15_7'));
+  assert.notEqual(headlessUserAgent('linux', 155), headlessUserAgent('darwin', 155));
+  for (const platform of ['linux', 'darwin']) assert.equal(headlessIdentityArguments(platform, 155)[0], `--user-agent=${headlessUserAgent(platform, 155)}`, 'the launch argument and the expectation come from one place');
+  assert.throws(() => headlessUserAgent('win32', 155), /no headed identity/);
 });

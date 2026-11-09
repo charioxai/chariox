@@ -18,11 +18,15 @@ export async function readBrowserMajor(binary, environment, run = promisify(exec
   catch (error) { if (/cannot read the browser version/.test(error.message)) throw error; throw new Error('MP-08: cannot run the browser to read its version'); }
 }
 
-export function headlessIdentityArguments(platform, major) {
+export function headlessUserAgent(platform, major) {
   const token = platformTokens[platform];
   if (!token) throw new Error(`MP-08: no headed identity for platform ${platform}`);
+  return `Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
+export function headlessIdentityArguments(platform, major) {
   return [
-    `--user-agent=Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
+    `--user-agent=${headlessUserAgent(platform, major)}`,
     // Headless has no input devices; media queries then report pointer: none and hover: none. 4 = fine, 2 = hover.
     '--blink-settings=primaryPointerType=4,availablePointerTypes=4,primaryHoverType=2,availableHoverTypes=2',
   ];

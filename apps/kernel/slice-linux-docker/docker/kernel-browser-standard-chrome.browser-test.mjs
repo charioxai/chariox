@@ -6,6 +6,7 @@ import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { KernelBrowserHost } from './kernel-browser-host.mjs';
+import { headlessUserAgent } from './kernel-browser-identity.mjs';
 import { collectSignals } from './kernel-browser-probe-arms.mjs';
 import { knownDifferences, unexpectedDifferences, unexpectedHeaderDifferences } from './kernel-browser-signals.mjs';
 
@@ -87,7 +88,7 @@ test('MP-08/10/11 a headless launch (the Mac kernel) reports the identity of the
         pointer: [matchMedia('(pointer: fine)').matches, matchMedia('(hover: hover)').matches, matchMedia('(any-pointer: fine)').matches]});
     })()`));
     const major = (await connection.send('Browser.getVersion')).product.match(/\/(\d+)\./)[1];
-    const expected = `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+    const expected = headlessUserAgent(process.platform, major); // the platform token the launcher chose for this host
     assert.equal(seen.ua, expected, 'navigator.userAgent must not say HeadlessChrome');
     assert.equal(seen.worker, expected, 'workers report the same User-Agent as the page');
     assert.equal(seenHeaders.at(-1), expected, 'the User-Agent request header must match navigator.userAgent');
