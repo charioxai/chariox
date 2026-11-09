@@ -26,15 +26,24 @@ const label = flags.get("--label") ?? "run"
 const evidenceRoot = resolve(flags.get("--evidence-dir") ?? "/root/.codex/evidence/relayproof/r1")
 const stateRoot = resolve(flags.get("--state-root") ?? "/root/.chariox/dev/relayproof/runs")
 assert(stateRoot.startsWith("/root/.chariox/dev/"), "state must stay under /root/.chariox/dev")
-// "8m": 8 Mbit/s down, 2 up. "1m": 1 Mbit/s down, 1 up. RTT is 60 ms in both.
-const PROFILES = { "8m": { down: 8000, up: 2000 }, "1m": { down: 1000, up: 1000 } }
+// "8m": 8 Mbit/s down, 2 up. "1m": 1 Mbit/s down, 1 up. RTT is 60 ms in all.
+// "1m-bloat" is "1m" behind a 1 MiB queue (about 8 s of delay when full), like a modem with a deep buffer.
+const PROFILES = { "8m": { down: 8000, up: 2000, queueKiB: 256 }, "1m": { down: 1000, up: 1000, queueKiB: 256 }, "1m-bloat": { down: 1000, up: 1000, queueKiB: 1024 },
+  // The incident link: a congested uplink of about 600 kbit/s (the Mac pulled 76 KB/s) with a deep buffer.
+  "600k": { down: 600, up: 600, queueKiB: 1024 },
+  // The same links with a bottleneck buffer near the bandwidth-delay product: the bulk that does not fit waits in the
+  // sender's socket buffer (visible as Send-Q on the relay), where only the sender can order it.
+  "8m-bdp": { down: 8000, up: 2000, queueKiB: 64 }, "1m-bdp": { down: 1000, up: 1000, queueKiB: 16 } }
 const profileName = flags.get("--profile") ?? "8m"
 const profile = PROFILES[profileName]
 assert(profile, `--profile is one of ${Object.keys(PROFILES)}`)
 const rttMs = Number(flags.get("--rtt-ms") ?? 60), jitterMs = Number(flags.get("--jitter-ms") ?? 6)
-const sizeBytes = Math.round(Number(flags.get("--size-mb") ?? 100) * 1024 * 1024)
+const fullSizeBytes = Math.round(Number(flags.get("--size-mb") ?? 100) * 1024 * 1024)
 const variants = (flags.get("--variant") ?? "single,three,stalled").split(",")
 const stallSeconds = Number(flags.get("--stall-seconds") ?? 20)
+// The frozen-reader variant moves less data (the transfer has to resume after the thaw) and queues a burst of replies for the frozen client.
+const stalledSizeBytes = Math.round(Number(flags.get("--stalled-size-mb") ?? 30) * 1024 * 1024)
+const stallBurst = Number(flags.get("--stall-burst") ?? 3000)
 const PROBE_INTERVAL_MS = 250, PROBE_TIMEOUT_MS = 15000
 for (const v of variants) assert(["single", "three", "stalled"].includes(v), `unknown variant ${v}`)
 
@@ -59,6 +68,7 @@ const summarize = samples => {
   const done = samples.filter(s => s.ok).map(s => s.ms).sort((a, b) => a - b)
   return { n: samples.length, failed: samples.length - done.length, p50: percentile(done, 0.5), p95: percentile(done, 0.95), max: done.at(-1) ?? null }
 }
+const cpuSeconds = pid => { try { const f = readFileSync(`/proc/${pid}/stat`, "utf8").slice(readFileSync(`/proc/${pid}/stat`, "utf8").lastIndexOf(")") + 2).split(" "); return (Number(f[11]) + Number(f[12])) / 100 } catch { return null } }
 const rssKib = pid => { try { return Number(/VmRSS:\s+(\d+)/.exec(readFileSync(`/proc/${pid}/status`, "utf8"))[1]) } catch { return null } }
 
 async function runVariant(variant) {
@@ -150,6 +160,7 @@ async function runVariant(variant) {
     child.on("close", code => { let value; try { value = JSON.parse(out) } catch {} ; done({ code, value, err: err.slice(-400), ms: Date.now() - started, pid: child.pid }) })
   })
 
+  const sizeBytes = variant === "stalled" ? Math.min(stalledSizeBytes, fullSizeBytes) : fullSizeBytes
   const result = { label, profile: profileName, link: { ...profile, rttMs, jitterMs }, variant, sizeBytes, startedAt: new Date().toISOString(), errors: [], notes: [] }
   const filesToRemove = []
   try {
@@ -160,10 +171,14 @@ async function runVariant(variant) {
     await until(async () => { try { const s = await import("node:net").then(n => new Promise(ok => { const c = n.connect(relayPort, "127.0.0.1"); c.on("connect", () => { c.destroy(); ok(true) }); c.on("error", () => ok(false)) })); return s } catch { return false } }, "relay listening")
     // The client kernel reaches the relay through the shaped link; the serving kernel is next to the relay.
     const proxyLog = openSync(join(evidence, "proxy.log"), "a", 0o600)
-    const proxy = spawn("node", [join(here, "throttle-proxy.mjs"), "--target", `127.0.0.1:${relayPort}`, "--down-kbps", String(profile.down), "--up-kbps", String(profile.up),
+    const proxy = spawn("node", [join(here, "throttle-proxy.mjs"), "--target", `127.0.0.1:${relayPort}`, "--down-kbps", String(profile.down), "--up-kbps", String(profile.up), "--queue-bytes", String(profile.queueKiB * 1024),
       "--delay-ms", String(rttMs / 2), "--jitter-ms", String(jitterMs / 2)], { stdio: ["ignore", "pipe", proxyLog] })
     children.push(proxy); proxy.name = "proxy"
     const proxyPort = await new Promise((ok, fail) => { proxy.stdout.once("data", b => ok(JSON.parse(String(b)).listening)); proxy.on("error", fail) })
+    const proxyStats = []
+    let proxyBuffer = ""
+    proxy.stdout.on("data", b => { proxyBuffer += b; let i; while ((i = proxyBuffer.indexOf("\n")) >= 0) { const line = proxyBuffer.slice(0, i); proxyBuffer = proxyBuffer.slice(i + 1); try { const m = JSON.parse(line); if (m.bytes) proxyStats.push(m.bytes) } catch {} } })
+    const proxyBytes = async () => { const n = proxyStats.length; guardedKill(proxy.pid, "SIGUSR1"); await until(() => proxyStats.length > n, "proxy counters", 5000); return proxyStats.at(-1) }
     const worker = await role("worker"), home = await role("home")
     const allActions = ["daemon.register", "daemon.heartbeat", "packet.route", "peer.request", "peer.event", "client.connect", "client.metadata.read"]
     await worker.rpc({ ConfigureRelay: { relay_url: `ws://127.0.0.1:${relayPort}`, relay_token: token(worker.status.daemon_id, "kernel", allActions) } })
@@ -192,8 +207,11 @@ async function runVariant(variant) {
     const probes = { small: [], list: [], idleSmall: [], idleList: [] }
     const small = { ListSessions: null }, listBody = { ListGatewayKernels: {} }
     await timed(smallClient, small, []); await timed(listClient, listBody, []) // warm the connections
+    const idleFrom = await proxyBytes()
     for (let i = 0; i < 20; i++) { await timed(smallClient, small, probes.idleSmall); await timed(listClient, listBody, probes.idleList); await delay(PROBE_INTERVAL_MS) }
 
+    const idleTo = await proxyBytes()
+    const probeWireDown = (idleTo.down - idleFrom.down) / 20 // bytes the relay sends per probe pair (small request + kernel list)
     // The data: a file of random bytes on the serving kernel.
     const bigPath = join(worker.dir, "work", "big.bin")
     filesToRemove.push(bigPath)
@@ -205,9 +223,12 @@ async function runVariant(variant) {
     filesToRemove.push(...destinations, ...destinations.map(d => `${d}.chariox-partial`))
 
     result.relayRssKib = { before: rssKib(relay.pid), max: rssKib(relay.pid) }
+    const cpuBefore = { relay: cpuSeconds(relay.pid), worker: cpuSeconds(worker.child.pid), home: cpuSeconds(home.child.pid) }
     result.proxyBytesBefore = null
     const transfers = destinations.map(dest => ({ dest, done: false }))
+    const wireFrom = await proxyBytes()
     const startedAt = Date.now()
+    const relayLogFrom = statSync(join(evidence, "relay.log")).size
     let probing = true
     const sampleRss = setInterval(() => { result.relayRssKib.max = Math.max(result.relayRssKib.max, rssKib(relay.pid) ?? 0) }, 500)
     const probeLoop = (async () => {
@@ -220,13 +241,16 @@ async function runVariant(variant) {
         await delay(PROBE_INTERVAL_MS)
       }
     })()
-    const downloads = transfers.map(t => cli(home, ["files", "get", "--kernel", target, bigPath, t.dest, "--overwrite"]).then(res => {
+    const downloads = transfers.map(t => cli(home, ["files", "get", "--kernel", target, bigPath, t.dest, "--overwrite", ...(variant === "stalled" ? ["--timeout", "120"] : [])]).then(res => {
       t.done = true; t.code = res.code; t.elapsedMs = res.ms; t.error = res.code === 0 ? null : res.err; t.finishedAt = Date.now(); t.cliPid = res.pid
       try { t.bytes = statSync(t.dest).size } catch { t.bytes = 0 }
     }))
     if (variant === "stalled") {
       await delay(10000)
       result.notes.push(`SIGSTOP home kernel pid ${home.child.pid} at +${Date.now() - startedAt} ms for ${stallSeconds} s`)
+      // Replies pile up for the client: a burst of small requests whose answers come back while it is frozen.
+      const burst = Array.from({ length: stallBurst }, () => smallClient.send(small).then(() => true, () => false))
+      await delay(1500)
       guardedKill(home.child.pid, "SIGSTOP")
       const stalledFrom = Date.now()
       while (Date.now() - stalledFrom < stallSeconds * 1000) {
@@ -240,12 +264,16 @@ async function runVariant(variant) {
       result.relayRssKib.duringStall = rssKib(relay.pid)
       guardedKill(home.child.pid, "SIGCONT")
       result.notes.push(`SIGCONT at +${Date.now() - startedAt} ms`)
+      const answered = await Promise.race([Promise.all(burst), delay(30000).then(() => null)])
+      result.burst = { sent: stallBurst, answered: answered ? answered.filter(Boolean).length : null }
     }
     await Promise.all(downloads)
     probing = false
     await probeLoop
     clearInterval(sampleRss)
     const windowMs = Date.now() - startedAt
+    const wireTo = await proxyBytes()
+    result.cpuSeconds = Object.fromEntries(Object.entries({ relay: relay.pid, worker: worker.child.pid, home: home.child.pid }).map(([k, pid]) => [k, +((cpuSeconds(pid) ?? 0) - cpuBefore[k]).toFixed(1)]))
     await delay(2000)
     result.relayRssKib.after = rssKib(relay.pid)
     result.transfers = transfers.map(t => ({ code: t.code, elapsedMs: t.elapsedMs, bytes: t.bytes, error: t.error }))
@@ -275,7 +303,10 @@ async function runVariant(variant) {
     const interesting = /relay_peer_removed|end_reason|read failed|did not refresh|timed out|timeout|reconnect|disconnect|capacity|closed|error/i
     const noise = /relay_connection_closed.*normal|"level":"info"/i
     for (const name of ["relay", "worker", "home"]) {
-      const lines = ((name === "relay" ? "" : readFileSync(join(evidence, `${name}.klog`), "utf8")) + readFileSync(join(evidence, `${name}.log`), "utf8")).split("\n").filter(l => interesting.test(l) && !noise.test(l))
+      // Only what happened from the start of the transfer: setup closes and reconnects are the harness's own.
+      const after = l => { const m = /"timestamp_ms":(\d+)/.exec(l); return !m || Number(m[1]) >= startedAt }
+      const text = name === "relay" ? readFileSync(join(evidence, "relay.log")).subarray(relayLogFrom).toString("utf8") : readFileSync(join(evidence, `${name}.klog`), "utf8")
+      const lines = text.split("\n").filter(l => interesting.test(l) && !noise.test(l) && after(l))
       result.errors.push({ source: name, count: lines.length, first: lines.slice(0, 4).map(l => l.slice(0, 260)) })
     }
     // Presence heartbeats of the serving kernel as logged by the kernel itself.
@@ -283,10 +314,11 @@ async function runVariant(variant) {
     const stamp = l => { const m = /"timestamp_ms":(\d+)/.exec(l); return m ? Number(m[1]) : NaN }
     const times = presence.map(stamp).filter(Number.isFinite)
     result.presence = { lines: presence.length, maxGapS: times.length > 1 ? Math.max(...times.slice(1).map((t, i) => (t - times[i]) / 1000)) : null }
-    proxy.stdout.on("data", b => { try { result.proxyBytes = JSON.parse(String(b)).bytes } catch {} })
-    guardedKill(proxy.pid, "SIGTERM")
-    await delay(500)
-    result.wireDownRate = result.proxyBytes ? result.proxyBytes.down / (windowMs / 1000) / bytesPerSecondLink : null
+    // The probes themselves cost the downlink bytes (a kernel-list renewal is a whole relay exchange): take their idle cost off.
+    const probePairs = Math.min(probes.small.length, probes.list.length)
+    result.wire = { downBytes: wireTo.down - wireFrom.down, probePairBytes: Math.round(probeWireDown), probePairs }
+    result.wireDownRateRaw = result.wire.downBytes / (windowMs / 1000) / bytesPerSecondLink
+    result.wireDownRate = (result.wire.downBytes - probeWireDown * probePairs) / (windowMs / 1000) / bytesPerSecondLink
   } catch (error) {
     result.fatal = error.message
   } finally {

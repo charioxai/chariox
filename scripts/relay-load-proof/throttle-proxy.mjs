@@ -3,7 +3,7 @@
 // bottleneck (it does not buffer without limit). Test tool only.
 //   node throttle-proxy.mjs --target 127.0.0.1:43130 --down-kbps 8000 --up-kbps 2000 --delay-ms 30 --jitter-ms 5
 // "down" is target -> client, "up" is client -> target. It prints one JSON line with the listening port,
-// and one JSON line with the byte counters at SIGTERM.
+// and one JSON line with the byte counters at SIGUSR1 (running) and SIGTERM (final).
 import { createServer, connect } from "node:net"
 import { pathToFileURL } from "node:url"
 
@@ -112,5 +112,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   })
   const listening = await proxy.listen()
   console.log(JSON.stringify({ listening }))
+  // SIGUSR1 prints the counters without stopping, so a run can read them at the start and end of a phase.
+  process.on("SIGUSR1", () => console.log(JSON.stringify({ bytes: proxy.bytes() })))
   process.on("SIGTERM", () => { console.log(JSON.stringify({ bytes: proxy.bytes() })); process.exit(0) })
 }
