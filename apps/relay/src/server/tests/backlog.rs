@@ -164,3 +164,104 @@ async fn a_stalled_client_does_not_disconnect_the_kernel_that_answers_it() {
     let _ = shutdown_tx.send(());
     server_task.await.unwrap();
 }
+
+async fn live_machine_ids(url: &str) -> Vec<String> {
+    let (mut client, _) = connect_async_with_retry(url).await.unwrap();
+    client
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientMetadataRequest {
+                request_id: "machines".to_string(),
+                auth_token: "secret".to_string(),
+                query: RelayMetadataQuery::ListLiveMachines,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    match tokio::time::timeout(Duration::from_secs(10), client.next()).await {
+        Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str(&text).unwrap() {
+            RelayEnvelope::ClientMetadataResponse {
+                machines: Some(machines),
+                ..
+            } => machines.into_iter().map(|m| m.machine_id).collect(),
+            other => panic!("unexpected metadata response: {other:?}"),
+        },
+        other => panic!("no metadata response: {other:?}"),
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a kernel renews its kernel list over the
+// socket it already has instead of opening a new one per renewal. A metadata token the
+// relay refuses on that socket is an answer, not the end of the kernel's connection.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_metadata_request_on_a_kernel_socket_keeps_the_kernel_connected() {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server.bind_listener().await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(50)).await;
+    assert_eq!(live_machine_ids(&url).await, vec!["machine-1".to_string()]);
+
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::ClientMetadataRequest {
+                request_id: "kernel-list".to_string(),
+                auth_token: "expired-metadata-token".to_string(),
+                query: RelayMetadataQuery::ListLiveMachines,
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    match tokio::time::timeout(Duration::from_secs(2), daemon.next()).await {
+        Err(_) => {}
+        Ok(Some(Ok(Message::Text(text)))) => assert!(
+            matches!(
+                serde_json::from_str::<RelayEnvelope>(&text).unwrap(),
+                RelayEnvelope::ClientMetadataResponse { error: Some(_), .. }
+            ),
+            "the relay must answer a refused metadata request, not close the kernel: {text}"
+        ),
+        Ok(other) => {
+            panic!("the relay dropped the kernel over a refused metadata request: {other:?}")
+        }
+    }
+    assert_eq!(
+        live_machine_ids(&url).await,
+        vec!["machine-1".to_string()],
+        "the kernel must stay connected"
+    );
+    let _ = shutdown_tx.send(());
+    server_task.await.unwrap();
+}
