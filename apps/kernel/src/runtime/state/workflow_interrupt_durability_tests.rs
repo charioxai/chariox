@@ -3654,3 +3654,39 @@ async fn cancelling_a_workflow_cancels_the_run_its_node_task_owns_outside_the_la
     result.expect("the outer workflow run is cancelled");
     assert_workflow_run_stops(&fixture, &session).await;
 }
+
+// MP-08 / MP-09 / MP-10 / MP-11: a workflow cancel stops its node prompts while it holds
+// every run lane in the Room. A prompt without a provider run settles its task there, and
+// cancelling the work that task owns (another workflow run) takes every run lane again.
+#[tokio::test]
+async fn stopping_a_turn_without_a_provider_cancels_its_workflow_run_outside_the_lanes() {
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.room_agent_tools = true;
+    let fixture = interrupt_fixture_with_creator(
+        crate::test_support::TestWorktree::new("providerless-stop-workflow-lanes"),
+        config,
+        true,
+    );
+    let creator = fixture.unrelated_agent_id.clone();
+    let (_creator_run, session, prompt, _task) =
+        creator_turn_owning_the_workflow_run(&fixture, "providerless-stop-creator");
+    // Stands for the lanes the interrupting workflow cancel holds.
+    let room_lane = fixture
+        .runtime
+        .provider_runtime_lanes
+        .acquire("interrupt-provider-run")
+        .await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        fixture.runtime.cancel_local_prompt_without_provider(
+            &fixture.session_id,
+            &creator,
+            prompt.id(),
+        ),
+    )
+    .await
+    .expect("stopping the turn must not wait for run lanes its caller holds")
+    .expect("the turn is stopped");
+    drop(room_lane);
+    assert_workflow_run_stops(&fixture, &session).await;
+}
