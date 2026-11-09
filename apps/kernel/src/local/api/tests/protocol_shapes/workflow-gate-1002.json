@@ -110,5 +110,11 @@
         "next_cursor": null
       }
     }
+  ],
+  "node_run_waiting_reasons": [
+    "provider_profile_unavailable",
+    "provider_profile_unverified",
+    "provider_profile_unauthenticated",
+    "provider_profile_usage_exhausted"
   ]
 }

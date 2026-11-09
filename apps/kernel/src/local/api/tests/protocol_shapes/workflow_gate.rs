@@ -18,12 +18,28 @@ fn workflow_gate_entry_and_owned_state_protocol_snapshot() {
         let response: LocalDaemonResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), *wire);
     }
+    for wire in snapshot["node_run_waiting_reasons"].as_array().unwrap() {
+        let reason: crate::session::WorkflowNodeWaitingReason =
+            serde_json::from_value(wire.clone()).unwrap();
+        let mut node_run = crate::session::WorkflowNodeRun::new(
+            "node-run",
+            "node",
+            "agent",
+            0,
+            crate::session::WorkflowNodeRunStatus::Ready,
+        );
+        node_run.set_waiting_reason(reason);
+        assert_eq!(
+            serde_json::to_value(node_run).unwrap()["waiting_reason"],
+            *wire
+        );
+    }
     assert_eq!(
         format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
         ),
-        "51e0bfeba5c3dfe08f2ba0dc920bb95f2bb5e00a343c04cd067b761e023d4907"
+        "fa8a6966aac70d50d04e57cce58aedd80fd311105203d8ef608112e3e97a413c"
     );
     assert!(serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({"WorkflowGate":{"session_id":"room","workflow_ref":"advisory","action":{"kind":"reset_state","reason":"clear","state":{"forged":true}}}})).is_err());
 }
