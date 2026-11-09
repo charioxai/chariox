@@ -6684,18 +6684,16 @@ how much was free, the floor, its write rate, what it wrote and what it held in 
 `process` outside event carries the same reason as `ended`. A command that is held before it starts
 still waits for room in the one queue shared with memory.
 
-Below the floor the kernel first trims idle scratch, then puts one turn to each of the three
-agents holding the most (`PromptOrigin::Notification`): what is free, their writing processes with
-the bytes they wrote and the deleted files they keep open, their `$TMPDIR` and its biggest entries,
-and the biggest folders of their workspace. The agents decide what to free; the kernel deletes
-nothing but its own scratch.
+Below the floor the kernel trims idle scratch harder (items nothing wrote for a minute) and, when that
+frees nothing, logs one line per volume at most once a minute. It sends no agent a prompt about disk
+space and deletes nothing but its own scratch.
 
 Every agent's processes get `TMPDIR`, `TMP` and `TEMP` set to `<home>/t/<room>/<agent>` (eight
 characters of each id, private, created at launch). An entry in it that nothing wrote for
 `CHARIOX_TEMP_IDLE_SECONDS` (one hour) is removed once a minute, unless a process has it open, works
 in it or maps it; a Room that ends clears its folder at once. Focused checks:
 `cargo test -p chariox-kernel --lib -- agent_temp disk_scan disk_pressure disk_use process_resources`
-and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|ask|runaway`.
+and `node scripts/drills/process-admission-live.mjs --scenario temp|trim|runaway`.
 
 ### MP-08 / MP-09 / MP-10 / MP-11: current disk occupancy — local 991 / peer 430
 

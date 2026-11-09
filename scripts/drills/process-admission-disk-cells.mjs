@@ -1,4 +1,4 @@
-// The disk cells of the process-admission live drill (OF-37 attribution, OF-38 temp, OF-39 trim, OF-40 ask,
+// The disk cells of the process-admission live drill (OF-37 attribution, OF-38 temp, OF-39 trim,
 // OF-42 runaway). Each flow gives real agents real work through their own tools, then checks the kernel's
 // side on the real machine: files, processes and the session's process rows. Nothing here talks to a provider.
 import { runDiskWaits } from "./process-admission-disk-waits.mjs"
@@ -248,45 +248,10 @@ pathlib.Path(result).write_text("PASS DONE")
     assert(checks.every(c => c.ok), "the receiving-volume regression failed")
   }
 
-  if (scenario === "ask" || scenario === "runaway") {
+  if (scenario === "runaway") {
     const before = df()
     note("volume", { ...before, floor_gib: Math.max(before.total / 20, 10 * GIB) / GIB })
     report.volume = before
-  }
-
-  if (scenario === "ask") {
-    // OF-40/OF-37: every agent leaves an orphan writing into a deleted file and a build output; the disk falls below
-    // its floor; the kernel asks the biggest holders, naming what they hold; the agents free it and report.
-    const prompt = `You work in the current folder. Run these shell commands one after another, then reply DONE_ask_b{N}:
-1. setsid nohup python3 hog.py b{N} 6 1500 > hog-b{N}.log 2>&1 &
-2. mkdir -p target-b{N} && (cd target-b{N} && python3 ../write.py b{N} 900 100)   (target-b{N} is your build output: python3 ../write.py regenerates it whenever you need it)
-3. echo DONE > answer-ask-b{N}.txt
-If the system messages you about disk space later, act on it.`
-    const sawRow = new Set()
-    const watching = { stop: false }
-    const watch = (async () => {
-      while (!watching.stop) {
-        for (const target of agents) for (const p of rowsOf(target)) if (p.deleted_open_bytes > 0 && !sawRow.has(target.id + Math.floor(p.deleted_open_bytes / 2 ** 27))) {
-          sawRow.add(target.id + Math.floor(p.deleted_open_bytes / 2 ** 27))
-          note("hog-row", { agent: target.id, pid: p.pid, written_mb: Math.round((p.disk_written_bytes ?? 0) / 2 ** 20), deleted_open_mb: Math.round(p.deleted_open_bytes / 2 ** 20), outlived: p.outlived, state: p.state?.kind })
-        }
-        await delay(1000)
-      }
-    })()
-    const started = Date.now()
-    await say(prompt, "ask")
-    await waitAnswers("ask", 900)
-    note("setup-done", { seconds: (Date.now() - started) / 1000, ...df() })
-    // The kernel asks within seconds of the disk falling below its floor; the agents then free their output.
-    const freed = await until(() => agents.every((_, i) => !existsSync(join(work, `target-b${i + 1}`))) && hogs().length === 0, "the agents to free their output and stop their leftovers", 600000).then(() => true, () => false)
-    check("agents freed their build output and stopped the orphan writers after the ask", freed, { hogs_left: hogs().map(h => h.pid), targets_left: readdirSync(work).filter(n => n.startsWith("target-")) })
-    const text = transcripts()
-    check("the ask named the biggest folders and the process holding deleted files", /deleted files/.test(text) && /target-b\d/.test(text) || providerOf(1) !== "claude", { note: "Claude transcripts" })
-    report.volume_after = df()
-    for (const target of agents) report[`rows_${target.id}`] = rowsOf(target).map(p => ({ pid: p.pid, command: p.command, written: p.disk_written_bytes, deleted_open: p.deleted_open_bytes, outlived: p.outlived }))
-    watching.stop = true
-    await watch
-    for (const n of agents.keys()) check(`agent ${n + 1} (${providerOf(n + 1)}) attributed: an orphan filling a deleted file was shown on its row`, [...sawRow].some(key => key.startsWith(agents[n].id)))
   }
 
   if (scenario === "runaway") {
