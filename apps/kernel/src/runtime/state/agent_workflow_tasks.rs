@@ -160,8 +160,10 @@ impl KernelRuntimeOwnedState {
 
 impl KernelRuntimeState {
     // MP-08 / MP-10 / MP-11: terminal runs are archived out of the hot cache.
-    // Reconcile durable failures even after the parent handled its run receipt.
-    pub(super) async fn reconcile_failed_workflow_tasks(
+    // Reconcile durable failures even after the parent handled its run receipt. The tasks of a
+    // failed run are stopped in work of their own: their workers may not answer, and the sweep that
+    // found the run goes on with every other task.
+    pub(super) fn reconcile_failed_workflow_tasks(
         &self,
         task: &AgentTaskExecution,
     ) -> Result<(), DaemonError> {
@@ -196,25 +198,44 @@ impl KernelRuntimeState {
             ) {
                 continue;
             }
-            self.cancel_workflow_agent_tasks(&task.room_id, id).await?;
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::ReconcileFailedWorkflow {
-                    owner_id: session.host_daemon_id().into(),
-                    room: task.room_id.clone(),
-                    run: id.into(),
-                })?;
-            self.owned
-                .durable_state_store
-                .agent_lifecycle(Operation::SourceOutcome {
-                    room: task.room_id.clone(),
-                    source: id.into(),
-                    occurrence: format!("workflow-failure-{id}"),
-                    success: false,
-                    now: crate::session::unix_epoch_ms(),
-                    public_answer: Some(workflow_failure_answer(&run)),
-                })?;
+            let (room, id) = (task.room_id.clone(), id.to_owned());
+            self.spawn_task_work(
+                format!("workflow:{}:{id}", task.task_id),
+                move |state| async move { state.reconcile_failed_workflow_run(&room, &id, &run).await },
+            );
         }
+        Ok(())
+    }
+    async fn reconcile_failed_workflow_run(
+        &self,
+        room: &str,
+        id: &str,
+        run: &crate::session::WorkflowRun,
+    ) -> Result<(), DaemonError> {
+        let owner_id = self
+            .owned
+            .session_store
+            .get_session(room)?
+            .host_daemon_id()
+            .to_owned();
+        self.cancel_workflow_agent_tasks(room, id).await?;
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::ReconcileFailedWorkflow {
+                owner_id,
+                room: room.into(),
+                run: id.into(),
+            })?;
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::SourceOutcome {
+                room: room.into(),
+                source: id.into(),
+                occurrence: format!("workflow-failure-{id}"),
+                success: false,
+                now: crate::session::unix_epoch_ms(),
+                public_answer: Some(workflow_failure_answer(run)),
+            })?;
         Ok(())
     }
     pub(super) async fn cancel_workflow_agent_tasks(

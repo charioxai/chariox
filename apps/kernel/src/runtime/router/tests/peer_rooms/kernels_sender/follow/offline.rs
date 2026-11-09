@@ -518,6 +518,7 @@ fn follows_of_a_kernel_its_owner_unlinked_are_lost_and_of_a_stopped_one_kept() {
         .unwrap();
         let now = crate::session::unix_epoch_ms();
         state.sweep_agent_lifecycle_at_for_test(now).await.unwrap();
+        state.unpaired_peer_follow_settlements_settled().await;
         assert!(
             a.peer_events().await.is_empty(),
             "a stopped kernel keeps its followers"
@@ -528,6 +529,7 @@ fn follows_of_a_kernel_its_owner_unlinked_are_lost_and_of_a_stopped_one_kept() {
             .sweep_agent_lifecycle_at_for_test(now + 60_000)
             .await
             .unwrap();
+        state.unpaired_peer_follow_settlements_settled().await;
         let events = a.peer_events_after_delivery(1).await;
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].payload["event"], "source_lost", "{:?}", events[0]);
@@ -545,6 +547,7 @@ fn follows_of_a_kernel_its_owner_unlinked_are_lost_and_of_a_stopped_one_kept() {
             .sweep_agent_lifecycle_at_for_test(now + 120_000)
             .await
             .unwrap();
+        state.unpaired_peer_follow_settlements_settled().await;
         assert_eq!(a.peer_events().await.len(), 1, "once");
         unlink(&[&a, &b]);
     });

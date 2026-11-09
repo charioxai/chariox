@@ -240,6 +240,12 @@ pub(crate) struct KernelRuntimeState {
     peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
     /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
     peer_outcomes_owed_now: Arc<std::sync::atomic::AtomicBool>,
+    /// One settlement pass over the follows of peers this kernel no longer pairs with at a time,
+    /// apart from the lifecycle sweep.
+    unpaired_peer_follow_settlements: lifecycle_sweep_flight::SweepFlight,
+    /// The work the lifecycle sweep started for a task and does not wait for, once per task and kind.
+    task_work: task_work_flight::TaskWorkFlight,
+    trigger_firings: agent_trigger_firings::TriggerFirings,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -1095,6 +1101,9 @@ impl KernelRuntimeState {
             lifecycle_sweeps: Default::default(),
             peer_outcome_deliveries: Default::default(),
             peer_outcomes_owed_now: Default::default(),
+            unpaired_peer_follow_settlements: Default::default(),
+            task_work: Default::default(),
+            trigger_firings: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
@@ -1625,6 +1634,7 @@ mod agent_task_human_control_wait;
 mod agent_task_owner_interactions;
 mod agent_task_owner_resolution;
 mod agent_task_projection;
+mod agent_trigger_firings;
 #[cfg(test)]
 mod agent_turn_task_tests;
 mod agent_wake_cancellation;
@@ -1639,8 +1649,11 @@ mod lifecycle_sweep_flight;
 #[cfg(test)]
 mod peer_gone_tests;
 #[cfg(test)]
+mod pump_stall_tests;
+#[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;
+mod task_work_flight;
 mod terminal_wake;
 mod terminal_wake_worker;
 #[cfg(test)]

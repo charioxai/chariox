@@ -478,11 +478,41 @@ impl KernelRuntimeState {
         }
     }
 
+    /// Following side: asks for the follows that can no longer be answered to be settled, off the
+    /// caller's path. One pass runs at a time and asking while it runs makes it run once more, so a
+    /// Cloud that does not answer delays only this pass, never a sweep.
+    pub(super) fn spawn_unpaired_peer_follow_settlement(&self, now: u64) {
+        let Some(mut run) = self.unpaired_peer_follow_settlements.ask() else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut now = now;
+            loop {
+                if let Err(error) = state.settle_unpaired_peer_follows(now).await {
+                    tracing::warn!(%error, "peer follows of a former owner retained for the next sweep");
+                }
+                if !run.asked_again() {
+                    break;
+                }
+                now = now.max(crate::session::unix_epoch_ms());
+            }
+        });
+    }
+
+    /// Waits until no settlement pass runs.
+    #[cfg(test)]
+    pub(crate) async fn unpaired_peer_follow_settlements_settled(&self) {
+        while !self.unpaired_peer_follow_settlements.is_idle() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// Following side: this kernel speaks for its owner to the owner's other kernels. Once it no
     /// longer does (unlinked from the owner's account, or signed in as another owner), or once
     /// the followed kernel was unlinked from the owner, no outcome reaches its follows of peers
     /// there again: each is a lost source.
-    pub(super) async fn settle_unpaired_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
+    async fn settle_unpaired_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
         let config = self.owned.config_projection.snapshot();
         // The same owner the sending side vouches for (`peer_agent_caller`).
         let owner = config

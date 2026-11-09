@@ -273,6 +273,23 @@ async fn provider_launch_failure_retries_durable_resume_invalidation_automatical
     );
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     router.pump_transport_runtime().await;
+    // The retry runs as work of its own that the pump only starts.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let ended = app
+                .lock()
+                .await
+                .providers()
+                .get_run(run.id())
+                .is_ok_and(|run| run.state() == ProviderRunState::Ended);
+            if ended {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the due launch failure retry should end the run");
     let app = app.lock().await;
 
     assert_eq!(

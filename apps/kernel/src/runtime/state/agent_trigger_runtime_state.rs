@@ -423,7 +423,7 @@ impl KernelRuntimeState {
         }
     }
 
-    pub(crate) async fn dispatch_due_agent_triggers(&self, now_ms: u64) {
+    pub(crate) fn dispatch_due_agent_triggers(&self, now_ms: u64) {
         let recovered_steers = self.owned.reconcile_inactive_local_steers();
         self.resume_idle_agent_trigger_queues(
             recovered_steers
@@ -435,80 +435,82 @@ impl KernelRuntimeState {
             .session_store
             .write()
             .claim_due_agent_triggers(now_ms);
-        for dispatch in dispatches {
-            let result = self.fire_agent_trigger(&dispatch).await;
-            let update = match result {
-                Ok(AgentTriggerFiring::Fired {
-                    outcome,
-                    steer_refusal,
-                    ..
-                }) => self.owned.session_store.write().mark_agent_trigger_fired(
+        self.spawn_trigger_firings(dispatches, now_ms);
+    }
+
+    pub(super) fn settle_agent_trigger_firing(
+        &self,
+        dispatch: &AgentTriggerDispatch,
+        result: Result<AgentTriggerFiring, DaemonError>,
+        now_ms: u64,
+    ) {
+        let update = match result {
+            Ok(AgentTriggerFiring::Fired {
+                outcome,
+                steer_refusal,
+                ..
+            }) => self.owned.session_store.write().mark_agent_trigger_fired(
+                &dispatch.session_id,
+                &dispatch.trigger_id,
+                now_ms,
+                outcome,
+                steer_refusal,
+            ),
+            Ok(AgentTriggerFiring::Coalesced) => self
+                .owned
+                .session_store
+                .write()
+                .mark_agent_trigger_coalesced(&dispatch.session_id, &dispatch.trigger_id, now_ms),
+            Ok(AgentTriggerFiring::Deferred) => self
+                .owned
+                .session_store
+                .write()
+                .defer_agent_trigger(&dispatch.session_id, &dispatch.trigger_id, now_ms),
+            Ok(AgentTriggerFiring::Skipped | AgentTriggerFiring::Settled { .. }) => return,
+            Ok(AgentTriggerFiring::AgentGone) => {
+                self.record_agent_trigger_notice(
+                    dispatch,
+                    format!(
+                        "Trigger `{}` was removed: its agent `{}` no longer exists",
+                        dispatch.trigger_id, dispatch.agent_id
+                    ),
+                );
+                self.owned
+                    .session_store
+                    .write()
+                    .delete_agent_trigger(&dispatch.session_id, &dispatch.trigger_id)
+                    .map(Some)
+            }
+            Err(error) => {
+                self.record_agent_trigger_notice(
+                    dispatch,
+                    format!(
+                        "Trigger `{}` could not deliver its prompt: {error}",
+                        dispatch.trigger_id
+                    ),
+                );
+                self.owned.session_store.write().mark_agent_trigger_failed(
                     &dispatch.session_id,
                     &dispatch.trigger_id,
                     now_ms,
-                    outcome,
-                    steer_refusal,
-                ),
-                Ok(AgentTriggerFiring::Coalesced) => self
-                    .owned
-                    .session_store
-                    .write()
-                    .mark_agent_trigger_coalesced(
-                        &dispatch.session_id,
-                        &dispatch.trigger_id,
-                        now_ms,
-                    ),
-                Ok(AgentTriggerFiring::Deferred) => self
-                    .owned
-                    .session_store
-                    .write()
-                    .defer_agent_trigger(&dispatch.session_id, &dispatch.trigger_id, now_ms),
-                Ok(AgentTriggerFiring::Skipped | AgentTriggerFiring::Settled { .. }) => continue,
-                Ok(AgentTriggerFiring::AgentGone) => {
-                    self.record_agent_trigger_notice(
-                        &dispatch,
-                        format!(
-                            "Trigger `{}` was removed: its agent `{}` no longer exists",
-                            dispatch.trigger_id, dispatch.agent_id
-                        ),
-                    );
-                    self.owned
-                        .session_store
-                        .write()
-                        .delete_agent_trigger(&dispatch.session_id, &dispatch.trigger_id)
-                        .map(Some)
-                }
-                Err(error) => {
-                    self.record_agent_trigger_notice(
-                        &dispatch,
-                        format!(
-                            "Trigger `{}` could not deliver its prompt: {error}",
-                            dispatch.trigger_id
-                        ),
-                    );
-                    self.owned.session_store.write().mark_agent_trigger_failed(
-                        &dispatch.session_id,
-                        &dispatch.trigger_id,
-                        now_ms,
-                        error.to_string(),
-                    )
-                }
-            };
-            if let Err(error) = update.and_then(|_| {
-                self.owned
-                    .persist_agent_trigger_session(&dispatch.session_id, "agent_trigger_fired")
-                    .map(|_| ())
-            }) {
-                crate::logging::warn_with_fields(
-                    "daemon.agent_trigger",
-                    "agent trigger state update failed",
-                    serde_json::json!({
-                        "session_id": dispatch.session_id,
-                        "trigger_id": dispatch.trigger_id,
-                        "error": error.to_string(),
-                    }),
-                );
+                    error.to_string(),
+                )
             }
+        };
+        if let Err(error) = update.and_then(|_| {
+            self.owned
+                .persist_agent_trigger_session(&dispatch.session_id, "agent_trigger_fired")
+                .map(|_| ())
+        }) {
+            crate::logging::warn_with_fields(
+                "daemon.agent_trigger",
+                "agent trigger state update failed",
+                serde_json::json!({
+                    "session_id": dispatch.session_id,
+                    "trigger_id": dispatch.trigger_id,
+                    "error": error.to_string(),
+                }),
+            );
         }
     }
 
@@ -982,7 +984,7 @@ pub(super) mod tests {
             let firing_runtime = runtime.clone();
             let due = trigger.next_run_at_ms();
             let firing =
-                tokio::spawn(async move { firing_runtime.dispatch_due_agent_triggers(due).await });
+                tokio::spawn(async move { firing_runtime.fire_due_agent_triggers(due).await });
             wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
             assert!(
                 !firing.is_finished(),
@@ -1082,7 +1084,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -1164,7 +1166,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -1328,7 +1330,7 @@ pub(super) mod tests {
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
         let connection = (!restart_recovery).then(|| reject_trigger_settlement(&runtime));
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -1407,7 +1409,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let connection = reject_trigger_settlement(&runtime);
         let due = trigger.next_run_at_ms();
-        runtime.dispatch_due_agent_triggers(due).await;
+        runtime.fire_due_agent_triggers(due).await;
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
         let (_, queued) = runtime
             .owned
@@ -1434,9 +1436,7 @@ pub(super) mod tests {
             .execute_batch("DROP TRIGGER reject_trigger_settlement;")
             .unwrap();
         for tick in 0..3 {
-            runtime
-                .dispatch_due_agent_triggers(due + tick * 1_000)
-                .await;
+            runtime.fire_due_agent_triggers(due + tick * 1_000).await;
         }
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
         let (_, queued) = runtime
@@ -1519,7 +1519,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let connection = reject_trigger_settlement(&runtime);
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         runtime
             .owned
@@ -1566,7 +1566,7 @@ pub(super) mod tests {
                     .execute_batch("DROP TRIGGER reject_trigger_settlement;")
                     .unwrap();
                 runtime
-                    .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+                    .fire_due_agent_triggers(trigger.next_run_at_ms())
                     .await;
                 (runtime, None)
             }
@@ -1649,7 +1649,7 @@ pub(super) mod tests {
         assert_eq!(jobs[0].provider_run_id, run_id);
         assert!(jobs[0].result.is_ok());
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         assert!(runtime
             .owned
@@ -1678,7 +1678,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let settlement = reject_trigger_settlement(&runtime);
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         runtime
             .owned
@@ -1721,7 +1721,7 @@ pub(super) mod tests {
             .unwrap();
 
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
 
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
@@ -1739,7 +1739,7 @@ pub(super) mod tests {
             .unwrap();
 
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
 
         let jobs = tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -1832,7 +1832,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -1897,7 +1897,7 @@ pub(super) mod tests {
         install_slow_structured_run(&runtime, &session_id, &agent_id, &run_id, "ack-lost");
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Every).await;
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         let session = runtime.owned.session_snapshot(&session_id).unwrap();
         let original = session.trigger_deliveries()[0].clone();
@@ -1950,7 +1950,7 @@ pub(super) mod tests {
             runtime.clone()
         };
         recovered
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         let session = recovered.owned.session_snapshot(&session_id).unwrap();
         let actual = session
@@ -2019,7 +2019,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Every).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -2095,7 +2095,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -2535,7 +2535,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         let state = runtime.clone();
         let due = trigger.next_run_at_ms();
-        let firing = tokio::spawn(async move { state.dispatch_due_agent_triggers(due).await });
+        let firing = tokio::spawn(async move { state.fire_due_agent_triggers(due).await });
         wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !runtime
@@ -2569,7 +2569,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            runtime.dispatch_due_agent_triggers(trigger.next_run_at_ms()),
+            runtime.fire_due_agent_triggers(trigger.next_run_at_ms()),
         )
         .await
         .expect("the firing must settle");
@@ -2687,7 +2687,7 @@ pub(super) mod tests {
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            runtime.dispatch_due_agent_triggers(trigger.next_run_at_ms()),
+            runtime.fire_due_agent_triggers(trigger.next_run_at_ms()),
         )
         .await
         .expect("the firing must settle");
@@ -2772,7 +2772,7 @@ pub(super) mod tests {
         runtime.owned.provider_run_projection.update(run);
         let trigger = schedule(&runtime, &session_id, &agent_id, AgentTriggerRepeat::Once).await;
         runtime
-            .dispatch_due_agent_triggers(trigger.next_run_at_ms())
+            .fire_due_agent_triggers(trigger.next_run_at_ms())
             .await;
         // The actor accepts Submit in its mailbox, then its Codex adapter
         // rejects it because there is no live native turn/runtime.
@@ -2862,7 +2862,7 @@ pub(super) mod tests {
             let firing_runtime = runtime.clone();
             let due = first.next_run_at_ms().max(second.next_run_at_ms());
             let firing =
-                tokio::spawn(async move { firing_runtime.dispatch_due_agent_triggers(due).await });
+                tokio::spawn(async move { firing_runtime.fire_due_agent_triggers(due).await });
             wait_for_queued_firing(&runtime, &session_id, &agent_id).await;
             let owner = runtime.owned.agent_store.get_agent(&agent_id).unwrap();
             for enabled in [Some(false), reenable.then_some(true)]
