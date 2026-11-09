@@ -700,4 +700,14 @@ mod tests {
 
         assert_eq!(relay_request_kind(&request), "environment.action.cancel");
     }
+
+    #[test]
+    fn a_room_tool_refusal_crosses_the_relay_as_its_own_code() {
+        let mapped = map_relay_error(&crate::runtime::room_tool_admission::denied(
+            "agent is unavailable in this room",
+        ));
+        assert_eq!(mapped.code, "room_tool_refused");
+        assert_eq!(mapped.message, "agent is unavailable in this room");
+        assert!(!mapped.retryable);
+    }
 }

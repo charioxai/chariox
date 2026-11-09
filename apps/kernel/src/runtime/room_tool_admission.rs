@@ -204,3 +204,77 @@ pub(crate) fn command_doc(mut value: serde_json::Value) -> serde_json::Value {
     }
     value
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::GridPosition;
+    use crate::transport::kernel_protocol::map_kernel_error;
+
+    fn agent(id: &str, room: &str, owner: &str) -> AgentInstance {
+        let mut agent = AgentInstance::new(
+            id,
+            format!("ref-{id}"),
+            room,
+            None,
+            "dev-stub",
+            None,
+            None,
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_owner_user_id(owner);
+        agent
+    }
+
+    /// A refusal reaches the user as its own sentence under its own code, and a client
+    /// must not retry it.
+    fn assert_plain_refusal(error: DaemonError, sentence: &str) {
+        assert_eq!(error.to_string(), sentence);
+        let mapped = map_kernel_error(&error);
+        assert_eq!(mapped.code, "room_tool_refused");
+        assert_eq!(mapped.message, sentence);
+        assert!(!mapped.retryable);
+    }
+
+    #[test]
+    fn every_admission_refusal_is_a_plain_non_retryable_sentence() {
+        let actor = agent("actor", "room", "alice");
+        let other_room = agent("stranger", "elsewhere", "bob");
+        let sibling = agent("sibling", "room", "alice");
+        let agents = vec![actor.clone(), sibling.clone()];
+
+        assert_plain_refusal(
+            resolve_agent(&agents, "room", "nobody").unwrap_err(),
+            "agent is unavailable in this room",
+        );
+        let twin = agent("twin", "room", "alice");
+        let mut aliased = vec![twin.clone(), twin];
+        aliased.push(actor.clone());
+        assert_plain_refusal(
+            resolve_agent(&aliased, "room", "twin").unwrap_err(),
+            "ambiguous room agent reference",
+        );
+        assert_plain_refusal(
+            in_subtree(&actor, &sibling, &agents).unwrap_err(),
+            "only the agents above an agent in this room can control it",
+        );
+        assert_plain_refusal(
+            workflow_node(&actor, &sibling, &agents).unwrap_err(),
+            "only the agents above an agent in this room can control it",
+        );
+        assert_plain_refusal(
+            workflow_execution_target(&actor, &other_room).unwrap_err(),
+            "workflow execution target is outside the caller room",
+        );
+        assert_plain_refusal(
+            command(&["agent".to_owned(), "unknown".to_owned()]).unwrap_err(),
+            "command is outside the regular room surface",
+        );
+    }
+}
