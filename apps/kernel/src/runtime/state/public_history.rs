@@ -296,6 +296,14 @@ fn public_tool_value(value: serde_json::Value) -> serde_json::Value {
     project(value, 0)
 }
 
+/// A history read that broke is a failure to retry, not a refusal of the caller.
+fn history_failed(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "room history",
+        message: message.to_owned(),
+    }
+}
+
 impl KernelRuntimeState {
     fn authorize_public_history_room(
         &self,
@@ -433,15 +441,12 @@ impl KernelRuntimeState {
             )?;
             Ok(RuntimeToolResult {
                 ok: true,
-                payload: serde_json::to_value(result).map_err(|_| {
-                    crate::runtime::room_tool_admission::denied("invalid public history projection")
-                })?,
+                payload: serde_json::to_value(result)
+                    .map_err(|_| history_failed("invalid public history projection"))?,
             })
         })
         .await
-        .map_err(|_| {
-            crate::runtime::room_tool_admission::denied("history query did not complete")
-        })?
+        .map_err(|_| history_failed("history query did not complete"))?
     }
 
     pub(super) async fn read_room_history(
@@ -498,7 +503,7 @@ impl KernelRuntimeState {
             })
         })
         .await
-        .map_err(|_| crate::runtime::room_tool_admission::denied("history read did not complete"))?
+        .map_err(|_| history_failed("history read did not complete"))?
     }
 
     pub(super) async fn room_public_turn(
@@ -551,7 +556,7 @@ impl KernelRuntimeState {
                 })
             })
             .await
-            .map_err(|_| crate::runtime::room_tool_admission::denied("history turn did not complete"))?
+            .map_err(|_| history_failed("history turn did not complete"))?
     }
 }
 
