@@ -152,6 +152,11 @@ export const freeformMarkdownStyles = `
   color: var(--muted);
 }
 
+.freeform-md-visual {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .freeform-md-image {
   display: inline-flex;
   flex-direction: column;

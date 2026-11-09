@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it"
-import type { MarkdownIt as MarkdownItInstance, StateCore, StateInline, Token } from "markdown-it"
+import type { MarkdownIt as MarkdownItInstance, StateBlock, StateCore, StateInline, Token } from "markdown-it"
 
 import {
   cachedHighlight,
@@ -23,6 +23,8 @@ const fileReferencePattern = /^\[([^\]\n]+)\]\s*\((<[^>\n]+>|(?:\\.|[^()\\\n])+(
 const escapedCodeSpanPattern = /^`((?:\\`|[^`\n])+?)`/
 const taskMarkerPattern = /^\[([ xX])\][ \t]+/
 const externalHrefPattern = /^(?:https?:\/\/|mailto:)/i
+// Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
+const visualizeLinePattern = /^visualize(\{.*\})[ \t]*$/
 const maxCachedRenders = 300
 
 const markdown = createMarkdown()
@@ -62,6 +64,7 @@ function createMarkdown(): MarkdownItInstance {
   })
   md.linkify.set({ fuzzyLink: false, fuzzyEmail: false })
   md.use(markdownMath)
+  md.block.ruler.before("paragraph", "visualize_page", visualizeLineRule, { alt: ["paragraph"] })
   md.inline.ruler.before("link", "file_reference", fileReferenceRule)
   md.inline.ruler.before("backticks", "escaped_code_span", escapedCodeSpanRule)
   md.core.ruler.after("inline", "fence_snippet", fenceSnippetRule)
@@ -70,6 +73,10 @@ function createMarkdown(): MarkdownItInstance {
   const rules = md.renderer.rules
   rules.fence = (tokens, index) => renderCodeFigure(tokens[index]!.content, tokens[index]!.info)
   rules.code_block = (tokens, index) => renderCodeFigure(tokens[index]!.content, "")
+  rules.visualize_page = (tokens, index) => {
+    const path = (tokens[index]!.meta as { path: string }).path
+    return `<p class="freeform-md-visual" title="${escapeHtml(path)}">▣ visual: ${escapeHtml(path.split("/").pop() || path)} · ${escapeHtml(path)} (open in the web app)</p>`
+  }
   rules.file_reference = (tokens, index) => {
     const { label, target } = tokens[index]!.meta as { label: string; target: string }
     return `<span class="freeform-code-reference" role="link" tabindex="0" data-file-reference-target="${escapeHtml(target)}" aria-label="File reference: ${escapeHtml(label)}">${escapeHtml(label)}</span>`
@@ -143,6 +150,28 @@ function findLinkOpen(tokens: Token[], closeIndex: number): Token | null {
     if (tokens[index]!.type === "link_open") return tokens[index]!
   }
   return null
+}
+
+// This pane does not draw the page a visualize line names; it names the page,
+// like the terminal does. The line ends a paragraph; code keeps it literal.
+function visualizeLineRule(state: StateBlock, startLine: number, _endLine: number, silent: boolean): boolean {
+  if (state.sCount[startLine]! - state.blkIndent >= 4) return false
+  const line = state.src.slice(state.bMarks[startLine]! + state.tShift[startLine]!, state.eMarks[startLine])
+  const json = visualizeLinePattern.exec(line)?.[1]
+  const path = json === undefined ? null : visualizePagePath(json)
+  if (path === null) return false
+  if (silent) return true
+  const token = state.push("visualize_page", "", 0)
+  token.meta = { path }
+  token.map = [startLine, startLine + 1]
+  state.line = startLine + 1
+  return true
+}
+
+function visualizePagePath(json: string): string | null {
+  let path: unknown
+  try { path = (JSON.parse(json) as { path?: unknown }).path } catch { return null }
+  return typeof path === "string" && path.trim() ? path.trim() : null
 }
 
 // Local absolute paths keep the pane's file-reference behaviour, including
