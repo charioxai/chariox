@@ -3506,6 +3506,39 @@ test('browsertools: save writes into the workspace for an agent and is refused f
   await assert.rejects(host.request(save({ path: 'other.txt' })), { code: 'user_domain_not_granted' });
 }));
 
+// Review r1 P2: a slow save fetch holds no shared barrier; input and state reads of other Tabs finish meanwhile.
+test('browsertools: a held save fetch lets input and a state read finish through the scheduled host path', { timeout: 8000 }, () => using(async ({ host, connection }, root) => {
+  const opened = await host.request({ op: 'open', url: 'https://example.com/a' });
+  const other = (await host.request({ op: 'open', url: 'https://example.com/b' })).tabs.find(tab => tab.tab_id !== opened.tab_id);
+  const workspace = path.join(root, 'room');
+  await mkdir(workspace);
+  const fetching = Promise.withResolvers(), release = Promise.withResolvers();
+  withCdp(connection, method => method === 'Network.loadNetworkResource' ? (fetching.resolve(), release.promise) : undefined);
+  const input = new PassThrough(), output = new PassThrough();
+  const lines = readline.createInterface({ input: output }), waiters = new Map();
+  lines.on("line", line => { const reply = JSON.parse(line); waiters.get(reply.id)?.resolve(reply); });
+  const server = new BrowserControllerStdioServer({ input, output, scheduleRequest: request => scheduleHostRequest(request, host.browser),
+    handleRequest: (request, options) => host.handle(request, options) });
+  const running = server.run();
+  const rpc = (id, params) => {
+    const result = Promise.withResolvers(); waiters.set(id, result);
+    input.write(`${JSON.stringify({ id, method: "host.browser", params })}\n`);
+    return result.promise;
+  };
+  const limit = promise => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(null), 3000))]);
+  try {
+    const saving = rpc(1, { op: 'save', focused_agent: true, tab_id: opened.tab_id, generation: opened.generation, url: 'https://img.example/a.png', path: 'a.png', _save_roots: [workspace] });
+    await limit(fetching.promise);
+    const typed = await limit(rpc(2, { op: 'input', tab_id: other.tab_id, generation: opened.generation, document_id: other.document_id, input: { kind: 'text', text: 'a' } }));
+    assert.ok(typed?.ok, 'input queued behind the held save: ' + JSON.stringify(typed));
+    const state = await limit(rpc(3, { op: 'state' }));
+    assert.ok(state?.ok, 'a state read queued behind the held save: ' + JSON.stringify(state));
+    release.resolve({ resource: { success: false } });
+    const saved = await limit(saving);
+    assert.equal(saved?.ok, false, 'the save still ends with its own answer');
+  } finally { release.resolve({ resource: { success: false } }); input.end(); await running; lines.close(); output.end(); }
+}));
+
 // MP-08/MP-09/MP-10/MP-11: browsertools r1 op 3. Scroll a snapshot node into view.
 test('browsertools: scroll with a target node_ref scrolls that node into view and moves no pointer', () => using(async ({ host, connection, sent }) => {
   const opened = await host.request({ op: 'open', url: 'about:blank' });

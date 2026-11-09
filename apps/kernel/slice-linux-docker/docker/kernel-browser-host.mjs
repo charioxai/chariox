@@ -73,7 +73,8 @@ export function scheduleHostRequest(request, browser, viewport = hostViewport(),
     ['host.browser','host.computer'].includes(request.method) && (request.params?.op === 'screenshot' &&
     typeof request.params.display_subscription_id === 'string' || request.params?.op === 'mirror_next' && typeof request.params.subscription_id === 'string' ||
     (request.params?.op === 'state' || request.params?.op === 'display_subscribe' && (request.params.target || nativeDesktop && request.method === 'host.browser')) && browser?.canReconcileConcurrently?.(viewport) === true ||
-    request.params?.op === 'state_signal' || request.params?.op === 'wait' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
+    // An agent's save waits on the page session's fetch: it resolves only its own Tab and checks its authority before writing.
+    request.params?.op === 'state_signal' || request.params?.op === 'wait' || request.params?.op === 'save' || request.params?.op === 'state' && browser?.dialogDefaults?.pending().length > 0 ||
     ['chrome_window_follow', 'note_selection', 'pointer_cursor', 'popup_region'].includes(request.params?.op) ||
     // Releasing a display's compositor takes seconds; the person's input and resize must not queue behind it.
     request.method === 'host.browser' && request.params?.op === 'unsubscribe')
@@ -1150,7 +1151,7 @@ export class KernelBrowserHost {
       if (!agentRequest) throw new UserDomainRefusal("not_granted");
       return waitForPage(this, command, scope, signal);
     }
-    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor'].includes(command.op)
+    let tab = command.op === 'input' && typeof command.document_id === 'string' || ['navigate', 'resize', 'note_selection', 'pointer_cursor', 'save'].includes(command.op)
       ? await slowMark(this.timing, 'input_wait display_target', this.displayTarget(command,nativeInputDocumentTarget(this,command,scope,nativeDisplay),INPUT_DOCUMENT_WAIT_MS))
       : command.op === 'show_tab' ? this.ownedTab(command) : await this.target(command);
     assertNotCancelled(signal);
