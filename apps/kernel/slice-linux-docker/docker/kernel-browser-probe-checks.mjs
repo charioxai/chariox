@@ -48,6 +48,11 @@ export const checks = [
     const failed = JSON.parse(await page.evaluate("JSON.stringify([...document.querySelectorAll('tr')].filter(r => /failed/.test(r.innerHTML)).map(r => r.cells[0].innerText.trim()))"));
     return { outcome: failed.join(', ') || 'none', detail: '' };
   } },
+  { id: 'botd', title: 'FingerprintJS BotD (the library behind its demo)', external: true, async run(page) {
+    await page.navigate('https://example.com/', 2000);
+    const result = await page.evaluate("import('https://openfpcdn.io/botd/v1').then(m => m.load()).then(b => b.detect()).then(r => JSON.stringify(r)).catch(e => 'error ' + e)");
+    return { outcome: /"bot":false/.test(result) ? 'not a bot' : result.slice(0, 80), detail: result.slice(0, 80) };
+  } },
   { id: 'turnstile', title: 'Cloudflare Turnstile demo token', external: true, async run(page) {
     await page.navigate('https://demo.turnstile.workers.dev/', 10000);
     const n = await page.evaluate("[...document.querySelectorAll('[name=cf-turnstile-response]')].reduce((a, i) => a + i.value.length, 0)");
