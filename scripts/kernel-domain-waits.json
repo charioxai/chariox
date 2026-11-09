@@ -112,7 +112,7 @@
   {
     "path": "apps/kernel/src/room_terminal/service/handover.rs",
     "method": "wait",
-    "context": "if state.removed || state.shutdown { continue; } state.handed_over = true; let TerminalState { terminal, pty, .. } = &mut *state; let Some(run_id) = terminal.run_id.clone() else { continue; }; let deadline = Instant::now() + HOLD_TIMEOUT; while !pty.hold_output(&run_id, Duration::from_millis(200))? { terminal.pump_output(pty, Instant::now()); if Instant::now() >= deadline { return Err(refused(format!( , terminal.record.terminal_id ))); } } terminal.pump_output(pty, Instant::now()); handovers.push(terminal.handover(pty.handover(&run_id)?)); let record = terminal.persisted_record(); self.inner.store.enqueue_save(&record)?"
+    "context": "true; let TerminalState { terminal, pty, .. } = &mut *state; let Some(run_id) = terminal.run_id.clone() else { continue; }; let deadline = Instant::now() + HOLD_TIMEOUT; while !pty.hold_output(&run_id, Duration::from_millis(200))? { terminal.pump_output(pty, Instant::now()); if Instant::now() >= deadline { return Err(refused(format!( , terminal.record.terminal_id ))); } } terminal.pump_output(pty, Instant::now()); let OutgoingPty { handover, master } = pty.handover(&run_id)?; handovers.push((terminal.handover(handover), master)); let record = terminal.persisted_record(); self.inner.store.enqueue_save(&record)?"
   },
   {
     "path": "apps/kernel/src/room_terminal/service/pump_task.rs",
