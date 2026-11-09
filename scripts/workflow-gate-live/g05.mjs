@@ -17,7 +17,7 @@ async function restart(){await rig.kill9();rig.exited=undefined;await rig.start(
  const e=await done(e0.entry_id,90000);await sleep(1500);const nums=e.decisions.map(d=>d.evaluation_number);
  C.ok('F1','SIGKILL while Deferred: resumes, one run, consecutive evaluation numbers',e.disposition==='queued'&&nums.every((n,i)=>n===i+1)&&e.evaluation_count===nums.length&&nd(e.entry_id)===nums.length&&(S=await settled(rig)).ok,{kinds:kinds(e),nums,S,beforeKill:mid.evaluation_count});}
 // F2 kill mid-evaluation
-{const r0=await nruns(),v0=await rev();const {entry:e0,worker:w}=await heldEval(rig,'run');
+{const r0=await nruns();const {entry:e0,worker:w}=await heldEval(rig,'run');const v0=await rev(); // after the hold: heldEval retries, and a missed attempt completes normally
  const ev=await rig.entry(A,e0.entry_id);
  await rig.kill9();sigWorker(w,'SIGKILL');rig.exited=undefined;await rig.start();
  const e=await done(e0.entry_id,60000);await sleep(3000);const e2=await rig.entry(A,e0.entry_id);
