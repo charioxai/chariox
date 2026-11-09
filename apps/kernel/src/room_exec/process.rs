@@ -98,7 +98,7 @@ pub(super) fn spawn(
     })
 }
 
-async fn cancelled(cancel: &mut watch::Receiver<Option<CancelReason>>) -> CancelReason {
+pub(super) async fn cancelled(cancel: &mut watch::Receiver<Option<CancelReason>>) -> CancelReason {
     if let Some(reason) = *cancel.borrow() {
         return reason;
     }

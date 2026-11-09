@@ -719,6 +719,7 @@ fn session_snapshot_with_agent() -> SessionSnapshotProjection {
         session,
         provider_run: None,
         agent_activity,
+        agent_tree_revs: BTreeMap::new(),
     }
 }
 
@@ -754,6 +755,7 @@ fn session_snapshot_with_workflow_status(status: WorkflowRunStatus) -> SessionSn
         session,
         provider_run: None,
         agent_activity: BTreeMap::new(),
+        agent_tree_revs: BTreeMap::new(),
     }
 }
 
@@ -1389,4 +1391,35 @@ fn an_ordinary_frame_is_encoded_without_a_second_json_tree() {
         0,
         "a frame with nothing to redact built a JSON tree"
     );
+}
+
+// MP-08/MP-09/MP-10/MP-11: one agent_tree_changed per tree whose revision differs, never on attach.
+#[test]
+fn agent_tree_changed_is_one_event_per_changed_tree() {
+    let mut before = session_snapshot_with_agent();
+    before.agent_tree_revs = BTreeMap::from([("agent-a".to_string(), 5)]);
+    assert!(
+        agent_tree_changed_events(&before, None).is_empty(),
+        "attach reads the tree itself"
+    );
+    assert!(agent_tree_changed_events(&before, Some(&before)).is_empty());
+    let mut after = before.clone();
+    after.agent_tree_revs.insert("agent-a".to_string(), 9);
+    after.agent_tree_revs.insert("agent-b".to_string(), 3);
+    let events = session_projection_changed_events(&after, Some(&before));
+    let wires = events
+        .iter()
+        .map(|event| serde_json::to_value(event).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(wires.len(), 2, "{wires:?}");
+    assert_eq!(wires[0]["event"], "agent_tree_changed");
+    assert_eq!(wires[0]["session_id"], "session-a");
+    assert_eq!(wires[0]["root"], "agent-a");
+    assert_eq!(wires[0]["rev"], 9);
+    assert_eq!(wires[1]["root"], "agent-b");
+    assert_eq!(event_session_id(&events[0]), Some("session-a"));
+    assert!(event_is_relevant_to_attachment(
+        &events[0],
+        "any-attachment"
+    ));
 }

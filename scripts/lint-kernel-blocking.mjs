@@ -1,11 +1,39 @@
-// MP-08 / MP-09 / MP-10 / MP-11: keep subprocess waits out of shared state paths.
+// MP-08 / MP-09 / MP-10 / MP-11: keep subprocess waits and lock chains out of shared state paths.
+//
+// Rules:
+//  1. raw subprocess waits and the environment lock (kernel-domain-waits.json lists the reviewed receipt waits);
+//  2. a std/parking_lot Mutex/RwLock guard bound with `let` that is still live at an `.await` of its block
+//     (kernel-lock-awaits.json lists the reviewed ones: { path, guard, init, reason });
+//  3. an `.await` that suspends a long-lived scheduler or pump loop itself without a bound
+//     (kernel-loop-waits.json lists the reviewed ones: { path, fn, call, reason }). A freeze of such a loop
+//     stops every timer, wake or output it serves, so its slow work runs timed out or as a single-flight task.
+//
+// Long-lived loops checked by rule 3 (add a loop here when it serves every room):
+//  | file                                      | function                       | serves                            |
+//  |-------------------------------------------|--------------------------------|-----------------------------------|
+//  | runtime/state/agent_wake_scheduler.rs     | run_agent_wake_scheduler       | agent timers, wakes, deadlines    |
+//  | runtime/state/agent_wake_scheduler.rs     | sweep_agent_wakes              | 30 s dead-man sweep of the wakes  |
+//  | runtime/state/agent_wake_scheduler.rs     | tick_agent_wakes               | due wake firing (async, no await) |
+//  | runtime/state/app_wake_pump_runtime.rs    | run_app_wake_scheduler         | app wake delivery                 |
+//  | runtime/state/provider_output_pump_runtime.rs | run_provider_output_pump_until | provider output into history  |
+//  | runtime/state/disk_pressure.rs            | run_disk_maintenance           | disk pressure scans (own task)    |
 import { readdirSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
+import { lockAcrossAwait } from './lib/kernel-lock-across-await.mjs'
+import { loopWaits } from './lib/kernel-loop-waits.mjs'
 import { productionSource } from './lib/rust-production-source.mjs'
 
 // Reviewed non-process receipt waits and domain output projections. Context
 // changes require reviewing the receiver again; no whole file is exempt.
 const domainCalls = JSON.parse(readFileSync(new URL('./kernel-domain-waits.json', import.meta.url), 'utf8'))
+const lockAwaits = JSON.parse(readFileSync(new URL('./kernel-lock-awaits.json', import.meta.url), 'utf8'))
+const loopAwaits = JSON.parse(readFileSync(new URL('./kernel-loop-waits.json', import.meta.url), 'utf8'))
+const loopFunctions = {
+  'apps/kernel/src/runtime/state/agent_wake_scheduler.rs': ['run_agent_wake_scheduler', 'tick_agent_wakes', 'sweep_agent_wakes'],
+  'apps/kernel/src/runtime/state/app_wake_pump_runtime.rs': ['run_app_wake_scheduler'],
+  'apps/kernel/src/runtime/state/provider_output_pump_runtime.rs': ['run_provider_output_pump_until'],
+  'apps/kernel/src/runtime/state/disk_pressure.rs': ['run_disk_maintenance'],
+}
 function domainCall(code, path, match) {
   const context = code.slice(Math.max(0, match.index - 3000), match.index).replace(/\s+/g, ' ').trim().split(' ').slice(-60).join(' ')
   return domainCalls.some(site => site.path === path && site.method === match[1] && site.context === context)
@@ -23,6 +51,8 @@ export function blockingViolations(source, path) {
   if (path.endsWith('/provider/service/store.rs')) {
     for (const match of code.matchAll(/self\.write\(\)\s*\.\s*(?:start_run_provider_only|prepare_run_provider_only)\(/g)) add(match.index, 'provider connect under STORE')
   }
+  violations.push(...lockAcrossAwait(code, path, lockAwaits))
+  if (loopFunctions[path]) violations.push(...loopWaits(code, path, loopFunctions[path], loopAwaits))
   return violations
 }
 

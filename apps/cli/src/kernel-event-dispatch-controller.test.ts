@@ -290,6 +290,14 @@ test("kernel event dispatch applies agent activity deltas without resyncing", as
   ])
 })
 
+test("kernel event dispatch records a sub-agent tree change for the Sub-agents view", async () => {
+  const harness = createHarness()
+
+  await harness.controller.handleKernelEvent({ event: "agent_tree_changed", session_id: "session-1", root: "agent-1", rev: 4 })
+
+  assert.deepEqual(harness.calls, ["activity:kernel_agent_tree_changed"])
+})
+
 test("kernel event dispatch backfills durable history from a completed activity projection", async () => {
   const harness = createHarness()
 

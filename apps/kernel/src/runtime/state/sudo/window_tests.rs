@@ -1314,6 +1314,7 @@ async fn sudo_expiry_wake_retries_after_a_failed_inbox_write() {
                 obligation_id: Some("expiry-wait-source".into()),
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         })
         .unwrap();

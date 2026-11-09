@@ -189,7 +189,7 @@ export function createUserAppViewController(deps: {
     else if (event.name === "pageup" || event.name === "pagedown") deps.scroll(event.name === "pageup" ? -1 : 1)
     else if (!event.ctrl && !event.meta && !event.alt && active) {
       const bound = active, key = keys[event.name]
-      if (event.shift && key) { deps.notify("Use unmodified navigation keys in this prototype"); return true }
+      if (event.shift && key) { deps.notify("Use unmodified navigation keys here"); return true }
       if (key) sendInput(bound, { kind: "key", key })
       else {
         const value = event.sequence || (event.name === "space" ? " " : Array.from(event.name).length === 1 ? (event.shift ? event.name.toUpperCase() : event.name) : "")

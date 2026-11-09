@@ -85,6 +85,37 @@ impl KernelRuntimeState {
         if actor.archived() {
             return Err(denied("unarchive this agent before using Room tools"));
         }
+        if let LocalDaemonRequest::SpawnAgent(r) = request {
+            if r.session_id != actor.session_id() {
+                return self.authorize_peer_spawn(&actor, r);
+            }
+            return Ok(());
+        }
+        // A peer may stop a turn in another room of the same owner, so a cancel is admitted
+        // against its target before the caller-room fence below.
+        if let LocalDaemonRequest::CancelActivePrompt(r) = request {
+            return match r.target_agent_id.as_deref() {
+                // An agent may always stop its own turn.
+                Some(target) if target == actor.id() && r.session_id == actor.session_id() => {
+                    Ok(())
+                }
+                Some(target) => {
+                    let target = self
+                        .owned
+                        .agent_store
+                        .get_agent(target)
+                        .ok()
+                        .filter(|target| target.session_id() == r.session_id)
+                        .ok_or_else(|| denied("agent is unavailable in that room"))?;
+                    self.authorize_peer_control(
+                        &actor,
+                        &target,
+                        super::peer_rooms::PeerControl::Cancel,
+                    )
+                }
+                None => Err(denied("cancel names the agent whose turn it stops")),
+            };
+        }
         if let Some(crate::runtime::session_membership::scope::SessionMembershipScope::SessionId(
             room,
         )) = crate::runtime::session_membership::scope::request_session_scope(request)
@@ -110,12 +141,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::SetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::GetAgentDeadline(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ListDescendants(r) => (&r.session_id, &r.agent_id, false),
-            LocalDaemonRequest::CancelActivePrompt(r) => match r.target_agent_id.as_ref() {
-                // An agent may always stop its own turn.
-                Some(target) if target == actor.id() => return Ok(()),
-                Some(target) => (&r.session_id, target, false),
-                None => return Err(denied("cancel names the agent whose turn it stops")),
-            },
             LocalDaemonRequest::AliasAgent(r) => (&r.session_id, &r.agent_id, false),
             LocalDaemonRequest::ArchiveAgent(_) => {
                 return Err(denied("only the owner can archive or unarchive agents"))
@@ -175,12 +200,6 @@ impl KernelRuntimeState {
             LocalDaemonRequest::FocusAgent(_) | LocalDaemonRequest::CycleAgentFocus(_) => {
                 return Err(denied("agents cannot change user focus"));
             }
-            LocalDaemonRequest::SpawnAgent(r) => {
-                if r.session_id != actor.session_id() {
-                    return Err(denied("spawn target is outside the caller room"));
-                }
-                return Ok(());
-            }
             LocalDaemonRequest::AttachToSession(r) => {
                 if r.session_id != actor.session_id() {
                     return Err(denied("attachment is outside the caller room"));
@@ -217,6 +236,46 @@ impl KernelRuntimeState {
 }
 
 impl KernelRuntimeState {
+    /// M2 P3: a room agent creates an ordinary agent in another room of its owner. The request
+    /// carries no placement: the peer starts in the target room's own folder on this kernel.
+    fn authorize_peer_spawn(
+        &self,
+        actor: &crate::agent::AgentInstance,
+        request: &crate::local::SpawnAgentRequest,
+    ) -> Result<(), DaemonError> {
+        if actor.is_sub_agent() {
+            return Err(denied(
+                "only a room agent creates peers in another room; a sub-agent creates sub-agents of its own",
+            ));
+        }
+        if request.worktree_id.is_some()
+            || request.kernel_ref.is_some()
+            || request.slice_ref.is_some()
+            || request.worktree_placement.is_some()
+        {
+            return Err(denied(
+                "a peer in another room starts in that room's own folder on this kernel",
+            ));
+        }
+        let rooms = &self.owned.session_store;
+        let own_room = rooms.get_session(actor.session_id())?;
+        if self.drives_as_room_guest(&own_room, actor) {
+            return Err(denied("the room for the peer does not exist"));
+        }
+        let (Some(own_owner), Some(room_owner)) = (
+            rooms.session_owner_user_id(actor.session_id()),
+            rooms.session_owner_user_id(&request.session_id),
+        ) else {
+            return Err(denied("the room for the peer does not exist"));
+        };
+        if !self.same_owner(&own_owner, &room_owner) {
+            return Err(denied(
+                "a peer can only be created in a room of the same owner",
+            ));
+        }
+        Ok(())
+    }
+
     /// A5: moving a sub-agent keeps it inside the folders of its own parent.
     fn keep_configured_folders_inside_parent(
         &self,

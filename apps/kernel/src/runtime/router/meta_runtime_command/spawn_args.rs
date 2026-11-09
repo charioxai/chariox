@@ -75,6 +75,8 @@ pub(super) struct MetaAgentSpawnArgs {
     pub(super) permission_level: Option<crate::provider::AgentPermissionLevel>,
     pub(super) deadline: Option<std::time::Duration>,
     pub(super) command_id: Option<String>,
+    pub(super) room: Option<String>,
+    pub(super) no_follow: bool,
 }
 
 /// `90s`, `30m`, `2h` or `1d`: how long from now.
@@ -119,6 +121,8 @@ pub(super) fn parse_meta_agent_spawn_args(
     let mut permission_level = None;
     let mut deadline = None;
     let mut command_id = None;
+    let mut room = None;
+    let mut no_follow = false;
 
     let mut index = 0;
     while index < args.len() {
@@ -237,6 +241,20 @@ pub(super) fn parse_meta_agent_spawn_args(
                     _ => command_id = Some(value.clone()),
                 }
                 index += 2;
+            }
+            "--room" => {
+                let Some(value) = args.get(index + 1).filter(|value| !value.starts_with("--"))
+                else {
+                    return Err(meta_command_error(
+                        "usage: agent spawn --room <room> [--no-follow]",
+                    ));
+                };
+                room = Some(value.clone());
+                index += 2;
+            }
+            "--no-follow" => {
+                no_follow = true;
+                index += 1;
             }
             "--machine" | "--kernel" => {
                 let Some(value) = args.get(index + 1) else {
@@ -370,6 +388,30 @@ pub(super) fn parse_meta_agent_spawn_args(
             ));
         }
     }
+    if no_follow && room.is_none() {
+        return Err(meta_command_error(
+            "usage: agent spawn --no-follow needs --room <room>",
+        ));
+    }
+    if room.is_some() {
+        let unsupported = [
+            (
+                "--dir/--worktree",
+                directory.is_some() || git_worktree.is_some(),
+            ),
+            (
+                "--slice",
+                slice_ref.is_some() || slice_create.is_some() || slice_display_mode.is_some(),
+            ),
+            ("--deadline", deadline.is_some()),
+            ("--command-id", command_id.is_some() && kernel_ref.is_none()),
+        ];
+        if let Some((option, _)) = unsupported.iter().find(|(_, given)| *given) {
+            return Err(meta_command_error(format!(
+                "usage: agent spawn --room does not accept {option}; a peer starts in the target room's own folder on its kernel, and only its owner sets a deadline"
+            )));
+        }
+    }
     if let Some(mode) = slice_display_mode {
         let Some(create) = slice_create.as_mut() else {
             return Err(meta_command_error(
@@ -399,6 +441,8 @@ pub(super) fn parse_meta_agent_spawn_args(
         permission_level,
         deadline,
         command_id,
+        room,
+        no_follow,
     })
 }
 

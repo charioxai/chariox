@@ -4,16 +4,28 @@ use std::time::Duration;
 
 use tokio::sync::{mpsc, watch};
 
-use super::{process, CancelReason, ExecOutcome, ExecState, Record, RoomExecService};
+use super::placement::Placed;
+use super::{process, remote, CancelReason, ExecOutcome, ExecState, Record, RoomExecService};
+
+/// What can change a held launch's course while it waits.
+pub(super) struct Signals {
+    pub(super) cancel: watch::Receiver<Option<CancelReason>>,
+    pub(super) forced: watch::Receiver<bool>,
+    pub(super) placed: watch::Receiver<Option<Arc<Placed>>>,
+}
 
 pub(super) fn start(
     record: Arc<Record>,
     input: mpsc::Receiver<Option<Vec<u8>>>,
-    mut cancel: watch::Receiver<Option<CancelReason>>,
-    mut forced: watch::Receiver<bool>,
+    signals: Signals,
     service: RoomExecService,
     authority: Option<crate::runtime::state::KernelRuntimeState>,
 ) {
+    let Signals {
+        mut cancel,
+        mut forced,
+        mut placed,
+    } = signals;
     tokio::spawn(async move {
         loop {
             if cancel.borrow().is_some() {
@@ -37,6 +49,11 @@ pub(super) fn start(
                     return;
                 }
             }
+            let elsewhere = placed.borrow().clone();
+            if let Some(placed) = elsewhere {
+                remote::run(record, input, cancel, service, placed).await;
+                return;
+            }
             let permit = service.inner.admission.reserve(
                 &intent.exec_id,
                 &intent.command,
@@ -57,6 +74,10 @@ pub(super) fn start(
                                 },
                             );
                             return;
+                        }
+                        if placed.borrow().is_some() {
+                            // Placed while the permit was granted: it runs elsewhere.
+                            continue;
                         }
                         *state = ExecState::Starting;
                     }
@@ -98,13 +119,19 @@ pub(super) fn start(
                     return;
                 }
                 Err(wait) => {
-                    *record.state.lock().expect("exec state poisoned") = ExecState::Queued { wait };
+                    let mut state = record.state.lock().expect("exec state poisoned");
+                    if placed.borrow().is_some() {
+                        continue;
+                    }
+                    *state = ExecState::Queued { wait };
+                    drop(state);
                     record.changed.notify_waiters();
                 }
             }
             tokio::select! {
                 _ = cancel.changed() => {},
                 _ = forced.changed() => {},
+                _ = placed.changed() => {},
                 _ = tokio::time::sleep(Duration::from_millis(250)) => {},
             }
         }

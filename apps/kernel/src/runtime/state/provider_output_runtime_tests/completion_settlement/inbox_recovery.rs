@@ -49,6 +49,7 @@ async fn a02_r8_blocked_subscriber_does_not_suppress_waiting_subscriber() {
                     obligation_id: None,
                     source_cursor: 0,
                     live: true,
+                    peer: false,
                 },
             })
             .unwrap();
@@ -213,6 +214,7 @@ async fn older_wait_after_newer_cancellation(deadline: bool) {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         })
         .unwrap();

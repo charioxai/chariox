@@ -428,6 +428,95 @@ async fn a_collaborator_resolves_only_this_rooms_sources() {
         .is_ok());
 }
 
+/// Enrolls the rig's kernel, whose room was made before under `local`, for `kernel-owner`.
+fn enroll(rig: &Rig) -> &'static str {
+    let mut config = rig.runtime.owned.config_projection.snapshot();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: "kernel-owner".into(),
+        realm_id: "test-realm".into(),
+        ..Default::default()
+    });
+    rig.runtime.owned.config_projection.update(config);
+    "kernel-owner"
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the enrolled owner of a room made before enrollment picks from
+// all its sources, as the owner does; a collaborator still sees this room's only.
+#[tokio::test]
+async fn the_enrolled_owner_resolves_its_sources_of_any_room() {
+    let rig = rig().await;
+    let workflow = rig.workflow_with_exit("pipeline");
+    let source = rig.register(&workflow);
+    let enrolled = enroll(&rig);
+    let resolved = rig.runtime.resolve_workflow_notification_source(
+        "local",
+        enrolled,
+        "another-room",
+        &source,
+    );
+    assert!(resolved.is_ok(), "{:?}", resolved.err());
+    let chosen = rig.runtime.choose_notification_source(
+        "local",
+        enrolled,
+        "another-room",
+        std::slice::from_ref(&source),
+    );
+    assert!(chosen.is_ok(), "{:?}", chosen.err());
+    assert!(rig
+        .runtime
+        .resolve_workflow_notification_source("local", "guest", "another-room", &source)
+        .is_err());
+    assert!(rig
+        .runtime
+        .choose_notification_source(
+            "local",
+            "guest",
+            "another-room",
+            std::slice::from_ref(&source)
+        )
+        .is_err());
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: the enrolled owner subscribes to its own App's event in a room
+// made before enrollment; a collaborator still needs the App bound in the Room.
+#[tokio::test]
+async fn the_enrolled_owner_resolves_its_app_event_without_a_room_binding() {
+    let rig = rig().await;
+    let catalog = crate::durable_state::app_state::fixture_room_event_catalog(
+        &rig.runtime.owned.durable_state_store,
+        "local",
+    );
+    let enrolled = enroll(&rig);
+    let resolved = rig
+        .runtime
+        .resolve_app_notification_source(
+            "local",
+            enrolled,
+            &rig.session_id,
+            catalog.installation_id(),
+            "changed",
+        )
+        .await;
+    assert!(resolved.is_ok(), "{:?}", resolved.err());
+    let guest = rig
+        .runtime
+        .resolve_app_notification_source(
+            "local",
+            "guest",
+            &rig.session_id,
+            catalog.installation_id(),
+            "changed",
+        )
+        .await;
+    assert!(
+        guest.as_ref().is_err_and(|error| error
+            .to_string()
+            .contains("App is not installed in this Room")),
+        "{:?}",
+        guest.err()
+    );
+}
+
 // MP-08 / MP-10 (VS-S2-1): a source on another kernel delivers through the peer channel; the
 // subscriber kernel admits it for the agent and queues it, and refuses once the trigger is gone.
 #[tokio::test]

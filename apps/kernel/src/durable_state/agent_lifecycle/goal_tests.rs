@@ -428,7 +428,8 @@ fn a12_progressing_goals_have_no_turn_cap_and_evaluations_cannot_mutate_work() {
                     source_id: "source".into(),
                     obligation_id: None,
                     source_cursor: 0,
-                    live: true
+                    live: true,
+                    peer: false,
                 }
             })
             .is_err());

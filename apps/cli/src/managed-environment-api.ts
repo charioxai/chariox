@@ -39,7 +39,7 @@ export async function getManagedEnvironmentReimagePreflight(profile: CloudContro
   return preflight
 }
 export async function createManagedEnvironment(profile: CloudControlProfile, input: ManagedEnvironmentCreateInput, client?: LocalIpcClient): Promise<ManagedEnvironmentResult> {
-  await preflightProviderAccountPortability(client, input.contextPlan)
+  await preflightProviderAccountPortability(client, input.contextPlan, input.clientRequestId)
   const result = await managedEnvironmentJson<ManagedEnvironmentResult>(profile, "/managed-environments", input)
   validateManagedEnvironmentResult(result)
   if (result.environment.accountId !== profile.accountId) throw new Error("Cloud returned a different managed account")
@@ -69,11 +69,12 @@ export async function prepareManagedEnvironmentContextTransfer(profile: CloudCon
   return ticket
 }
 
-export async function preflightProviderAccountPortability(client: LocalIpcClient | undefined, plan: ManagedEnvironmentContextPlanInput): Promise<void> {
+/** `launchId` names the launch, so its transfer start takes the Vault unlock this preflight holds. */
+export async function preflightProviderAccountPortability(client: LocalIpcClient | undefined, plan: ManagedEnvironmentContextPlanInput, launchId?: string): Promise<void> {
   if (plan.providerAccounts.kind === "none") return
   if (!client) throw new Error("Selected provider accounts require a kernel credential portability preflight before provisioning")
   const response = await sendWithProtocolMinimum<Record<string, unknown>>(
-    client.send.bind(client), preflightProviderAccountPortabilityRequest(plan.providerAccounts), {
+    client.send.bind(client), preflightProviderAccountPortabilityRequest(plan.providerAccounts, launchId), {
       capability: "MP-08 / MP-11 provider account portability preflight",
       requestVariant: "PreflightProviderAccountPortability",
       minimumProtocolVersion: providerAccountPortabilityPreflightMinimumProtocolVersion,
@@ -109,8 +110,9 @@ export async function observeManagedEnvironmentPreReimage(
 export async function startManagedContextTransfer(
   client: LocalIpcClient,
   ticket: ManagedContextTransferTicket,
+  launchId?: string,
 ): Promise<ManagedContextTransferStatus> {
-  const response = await sendWithProtocolMinimum<Record<string, unknown>>(client.send.bind(client), startManagedContextTransferRequest(ticket, true), {
+  const response = await sendWithProtocolMinimum<Record<string, unknown>>(client.send.bind(client), startManagedContextTransferRequest(ticket, true, launchId), {
     capability: "MP-08 / MP-10 Project export review", requestVariant: "StartManagedContextTransfer", unknownField: "interactive", minimumProtocolVersion: 371,
   })
   return expectVariant<{ status: ManagedContextTransferStatus }>(

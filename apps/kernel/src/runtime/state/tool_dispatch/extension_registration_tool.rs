@@ -380,8 +380,11 @@ impl KernelRuntimeState {
         name: Option<&str>,
         source_path: Option<&Path>,
     ) -> Result<Option<crate::transport::runtime_tools::RuntimeToolResult>, DaemonError> {
-        let authority =
-            crate::session::effective_agent_extension_registration_authority(session, Some(agent));
+        let authority = crate::session::effective_agent_extension_registration_authority(
+            session,
+            Some(agent),
+            &self.owned.agent_store.get_session_agents(session.id()),
+        );
         if !authority.requires_approval() {
             return Ok(None);
         }
@@ -730,3 +733,7 @@ fn registration_result(
     }
     crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload }
 }
+
+#[cfg(test)]
+#[path = "extension_registration_tool_tests.rs"]
+mod tests;

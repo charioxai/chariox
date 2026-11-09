@@ -609,6 +609,19 @@ impl DaemonError {
         )
     }
 
+    /// The relay handed the request to the other kernel and no answer came back: that kernel
+    /// dropped off, or the wait for its answer ran out. What it did is unknown.
+    pub(crate) fn is_peer_answer_lost(&self) -> bool {
+        match self {
+            Self::RelayTransport { code, .. } => code == "target_disconnected",
+            Self::LocalTransport {
+                operation: "read relay peer response",
+                message,
+            } => message.starts_with(crate::transport::relay_client::RELAY_PEER_RESPONSE_TIMED_OUT),
+            _ => false,
+        }
+    }
+
     fn is_exact_peer_refusal(&self, expected_code: &str) -> bool {
         matches!(
             self,

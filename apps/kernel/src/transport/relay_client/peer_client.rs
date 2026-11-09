@@ -136,6 +136,25 @@ pub async fn send_peer_request_to_known_kernel_via_relay(
     .await
 }
 
+/// The request left on the connected relay and no answer came back in time.
+pub(crate) fn relay_peer_response_timed_out(response_timeout: Option<Duration>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "read relay peer response",
+        message: relay_peer_response_timeout_message(response_timeout),
+    }
+}
+
+fn relay_peer_response_timeout_message(response_timeout: Option<Duration>) -> String {
+    format!(
+        "{RELAY_PEER_RESPONSE_TIMED_OUT} after {}ms",
+        response_timeout
+            .map(|timeout| timeout.as_millis())
+            .unwrap_or(0)
+    )
+}
+
+pub(crate) const RELAY_PEER_RESPONSE_TIMED_OUT: &str = "timed out waiting for relay peer response";
+
 pub(crate) async fn send_peer_request_to_known_kernel_via_relay_with_timeout(
     config: &crate::config::DaemonConfig,
     state: &Arc<RwLock<RelayClientState>>,
@@ -295,17 +314,9 @@ pub(super) async fn enqueue_peer_request_to_known_kernel_via_relay_authorized(
             }
             Err(_) => {
                 drop(pending);
-                let message = format!(
-                    "timed out waiting for relay peer response after {}ms",
-                    response_timeout
-                        .map(|timeout| timeout.as_millis())
-                        .unwrap_or(0)
-                );
+                let message = relay_peer_response_timeout_message(response_timeout);
                 trace.log_completed("timeout", Some(&message), None);
-                return Err(DaemonError::LocalTransport {
-                    operation: "read relay peer response",
-                    message,
-                });
+                return Err(relay_peer_response_timed_out(response_timeout));
             }
         };
         // MP-11: the relay has no peer identity when it refuses a request

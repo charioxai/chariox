@@ -22,6 +22,9 @@ pub struct SessionSnapshotProjection {
     pub session: RuntimeSession,
     pub provider_run: Option<RuntimeProviderRun>,
     pub agent_activity: BTreeMap<String, AgentRuntimeActivity>,
+    /// The revision followers were last told for each sub-agent tree this user may read.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub agent_tree_revs: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +105,17 @@ impl SessionSnapshotProjection {
             user_id,
             Some(history),
         )?;
+        // Read before redaction: a sub-agent root is not in the redacted agent list.
+        let session = &self.session;
+        self.agent_tree_revs.retain(|root, _| {
+            session
+                .agents()
+                .iter()
+                .find(|agent| agent.id() == root)
+                .is_some_and(|agent| {
+                    session.can_view_tree_agent_owned_by(user_id, agent.owner_user_id())
+                })
+        });
         self.session = self
             .session
             .redacted_for_user_with_workflow_history(user_id, history)?;
@@ -191,6 +205,7 @@ impl SessionSnapshotProjection {
             session,
             provider_run,
             agent_activity,
+            agent_tree_revs: crate::agent::tree_rev::published_revs(session_id),
         })
     }
 }

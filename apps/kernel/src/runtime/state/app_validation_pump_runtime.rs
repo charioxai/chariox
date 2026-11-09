@@ -123,7 +123,8 @@ impl KernelRuntimeState {
             .filter(|session| self.is_room_member(session, owner))
             .max_by_key(|session| {
                 (
-                    session.owner_user_id() == owner,
+                    session.owner_user_id()
+                        == self.room_member_user_id_in(session.owner_user_id(), owner),
                     session
                         .last_prompt_sent_at_ms()
                         .unwrap_or(session.created_at_ms()),

@@ -472,6 +472,7 @@ mod tests {
             obligation_id: None,
             source_cursor: 0,
             live,
+            peer: false,
         }
     }
     #[test]

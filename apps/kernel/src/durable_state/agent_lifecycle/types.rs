@@ -102,6 +102,10 @@ pub(crate) struct Registration {
     #[serde(default)]
     pub source_cursor: u64,
     pub live: bool,
+    /// The source is an agent that is neither above nor below the subscriber: its end
+    /// arrives as `peer_event`, never as an obligation receipt.
+    #[serde(default)]
+    pub peer: bool,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct InboxEvent {
@@ -126,7 +130,7 @@ impl InboxEvent {
     pub(crate) fn is_source_outcome(&self) -> bool {
         matches!(
             self.kind.as_str(),
-            "source_completed" | "source_lost" | "child_finished"
+            "source_completed" | "source_lost" | "child_finished" | "peer_event"
         )
     }
     /// The outcome is about this obligation source (a child's task id also names its `child_finished`).
@@ -138,6 +142,7 @@ impl InboxEvent {
     /// The source did not finish its work.
     pub(crate) fn is_loss(&self) -> bool {
         self.kind == "source_lost"
+            || (self.kind == "peer_event" && self.payload["success"].as_bool() == Some(false))
             || (self.kind == "child_finished" && self.payload["success"].as_bool() == Some(false))
     }
 }
@@ -373,10 +378,45 @@ pub(crate) enum Operation {
         cancelled: bool,
         now: u64,
     },
-    #[allow(
-        dead_code,
-        reason = "Keep the existing typed writer operation or receipt payload for API and regression compatibility"
-    )]
+    /// The first answer to a peer request of another kernel, so a retry gets the same one.
+    RememberPeerRequest {
+        kernel: String,
+        request_id: String,
+        answer: String,
+    },
+    /// An agent of another kernel follows `agent` of `room` here; an older generation of the
+    /// same subscription changes nothing.
+    FollowPeer {
+        kernel: String,
+        owner: String,
+        subscription: String,
+        room: String,
+        agent: String,
+        generation: u64,
+    },
+    /// Ends a follow, only for the kernel that holds it and never with an older generation.
+    UnfollowPeer {
+        kernel: String,
+        subscription: String,
+        generation: u64,
+    },
+    /// A followed agent or its room is gone: its followers on other kernels hear `source_lost`.
+    PeerSourceLost {
+        room: String,
+        agent: String,
+        now: u64,
+    },
+    PeerOutboxDelivered {
+        delivery: String,
+    },
+    /// Another attempt later; outcomes past their age are dropped with it.
+    PeerOutboxRetry {
+        delivery: String,
+        at: u64,
+        now: u64,
+    },
+    /// An event without a sender turn on this kernel, such as a message from a peer on
+    /// another kernel; de-duplicated on (room, agent, source, occurrence).
     Occur(InboxEvent),
     Send {
         task: String,
@@ -609,6 +649,7 @@ pub(crate) enum Outcome {
     },
     Swept(Vec<AgentTaskExecution>),
     Wakes(Vec<AgentWake>),
+    PeerFollowed(super::peer_follows::PeerFollowed),
     Saved,
 }
 pub(crate) struct Request {

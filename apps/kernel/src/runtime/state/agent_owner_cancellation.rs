@@ -9,8 +9,12 @@ impl KernelRuntimeState {
         room: &str,
         attachment: &str,
     ) -> Result<String, DaemonError> {
-        let owner = crate::runtime::command::command_caller_user_id(command);
         let session = self.owned.session_store.get_session(room)?;
+        // The identity the room keeps for its owner: `local` in a room made before enrollment.
+        let owner = self.room_member_user_id_in(
+            session.owner_user_id(),
+            &crate::runtime::command::command_caller_user_id(command),
+        );
         let attachment = self.owned.ensure_attachment_in_session(room, attachment)?;
         if !command.is_terminal_caller()
             || session.owner_user_id() != owner
@@ -93,3 +97,7 @@ impl KernelRuntimeState {
         self.agent_cancellation_response(&request.session_id, &wakes[0].task_id)
     }
 }
+
+#[cfg(test)]
+#[path = "enrolled_owner_terminal_controls_tests.rs"]
+mod enrolled_owner_terminal_controls_tests;

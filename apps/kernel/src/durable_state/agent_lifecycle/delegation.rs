@@ -77,6 +77,11 @@ pub(super) fn bind_message(tx: &Transaction<'_>, e: &InboxEvent) -> Result<(), D
         .optional()
         .map_err(sql)?;
     if let (Some(parent), Some(prompt)) = (parent, e.prompt_id.as_deref()) {
+        // A message to another room reaches a peer, never a delegate: its reply settles the
+        // sender through the reply obligation, not a delegation binding.
+        if load(tx, &parent)?.room_id != e.room_id {
+            return Ok(());
+        }
         if let Some(child) = for_turn(tx, &e.room_id, &e.agent_id, prompt)? {
             // Cancellation leaves no authority to bind new work.
             if matches!(

@@ -605,6 +605,42 @@ impl CommandRouter {
             Ok(spawn) => spawn,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
+        // `--room` with `--kernel` names a room on that kernel; this kernel's own name keeps the
+        // spawn here. Without `--room` the reference stays: a sub-agent runs on that kernel.
+        if let Some(room) = spawn.room.clone() {
+            if let Some(kernel) = spawn.kernel_ref.take() {
+                match self.runtime_state.resolve_peer_kernel(&kernel).await {
+                    Ok(Some(kernel)) => {
+                        return Ok(self
+                            .spawn_peer_on_kernel(metaagent, command, &kernel, room, spawn)
+                            .await)
+                    }
+                    Ok(None) if spawn.command_id.is_some() => {
+                        return Ok(meta_command_failure_result(
+                            command,
+                            meta_command_error(
+                                "usage: agent spawn --room does not accept --command-id for a room on this kernel",
+                            ),
+                        ))
+                    }
+                    Ok(None) => {}
+                    Err(error) => return Ok(meta_command_failure_result(command, error)),
+                }
+            }
+        }
+
+        // A guest of this room reaches no other room: every one reads as missing.
+        if spawn
+            .room
+            .as_deref()
+            .is_some_and(|room| room != session.id())
+            && self.runtime_state.drives_as_room_guest(session, metaagent)
+        {
+            return Ok(meta_command_failure_result(
+                command,
+                crate::runtime::room_tool_admission::denied("the room for the peer does not exist"),
+            ));
+        }
 
         if let Some(reference) = spawn.slice_ref.as_deref() {
             match self
@@ -688,10 +724,20 @@ impl CommandRouter {
             created_slice = Some(slice);
         }
 
+        let target_room = match spawn.room.as_deref() {
+            Some(room) => match self.runtime_state.resolve_session_ref_id(room, None).await {
+                Ok(room) => Some(room),
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            },
+            None => None,
+        };
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
+        let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
-            no_subscribe: false,
-            session_id: session.id().to_string(),
+            no_subscribe: spawn.no_follow,
+            session_id: target_room
+                .clone()
+                .unwrap_or_else(|| session.id().to_string()),
             alias: spawn.alias,
             provider: spawn
                 .provider
@@ -715,9 +761,12 @@ impl CommandRouter {
             // Omitted, the child takes the parent's effective limit where it is created.
             execution_mode: None,
             permission_level: spawn.permission_level,
-            worktree_id: spawn
-                .worktree_id
-                .or_else(|| metaagent.worktree_id().map(str::to_string)),
+            worktree_id: spawn.worktree_id.or_else(|| {
+                target_room
+                    .is_none()
+                    .then(|| metaagent.worktree_id().map(str::to_string))
+                    .flatten()
+            }),
             kernel_ref: if spawn.slice_ref.is_some() {
                 None
             } else {
@@ -729,6 +778,13 @@ impl CommandRouter {
         });
         let mut spawn_command = meta_kernel_command(provider_run, metaagent, &request);
         spawn_command.idempotency_key = spawn.command_id.clone();
+        // A peer in another room of the owner is created by the owner as that room knows it.
+        if let Some(room) = target_room.as_deref().filter(|room| *room != session.id()) {
+            spawn_command.caller.user_id = Some(
+                self.runtime_state
+                    .owner_identity_in(room, metaagent.owner_user_id()),
+            );
+        }
         let response = match Box::pin(self.dispatch(spawn_command, request)).await {
             Ok(response) => response,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
@@ -743,18 +799,93 @@ impl CommandRouter {
                 return Ok(meta_command_failure_result(command, error));
             }
         }
+        // The spawner of a peer hears of its turns without polling, unless it said --no-follow.
+        // The peer exists either way, so a follow that fails is reported next to it.
+        let followed = match (&response, follow) {
+            (LocalDaemonResponse::AgentSpawned { agent, .. }, true) => Some(
+                self.runtime_state
+                    .follow_spawned_peer(metaagent, agent)
+                    .map_err(|error| error.to_string()),
+            ),
+            _ => None,
+        };
         let mut result = meta_command_success_result(
             command,
             &response,
             metaagent,
             self.runtime_state.room_agent_tools_enabled(),
         );
+        if target_room.is_some() {
+            if let Some(payload) = result.payload.as_object_mut() {
+                let (registration, refused) = match followed {
+                    Some(Ok(registration)) => (Some(registration), None),
+                    Some(Err(refused)) => (None, Some(refused)),
+                    None => (None, None),
+                };
+                payload.insert(
+                    "follow_registration_id".to_string(),
+                    serde_json::json!(registration),
+                );
+                if let Some(refused) = refused {
+                    payload.insert("follow_refused".to_string(), serde_json::json!(refused));
+                }
+            }
+        }
         if let Some(slice) = created_slice {
             if let Some(payload) = result.payload.as_object_mut() {
                 payload.insert("created_slice".to_string(), serde_json::json!(slice));
             }
         }
         Ok(result)
+    }
+
+    /// `agent spawn --room <room> --kernel <kernel>`: an ordinary agent in a room on another
+    /// kernel of the owner, with the same defaults and the same follow a peer on this kernel
+    /// gets, unless the caller says --no-follow.
+    async fn spawn_peer_on_kernel(
+        &self,
+        metaagent: &crate::agent::AgentInstance,
+        command: &str,
+        kernel: &str,
+        room: String,
+        spawn: MetaAgentSpawnArgs,
+    ) -> RuntimeToolResult {
+        let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
+        let inherited =
+            |value: Option<&str>| same_provider.then(|| value.map(str::to_string)).flatten();
+        let request = crate::runtime::state::peer_agent_outbound::RoomPeerSpawn {
+            room,
+            provider: spawn
+                .provider
+                .unwrap_or_else(|| metaagent.provider().to_string()),
+            account_profile: spawn
+                .account_profile
+                .or_else(|| inherited(metaagent.account_profile())),
+            model: spawn.model.or_else(|| inherited(metaagent.model())),
+            effort: spawn.effort.or_else(|| inherited(metaagent.effort())),
+            alias: spawn.alias,
+            prompt: None,
+            permission_level: spawn
+                .permission_level
+                .or(metaagent.permission_level_override()),
+            command_id: spawn.command_id,
+            follow: !spawn.no_follow,
+        };
+        match self
+            .runtime_state
+            .spawn_room_peer(metaagent, kernel, request)
+            .await
+        {
+            Ok(spawned) => RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "command": command,
+                    "response": {"spawned": {"kernel": spawned.agent.kernel_id, "room": spawned.agent.room_id, "agent": spawned.agent.agent_id, "alias": spawned.alias, "duplicate": spawned.duplicate}},
+                    "follow_registration_id": spawned.follow_registration_id,
+                }),
+            },
+            Err(error) => meta_command_failure_result(command, error),
+        }
     }
 
     /// `trigger notification <source> [prompt]` and `trigger remove <id>`: an agent acts on its own

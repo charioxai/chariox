@@ -156,6 +156,10 @@ export function createKernelEventDispatchController(
         deps.recordDaemonActivity("kernel_agent_activity_changed")
         await applyAgentActivityChanged(event)
         return
+      case "agent_tree_changed":
+        // The Sub-agents view reads the tree again on this event (cli-sub-agents-composition).
+        deps.recordDaemonActivity("kernel_agent_tree_changed")
+        return
       case "provider_run_changed":
         deps.recordDaemonActivity("kernel_provider_run_changed")
         await applyProviderRunChanged(event)

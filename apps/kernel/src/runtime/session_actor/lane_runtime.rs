@@ -110,7 +110,7 @@ impl SessionRuntime {
         );
         let queue_depth_before = self.queue_limit.saturating_sub(lane.capacity());
         let caller_metaagent_id = self
-            .verified_metaagent_caller_id(&command, &session_id, &caller_user_id)
+            .verified_metaagent_caller_id(&command, &request, &session_id, &caller_user_id)
             .await?;
         let terminal_caller = command.is_terminal_caller() && caller_metaagent_id.is_none();
         let connection_class = command.caller.connection_class;
@@ -451,6 +451,7 @@ impl SessionRuntime {
     async fn verified_metaagent_caller_id(
         &self,
         command: &KernelCommand,
+        request: &LocalDaemonRequest,
         session_id: &str,
         caller_user_id: &str,
     ) -> Result<Option<String>, DaemonError> {
@@ -465,7 +466,7 @@ impl SessionRuntime {
         };
         let verified = self
             .store
-            .verify_metaagent_caller(session_id, metaagent_id, caller_user_id)
+            .verify_metaagent_caller(session_id, metaagent_id, caller_user_id, request)
             .await?;
         Ok(Some(verified))
     }

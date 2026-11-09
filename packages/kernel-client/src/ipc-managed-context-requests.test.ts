@@ -44,6 +44,9 @@ test("managed context transfer requests use the shared local daemon shape", () =
   assert.deepEqual(startManagedContextTransferRequest(ticket), {
     StartManagedContextTransfer: { ticket },
   })
+  assert.deepEqual(startManagedContextTransferRequest(ticket, true, "launch-1"), {
+    StartManagedContextTransfer: { ticket, interactive: true, launchId: "launch-1" },
+  })
   assert.deepEqual(getManagedContextTransferStatusRequest("context-1"), {
     GetManagedContextTransferStatus: { contextId: "context-1" },
   })

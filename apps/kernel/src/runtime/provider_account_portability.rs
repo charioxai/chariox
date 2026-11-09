@@ -32,7 +32,7 @@ pub(crate) async fn execute_preflight(
                 "provider_account_portability",
             )
             .await?;
-        runtime_state.hold_vault_for_login_export(unlocked, command);
+        runtime_state.hold_vault_for_login_export(unlocked, command, request.launch_id.as_deref());
     }
     Ok(LocalDaemonResponse::ProviderAccountPortabilityPreflightPassed {})
 }

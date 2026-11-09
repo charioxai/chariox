@@ -619,11 +619,14 @@ mod tests {
 
         let started = dispatch_public(
             &home_router,
-            LocalDaemonRequest::StartManagedContextTransfer(StartManagedContextTransferRequest {
-                owner_managed: None,
-                interactive: false,
-                ticket: Some(ticket.clone()),
-            }),
+            LocalDaemonRequest::StartManagedContextTransfer(Box::new(
+                StartManagedContextTransferRequest {
+                    owner_managed: None,
+                    interactive: false,
+                    ticket: Some(ticket.clone()),
+                    launch_id: None,
+                },
+            )),
         )
         .await;
         let mut final_status = None;

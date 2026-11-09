@@ -492,4 +492,6 @@ pub use workspace::*;
 /// lets an owner-managed copy select event connection records, adds the parent edge with SetAgentParent, the spawn key,
 /// child_finished and the inbox sender relation, the sub-agent tree read and its change event, and carries Vault
 /// provider logins to a new managed machine (peer 439).
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1000;
+/// MP-08/MP-09/MP-10/MP-11: 1001 carries peers across rooms and kernels of one owner (spawn --room, messages, steer,
+/// cancel and follow, `peer_event`), the `agent_tree_changed` event and the `kernel_access_sub_agent` refusal (peer 440).
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 1001;

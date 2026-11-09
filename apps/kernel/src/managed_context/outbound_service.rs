@@ -469,6 +469,8 @@ pub(crate) struct ManagedContextOutboundCaller {
     pub user_id: String,
     /// The session whose Vault unlock the export may take over.
     pub session_id: Option<String>,
+    /// The launch whose Vault unlock the export takes over, when the client named one.
+    pub launch_id: Option<String>,
 }
 
 pub(crate) fn start_managed_context_outbound_operation(
@@ -569,7 +571,10 @@ pub(crate) fn start_managed_context_outbound_operation(
             ) {
                 Ok(true) => caller
                     .runtime
-                    .vault_for_login_export(caller.session_id.as_deref())
+                    .vault_for_login_export(
+                        caller.session_id.as_deref(),
+                        caller.launch_id.as_deref(),
+                    )
                     .await
                     .map(Some)
                     .map_err(|_| vault_login_locked_error()),

@@ -333,6 +333,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                                     0
                                 },
                                 live: true,
+                                peer: false,
                             };
                             tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload", params![reg.id,reg.task_id,encode(&reg)?]).map_err(sql)?;
                         }
@@ -370,7 +371,10 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     return Err(error("source does not cover an open obligation"));
                 }
             }
-            tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",params![registration.id,task,encode(&registration)?]).map_err(sql)?;
+            // A registration another task holds is never rewritten: it stays bound to its task.
+            if tx.execute("INSERT INTO agent_registrations VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload WHERE agent_registrations.task_id=excluded.task_id",params![registration.id,task,encode(&registration)?]).map_err(sql)? == 0 {
+                return Err(error("registration belongs to another task"));
+            }
             recover_source(tx, &mut load(tx, &task)?, registration)?;
             Ok(Outcome::Saved)
         }
@@ -441,7 +445,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
             let regs = registrations(tx, &task)?;
             let mut selected = vec![];
             for r in regs.iter().filter(|r| ids.contains(&r.id)) {
-                let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost')",params![t.room_id,t.agent_id,r.source_id,sql_integer(cursor)?],|row|row.get(0)).map_err(sql)?;
+                let pending:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND sequence>?4 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event')",params![t.room_id,t.agent_id,r.source_id,sql_integer(cursor)?],|row|row.get(0)).map_err(sql)?;
                 if r.live || pending > 0 {
                     selected.push(r);
                 }
@@ -590,7 +594,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .filter(|_| !cancelled && t.state != ExecutionState::Blocked)
             {
                 let regs = registrations(tx, &t.task_id)?;
-                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                let pending:i64 = tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                 // MP-08/MP-09/MP-10/MP-11 F03: the deadline was checked
                 // at admission. A late native boundary commits that same
                 // wait; the normal sweep delivers its elapsed deadline.
@@ -711,6 +715,68 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
         | Operation::CancelOwnerTimer { .. }
         | Operation::WakeAlerted { .. }
         | Operation::RetireWakes { .. }) => super::wakes::apply(tx, op),
+        op @ (Operation::FollowPeer { .. }
+        | Operation::UnfollowPeer { .. }
+        | Operation::PeerSourceLost { .. }
+        | Operation::PeerOutboxDelivered { .. }
+        | Operation::PeerOutboxRetry { .. }) => super::peer_follows::apply(tx, op),
+        Operation::RememberPeerRequest {
+            kernel,
+            request_id,
+            answer,
+        } => {
+            tx.execute(
+                "INSERT OR IGNORE INTO peer_agent_requests VALUES(?1,?2,?3)",
+                params![kernel, request_id, answer],
+            )
+            .map_err(sql)?;
+            Ok(Outcome::Saved)
+        }
+    }
+}
+
+/// The event that tells `task` its source ended. A peer is followed, not waited on: its event
+/// names what happened and carries none of the peer's own text.
+pub(super) fn source_end(
+    task: &AgentTaskExecution,
+    source: &str,
+    occurrence_id: &str,
+    success: bool,
+    public_answer: &Option<serde_json::Value>,
+    peer: bool,
+) -> InboxEvent {
+    if peer {
+        return occurrence(
+            &task.room_id,
+            &task.agent_id,
+            source,
+            occurrence_id,
+            "peer_event",
+            serde_json::json!({"task_id":task.task_id,"source_id":source,"occurrence_id":occurrence_id,"success":success,"event":peer_event_name(occurrence_id, success)}),
+        );
+    }
+    occurrence(
+        &task.room_id,
+        &task.agent_id,
+        source,
+        occurrence_id,
+        if success {
+            "source_completed"
+        } else {
+            "source_lost"
+        },
+        serde_json::json!({"task_id":task.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":occurrence_id,"success":success,"public_answer":public_answer}),
+    )
+}
+
+/// What a followed peer's end was: a source lost on another kernel says so itself.
+fn peer_event_name(occurrence_id: &str, success: bool) -> &'static str {
+    if success {
+        "turn_ended"
+    } else if occurrence_id.starts_with(super::peer_follows::SOURCE_LOST_OCCURRENCE) {
+        "source_lost"
+    } else {
+        "turn_failed"
     }
 }
 
@@ -729,17 +795,13 @@ pub(super) fn recover_source(
             .transpose()?;
         event(
             tx,
-            occurrence(
-                &task.room_id,
-                &task.agent_id,
+            source_end(
+                task,
                 &registration.source_id,
                 &id,
-                if success {
-                    "source_completed"
-                } else {
-                    "source_lost"
-                },
-                serde_json::json!({"task_id":task.task_id,"source_id":registration.source_id,"public_history_ref":registration.source_id,"occurrence_id":id,"success":success,"public_answer":public_answer}),
+                success,
+                &public_answer,
+                registration.peer && registration.obligation_id.is_none(),
             ),
         )?;
         registration.live = false;

@@ -252,7 +252,7 @@ pub enum LocalDaemonRequest {
     PreflightProviderAccountPortability(PreflightProviderAccountPortabilityRequest),
     ControlPlane(ControlPlaneRequest),
     ObserveManagedEnvironmentPreReimage(ObserveManagedEnvironmentPreReimageRequest),
-    StartManagedContextTransfer(StartManagedContextTransferRequest),
+    StartManagedContextTransfer(Box<StartManagedContextTransferRequest>),
     GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),
     GetManagedContextLaunchTarget(GetManagedContextLaunchTargetRequest),
     ListSlices(ListSlicesRequest),

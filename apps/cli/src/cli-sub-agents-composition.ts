@@ -10,7 +10,7 @@ import { subAgentsCardRows } from "./sub-agents-card-view.js"
 type Key = { name: string; ctrl?: boolean; meta?: boolean; shift?: boolean; eventType?: string; preventDefault?(): void; stopPropagation?(): void }
 
 /** Events after which the room's trees may differ. The kernel's own `agent_tree` follow event is an outside event. */
-const ROOM_CHANGE_EVENTS = new Set(["session_snapshot", "agent_activity_changed", "provider_run_changed", "runtime_interactions_changed"])
+const ROOM_CHANGE_EVENTS = new Set(["session_snapshot", "agent_activity_changed", "agent_tree_changed", "provider_run_changed", "runtime_interactions_changed"])
 
 export function createCliSubAgentsComposition(deps: {
   client: LocalIpcClient

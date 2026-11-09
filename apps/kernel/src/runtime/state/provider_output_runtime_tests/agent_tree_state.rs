@@ -257,3 +257,177 @@ async fn a_client_read_does_not_swallow_the_event_followers_are_owed() {
     assert_eq!(events.len(), 2, "the follower was never told: {events:?}");
     assert_eq!(events[1].1, read_rev);
 }
+
+fn tree_changed_events(
+    snapshot: &crate::runtime::projection::SessionSnapshotProjection,
+    previous: &crate::runtime::projection::SessionSnapshotProjection,
+) -> Vec<crate::transport::kernel_protocol::KernelEvent> {
+    crate::transport::kernel_protocol::session_projection_changed_events(snapshot, Some(previous))
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event,
+                crate::transport::kernel_protocol::KernelEvent::AgentTreeChanged { .. }
+            )
+        })
+        .collect()
+}
+
+// The room's own clients (not only external followers) hear of a tree change, once.
+#[tokio::test]
+async fn the_rooms_clients_hear_a_tree_change_through_their_projection() {
+    use crate::transport::kernel_protocol::KernelEvent;
+    let team = team_with("tree-room-event", None, true).await;
+    let quiet = team
+        .runtime
+        .session_snapshot_projection(&team.room, 0)
+        .unwrap();
+    assert!(
+        quiet.agent_tree_revs.is_empty(),
+        "{:?}",
+        quiet.agent_tree_revs
+    );
+    let sequence = team
+        .runtime
+        .session_projection_session_change_sequence(&team.room);
+    team.runtime.publish_changed_agent_trees();
+    assert_ne!(
+        team.runtime
+            .session_projection_session_change_sequence(&team.room),
+        sequence,
+        "the room's subscriptions are woken"
+    );
+    let told = team
+        .runtime
+        .session_snapshot_projection(&team.room, 0)
+        .unwrap();
+    let rev = read(&team).rev;
+    assert_eq!(told.agent_tree_revs.get(&team.parent), Some(&rev));
+    let events = tree_changed_events(&told, &quiet);
+    assert!(
+        matches!(events.as_slice(), [KernelEvent::AgentTreeChanged { session_id, root, rev: sent }]
+            if *session_id == team.room && *root == team.parent && *sent == rev),
+        "{events:?}"
+    );
+    // The same tree again says nothing, to followers or to the room.
+    let sequence = team
+        .runtime
+        .session_projection_session_change_sequence(&team.room);
+    team.runtime.publish_changed_agent_trees();
+    assert_eq!(
+        team.runtime
+            .session_projection_session_change_sequence(&team.room),
+        sequence
+    );
+    // A change moves the rev the event carries to the one external followers get.
+    team.runtime
+        .owned
+        .durable_state_store
+        .agent_lifecycle(Operation::Settle {
+            room: team.room.clone(),
+            agent: team.child.clone(),
+            prompt: team.child_prompt.id().into(),
+            run: team.child_run.clone(),
+            has_answer: true,
+            cancelled: false,
+            now: 4,
+        })
+        .unwrap();
+    team.runtime.publish_changed_agent_trees();
+    let after = team
+        .runtime
+        .session_snapshot_projection(&team.room, 0)
+        .unwrap();
+    let events = tree_changed_events(&after, &told);
+    assert!(
+        matches!(events.as_slice(), [KernelEvent::AgentTreeChanged { rev: sent, .. }]
+            if *sent == read(&team).rev && *sent != rev),
+        "{events:?}"
+    );
+}
+
+// `agent_tree_changed` and `ListDescendants` follow one rule: a member hears of a change to a tree
+// exactly when the listing shows them its agents. A full collaborator reads every node of the owner's
+// tree and hears of its change; a private member reads none of them and hears nothing.
+#[tokio::test]
+async fn a_tree_change_reaches_exactly_the_members_whose_listing_shows_the_tree() {
+    use crate::session::CollaborationLevel;
+    let team = team_with("tree-private", None, true).await;
+    {
+        let mut sessions = team.runtime.owned.session_store.write();
+        for (invite_id, user_id, level) in [
+            ("invite-full", "user-full", CollaborationLevel::Full),
+            (
+                "invite-private",
+                "user-private",
+                CollaborationLevel::Private,
+            ),
+        ] {
+            let (_, invite) = sessions
+                .create_session_invite(
+                    &team.room,
+                    invite_id.into(),
+                    USER.into(),
+                    None,
+                    Some(1),
+                    level,
+                )
+                .unwrap();
+            sessions
+                .join_session_invite(&team.room, invite.invite_id(), user_id.into(), 1)
+                .unwrap();
+        }
+    }
+    let history = &team.runtime.owned.durable_state_store;
+    let seen_by = |user: &str| {
+        team.runtime
+            .session_snapshot_projection(&team.room, 0)
+            .unwrap()
+            .redacted_for_user(user, history)
+            .unwrap()
+    };
+    let before = [
+        ("user-full", seen_by("user-full")),
+        ("user-private", seen_by("user-private")),
+    ];
+    team.runtime.publish_changed_agent_trees();
+    let whole = read(&team);
+    assert!(!whole.nodes.is_empty());
+    for (user, quiet) in before {
+        let listed = match team
+            .runtime
+            .list_descendants(
+                user,
+                ListDescendantsRequest {
+                    session_id: team.room.clone(),
+                    agent_id: team.parent.clone(),
+                },
+            )
+            .unwrap()
+        {
+            LocalDaemonResponse::AgentTree { tree } => tree,
+            other => panic!("agent tree expected, got {other:?}"),
+        };
+        let heard: Vec<String> = tree_changed_events(&seen_by(user), &quiet)
+            .into_iter()
+            .filter_map(|event| match event {
+                crate::transport::kernel_protocol::KernelEvent::AgentTreeChanged {
+                    root, ..
+                } => Some(root),
+                _ => None,
+            })
+            .collect();
+        let shown = !listed.nodes.is_empty();
+        assert_eq!(
+            heard == vec![team.parent.clone()],
+            shown,
+            "{user}: heard {heard:?}, listed {:?}",
+            listed.nodes
+        );
+        assert_eq!(heard.is_empty(), !shown, "{user}: heard {heard:?}");
+        match user {
+            "user-full" => assert_eq!(listed.nodes.len(), whole.nodes.len()),
+            _ => assert!(heard.is_empty() && listed.nodes.is_empty(), "{user}"),
+        }
+    }
+}

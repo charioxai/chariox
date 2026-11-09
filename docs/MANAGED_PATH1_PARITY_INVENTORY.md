@@ -2061,7 +2061,7 @@ report timestamp. An old baseline observed after the rebuild request is invalid.
 Compare the retained before/after host captures with that exact operation:
 
 ```sh
-node apps/cli/scripts/path1-host-cloud-correlation.mjs \
+CHARIOX_OSS_ROOT="$OSS_CHECKOUT" node "$CLOUD_CHECKOUT/deploy/providers/hetzner/drills/path1-host-cloud-correlation.mjs" \
   --before /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/host-before.json \
   --after /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/host-after.json \
   --cloud /Users/miguel/.codex/evidence/browser-computer-use/<campaign>/cloud-reimage.json \

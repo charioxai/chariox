@@ -438,6 +438,10 @@ impl SessionStateProjectionStore {
         self.changes.wait_for_change_after(sequence).await;
     }
 
+    pub(crate) fn record_session_change(&self, session_id: &str) {
+        self.session_change_signal(session_id).record_change();
+    }
+
     pub(crate) fn session_change_sequence(&self, session_id: &str) -> u64 {
         self.session_change_signal(session_id).sequence()
     }

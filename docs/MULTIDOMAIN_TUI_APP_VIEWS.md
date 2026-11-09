@@ -1,8 +1,7 @@
-# User-domain App text prototype
+# User-domain App text views
 
-This removable TUI prototype requires `CHARIOX_USER_APP_VIEWS_PROTOTYPE=1`,
-the same opt-in name as Cloud's native-rendering build flag. It is off by default;
-no panel, poll timer, App requests or input hooks are created when disabled.
+The TUI opens an installed App's view with `/app view open INSTALLATION`; the
+command is in the `/app` help and needs no setting.
 Use a protocol-418 kernel from the multidomain integration branch. Known older
 kernels get the shared minimum-version diagnostic before these requests.
 Protocol remains 418/70; this client uses the existing 417/418 wire shapes.
@@ -35,7 +34,7 @@ field values; its existing secret-input checks still apply.
 While the panel is open, Tab, ordinary typing, Enter, Backspace/Delete,
 arrows and Home/End act on the App frontend through KernelBrowser input.
 The frontend calls `window.chariox.call` through the existing kernel App channel.
-Modifier navigation combinations are deferred in this prototype. PgUp/PgDn
+Modifier navigation combinations are deferred. PgUp/PgDn
 scroll the outline; Escape returns to the prompt **without closing** the App;
 Ctrl+W closes it. Each input validates the selected owner-visible view and its
 tab/generation before sending. The queue is bounded and stale queued input is
@@ -60,7 +59,7 @@ popup routing stays on its established path.
 Each selected/created view captures the concrete admitted kernel client,
 not the mutable kernel selector. Reads/actions fail after a kernel switch;
 no stale view id or approval proof is sent to the new kernel. Cleanup closes
-only instances opened by this prototype, through their originating clients.
+only instances opened by this client, through their originating clients.
 Views selected from the list remain open unless explicitly closed. Opening
 failures close a newly allocated instance on its original client.
 
@@ -107,9 +106,8 @@ Room accessibility formatter remains a small pure module.
 
 ## Open questions
 
-- Owner: confirm the text tier and kernel-host fallback before enabling this flag.
 - Owner: choose additional accessibility selection/action conventions and keyboard
-  modifier support; this prototype implements basic human keyboard interaction.
+  modifier support; the TUI implements basic human keyboard interaction.
 - Coordinator: provide a compatible approved signed App runtime for release trust
   acceptance. Live full-CLI/display checks use a private signed test runtime below.
 - Reconnect grace, restart restoration and focused MCP naming remain deferred
@@ -117,7 +115,7 @@ Room accessibility formatter remains a small pure module.
 
 ## Live full CLI follow-up
 
-With the prototype flag, `/` in the waiting room focuses the existing command
+`/` in the waiting room focuses the existing command
 input; it does not activate a session. The shortcut is listed in waiting-room
 hotkey help. `/app view open INSTALLATION`, `/app views`, and `/app view show VIEW`
 are then available without a Room. Once projected, Tab/type/Enter sends real

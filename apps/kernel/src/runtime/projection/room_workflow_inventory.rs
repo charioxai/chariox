@@ -327,6 +327,7 @@ fn mp11_amfix_snapshot_recomputes_inventory_for_private_recipient() {
         session: room,
         provider_run: None,
         agent_activity: Default::default(),
+        agent_tree_revs: Default::default(),
     }
     .redacted_for_user("bob", &app.durable_state_store())
     .unwrap();

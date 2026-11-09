@@ -14,13 +14,15 @@ pub(super) fn revert_for_prompt(
     prompt: &str,
 ) -> Result<(), DaemonError> {
     let mut q = tx
-        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND json_extract(payload,'$.state')='accepted' AND json_extract(payload,'$.target_prompt_id')=?3 AND NOT EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) ORDER BY sequence")
+        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.target_prompt_id') END=?3 AND json_extract(payload,'$.state')='accepted' AND NOT EXISTS(SELECT 1 FROM agent_inbox_shown s WHERE s.sequence=agent_inbox.sequence) ORDER BY sequence")
         .map_err(sql)?;
     let sequences = q
         .query_map(params![room, agent, prompt], |r| r.get::<_, i64>(0))
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
+    #[cfg(test)]
+    INBOX_LOOKUP_STEPS.with(|n| n.set(n.get() + q.get_status(rusqlite::StatementStatus::VmStep)));
     drop(q);
     for sequence in sequences {
         let sequence = u64::try_from(sequence).map_err(|_| error("corrupt inbox sequence"))?;

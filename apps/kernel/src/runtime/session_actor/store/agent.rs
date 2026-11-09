@@ -268,13 +268,15 @@ impl SessionRuntimeStore {
                 .into_iter()
                 .find(|agent| agent.id() == id)
         });
-        if let (Some(parent), Some(key)) = (&parent, idempotency_key.as_deref()) {
+        // A parent's command id, or a peer spawn's request from another kernel, names one agent.
+        if let Some(key) = idempotency_key.as_deref() {
+            let parent_id = parent.as_ref().map(|parent| parent.id());
             let existing = self
                 .state
                 .session_agents(&request.session_id)
                 .into_iter()
                 .find(|agent| {
-                    agent.parent_agent_id() == Some(parent.id()) && agent.spawn_key() == Some(key)
+                    agent.parent_agent_id() == parent_id && agent.spawn_key() == Some(key)
                 });
             if let Some(agent) = existing {
                 return self
@@ -285,12 +287,23 @@ impl SessionRuntimeStore {
                     .await;
             }
         }
+        let peer_limit = match caller_metaagent_id
+            .as_deref()
+            .map(|caller| self.state.peer_spawn_limit(caller, &request.session_id))
+            .transpose()
+        {
+            Ok(limit) => limit.flatten(),
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
+        let is_peer = peer_limit.is_some();
         let (execution_mode, permission_level) = match child_authority(
-            parent_limit(
-                &session,
-                parent.as_ref(),
-                &self.state.session_agents(&request.session_id),
-            ),
+            peer_limit.or_else(|| {
+                parent_limit(
+                    &session,
+                    parent.as_ref(),
+                    &self.state.session_agents(&request.session_id),
+                )
+            }),
             request.execution_mode,
             request.permission_level,
             defaults,
@@ -309,14 +322,14 @@ impl SessionRuntimeStore {
                 .room_member_user_id(&request.session_id, &caller_user_id),
         );
         let create_request = match caller_metaagent_id.as_deref() {
-            Some(metaagent_id) if !request.metaagent => {
+            Some(metaagent_id) if !request.metaagent && !is_peer => {
                 create_request.with_parent_agent_id(metaagent_id)
             }
             _ => create_request,
         };
         let create_request = match idempotency_key {
-            Some(key) if parent.is_some() => create_request.with_spawn_key(key),
-            _ => create_request,
+            Some(key) => create_request.with_spawn_key(key),
+            None => create_request,
         };
         let create_request = if let Some(alias) = request.alias {
             create_request.with_alias(alias)

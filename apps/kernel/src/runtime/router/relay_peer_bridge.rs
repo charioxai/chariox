@@ -35,6 +35,21 @@ impl CommandRouter {
         self.runtime_state
             .receive_workflow_notification_peer(kernel, owner, request)
     }
+    pub(crate) async fn relay_peer_agent(
+        &self,
+        kernel: &str,
+        owner: &str,
+        request: crate::transport::relay_peer::RelayPeerRequest,
+    ) -> Result<crate::transport::relay_peer::RelayPeerResponse, DaemonError> {
+        if let request @ crate::transport::relay_peer::RelayPeerRequest::SpawnRoomPeer { .. } =
+            request
+        {
+            return self.spawn_room_peer(kernel, owner, request).await;
+        }
+        self.runtime_state
+            .receive_peer_agent_request(kernel, owner, request)
+            .await
+    }
     pub(crate) fn relay_project_environment(
         &self,
         owner: &str,

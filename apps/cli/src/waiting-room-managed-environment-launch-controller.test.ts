@@ -70,6 +70,7 @@ test("managed TUI launch starts and monitors direct source transfer", async () =
 
   assert.deepEqual(harness.transferStarts, ["context-1"])
   assert.deepEqual(harness.transferStatusRequests, ["context-1"])
+  assert.deepEqual(harness.transferLaunchKeys, [harness.createdInputs[0]?.clientRequestId], "the transfer start names the launch its create named")
   assert.equal(prepared.workspacePath, "/managed/context-1/primary")
   assert.equal(prepared.launchTarget.development.kind, "from_source")
   assert.deepEqual(prepared.projectSelection, {
@@ -337,6 +338,7 @@ function createHarness(options: HarnessOptions) {
   }> = []
   const connectedKernels: Array<{ machineId: string; kernelId: string }> = []
   const transferStarts: string[] = []
+  const transferLaunchKeys: (string | undefined)[] = []
   const transferStatusRequests: string[] = []
   const launchTargetRequests: Array<{ contextId: string; planDigest: string }> = []
   const createResults = [...(options.createResults ?? [])]
@@ -384,8 +386,9 @@ function createHarness(options: HarnessOptions) {
       return next
     },
     prepareContextTransfer: async () => options.transferTicket ?? transferTicket(sourcePlan()),
-    startContextTransfer: async (ticket) => {
+    startContextTransfer: async (ticket, launchId) => {
       transferStarts.push(ticket.contextPlan.contextId)
+      transferLaunchKeys.push(launchId)
       return options.startedTransfer ?? transferStatus("completed", ticket.contextPlan)
     },
     getContextTransferStatus: async (contextId) => {
@@ -432,6 +435,7 @@ function createHarness(options: HarnessOptions) {
     lifecycleRequests,
     connectedKernels,
     transferStarts,
+    transferLaunchKeys,
     transferStatusRequests,
     launchTargetRequests,
     get connectAttempts() {

@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: one lifecycle sweep runs at a time. A sweep reads the whole task
 //! ledger, and every settled turn, prompt dispatch and Room change asks for one, so asking while a sweep
-//! runs only marks that it must run once more instead of starting another.
+//! runs only marks that it must run once more instead of starting another. Peer outcome delivery
+//! passes run one at a time the same way, apart from the sweep.
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

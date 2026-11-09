@@ -178,17 +178,20 @@ export const vocabularyFindings = (path, text) => patternFindings(path, text, VO
 const isProductPath = path => !SELF_FILES.has(path) && !EXEMPT_PATH.test(path)
 export const isCheckedPath = path => isProductPath(path) && !ALLOWED_FILES.has(path)
 
-const PATH_SCAN_ROOTS = ['apps/kernel/src/', 'apps/cli/src/', 'packages/kernel-client/src/', 'apps/relay/src/']
-const PATH_SCAN_EXTENSION = /\.(?:rs|tsx?)$/
-// A string literal that starts with a control-plane path, optionally after a `{}` or `${..}` base.
-const PATH_LITERAL = /["'`](?:\{\}|\$\{[^}]*\})?(\/(?:v1\/|managed-|control-plane|relay\/|kernels\/)[^"'`\s]*)/g
+const PATH_SCAN_ROOTS = [
+  'apps/kernel/src/', 'apps/cli/src/', 'apps/cli/scripts/', 'packages/kernel-client/src/', 'apps/relay/src/',
+  'apps/server/src/', 'apps/setup/', 'deploy/', 'docker/', 'packages/aegs-sdk/src/', 'scripts/',
+]
+const PATH_SCAN_EXTENSION = /\.(?:rs|tsx?|mjs|cjs|js|sh)$|(?:^|\/)Dockerfile[^/]*$/
+// A string literal that starts with a control-plane path, optionally after a `{}`, `${..}` or `$NAME` base.
+const PATH_LITERAL = /["'`](?:\{\}|\$\{[^}]*\}|\$\w+)?(\/(?:v1\/|managed-|control-plane|relay\/|kernels\/|browser\/)[^"'`\s]*)/g
 
 // Control-plane API paths in a source file, normalized: no query, placeholders as `{}`.
 export function controlPlanePaths(path, text) {
   const found = []
   productText(path, text).split('\n').forEach((line, index) => {
     const code = line.trimStart()
-    if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*')) return
+    if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*') || code.startsWith('#')) return
     for (const hit of line.matchAll(PATH_LITERAL)) {
       const normalized = hit[1].split('?')[0].replace(/\$\{[^}]*(?:\}|$)/g, '{}').replace(/\{[^}]*\}/g, '{}').replace(/\\+$/, '')
       if (/\.[a-z]+$/.test(normalized)) continue // a file name such as /managed-vault.json, not an API path
@@ -229,14 +232,28 @@ function readAllowlist(root, name) {
 
 const problem = (file, kind, text, line = 0) => ({ file, line, kind, text })
 
+// Every leak is owned: the plan row it belongs to and the slice (docs/design/OSS_BOUNDARY_PLAN.md,
+// section 2) that deletes it. The ceiling is the recorded entry total and only goes down: lower it
+// in the change that deletes entries; raising it needs the owner, not a reviewer.
+export const LEAK_ROWS = new Set(['OSB-04', 'OSB-05', 'OSB-06', 'OSB-07', 'OSB-09'])
+export const LEAK_SLICES = new Set(['B0', 'B1', 'B2', 'B3', 'B4a', 'B4b', 'B5', 'B6', 'B7', 'B8'])
+export const LEAK_ENTRY_CEILING = 39
+
 function vocabularyProblems(root, files) {
   const leaks = new Map()
-  for (const entry of readAllowlist(root, 'oss-boundary-leaks.allow.json')) {
+  const problems = []
+  const entries = readAllowlist(root, 'oss-boundary-leaks.allow.json')
+  for (const entry of entries) {
     if (!entry.path || !entry.removedBy) { leaks.set(entry.path ?? '?', null); continue }
+    if (!LEAK_ROWS.has(entry.row) || !LEAK_SLICES.has(entry.slice)) {
+      problems.push(problem(entry.path, 'leak entry', `needs an owner row (${[...LEAK_ROWS].join('|')}) and a plan slice (${[...LEAK_SLICES].join('|')})`))
+    }
     leaks.set(entry.path, entry)
   }
+  if (entries.length > LEAK_ENTRY_CEILING) {
+    problems.push(problem('scripts/oss-boundary-leaks.allow.json', 'leak list grew', `${entries.length} entries, recorded total ${LEAK_ENTRY_CEILING}: move the logic to Cloud instead of adding an entry`))
+  }
   const matched = new Set()
-  const problems = []
   for (const path of files.filter(isCheckedPath)) {
     const text = readText(root, path)
     if (text === null) continue
@@ -259,8 +276,10 @@ function controlPlanePathProblems(root, files) {
   const problems = []
   for (const entry of entries) {
     const label = entry.path ?? '?'
-    if (!entry.path || !entry.why || !entry.seam || !Array.isArray(entry.callers) || entry.callers.length === 0) {
-      problems.push(problem('scripts/control-plane-paths.allow.json', 'path entry', `${label} needs path, callers, why and seam`))
+    // A path nobody has classified yet names the slice that decides it instead of a seam.
+    const owned = entry.seam || LEAK_SLICES.has(entry.slice)
+    if (!entry.path || !entry.why || !owned || !Array.isArray(entry.callers) || entry.callers.length === 0) {
+      problems.push(problem('scripts/control-plane-paths.allow.json', 'path entry', `${label} needs path, callers, why and a seam or a plan slice`))
       continue
     }
     known.set(entry.path, entry)

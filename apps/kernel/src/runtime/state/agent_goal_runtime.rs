@@ -436,6 +436,7 @@ impl KernelRuntimeState {
         request: &crate::local::SubmitPromptRequest,
         owner: &str,
     ) -> Result<Option<crate::local::SubmitPromptRequest>, DaemonError> {
+        let owner = &self.room_member_user_id(&request.session_id, owner);
         let Some(rest) = request.prompt.trim().strip_prefix("/goal ") else {
             return Ok(None);
         };
@@ -544,6 +545,9 @@ impl KernelRuntimeState {
         request: &crate::local::SubmitPromptRequest,
         owner: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        // Goals, tasks and attachments keep the identity the room keeps for its owner: `local` in
+        // a room made before enrollment.
+        let owner = &self.room_member_user_id(&request.session_id, owner);
         if let Some(response) = self.adopt_legacy_goal(request, owner)? {
             return Ok(Some(response));
         }
@@ -557,6 +561,7 @@ impl KernelRuntimeState {
         owner: &str,
         sudo: Option<&crate::local::KernelSudoTurn>,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
+        let owner = &self.room_member_user_id(&request.session_id, owner);
         let Some(request) = self.prepare_goal_control(request, owner)? else {
             return Ok(None);
         };

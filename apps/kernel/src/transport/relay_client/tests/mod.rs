@@ -7,6 +7,7 @@ mod cloud_terminal_pairing;
 mod leased_prompt_run_change;
 mod ordinary_lease_caller;
 mod peer_events;
+mod peer_machine;
 mod peer_transport;
 mod registration;
 mod remote_agents;

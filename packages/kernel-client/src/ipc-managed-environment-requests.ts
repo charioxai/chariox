@@ -279,6 +279,7 @@ export function observeManagedEnvironmentPreReimageRequest(input: {
 
 // MP-08 / MP-11: kernel-owned portability check returns acknowledgement only.
 export const providerAccountPortabilityPreflightMinimumProtocolVersion = 491
-export function preflightProviderAccountPortabilityRequest(providerAccounts: ManagedEnvironmentProviderAccounts) {
-  return {PreflightProviderAccountPortability: {providerAccounts}} as const
+/** `launchId` names the launch, so its transfer start finds the Vault unlock this preflight holds. */
+export function preflightProviderAccountPortabilityRequest(providerAccounts: ManagedEnvironmentProviderAccounts, launchId?: string) {
+  return {PreflightProviderAccountPortability: {providerAccounts, ...(launchId ? {launchId} : {})}} as const
 }

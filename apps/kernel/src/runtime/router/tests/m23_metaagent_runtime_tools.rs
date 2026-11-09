@@ -302,6 +302,7 @@ mod workflow_code_patterns;
 mod authority_limit;
 mod decisions;
 mod hidden_subagents;
+mod peer_spawn;
 mod room_admission;
 mod room_prompt_dispatch;
 mod subtree;

@@ -1,4 +1,5 @@
 //! Room commands for the agent tree: a parent reads and controls the agents below it.
+use super::agent_peer::PeerTarget;
 use super::request::meta_kernel_command;
 use super::result::{meta_command_error, meta_command_failure_result};
 use super::*;
@@ -30,6 +31,17 @@ impl CommandRouter {
                     args,
                 )
                 .await?,
+            ),
+            Some(verb @ ("steer" | "message")) => Some(
+                self.dispatch_meta_agent_message_command(
+                    provider_run,
+                    session,
+                    caller,
+                    command,
+                    verb == "steer",
+                    args,
+                )
+                .await,
             ),
             Some("children") => {
                 Some(self.meta_agent_children_result(session, caller, command, args))
@@ -110,29 +122,70 @@ impl CommandRouter {
         command: &str,
         args: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
-        let [reference] = args else {
-            return Ok(meta_command_failure_result(
+        let usage = || {
+            Ok(meta_command_failure_result(
                 command,
-                meta_command_error("usage: agent cancel <agent-ref>"),
-            ));
+                meta_command_error(
+                    "usage: agent cancel <agent-ref> [--room <room> [--kernel <kernel>|--machine <machine>]]",
+                ),
+            ))
         };
-        let target = match self
-            .resolve_owned_regular_agent(session.id(), parent, reference)
-            .await
-        {
+        let Some((reference, options)) = args.split_first() else {
+            return usage();
+        };
+        let Some(PeerTarget { room, kernel, .. }) = PeerTarget::parse(options, false) else {
+            return usage();
+        };
+        if let (Some(kernel), Some(room)) = (kernel, room) {
+            match self.runtime_state.resolve_peer_kernel(kernel).await {
+                Ok(Some(kernel)) => {
+                    return Ok(
+                        match self
+                            .cancel_peer_agent_on_kernel(parent, &kernel, room, reference)
+                            .await
+                        {
+                            Ok(cancelled) => RuntimeToolResult {
+                                ok: true,
+                                payload: serde_json::json!({"command": command, "response": cancelled}),
+                            },
+                            Err(error) => meta_command_failure_result(command, error),
+                        },
+                    )
+                }
+                Ok(None) => {}
+                Err(error) => return Ok(meta_command_failure_result(command, error)),
+            }
+        }
+        let target = match room {
+            Some(room) => {
+                self.runtime_state
+                    .resolve_message_target(session, parent, Some(room), reference)
+            }
+            None => {
+                self.resolve_owned_regular_agent(session.id(), parent, reference)
+                    .await
+            }
+        };
+        let target = match target {
             Ok(target) => target,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
-        let attachment_id = match self
-            .ensure_metaagent_command_attachment(session.id(), parent)
-            .await
-        {
+        // In another room the kernel cancels through that agent's own delivery seat, so the
+        // caller never joins the room; the command still records the caller.
+        let attachment_id = if target.session_id() == session.id() {
+            self.ensure_metaagent_command_attachment(session.id(), parent)
+                .await
+        } else {
+            self.runtime_state
+                .ensure_agent_message_attachment(target.session_id(), &target)
+        };
+        let attachment_id = match attachment_id {
             Ok(id) => id,
             Err(error) => return Ok(meta_command_failure_result(command, error)),
         };
         let request =
             LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
-                session_id: session.id().to_string(),
+                session_id: target.session_id().to_string(),
                 attachment_id,
                 target_agent_id: Some(target.id().to_string()),
                 expected_prompt_id: None,
@@ -148,6 +201,33 @@ impl CommandRouter {
             )),
             Err(error) => Ok(meta_command_failure_result(command, error)),
         }
+    }
+
+    /// `agent cancel <agent> --room <room> --kernel <kernel>` on another kernel of the owner.
+    async fn cancel_peer_agent_on_kernel(
+        &self,
+        parent: &crate::agent::AgentInstance,
+        kernel: &str,
+        room: &str,
+        reference: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let request_id = self
+            .runtime_state
+            .peer_cancel_request_id(parent, kernel, room, reference)?;
+        let (target, duplicate) = self
+            .runtime_state
+            .relay_peer_agent(
+                parent,
+                kernel,
+                room,
+                reference,
+                crate::runtime::state::peer_agent_outbound::PeerAgentCall::Cancel,
+                request_id,
+            )
+            .await?;
+        Ok(
+            serde_json::json!({"cancelled": true, "duplicate": duplicate, "kernel": target.kernel_id, "room": target.room_id, "agent": target.agent_id}),
+        )
     }
 
     /// `agent children [agent]` lists everything below the caller, or below one of its descendants.
@@ -243,6 +323,18 @@ impl CommandRouter {
         tokens: &[String],
     ) -> Result<RuntimeToolResult, DaemonError> {
         use crate::runtime::state::ChildDecisionStatus;
+        if tokens
+            .iter()
+            .skip(2)
+            .any(|token| matches!(token.as_str(), "--room" | "--kernel" | "--machine"))
+        {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "peer_decision_refused: a decision is answered or passed only by the agent that holds it in its own room; a peer never settles it, send the agent a message instead",
+                ),
+            ));
+        }
         let status = match (
             tokens.get(1).map(String::as_str),
             tokens.get(2..).unwrap_or_default(),

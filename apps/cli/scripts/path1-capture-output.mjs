@@ -1,4 +1,5 @@
-import { open, lstat, realpath, unlink } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { open, lstat, readFile, realpath, unlink } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -12,6 +13,22 @@ function requireValue(condition, message) {
 function within(root, target) {
   const path = relative(root, target)
   return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+}
+
+const MAX_CAPTURE_INPUT_BYTES = 1024 * 1024
+
+// Reads a retained capture as exact bytes: a bounded regular file, no symlink, bound by its sha256.
+export async function readCaptureInput(file) {
+  const canonical = await realpath(resolve(file))
+  const metadata = await lstat(resolve(file))
+  requireValue(metadata.isFile() && !metadata.isSymbolicLink() && metadata.size <= MAX_CAPTURE_INPUT_BYTES,
+    "capture input must be a bounded regular file")
+  const bytes = await readFile(canonical)
+  requireValue(bytes.length <= MAX_CAPTURE_INPUT_BYTES, "capture input exceeds the size bound")
+  return {
+    capture: JSON.parse(bytes.toString("utf8")),
+    evidence: { path: canonical, sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` },
+  }
 }
 
 async function assertNoSymlinkPath(directory) {

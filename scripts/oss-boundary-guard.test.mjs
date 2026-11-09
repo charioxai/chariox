@@ -1,7 +1,7 @@
 // OF-18+: OSS product code stays free of compute-provider and Cloud-only business logic.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -97,18 +97,19 @@ function scratch(files, allow = {}) {
   write('scripts/control-plane-requests.allow.json', JSON.stringify(allow.requests ?? []))
   return { root, files: Object.keys(files), done: () => rmSync(root, { recursive: true, force: true }) }
 }
-const problemsOf = (files, allow) => {
+const fullProblemsOf = (files, allow) => {
   const repo = scratch(files, allow)
-  try { return boundaryProblems(repo.root, repo.files).map(p => `${p.kind}: ${p.file}`) } finally { repo.done() }
+  try { return boundaryProblems(repo.root, repo.files) } finally { repo.done() }
 }
+const problemsOf = (files, allow) => fullProblemsOf(files, allow).map(p => `${p.kind}: ${p.file}`)
 
 test('a planted Cloud vocabulary leak is red until it is listed, and a stale entry is red', () => {
   const files = { 'apps/cli/src/plan.ts': 'export const preset = "agents_done" // auto-stop policy\n' }
   assert.equal(problemsOf(files).length, 1)
   assert.match(problemsOf(files)[0], /^auto-stop word: Cloud-only vocabulary in OSS.*: apps\/cli\/src\/plan\.ts$/)
-  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2' }] }), [])
-  assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
-  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts' }] }), ['leak entry: apps/cli/src/plan.ts'])
+  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), [])
+  assert.deepEqual(problemsOf({ 'apps/cli/src/plan.ts': 'export const preset = 1\n' }, { leaks: [{ path: 'apps/cli/src/plan.ts', removedBy: 'item 2', row: 'OSB-09', slice: 'B2' }] }), ['stale leak entry: apps/cli/src/plan.ts'])
+  assert.deepEqual(problemsOf(files, { leaks: [{ path: 'apps/cli/src/plan.ts', row: 'OSB-09', slice: 'B2' }] }), ['leak entry: apps/cli/src/plan.ts'])
   assert.deepEqual(problemsOf({ 'apps/cli/src/plan.test.ts': 'const rent = "auto-stop"' }), [])
 })
 
@@ -142,6 +143,43 @@ test('a planted Cloud-shaped request or kernel-client builder is red until it is
   assert.deepEqual(problemsOf(files, { requests }), [])
   assert.deepEqual(problemsOf(files, { requests: [{ ...requests[0], why: 'needed' }, requests[1]] }), ['request entry: scripts/control-plane-requests.allow.json'])
   assert.deepEqual(problemsOf({ ...files, 'packages/kernel-client/src/ipc-cloud-ledger-requests.ts': 'export {}\n' }, { requests: [...requests, { name: 'LocalDaemonRequest::Gone', why: 'generic seam: removed long ago' }] }), ['stale request entry: scripts/control-plane-requests.allow.json'])
+})
+
+test('a control-plane path in apps/server or under /browser/ is seen by the guard', () => {
+  const planted = { 'apps/server/src/hosted-trigger.ts': 'const u = new URL(`/browser/x/${id}/admission`, origin)\n' }
+  assert.deepEqual(problemsOf(planted), ['unlisted control-plane path: apps/server/src/hosted-trigger.ts'])
+  const entry = { path: '/browser/x/{}/admission', callers: ['apps/server/src/hosted-trigger.ts'], why: 'w', seam: 'generic seam: hosted trigger admission' }
+  assert.deepEqual(problemsOf(planted, { paths: [entry] }), [])
+  assert.deepEqual(problemsOf({ 'packages/aegs-sdk/src/server.rs': 'const P: &str = "/v1/subscriptions";\n' }), ['unlisted control-plane path: packages/aegs-sdk/src/server.rs'])
+  assert.deepEqual(problemsOf({ 'scripts/e2e-stack/live.mjs': 'await get("/relay/token")\n' }), ['unlisted control-plane path: scripts/e2e-stack/live.mjs'])
+  assert.deepEqual(problemsOf({ 'deploy/run.sh': 'curl "$ORIGIN/v1/owners/kernels"\n' }), ['unlisted control-plane path: deploy/run.sh'])
+})
+
+test('a leak-list entry needs an owner row and a plan slice', () => {
+  const files = { 'apps/cli/src/plan.ts': 'export const preset = "agents_done" // auto-stop policy\n' }
+  const entry = { path: 'apps/cli/src/plan.ts', removedBy: 'B2', row: 'OSB-09', slice: 'B2' }
+  assert.deepEqual(problemsOf(files, { leaks: [entry] }), [])
+  for (const broken of [{ row: undefined }, { slice: undefined }, { row: 'OSB-99' }, { slice: 'B9' }, { row: 'reimage' }]) {
+    assert.deepEqual(problemsOf(files, { leaks: [{ ...entry, ...broken }] }), ['leak entry: apps/cli/src/plan.ts'], JSON.stringify(broken))
+  }
+  assert.match(fullProblemsOf(files, { leaks: [{ ...entry, row: undefined }] })[0].text, /owner row/)
+})
+
+test('the leak list may not grow past the recorded total', () => {
+  assert.ok(Number.isInteger(guard.LEAK_ENTRY_CEILING) && guard.LEAK_ENTRY_CEILING > 0, 'the guard records the leak-list ceiling')
+  const files = {}
+  const leaks = []
+  for (let i = 0; i <= guard.LEAK_ENTRY_CEILING; i++) {
+    files[`apps/cli/src/leak${i}.ts`] = 'export const preset = "agents_done" // auto-stop policy\n'
+    leaks.push({ path: `apps/cli/src/leak${i}.ts`, removedBy: 'B2', row: 'OSB-09', slice: 'B2' })
+  }
+  assert.deepEqual(problemsOf(files, { leaks }), ['leak list grew: scripts/oss-boundary-leaks.allow.json'])
+  assert.deepEqual(problemsOf(Object.fromEntries(Object.entries(files).slice(1)), { leaks: leaks.slice(1) }), [])
+})
+
+test('the recorded leak ceiling is the current entry count, so deleting entries lowers it', () => {
+  const entries = JSON.parse(readFileSync(resolve(fileURLToPath(import.meta.url), '../oss-boundary-leaks.allow.json'), 'utf8'))
+  assert.ok(entries.length === guard.LEAK_ENTRY_CEILING, `${entries.length} entries but the ceiling is ${guard.LEAK_ENTRY_CEILING}: set LEAK_ENTRY_CEILING to the new total`)
 })
 
 test('the repository has no unlisted provider names, Cloud vocabulary, control-plane paths or Cloud-shaped requests', () => {

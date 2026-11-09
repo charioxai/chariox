@@ -122,7 +122,7 @@ impl KernelRuntimeState {
                 else {
                     continue;
                 };
-                if !tree_rev::claim_publication(&session_id, &root, fingerprint) {
+                if !tree_rev::claim_publication(&session_id, &root, fingerprint, tree.rev) {
                     continue;
                 }
                 if let Err(error) = self.owned.durable_state_store.outside_publish(
@@ -137,6 +137,10 @@ impl KernelRuntimeState {
                 ) {
                     tracing::warn!(%error, %root, "A4: tree change event not published");
                 }
+                // The room's own clients hear of the change through their projection.
+                self.owned
+                    .session_projection
+                    .record_session_change(&session_id);
             }
         }
         tree_rev::retain(|session, root| {

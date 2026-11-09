@@ -1,4 +1,4 @@
-pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--command-id <id>]";
+pub(crate) const AGENT_SPAWN_USAGE: &str = "agent spawn [alias] [model] [--provider <provider>] [--model <model>] [--effort <effort>|--variant <variant>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--account-profile <profile>] [--permission required|yolo] [--deadline <90s|30m|2h|1d>] [--room <room> [--kernel <kernel-ref>] [--no-follow]] [--command-id <id>]";
 
 use super::super::{MetaCommandDoc, MetaCommandPolicy};
 
@@ -79,6 +79,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
             "agent spawn isolated-builder --slice new:headless",
             "agent spawn slice-worker --slice linux-dev",
             "agent spawn slice-child --slice <self.location.kernel_id>",
+            "agent spawn reviewer --room qa-room",
         ],
         tags: &["agent", "spawn", "worker", "orchestration"],
         intents: &[
@@ -93,7 +94,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "owned agents only",
         routed: true,
-        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation. `--slice` takes a slice id or name, or the full worker kernel ID (`self.location.kernel_id` from scoped discovery) to place the child on the slice the calling agent runs in; `current`, aliases and ID prefixes are not accepted. Omitting placement creates the child on the home kernel.",
+        description: "Create a regular agent owned by the current user. Agents in Meta mode cannot spawn another agent in Meta mode. Spawn can choose provider, model, and effort/variant, and uses the same placement option contract as normal agent/session launch surfaces: directory placement, remote kernel placement, existing slice placement, and new slice creation. `--slice` takes a slice id or name, or the full worker kernel ID (`self.location.kernel_id` from scoped discovery) to place the child on the slice the calling agent runs in; `current`, aliases and ID prefixes are not accepted. Omitting placement creates the child on the home kernel. `--room <room>` (a room agent only; a sub-agent is refused) instead creates an ordinary peer agent in another room of the same owner on this kernel: it has no parent, counts in that room, starts in that room's own folder, and never has more authority than the calling agent. It takes only the identity and permission options (`--provider`, `--model`, `--effort`, `--account-profile`, `--permission`); `--no-follow` is accepted and recorded. With `--kernel <kernel-ref>` the room is on another kernel of the same owner, named as for remote placement; it is followed the same way unless `--no-follow`, takes `--command-id` to name the call across turns (a retry with the same id, or the same spawn again in the same turn, answers the peer already created with `duplicate: true`), and a refusal names its reason (room_unavailable, kernel_unreachable, owner_unverified, not_permitted, room_full).",
     },
     MetaCommandDoc {
         name: "agent focus",
@@ -148,16 +149,44 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
     MetaCommandDoc {
         name: "agent cancel",
         aliases: &["agent cancel"],
-        usage: "agent cancel <agent-ref>",
-        examples: &["agent cancel worker-1"],
+        usage: "agent cancel <agent-ref> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]]",
+        examples: &["agent cancel worker-1", "agent cancel reviewer --room 18e6036479710b80"],
         tags: &["agent", "cancel", "stop", "orchestration"],
-        intents: &["stop a worker's turn", "interrupt a sub-agent", "cancel what a child is doing"],
+        intents: &["stop a worker's turn", "interrupt a sub-agent", "cancel what a child is doing", "stop a peer's turn"],
         scope: "session",
         mutates: true,
         policy: MetaCommandPolicy::Allow,
-        authority: "agents below the caller",
+        authority: "agents below the caller; peers of the same owner with no more authority than the caller",
         routed: true,
-        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event.",
+        description: "Stop the active turn of an agent below you, at any depth, and keep the agent. Its finish arrives as a child_finished event. A peer (an ordinary agent of this or another room of the same owner, never one above you) can be stopped too when its permission level and mode are at or below yours; --room names its room.",
+    },
+    MetaCommandDoc {
+        name: "agent steer",
+        aliases: &["agent steer"],
+        usage: "agent steer <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]]",
+        examples: &["agent steer worker-1 \"stop editing parser.rs\"", "agent steer reviewer \"use the new schema\" --room 18e6036479710b80"],
+        tags: &["agent", "steer", "message", "orchestration"],
+        intents: &["redirect a worker", "steer a sub-agent", "interrupt a peer with an instruction"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "agents below the caller; peers of the same owner with no more authority than the caller",
+        routed: true,
+        description: "Send an urgent message to an agent. It reaches the agent as a message from you with your name on it, never as a user prompt. An agent below you, or a peer (an ordinary agent of this or another room, on this or another kernel, of the same owner) whose permission level and mode are at or below yours, can be steered; for a peer with more authority use `agent message`. This is chariox.send_agent_message with urgent set.",
+    },
+    MetaCommandDoc {
+        name: "agent message",
+        aliases: &["agent message"],
+        usage: "agent message <agent-ref> <text> [--room <room> [--kernel <kernel-ref> | --machine <machine-ref>]] [--reply-requested]",
+        examples: &["agent message worker-1 \"parser.rs is mine for the hour\"", "agent message reviewer \"which tests cover this?\" --room 18e6036479710b80 --reply-requested"],
+        tags: &["agent", "message", "tell", "peer", "orchestration"],
+        intents: &["tell another agent something", "ask a peer a question", "message an agent in another room"],
+        scope: "session",
+        mutates: true,
+        policy: MetaCommandPolicy::Allow,
+        authority: "any ordinary agent of the same owner, in this or another room, on this or another kernel",
+        routed: true,
+        description: "Send a message to an agent. It arrives in the agent's inbox as a message from you with your name on it and gives you no authority over it. With --reply-requested the agent is asked to answer. A message never answers, approves or denies a decision card. This is chariox.send_agent_message.",
     },
     MetaCommandDoc {
         name: "agent deadline",
@@ -199,7 +228,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "the current holder of a sub-agent's decision",
         routed: true,
-        description: "Answer a decision a sub-agent raised and your child_decision event named, with one of its choice ids or free text. Only the current holder can answer; a settled decision reports settled_by_user.",
+        description: "Answer a decision a sub-agent raised and your child_decision event named, with one of its choice ids or free text. Only the current holder can answer, and only in this room: it never answers for a peer, so --room, --kernel and --machine are refused. A settled decision reports settled_by_user, an id you were never offered reports unknown_interaction.",
     },
     MetaCommandDoc {
         name: "agent pass",
@@ -213,7 +242,7 @@ pub(super) const COMMANDS: &[MetaCommandDoc] = &[
         policy: MetaCommandPolicy::Allow,
         authority: "the current holder of a sub-agent's decision",
         routed: true,
-        description: "Hand a decision you hold to the next holder above you: your parent agent, or the user. The decision stays one card.",
+        description: "Hand a decision you hold to the next holder above you: your parent agent, or the user. The decision stays one card. It never acts for a peer, so --room, --kernel and --machine are refused.",
     },
     MetaCommandDoc {
         name: "agent usage",

@@ -253,6 +253,7 @@ mod tests {
         let request = LocalDaemonRequest::PreflightProviderAccountPortability(
             crate::local::PreflightProviderAccountPortabilityRequest {
                 provider_accounts: crate::local::ManagedEnvironmentProviderAccounts::None,
+                launch_id: None,
             },
         );
         let mut command = KernelCommand::from_local_request("preflight", None, None, &request);

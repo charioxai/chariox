@@ -92,8 +92,9 @@ export function startOwnerManagedContextTransferRequest(ownerManaged: OwnerManag
   return { StartManagedContextTransfer: { interactive: true, ownerManaged } } as const
 }
 
-export function startManagedContextTransferRequest(ticket: ManagedContextTransferTicket, interactive = false) {
-  return { StartManagedContextTransfer: { ticket, ...(interactive ? { interactive: true } : {}) } } as const
+/** `launchId` is the key the same launch gave its preflight, so the export asks in that launch's room. */
+export function startManagedContextTransferRequest(ticket: ManagedContextTransferTicket, interactive = false, launchId?: string) {
+  return { StartManagedContextTransfer: { ticket, ...(interactive ? { interactive: true } : {}), ...(launchId ? { launchId } : {}) } } as const
 }
 
 export function getManagedContextTransferStatusRequest(contextId: string) {

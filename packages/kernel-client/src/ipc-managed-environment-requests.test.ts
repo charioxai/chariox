@@ -169,4 +169,5 @@ test("MP-08 / MP-11 protocol 491 provider portability sends selection only", asy
   assert.equal(providerAccountPortabilityPreflightMinimumProtocolVersion, 491)
   const providerAccounts = {kind: "selected" as const, accounts: [{provider: "codex", accountProfile: "synthetic-profile"}]}
   assert.deepEqual(preflightProviderAccountPortabilityRequest(providerAccounts), {PreflightProviderAccountPortability: {providerAccounts}})
+  assert.deepEqual(preflightProviderAccountPortabilityRequest(providerAccounts, "launch-1"), {PreflightProviderAccountPortability: {providerAccounts, launchId: "launch-1"}})
 })

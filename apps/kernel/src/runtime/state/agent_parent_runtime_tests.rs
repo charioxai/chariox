@@ -424,6 +424,90 @@ impl LeasedTree {
             .unwrap()
     }
 
+    /// Sends `agent` the entry prompt of a new one-node workflow that keeps the agent's context,
+    /// through the admission every workflow prompt takes, and returns what it dispatched.
+    async fn submit_workflow(&self, agent: &str, prompt_id: &str) -> WorkflowPromptDispatches {
+        let (run_id, node_run_id) = {
+            let app = self.app.lock().await;
+            let mut sessions = app.sessions_mut();
+            let workflow = sessions
+                .create_workflow(&self.room, Some(prompt_id.to_string()))
+                .unwrap();
+            // A flushing workflow relaunches the run anyway; one that keeps context reuses it.
+            sessions
+                .set_workflow_flush_agent_context_before_run(&self.room, workflow.id(), false)
+                .unwrap();
+            let node = sessions
+                .add_workflow_node(&self.room, workflow.id(), agent)
+                .unwrap();
+            let endpoint = sessions
+                .create_workflow_endpoint(
+                    &self.room,
+                    workflow.id(),
+                    node.id(),
+                    Some("entry".to_string()),
+                )
+                .unwrap();
+            let run = sessions
+                .invoke_workflow_endpoint(
+                    &self.room,
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("continue".to_string()),
+                )
+                .unwrap();
+            let node_run_id = run.node_runs()[0].id().to_string();
+            sessions
+                .prepare_workflow_turn(
+                    &self.room,
+                    run.id(),
+                    &node_run_id,
+                    format!("workflow-ack:{node_run_id}"),
+                    "continue".to_string(),
+                    None,
+                    None,
+                )
+                .unwrap();
+            (run.id().to_string(), node_run_id)
+        };
+        self.runtime
+            .owned
+            .workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: self.room.clone(),
+                    prompt: crate::session::PromptQueueItem::new(
+                        prompt_id,
+                        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&run_id),
+                        agent,
+                        "continue",
+                        crate::session::PromptStatus::Queued,
+                    )
+                    .with_workflow_context(&run_id, &node_run_id),
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                &run_id,
+                &node_run_id,
+            )
+            .unwrap()
+    }
+
+    /// Delivers metaagent `agent` an event from `local`, as every metaagent event is delivered.
+    fn deliver_event(&self, agent: &str) -> WorkflowPromptDispatches {
+        let metaagent = self.runtime.owned.agent_store.get_agent(agent).unwrap();
+        self.runtime.owned.metaagent_event_prompt_for_metaagent(
+            &self.room,
+            &metaagent,
+            "agent.turn.completed",
+            Some(&self.local),
+            &self.attachment,
+            "local completed",
+            "local completed its turn",
+            serde_json::json!({ "worker_id": self.local }),
+            self.local.clone(),
+        )
+    }
+
     /// The settings `agent` asked for itself.
     fn own_settings(&self, agent: &str) -> (Option<Mode>, Option<Level>) {
         let agent = self.runtime.owned.agent_store.get_agent(agent).unwrap();
@@ -871,4 +955,158 @@ async fn a_prompt_sent_during_a_turn_never_ends_it_for_a_changed_limit() {
         Some(launched.id().to_owned()),
         "a prompt queued behind a running turn must never end that turn"
     );
+}
+
+/// Leaves the idle run of `claude_like` at OPEN under a parent lowered to LIMITED during its
+/// last turn, and returns that run.
+async fn idle_run_above_a_lowered_limit(
+    tree: &mut LeasedTree,
+) -> crate::provider::RuntimeProviderRun {
+    let (room, high, claude_like) = (
+        tree.room.clone(),
+        tree.high.clone(),
+        tree.claude_like.clone(),
+    );
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &claude_like);
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    tree.app
+        .lock()
+        .await
+        .complete_active_prompt(&room, &claude_like, None)
+        .unwrap();
+    assert_eq!(tree.next_turn(&claude_like), OPEN);
+    launched
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_workflow_prompt_after_a_turn_that_outlived_a_lowered_limit_launches_at_it() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let claude_like = tree.claude_like.clone();
+    let launched = idle_run_above_a_lowered_limit(&mut tree).await;
+    tree.runtime
+        .owned
+        .provider_store
+        .enable_workflow_tools(launched.id())
+        .unwrap();
+    let dispatches = tree
+        .submit_workflow(&claude_like, "workflow-after-lowered-limit")
+        .await;
+    let bound = dispatches
+        .local
+        .first()
+        .map(|dispatch| dispatch.provider_run_id.clone())
+        .or_else(|| dispatches.starting_provider_runs.first().cloned())
+        .expect("the workflow prompt is bound to a run");
+    assert_ne!(
+        bound,
+        launched.id(),
+        "an idle Yolo/Build process must not start a workflow turn under a Required/Plan parent"
+    );
+    let next = tree.runtime.owned.provider_store.get_run(&bound).unwrap();
+    assert_eq!((next.execution_mode(), next.permission_level()), LIMITED);
+    assert_eq!(
+        dispatches.provider_run_retirements.get(&bound),
+        Some(&vec![launched.id().to_string()]),
+        "the ended process is retired before the workflow run launches"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_workflow_prompt_sent_during_a_turn_never_ends_it_for_a_changed_limit() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high, claude_like) = (
+        tree.room.clone(),
+        tree.high.clone(),
+        tree.claude_like.clone(),
+    );
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &claude_like);
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.runtime
+        .owned
+        .provider_store
+        .enable_workflow_tools(launched.id())
+        .unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    let dispatches = tree
+        .submit_workflow(&claude_like, "workflow-during-turn")
+        .await;
+    assert!(
+        dispatches.local.is_empty(),
+        "the workflow prompt waits for the turn"
+    );
+    assert_eq!(
+        tree.live_run(&claude_like).map(|run| run.id().to_owned()),
+        Some(launched.id().to_owned()),
+        "a workflow prompt queued behind a running turn must never end that turn"
+    );
+    assert_eq!(tree.next_turn(&claude_like), OPEN);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_metaagent_event_after_a_turn_that_outlived_a_lowered_limit_starts_at_it() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, claude_like) = (tree.room.clone(), tree.claude_like.clone());
+    tree.app
+        .lock()
+        .await
+        .agents_mut()
+        .activate_agent_meta_mode(&claude_like, None)
+        .unwrap();
+    let launched = idle_run_above_a_lowered_limit(&mut tree).await;
+    let dispatches = tree.deliver_event(&claude_like);
+    assert!(
+        dispatches
+            .local
+            .iter()
+            .all(|dispatch| dispatch.provider_run_id != launched.id()),
+        "an idle Yolo/Build process must not start an event turn under a Required/Plan parent"
+    );
+    assert_eq!(
+        dispatches.project_queue_promotions,
+        vec![(room.clone(), claude_like.clone())],
+        "the event waits for the queue promotion that moves the run"
+    );
+    tree.runtime
+        .advance_project_queued_prompt_after_settlement(&room, &claude_like)
+        .await;
+    let session = tree.runtime.owned.session_store.get_session(&room).unwrap();
+    assert!(
+        tree.runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &claude_like)
+            .is_some(),
+        "the event is delivered"
+    );
+    let next = tree.live_run(&claude_like).unwrap();
+    assert_ne!(next.id(), launched.id());
+    assert_eq!((next.execution_mode(), next.permission_level()), LIMITED);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_metaagent_event_during_a_turn_never_ends_it_for_a_changed_limit() {
+    let mut tree = leased_tree(Mode::Build, Level::Yolo).await;
+    let (room, high, claude_like) = (
+        tree.room.clone(),
+        tree.high.clone(),
+        tree.claude_like.clone(),
+    );
+    tree.app
+        .lock()
+        .await
+        .agents_mut()
+        .activate_agent_meta_mode(&claude_like, None)
+        .unwrap();
+    crate::test_support::admit_room_test_turn(&mut *tree.app.lock().await, &room, &claude_like);
+    let launched = tree.live_run(&claude_like).unwrap();
+    tree.set_settings(&high, Mode::Plan, Level::Required).await;
+    let dispatches = tree.deliver_event(&claude_like);
+    assert!(dispatches.project_queue_promotions.is_empty());
+    assert_eq!(
+        tree.live_run(&claude_like).map(|run| run.id().to_owned()),
+        Some(launched.id().to_owned()),
+        "an event delivered during a running turn must never end that turn"
+    );
+    assert_eq!(tree.next_turn(&claude_like), OPEN);
 }

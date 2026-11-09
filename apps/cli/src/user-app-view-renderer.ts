@@ -3,7 +3,7 @@ import { theme } from "./theme.js"
 import type { UserAppViewPanel } from "./user-app-view-controller.js"
 
 export function createUserAppViewRenderer(renderer: CliRenderer, options: { id?: string; footer?: string } = {}) {
-  const box = new BoxRenderable(renderer, { id: options.id ?? "user-app-view-prototype", position: "absolute", top: 1, left: 1,
+  const box = new BoxRenderable(renderer, { id: options.id ?? "user-app-view", position: "absolute", top: 1, left: 1,
     border: true, flexDirection: "column", padding: 1, visible: false, zIndex: 50 })
   const body = new ScrollBoxRenderable(renderer, { flexGrow: 1, scrollY: true, scrollX: false })
   const text = new TextRenderable(renderer, { content: "", wrapMode: "word", flexShrink: 0 })

@@ -6,15 +6,27 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { TextareaRenderable, BoxRenderable } from "@opentui/core"
 import { createCliUserAppViewsComposition } from "./cli-user-app-views-composition.js"
 import { createCliKernelApprovalComposition } from "./cli-kernel-approval-composition.js"
+import { handleAppSlashCommand } from "./app-command-handler.js"
+import { parseSlashCommand } from "./commands.js"
+import { tuiAppHelp } from "./app-command-catalog.js"
 
-const flag = "CHARIOX_USER_APP_VIEWS_PROTOTYPE"
-test("flag off creates no panel, timers, requests or input hooks",()=>{
-  const old=process.env[flag];delete process.env[flag]
-  try {assert.equal(createCliUserAppViewsComposition({} as never),undefined)}finally{if(old===undefined)delete process.env[flag];else process.env[flag]=old}
+test("/app view open shows an installed App's view in the TUI",async()=>{
+    const h=await createTestRenderer({width:100,height:24,useThread:false})
+  const view={view_id:"v",installation_id:"fixture",generation:"g",origin:"https://app.invalid",browser:{tab_id:"host-tab-1",generation:1}}
+  const client={send:async(request:any)=>{if(request.OpenUserAppView)return {UserAppViewOpened:{view}};if(request.ListUserAppViews)return {UserAppViewsListed:{views:[view]}};if(request.CloseUserAppView)return {UserAppViewClosed:{view_id:"v"}};return {KernelBrowser:{result:{generation:1,snapshot:{accessibility_nodes:[{node_ref:"n",role:"button",name:"Call App",disabled:false}]}}}}}}
+  let dispose!:()=>void
+  try {
+    const views=createRoot(cleanup=>{dispose=cleanup;return createCliUserAppViewsComposition({
+      client:()=>client,renderer:h.renderer,dimensions:()=>({width:100,height:24}),themeRevision:()=>0,currentFocus:()=>null,promptFocus:()=>null,notify(){},approvalOwnsInput:()=>false,
+    })})
+    assert.ok(views,"the App views surface exists")
+    await handleAppSlashCommand({userAppViews:views,sendAppRequest:r=>client.send(r),appendNotice(){},flashFooter(){}},parseSlashCommand("/app view open fixture") as never)
+    await h.renderOnce();assert.match(h.captureCharFrame(),/Call App/)
+    assert.match(tuiAppHelp().join("\n"),/\/app views \| view open INSTALLATION/)
+  }finally{dispose?.();h.renderer.destroy()}
 })
 test("text panel preserves prompt draft/focus and forwards real OpenTUI keys",async()=>{
-  const old=process.env[flag];process.env[flag]="1"
-  const h=await createTestRenderer({width:100,height:24,useThread:false})
+    const h=await createTestRenderer({width:100,height:24,useThread:false})
   const prompt=new TextareaRenderable(h.renderer,{initialValue:"draft kept"});h.renderer.root.add(prompt);prompt.focus()
   const requests:any[]=[];const view={view_id:"v",installation_id:"fixture",generation:"g",origin:"https://app.invalid",browser:{tab_id:"host-tab-1",generation:1}}
   let dispose!:()=>void
@@ -31,11 +43,10 @@ test("text panel preserves prompt draft/focus and forwards real OpenTUI keys",as
     h.renderer.stdin.emit("data",Buffer.from("\x1b"));await sleep(50);assert.equal(prompt.focused,true);assert.equal(prompt.plainText,"draft kept")
     assert.equal(controller.ownsInput(),false)
     h.renderer.keyInput.off("keypress",controller.handleKey)
-  }finally{dispose();h.renderer.destroy();if(old===undefined)delete process.env[flag];else process.env[flag]=old}
+  }finally{dispose();h.renderer.destroy()}
 })
-test("flagged detached approval popup labels user domain and refuses a switched kernel",async()=>{
-  const old=process.env[flag];process.env[flag]="1"
-  const h=await createTestRenderer({width:100,height:28,useThread:false})
+test("detached approval popup labels user domain and refuses a switched kernel",async()=>{
+    const h=await createTestRenderer({width:100,height:28,useThread:false})
   const requests:any[]=[];let listener:(event:any)=>void=()=>{},source:any
   const original={send:async(r:any)=>{requests.push(r);return {UserDomainInteractionAnswered:{interaction_id:"a"}}}}
   source=original
@@ -52,5 +63,5 @@ test("flagged detached approval popup labels user domain and refuses a switched 
     source={send:async()=>{throw Error("wrong kernel")}}
     h.mockInput.pressKey("x");h.renderer.stdin.emit("data",Buffer.from("\r"));await sleep(20)
     assert.equal(requests.length,0);assert.equal(approvals.ownsInput(),true)
-  }finally{h.renderer.keyInput.off("keypress",approvals.handleKey);dispose();h.renderer.destroy();if(old===undefined)delete process.env[flag];else process.env[flag]=old}
+  }finally{h.renderer.keyInput.off("keypress",approvals.handleKey);dispose();h.renderer.destroy()}
 })

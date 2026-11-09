@@ -103,7 +103,16 @@ impl KernelRuntimeState {
                 .iter()
                 .any(|run| run.id() == event.source_id)
         });
-        let source_kind = if agent.is_some() {
+        // A followed peer on another kernel is named by where it runs there.
+        let remote = agent
+            .is_none()
+            .then(|| match event.kind.as_str() {
+                "peer_event" => super::super::peer_source_stamp(&event.source_id),
+                "message" => super::super::peer_message_stamp(&event.source_id, &event.payload),
+                _ => None,
+            })
+            .flatten();
+        let source_kind = if agent.is_some() || remote.is_some() {
             "agent"
         } else if is_run {
             "workflow_run"
@@ -113,8 +122,18 @@ impl KernelRuntimeState {
         let alias = agent
             .as_ref()
             .map(|agent| agent.alias().unwrap_or(agent.agent_ref()).to_owned());
-        let name = alias.as_deref().unwrap_or(&event.source_id);
-        let relation = SenderRelation::of(reader, agent.as_ref(), agents);
+        let remote_name = remote
+            .as_ref()
+            .map(|stamp| format!("{}/{}", stamp.kernel_id, stamp.agent_id));
+        let name = alias
+            .as_deref()
+            .or(remote_name.as_deref())
+            .unwrap_or(&event.source_id);
+        let relation = if remote.is_some() {
+            SenderRelation::Peer
+        } else {
+            SenderRelation::of(reader, agent.as_ref(), agents)
+        };
         let what = super::super::agent_inbox_wake_text::kind_label(&event.kind);
         let mut summary = format!("{what} from {name}");
         summary.truncate(summary.floor_char_boundary(SUMMARY_LIMIT));
@@ -124,6 +143,17 @@ impl KernelRuntimeState {
             .and_then(|fields| fields.remove("attachments"))
             .unwrap_or_else(|| serde_json::json!([]));
         let (payload, truncated) = bounded_payload(&payload);
+        // The kernel stamps an agent sender with where it runs; a peer may be in another room.
+        let (kernel_id, sender_room) = match &agent {
+            Some(agent) => (
+                Some(self.owned.config_projection.snapshot().daemon_id),
+                Some(agent.session_id().to_owned()),
+            ),
+            None => match &remote {
+                Some(stamp) => (Some(stamp.kernel_id.clone()), Some(stamp.room_id.clone())),
+                None => (None, None),
+            },
+        };
         let view = serde_json::json!({
             "sequence": event.sequence,
             "kind": event.kind,
@@ -134,7 +164,8 @@ impl KernelRuntimeState {
                 "kind": source_kind,
                 "id": event.source_id,
                 "alias": alias,
-                "kernel_id": serde_json::Value::Null,
+                "kernel_id": kernel_id,
+                "room": sender_room,
                 "relation": relation.name(),
             },
             "guidance": relation.guidance(name),

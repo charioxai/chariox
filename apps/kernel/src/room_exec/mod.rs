@@ -2,9 +2,13 @@
 mod buffer;
 mod launch;
 mod lease;
+mod placement;
+#[cfg(test)]
+mod placement_tests;
 mod process;
 #[cfg(test)]
 mod queue_tests;
+mod remote;
 #[cfg(test)]
 mod tests;
 
@@ -109,6 +113,7 @@ pub(super) struct Record {
     intent: LaunchIntent,
     state: Mutex<ExecState>,
     force: watch::Sender<bool>,
+    place: watch::Sender<Option<Arc<placement::Placed>>>,
     created_at: tokio::time::Instant,
     reader_deadline: watch::Sender<tokio::time::Instant>,
     input: Mutex<Input>,
@@ -234,6 +239,7 @@ impl RoomExecService {
         let (reader_deadline, deadline) = watch::channel(created_at + lease::READER_LEASE);
         let exec_id = format!("exec-{:032x}", rand::random::<u128>());
         let (force, forced) = watch::channel(false);
+        let (place, placed) = watch::channel(None);
         let record = Arc::new(Record {
             intent: LaunchIntent {
                 exec_id: exec_id.clone(),
@@ -245,6 +251,7 @@ impl RoomExecService {
             },
             state: Mutex::new(ExecState::Starting),
             force,
+            place,
             created_at,
             reader_deadline,
             input: Mutex::new(Input {
@@ -260,7 +267,17 @@ impl RoomExecService {
         records.insert(exec_id.clone(), record.clone());
         self.inner.running.fetch_add(1, Ordering::AcqRel);
         lease::start(exec_id.clone(), Arc::downgrade(&self.inner), deadline);
-        launch::start(record, receiver, cancelled, forced, self.clone(), authority);
+        launch::start(
+            record,
+            receiver,
+            launch::Signals {
+                cancel: cancelled,
+                forced,
+                placed,
+            },
+            self.clone(),
+            authority,
+        );
         drop(records);
         drop(admission);
         self.report_work();
@@ -427,6 +444,39 @@ impl RoomExecService {
             ));
         }
         record.force.send_replace(true);
+        Ok(())
+    }
+
+    /// Runs a launch that is still held on another kernel. A process that
+    /// already started keeps running where it is.
+    #[allow(dead_code)] // reached through the Run on command, which is not wired yet
+    pub(crate) fn place(
+        &self,
+        session_id: &str,
+        exec_id: &str,
+        origin_kernel: &str,
+        target: Arc<dyn placement::ExecPlacement>,
+    ) -> Result<(), DaemonError> {
+        let record = self.record(session_id, exec_id)?;
+        let mut state = record.state.lock().expect("exec state poisoned");
+        if !matches!(*state, ExecState::Queued { .. }) {
+            return Err(error(
+                "exec_not_queued",
+                "only a launch held before start can run on another kernel; a started process keeps running where it is",
+            ));
+        }
+        // Not queued any more: the held launch must not start here, and it
+        // reads as starting until the other kernel reports it running.
+        *state = ExecState::Starting;
+        record.place.send_replace(Some(Arc::new(placement::Placed {
+            target,
+            attributed_agent: record
+                .intent
+                .acting_agent
+                .as_ref()
+                .map(|agent| format!("{origin_kernel}/{agent}")),
+        })));
+        record.changed.notify_waiters();
         Ok(())
     }
 

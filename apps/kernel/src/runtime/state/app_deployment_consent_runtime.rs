@@ -90,7 +90,11 @@ impl KernelRuntimeState {
                 .ok_or(AppRequestErrorCode::NotFound)?;
             (publication, snapshot)
         };
-        if publication.created_by_user_id() != owner {
+        if !self.acts_for_owner(
+            &request.session_id,
+            &owner,
+            publication.created_by_user_id(),
+        ) {
             return Err(AppRequestErrorCode::Unauthorized);
         }
         let id = publication.id().to_owned();
@@ -184,7 +188,11 @@ impl KernelRuntimeState {
             .read()
             .resolve_workflow_publication_ref(&request.session_id, &request.publication_ref)
             .map_err(|_| AppRequestErrorCode::NotFound)?;
-        if publication.created_by_user_id() != owner {
+        if !self.acts_for_owner(
+            &request.session_id,
+            &owner,
+            publication.created_by_user_id(),
+        ) {
             return Err(AppRequestErrorCode::Unauthorized);
         }
         let consent = DeploymentConsent {

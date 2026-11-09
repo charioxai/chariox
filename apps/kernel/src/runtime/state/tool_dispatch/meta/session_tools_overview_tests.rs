@@ -396,6 +396,7 @@ async fn room_overview_historical_workflow_visibility_survives_foreign_agent_del
             session: retained_session.clone(),
             provider_run: None,
             agent_activity: Default::default(),
+            agent_tree_revs: Default::default(),
             room_workflows: crate::runtime::projection::RoomWorkflowInventory::project(
                 &retained_session,
                 actor.owner_user_id(),

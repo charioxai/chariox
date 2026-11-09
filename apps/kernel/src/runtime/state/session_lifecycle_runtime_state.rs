@@ -827,17 +827,15 @@ impl KernelRuntimeState {
         self.destroy_agent(agent_id, caller_user_id).await
     }
 
-    /// Destroys the agent, then its sub-agents depth-first (A4).
+    /// Marks the agent's subtree as deleting, then destroys the agent and its
+    /// sub-agents depth-first (A4).
     pub(crate) async fn destroy_agent(
         &self,
         agent_id: &str,
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
-        let destroyed = self
-            .destroy_one_agent(agent_id, caller_user_id, false)
-            .await?;
-        self.destroy_sub_agents_of(destroyed.id()).await;
-        Ok(destroyed)
+        self.mark_subtree_deleting(agent_id, caller_user_id)?;
+        self.destroy_subtree(agent_id, caller_user_id).await
     }
 
     /// `cascade` destroys a sub-agent whose parent the command already removed:
@@ -1429,7 +1427,10 @@ fn session_request_provider(request: &crate::session::CreateSessionRequest) -> O
         .filter(|provider| !provider.trim().is_empty() && *provider != "default")
 }
 
-fn kernel_ref_matches_local_config(config: &crate::config::DaemonConfig, kernel_ref: &str) -> bool {
+pub(super) fn kernel_ref_matches_local_config(
+    config: &crate::config::DaemonConfig,
+    kernel_ref: &str,
+) -> bool {
     let kernel_ref = kernel_ref.trim();
     !kernel_ref.is_empty()
         && (config.daemon_id == kernel_ref || config.daemon_alias.as_deref() == Some(kernel_ref))

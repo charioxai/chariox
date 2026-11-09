@@ -115,7 +115,8 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                 .map(|v| decode::<serde_json::Value>(&v))
                 .transpose()?;
             for mut t in source_tasks(tx, &room, &source)? {
-                if t.room_id != room || t.state == ExecutionState::Done {
+                // Only a peer's follower lives in another room; its registration below decides.
+                if t.state == ExecutionState::Done {
                     continue;
                 }
                 let registrations = match registrations(tx, &t.task_id) {
@@ -161,11 +162,14 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                         changed = true;
                     }
                 }
+                let obligations_changed = changed;
+                let mut peers_ended = false;
                 for mut reg in registrations {
                     if reg.source_id == source
                         && reg.live
                         && !(success && super::delegation::unbound(&t, &reg))
                     {
+                        peers_ended |= reg.peer;
                         reg.live = false;
                         tx.execute(
                             "UPDATE agent_registrations SET payload=?2 WHERE id=?1",
@@ -185,23 +189,29 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                     t.reason.clear();
                 }
                 if changed {
-                    let e = occurrence(
-                        &room,
-                        &t.agent_id,
+                    let e = super::transitions::source_end(
+                        &t,
                         &source,
                         &id,
-                        if success {
-                            "source_completed"
-                        } else {
-                            "source_lost"
-                        },
-                        serde_json::json!({"task_id":t.task_id,"source_id":source,"public_history_ref":source,"occurrence_id":id,"success":success,"public_answer":public_answer}),
+                        success,
+                        &public_answer,
+                        peers_ended && !obligations_changed,
                     );
                     event(tx, e)?;
                     t.revision += 1;
                     save(tx, &t)?;
                 }
             }
+            super::peer_follows::turn_ended(tx, &room, &source, &id, success, now)?;
+            replies::forward_to_sender_room(
+                tx,
+                &room,
+                &source,
+                &id,
+                success,
+                public_answer.clone(),
+                now,
+            )?;
             replies::reconcile_source(tx, &room, &source)?;
             if !success {
                 replies::recipient_lost(tx, &room, &source, now, public_answer.as_ref())?;
@@ -251,7 +261,7 @@ pub(super) fn apply(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, Daem
                             .registration_ids
                             .iter()
                             .any(|id| !regs.iter().any(|r| &r.id == id && r.live));
-                        let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
+                        let unread:i64=tx.query_row("SELECT count(*) FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence>?3 AND json_extract(payload,'$.state') NOT IN ('handled','expired','failed') AND json_extract(payload,'$.kind') IN ('source_completed','source_lost','peer_event') AND (json_extract(payload,'$.payload.task_id')=?4 OR EXISTS(SELECT 1 FROM json_each(json_extract(payload,'$.payload.task_ids')) WHERE value=?4))",params![t.room_id,t.agent_id,sql_integer(w.inbox_cursor)?,t.task_id],|r|r.get(0)).map_err(sql)?;
                         let check_in = next_check_in.filter(|due| {
                             *due <= now
                                 && source_deadline.is_none_or(|deadline| deadline > now)

@@ -175,6 +175,26 @@ impl KernelRuntimeState {
         self.owned.agent_store.get_session_agents(session_id)
     }
 
+    /// What the calling agent may give an agent it creates in `target_session`, when it lives in
+    /// another room: its own effective level and mode in its own room. `None` for a same-room spawn.
+    pub(crate) fn peer_spawn_limit(
+        &self,
+        caller_agent_id: &str,
+        target_session: &str,
+    ) -> Result<Option<crate::session::EffectiveAgentExecutionConfig>, DaemonError> {
+        let caller = self.owned.agent_store.get_agent(caller_agent_id)?;
+        if caller.session_id() == target_session {
+            return Ok(None);
+        }
+        let session = self
+            .owned
+            .session_snapshot_without_projection_update(caller.session_id())?;
+        let agents = self.session_agents(caller.session_id());
+        Ok(Some(
+            crate::session::effective_agent_execution_config_in_tree(&session, &caller, &agents),
+        ))
+    }
+
     pub(crate) fn client_attachment_for_session(
         &self,
         client_id: &str,

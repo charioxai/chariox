@@ -986,8 +986,11 @@ fn waiting_room_public_agent_summaries(
         .iter()
         .filter(|agent| !agent.archived())
         .map(|agent| {
-            let effective_config =
-                crate::session::effective_agent_execution_config(session, Some(agent));
+            let effective_config = crate::session::effective_agent_execution_config_in_tree(
+                session,
+                agent,
+                session.agents(),
+            );
             let workspace_id = agent
                 .workspace_id()
                 .unwrap_or_else(|| session.workspace_id())

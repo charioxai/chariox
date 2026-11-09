@@ -220,7 +220,8 @@ impl KernelRuntimeState {
         installation: &str,
         event: &str,
     ) -> Result<ResolvedSource, DaemonError> {
-        if (caller != owner || self.room_provider_origin.is_some())
+        if (!self.owned.acts_for_owner_in(owner, caller, owner)
+            || self.room_provider_origin.is_some())
             && !self.room_notification_apps(room).contains(installation)
         {
             return Err(app_error("App is not installed in this Room"));

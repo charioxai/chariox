@@ -1,0 +1,62 @@
+[
+  {
+    "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
+    "fn": "run_agent_wake_scheduler",
+    "call": "tick_agent_deadlines",
+    "reason": "each due agent's cleanup runs under a 5 s tokio::time::timeout inside the call (agent_deadline_runtime.rs); the rest is synchronous store work"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
+    "fn": "run_agent_wake_scheduler",
+    "call": "tick_agent_wakes",
+    "reason": "awaits nothing itself (tick_agent_wakes is checked as a loop function too); deliveries run in spawned tasks"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
+    "fn": "sweep_agent_wakes",
+    "call": "tick_agent_deadlines",
+    "reason": "each due agent's cleanup runs under a 5 s tokio::time::timeout inside the call (agent_deadline_runtime.rs); the rest is synchronous store work"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/agent_wake_scheduler.rs",
+    "fn": "sweep_agent_wakes",
+    "call": "tick_agent_wakes",
+    "reason": "awaits nothing itself (tick_agent_wakes is checked as a loop function too); deliveries run in spawned tasks"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/app_wake_pump_runtime.rs",
+    "fn": "run_app_wake_scheduler",
+    "call": "wait_for_app_wake",
+    "reason": "idle wait for new durable work; holds no lock and serves nothing else"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/app_wake_pump_runtime.rs",
+    "fn": "run_app_wake_scheduler",
+    "call": "app_wake_pass",
+    "reason": "one page: store reads on spawn_blocking, each delivery under DELIVERY_TIMEOUT; this loop is the App wake lane only"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/disk_pressure.rs",
+    "fn": "run_disk_maintenance",
+    "call": "tend_disk",
+    "reason": "runs on its own single-flight task (JoinSet of run_agent_wake_scheduler); a slow scan or pending launch interaction waits only that task"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_output_pump_runtime.rs",
+    "fn": "run_provider_output_pump_until",
+    "call": "next",
+    "reason": "shutdown drain after `stop` fired; during normal running polls are driven concurrently by `jobs` in the select"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_output_pump_runtime.rs",
+    "fn": "run_provider_output_pump_until",
+    "call": "wait_for_provider_output_polls",
+    "reason": "shutdown drain after `stop` fired"
+  },
+  {
+    "path": "apps/kernel/src/runtime/state/provider_output_pump_runtime.rs",
+    "fn": "run_provider_output_pump_until",
+    "call": "pump_ready_provider_output_run",
+    "reason": "shutdown drain after `stop` fired"
+  }
+]

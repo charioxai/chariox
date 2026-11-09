@@ -438,7 +438,13 @@ for (const action of ["create", "reimage"] as const) for (const denied of [false
     else await request
     assert.equal(requestCount(harness.local, "PreflightProviderAccountPortability"), 1)
     const preflightRequest = harness.local.requests.find(request => requestKind(request) === "PreflightProviderAccountPortability")
-    assert.deepEqual(preflightRequest, {PreflightProviderAccountPortability: {providerAccounts: plan.providerAccounts}})
+    if (action === "create") {
+      // The create's preflight names its launch; a denied preflight stops before Cloud ever sees the create.
+      const {launchId, ...preflight} = (preflightRequest as any).PreflightProviderAccountPortability
+      assert.ok(typeof launchId === "string" && launchId.length > 0, "the create's preflight carries its launch key")
+      assert.deepEqual(preflight, {providerAccounts: plan.providerAccounts})
+      if (!denied) assert.equal(launchId, harness.cloudRequests.find(sent => sent.path === "/managed-environments" && sent.body)?.body.clientRequestId, "the launch key is the create's request id")
+    } else assert.deepEqual(preflightRequest, {PreflightProviderAccountPortability: {providerAccounts: plan.providerAccounts}})
     assert.equal(requestCount(harness.old, "PreflightProviderAccountPortability"), 0)
     assert.equal(requestCount(harness.replacement, "PreflightProviderAccountPortability"), 0)
     if (denied) assert.equal(harness.cloudPaths.length, before, "no STOP/provisioning after failed preflight")

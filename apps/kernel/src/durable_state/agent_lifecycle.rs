@@ -14,6 +14,8 @@ mod delivery;
 mod leased_processes;
 pub(crate) use leased_processes::LeasedProcessMutation;
 #[cfg(test)]
+mod inbox_lookup_tests;
+#[cfg(test)]
 mod unread_steer_tests;
 mod unread_steers;
 mod worker_stops;
@@ -33,6 +35,9 @@ mod migration;
 pub(crate) mod outside;
 #[cfg(test)]
 mod outside_tests;
+pub(crate) mod peer_follows;
+#[cfg(test)]
+mod peer_room_reply_tests;
 #[cfg(test)]
 mod plain_tests;
 mod quarantine;
@@ -104,7 +109,11 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     CREATE TABLE IF NOT EXISTS agent_inbox_refusals(sequence INTEGER PRIMARY KEY,first_refused_at_ms INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS agent_inbox_shown(sequence INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS agent_inbox_unread_reverts(sequence INTEGER PRIMARY KEY,count INTEGER NOT NULL);
-    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);").map_err(sql)?;
+    CREATE INDEX IF NOT EXISTS agent_inbox_recipient ON agent_inbox(room_id,agent_id,sequence);
+    CREATE INDEX IF NOT EXISTS agent_inbox_occurrence ON agent_inbox(room_id,agent_id,occurrence_id);
+    CREATE INDEX IF NOT EXISTS agent_inbox_prompt ON agent_inbox(room_id,agent_id,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END);
+    CREATE INDEX IF NOT EXISTS agent_inbox_target_prompt ON agent_inbox(room_id,agent_id,CASE WHEN json_valid(payload) THEN json_extract(payload,'$.target_prompt_id') END);
+    CREATE TABLE IF NOT EXISTS peer_agent_requests(sender_kernel_id TEXT NOT NULL,request_id TEXT NOT NULL,answer TEXT NOT NULL,PRIMARY KEY(sender_kernel_id,request_id));").map_err(sql)?;
     let columns: Vec<String> = db
         .prepare("PRAGMA table_info(agent_source_occurrences)")
         .map_err(sql)?
@@ -118,6 +127,7 @@ pub(super) fn initialize(db: &mut Connection) -> Result<(), DaemonError> {
     }
     index_task_lookups(db)?;
     outside::initialize(db)?;
+    peer_follows::initialize(db)?;
     deadlines::initialize(db)?;
     wakes::initialize(db)?;
     leased_processes::initialize(db)?;
@@ -533,6 +543,56 @@ impl DurableKernelStateStore {
         self.agent_work_inbox(room, agent, after, None)
     }
 
+    /// The answer this kernel gave to a peer request of another kernel, if it already acted on it.
+    pub(crate) fn peer_agent_request_answer(
+        &self,
+        kernel: &str,
+        request_id: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.peer_requests")?;
+        db.query_row(
+            "SELECT answer FROM peer_agent_requests WHERE sender_kernel_id=?1 AND request_id=?2",
+            params![kernel, request_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)
+    }
+
+    /// Keeps the first answer to a peer request, so a retry gets the same one.
+    pub(crate) fn remember_peer_agent_request_answer(
+        &self,
+        kernel: &str,
+        request_id: &str,
+        answer: &str,
+    ) -> Result<(), DaemonError> {
+        self.agent_lifecycle(Operation::RememberPeerRequest {
+            kernel: kernel.into(),
+            request_id: request_id.into(),
+            answer: answer.into(),
+        })
+        .map(|_| ())
+    }
+
+    /// Whether this occurrence of `source` already reached the agent's inbox.
+    pub(crate) fn agent_inbox_has_occurrence(
+        &self,
+        room: &str,
+        agent: &str,
+        source: &str,
+        occurrence: &str,
+    ) -> Result<bool, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox")?;
+        db.query_row(
+            "SELECT 1 FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",
+            params![room, agent, source, occurrence],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|found| found.is_some())
+        .map_err(sql)
+    }
+
     pub(crate) fn agent_work_inbox(
         &self,
         room: &str,
@@ -555,6 +615,38 @@ impl DurableKernelStateStore {
             .map_err(sql)?;
         rows.map(|r| {
             let (seq, source, id, payload) = r.map_err(sql)?;
+            #[cfg(test)]
+            INBOX_ROWS_READ.with(|n| n.set(n.get() + 1));
+            decode_inbox(seq, room, agent, &source, &id, &payload)
+        })
+        .collect()
+    }
+
+    /// The recipient's rows for one occurrence id, read through the occurrence index.
+    pub(crate) fn agent_inbox_occurrence(
+        &self,
+        room: &str,
+        agent: &str,
+        occurrence: &str,
+    ) -> Result<Vec<InboxEvent>, DaemonError> {
+        let db = self.lock_connection("agent.lifecycle.inbox")?;
+        let mut q = db
+            .prepare_cached("SELECT sequence,source_id,occurrence_id,payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND occurrence_id=?3 ORDER BY sequence")
+            .map_err(sql)?;
+        let rows = q
+            .query_map(params![room, agent, occurrence], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(sql)?;
+        rows.map(|r| {
+            let (seq, source, id, payload) = r.map_err(sql)?;
+            #[cfg(test)]
+            INBOX_ROWS_READ.with(|n| n.set(n.get() + 1));
             decode_inbox(seq, room, agent, &source, &id, &payload)
         })
         .collect()
@@ -709,6 +801,10 @@ thread_local! {
     pub(crate) static VISIBLE_TASK_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
     /// Tasks decoded on this thread, so a test can bound what one operation reads.
     pub(crate) static DECODED_TASKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Inbox rows decoded by the recipient reads on this thread.
+    pub(crate) static INBOX_ROWS_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Virtual machine steps of the per-prompt inbox lookups (batch siblings, unread steers) on this thread.
+    pub(crate) static INBOX_LOOKUP_STEPS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
 }
 fn decode_task(
     id: &str,
@@ -883,9 +979,11 @@ fn live_tasks(
 /// The room's tasks a terminal outcome of `source` can change, in ledger order: those
 /// registered on it, those holding obligations, and unreadable ones so they are quarantined.
 /// Plain turns stay in the ledger, so the outcome of every turn would otherwise read them all.
+/// A peer follows across the rooms of its owner, so its registration is found in any room.
 const SOURCE_TASKS: &str = "rowid IN (\
     SELECT t.rowid FROM agent_registrations r CROSS JOIN agent_tasks t ON t.task_id=r.task_id \
-    WHERE (r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1 \
+    WHERE ((r.source_id=?2 OR r.source_id IS NULL) AND t.room_id=?1) \
+    OR (r.source_id=?2 AND json_extract(r.payload,'$.peer')=1) \
     UNION SELECT rowid FROM agent_tasks WHERE room_id=?1 AND obligated=1 AND state IS NOT 'done' \
     UNION SELECT rowid FROM agent_tasks WHERE state IS NULL AND +room_id=?1)";
 fn source_tasks(
@@ -1074,7 +1172,11 @@ fn event(tx: &Transaction<'_>, mut e: InboxEvent) -> Result<InboxEvent, DaemonEr
     let previous:Option<String>=tx.query_row("SELECT payload FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND source_id=?3 AND occurrence_id=?4",params![room,agent,e.source_id,e.occurrence_id],|r|r.get(0)).optional().map_err(sql)?;
     if let Some(previous) = previous {
         let mut p: InboxEvent = decode(&previous)?;
-        if matches!(e.kind.as_str(), "source_completed" | "source_lost") && p.kind == e.kind {
+        if matches!(
+            e.kind.as_str(),
+            "source_completed" | "source_lost" | "peer_event"
+        ) && p.kind == e.kind
+        {
             let mut left = p.payload.clone();
             let mut right = e.payload.clone();
             if let (Some(left), Some(right)) = (left.as_object_mut(), right.as_object_mut()) {

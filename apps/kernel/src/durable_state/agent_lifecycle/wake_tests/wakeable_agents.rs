@@ -33,6 +33,7 @@ fn subscribe(f: &Fixture) {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
 }
@@ -222,6 +223,7 @@ fn managed_working_agents_each_agent_is_listed_once_per_room() {
             obligation_id: None,
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     assert_eq!(

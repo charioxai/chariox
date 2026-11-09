@@ -516,6 +516,24 @@ fn external_response_tells_a_grant_holder_what_is_wrong_with_its_terminal() {
     }
 }
 
+// A real external caller still gets the masked generic text for a refusal that is not one of
+// the kernel's typed sentences; only the sub-agent refusal is spelled out.
+#[test]
+fn an_unlisted_refusal_stays_masked_for_an_external_caller() {
+    let caller = command(KernelConnectionClass::ExternalAgent);
+    let told = finish_response(
+        &caller,
+        Err(crate::runtime::kernel_access::error(format!(
+            "an internal reason {CANARY}"
+        ))),
+    )
+    .unwrap_err();
+    assert_eq!(
+        told.to_string(),
+        "external request failed; details are available only in the host terminal"
+    );
+}
+
 #[test]
 fn external_response_retains_only_exact_public_authority_errors() {
     let caller = command(KernelConnectionClass::ExternalAgent);

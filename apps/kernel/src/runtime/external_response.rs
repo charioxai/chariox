@@ -129,7 +129,7 @@ response_policies! {
         CredentialVaultKeySealed,
         SessionViewAttached,
         SessionInviteCreated,
-        // MP-11: prototype user App views carry App frontends and channel data.
+        // MP-11: user App views carry App frontends and channel data.
         ClientAppView,
         UserAppViewOpened,
         UserAppViewsListed,

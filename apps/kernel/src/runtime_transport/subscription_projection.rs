@@ -84,6 +84,7 @@ mod tests {
             session,
             provider_run: None,
             agent_activity: Default::default(),
+            agent_tree_revs: Default::default(),
         }
     }
 

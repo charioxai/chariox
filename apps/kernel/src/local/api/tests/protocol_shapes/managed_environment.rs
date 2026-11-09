@@ -87,3 +87,42 @@ fn provider_account_portability_preflight_protocol_478_is_acknowledgement_only()
     )
     .is_err());
 }
+
+// MP-10 / MP-11: preflight and transfer start carry one optional launch key; without it the
+// shapes are the ones above, so the pinned hashes stay.
+#[test]
+fn preflight_and_transfer_start_carry_an_optional_launch_key() {
+    let preflight = serde_json::json!({"PreflightProviderAccountPortability": {
+        "providerAccounts": {"kind": "none"}, "launchId": "launch-1"
+    }});
+    let parsed: LocalDaemonRequest = serde_json::from_value(preflight.clone()).unwrap();
+    let LocalDaemonRequest::PreflightProviderAccountPortability(request) = &parsed else {
+        panic!("preflight request");
+    };
+    assert_eq!(request.launch_id.as_deref(), Some("launch-1"));
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), preflight);
+
+    let start = serde_json::json!({"StartManagedContextTransfer": {
+        "interactive": true, "launchId": "launch-1"
+    }});
+    let parsed: LocalDaemonRequest = serde_json::from_value(start.clone()).unwrap();
+    let LocalDaemonRequest::StartManagedContextTransfer(request) = &parsed else {
+        panic!("transfer start request");
+    };
+    assert_eq!(request.launch_id.as_deref(), Some("launch-1"));
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), start);
+
+    let without = serde_json::to_value(LocalDaemonRequest::StartManagedContextTransfer(Box::new(
+        StartManagedContextTransferRequest {
+            ticket: None,
+            owner_managed: None,
+            interactive: true,
+            launch_id: None,
+        },
+    )))
+    .unwrap();
+    assert_eq!(
+        without,
+        serde_json::json!({"StartManagedContextTransfer": {"interactive": true}})
+    );
+}

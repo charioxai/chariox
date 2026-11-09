@@ -973,13 +973,14 @@ mod tests {
             (true, false, false),
             (true, false, true),
         ] {
-            let request = crate::local::LocalDaemonRequest::StartManagedContextTransfer(
+            let request = crate::local::LocalDaemonRequest::StartManagedContextTransfer(Box::new(
                 crate::local::StartManagedContextTransferRequest {
                     ticket: include_ticket.then(|| ticket.clone()),
                     owner_managed: include_owner.then(|| selection.clone()),
                     interactive,
+                    launch_id: None,
                 },
-            );
+            ));
             let error = crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request(
                 config.clone(), Arc::new(RwLock::new(RelayClientState::default())), store.clone(),
                 runtime.provider_account_profile_registry().clone(), runtime.clone(),

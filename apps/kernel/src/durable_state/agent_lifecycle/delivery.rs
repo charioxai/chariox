@@ -76,7 +76,9 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
         } => {
             let mut t = load(tx, &task)?;
             current(&t, &prompt)?;
-            if e.source_id != t.agent_id || e.room_id != t.room_id || e.kind != "message" {
+            // A message to another room lives in the recipient's room and names the sender's.
+            let sender_room = e.payload["sender_room_id"].as_str().unwrap_or(&e.room_id);
+            if e.source_id != t.agent_id || sender_room != t.room_id || e.kind != "message" {
                 return Err(error("message source binding invalid"));
             }
             let admitted = event(tx, e)?;
@@ -100,6 +102,7 @@ fn apply_row(tx: &Transaction<'_>, op: Operation) -> Result<Outcome, DaemonError
                         obligation_id: Some(id),
                         source_cursor: 0,
                         live: true,
+                        peer: false,
                     };
                     tx.execute(
                         "INSERT INTO agent_registrations VALUES(?1,?2,?3)",
@@ -542,7 +545,7 @@ fn siblings(
     sequence: u64,
 ) -> Result<Vec<u64>, DaemonError> {
     let mut q = tx
-        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND json_valid(payload) AND json_extract(payload,'$.prompt_id') IS NOT NULL AND json_extract(payload,'$.prompt_id')=(SELECT json_extract(payload,'$.prompt_id') FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3) ORDER BY sequence")
+        .prepare("SELECT sequence FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence<>?3 AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END IS NOT NULL AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END=(SELECT CASE WHEN json_valid(payload) THEN json_extract(payload,'$.prompt_id') END FROM agent_inbox WHERE room_id=?1 AND agent_id=?2 AND sequence=?3) ORDER BY sequence")
         .map_err(sql)?;
     let rows = q
         .query_map(params![room, agent, sql_integer(sequence)?], |r| {
@@ -551,6 +554,8 @@ fn siblings(
         .map_err(sql)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql)?;
+    #[cfg(test)]
+    INBOX_LOOKUP_STEPS.with(|n| n.set(n.get() + q.get_status(rusqlite::StatementStatus::VmStep)));
     rows.into_iter()
         .map(|s| u64::try_from(s).map_err(|_| error("corrupt delivery sequence")))
         .collect()

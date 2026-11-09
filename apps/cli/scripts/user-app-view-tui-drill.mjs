@@ -24,8 +24,7 @@ if (process.argv[2] === '--terminal') {
     dimensions:()=>({width:110,height:28}),themeRevision:()=>0,currentFocus:()=>null,promptFocus:()=>null,
     notify:text=>{status.content=text},approvalOwnsInput:()=>false,
   })})
-  if(!views) throw Error('flagged projection unavailable')
-  const commands={l:'/app views',o:'/app open fixture',s:'/app view show fixture-view',c:`/app view call echo '{"text":"keyboard command"}'`,a:'/app view approvals',d:'/app view answer fixture-approval deny'}
+    const commands={l:'/app views',o:'/app open fixture',s:'/app view show fixture-view',c:`/app view call echo '{"text":"keyboard command"}'`,a:'/app view approvals',d:'/app view answer fixture-approval deny'}
   let pending=Promise.resolve()
   renderer.keyInput.on('keypress',event=>{
     if(views.handleKey(event)) return
@@ -69,7 +68,7 @@ if (process.argv[2] === '--terminal') {
     socket.send(JSON.stringify({type:'response',request_id:frame.request_id,response,error:null}))
   }))
   const terminal=Bun.spawn([process.execPath,'--conditions=browser',fileURLToPath(import.meta.url),'--terminal',`ws://127.0.0.1:${server.address().port}`,path.join(evidence,'frame.txt')],{
-    cwd:cli,env:{...process.env,CHARIOX_USER_APP_VIEWS_PROTOTYPE:'1',CHARIOX_HOME:scratch,CHARIOX_LOG_DIR:scratch,TERM:'xterm-256color'},
+    cwd:cli,env:{...process.env,CHARIOX_HOME:scratch,CHARIOX_LOG_DIR:scratch,TERM:'xterm-256color'},
     terminal:{cols:110,rows:28,data(_terminal,bytes){output+=new TextDecoder().decode(bytes)}},
   })
   const strip=text=>text.replace(/\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[=>78]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,'')

@@ -80,8 +80,15 @@ pub(crate) fn tree_for_viewer(
             .find(|agent| agent.id() == agent_id)
             .is_some_and(|agent| is_viewers(agent.owner_user_id()))
     };
-    tree.nodes
-        .retain(|node| viewers_agent(&node.agent_id) || level.can_view_agent_trace());
+    tree.nodes.retain(|node| {
+        agents
+            .iter()
+            .find(|agent| agent.id() == node.agent_id)
+            .is_some_and(|agent| {
+                is_viewers(agent.owner_user_id())
+                    || session.can_view_tree_agent_owned_by(member, agent.owner_user_id())
+            })
+    });
     if !level.can_view_agent_parameters() {
         for node in &mut tree.nodes {
             if !viewers_agent(&node.agent_id) {

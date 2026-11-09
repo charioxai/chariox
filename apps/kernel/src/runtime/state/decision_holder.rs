@@ -275,16 +275,11 @@ impl KernelRuntimeOwnedState {
         tenure: u32,
         interaction_id: &str,
     ) -> Result<Vec<ledger::InboxEvent>, DaemonError> {
-        let occurrence = child_decision_occurrence(interaction_id, holder, tenure);
-        let mut events = Vec::new();
-        self.durable_state_store
-            .scan_agent_inbox(session_id, holder, 0, None, |event| {
-                if event.occurrence_id == occurrence {
-                    events.push(event);
-                }
-                std::ops::ControlFlow::Continue(())
-            })?;
-        Ok(events)
+        self.durable_state_store.agent_inbox_occurrence(
+            session_id,
+            holder,
+            &child_decision_occurrence(interaction_id, holder, tenure),
+        )
     }
 
     /// The decisions `holder` already had: its event for the current tenure is no longer
@@ -900,6 +895,31 @@ impl KernelRuntimeState {
         }
     }
 
+    /// A decision no longer pending was settled if `holder` was ever sent it, else it is not
+    /// one `holder` knows. An unreadable inbox reads as settled, the old answer.
+    fn settled_or_unknown(
+        &self,
+        session_id: &str,
+        holder: &str,
+        interaction_id: &str,
+    ) -> ChildDecisionStatus {
+        let offered = self
+            .owned
+            .durable_state_store
+            .agent_work_inbox(session_id, holder, 0, None)
+            .map_or(true, |events| {
+                events.iter().any(|event| {
+                    event.kind == CHILD_DECISION_EVENT
+                        && event.payload["interaction_id"] == interaction_id
+                })
+            });
+        if offered {
+            ChildDecisionStatus::SettledByUser
+        } else {
+            ChildDecisionStatus::UnknownInteraction
+        }
+    }
+
     /// Whether `holder` holds the decision now: `Answered` stands for "may go on".
     fn child_decision_gate(
         &self,
@@ -914,7 +934,7 @@ impl KernelRuntimeState {
             .get(interaction_id)
             .filter(|pending| pending.session_id == session_id)
         {
-            None => ChildDecisionStatus::SettledByUser,
+            None => self.settled_or_unknown(session_id, holder, interaction_id),
             Some(pending) if pending.holder != DecisionHolder::Agent(holder.to_owned()) => {
                 ChildDecisionStatus::NotHolder
             }
@@ -933,6 +953,8 @@ pub(crate) enum ChildDecisionStatus {
     NotHolder,
     /// The decision was answered, withdrawn or timed out before this answer arrived.
     SettledByUser,
+    /// The caller was never offered a decision with this id.
+    UnknownInteraction,
     /// The answer is neither a choice of the decision nor free text it accepts.
     InvalidAnswer,
 }

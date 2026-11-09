@@ -296,6 +296,8 @@ macro_rules! public_events {
                 KernelEvent::PasskeyPromptsChanged { .. } => {},
                 // Transcript turns are for the session's own clients, not external streams.
                 KernelEvent::AgentTurnChanged { .. } => {},
+                // External agents follow trees through their own `agent_tree` event.
+                KernelEvent::AgentTreeChanged { .. } => {},
                 KernelEvent::HomeExtensionAuditAppended { .. } => {},
                 KernelEvent::HomeExtensionAuditLagged { .. } => {},
                 // MP-11: browser display frames stay off external streams.

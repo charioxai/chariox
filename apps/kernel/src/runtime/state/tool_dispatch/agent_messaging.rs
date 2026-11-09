@@ -21,7 +21,7 @@ impl KernelRuntimeState {
                 "agent_tasks": self.owned.durable_state_store.agent_tasks(Some(session.id()),None).unwrap_or_default(),
                 "agents": agents
                     .iter()
-                    .map(|agent| session_agent_description(session, requester, agent))
+                    .map(|agent| session_agent_description(session, requester, agent, &agents))
                     .collect::<Vec<_>>(),
             }),
         }
@@ -50,11 +50,24 @@ impl KernelRuntimeState {
                 ok: true,
                 payload: serde_json::json!({
                     "session_id": session.id(),
-                    "agent": session_agent_description(session, requester, agent),
+                    "agent": session_agent_description(session, requester, agent, &agents),
                 }),
             },
             Err(message) => agent_message_failure(message),
         }
+    }
+
+    /// A room command's message: the tool's own path, on behalf of the provider run that ran it.
+    pub(crate) async fn send_agent_message_for_provider_run(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        session: &crate::session::RuntimeSession,
+        sender: &crate::agent::AgentInstance,
+        arguments: serde_json::Value,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        self.with_room_provider_origin(provider_run.agent_instance_id(), Some(provider_run.id()))
+            .handle_send_agent_message_runtime_tool(session, sender, arguments)
+            .await
     }
 
     pub(super) async fn handle_send_agent_message_runtime_tool(
@@ -72,6 +85,15 @@ impl KernelRuntimeState {
         })?;
         if self.owned.config_projection.snapshot().room_agent_tools {
             return self.send_durable_agent_message(session, sender, args).await;
+        }
+        if args
+            .room
+            .as_deref()
+            .is_some_and(|room| room != session.id())
+        {
+            return Ok(agent_message_failure(
+                "messages to another room need Room agent tools",
+            ));
         }
         let message = args.message.trim();
         if message.is_empty() && args.attachments.is_empty() {
@@ -368,7 +390,7 @@ impl KernelRuntimeState {
         Ok(result)
     }
 
-    pub(in crate::runtime::state) fn ensure_agent_message_attachment(
+    pub(crate) fn ensure_agent_message_attachment(
         &self,
         session_id: &str,
         sender: &crate::agent::AgentInstance,
@@ -456,8 +478,10 @@ fn session_agent_description(
     session: &crate::session::RuntimeSession,
     requester: &crate::agent::AgentInstance,
     agent: &crate::agent::AgentInstance,
+    agents: &[crate::agent::AgentInstance],
 ) -> serde_json::Value {
-    let effective = crate::session::effective_agent_execution_config(session, Some(agent));
+    let effective =
+        crate::session::effective_agent_execution_config_in_tree(session, agent, agents);
     let location = agent.remote_execution().map_or_else(
         || serde_json::json!({ "kind": "local" }),
         |remote| {

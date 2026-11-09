@@ -40,6 +40,7 @@ pub(crate) use managed_context_bridge::{
 mod app_event_routes;
 mod app_pre_lane;
 mod meta_runtime_command;
+mod peer_agent_spawn;
 mod pre_lane_dispatch;
 mod pre_lane_request;
 mod priority_dispatch;
@@ -262,6 +263,7 @@ mod tests {
     mod agent_workflow;
     mod dictation;
     mod outside_events;
+    mod peer_rooms;
     #[cfg(target_os = "linux")]
     mod resource_telemetry;
     mod room_environment_placement;

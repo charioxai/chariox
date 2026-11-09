@@ -3,7 +3,8 @@
 //! every time" that unlock belongs to one operation, so preflight hands it over here: one use,
 //! held for a bounded time, consumed by the export. A hold that ran out (or was used) makes the
 //! export ask again through the launching session's unlock card. Holds are kept per Vault path and
-//! launching session, so two launches never take over each other's ask.
+//! launch: the launch key that preflight and transfer start both carry, or else the launching
+//! session, so two launches never take over each other's ask.
 use super::runtime_vault_unlock_state::{expand_vault_path, VaultUnlockGuard};
 use super::*;
 use std::collections::BTreeMap;
@@ -31,8 +32,26 @@ struct Entry {
     launched: u64,
 }
 
-/// A Vault path and the session that launched the machine.
-type EntryKey = (PathBuf, Option<String>);
+/// The launch a hold belongs to.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Launch {
+    /// The key the client gave preflight and transfer start.
+    Key(String),
+    /// A launch without a key, known by the session that launched the machine.
+    Session(Option<String>),
+}
+
+impl Launch {
+    fn of(launch_id: Option<&str>, session_id: Option<&str>) -> Self {
+        match launch_id {
+            Some(key) => Self::Key(key.to_owned()),
+            None => Self::Session(session_id.map(str::to_owned)),
+        }
+    }
+}
+
+/// A Vault path and the launch of the machine.
+type EntryKey = (PathBuf, Launch);
 
 fn entries() -> &'static Mutex<BTreeMap<EntryKey, Entry>> {
     static ENTRIES: OnceLock<Mutex<BTreeMap<EntryKey, Entry>>> = OnceLock::new();
@@ -67,21 +86,26 @@ impl KernelRuntimeState {
         &self,
         guard: VaultUnlockGuard,
         command: &crate::runtime::command::KernelCommand,
+        launch_id: Option<&str>,
     ) {
-        self.hold_vault_until(guard, command, Instant::now() + VAULT_CARRY_HOLD);
+        self.hold_vault_until(guard, command, launch_id, Instant::now() + VAULT_CARRY_HOLD);
     }
 
     fn hold_vault_until(
         &self,
         guard: VaultUnlockGuard,
         command: &crate::runtime::command::KernelCommand,
+        launch_id: Option<&str>,
         deadline: Instant,
     ) {
         let Some(path) = self.carry_vault_path() else {
             return;
         };
         let id = rand::random::<u64>();
-        let key = (path.clone(), command.session_id.clone());
+        let key = (
+            path.clone(),
+            Launch::of(launch_id, command.session_id.as_deref()),
+        );
         {
             let mut entries = locked_entries();
             let entry = entries.entry(key.clone()).or_insert_with(|| Entry {
@@ -130,18 +154,20 @@ impl KernelRuntimeState {
 
     /// The Vault, open for one export. Takes the unlock preflight held; when that lapsed or was
     /// used, asks again with the unlock card of the session that launched the machine. An export
-    /// that names no launch of its own takes the latest one. Dropping the guard ends the use.
+    /// with a launch key takes only that launch's hold; one with neither a key nor a known session
+    /// takes the latest launch. Dropping the guard ends the use.
     pub(crate) async fn vault_for_login_export(
         &self,
         session_id: Option<&str>,
+        launch_id: Option<&str>,
     ) -> Result<VaultUnlockGuard, DaemonError> {
         let Some(path) = self.carry_vault_path() else {
             return Ok(VaultUnlockGuard::not_required());
         };
         let (held, ask) = {
             let mut entries = locked_entries();
-            let own = (path.clone(), session_id.map(str::to_owned));
-            let key = if entries.contains_key(&own) {
+            let own = (path.clone(), Launch::of(launch_id, session_id));
+            let key = if entries.contains_key(&own) || launch_id.is_some() {
                 Some(own)
             } else {
                 entries

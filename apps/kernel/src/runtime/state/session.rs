@@ -444,6 +444,9 @@ impl KernelRuntimeOwnedState {
                 message,
             })?;
         self.cancel_owned_agent_wakes(session_id, None);
+        for agent in self.agent_store.get_session_agents(session_id) {
+            self.announce_agent_gone(session_id, agent.id());
+        }
         self.withdraw_agent_interactions(session_id, None)?;
 
         if session.status() == crate::session::SessionStatus::Ended {

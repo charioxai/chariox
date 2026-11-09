@@ -279,6 +279,47 @@ mod tests {
         assert!(state.owned.user_domain_interactions("alice").is_empty());
         assert!(state.owned.session_store.list_sessions().is_empty());
     }
+    /// MP-08 / MP-09 / MP-10 / MP-11: the enrolled owner hosts its App validation in its room made
+    /// before enrollment (`local`), not in a more recently used room of someone else.
+    #[test]
+    fn app_validation_of_the_enrolled_owner_is_hosted_in_its_pre_enrollment_room() {
+        let state = fixture();
+        let mut config = state.owned.config_projection.snapshot();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "enrolled".into(),
+            ..Default::default()
+        });
+        state.owned.config_projection.update(config);
+        let room = |id: &str, owner: &str, prompt_at_ms: u64| {
+            let mut room = crate::session::RuntimeSession::new(
+                id,
+                None,
+                "workspace",
+                "worktree",
+                "machine",
+                "kernel",
+            );
+            room.set_owner_user_id(owner);
+            room.add_member(
+                "enrolled",
+                Some(owner.into()),
+                crate::session::CollaborationLevel::Full,
+            );
+            room.note_prompt_sent_at("agent", prompt_at_ms);
+            state.owned.session_store.write().restore_session(room);
+        };
+        room("own-room", crate::session::DEFAULT_LOCAL_USER_ID, 1);
+        room("shared-room", "bob", u64::MAX / 2);
+        assert_eq!(
+            state.validation_session("enrolled").as_deref(),
+            Some("own-room")
+        );
+        // A user who is not the enrolled owner keeps the most recently used room.
+        assert_eq!(
+            state.validation_session("bob").as_deref(),
+            Some("shared-room")
+        );
+    }
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
     #[tokio::test]
     async fn native_user_views_route_decisions_outside_an_existing_room() {

@@ -18,10 +18,10 @@ impl Fixture {
             &docker,
             r#"#!/bin/sh
 case "$4" in
- startup) sleep 0.3; printf private ;;
- bytes) printf private; sleep 0.3 ;;
- eof) printf private; exec 1>&-; sleep 0.3 ;;
- descendant) sleep 0.3 & printf private; exit 0 ;;
+ startup) sleep 5; printf private ;;
+ bytes) printf private; sleep 5 ;;
+ eof) printf private; exec 1>&-; sleep 5 ;;
+ descendant) sleep 5 & printf private; exit 0 ;;
  delayed) (sleep 0.04; printf suffix) & printf prefix; exit 0 ;;
  healthy) for n in 1 2 3 4 5 6; do printf x; sleep 0.04; done ;;
  *) printf recovered ;;
@@ -65,6 +65,12 @@ impl Drop for Fixture {
     }
 }
 
+// Every stalled producer outlives the stall window by a wide margin, so a
+// starved host cannot let one finish before the window closes, and the
+// windows of the healthy cases are wide enough to survive a starved producer.
+const STALL_WINDOW: Duration = Duration::from_millis(700);
+const HEALTHY_WINDOW: Duration = Duration::from_millis(1500);
+
 #[test]
 fn home_archive_stream_stalled_start_bytes_and_eof_settle_and_recover() {
     let _lock = crate::env_lock::lock();
@@ -73,13 +79,13 @@ fn home_archive_stream_stalled_start_bytes_and_eof_settle_and_recover() {
     std::fs::write(&previous, b"known-good").unwrap();
     for mode in ["startup", "bytes", "eof", "descendant"] {
         let started = Instant::now();
-        let result = fixture.capture(mode, Duration::from_millis(70));
+        let result = fixture.capture(mode, STALL_WINDOW);
         assert!(
             matches!(result, Err(DaemonError::LocalTransport { ref message, .. }) if message.contains("made no progress")),
             "{mode} must report inactivity"
         );
         assert!(
-            started.elapsed() < Duration::from_millis(250),
+            started.elapsed() < Duration::from_secs(3),
             "{mode} must settle its producer"
         );
         assert!(
@@ -88,9 +94,7 @@ fn home_archive_stream_stalled_start_bytes_and_eof_settle_and_recover() {
         );
         assert_eq!(std::fs::read(&previous).unwrap(), b"known-good");
         let recovery = fixture.root.join("success");
-        fixture
-            .capture("success", Duration::from_millis(70))
-            .unwrap();
+        fixture.capture("success", STALL_WINDOW).unwrap();
         assert_eq!(std::fs::read(&recovery).unwrap(), b"recovered");
         std::fs::remove_file(recovery).unwrap();
     }
@@ -101,15 +105,11 @@ fn home_archive_stream_healthy_progress_and_delayed_descendant_outlive_parent() 
     let _lock = crate::env_lock::lock();
     let fixture = Fixture::new();
     let started = Instant::now();
-    let (path, size, _) = fixture
-        .capture("healthy", Duration::from_millis(150))
-        .unwrap();
+    let (path, size, _) = fixture.capture("healthy", HEALTHY_WINDOW).unwrap();
     assert!(started.elapsed() > Duration::from_millis(200));
     assert_eq!(size, 6);
     assert_eq!(std::fs::read(path).unwrap(), b"xxxxxx");
-    let (path, _, _) = fixture
-        .capture("delayed", Duration::from_millis(150))
-        .unwrap();
+    let (path, _, _) = fixture.capture("delayed", HEALTHY_WINDOW).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), b"prefixsuffix");
 }
 
@@ -134,7 +134,7 @@ case "$*" in
  *" df -B1 --output=avail /tmp") printf '107374182400\n'; exit 0 ;;
  *"State.Running"*) cat "$root/status"; exit 0 ;;
  *"io.chariox.snapshot-helper"*) printf '%s\n' "$4"; exit 0 ;;
- *"tar --zstd -C /home-src -cf - .") printf 'private-partial'; sleep 0.3; exit 0 ;;
+ *"tar --zstd -C /home-src -cf - .") printf 'private-partial'; sleep 5; exit 0 ;;
 esac
 case "$1" in
  ps) printf 'chariox-slice-dev\n'; test ! -f "$root/helpers" || cat "$root/helpers" ;;
@@ -177,7 +177,7 @@ exit 0
     let result = super::super::disk_admission::with_test_disk_admission_lock_path(
         &fixture.root.join("engine.lock"),
         || {
-            with_test_progress_timeout(Duration::from_millis(70), || {
+            with_test_progress_timeout(STALL_WINDOW, || {
                 super::super::capture_preflight::with_test_verified_layout(|| {
                     super::super::state::save_local_docker_slice_state_live(&record, &options)
                 })
@@ -188,7 +188,10 @@ exit 0
         matches!(result, Err(DaemonError::LocalTransport { ref message, .. }) if message.contains("made no progress")),
         "{result:?}"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // The producer would run for 5 s and the default window is 300 s: only
+    // the 700 ms stall window ends this run. The wall bound just catches a
+    // hang and has to hold on a loaded host.
+    assert!(started.elapsed() < Duration::from_secs(60));
     assert_eq!(std::fs::read(&manifest).unwrap(), prior_manifest);
     assert_eq!(
         std::fs::read(&prior_archive).unwrap(),

@@ -49,8 +49,7 @@ layer remains.
 
 ## Web capture and editor
 
-The existing `CHARIOX_USER_APP_VIEWS_PROTOTYPE=1` flag gates the entire capture
-flow. There is no capture button. **Cmd+Shift+S** (macOS) or **Ctrl+Shift+S**
+There is no capture button. **Cmd+Shift+S** (macOS) or **Ctrl+Shift+S**
 (elsewhere) starts capture and calls `preventDefault`, so the browser's own
 shortcut never fires (Super+S belongs to the OS on Windows/GNOME and plain Cmd+S
 is Save). A host-owned top-layer crosshair overlay then takes a drag for a

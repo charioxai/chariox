@@ -1,0 +1,183 @@
+{
+  "peer": 440,
+  "requests": [
+    {
+      "kind": "peer_agent_message",
+      "protocol_version": 0,
+      "request_id": "request-1",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      },
+      "target": {
+        "room": "room-b",
+        "agent": "peer"
+      },
+      "message": "parser.rs is mine",
+      "urgent": true,
+      "reply_requested": false,
+      "caller_authority": {
+        "mode": "build",
+        "permission_level": "required"
+      }
+    },
+    {
+      "kind": "peer_agent_cancel",
+      "protocol_version": 0,
+      "request_id": "request-2",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      },
+      "target": {
+        "room": "room-b",
+        "agent": "peer"
+      },
+      "caller_authority": {
+        "mode": "build",
+        "permission_level": "required"
+      }
+    },
+    {
+      "kind": "subscribe_peer_agent",
+      "protocol_version": 0,
+      "request_id": "request-3",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      },
+      "target": {
+        "room": "room-b",
+        "agent": "peer"
+      },
+      "subscription_id": "follow-1",
+      "generation": 2
+    },
+    {
+      "kind": "unsubscribe_peer_agent",
+      "protocol_version": 0,
+      "subscription_id": "follow-1",
+      "generation": 3
+    },
+    {
+      "kind": "spawn_room_peer",
+      "protocol_version": 0,
+      "request_id": "request-4",
+      "sender": {
+        "kernel_id": "kernel-a",
+        "room_id": "room-a",
+        "agent_id": "agent-a"
+      },
+      "room": "room-b",
+      "provider": "claude",
+      "account_profile": null,
+      "model": "haiku",
+      "effort": "low",
+      "alias": "reviewer",
+      "prompt": "review parser.rs",
+      "execution_mode": "plan",
+      "permission_level": "required",
+      "caller_authority": {
+        "mode": "build",
+        "permission_level": "required"
+      },
+      "follow": {
+        "subscription_id": "follow-2",
+        "generation": 1
+      }
+    },
+    {
+      "kind": "deliver_peer_agent_outcome",
+      "protocol_version": 0,
+      "delivery_id": "delivery-1",
+      "outcome": {
+        "kind": "event",
+        "subscription_id": "follow-1",
+        "source": {
+          "kernel_id": "kernel-b",
+          "room_id": "room-b",
+          "agent_id": "agent-b"
+        },
+        "occurrence_id": "turn-7",
+        "event": "turn_ended"
+      }
+    },
+    {
+      "kind": "deliver_peer_agent_outcome",
+      "protocol_version": 0,
+      "delivery_id": "delivery-2",
+      "outcome": {
+        "kind": "reply",
+        "request_id": "request-1",
+        "source": {
+          "kernel_id": "kernel-b",
+          "room_id": "room-b",
+          "agent_id": "agent-b"
+        },
+        "occurrence_id": "turn-8",
+        "success": true,
+        "public_answer": {
+          "text": "done"
+        }
+      }
+    }
+  ],
+  "responses": [
+    {
+      "kind": "peer_agent_accepted",
+      "protocol_version": 0,
+      "duplicate": false,
+      "target": {
+        "kernel_id": "kernel-b",
+        "room_id": "room-b",
+        "agent_id": "agent-b"
+      }
+    },
+    {
+      "kind": "peer_agent_subscribed",
+      "protocol_version": 0,
+      "subscription_id": "follow-1",
+      "generation": 2,
+      "target": {
+        "kernel_id": "kernel-b",
+        "room_id": "room-b",
+        "agent_id": "agent-b"
+      }
+    },
+    {
+      "kind": "room_peer_spawned",
+      "protocol_version": 0,
+      "duplicate": true,
+      "agent": {
+        "kernel_id": "kernel-b",
+        "room_id": "room-b",
+        "agent_id": "agent-b"
+      },
+      "alias": "reviewer"
+    },
+    {
+      "kind": "peer_agent_outcome_ack",
+      "protocol_version": 0,
+      "ack": "unknown_subscription"
+    },
+    {
+      "kind": "peer_agent_refused",
+      "protocol_version": 0,
+      "refusal": {
+        "reason": "more_authority",
+        "mode": "build",
+        "permission_level": "yolo"
+      }
+    },
+    {
+      "kind": "peer_agent_refused",
+      "protocol_version": 0,
+      "refusal": {
+        "reason": "room_unavailable"
+      }
+    }
+  ]
+}

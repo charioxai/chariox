@@ -17,6 +17,7 @@ const FINISHED: &str = "('fired','exited','lost','cancelled')";
 const LEDGER_KINDS: &[&str] = &[
     "source_completed",
     "source_lost",
+    "peer_event",
     "deadline_reached",
     "wait_recheck",
     "delivery_corrupt",
@@ -428,6 +429,7 @@ fn arm(
         obligation_id: Some(wake.id.clone()),
         source_cursor: 0,
         live: true,
+        peer: false,
     };
     tx.execute(
         "INSERT INTO agent_registrations VALUES(?1,?2,?3)",

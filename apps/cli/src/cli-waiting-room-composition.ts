@@ -500,7 +500,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await controlProfile(),
       environmentId,
     ),
-    startContextTransfer: (ticket) => startManagedContextTransfer(deps.client, ticket),
+    startContextTransfer: (ticket, launchId) => startManagedContextTransfer(deps.client, ticket, launchId),
     getContextTransferStatus: (contextId) => getManagedContextTransferStatus(deps.client, contextId),
     connectKernel: async (machineId, kernelId, isActive) => {
       const sourceRelay = deps.relayStatusState()

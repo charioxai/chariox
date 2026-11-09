@@ -1,6 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11 A02: authenticated source/task admission.
 use super::*;
 use crate::durable_state::agent_lifecycle::{self as ledger, Operation, Outcome, Registration};
+use crate::runtime::state::agent_inbox_sender::SenderRelation;
 impl KernelRuntimeState {
     pub(super) async fn dispatch_agent_event_tool(
         &self,
@@ -145,20 +146,83 @@ impl KernelRuntimeState {
                         prompt: prompt.id().into(),
                         registration: id.into(),
                     })?;
+                self.end_peer_follow_on_other_kernel(actor, id).await;
                 serde_json::json!({"unsubscribed":id})
             }
+            "chariox.events.subscribe" if other_kernel(&args).is_some() => {
+                let kernel = other_kernel(&args).unwrap_or_default();
+                let peer_room = args["room"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|room| !room.is_empty())
+                    .ok_or_else(|| {
+                        ledger::error("room required to follow an agent on another kernel")
+                    })?;
+                let source = args["source_id"]
+                    .as_str()
+                    .ok_or_else(|| ledger::error("source_id required"))?;
+                match self.resolve_peer_kernel(kernel).await? {
+                    Some(kernel) => {
+                        self.subscribe_peer_on_other_kernel(
+                            actor,
+                            task_id,
+                            prompt.id(),
+                            &kernel,
+                            peer_room,
+                            source,
+                        )
+                        .await?
+                    }
+                    None if peer_room != room => self.subscribe_peer_in_other_room(
+                        &session,
+                        actor,
+                        task_id,
+                        prompt.id(),
+                        &args,
+                        peer_room,
+                    )?,
+                    None => return Err(ledger::error(
+                        "that kernel is this one; follow an agent of this room without `kernel`",
+                    )),
+                }
+            }
+            "chariox.events.subscribe" if other_room(&args, room).is_some() => self
+                .subscribe_peer_in_other_room(
+                    &session,
+                    actor,
+                    task_id,
+                    prompt.id(),
+                    &args,
+                    other_room(&args, room).unwrap_or_default(),
+                )?,
             "chariox.events.subscribe" => {
                 let source = args["source_id"]
                     .as_str()
                     .ok_or_else(|| ledger::error("source_id required"))?;
                 let agents = self.session_agents(room);
                 let delegate = agents.iter().any(|a| a.id() == source && a.id() != actor);
-                let peer_task = self
+                let room_tasks = self
                     .owned
                     .durable_state_store
-                    .agent_tasks(Some(room), None)?
+                    .agent_tasks(Some(room), None)?;
+                let peer_task = room_tasks
                     .iter()
                     .any(|t| t.task_id == source && t.agent_id != actor);
+                let peer = {
+                    let followed = room_tasks
+                        .iter()
+                        .find(|t| t.task_id == source)
+                        .map_or(source, |t| t.agent_id.as_str());
+                    match (
+                        agents.iter().find(|a| a.id() == actor),
+                        agents.iter().find(|a| a.id() == followed),
+                    ) {
+                        (Some(me), Some(other)) if other.id() != actor => {
+                            SenderRelation::of(me, Some(other), &agents) == SenderRelation::Peer
+                        }
+                        _ => false,
+                    }
+                };
                 let workflow = session.workflow_runs().iter().any(|w| {
                     w.id() == source
                         && !matches!(
@@ -190,6 +254,7 @@ impl KernelRuntimeState {
                             obligation_id: obligation,
                             source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
                             live: true,
+                            peer,
                         },
                     })?;
                 serde_json::json!({"registration_id":id})
@@ -259,5 +324,58 @@ impl KernelRuntimeState {
             _ => return Err(ledger::error("unknown event tool")),
         };
         Ok(crate::transport::runtime_tools::RuntimeToolResult { ok: true, payload })
+    }
+}
+
+/// The kernel named by a subscribe that follows an agent on another kernel of the owner.
+fn other_kernel(args: &serde_json::Value) -> Option<&str> {
+    args["kernel"]
+        .as_str()
+        .map(str::trim)
+        .filter(|kernel| !kernel.is_empty())
+}
+
+/// The room named by a subscribe that follows an agent outside the caller's room.
+fn other_room<'a>(args: &'a serde_json::Value, room: &str) -> Option<&'a str> {
+    args["room"]
+        .as_str()
+        .map(str::trim)
+        .filter(|other| !other.is_empty() && *other != room)
+}
+
+impl KernelRuntimeState {
+    /// A peer in another room of the owner is followed by its address there; its turns end in
+    /// that room and reach this task as peer events.
+    fn subscribe_peer_in_other_room(
+        &self,
+        session: &crate::session::RuntimeSession,
+        actor: &str,
+        task_id: &str,
+        prompt_id: &str,
+        args: &serde_json::Value,
+        other: &str,
+    ) -> Result<serde_json::Value, DaemonError> {
+        let source = args["source_id"]
+            .as_str()
+            .ok_or_else(|| ledger::error("source_id required"))?;
+        let caller = self.owned.agent_store.get_agent(actor)?;
+        let peer = self.resolve_message_target(session, &caller, Some(other), source)?;
+        let id = format!("subscription-{:032x}", rand::random::<u128>());
+        self.owned
+            .durable_state_store
+            .agent_lifecycle(Operation::Subscribe {
+                task: task_id.into(),
+                prompt: prompt_id.into(),
+                registration: Registration {
+                    id: id.clone(),
+                    task_id: task_id.into(),
+                    source_id: peer.id().into(),
+                    obligation_id: None,
+                    source_cursor: args["source_cursor"].as_u64().unwrap_or(0),
+                    live: true,
+                    peer: true,
+                },
+            })?;
+        Ok(serde_json::json!({"registration_id":id,"source_id":peer.id(),"room":other}))
     }
 }

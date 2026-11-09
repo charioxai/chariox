@@ -130,7 +130,10 @@ test("App command parity snapshot", () => {
     'file: cli=file revoke INSTALLATION [OPERATION] | tui=file grant OPERATION "FILE"… | file save OPERATION "PATH" | file revoke INSTALLATION [OPERATION]',
   ])
   assert.match(cliAppUsage(), /chariox app create\|keygen\|manifest\|validate\|pack\|inspect\|install\|update\|list\|actions\|set\|/)
-  assert.equal(tuiAppHelp().length, appCommandCatalog.filter((entry) => entry.tui).length)
+  const help = tuiAppHelp()
+  assert.equal(help.length, appCommandCatalog.filter((entry) => entry.tui).length + 2)
+  assert.match(help.join("\n"), /\/app views \| view open INSTALLATION/)
+  assert.doesNotMatch(help.join("\n"), /prototype|experimental/i)
 })
 
 test("file revoke reaches the kernel from the standalone CLI and TUI", async () => {

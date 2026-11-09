@@ -231,8 +231,9 @@ pub struct AgentInstance {
     /// by the user, never by an agent. Control follows it down to every depth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     parent_agent_id: Option<AgentRef>,
-    /// The parent's command id of the spawn that created this agent, so a
-    /// retried spawn finds the same child instead of creating another.
+    /// The parent's command id of the spawn that created this agent, or the
+    /// peer spawn request of another kernel, so a retried spawn finds the same
+    /// agent instead of creating another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     spawn_key: Option<String>,
     #[serde(default)]

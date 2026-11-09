@@ -6,12 +6,12 @@ use std::time::Duration;
 
 mod control;
 mod disk_use;
-#[cfg(test)]
-pub(crate) use control::pause_sampling_for_key;
 use control::WatchCommand;
 pub(crate) use control::{
     end_owner, outside_ended_for_key, start_now_for_key, stop_for_key, stop_released,
 };
+#[cfg(test)]
+pub(crate) use control::{hold_registry_for_test, pause_sampling_for_key};
 pub use control::{ProcessControlOutcome, ProcessControlResult, ProcessControlTarget};
 pub(crate) use handover::{adopt_released, hand_over_released, ReleasedJobs};
 

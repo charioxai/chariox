@@ -90,13 +90,14 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
         updated_at_ms: 1_234,
     };
     let snapshot = serde_json::json!([
-        LocalDaemonRequest::StartManagedContextTransfer(
+        LocalDaemonRequest::StartManagedContextTransfer(Box::new(
             crate::local::StartManagedContextTransferRequest {
                 ticket: Some(ticket),
                 owner_managed: None,
-                interactive: false
-            },
-        ),
+                interactive: false,
+                launch_id: None,
+            }
+        ),),
         LocalDaemonRequest::GetManagedContextTransferStatus(
             crate::local::GetManagedContextTransferStatusRequest {
                 context_id: "context-1".to_string(),

@@ -520,14 +520,21 @@ impl KernelRuntimeState {
         {
             return Err(ledger::error("stale sender turn"));
         }
-        let agents = self.session_agents(session.id());
-        let target = crate::runtime::room_tool_admission::resolve_agent(
-            &agents,
-            session.id(),
-            args.agent.trim_start_matches('@'),
-        )?;
+        if let Some(kernel) = args.kernel.as_deref() {
+            if let Some(kernel) = self.resolve_peer_kernel(kernel).await? {
+                return self
+                    .send_agent_message_to_kernel(sender, &kernel, args)
+                    .await;
+            }
+        }
+        let target =
+            &self.resolve_message_target(session, sender, args.room.as_deref(), &args.agent)?;
+        let target_room = target.session_id();
         if sender.id() == target.id() {
             return Err(ledger::error("self-trigger message denied"));
+        }
+        if args.urgent {
+            self.authorize_peer_control(sender, target, super::peer_rooms::PeerControl::Steer)?;
         }
         // Refuse here, while the sender can still react: a message the peer's account cannot
         // start would otherwise stay durable and pending behind the sender's goal.
@@ -544,7 +551,7 @@ impl KernelRuntimeState {
             )?;
             return Err(error);
         }
-        // Room admission precedes resource lookup; no cross-room discovery.
+        // Admission precedes resource lookup; another room reveals only its ordinary agents.
         let id = args
             .idempotency_key
             .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
@@ -552,12 +559,12 @@ impl KernelRuntimeState {
             return Err(ledger::error("invalid message occurrence"));
         }
         let mut event = ledger::occurrence(
-            session.id(),
+            target_room,
             target.id(),
             sender.id(),
             &format!("{}:{id}", current.id()),
             "message",
-            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
+            serde_json::json!({"message":args.message,"sender_agent_id":sender.id(),"sender_room_id":session.id(),"sender_prompt_id":current.id(),"no_reply":!args.reply_requested,"attachments":args.attachments}),
         );
         event.urgent = args.urgent;
         event.reply_requested = args.reply_requested;
@@ -602,12 +609,12 @@ impl KernelRuntimeState {
             );
         }
         self.owned.record_notice_for_agent(
-            session.id(),
+            target_room,
             None,
             Some(target.id()),
             self.owned
                 .attachment_store
-                .list_session_attachment_ids(session.id()),
+                .list_session_attachment_ids(target_room),
             format!(
                 "Agent inbox: event {} from {} ({})",
                 event.sequence,
@@ -615,14 +622,14 @@ impl KernelRuntimeState {
                 if args.urgent { "urgent" } else { "next turn" }
             ),
         );
-        if let Err(error) = Box::pin(self.deliver_agent_inbox(session.id(), target.id())).await {
+        if let Err(error) = Box::pin(self.deliver_agent_inbox(target_room, target.id())).await {
             self.owned.record_notice_for_agent(
-                session.id(),
+                target_room,
                 None,
                 Some(target.id()),
                 self.owned
                     .attachment_store
-                    .list_session_attachment_ids(session.id()),
+                    .list_session_attachment_ids(target_room),
                 format!(
                     "Event {} is durable and pending: {}",
                     event.sequence,
@@ -633,6 +640,45 @@ impl KernelRuntimeState {
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({"status":"durable","sequence":event.sequence,"urgent":event.urgent,"reply_requested":event.reply_requested}),
+        })
+    }
+    /// A message or steer to an agent on another kernel lands there as a stamped inbox message.
+    /// Nothing waits here for its answer: a reply comes back the same way, as a message.
+    async fn send_agent_message_to_kernel(
+        &self,
+        sender: &crate::agent::AgentInstance,
+        kernel: &str,
+        args: crate::transport::runtime_tools::SendAgentMessageArgs,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let Some(room) = args.room.as_deref() else {
+            return Err(ledger::error(
+                "a message to another kernel names the agent's room there",
+            ));
+        };
+        super::peer_agent_outbound::refuse_peer_attachments(&args.attachments)?;
+        let request_id = args
+            .idempotency_key
+            .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()));
+        if request_id.trim().is_empty() || request_id.len() > 128 {
+            return Err(ledger::error("invalid message occurrence"));
+        }
+        let (target, duplicate) = self
+            .relay_peer_agent(
+                sender,
+                kernel,
+                room,
+                &args.agent,
+                super::peer_agent_outbound::PeerAgentCall::Message {
+                    message: args.message,
+                    urgent: args.urgent,
+                    reply_requested: args.reply_requested,
+                },
+                request_id,
+            )
+            .await?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: true,
+            payload: serde_json::json!({"status":if duplicate {"duplicate"} else {"delivered"},"kernel":target.kernel_id,"room":target.room_id,"agent":target.agent_id,"urgent":args.urgent,"reply_requested":args.reply_requested}),
         })
     }
     /// Native TUI turns end at the provider Stop event, which completes the prompt without the
@@ -840,6 +886,8 @@ impl KernelRuntimeState {
                     success: task.state == ExecutionState::Done,
                 })?;
         }
+        // A followed agent's end is owed to its followers on other kernels now.
+        self.spawn_peer_agent_outcome_delivery();
         // A retried settlement changed nothing: the sweep that found it would
         // find it again, so waking it here would spin.
         if changed {
@@ -1048,6 +1096,18 @@ impl KernelRuntimeState {
         if let Err(error) = self.sweep_agent_wakes(now).await {
             tracing::warn!(%error, "MP-08/MP-09/MP-10/MP-11 A03: wake dead-man check retained");
         }
+        if let Err(error) = self.settle_lost_peer_follows(now) {
+            tracing::warn!(%error, "peer follows of gone agents retained for the next sweep");
+        }
+        if let Err(error) = self.settle_unpaired_peer_follows(now).await {
+            tracing::warn!(%error, "peer follows of a former owner retained for the next sweep");
+        }
+        if let Err(error) = self.drop_unknown_peer_follows(now) {
+            tracing::warn!(%error, "peer follows of unanswered spawns retained for the next sweep");
+        }
+        // Outcomes another kernel did not take yet go out in their own pass: a kernel that does
+        // not answer never holds this sweep.
+        self.spawn_peer_agent_outcome_delivery();
         // Recover replies orphaned before this version, even when delivery already ended.
         for (room, agent) in self
             .owned

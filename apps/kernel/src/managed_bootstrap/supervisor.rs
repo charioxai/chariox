@@ -2024,6 +2024,17 @@ while :; do sleep 0.05; done
             assert!(Instant::now() < deadline, "the kernel did not start");
             thread::sleep(Duration::from_millis(20));
         }
+        // The kernel writes its record as soon as it has consumed its auth
+        // token, which can be before the supervisor has registered it as the
+        // reload target; a reload sent in that gap is dropped and the join
+        // below would never return.
+        while KERNEL_PID.load(std::sync::atomic::Ordering::SeqCst) <= 1 {
+            assert!(
+                Instant::now() < deadline,
+                "the supervisor did not register the kernel"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
         assert_eq!(
             std::fs::read_to_string(&record).unwrap().trim(),
             installed.display().to_string(),

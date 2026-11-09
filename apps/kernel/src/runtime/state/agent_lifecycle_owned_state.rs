@@ -351,7 +351,7 @@ impl KernelRuntimeOwnedState {
                 operation,
             });
         }
-        if agent.owner_user_id() == user_id {
+        if self.acts_for_owner(agent.session_id(), user_id, agent.owner_user_id()) {
             Ok(agent)
         } else {
             Err(DaemonError::OwnershipAccessDenied {
@@ -372,6 +372,7 @@ impl KernelRuntimeOwnedState {
         self.kernel_browser_host.revoke_agent(agent.id());
         let session_id = agent.session_id().to_string();
         self.cancel_owned_agent_wakes(&session_id, Some(agent_id));
+        self.announce_agent_gone(&session_id, agent_id);
         let provider_run_ids = self
             .provider_store
             .list_runs()
@@ -488,7 +489,10 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_session_agents(session_id)
             .into_iter()
-            .filter(|agent| !agent.archived() && agent.owner_user_id() == caller_user_id)
+            .filter(|agent| {
+                !agent.archived()
+                    && self.acts_for_owner(session_id, caller_user_id, agent.owner_user_id())
+            })
             .collect::<Vec<_>>();
         if own_agents.is_empty() {
             return Ok(None);
@@ -496,7 +500,10 @@ impl KernelRuntimeOwnedState {
         let current_focused = self
             .agent_store
             .get_focused_agent(session_id)
-            .filter(|agent| !agent.archived() && agent.owner_user_id() == caller_user_id)
+            .filter(|agent| {
+                !agent.archived()
+                    && self.acts_for_owner(session_id, caller_user_id, agent.owner_user_id())
+            })
             .map(|agent| agent.id().to_string());
         let next_agent_id = if let Some(current_id) = current_focused {
             let current_index = own_agents

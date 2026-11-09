@@ -173,6 +173,12 @@ pub(crate) enum KernelEvent {
         #[serde(default)]
         agent_activity_revision: u64,
     },
+    /// The sub-agent tree below `root` changed: read `ListDescendants` again.
+    AgentTreeChanged {
+        session_id: String,
+        root: String,
+        rev: u64,
+    },
     ProviderRunChanged {
         session_id: String,
         provider_run: Option<PublicProviderRun>,
@@ -403,6 +409,17 @@ pub(crate) fn kernel_event_trace_payload(event_id: u64, event: &KernelEvent) -> 
             "session_id": session_id,
             "agent_activity": agent_activity,
             "agent_activity_revision": agent_activity_revision,
+        }),
+        KernelEvent::AgentTreeChanged {
+            session_id,
+            root,
+            rev,
+        } => serde_json::json!({
+            "event_id": event_id,
+            "event": "agent_tree_changed",
+            "session_id": session_id,
+            "root": root,
+            "rev": rev,
         }),
         KernelEvent::ProviderRunChanged {
             session_id,
@@ -664,6 +681,26 @@ pub(crate) fn agent_activity_changed_event(
     })
 }
 
+/// One event per tree whose published revision differs from the one this subscriber last saw.
+pub(crate) fn agent_tree_changed_events(
+    snapshot: &SessionSnapshotProjection,
+    previous_snapshot: Option<&SessionSnapshotProjection>,
+) -> Vec<KernelEvent> {
+    let Some(previous_snapshot) = previous_snapshot else {
+        return Vec::new();
+    };
+    snapshot
+        .agent_tree_revs
+        .iter()
+        .filter(|(root, rev)| previous_snapshot.agent_tree_revs.get(*root) != Some(*rev))
+        .map(|(root, rev)| KernelEvent::AgentTreeChanged {
+            session_id: snapshot.session.id().to_string(),
+            root: root.clone(),
+            rev: *rev,
+        })
+        .collect()
+}
+
 pub(crate) fn provider_run_changed_event(
     snapshot: &SessionSnapshotProjection,
     previous_snapshot: Option<&SessionSnapshotProjection>,
@@ -729,6 +766,7 @@ pub(crate) fn session_projection_changed_events(
     ]
     .into_iter()
     .flatten()
+    .chain(agent_tree_changed_events(snapshot, previous))
     .chain(agent_task_updated_events(snapshot, previous))
     .collect()
 }
@@ -882,6 +920,7 @@ pub(crate) fn kernel_event_name(event: &KernelEvent) -> &'static str {
         KernelEvent::SessionSnapshot { .. } => "session_snapshot",
         KernelEvent::AgentTaskUpdated { .. } => "agent_task_updated",
         KernelEvent::AgentActivityChanged { .. } => "agent_activity_changed",
+        KernelEvent::AgentTreeChanged { .. } => "agent_tree_changed",
         KernelEvent::ProviderRunChanged { .. } => "provider_run_changed",
         KernelEvent::SessionMetadataChanged { .. } => "session_metadata_changed",
         KernelEvent::RuntimeInteractionsChanged { .. } => "runtime_interactions_changed",
@@ -920,6 +959,7 @@ pub(crate) fn event_session_id(event: &KernelEvent) -> Option<&str> {
         KernelEvent::SessionSnapshot { session, .. } => Some(session.id()),
         KernelEvent::AgentTaskUpdated { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::AgentActivityChanged { session_id, .. } => Some(session_id.as_str()),
+        KernelEvent::AgentTreeChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::ProviderRunChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::SessionMetadataChanged { session_id, .. } => Some(session_id.as_str()),
         KernelEvent::RuntimeInteractionsChanged { session_id, .. } => Some(session_id.as_str()),
@@ -988,6 +1028,7 @@ pub(crate) fn event_is_relevant_to_attachment(event: &KernelEvent, attachment_id
         | KernelEvent::SessionSnapshot { .. }
         | KernelEvent::AgentTaskUpdated { .. }
         | KernelEvent::AgentActivityChanged { .. }
+        | KernelEvent::AgentTreeChanged { .. }
         | KernelEvent::ProviderRunChanged { .. }
         | KernelEvent::SessionMetadataChanged { .. }
         | KernelEvent::RuntimeInteractionsChanged { .. }

@@ -724,7 +724,7 @@ permission level or mode. Only the user changes the edge, with
 `SetAgentParent {session_id, agent_id, parent_agent_id}` (answered by
 `AgentParentChanged {agent}`); every agent caller, a sudo window included, is
 refused. A Room agent controls its subtree with `agent cancel`, `agent deadline
-set|get`, `agent children` and `agent spawn`, and reads `agent usage` and
+set|get`, `agent children`, `agent steer`, `agent message` and `agent spawn`, and reads `agent usage` and
 `agent profiles`. `agent spawn` takes `--account-profile`, `--permission
 required|yolo`, `--deadline 90s|30m|2h|1d` and `--command-id`; a child never
 has a higher permission level or mode than its parent, and a retry with the
@@ -746,8 +746,9 @@ not listed to the user until it reaches the user. A holder agent gets an urgent
 `question`, `choices`, `text_allowed`, `needs_answer`) and answers with the room
 command `agent answer <interaction> <choice-id|text>` or hands it on with `agent
 pass <interaction>`; both return `ChildDecision {status}` with `status` one of
-`answered`, `passed`, `not_holder`, `settled_by_user`, `invalid_answer`, and no
-text. The decision moves up at once, with no model turn, when its holder's turn
+`answered`, `passed`, `not_holder`, `settled_by_user`, `unknown_interaction`,
+`invalid_answer`, and no text; `--room`, `--kernel` and `--machine` are refused
+with `peer_decision_refused`, because a peer never settles a decision. The decision moves up at once, with no model turn, when its holder's turn
 ends, errors, is cancelled or is blocked. A decision answered by a parent closes
 as `resolution.via = "parent_agent"`. The relay peer protocol needs no change for it.
 
@@ -1320,6 +1321,7 @@ Current pushed event contract:
 - `assistant_message_completed` carries `session_id`, `provider_run_id`, optional `agent_id`, `message_id`, and `completed_at_ms`
 - `session_snapshot` is the full subscribed-session projection and remains the fallback after attach, replay gaps, explicit recovery, and structural changes
 - `agent_activity_changed` carries `session_id` and the complete agent activity map for activity-only projection updates
+- `agent_tree_changed` carries `session_id`, the `root` agent whose sub-agent tree changed and the same `rev` the external-agent `agent_tree` event carries; it is sent beside `agent_activity_changed`, once per changed tree, only to members whose `ListDescendants` shows the agents of that tree (the root's owner, or a member who can view agent traces), and a client reads `ListDescendants` again
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
@@ -6899,7 +6901,13 @@ the accounts installed before it roll back. `ProviderAccountProfile.context_tran
 `unavailable`, which marks only a login whose Vault is not a Chariox Vault (the earlier `vault_credential` is gone).
 `PreflightProviderAccountPortability` accepts a Vault login and, with a Vault login selected, finds the Vault unlocked:
 the existing unlock card appears in the launching session, an agent's included, and a caller without a session gets the
-typed `vault_locked` refusal. A package without a transferred Vault that reaches a machine whose Vault is not open
+typed `vault_locked` refusal. That unlock is held, once and for a bounded time, for the export of the same launch.
+Preflight and `StartManagedContextTransfer` both take an optional `launchId` (the client's own key for one launch,
+omitted when absent; no protocol number of its own): an export whose start names a `launchId` takes only that launch's
+held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
+two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
+found by the launching session, else the latest launch. Focused check:
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package without a transferred Vault that reaches a machine whose Vault is not open
 still imports, without those logins: the import receipt names each one in `providerAccounts.omitted`, the relay peer
 receipt in `omitted_provider_accounts` and the local `ManagedContextTransferStatus` receipt in
 `omittedProviderAccounts`, each `{provider, profileId, label, reason: "vault_closed", nextStep: "sign_in_again"}`
@@ -6954,3 +6962,29 @@ unchanged: the worker gets the folder through the existing `SpawnLeasedAgent.wor
 peer 439 stays, and no client minimum changes. Snapshot:
 `protocol_shapes/remote-agent-binding-worktree-1000.json`. Focused check:
 `cargo test -p chariox-kernel --lib -- remote_agent_binding_worktree lease_dir_after_restart`.
+
+### Peers, the sub-agent tree event and the sub-agent access refusal — local 1001 / relay peer 440
+
+Landing 6 carries one pair. Local daemon protocol 1001 adds peers across rooms of one owner (`agent
+spawn --room`, messages, steer, cancel and follow of an ordinary agent of another room, the `peer_event`
+inbox kind), the room clients' `agent_tree_changed` event and the typed `kernel_access_sub_agent`
+refusal. Relay peer 440 carries the same peers across kernels of one owner, below. Managed upgrades
+admit 1000 and 1001.
+
+### Peers across kernels of one owner — relay peer 440
+
+MP-08 / MP-10 / MP-11: an agent messages, steers, cancels, follows or spawns an ordinary agent in a
+room of another kernel of the same owner (design: `docs/design/sub-agents.md` 7.5,
+`docs/design/PEERS_P5.md`). Relay peer 440 adds six requests: `peer_agent_message` (`urgent` steers),
+`peer_agent_cancel`, `subscribe_peer_agent`, `unsubscribe_peer_agent`, `spawn_room_peer` and
+`deliver_peer_agent_outcome` (a followed peer's `event` or the `reply` to a message), and five
+responses: `peer_agent_accepted`, `peer_agent_subscribed`, `room_peer_spawned`,
+`peer_agent_outcome_ack` and `peer_agent_refused` with a typed `refusal` (`room_unavailable`,
+`agent_unavailable`, `ambiguous`, `more_authority`, `sub_agent_caller`, `room_full`,
+`attachments_local_only`). Each request is admitted only between kernels of one authenticated
+Cloud owner, and its `sender` stamp must name the authenticated sending kernel. The caller's
+`caller_authority` is lowered to the receiving kernel's record of the target room before the
+authority rule (level and mode at least the target's) runs. A message is an inbox `message` event
+with `sender_kernel_id`, never a prompt; one `request_id` of one kernel is one delivery. The client
+minimums do not change. Snapshot: `fixtures/peer-agent-link-protocol.json`.
+Focused check: `cargo test -p chariox-kernel --lib -- peer_rooms::kernels peer_agent_link_shapes peer_agent_stamp`.

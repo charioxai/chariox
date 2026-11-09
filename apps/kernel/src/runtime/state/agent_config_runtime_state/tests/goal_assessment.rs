@@ -174,6 +174,7 @@ async fn a12_assessment_context_exposes_unhandled_correlated_receipts() {
             obligation_id: Some("delegate".into()),
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     apply(Operation::SourceOutcome {
@@ -383,6 +384,7 @@ async fn a12_assessment_exposes_expired_wake_with_unresolved_source_outcome() {
             obligation_id: Some("peer".into()),
             source_cursor: 0,
             live: true,
+            peer: false,
         },
     });
     apply(Operation::SourceOutcome {
@@ -1673,6 +1675,7 @@ async fn inbox_wake_recovers_original_notes_in_hidden_provider_context() {
                 obligation_id: None,
                 source_cursor: 0,
                 live: true,
+                peer: false,
             },
         },
         Operation::Yield {

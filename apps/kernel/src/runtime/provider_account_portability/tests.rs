@@ -52,6 +52,7 @@ impl Fixture {
                     account_profile: profile.profile_id,
                 }],
             },
+            launch_id: None,
         };
         Self {
             root,

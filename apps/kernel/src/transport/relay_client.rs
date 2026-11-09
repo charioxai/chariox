@@ -79,6 +79,8 @@ use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext, RelayReconnectGate};
 use local_browser::LocalBrowserDirect;
 #[cfg(test)]
+pub(crate) use peer_client::relay_peer_response_timed_out;
+#[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 pub(crate) use peer_client::send_peer_request_via_temporary_connection_with_optional_timeout;
 pub(crate) use peer_client::{
@@ -90,6 +92,7 @@ pub(crate) use peer_client::{
     send_peer_request_via_connected_relay_authorized,
     send_peer_request_via_temporary_connection_authenticated,
     send_peer_request_via_temporary_connection_authorized, RelayPeerResponseWaiter,
+    RELAY_PEER_RESPONSE_TIMED_OUT,
 };
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};
 pub use peer_client::{

@@ -102,11 +102,19 @@ pub fn effective_agent_permission_level(
         .unwrap_or_default()
 }
 
+/// What `agent` may do without asking the person, at the level its parent chain allows.
 pub fn effective_agent_user_authority(
     session: &RuntimeSession,
     agent: Option<&AgentInstance>,
+    agents: &[AgentInstance],
 ) -> EffectiveAgentUserAuthority {
-    match effective_agent_permission_level(session, agent) {
+    let level = match agent {
+        Some(agent) => {
+            effective_agent_execution_config_in_tree(session, agent, agents).permission_level
+        }
+        None => effective_agent_permission_level(session, None),
+    };
+    match level {
         AgentPermissionLevel::Yolo => EffectiveAgentUserAuthority::Full,
         AgentPermissionLevel::Required => EffectiveAgentUserAuthority::ApprovalRequired,
     }
@@ -115,8 +123,9 @@ pub fn effective_agent_user_authority(
 pub fn effective_agent_extension_registration_authority(
     session: &RuntimeSession,
     agent: Option<&AgentInstance>,
+    agents: &[AgentInstance],
 ) -> EffectiveAgentUserAuthority {
-    effective_agent_user_authority(session, agent)
+    effective_agent_user_authority(session, agent, agents)
 }
 
 #[cfg(test)]
@@ -195,7 +204,7 @@ mod tests {
             .expect("session should be created");
 
         assert_eq!(
-            effective_agent_user_authority(&session, None),
+            effective_agent_user_authority(&session, None, &[]),
             EffectiveAgentUserAuthority::ApprovalRequired
         );
 
@@ -218,7 +227,7 @@ mod tests {
         agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
 
         assert_eq!(
-            effective_agent_user_authority(&session, Some(&agent)),
+            effective_agent_user_authority(&session, Some(&agent), &[]),
             EffectiveAgentUserAuthority::Full
         );
     }

@@ -200,6 +200,9 @@ mod visible_region_capture;
 mod web_bot_auth_runtime;
 pub(crate) use runtime_tool_call_activity::RuntimeToolCallActivity;
 
+/// When Cloud's kernel directory was read, and the kernels it listed as unlinked.
+type UnlinkedKernels = (u64, BTreeSet<String>);
+
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
     external_command_authority: Option<ExternalCommandAuthority>,
@@ -226,7 +229,17 @@ pub(crate) struct KernelRuntimeState {
     /// Recovery operations this kernel life dispatched. One from an earlier life has no provider
     /// behind it any more, so restart recovery may supersede it instead of waiting for it.
     restart_recovery_dispatched: Arc<std::sync::Mutex<BTreeSet<String>>>,
+    /// When this kernel life first saw each follow still waiting to learn its peer.
+    unknown_peer_follows: Arc<std::sync::Mutex<BTreeMap<String, u64>>>,
+    /// Peer spawns this kernel life is creating, by sending kernel and request id.
+    peer_spawns_in_flight: peer_agent_inbound::PeerSpawnsInFlight,
+    /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
+    unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
+    peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
+    /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
+    peer_outcomes_owed_now: Arc<std::sync::atomic::AtomicBool>,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -1076,7 +1089,12 @@ impl KernelRuntimeState {
             leased_agent_operations: leased_agent_operations::LeasedAgentOperations::default(),
             detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             restart_recovery_dispatched: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
+            unknown_peer_follows: Default::default(),
+            peer_spawns_in_flight: Default::default(),
+            unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            peer_outcome_deliveries: Default::default(),
+            peer_outcomes_owed_now: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,
@@ -1561,6 +1579,12 @@ impl KernelRuntimeState {
     }
 }
 
+mod peer_agent_follow;
+pub(crate) use peer_agent_follow::peer_source_stamp;
+pub(crate) mod peer_agent_inbound;
+pub(crate) use peer_agent_inbound::peer_message_stamp;
+pub(crate) mod peer_agent_outbound;
+mod peer_rooms;
 mod room_agent_admission;
 
 mod agent_assessment_result;
@@ -1586,6 +1610,7 @@ mod agent_subtree_cascade;
 mod agent_tree_runtime;
 mod child_finished_event;
 
+mod agent_gone_announcement;
 mod agent_owner_cancellation;
 mod agent_process_group;
 mod agent_process_output;
@@ -1611,6 +1636,8 @@ mod interaction_wake;
 mod leased_task_connectivity;
 mod leased_worker_stop_obligation;
 mod lifecycle_sweep_flight;
+#[cfg(test)]
+mod peer_gone_tests;
 #[cfg(test)]
 mod resident_room_scan_tests;
 mod room_dispatch_obligation;

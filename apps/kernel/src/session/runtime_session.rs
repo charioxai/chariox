@@ -523,6 +523,16 @@ impl RuntimeSession {
             .map(|member| member.collaboration_level())
     }
 
+    /// Whether `viewer` may see an agent of `agent_owner_user_id` in a sub-agent tree: their own
+    /// agent, or any agent once they can view agent traces. `ListDescendants` keeps the nodes this
+    /// allows, and `agent_tree_changed` goes to the viewers it allows for the tree's root.
+    pub fn can_view_tree_agent_owned_by(&self, viewer: &str, agent_owner_user_id: &str) -> bool {
+        agent_owner_user_id == viewer
+            || self
+                .collaboration_level_for_user(viewer)
+                .is_some_and(|level| level.can_view_agent_trace())
+    }
+
     pub fn can_prompt_agent_owned_by(
         &self,
         caller_user_id: &str,
