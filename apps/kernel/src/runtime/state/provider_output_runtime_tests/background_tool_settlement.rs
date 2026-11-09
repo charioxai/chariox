@@ -32,6 +32,11 @@ impl BackgroundTurn {
     /// A turn whose agent launched one Claude and one Codex background command
     /// and finished one foreground call.
     async fn start() -> Self {
+        Self::start_on("claude-code").await
+    }
+
+    /// The same turn on a provider whose output the kernel pumps itself.
+    async fn start_on(provider: &str) -> Self {
         let worktree = crate::test_support::TestWorktree::new("background-tool-settlement");
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).unwrap();
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -49,7 +54,7 @@ impl BackgroundTurn {
                 crate::provider::LaunchProviderRequest::new(
                     session.id(),
                     "dev-stub",
-                    "claude-code",
+                    provider,
                     "default",
                     "test",
                 )
@@ -268,4 +273,69 @@ async fn a_kernel_restart_ends_background_commands_of_runs_it_did_not_take_over(
     assert!(stored["toolu_bg"]["finished_at_ms"].is_u64());
     assert!(stored["call_sleep"]["finished_at_ms"].is_u64());
     assert!(stored["toolu_fg"].get("finished_at_ms").is_none());
+}
+
+impl BackgroundTurn {
+    /// The turn settled and its provider process died before any task
+    /// notification arrived, with no prompt left to fail.
+    async fn settled_turn_with_dead_provider(&self) {
+        self.live_tools();
+        self.runtime
+            .owned
+            .complete_local_prompt_without_advance(&self.session, &self.agent, Some(&self.run))
+            .unwrap();
+        self.runtime
+            .owned
+            .provider_store
+            .terminate_run_provider_only(&self.session, &self.run)
+            .unwrap();
+    }
+
+    async fn assert_background_commands_ended_at_or_after(&self, before: u64) {
+        let ended = self.live_tools();
+        let mut ids = ended
+            .iter()
+            .map(|tool| tool["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, ["call_sleep", "toolu_bg"], "{ended:?}");
+        for tool in &ended {
+            assert!(tool["finished_at_ms"].as_u64().unwrap() >= before, "{tool}");
+        }
+        let stored = self.stored_tools().await;
+        assert!(stored["toolu_bg"]["finished_at_ms"].is_u64());
+        assert!(stored["call_sleep"]["finished_at_ms"].is_u64());
+    }
+}
+
+#[tokio::test]
+async fn liveness_seeing_a_dead_provider_without_an_active_prompt_ends_its_background_commands() {
+    let turn = BackgroundTurn::start().await;
+    turn.settled_turn_with_dead_provider().await;
+    let before = crate::session::unix_epoch_ms();
+    turn.runtime
+        .reconcile_provider_run_exit(&turn.session, &turn.run)
+        .await
+        .unwrap();
+    turn.assert_background_commands_ended_at_or_after(before)
+        .await;
+}
+
+#[tokio::test]
+async fn the_output_pump_seeing_a_dead_provider_without_an_active_prompt_ends_its_background_commands(
+) {
+    let turn = BackgroundTurn::start_on("slow-structured").await;
+    turn.settled_turn_with_dead_provider().await;
+    let before = crate::session::unix_epoch_ms();
+    turn.runtime
+        .pump_owned_provider_output(
+            &turn.session,
+            &turn.run,
+            vec![turn.attachment.clone()],
+            false,
+        )
+        .await
+        .unwrap();
+    turn.assert_background_commands_ended_at_or_after(before)
+        .await;
 }
