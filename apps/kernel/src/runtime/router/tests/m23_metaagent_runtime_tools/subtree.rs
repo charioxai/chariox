@@ -472,6 +472,102 @@ async fn spawn_deadline() {
 }
 
 #[test]
+fn a_spawn_answer_states_the_values_the_kernel_applied() {
+    run_large_stack_async_test("subtree-spawn-answer-applied", spawn_answer_applied);
+}
+
+async fn spawn_answer_applied() {
+    let world = world("subtree-spawn-answer-applied").await;
+    let workspace = world._env.root.join("workspace").display().to_string();
+    let full = room_command(
+        &world,
+        "a",
+        "agent spawn full --provider dev-stub --account-profile team-b --effort high \
+         --permission REQUIRED --deadline 30m",
+    )
+    .await;
+    assert!(full.ok, "{full:?}");
+    let answer = &full.payload["response"]["agent"];
+    assert_eq!(answer["profile"], "team-b");
+    assert_eq!(answer["effort"], "high");
+    assert_eq!(answer["permission"], "required");
+    assert_eq!(answer["worktree"], workspace);
+    assert_eq!(answer["branch"], serde_json::Value::Null);
+    let armed = room_command(&world, "a", "agent deadline get full")
+        .await
+        .payload["response"]["deadline"]["deadline_ms"]
+        .clone();
+    assert_eq!(answer["deadline_ms"], armed);
+
+    // The profile named `default` is the unset profile, and options nobody gave stay null.
+    let plain = room_command(
+        &world,
+        "peer",
+        "agent spawn plain --provider dev-stub --account-profile default",
+    )
+    .await;
+    assert!(plain.ok, "{plain:?}");
+    let answer = &plain.payload["response"]["agent"];
+    for absent in ["profile", "effort", "permission", "deadline_ms", "branch"] {
+        assert_eq!(answer[absent], serde_json::Value::Null, "{absent}: {answer}");
+    }
+    assert_eq!(answer["worktree"], workspace);
+}
+
+#[test]
+fn a_spawn_answer_names_the_worktree_and_branch_it_created() {
+    run_large_stack_async_test("subtree-spawn-answer-worktree", spawn_answer_worktree);
+}
+
+async fn spawn_answer_worktree() {
+    let world = world("subtree-spawn-answer-worktree").await;
+    let workspace = world._env.root.join("workspace");
+    for args in [
+        &["init", "-q"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let target = workspace.join("feature-tree");
+    let spawned = room_command(
+        &world,
+        "a",
+        &format!(
+            "agent spawn tree --provider dev-stub --worktree {} --branch feature-x",
+            target.display()
+        ),
+    )
+    .await;
+    assert!(spawned.ok, "{spawned:?}");
+    let answer = &spawned.payload["response"]["agent"];
+    let stored = world
+        .app
+        .lock()
+        .await
+        .agents()
+        .get_agent(answer["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(answer["worktree"], stored.worktree_id().unwrap());
+    assert!(stored.worktree_id().unwrap().ends_with("feature-tree"));
+    assert_eq!(answer["branch"], "feature-x");
+}
+
+#[test]
 fn deleting_an_agent_ends_its_sub_agents_with_it() {
     run_large_stack_async_test("subtree-delete-with-children", delete_with_children);
 }
