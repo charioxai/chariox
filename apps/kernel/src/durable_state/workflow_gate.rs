@@ -516,7 +516,18 @@ pub(super) fn execute(db: &mut Connection, request: Request) -> bool {
                 Outcome::Unit
             }
             Operation::EnrollOwner { old, session } => {
+                // The enrolled endpoint owners and the gate rows they admit move
+                // together. Rows move first: the workflow write cancels every
+                // entry whose owner no longer matches its endpoint.
                 enrollment::enroll_owner_in(&tx, session.id(), &old, session.owner_user_id())?;
+                let encoded = super::workflow_runtime::encode_workflow_session(&session)?;
+                let now = crate::session::unix_epoch_ms();
+                super::workflow_runtime::write_workflow_runtime_transition(&tx,super::workflow_runtime::WorkflowRuntimeTransitionWrite {
+                    event_id:&format!("state_evt_{now}_{}",super::rand_suffix()),event_kind:"workflow.runtime.updated",timestamp_ms:now,
+                    payload_json:&serde_json::json!({"reason":"workflow_gate_owner_enrolled","owner_id":session.owner_user_id()}).to_string(),
+                    owner_id:session.host_daemon_id(),source_owner_id:session.owner_user_id(),session_id:session.id(),hot_entities:&encoded.hot_entities,
+                    workflow_runs:&encoded.workflow_runs,delivery_receipts:&encoded.delivery_receipts,prompt_state_jsons:&[],invocation_creator:None,
+                }).map_err(sql)?;
                 Outcome::Unit
             }
             Operation::Cancel { owner, id, reason } => {

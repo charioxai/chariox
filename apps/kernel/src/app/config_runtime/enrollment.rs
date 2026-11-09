@@ -57,6 +57,8 @@ impl DaemonApp {
                 .write()
                 .enroll_local_session_owner(session.id(), owner);
             session.enroll_local_owner(owner);
+            self.durable_state
+                .enroll_gate_owner(DEFAULT_LOCAL_USER_ID, &session)?;
             self.durable_state.append_event("session.updated", Some(session.id().into()),
                 serde_json::json!({"session": session.durable_runtime_snapshot(), "reason": "cloud_owner_enrolled"}))?;
             updated.push(sessions.restore_session(session));

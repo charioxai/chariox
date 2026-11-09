@@ -21,5 +21,8 @@ let fresh;try{const e3=await submit(rig,'run');const f=await rig.waitFor(A,e3.en
 await sleep(1500);
 const final={deferredLeft:jq(rig,"select entry_id,disposition from workflow_gate_entries where disposition not in ('queued','dropped','failed','expired','cancelled')"),owners:jq(rig,'select owner_id,disposition,count(*) from workflow_gate_entries group by 1,2')};
 const out={before,after,listed,listErr,st,stErr,cancel,fresh,final};console.log('OUT',JSON.stringify(out));
-rec('enrolled-owner-sees-pre-enrollment-gate-entries',{result:'INFO',out});
+// defer:N re-evaluates every step, so the kept revision can only have advanced.
+const revision=before.state.find(r=>r[0]==='local')?.[1];
+const pass=Array.isArray(listed)&&listed.length===before.entries.length&&revision>0&&st>=revision&&!/^ERR/.test(cancel)&&final.owners.some(r=>r[1]==='cancelled')&&fresh?.disp==='queued'&&final.deferredLeft.length===0&&final.owners.every(r=>r[0]===user)&&after.owners.every(r=>r[0]===user);
+rec('enrolled-owner-sees-pre-enrollment-gate-entries',{result:pass?'PASS':'FAIL',out});
 await rig.stop();
