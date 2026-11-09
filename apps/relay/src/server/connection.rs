@@ -554,12 +554,34 @@ pub(crate) async fn handle_connection(
                             auth_token,
                             query,
                         } => {
-                            let identity = verify_relay_token(
+                            let identity = match verify_relay_token(
                                 &auth_verifier,
                                 &auth_token,
                                 RelayAction::ClientMetadataRead,
                                 None,
-                            )?;
+                            ) {
+                                Ok(identity) => identity,
+                                // A kernel renews its list over the socket it already has: a
+                                // refused token is an answer there, not the end of its connection.
+                                Err(error) if registered_daemon_key.is_some() => {
+                                    send_envelope(
+                                        &outgoing_tx,
+                                        &RelayEnvelope::ClientMetadataResponse {
+                                            request_id,
+                                            machines: None,
+                                            kernels: None,
+                                            kernel: None,
+                                            error: Some(relay_error(
+                                                "relay_token_refused",
+                                                &error.to_string(),
+                                                false,
+                                            )),
+                                        },
+                                    )?;
+                                    continue;
+                                }
+                                Err(error) => return Err(error),
+                            };
                             // The request's own token proves the realm, so the
                             // request and its answer count for it too.
                             if !connection_meter.bind_realm(&identity.realm_id) {
