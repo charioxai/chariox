@@ -57,6 +57,7 @@ mod peer_events;
 mod peer_requests;
 mod peer_trace;
 mod remote_inventory;
+mod reply_notes;
 mod request_errors;
 mod request_timing;
 mod sender_identity;
@@ -182,6 +183,8 @@ pub(crate) struct RelayOutgoingSender {
     priority_tx: mpsc::Sender<RelayEnvelope>,
     event_tx: mpsc::Sender<RelayEnvelope>,
     closing: Arc<AtomicBool>,
+    /// Who each queued reply answers; the writer reads it.
+    notes: Arc<reply_notes::ReplyNotes>,
 }
 
 impl RelayOutgoingSender {
@@ -208,6 +211,7 @@ impl RelayOutgoingSender {
             priority_tx,
             event_tx,
             closing: Arc::new(AtomicBool::new(false)),
+            notes: Arc::default(),
         }
     }
 
@@ -244,6 +248,18 @@ impl RelayOutgoingSender {
     ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
+    }
+
+    /// A reply to a client's request: the writer names `origin` in its diagnostics, and a bulk
+    /// reply waits while the client already has its share queued.
+    async fn send_reply(&self, envelope: RelayEnvelope, origin: reply_notes::ReplyOrigin) -> bool {
+        let bulk = relay_envelope_uses_event_lane(&envelope);
+        let noted = self.notes.note(&envelope, origin, bulk).await;
+        let sent = self.send(envelope).await;
+        if let (false, Some(key)) = (sent, noted) {
+            self.notes.forget(&key);
+        }
+        sent
     }
 
     /// MP-08/MP-10/MP-11: replies wait for lane capacity; they are never dropped.

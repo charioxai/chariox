@@ -5,6 +5,8 @@ use chariox_relay::protocol::RelayEnvelope;
 use futures_util::{Sink, SinkExt};
 use tokio_tungstenite::tungstenite::Message;
 
+use super::super::reply_notes::ReplyNotes;
+
 const RELAY_LARGE_FRAME_LOG_BYTES: usize = 256 * 1024;
 const RELAY_SLOW_WRITE_LOG_MS: u128 = 500;
 const RELAY_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -34,6 +36,7 @@ pub(super) async fn send_relay_envelope_frame<S>(
     lane: &'static str,
     binary_events: bool,
     closing: &AtomicBool,
+    notes: &ReplyNotes,
 ) -> bool
 where
     S: Sink<Message> + Unpin,
@@ -68,6 +71,7 @@ where
         }
     };
     let payload_len = frame.len();
+    let reply = notes.take(&envelope);
     let packet = chariox_relay::transport_timing::envelope_signature(&envelope);
     chariox_relay::transport_timing::record("kernel_write_start", packet);
     let started = Instant::now();
@@ -77,6 +81,7 @@ where
         crate::transport::kernel_browser_display::timing("event_socket_write", started);
     }
     let elapsed_ms = started.elapsed().as_millis();
+    notes.record_written(lane, reply.as_ref(), payload_len);
     if payload_len >= RELAY_LARGE_FRAME_LOG_BYTES || elapsed_ms >= RELAY_SLOW_WRITE_LOG_MS {
         crate::logging::warn_with_fields(
             "daemon.relay_client",
@@ -87,6 +92,8 @@ where
                 "payload_bytes": payload_len,
                 "write_ms": elapsed_ms,
                 "sent": sent,
+                "request_kind": reply.as_ref().map(|reply| reply.origin.request_kind),
+                "client": reply.as_ref().map(|reply| reply.origin.client.as_str()),
             }),
         );
     }
@@ -123,6 +130,7 @@ pub(super) async fn run_relay_writer<S>(
     mut transport_receipt_rx: tokio::sync::mpsc::Receiver<String>,
     binary_events: bool,
     closing: std::sync::Arc<AtomicBool>,
+    notes: std::sync::Arc<ReplyNotes>,
 ) where
     S: Sink<Message> + Unpin,
 {
@@ -142,13 +150,13 @@ pub(super) async fn run_relay_writer<S>(
             }
             envelope = priority_outgoing_rx.recv(), if priority_open => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &closing).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "priority", binary_events, &closing, &notes).await { break; },
                     None => priority_open = false,
                 }
             }
             envelope = event_outgoing_rx.recv(), if event_open => {
                 match envelope {
-                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &closing).await { break; },
+                    Some(envelope) => if !send_relay_envelope_frame(&mut writer, envelope, "event", binary_events, &closing, &notes).await { break; },
                     None => event_open = false,
                 }
             }
@@ -217,6 +225,7 @@ mod tests {
                 receipt_rx,
                 false,
                 Arc::new(AtomicBool::new(false)),
+                Arc::default(),
             );
             assert!(
                 tokio::time::timeout(Duration::from_secs(31), writer)
@@ -225,5 +234,54 @@ mod tests {
                 "stalled {lane} write never releases connector"
             );
         }
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): the 11-09 flood had to be traced to its
+    // requester from frame sizes; the diagnostic now names the request kind and the client.
+    #[tokio::test]
+    async fn large_reply_log_names_its_request() {
+        let logs = crate::logging::capture::start();
+        let notes = ReplyNotes::default();
+        let reply = RelayEnvelope::DaemonResponse {
+            relay_request_id: "chunk-1".into(),
+            encrypted_response: Some(chariox_relay::protocol::EncryptedRelayPayload {
+                sender_public_key: "daemon".into(),
+                nonce: "nonce".into(),
+                ciphertext: "x".repeat(300 * 1024),
+            }),
+            error: None,
+        };
+        let origin = super::super::super::reply_notes::ReplyOrigin::new(
+            "machine_file.read",
+            "key-of-the-file-reader",
+        );
+        let client = origin.client.clone();
+        notes.note(&reply, origin, true).await;
+        let mut sink = futures_util::sink::drain::<Message>();
+        assert!(
+            send_relay_envelope_frame(
+                &mut sink,
+                reply,
+                "event",
+                false,
+                &AtomicBool::new(false),
+                &notes
+            )
+            .await
+        );
+        let record = logs
+            .records()
+            .into_iter()
+            .find(|record| record.contains("relay envelope write exceeded diagnostic threshold"))
+            .expect("a 300 KB reply is logged");
+        assert!(
+            record.contains("\"request_kind\":\"machine_file.read\""),
+            "{record}"
+        );
+        assert!(
+            record.contains(&format!("\"client\":\"{client}\"")),
+            "{record}"
+        );
+        assert_eq!(client.len(), 8);
     }
 }
