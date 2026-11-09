@@ -119,18 +119,20 @@ export const knownDifferences = {
   'iframe': 'KNOWN LEAK: a same-origin iframe\'s own Function.prototype.toString shows the permission wrappers\' JavaScript source',
   'webgl': 'a GPU-less host: the kernel opts into SwiftShader (--enable-unsafe-swiftshader) where stock Chrome has no WebGL',
   'webgl.extensions': 'a GPU-less host: SwiftShader',
-  'worker': 'a GPU-less host: the worker\'s WebGL renderer is SwiftShader (everything else in the worker must match)',
   'uad.high': 'KNOWN LEAK (headless only): --user-agent drops the high-entropy client hints (architecture, bitness, full version list)',
 };
 
-const sameWithoutGl = (a, b) => { try { const x = JSON.parse(a), y = JSON.parse(b); delete x.gl; delete y.gl; return JSON.stringify(x) === JSON.stringify(y); } catch { return a === b; } };
+// On a GPU-less host the worker's WebGL renderer (its `gl` field) is SwiftShader in the kernel browser and absent in stock Chrome;
+// that field alone is exempt, every other worker field is compared like any page signal.
+const withoutWorkerGl = value => { try { const worker = JSON.parse(value); delete worker.gl; return JSON.stringify(worker); } catch { return value; } };
 
 // Keys whose value differs from the stock browser and are not in the known list, with both values.
 export function unexpectedDifferences(stock, kernel, { gpuless = stock.webgl === 'none' } = {}) {
   const out = [];
+  const comparable = (key, value) => key === 'worker' && gpuless ? withoutWorkerGl(value) : value;
   for (const key of new Set([...Object.keys(stock), ...Object.keys(kernel)])) {
-    if (key === 'worker' ? sameWithoutGl(stock[key], kernel[key]) : stock[key] === kernel[key]) continue;
-    if (key in knownDifferences && (!/^webgl|^worker$/.test(key) || gpuless)) continue;
+    if (comparable(key, stock[key]) === comparable(key, kernel[key])) continue;
+    if (key in knownDifferences && (!/^webgl/.test(key) || gpuless)) continue;
     out.push({ key, stock: stock[key], kernel: kernel[key] });
   }
   return out;
