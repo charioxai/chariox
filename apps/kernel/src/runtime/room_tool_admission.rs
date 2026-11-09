@@ -1,9 +1,13 @@
 //! MP-08 / MP-11: shared room admission and the subtree control policy.
 use crate::{agent::AgentInstance, error::DaemonError};
 
+/// Code a client sees for a refusal; the policy cannot change on a retry.
+pub(crate) const REFUSED_CODE: &str = "room_tool_refused";
+
+/// The one way a room policy refuses: the message is the sentence the user reads.
 pub(crate) fn denied(message: impl Into<String>) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "room tool admission",
+    DaemonError::MachineRequest {
+        code: REFUSED_CODE.into(),
         message: message.into(),
     }
 }
@@ -237,7 +241,7 @@ mod tests {
     fn assert_plain_refusal(error: DaemonError, sentence: &str) {
         assert_eq!(error.to_string(), sentence);
         let mapped = map_kernel_error(&error);
-        assert_eq!(mapped.code, "room_tool_refused");
+        assert_eq!(mapped.code, REFUSED_CODE);
         assert_eq!(mapped.message, sentence);
         assert!(!mapped.retryable);
     }
