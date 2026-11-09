@@ -294,4 +294,42 @@ mod tests {
             assert!(sending.await.unwrap());
         }
     }
+
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): the lanes kernel logs who sent how much,
+    // top three, once an hour.
+    #[test]
+    fn the_three_heaviest_requesters_are_logged_once_an_hour() {
+        let logs = crate::logging::capture::start();
+        let started = Instant::now();
+        let mut usage = ReplyUsage {
+            window_started: started,
+            ..ReplyUsage::default()
+        };
+        for (kind, key, bytes) in [
+            ("machine_file.read", "reader", 350_000),
+            ("machine_file.read", "reader", 350_000),
+            ("session.list", "tab", 2_000),
+            ("history.outline", "tab", 9_000),
+            ("agent.state", "cli", 500),
+            ("room.list", "other", 100),
+        ] {
+            usage.record("event", Some(&ReplyOrigin::new(kind, key)), bytes, started);
+        }
+        let quiet = logs
+            .records()
+            .iter()
+            .filter(|record| record.contains("relay traffic of the last hour"))
+            .count();
+        usage.record("priority", None, 10, started + USAGE_WINDOW);
+        let hourly: Vec<_> = logs
+            .records()
+            .into_iter()
+            .filter(|record| record.contains("relay traffic of the last hour"))
+            .collect();
+        assert_eq!(hourly.len(), quiet + 1, "one line at the end of the hour");
+        let line = hourly.last().unwrap();
+        assert!(line.contains("\"bytes_out\":700000") && line.contains("machine_file.read"));
+        assert!(!line.contains("room.list"), "only the top three: {line}");
+        assert!(usage.by_requester.is_empty(), "a new hour starts empty");
+    }
 }
