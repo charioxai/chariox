@@ -118,3 +118,26 @@ async fn a_person_and_the_launching_agent_are_authorized_and_nobody_else() {
             .authorize_exec_place(&peer, &place(&session, None, None)),
     );
 }
+
+// A kernel does not place on behalf of another kernel's gateway: the holder of the launch
+// decides, and an agent of a third kernel would otherwise borrow this kernel's owner grant.
+#[tokio::test]
+async fn a_gateway_cannot_ask_this_kernel_to_place_a_launch() {
+    let f = fixture();
+    let request =
+        crate::local::LocalDaemonRequest::RoomTerminal(place(&f.request.session_id, None, None));
+    let from_gateway = crate::local::OnBehalfOf {
+        origin_kernel: "kernel-a-id".into(),
+        origin_name: Some("kernel-a".into()),
+        grant_id: "reach:run-1".into(),
+        harness: "claude".into(),
+    };
+    let refusal = f
+        .state
+        .authorize_on_behalf_of_request(&from_gateway, &request)
+        .unwrap_err();
+    assert!(
+        matches!(&refusal, DaemonError::MachineRequest { code, .. } if code == "exec_place_not_here"),
+        "{refusal:?}"
+    );
+}
