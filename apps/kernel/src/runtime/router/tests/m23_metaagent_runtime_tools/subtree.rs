@@ -573,6 +573,124 @@ async fn spawn_answer_worktree() {
     assert_eq!(answer["branch"], "feature-x");
 }
 
+/// The local-protocol answer of `SpawnAgent` as a client reads it.
+async fn local_spawn_answer(world: &World, key: Option<&str>) -> serde_json::Value {
+    let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        no_subscribe: true,
+        session_id: world.room.clone(),
+        alias: None,
+        provider: Some("dev-stub".into()),
+        account_profile: None,
+        model: None,
+        effort: None,
+        execution_mode: None,
+        permission_level: None,
+        worktree_id: None,
+        kernel_ref: None,
+        slice_ref: None,
+        worktree_placement: None,
+        metaagent: false,
+    });
+    let mut command = KernelCommand::from_local_request("local-spawn", None, None, &request);
+    command.idempotency_key = key.map(str::to_string);
+    let response = world.router.dispatch(command, request).await.unwrap();
+    serde_json::to_value(response).unwrap()["AgentSpawned"].clone()
+}
+
+fn init_git_workspace(workspace: &std::path::Path) {
+    for args in [
+        &["init", "-q", "-b", "trunk"][..],
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+        ][..],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(workspace)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+}
+
+#[test]
+fn the_local_spawn_answer_names_the_branch_the_room_command_answer_names() {
+    run_large_stack_async_test("subtree-local-spawn-branch", local_spawn_branch);
+}
+
+async fn local_spawn_branch() {
+    let world = world("subtree-local-spawn-branch").await;
+    // Outside a git folder there is no branch to name.
+    let plain = local_spawn_answer(&world, None).await;
+    assert!(plain.get("branch").is_none(), "{plain}");
+    init_git_workspace(&world._env.root.join("workspace"));
+    let local = local_spawn_answer(&world, None).await;
+    assert_eq!(local["branch"], "trunk", "{local}");
+    let room = room_command(&world, "a", "agent spawn viaroom --provider dev-stub").await;
+    assert!(room.ok, "{room:?}");
+    assert_eq!(room.payload["response"]["agent"]["branch"], local["branch"]);
+}
+
+#[test]
+fn the_local_spawn_answer_carries_the_deadline_armed_on_the_agent() {
+    run_large_stack_async_test("subtree-local-spawn-deadline", local_spawn_deadline);
+}
+
+async fn local_spawn_deadline() {
+    let world = world("subtree-local-spawn-deadline").await;
+    let first = local_spawn_answer(&world, Some("again")).await;
+    assert!(first.get("deadline_ms").is_none(), "{first}");
+    let armed = crate::session::unix_epoch_ms() + 30 * 60_000;
+    world
+        .router
+        .runtime_state
+        .set_agent_deadline(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::SetAgentDeadlineRequest {
+                session_id: world.room.clone(),
+                agent_id: first["agent"]["id"].as_str().unwrap().to_string(),
+                deadline_ms: armed,
+            },
+        )
+        .unwrap();
+    // The same key finds the same agent, now with its deadline.
+    let again = local_spawn_answer(&world, Some("again")).await;
+    assert_eq!(again["agent"]["id"], first["agent"]["id"]);
+    assert_eq!(again["deadline_ms"], armed, "{again}");
+}
+
+#[test]
+fn an_agent_spawned_answer_without_the_applied_fields_still_decodes_and_with_them_round_trips() {
+    let agent = serde_json::to_value(crate::agent::AgentInstance::new(
+        "agent",
+        "agent-ref",
+        "room",
+        None,
+        "dev-stub",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    ))
+    .unwrap();
+    let older = serde_json::json!({"AgentSpawned": {"agent": agent}});
+    let decoded: LocalDaemonResponse = serde_json::from_value(older.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), older);
+    let newer = serde_json::json!({"AgentSpawned": {
+        "agent": agent, "deadline_ms": 1_800_000_u64, "branch": "feature-x",
+    }});
+    let decoded: LocalDaemonResponse = serde_json::from_value(newer.clone()).unwrap();
+    assert_eq!(serde_json::to_value(decoded).unwrap(), newer);
+}
+
 #[test]
 fn deleting_an_agent_ends_its_sub_agents_with_it() {
     run_large_stack_async_test("subtree-delete-with-children", delete_with_children);
