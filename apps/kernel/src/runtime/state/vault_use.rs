@@ -213,7 +213,6 @@ impl KernelRuntimeState {
         let credential = self.home_runtime_secret_service()?.credential(id)?.clone();
         let approval = self
             .authorize_vault_use(
-                &context.owner_user_id,
                 &context.agent_id,
                 &credential,
                 target,
@@ -251,7 +250,6 @@ impl KernelRuntimeState {
     /// Call before reading a value, then recheck the binding under the use barrier.
     pub(super) async fn authorize_vault_use(
         &self,
-        owner: &str,
         actor: &str,
         credential: &UserCredentialConfig,
         target: &VaultUseTarget,

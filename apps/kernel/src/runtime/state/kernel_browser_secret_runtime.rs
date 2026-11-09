@@ -285,7 +285,6 @@ impl KernelRuntimeState {
         {
             Some(
                 self.authorize_vault_use(
-                    agent.owner_user_id(),
                     agent.id(),
                     &credential,
                     &service.browser_vault_target(&args.credential_id, &url)?,
@@ -417,10 +416,10 @@ impl KernelRuntimeState {
             .as_ref()
             .is_some_and(|m| m.use_binding.is_some())
         {
-            let owner = self.owner_client_user_id(caller)?;
+            // Only the owner's terminal fills a bound entry here.
+            self.owner_client_user_id(caller)?;
             Some(
                 self.authorize_vault_use(
-                    &owner,
                     &actor,
                     &credential,
                     &self
