@@ -196,8 +196,29 @@ export function shouldRenderTranscriptAsMarkdown(role: string, text: string) {
   }
   // MP-08 / MP-10: plain paragraphs paint without a syntax-worker round trip.
   // Use the renderer's lexer so identifiers with underscores remain literal
-  // while actual Markdown still receives its normal formatting.
-  return hasMarkdownMarkup(Lexer.lex(text))
+  // while actual Markdown still receives its normal formatting. A visualize
+  // line is plain prose to the lexer, but only the Markdown path names its page.
+  return hasMarkdownMarkup(Lexer.lex(text)) || hasVisualizeLine(text)
+}
+
+// Codex's visualize skill ends a reply with this line for the app to draw the HTML page it names.
+const visualizeLinePattern = /^[ \t]{0,3}visualize(\{.*\})[ \t]*$/gm
+
+function hasVisualizeLine(text: string): boolean {
+  return Array.from(text.matchAll(visualizeLinePattern)).some(([, json]) => visualizePagePath(json!) !== null)
+}
+
+export function replaceVisualizeLines(text: string, render: (path: string) => string): string {
+  return text.replace(visualizeLinePattern, (line, json: string) => {
+    const path = visualizePagePath(json)
+    return path === null ? line : render(path)
+  })
+}
+
+function visualizePagePath(json: string): string | null {
+  let path: unknown
+  try { path = (JSON.parse(json) as { path?: unknown }).path } catch { return null }
+  return typeof path === "string" && path.trim() ? path.trim() : null
 }
 
 function hasMarkdownMarkup(tokens: Token[]): boolean {
