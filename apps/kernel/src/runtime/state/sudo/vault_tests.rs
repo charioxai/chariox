@@ -1,7 +1,7 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: ordinary Vault generation and protected login through
 //! the real MCP router. The browser is a fixture controller that records what
 //! the kernel physically inserted; live Chromium/provider acceptance is separate.
-use super::tests::{fixture, running, Fixture, PASSKEY};
+use super::tests::{fixture, fixture_with_options, running, Fixture, PASSKEY};
 use super::*;
 use crate::config::{UserCredentialConfig, UserCredentialMetadataConfig};
 use serde_json::{json, Value};
@@ -1097,7 +1097,7 @@ async fn vopen_generation_storage_wait_survives_expired_window() {
 #[tokio::test]
 async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _sudo = elevated(f);
@@ -1129,37 +1129,15 @@ async fn vopen_cards_ask_each_time_and_never_resolve_without_approval() {
         .browser_secret_input_for_target_url("test-card", SITE)
         .is_err());
     for allow in [true, false, true] {
-        let answer = async {
-            let id = tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    let id = f
-                        .state
-                        .owned
-                        .pending_interactions
-                        .write()
-                        .values()
-                        .filter_map(|pending| pending.user_domain_interaction.as_ref())
-                        .find(|interaction| interaction.id().starts_with("vault-card-"))
-                        .map(|interaction| interaction.id().to_owned());
-                    if let Some(id) = id {
-                        break id;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .unwrap();
-            answer_card(
-                f,
-                &id,
-                if allow { "allow" } else { "cancel" },
-                allow.then_some(PASSKEY),
-            )
-            .await
-            .unwrap();
-        };
-        let fill = call(f, PASTE, paste_args("test-card"));
-        let (result, ()) = tokio::join!(fill, answer);
+        next_turn(f, &format!("card-turn-{}", rand::random::<u32>()));
+        let (asked, result) = card_use(
+            f,
+            if allow { "allow" } else { "cancel" },
+            allow.then_some(PASSKEY),
+            || call(f, PASTE, paste_args("test-card")),
+        )
+        .await;
+        assert!(asked.is_some());
         assert_eq!(result.is_ok(), allow);
         assert_eq!(inserted(&login).is_some(), allow);
         let _ = std::fs::remove_file(login.root.path().join("echo"));
@@ -1178,7 +1156,7 @@ async fn answer_card(
 ) -> Result<(), DaemonError> {
     f.state
         .answer_terminal_runtime_interaction(
-            "",
+            &f.request.session_id,
             id,
             choice,
             None,
@@ -1190,36 +1168,74 @@ async fn answer_card(
         .await
 }
 
-/// The owner's pending payment decision, once a fill raised it.
+/// The owner's pending payment decision in the asking agent's Room, once a fill raised it.
+fn pending_card(f: &Fixture) -> Option<crate::session::RuntimeInteraction> {
+    f.state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .find(|interaction| interaction.id().starts_with("vault-card-"))
+        .cloned()
+}
+
 async fn card_decision(f: &Fixture) -> crate::session::RuntimeInteraction {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let found = f
-                .state
-                .owned
-                .pending_interactions
-                .write()
-                .values()
-                .filter_map(|pending| pending.user_domain_interaction.clone())
-                .find(|interaction| interaction.id().starts_with("vault-card-"));
-            if let Some(found) = found {
-                break found;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("the fill asks the owner")
+    pending_card(f).expect("the fill asks the owner")
 }
 
 fn card_pending(f: &Fixture) -> bool {
-    f.state
+    pending_card(f).is_some()
+}
+
+/// A Room with event tools, so a card payment can ask its owner without blocking the turn.
+async fn card_room(site: &str) -> Login {
+    login_room_with_fixture(fixture_with_options(None, true), site).await
+}
+
+/// The agent's current turn runs as a task, the way the kernel starts a turn.
+fn asking_task(f: &Fixture) -> String {
+    use crate::durable_state::agent_lifecycle::{Operation, Outcome};
+    let agent = f.request.target_agent_id.as_deref().unwrap();
+    let session = f
+        .state
         .owned
-        .pending_interactions
-        .write()
-        .values()
-        .filter_map(|pending| pending.user_domain_interaction.as_ref())
-        .any(|interaction| interaction.id().starts_with("vault-card-"))
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap();
+    let prompts = &f.state.owned.prompt_state_owner;
+    let active = prompts
+        .active_prompt_for_agent_snapshot(&session, agent)
+        .unwrap();
+    if active.status() != PromptStatus::Running {
+        let mut started = active.clone();
+        started.set_status(PromptStatus::Running);
+        assert!(prompts.replace_active_prompt_if_matches(&session, agent, &active, started));
+    }
+    let store = &f.state.owned.durable_state_store;
+    if let Some(task) = store
+        .agent_tasks(Some(&f.request.session_id), Some(agent))
+        .unwrap()
+        .into_iter()
+        .find(|task| task.prompt_id == active.id())
+    {
+        return task.task_id;
+    }
+    let Outcome::Task(task) = store
+        .agent_lifecycle(Operation::Begin {
+            owner: "local".into(),
+            room: f.request.session_id.clone(),
+            agent: agent.into(),
+            prompt: active.id().into(),
+            run: Some(f.run.id().into()),
+            now: crate::session::unix_epoch_ms(),
+        })
+        .unwrap()
+    else {
+        panic!("begin returns the task")
+    };
+    task.task_id
 }
 
 /// A structured card saved the way the owner's Create saves it: for any site.
@@ -1267,42 +1283,35 @@ fn no_card_data(text: &str) {
     );
 }
 
-/// Runs a card use and answers the owner decision it raises, if any, with `choice`.
-async fn card_use<T>(
+/// Runs a card use; when it asks the owner, answers with `choice` and, after an Allow, runs it again.
+async fn card_use<T, Fut>(
     f: &Fixture,
     choice: &str,
     passkey: Option<&str>,
-    work: impl std::future::Future<Output = Result<T, DaemonError>>,
+    work: impl Fn() -> Fut,
 ) -> (
     Option<crate::session::RuntimeInteraction>,
     Result<T, DaemonError>,
-) {
-    let answer = async {
-        let decision = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                let found = f
-                    .state
-                    .owned
-                    .pending_interactions
-                    .write()
-                    .values()
-                    .filter_map(|pending| pending.user_domain_interaction.clone())
-                    .find(|interaction| interaction.id().starts_with("vault-card-"));
-                if let Some(found) = found {
-                    break found;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .ok()?;
-        answer_card(f, decision.id(), choice, passkey)
-            .await
-            .unwrap();
-        Some(decision)
+)
+where
+    Fut: std::future::Future<Output = Result<T, DaemonError>>,
+{
+    asking_task(f);
+    assert!(!card_pending(f), "a decision was already open");
+    let first = work().await;
+    let Some(decision) = pending_card(f) else {
+        return (None, first);
     };
-    let (result, decision) = tokio::join!(work, answer);
-    (decision, result)
+    assert!(first.is_err(), "a fill that asks fills nothing");
+    answer_card(f, decision.id(), choice, passkey)
+        .await
+        .unwrap();
+    assert!(!card_pending(f), "the answer closes the card");
+    if choice == "allow" {
+        (Some(decision), work().await)
+    } else {
+        (Some(decision), first)
+    }
 }
 
 /// Ends the agent's current turn and starts its next one.
@@ -1345,7 +1354,7 @@ fn payment() -> Value {
 #[tokio::test]
 async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _sudo = elevated(f);
@@ -1367,8 +1376,20 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
     }
     assert!(!card_pending(f) && inserted(&login).is_none());
 
-    let approve = async {
-        let decision = card_decision(f).await;
+    asking_task(f);
+    let asked = call(f, PASTE, card_fill("number", Some(&payment))).await;
+    // The agent is not held: it learns at once that the owner was asked, and nothing is filled.
+    let refusal = asked.unwrap_err().to_string();
+    assert!(refusal.contains("Keep working"), "{refusal}");
+    assert!(inserted(&login).is_none());
+    let decision = card_decision(f).await;
+    assert_eq!(decision.agent_id(), Some(agent.as_str()));
+    assert_eq!(
+        decision.timeout_sec(),
+        Some(24 * 60 * 60),
+        "the card waits for the owner"
+    );
+    {
         assert_eq!(
             serde_json::to_value(decision.payment().unwrap()).unwrap(),
             json!({"origin": SITE, "entry": "Travel card", "card_last4": "4242",
@@ -1388,11 +1409,10 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
         answer_card(f, decision.id(), "allow", Some(PASSKEY))
             .await
             .unwrap();
-        decision
-    };
-    let (result, decision) =
-        tokio::join!(call(f, PASTE, card_fill("number", Some(&payment))), approve);
-    let result = result.unwrap();
+    }
+    let result = call(f, PASTE, card_fill("number", Some(&payment)))
+        .await
+        .unwrap();
     assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
     no_card_data(&result.to_string());
     no_card_data(&serde_json::to_string(&decision).unwrap());
@@ -1407,12 +1427,9 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
         ("expiry_month", "12"),
         ("expiry_year", "2099"),
     ] {
-        let (asked, result) = card_use(
-            f,
-            "cancel",
-            None,
-            call(f, PASTE, card_fill(field, Some(&payment))),
-        )
+        let (asked, result) = card_use(f, "cancel", None, || {
+            call(f, PASTE, card_fill(field, Some(&payment)))
+        })
         .await;
         assert!(asked.is_none(), "{field} asked again");
         no_card_data(&result.unwrap().to_string());
@@ -1427,25 +1444,19 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
         let mut changed = payment.clone();
         changed[key] = json!(other);
         let _ = std::fs::remove_file(&echo);
-        let (asked, result) = card_use(
-            f,
-            "cancel",
-            None,
-            call(f, PASTE, card_fill("number", Some(&changed))),
-        )
+        let (asked, result) = card_use(f, "cancel", None, || {
+            call(f, PASTE, card_fill("number", Some(&changed)))
+        })
         .await;
         let asked = serde_json::to_value(asked.unwrap().payment().unwrap()).unwrap();
         assert_eq!(asked["agent_claim"], changed);
         assert!(result.is_err() && inserted(&login).is_none(), "{key}");
     }
-    // The approval ends with the agent's turn.
+    // The approval ends with the agent's task.
     next_turn(f, "after-payment-turn");
-    let (asked, result) = card_use(
-        f,
-        "cancel",
-        None,
-        call(f, PASTE, card_fill("number", Some(&payment))),
-    )
+    let (asked, result) = card_use(f, "cancel", None, || {
+        call(f, PASTE, card_fill("number", Some(&payment)))
+    })
     .await;
     assert!(asked.is_some() && result.is_err() && inserted(&login).is_none());
     let activity = f
@@ -1463,18 +1474,15 @@ async fn vopen_one_approved_payment_fills_every_card_field_while_the_turn_lasts(
 async fn vopen_a_card_pays_at_any_site_and_another_site_asks_again() {
     crate::test_support::isolated_env_test!();
     const SHOP: &str = "http://127.0.0.1:8124";
-    let login = login_room_at(SHOP).await;
+    let login = card_room(SHOP).await;
     let f = &login.f;
     unlock(f);
     let _turn = running(f);
     saved_card(f);
     let payment = payment();
-    let (asked, result) = card_use(
-        f,
-        "allow",
-        Some(PASSKEY),
-        call(f, PASTE, card_fill("number", Some(&payment))),
-    )
+    let (asked, result) = card_use(f, "allow", Some(PASSKEY), || {
+        call(f, PASTE, card_fill("number", Some(&payment)))
+    })
     .await;
     result.unwrap();
     assert_eq!(asked.unwrap().payment().unwrap().origin, SHOP);
@@ -1511,9 +1519,9 @@ async fn vopen_a_card_pays_at_any_site_and_another_site_asks_again() {
                 .map(|_| ())
         }
     };
-    let (asked, result) = card_use(f, "cancel", None, use_at(SHOP)).await;
+    let (asked, result) = card_use(f, "cancel", None, || use_at(SHOP)).await;
     assert!(asked.is_none() && result.is_ok());
-    let (asked, result) = card_use(f, "cancel", None, use_at(SITE)).await;
+    let (asked, result) = card_use(f, "cancel", None, || use_at(SITE)).await;
     assert_eq!(asked.unwrap().payment().unwrap().origin, SITE);
     assert!(result.is_err());
 }
@@ -1565,36 +1573,29 @@ fn no_card_number(login: &Login) {
 #[tokio::test]
 async fn vopen_a_card_replaced_during_its_decision_fills_nothing() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _turn = running(f);
     saved_card(f);
     let payment = payment();
-    let replace_then_allow = async {
-        let decision = card_decision(f).await;
-        assert_eq!(
-            decision.payment().unwrap().card_last4.as_deref(),
-            Some("4242")
-        );
-        owner_replaces_card(f).await;
-        answer_card(f, decision.id(), "allow", Some(PASSKEY))
-            .await
-            .unwrap();
-    };
-    let (result, ()) = tokio::join!(
-        call(f, PASTE, card_fill("number", Some(&payment))),
-        replace_then_allow
+    asking_task(f);
+    let result = call(f, PASTE, card_fill("number", Some(&payment))).await;
+    let decision = card_decision(f).await;
+    assert_eq!(
+        decision.payment().unwrap().card_last4.as_deref(),
+        Some("4242")
     );
+    owner_replaces_card(f).await;
+    answer_card(f, decision.id(), "allow", Some(PASSKEY))
+        .await
+        .unwrap();
     assert!(result.is_err(), "the replaced card was filled");
     no_card_number(&login);
     for field in ["number", "security_code"] {
-        let (asked, result) = card_use(
-            f,
-            "cancel",
-            None,
-            call(f, PASTE, card_fill(field, Some(&payment))),
-        )
+        let (asked, result) = card_use(f, "cancel", None, || {
+            call(f, PASTE, card_fill(field, Some(&payment)))
+        })
         .await;
         let asked = asked.expect("the replacement needs its own decision");
         assert_eq!(asked.payment().unwrap().card_last4.as_deref(), Some("4444"));
@@ -1609,19 +1610,16 @@ async fn vopen_a_card_replaced_during_its_decision_fills_nothing() {
 #[tokio::test]
 async fn vopen_a_payment_approved_before_a_card_replacement_fills_nothing_after_it() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _turn = running(f);
     saved_card(f);
     let payment = payment();
     let echo = login.root.path().join("echo");
-    let (asked, result) = card_use(
-        f,
-        "allow",
-        Some(PASSKEY),
-        call(f, PASTE, card_fill("number", Some(&payment))),
-    )
+    let (asked, result) = card_use(f, "allow", Some(PASSKEY), || {
+        call(f, PASTE, card_fill("number", Some(&payment)))
+    })
     .await;
     assert!(asked.is_some());
     result.unwrap();
@@ -1642,12 +1640,9 @@ async fn vopen_a_payment_approved_before_a_card_replacement_fills_nothing_after_
         .unwrap();
     for field in ["security_code", "number"] {
         let _ = std::fs::remove_file(&echo);
-        let (asked, result) = card_use(
-            f,
-            "cancel",
-            None,
-            call(f, PASTE, card_fill(field, Some(&payment))),
-        )
+        let (asked, result) = card_use(f, "cancel", None, || {
+            call(f, PASTE, card_fill(field, Some(&payment)))
+        })
         .await;
         assert!(
             asked.is_some(),
@@ -1656,23 +1651,17 @@ async fn vopen_a_payment_approved_before_a_card_replacement_fills_nothing_after_
         assert!(result.is_err() && inserted(&login).is_none(), "{field}");
     }
     // The owner's Replace ends it too.
-    let (_, result) = card_use(
-        f,
-        "allow",
-        Some(PASSKEY),
-        call(f, PASTE, card_fill("number", Some(&payment))),
-    )
+    let (_, result) = card_use(f, "allow", Some(PASSKEY), || {
+        call(f, PASTE, card_fill("number", Some(&payment)))
+    })
     .await;
     result.unwrap();
     assert_eq!(inserted(&login).as_deref(), Some(OTHER_CARD_NUMBER));
     owner_replaces_card(f).await;
     let _ = std::fs::remove_file(&echo);
-    let (asked, result) = card_use(
-        f,
-        "cancel",
-        None,
-        call(f, PASTE, card_fill("security_code", Some(&payment))),
-    )
+    let (asked, result) = card_use(f, "cancel", None, || {
+        call(f, PASTE, card_fill("security_code", Some(&payment)))
+    })
     .await;
     assert!(asked.is_some() && result.is_err() && inserted(&login).is_none());
 }
@@ -1682,20 +1671,17 @@ async fn vopen_a_payment_approved_before_a_card_replacement_fills_nothing_after_
 #[tokio::test]
 async fn vopen_an_expired_card_payment_fills_nothing() {
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _turn = running(f);
     saved_card(f);
     let echo = login.root.path().join("echo");
     let payment = payment();
-    let approve = async {
-        let decision = card_decision(f).await;
-        answer_card(f, decision.id(), "allow", Some(PASSKEY))
-            .await
-            .unwrap();
-    };
-    let (first, ()) = tokio::join!(call(f, PASTE, card_fill("name", Some(&payment))), approve);
+    let (_, first) = card_use(f, "allow", Some(PASSKEY), || {
+        call(f, PASTE, card_fill("name", Some(&payment)))
+    })
+    .await;
     first.unwrap();
     assert_eq!(inserted(&login).as_deref(), Some("Ada Lovelace"));
     {
@@ -1710,85 +1696,190 @@ async fn vopen_an_expired_card_payment_fills_nothing() {
         grant.expires_at = std::time::Instant::now();
     }
     let _ = std::fs::remove_file(&echo);
-    let expire = async {
-        let decision = card_decision(f).await;
-        f.state
-            .timeout_runtime_interaction("", decision.id())
-            .await
-            .unwrap();
-    };
-    let (late, ()) = tokio::join!(call(f, PASTE, card_fill("name", Some(&payment))), expire);
+    let late = call(f, PASTE, card_fill("name", Some(&payment))).await;
     assert!(late.is_err());
     assert!(
         inserted(&login).is_none(),
         "an expired payment fills nothing"
     );
-    assert!(!card_pending(f));
+    // It asks again, and the new card waits for the owner.
+    assert!(card_pending(f));
 }
 
-// MP-08 / MP-09 / MP-10 / MP-11: a remembered passkey spares the owner typing it, never the
-// decision. With the window open each new payment still shows its card and waits for Allow;
-// sudo answers nothing.
+/// The owner's Allow on a card decision, as a client answers it.
+async fn allow_card(
+    f: &Fixture,
+    id: &str,
+    passkey: Option<&str>,
+    remember_minutes: Option<u32>,
+    class: crate::local::KernelConnectionClass,
+) -> Result<(), DaemonError> {
+    f.state
+        .answer_terminal_runtime_interaction(
+            &f.request.session_id,
+            id,
+            "allow",
+            None,
+            Some("local"),
+            passkey.map(crate::local::ApprovalPasskey::new).as_ref(),
+            remember_minutes,
+            Some(class),
+        )
+        .await
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11 PAYMENT PASSPHRASE RULE (owner, 11-09): a card payment is made only
+// under a passphrase-confirmed action. Every payment's Allow needs the typed passkey from a Chariox
+// terminal: an open remember window, an unlocked Vault or a sudo window never stands in for it,
+// remember minutes are refused (so a payment never starts a window), and no host, agent or
+// outside connection answers it.
 #[tokio::test]
-async fn vopen_a_remembered_passkey_still_needs_the_owners_allow_on_each_payment() {
+async fn vopen_every_card_payment_needs_the_typed_passkey() {
+    use crate::local::KernelConnectionClass::{ExternalAgent, Host, KernelAgent, Terminal};
     crate::test_support::isolated_env_test!();
-    let login = login_room().await;
+    let login = card_room(SITE).await;
     let f = &login.f;
     unlock(f);
     let _sudo = elevated(f);
     saved_card(f);
     let echo = login.root.path().join("echo");
-    let payment = payment();
-    let remember = async {
-        let decision = card_decision(f).await;
-        f.state
-            .answer_terminal_runtime_interaction(
-                "",
-                decision.id(),
-                "allow",
-                None,
-                Some("local"),
-                Some(&crate::local::ApprovalPasskey::new(PASSKEY)),
-                Some(15),
-                Some(crate::local::KernelConnectionClass::Terminal),
-            )
-            .await
-            .unwrap();
-    };
-    let (first, ()) = tokio::join!(
-        call(f, PASTE, card_fill("number", Some(&payment))),
-        remember
+    // An earlier typed passkey left the owner's remember window open.
+    f.state.owned.critical_approval_passkeys.record_success(
+        "local",
+        std::time::Instant::now(),
+        Some(15),
     );
-    first.unwrap();
-    let _ = std::fs::remove_file(&echo);
-    let mut next = payment.clone();
-    next["amount"] = json!("99.00");
-    let owner = async {
-        let decision = card_decision(f).await;
-        // Nothing answers it for the owner while the window is open.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert!(card_pending(f) && inserted(&login).is_none());
-        assert!(f
-            .state
-            .answer_terminal_runtime_interaction(
-                "",
-                decision.id(),
-                "allow",
-                None,
-                Some("local"),
-                None,
-                None,
-                Some(crate::local::KernelConnectionClass::Host),
-            )
+    for amount in ["12.50", "99.00"] {
+        let mut this = payment();
+        this["amount"] = json!(amount);
+        asking_task(f);
+        assert!(call(f, PASTE, card_fill("number", Some(&this)))
             .await
             .is_err());
+        let decision = card_decision(f).await;
+        let refusal = |result: Result<(), DaemonError>| result.unwrap_err().to_string();
+        // (a) The open window, unlocked Vault and sudo answer nothing.
+        let missing = refusal(allow_card(f, decision.id(), None, None, Terminal).await);
+        assert!(missing.contains("PASSKEY_REQUIRED"), "{missing}");
+        // (c) Remember minutes are refused, even with the right passkey.
+        let remember =
+            refusal(allow_card(f, decision.id(), Some(PASSKEY), Some(15), Terminal).await);
+        assert!(remember.contains("PASSKEY_NOT_ACCEPTED"), "{remember}");
+        // (e) Only a Chariox terminal answers it.
+        for class in [Host, KernelAgent, ExternalAgent] {
+            assert!(
+                allow_card(f, decision.id(), Some(PASSKEY), None, class)
+                    .await
+                    .is_err(),
+                "{class:?} answered a payment"
+            );
+        }
+        // (b) A wrong passkey is refused.
+        let wrong =
+            refusal(allow_card(f, decision.id(), Some("not-the-passkey"), None, Terminal).await);
+        assert!(wrong.contains("PASSKEY_REJECTED"), "{wrong}");
         assert!(card_pending(f) && inserted(&login).is_none());
-        // The owner's Allow, without typing the passkey again.
-        answer_card(f, decision.id(), "allow", None).await.unwrap();
+        // Filling again while the card waits fills nothing and shows no second card.
+        let again = call(f, PASTE, card_fill("number", Some(&this)))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(again.contains(decision.id()), "{again}");
+        assert_eq!(
+            f.state
+                .owned
+                .session_store
+                .get_session(&f.request.session_id)
+                .unwrap()
+                .active_interactions()
+                .iter()
+                .filter(|interaction| interaction.id().starts_with("vault-card-"))
+                .count(),
+            1
+        );
+        // (b) The typed passkey approves this one payment.
+        allow_card(f, decision.id(), Some(PASSKEY), None, Terminal)
+            .await
+            .unwrap();
+        call(f, PASTE, card_fill("number", Some(&this)))
+            .await
+            .unwrap();
+        assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
+        // (f) The audit shows a typed passkey, never a remembered one.
+        let outcomes: Vec<String> = f
+            .state
+            .owned
+            .durable_state_store
+            .load_subject_events_by_kind(decision.id(), "critical_approval.passkey", 50)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.payload["outcome"].as_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            outcomes.iter().all(|outcome| outcome != "remembered"),
+            "{outcomes:?}"
+        );
+        assert_eq!(outcomes.last().map(String::as_str), Some("verified"));
+        // (g) The next payment asks again and needs its own typed passkey.
+        let _ = std::fs::remove_file(&echo);
+    }
+}
+
+// MP-08 / MP-09 / MP-10 / MP-11: two payments at once are two cards in the agent's pane, and each
+// Allow approves only its own payment; the other card keeps waiting.
+#[tokio::test]
+async fn vopen_two_payments_at_once_are_two_cards() {
+    crate::test_support::isolated_env_test!();
+    let login = card_room(SITE).await;
+    let f = &login.f;
+    unlock(f);
+    let _turn = running(f);
+    saved_card(f);
+    asking_task(f);
+    let first = payment();
+    let mut second = payment();
+    second["amount"] = json!("99.00");
+    for claim in [&first, &second] {
+        assert!(call(f, PASTE, card_fill("number", Some(claim)))
+            .await
+            .is_err());
+    }
+    let cards: Vec<_> = f
+        .state
+        .owned
+        .session_store
+        .get_session(&f.request.session_id)
+        .unwrap()
+        .active_interactions()
+        .iter()
+        .filter(|interaction| interaction.id().starts_with("vault-card-"))
+        .cloned()
+        .collect();
+    assert_eq!(cards.len(), 2);
+    let amount = |card: &crate::session::RuntimeInteraction| {
+        card.payment()
+            .unwrap()
+            .agent_claim
+            .as_ref()
+            .unwrap()
+            .amount
+            .clone()
     };
-    let (second, ()) = tokio::join!(call(f, PASTE, card_fill("number", Some(&next))), owner);
-    second.unwrap();
+    let later = cards.iter().find(|card| amount(card) == "99.00").unwrap();
+    answer_card(f, later.id(), "allow", Some(PASSKEY))
+        .await
+        .unwrap();
+    call(f, PASTE, card_fill("number", Some(&second)))
+        .await
+        .unwrap();
     assert_eq!(inserted(&login).as_deref(), Some(CARD_NUMBER));
+    let _ = std::fs::remove_file(login.root.path().join("echo"));
+    assert!(call(f, PASTE, card_fill("number", Some(&first)))
+        .await
+        .is_err());
+    assert!(inserted(&login).is_none());
+    let waiting = card_decision(f).await;
+    assert_eq!(amount(&waiting), "12.50");
 }
 
 #[tokio::test]
@@ -1856,8 +1947,9 @@ async fn vopen_agent_is_rechecked_after_the_final_storage_barrier() {
 async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
     use tokio::io::AsyncWriteExt;
     crate::test_support::isolated_env_test!();
-    let f = fixture();
+    let f = fixture_with_options(None, true);
     unlock(&f);
+    let _turn = running(&f);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let origin = format!("http://{}", listener.local_addr().unwrap());
     let credential: UserCredentialConfig = serde_json::from_value(json!({
@@ -1875,32 +1967,13 @@ async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
         .unwrap()
         .upsert_vault_backed_credential_with_secret(&registry, credential, "fixture-card", false)
         .unwrap();
-    let answer = async {
-        let id = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let id = f
-                    .state
-                    .owned
-                    .pending_interactions
-                    .write()
-                    .values()
-                    .filter_map(|pending| pending.user_domain_interaction.as_ref())
-                    .find(|interaction| interaction.id().starts_with("vault-card-"))
-                    .map(|interaction| interaction.id().to_owned());
-                if let Some(id) = id {
-                    break id;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        f.state
-            .owned
-            .provider_store
-            .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
-            .unwrap();
-        answer_card(&f, &id, "allow", Some(PASSKEY)).await.unwrap();
+    asking_task(&f);
+    let request = || {
+        call(
+            &f,
+            "chariox.http_request_with_credential",
+            json!({"credential_id":"http-card", "url":origin}),
+        )
     };
     let receive = async {
         match tokio::time::timeout(Duration::from_secs(2), listener.accept()).await {
@@ -1913,12 +1986,21 @@ async fn vopen_http_card_wait_rechecks_the_live_actor_before_sending() {
             _ => false,
         }
     };
-    let request = call(
-        &f,
-        "chariox.http_request_with_credential",
-        json!({"credential_id":"http-card", "url":origin}),
-    );
-    let (result, (), sent) = tokio::join!(request, answer, receive);
+    let ask_then_end = async {
+        // The use asks the owner and returns at once; the run then ends before the owner allows.
+        assert!(request().await.is_err());
+        let decision = card_decision(&f).await;
+        f.state
+            .owned
+            .provider_store
+            .mark_run_ended_provider_only(&f.request.session_id, f.run.id())
+            .unwrap();
+        answer_card(&f, decision.id(), "allow", Some(PASSKEY))
+            .await
+            .unwrap();
+        request().await
+    };
+    let (result, sent) = tokio::join!(ask_then_end, receive);
     assert!(
         !sent,
         "ended provider run sent a credential-authenticated HTTP request"
