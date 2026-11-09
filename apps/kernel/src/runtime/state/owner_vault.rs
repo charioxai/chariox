@@ -2,7 +2,7 @@
 use super::*;
 use crate::config::{
     UserCredentialConfig, UserCredentialInjectionConfig, UserCredentialMetadataConfig,
-    UserCredentialSourceConfig, UserCredentialUse, VaultUseBinding, VaultUseTarget,
+    UserCredentialSourceConfig, UserCredentialUse, VaultUseBinding, VaultUseTarget, VaultValueKind,
 };
 use crate::local::{OwnerVaultActivity, OwnerVaultRequest, OwnerVaultResult, VaultPassphrase};
 use crate::runtime::command::KernelCommand;
@@ -14,11 +14,26 @@ fn failure(message: &str) -> DaemonError {
     }
 }
 
-fn validate_value(value: &str) -> Result<(), DaemonError> {
+/// The value to store: a payment card canonically, with its summary in the entry;
+/// every other kind as typed.
+fn owner_value(
+    entry: &mut UserCredentialConfig,
+    value: &str,
+) -> Result<zeroize::Zeroizing<String>, DaemonError> {
     if value.is_empty() || value.len() > 65536 {
         return Err(failure("Enter a value up to 64 KiB."));
     }
-    Ok(())
+    let metadata = entry.metadata.get_or_insert_default();
+    if metadata
+        .use_binding
+        .as_ref()
+        .is_none_or(|binding| binding.value_kind != VaultValueKind::PaymentCard)
+    {
+        return Ok(zeroize::Zeroizing::new(value.to_owned()));
+    }
+    let card = crate::config::PaymentCard::parse(value, crate::session::unix_epoch_ms())?;
+    metadata.payment_card = Some(card.summary());
+    Ok(card.canonical())
 }
 
 fn owner_credential(
@@ -30,16 +45,26 @@ fn owner_credential(
     if name.trim().is_empty() || name.len() > 200 {
         return Err(failure("Enter a name up to 200 characters."));
     }
-    use_binding.target.validate()?;
+    use_binding.validate()?;
     let created_by_kind = match kind {
         "Password" => "owner_password",
         "API key" => "owner_api_key",
         "2FA code" => "owner_totp",
         "Command secret" => "owner_command",
         "File secret" => "owner_file",
+        "Payment card" => "owner_payment_card",
         _ => return Err(failure("Choose a secret kind.")),
     };
+    if (kind == "Payment card") != (use_binding.value_kind == VaultValueKind::PaymentCard) {
+        return Err(failure("Choose the matching kind for this use."));
+    }
     let (allowed_hosts, allowed_uses, injection) = match (&use_binding.target, kind) {
+        // One card serves every site; each payment asks the owner.
+        (VaultUseTarget::AnySite, "Payment card") => (
+            vec![],
+            vec![UserCredentialUse::Browser],
+            UserCredentialInjectionConfig::Browser,
+        ),
         (VaultUseTarget::Site { origin }, "Password" | "API key") => (
             vec![origin.clone()],
             vec![UserCredentialUse::Browser],
@@ -107,15 +132,15 @@ impl KernelRuntimeState {
                 use_binding,
                 value,
             } => {
-                validate_value(value.expose_secret())?;
-                let entry = owner_credential(owner, name, &kind, use_binding)?;
+                let mut entry = owner_credential(owner, name, &kind, use_binding)?;
+                let value = owner_value(&mut entry, value.expose_secret())?;
                 let id = entry.id.clone();
                 commit_entry(
                     &service,
                     &registry,
                     None,
                     entry,
-                    Some(value.expose_secret()),
+                    Some(value.as_str()),
                     "Created by owner",
                 )?;
                 OwnerVaultResult::Saved { id }
@@ -179,11 +204,11 @@ impl KernelRuntimeState {
                 }
             }
             OwnerVaultRequest::Replace { id, value } => {
-                validate_value(value.expose_secret())?;
                 let previous = registered_entry(&registry, &id)?;
+                let mut entry = previous.clone();
+                let value = owner_value(&mut entry, value.expose_secret())?;
                 self.revoke_vault_observation_values(vault_key(&previous)?)
                     .await?;
-                let mut entry = previous.clone();
                 entry.metadata.get_or_insert_default().updated_at_ms =
                     Some(crate::session::unix_epoch_ms());
                 commit_entry(
@@ -191,9 +216,10 @@ impl KernelRuntimeState {
                     &registry,
                     Some(previous),
                     entry,
-                    Some(value.expose_secret()),
+                    Some(value.as_str()),
                     "Replaced by owner",
                 )?;
+                self.forget_vault_payment_grants(&id);
                 OwnerVaultResult::Saved { id }
             }
             OwnerVaultRequest::Delete { id } => {
@@ -213,6 +239,7 @@ impl KernelRuntimeState {
                     None,
                     "Deleted by owner",
                 )?;
+                self.forget_vault_payment_grants(&id);
                 OwnerVaultResult::Deleted { id }
             }
         };

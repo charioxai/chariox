@@ -319,8 +319,10 @@ never supplies this elevated login authority; existing explicit human-approved
 fills remain available.
 
 **Payments.** Sudo permits preparing a permitted digital task, including a
-payment. Each payment commit requires a new owner confirmation, regardless of
-the elevation or passkey remember window. Bind a single-use confirmation to
+payment. Each payment commit requires a new owner confirmation with the typed
+Vault passphrase (the Chariox passkey), regardless of the elevation, an unlocked
+Vault or the passkey remember window, which never satisfies a payment and is
+never started by one. Bind a single-use confirmation to
 payee, amount/currency, order/cart digest, origin and observed document/action;
 changed details require a new confirmation. Serialize consumption at the kernel
 commit boundary. Lost acknowledgements mean an uncertain payment, never an

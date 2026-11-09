@@ -235,7 +235,16 @@ Two file tools complete the set:
 Capture source does not determine destination: each entry grants only the use
 and injection selected by its binding. A retry must preserve that binding.
 Unbound entries are refused; capture them again for an exact destination.
-Payment cards retain one owner interaction per operation, including under sudo.
+Payment cards retain one owner interaction per payment, including under sudo.
+Its Allow always needs the typed Vault passphrase (the Chariox passkey) from a
+Chariox terminal: a remember window, an unlocked Vault or a sudo window never
+stands in for it, and a payment answer never starts a remember window. The
+decision is a card in the asking agent's pane and a passkey popup on every
+terminal of the Room's owner, both for as long as the card waits (24 hours at
+most); the agent's fill returns at once and the agent keeps working until the
+answer reaches its inbox. What a card approves lives only in kernel memory, so
+a card still waiting when the kernel restarts is withdrawn and the agent's
+inbox says to fill again to ask again.
 Browser captures similarly declare at most one exact destination origin, and
 issuer-free auth.md credentials bind to the issued resource origin.
 
@@ -261,7 +270,8 @@ passkey while that window is live. The client sends the owner's chosen answer
 without proof first. Only a kernel `PASSKEY_REQUIRED` response opens trusted
 passkey entry. An empty field in an already-open ordinary approval popup also
 asks the kernel to check its window; no client-local timer decides permission.
-New sudo windows, access grants and lifetime extensions still need fresh proof.
+New sudo windows, access grants, lifetime extensions and every card payment
+still need fresh proof.
 Remembering proof never chooses an action or grants a new sudo task.
 
 Required live drill `kernel-access-meta/KA-REMEMBER-WEB-TUI`: use a lane-owned

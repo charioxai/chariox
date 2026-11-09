@@ -175,6 +175,7 @@ pub fn create_vault_from_key_seed(
         path,
         unlocked: true,
         expires_at_ms,
+        single_use: lease == VaultUnlockLease::SingleUse,
     })
 }
 

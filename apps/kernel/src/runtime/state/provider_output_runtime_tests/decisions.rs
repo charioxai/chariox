@@ -802,6 +802,43 @@ fn every_user_only_kind_is_the_users() {
             kernel("vault-card-1", "vault-card-1"),
             Some(UserOnly::Payment),
         ),
+        // MP-08 / MP-09 / MP-10 / MP-11: a payment an agent's fill raises in its own Room is still the owner's alone.
+        (
+            "agent's payment card",
+            pending(),
+            RuntimeInteraction::new(
+                "vault-card-3",
+                "agent-1",
+                RuntimeInteractionKind::Choice,
+                RuntimeInteractionLevel::Critical,
+                Some("Use payment card".into()),
+                "m",
+                vec![
+                    RuntimeInteractionChoice::new("allow", "Allow once", "allow", None)
+                        .requiring_passkey(),
+                ],
+                None,
+                None,
+                None,
+            ),
+            Some(UserOnly::Payment),
+        ),
+        // MP-08 / MP-09 / MP-10 / MP-11: a payment stays a payment when approving needs the passkey.
+        (
+            "payment with passkey",
+            pending(),
+            RuntimeInteraction::for_kernel_operation(
+                "vault-card-2",
+                "vault-card-2",
+                "t",
+                "m",
+                vec![
+                    RuntimeInteractionChoice::new("allow", "Allow once", "allow", None)
+                        .requiring_passkey(),
+                ],
+            ),
+            Some(UserOnly::Payment),
+        ),
         (
             "sign-in",
             pending(),

@@ -399,6 +399,7 @@ fn vault_credential(
             value: "Bearer ${secret}".to_owned(),
         },
         metadata: Some(crate::config::UserCredentialMetadataConfig {
+            payment_card: None,
             use_binding: None,
             created_by_kind: Some("agent".to_owned()),
             created_by_id: None,

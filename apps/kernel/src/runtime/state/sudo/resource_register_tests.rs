@@ -324,6 +324,7 @@ async fn resource_register_http_revoke_uses_vault_and_never_echoes_response() {
             value: "Bearer ${secret}".into(),
         },
         metadata: Some(UserCredentialMetadataConfig {
+            payment_card: None,
             use_binding: None,
             created_by_kind: Some("captured".into()),
             created_by_id: Some(turn.agent_id.clone()),

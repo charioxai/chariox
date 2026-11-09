@@ -3,10 +3,10 @@
 //! the session or not (kernel access plan, section 5.2, D1). Today that is
 //! each critical approval. It joins its owner's set when it is registered and
 //! leaves it when a terminal answers it (approve with the verified passkey, or
-//! refuse) or when it expires; the change wakes every terminal subscription,
-//! which sends the new set, so every popup closes. A later answer is told the
-//! prompt was already answered. A wrong passkey answers nothing, so the
-//! prompt stays.
+//! refuse), when it expires, or when it is withdrawn unanswered; the change
+//! wakes every terminal subscription, which sends the new set, so every popup
+//! closes. A later answer is told the prompt was already answered. A wrong
+//! passkey answers nothing, so the prompt stays.
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -184,18 +184,31 @@ impl KernelRuntimeOwnedState {
             .lock()
             .expect("interaction mutation poisoned");
         let now = std::time::Instant::now();
-        let mut prompts = self
+        let live = self
             .pending_interactions
             .write()
-            .values()
-            .filter(|pending| pending.belongs_to(&self.session_store))
-            .filter(|pending| pending.kernel_operation_owner.as_deref() == Some(user_id))
-            .filter(|pending| {
+            .iter()
+            .filter(|(_, pending)| pending.belongs_to(&self.session_store))
+            .filter(|(_, pending)| {
                 pending
                     .kernel_operation_deadline
                     .is_some_and(|deadline| now < deadline)
             })
-            .filter_map(|pending| pending.passkey_prompt.as_deref().cloned())
+            .filter_map(|(id, pending)| {
+                let prompt = pending.passkey_prompt.clone()?;
+                Some((id.clone(), pending.kernel_operation_owner.clone(), prompt))
+            })
+            .collect::<Vec<_>>();
+        // Read Room owners only after releasing the pending set: registration takes the session
+        // store before it.
+        let mut prompts = live
+            .into_iter()
+            .filter(|(id, owner, prompt)| {
+                self.kernel_decision_owner(&prompt.session_id, id, owner.as_deref())
+                    .as_deref()
+                    == Some(user_id)
+            })
+            .map(|(_, _, prompt)| (*prompt).clone())
             .collect::<Vec<_>>();
         drop(_mutation); // Never hold interaction mutation while taking the access-grant lock.
         let access = self.kernel_access.lock().expect("access state poisoned");
@@ -241,6 +254,21 @@ impl KernelRuntimeOwnedState {
             (a.requested_at_ms, &a.interaction_id).cmp(&(b.requested_at_ms, &b.interaction_id))
         });
         prompts
+    }
+
+    /// A decision withdrawn before anyone answered it (its wake cancelled, its asking task or agent
+    /// ended, or a restart) closes its popup on every owner terminal, as revoked.
+    pub(super) fn close_withdrawn_passkey_prompt(&self, session_id: &str, interaction_id: &str) {
+        if !self
+            .passkey_prompts
+            .was_answered(session_id, interaction_id)
+        {
+            self.passkey_prompts.record_closed(
+                session_id,
+                interaction_id,
+                PasskeyPromptClosureReason::Revoked,
+            );
+        }
     }
 
     /// The refusal for an answer to a decision that is no longer pending:

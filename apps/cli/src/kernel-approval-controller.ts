@@ -7,7 +7,7 @@ import {
 } from "./kernel-handoff-entry.js"
 
 /** Protocol 403: the passkey is typed only into the passkey popup. */
-const PASSKEY_IN_POPUP = "Approve this in the Chariox passkey popup. Only the decision's owner gets it."
+export const PASSKEY_IN_POPUP = "Approve this in the Chariox passkey popup. Only the decision's owner gets it."
 
 export type KernelApprovalKey = {
   super?: boolean

@@ -1,7 +1,7 @@
 import {
   BoxRenderable, MouseButton, RGBA, ScrollBoxRenderable, TextAttributes, TextRenderable, type CliRenderer,
 } from "@opentui/core"
-import { UNTIL_AGENT_EXITS, type PasskeyPopupView } from "./passkey-popup-controller.js"
+import { UNTIL_AGENT_EXITS, isCardPayment, type PasskeyPopupView } from "./passkey-popup-controller.js"
 import { approvalCountdown } from "./kernel-clock.js"
 import { theme } from "./theme.js"
 
@@ -190,7 +190,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       if (!kernelAccess && !prompt.sudo_request) section(text(`${prompt.session_id === "kernel-access" && (prompt.kind === "access_grant" || prompt.kind === "access_extension")
         ? "Local kernel" : prompt.session_id ? `Session: ${session}` : "User domain"} · expires ${expiry(prompt.expires_at_ms)}`, { muted: true }))
       // Hidden input: only the length is ever rendered.
-      const remember = secret ? null : text(prompt.kind === "critical_approval"
+      const remember = secret || isCardPayment(prompt) ? null : text(prompt.kind === "critical_approval"
         ? `Remember for: ${view.passkey.rememberMinutes ? `${view.passkey.rememberMinutes} minutes` : "off"}`
         : prompt.kind === "sudo" ? `Window: ${hours(view.passkey.lifetime)} · maximum ${hours(prompt.max_lifetime_minutes)} · fresh passkey required`
         : `Access for: ${view.passkey.lifetime === UNTIL_AGENT_EXITS ? "until the agent exits" : `${view.passkey.lifetime} minutes`}`)
@@ -208,7 +208,7 @@ export function createPasskeyPopupRenderer(renderer: CliRenderer, actions: {
       panel.add(buttons)
       section(text(view.pending ? "Waiting for the kernel…"
         : !view.connected ? "Disconnected · reconnect to answer"
-        : `${secret ? "Enter sends · Ctrl+R cancels" : `Enter approves · Ctrl+R refuses${view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? " · Tab duration" : " · Tab lifetime"}`}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
+        : `${secret ? "Enter sends · Ctrl+R cancels" : `Enter approves · Ctrl+R refuses${isCardPayment(view.prompt) ? "" : view.prompt?.kind === "critical_approval" ? " · Tab remember" : view.prompt?.kind === "sudo" ? " · Tab duration" : " · Tab lifetime"}`}${view.count > 1 ? " · ←/→ requests" : ""}`, { muted: true }))
       scrim.add(panel)
       box.add(scrim)
       box.requestRender()

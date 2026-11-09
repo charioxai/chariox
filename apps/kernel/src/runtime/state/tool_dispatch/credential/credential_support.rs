@@ -106,6 +106,7 @@ pub(super) fn stamp_runtime_credential_metadata_for_agent(
         | crate::config::UserCredentialSourceConfig::File { .. } => None,
     };
     credential.metadata = Some(crate::config::UserCredentialMetadataConfig {
+        payment_card: None,
         use_binding: credential
             .metadata
             .as_ref()

@@ -244,6 +244,7 @@ impl KernelRuntimeState {
                 _ => crate::config::UserCredentialInjectionConfig::Env,
             },
             metadata: Some(UserCredentialMetadataConfig {
+                payment_card: None,
                 use_binding: Some(captured.use_binding),
                 created_by_kind: Some(CAPTURED_KIND.into()),
                 created_by_id: Some(turn.agent_id.clone()),
