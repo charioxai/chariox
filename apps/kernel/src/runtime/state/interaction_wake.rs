@@ -91,6 +91,15 @@ impl WakeDriver for InteractionWakeDriver {
         Ok(Cancel::Done)
     }
     fn recover(&self, wake: &AgentWake) -> Recovery {
+        // What a payment card approves lives only in kernel memory, so its Allow could approve
+        // nothing after a restart: the card is withdrawn and the agent asks again.
+        if super::vault_use::is_vault_payment_decision(&wake.id)
+            && !self.owned.vault_payment_asked(&wake.id)
+        {
+            return Recovery::Lost(
+                "the payment ask ended with the restart; fill the card again to ask again".into(),
+            );
+        }
         if let Err(error) = self.arm(wake) {
             return Recovery::Lost(error.to_string());
         }

@@ -520,6 +520,11 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    /// Whether this kernel holds what the card decision `interaction_id` approves.
+    pub(super) fn vault_payment_asked(&self, interaction_id: &str) -> bool {
+        self.vault_payment_asks().contains_key(interaction_id)
+    }
+
     /// A withdrawn card decision approves nothing.
     pub(super) fn forget_vault_payment_ask(&self, interaction_id: &str) {
         self.vault_payment_asks().remove(interaction_id);
