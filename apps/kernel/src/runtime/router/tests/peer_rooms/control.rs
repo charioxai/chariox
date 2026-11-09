@@ -207,6 +207,14 @@ fn the_steer_room_command_keeps_the_authority_limit_and_the_message_one_does_not
                 "{bad}: {}",
                 usage.payload
             );
+            assert!(
+                usage
+                    .payload
+                    .to_string()
+                    .contains("the text is one quoted argument"),
+                "{bad}: {}",
+                usage.payload
+            );
         }
     });
 }

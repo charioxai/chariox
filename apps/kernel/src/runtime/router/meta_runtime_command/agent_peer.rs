@@ -52,9 +52,9 @@ impl CommandRouter {
             meta_command_failure_result(
                 command,
                 meta_command_error(if steer {
-                    "usage: agent steer <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]]"
+                    "usage: agent steer <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]]; the text is one quoted argument"
                 } else {
-                    "usage: agent message <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]] [--reply-requested]"
+                    "usage: agent message <agent-ref> <text> [--room <room> [--kernel <kernel>|--machine <machine>]] [--reply-requested]; the text is one quoted argument"
                 }),
             )
         };
