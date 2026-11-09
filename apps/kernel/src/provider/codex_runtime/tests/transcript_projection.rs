@@ -867,6 +867,46 @@ fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
 }
 
 #[test]
+fn codex_turn_completion_holding_a_running_background_command_keeps_it_running() {
+    let mut wire = CodexWire {
+        active_turn_id: Some("turn-1".to_string()),
+        ..Default::default()
+    };
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
+    wire.receive(
+        "item/commandExecution/terminalInteraction",
+        json!({"threadId": "thread-1", "turnId": "turn-1", "itemId": "call_sleep", "processId": "pty-call_sleep", "stdin": ""}),
+    );
+    // The completed turn lists the command still in progress.
+    let settled = wire.receive(
+        "turn/completed",
+        json!({"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "error": null,
+            "items": [command_item("call_sleep", "sleep 40", "inProgress", None)]}}),
+    );
+    for (_, snapshot) in &settled {
+        assert!(snapshot["finished_at_ms"].is_null(), "{snapshot}");
+        assert_eq!(snapshot["status"], "running", "{snapshot}");
+    }
+    wire.active_turn_id = Some("turn-2".to_string());
+    let exited = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "completed", Some(0)),
+        ),
+    );
+    assert_eq!(exited.len(), 1, "the late exit must still settle its call");
+    assert_eq!(exited[0].1["status"], "completed");
+    assert!(exited[0].1["finished_at_ms"].is_u64());
+}
+
+#[test]
 fn codex_background_lifecycle_matches_the_protocol_snapshot() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../local/api/tests/protocol_shapes/provider-tool-background-lifecycle.json"
