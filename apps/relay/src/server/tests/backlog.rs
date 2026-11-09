@@ -35,6 +35,50 @@ async fn connect_client(url: &str, daemon_id: &str) -> Socket {
     client
 }
 
+/// A loopback relay with `daemon-a` registered on it.
+async fn relay_with_kernel() -> (
+    String,
+    Socket,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let server = RelayServer::new(RelayConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        shared_token: Some("secret".to_string()),
+    });
+    let listener = server.bind_listener().await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = RelayServer::new(RelayConfig {
+        host: addr.ip().to_string(),
+        port: addr.port(),
+        shared_token: Some("secret".to_string()),
+    });
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let server_task = tokio::spawn(async move {
+        server
+            .run_listener_until(listener, async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+    });
+    let url = format!("ws://{}:{}", addr.ip(), addr.port());
+    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
+    daemon
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonRegister {
+                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
+            })
+            .unwrap()
+            .into(),
+        ))
+        .await
+        .unwrap();
+    sleep(Duration::from_millis(50)).await;
+    (url, daemon, shutdown_tx, server_task)
+}
+
 fn client_request(index: usize) -> Message {
     Message::Text(
         serde_json::to_string(&RelayEnvelope::ClientRequest {
@@ -93,40 +137,7 @@ fn daemon_reply(relay_request_id: String) -> Message {
 // connection, and with it every other client of that kernel.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_stalled_client_does_not_disconnect_the_kernel_that_answers_it() {
-    let server = RelayServer::new(RelayConfig {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        shared_token: Some("secret".to_string()),
-    });
-    let listener = server.bind_listener().await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = RelayServer::new(RelayConfig {
-        host: addr.ip().to_string(),
-        port: addr.port(),
-        shared_token: Some("secret".to_string()),
-    });
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_task = tokio::spawn(async move {
-        server
-            .run_listener_until(listener, async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .unwrap();
-    });
-    let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
-    daemon
-        .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
-            })
-            .unwrap()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    sleep(Duration::from_millis(50)).await;
+    let (url, mut daemon, shutdown_tx, server_task) = relay_with_kernel().await;
 
     // The stalled client sends its requests and never reads a reply.
     let (mut stalled_tx, stalled_rx) = connect_client(&url, "daemon-a").await.split();
@@ -165,6 +176,46 @@ async fn a_stalled_client_does_not_disconnect_the_kernel_that_answers_it() {
     server_task.await.unwrap();
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a receiver that is too far behind to catch up is
+// told to come back later (close 1013) instead of the relay silently dropping its replies.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backlogged_receiver_is_closed_and_counted() {
+    let (url, mut daemon, shutdown_tx, server_task) = relay_with_kernel().await;
+    let (mut stalled_tx, mut stalled_rx) = connect_client(&url, "daemon-a").await.split();
+    let sender = tokio::spawn(async move {
+        for index in 0..REPLIES {
+            stalled_tx.send(client_request(index)).await.unwrap();
+        }
+        stalled_tx
+    });
+    for _ in 0..REPLIES {
+        let relay_request_id = next_daemon_request(&mut daemon)
+            .await
+            .expect("the kernel lost its relay connection while answering a stalled client");
+        daemon
+            .send(daemon_reply(relay_request_id))
+            .await
+            .expect("the kernel lost its relay connection while answering a stalled client");
+    }
+    let _stalled_tx = sender.await.unwrap();
+
+    // The client starts reading again: what it had queued, then the close.
+    let close = loop {
+        match tokio::time::timeout(Duration::from_secs(10), stalled_rx.next()).await {
+            Ok(Some(Ok(Message::Close(frame)))) => break frame,
+            Ok(Some(Ok(_))) => {}
+            other => panic!("the stalled client was never told to come back later: {other:?}"),
+        }
+    };
+    assert_eq!(
+        close.map(|frame| u16::from(frame.code)),
+        Some(1013),
+        "a backlogged receiver is closed with 'try again later'"
+    );
+    let _ = shutdown_tx.send(());
+    server_task.await.unwrap();
+}
+
 async fn live_machine_ids(url: &str) -> Vec<String> {
     let (mut client, _) = connect_async_with_retry(url).await.unwrap();
     client
@@ -196,40 +247,7 @@ async fn live_machine_ids(url: &str) -> Vec<String> {
 // relay refuses on that socket is an answer, not the end of the kernel's connection.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_metadata_request_on_a_kernel_socket_keeps_the_kernel_connected() {
-    let server = RelayServer::new(RelayConfig {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        shared_token: Some("secret".to_string()),
-    });
-    let listener = server.bind_listener().await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let server = RelayServer::new(RelayConfig {
-        host: addr.ip().to_string(),
-        port: addr.port(),
-        shared_token: Some("secret".to_string()),
-    });
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server_task = tokio::spawn(async move {
-        server
-            .run_listener_until(listener, async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-            .unwrap();
-    });
-    let url = format!("ws://{}:{}", addr.ip(), addr.port());
-    let (mut daemon, _) = connect_async_with_retry(&url).await.unwrap();
-    daemon
-        .send(Message::Text(
-            serde_json::to_string(&RelayEnvelope::DaemonRegister {
-                registration: test_registration("daemon-a", "machine-1", "Linux", 10),
-            })
-            .unwrap()
-            .into(),
-        ))
-        .await
-        .unwrap();
-    sleep(Duration::from_millis(50)).await;
+    let (url, mut daemon, shutdown_tx, server_task) = relay_with_kernel().await;
     assert_eq!(live_machine_ids(&url).await, vec!["machine-1".to_string()]);
 
     daemon
