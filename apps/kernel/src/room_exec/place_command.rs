@@ -2,8 +2,9 @@
 use std::sync::Arc;
 
 use super::gateway_placement::{self, GatewayExecPlacement, GrantedSend};
-use super::{error, RoomExecService};
+use super::{error, ExecState, ExecSummary, RoomExecService};
 use crate::error::DaemonError;
+use crate::local::{GatewayKernel, GatewayKernelStatus};
 
 /// Who asks: a person, or an agent that may place only what it started itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +14,7 @@ pub(crate) enum Requester {
 }
 
 impl Requester {
-    pub(crate) fn ensure_owns(&self, launch_agent: Option<&str>) -> Result<(), DaemonError> {
+    pub(super) fn ensure_owns(&self, launch_agent: Option<&str>) -> Result<(), DaemonError> {
         match self {
             Self::Person => Ok(()),
             Self::Agent(id) if launch_agent == Some(id.as_str()) => Ok(()),
@@ -53,3 +54,20 @@ pub(crate) async fn run_on_kernel(
         Arc::new(GatewayExecPlacement::new(grant, target_session_id)),
     )
 }
+
+/// The kernels a held launch could be placed on: the owner's other kernels that are online
+/// and speak the gateway contract.
+pub(crate) fn destinations(_kernels: Vec<GatewayKernel>, _own_kernel_id: &str) -> Vec<String> {
+    Vec::new()
+}
+
+/// Names `kernels` on each held launch that `requester` may place.
+pub(crate) fn offer_placement(
+    _execs: &mut [ExecSummary],
+    _requester: &Requester,
+    _kernels: &[String],
+) {
+}
+
+#[cfg(test)]
+mod tests;

@@ -29,7 +29,9 @@ use crate::error::DaemonError;
 use crate::room_terminal::managed_work::ManagedWork;
 use crate::runtime::process_resources::{LaunchAdmission, LaunchWait};
 use crate::runtime::state::ManagedKernelQuiescenceGate;
-pub(crate) use place_command::{run_on_kernel, Placement, Requester};
+pub(crate) use place_command::{
+    destinations, offer_placement, run_on_kernel, Placement, Requester,
+};
 
 pub const CHUNK_BYTES: usize = crate::local::KERNEL_FILE_MAX_CHUNK_BYTES as usize;
 const MAX_PER_ROOM: usize = 16;

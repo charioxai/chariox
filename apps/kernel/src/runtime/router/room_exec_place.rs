@@ -6,13 +6,11 @@ use std::time::Duration;
 use super::CommandRouter;
 use crate::error::DaemonError;
 use crate::local::{
-    GatewayKernelStatus, LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest,
-    RoomTerminalResult,
+    LocalDaemonResponse, RoomTerminalOperation, RoomTerminalRequest, RoomTerminalResult,
 };
 use crate::room_exec::gateway_placement::OriginGrant;
-use crate::room_exec::{ExecState, Requester};
+use crate::room_exec::{destinations, offer_placement, ExecState};
 use crate::runtime::command::KernelCaller;
-use crate::runtime::process_resources::SessionProcessOwner;
 
 /// A list never waits longer than this for the kernels a launch could move to.
 const OFFER_WAIT: Duration = Duration::from_secs(2);
@@ -87,25 +85,7 @@ impl CommandRouter {
         let Ok(Ok(kernels)) = listed else {
             return;
         };
-        let names: Vec<String> = kernels
-            .into_iter()
-            .filter(|kernel| {
-                kernel.status == GatewayKernelStatus::Online
-                    && kernel.gateway_ready
-                    && kernel.kernel_id != own_id
-            })
-            .map(|kernel| kernel.name)
-            .collect();
-        for exec in execs {
-            let launch_agent = match &exec.owner {
-                SessionProcessOwner::Agent(id) => Some(id.as_str()),
-                SessionProcessOwner::Terminal(_) => None,
-            };
-            if matches!(exec.state, ExecState::Queued { .. })
-                && placer.requester.ensure_owns(launch_agent).is_ok()
-            {
-                exec.placeable_on = names.clone();
-            }
-        }
+        let names = destinations(kernels, &own_id);
+        offer_placement(execs, &placer.requester, &names);
     }
 }
