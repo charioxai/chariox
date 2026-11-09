@@ -568,7 +568,8 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    /// Followed side: a followed agent or room that is gone tells its followers so.
+    /// Followed side: a followed agent or room that is gone tells its followers so. An archived
+    /// agent is gone for them too: it runs no turn, and an unarchived one takes new follows.
     pub(super) fn settle_lost_peer_follows(&self, now: u64) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;
         for (room, agent) in store.peer_followed_agents()? {
@@ -577,7 +578,7 @@ impl KernelRuntimeState {
                     .owned
                     .agent_store
                     .get_agent(&agent)
-                    .is_ok_and(|found| found.session_id() == room);
+                    .is_ok_and(|found| found.session_id() == room && !found.archived());
             if !present {
                 store.agent_lifecycle(Operation::PeerSourceLost { room, agent, now })?;
             }
