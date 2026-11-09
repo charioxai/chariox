@@ -34,7 +34,8 @@ pub(crate) fn target_vault_locked() -> DaemonError {
 }
 
 /// Importing named Secret entries writes them into this kernel's own Vault: refuse the whole
-/// import, before any entry lands, while that Vault is closed.
+/// import, before any entry lands, while that Vault is closed. An Update names nothing; its
+/// selection comes from the source's record, so `run_import` makes the same refusal once it has it.
 pub(crate) fn require_open_vault_for_secret_entries(
     config: &DaemonConfig,
     entries: Option<&[crate::local::EnvironmentEntryRef]>,
@@ -45,13 +46,17 @@ pub(crate) fn require_open_vault_for_secret_entries(
             .any(|entry| entry.kind == crate::local::EnvironmentEntryKind::Secret)
     });
     if names_a_secret && !target_vault_is_open(config)? {
-        return Err(DaemonError::VaultUnlock {
-            code: TARGET_VAULT_LOCKED,
-            message: "this kernel's Vault is locked; unlock it and try again".into(),
-            retryable: true,
-        });
+        return Err(secret_import_refused());
     }
     Ok(())
+}
+
+pub(crate) fn secret_import_refused() -> DaemonError {
+    DaemonError::VaultUnlock {
+        code: TARGET_VAULT_LOCKED,
+        message: "this kernel's Vault is locked; unlock it and try again".into(),
+        retryable: true,
+    }
 }
 
 #[cfg(test)]
