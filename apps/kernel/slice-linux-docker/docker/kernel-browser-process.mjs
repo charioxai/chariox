@@ -212,10 +212,13 @@ export class HostChromium {
       child.stderr.off('data',collectStderr);child.stderr.resume();startupStderr='';
       return connection;
     }
-    catch {}
-    await this.stop(this.connection, { preserveDesktop: keepDesktop });
-    const code=browserLaunchFailureReason(startupStderr,spawnCode);startupStderr='';
-    throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
+    catch(startupError){
+      await this.stop(this.connection, { preserveDesktop: keepDesktop });
+      const code=browserLaunchFailureReason(startupStderr,spawnCode,startupError?.code);startupStderr='';
+      // Once per failed launch, class only: the startup text itself is never logged.
+      process.stderr.write(`CHARIOX-LOG browser_launch_failed ${code}\n`);
+      throw Object.assign(new Error('MD-2: host Chromium launch failed'),{code});
+    }
   }
   async stop(connection = this.connection, { preserveDesktop = false } = {}) {
     this.stopWatchingBrowser();
