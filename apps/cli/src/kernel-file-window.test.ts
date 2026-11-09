@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { downloadWindowed, FILE_CHUNK_BYTES, MAX_IN_FLIGHT_BYTES, MIN_WINDOW } from "./kernel-file-window.js"
+import { transferWindowed, FILE_CHUNK_BYTES, MAX_IN_FLIGHT_BYTES, MIN_WINDOW } from "./kernel-file-window.js"
 
 // Virtual time: a timer fires only once every promise that can make progress has, so a run is
 // deterministic and a 100 MiB transfer at 8 Mbit/s takes milliseconds.
@@ -50,7 +50,7 @@ function remote(sim: ReturnType<typeof simulation>, carry: (bytes: number) => Pr
   const stats = { inFlight: 0, peakInFlight: 0, requests: [] as number[], unwritten: 0, peakUnwritten: 0 }
   return {
     stats,
-    read: async (offset: number, length: number) => {
+    request: async (offset: number, length: number) => {
       stats.requests.push(offset)
       stats.inFlight++
       stats.unwritten += length
@@ -67,13 +67,13 @@ async function pull(sim: ReturnType<typeof simulation>, bytes: Buffer, carry: (b
   const kernel = remote(sim, carry, bytes)
   const received: Buffer[] = []
   const started = sim.now()
-  await sim.run(downloadWindowed({
+  await sim.run(transferWindowed({
     size: bytes.length,
     from,
     roundTripMs,
     now: sim.now,
-    read: kernel.read,
-    write: async chunk => { received.push(Buffer.from(chunk)); kernel.written(chunk.length) },
+    request: kernel.request,
+    accept: async chunk => { received.push(Buffer.from(chunk)); kernel.written(chunk.length) },
   }))
   return { kernel, received: Buffer.concat(received), elapsedMs: sim.now() - started }
 }
@@ -156,17 +156,17 @@ test("a short reply is continued where it stopped, with no gap and no repeat", a
   const received: Buffer[] = []
   const asked: [number, number][] = []
   const carry = link(sim, 8 * MEGABIT, 60)
-  await sim.run(downloadWindowed({
+  await sim.run(transferWindowed({
     size: bytes.length,
     from: 0,
     roundTripMs: 60,
     now: sim.now,
-    read: async (offset, length) => {
+    request: async (offset, length) => {
       asked.push([offset, length])
       await carry(length)
       return bytes.subarray(offset, offset + (offset === 2 * FILE_CHUNK_BYTES ? length / 2 : length))
     },
-    write: async chunk => { received.push(Buffer.from(chunk)) },
+    accept: async chunk => { received.push(Buffer.from(chunk)) },
   }))
   assert.ok(Buffer.concat(received).equals(bytes))
   assert.ok(asked.some(([offset]) => offset === 2 * FILE_CHUNK_BYTES + FILE_CHUNK_BYTES / 2))
@@ -183,19 +183,19 @@ test("a reply that fails mid-window stops the transfer after a whole prefix of t
   const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
   process.on("unhandledRejection", onUnhandled)
   try {
-    await assert.rejects(sim.run(downloadWindowed({
+    await assert.rejects(sim.run(transferWindowed({
       size: bytes.length,
       from: 0,
       roundTripMs: 60,
       now: sim.now,
-      read: async (offset, length) => {
+      request: async (offset, length) => {
         if (failed) askedAfterFailure++
         await carry(length)
         if (offset === 5 * FILE_CHUNK_BYTES) { failed = true; throw new Error("the kernel went away") }
         if (offset > 5 * FILE_CHUNK_BYTES) throw new Error("later request cut off too")
         return bytes.subarray(offset, offset + length)
       },
-      write: async chunk => { written.push(Buffer.from(chunk)) },
+      accept: async chunk => { written.push(Buffer.from(chunk)) },
     })), /the kernel went away/)
     await new Promise<void>(resolve => setImmediate(resolve))
   } finally { process.off("unhandledRejection", onUnhandled) }
@@ -211,13 +211,13 @@ test("a failing write stops the transfer without leaving requests unanswered", a
   const bytes = source(20 * FILE_CHUNK_BYTES)
   const carry = link(sim, 8 * MEGABIT, 60)
   let writes = 0
-  await assert.rejects(sim.run(downloadWindowed({
+  await assert.rejects(sim.run(transferWindowed({
     size: bytes.length,
     from: 0,
     roundTripMs: 60,
     now: sim.now,
-    read: async (offset, length) => { await carry(length); return bytes.subarray(offset, offset + length) },
-    write: async () => { if (++writes === 3) throw new Error("disk full") },
+    request: async (offset, length) => { await carry(length); return bytes.subarray(offset, offset + length) },
+    accept: async () => { if (++writes === 3) throw new Error("disk full") },
   })), /disk full/)
   assert.equal(writes, 3)
 })
@@ -228,7 +228,7 @@ test("three transfers on one link share it: none finishes long before or after t
   const bytes = source(12 * MIB)
   const finished: number[] = []
   const one = async () => {
-    await downloadWindowed({ size: bytes.length, from: 0, roundTripMs: 60, now: sim.now, read: async (offset, length) => { await carry(length); return bytes.subarray(offset, offset + length) }, write: async () => undefined })
+    await transferWindowed({ size: bytes.length, from: 0, roundTripMs: 60, now: sim.now, request: async (offset, length) => { await carry(length); return bytes.subarray(offset, offset + length) }, accept: async () => undefined })
     finished.push(sim.now())
   }
   await sim.run(Promise.all([one(), one(), one()]))

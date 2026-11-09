@@ -1,9 +1,9 @@
 import { CommandFailure } from "./agent-command-table.js"
 
-// Chunk size of a file transfer, on both ends. A reply of 64 KiB is the smallest the kernel still
-// queues as bulk (its encrypted payload passes 64 KiB), so a client's replies stay bounded
-// there; one reply is about 117 KB on the wire, a hundred milliseconds of an 8 Mbit/s link, never the
-// half megabyte a 256 KiB chunk made.
+// Chunk size of a file transfer, on both ends. One reply is one indivisible relay message: at
+// 64 KiB it is about 117 KB on the wire, a hundred milliseconds of an 8 Mbit/s link, where a
+// 256 KiB chunk held it for half a second. It is also the smallest size the kernel still queues as
+// bulk (a reply of about 36 KiB or less goes on the priority lane, outside the per-client bound).
 export const FILE_CHUNK_BYTES = 64 * 1024
 // Requests in flight at the start, and the least ever: a transfer on a slow link stays here.
 export const MIN_WINDOW = 4
@@ -13,8 +13,9 @@ export const MAX_IN_FLIGHT_BYTES = 4 * 1024 * 1024
 const HEADROOM = 2
 const RATE_SAMPLES = 16
 
-// One request for `length` bytes at `offset`. It answers with at least one byte or throws.
-type Read = (offset: number, length: number) => Promise<Buffer>
+// One request for `length` bytes at `offset`. It answers with `length` set to the bytes it moved,
+// at least one, or throws.
+type Request<T extends { length: number }> = (offset: number, length: number) => Promise<T>
 
 // Estimates how many chunks fit in the link: the round trip of a small request, which the kernel
 // answers ahead of bulk replies and so measures the link and not the transfer's own queue, times
@@ -37,38 +38,45 @@ class WindowSizer {
   }
 }
 
-type Issued = { offset: number; length: number; reply: Promise<Buffer> }
+type Issued<T extends { length: number }> = { offset: number; length: number; reply: Promise<T> }
 
-// Downloads [from, size) with several reads in flight and hands the bytes to `write` in file order,
-// so whatever `write` has been given is always a whole prefix of the file. A failed read or write
-// ends the transfer; reads still in flight are awaited first, so nothing outlives the call.
-export async function downloadWindowed(input: { size: number; from: number; roundTripMs: number; now: () => number; read: Read; write: (bytes: Buffer) => Promise<void> }): Promise<void> {
-  const { size, now, read, write } = input
+// Moves [from, size) with several requests in flight and hands each answer to `accept` in file order,
+// so whatever `accept` has been given is always a whole prefix of the file. A failed request or
+// accept ends the transfer; requests still in flight are awaited first, so nothing outlives the call.
+export async function transferWindowed<T extends { length: number }>(input: {
+  size: number
+  from: number
+  roundTripMs: number
+  now: () => number
+  request: Request<T>
+  accept: (answer: T) => Promise<void>
+}): Promise<void> {
+  const { size, now, request, accept } = input
   const sizer = new WindowSizer(Math.max(input.roundTripMs, 1))
-  const issued: Issued[] = []
+  const issued: Issued<T>[] = []
   let next = input.from
   const settleAll = async () => { await Promise.allSettled(issued.map(item => item.reply)) }
   try {
     while (next < size || issued.length > 0) {
       while (next < size && issued.length < sizer.size) {
         const length = Math.min(FILE_CHUNK_BYTES, size - next)
-        const reply = read(next, length)
+        const reply = request(next, length)
         // The head's failure is raised below; a later reply that fails is dropped with the transfer.
         reply.catch(() => undefined)
         issued.push({ offset: next, length, reply })
         next += length
       }
       const head = issued.shift()!
-      const bytes = await head.reply
-      if (bytes.length > head.length) throw new CommandFailure("file_io_failed", `The kernel sent ${bytes.length} bytes for a request of ${head.length} at ${head.offset}; run the same command again to continue`)
-      sizer.completed(now(), bytes.length)
-      if (bytes.length < head.length) {
+      const answer = await head.reply
+      if (answer.length > head.length) throw new CommandFailure("file_io_failed", `The kernel moved ${answer.length} bytes for a request of ${head.length} at ${head.offset}; run the same command again to continue`)
+      sizer.completed(now(), answer.length)
+      if (answer.length < head.length) {
         // The source gave less than asked: what was requested beyond it would leave a gap.
         await settleAll()
         issued.length = 0
-        next = head.offset + bytes.length
+        next = head.offset + answer.length
       }
-      await write(bytes)
+      await accept(answer)
     }
   } finally { await settleAll() }
 }
