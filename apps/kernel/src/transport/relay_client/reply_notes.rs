@@ -1,6 +1,6 @@
 //! What the connection writer needs to know about a reply beside its envelope: which request
 //! kind and which client it answers. The notes name the requester in the write diagnostics,
-//! feed the hourly traffic counters, and carry the per-client bound on queued bulk replies.
+//! feed the traffic counters of the last hour, and carry the per-client bound on queued bulk replies.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
