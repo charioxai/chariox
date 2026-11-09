@@ -1,10 +1,12 @@
 //! Running terminals across a hot reload: the old kernel program holds their
 //! output and hands them over; the new program adopts them by terminal id.
 
+use std::os::fd::OwnedFd;
+
 use serde::{Deserialize, Serialize};
 
 use super::*;
-use crate::pty::PtyHandover;
+use crate::pty::{OutgoingPty, PtyHandover};
 
 /// How long a terminal's reader may take to stop between two reads.
 const HOLD_TIMEOUT: Duration = Duration::from_secs(2);
@@ -42,9 +44,10 @@ impl TerminalHandover {
 
 impl RoomTerminalService {
     /// Holds every running terminal's output between two reads, applies what
-    /// was already read and saves its record. After a failed swap,
+    /// was already read and saves its record. Each comes with the copy of its
+    /// PTY master the handover names. After a failed swap,
     /// `release_handover` lets them run on in this program.
-    pub fn hand_over(&self) -> Result<Vec<TerminalHandover>, DaemonError> {
+    pub(crate) fn hand_over(&self) -> Result<Vec<(TerminalHandover, OwnedFd)>, DaemonError> {
         let mut handovers = Vec::new();
         for owner in self.owners() {
             let mut state = owner.lock();
@@ -68,7 +71,8 @@ impl RoomTerminalService {
                 }
             }
             terminal.pump_output(pty, Instant::now());
-            handovers.push(terminal.handover(pty.handover(&run_id)?));
+            let OutgoingPty { handover, master } = pty.handover(&run_id)?;
+            handovers.push((terminal.handover(handover), master));
             let record = terminal.persisted_record();
             self.inner.store.enqueue_save(&record)?.wait()?;
         }

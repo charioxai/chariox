@@ -10,6 +10,7 @@
 use crate::runtime::bounded_process::AsyncBoundedCommandExt as _;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -623,6 +624,7 @@ impl PreparedForTests {
     pub(crate) fn new() -> Self {
         *lock(&PREPARED) = Some(Prepared {
             handover: Handover::default(),
+            masters: Vec::new(),
             path: PathBuf::new(),
             offered_ptys: BTreeMap::new(),
         });
@@ -631,14 +633,10 @@ impl PreparedForTests {
 
     /// A swap prepared as on a SIGUSR2, with the running terminals of `terminals`.
     pub(crate) fn with_terminals(terminals: &RoomTerminalService) -> Self {
-        let handover = terminals
+        let terminals = terminals
             .hand_over()
             .expect("the terminals are handed over");
-        *lock(&PREPARED) = Some(Prepared {
-            handover: Handover::with_terminals(handover),
-            path: PathBuf::new(),
-            offered_ptys: BTreeMap::new(),
-        });
+        *lock(&PREPARED) = Some(Prepared::new(terminals, PathBuf::new()));
         Self
     }
 
@@ -713,9 +711,12 @@ pub(crate) fn hand_over_attachments(attachments: &[crate::attachment::RuntimeAtt
 
 /// Offers a provider server's PTY to a running turn that may be handed over.
 /// The PTY of a run whose turn is not handed over ends before the swap.
-pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::PtyHandover) {
+pub(crate) fn offer_provider_pty(run_id: &str, pty: crate::pty::OutgoingPty) {
     if let Some(prepared) = lock(&PREPARED).as_mut() {
-        prepared.offered_ptys.insert(run_id.to_string(), pty);
+        prepared.masters.push(pty.master);
+        prepared
+            .offered_ptys
+            .insert(run_id.to_string(), pty.handover);
     }
 }
 
@@ -764,8 +765,24 @@ fn provider_handover(
 /// stops as for a planned restart before `finish` replaces the program.
 struct Prepared {
     handover: Handover,
+    // The PTY masters the handover names, owned by the swap alone until
+    // `exec`: the terminals and runs that handed them over close their own
+    // descriptors whenever the kernel's stop drops them.
+    masters: Vec<OwnedFd>,
     path: PathBuf,
     offered_ptys: BTreeMap<String, crate::pty::PtyHandover>,
+}
+
+impl Prepared {
+    fn new(terminals: Vec<(TerminalHandover, OwnedFd)>, path: PathBuf) -> Self {
+        let (terminals, masters) = terminals.into_iter().unzip();
+        Self {
+            handover: Handover::with_terminals(terminals),
+            masters,
+            path,
+            offered_ptys: BTreeMap::new(),
+        }
+    }
 }
 
 static PREPARED: Mutex<Option<Prepared>> = Mutex::new(None);
@@ -787,12 +804,9 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     };
     while requests.recv().await.is_some() {
         match prepare(&terminals).await {
-            Ok(handover) => {
-                *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Prepared {
-                    handover,
-                    path: handover_path,
-                    offered_ptys: BTreeMap::new(),
-                });
+            Ok(terminals) => {
+                *PREPARED.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some(Prepared::new(terminals, handover_path));
                 return;
             }
             Err(reason) => crate::logging::error_with_fields(
@@ -805,12 +819,14 @@ pub async fn requested(terminals: RoomTerminalService, handover_path: PathBuf) {
     std::future::pending().await
 }
 
-async fn prepare(terminals: &RoomTerminalService) -> Result<Handover, String> {
+async fn prepare(
+    terminals: &RoomTerminalService,
+) -> Result<Vec<(TerminalHandover, OwnedFd)>, String> {
     let start = START.get().ok_or("the kernel program path is unknown")?;
     verify(start).await?;
     let handing = terminals.clone();
     match tokio::task::spawn_blocking(move || handing.hand_over()).await {
-        Ok(Ok(terminals)) => Ok(Handover::with_terminals(terminals)),
+        Ok(Ok(terminals)) => Ok(terminals),
         Ok(Err(error)) => {
             terminals.release_handover();
             Err(error.to_string())

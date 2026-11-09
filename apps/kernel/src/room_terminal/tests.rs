@@ -572,7 +572,7 @@ async fn a_hot_reload_hands_over_who_launched_the_terminals_commands() {
     // SAFETY: the positive PID of a job this test started; never a group.
     unsafe { libc::kill(pid as i32, libc::SIGKILL) };
     service.end_session("room-1");
-    let submissions = serde_json::to_value(&handovers[0].pty.submissions).unwrap();
+    let submissions = serde_json::to_value(&handovers[0].0.pty.submissions).unwrap();
     assert_eq!(submissions["default"], false, "{submissions}");
     assert_eq!(submissions["unreported"], false, "{submissions}");
     assert_eq!(submissions["jobs"][pid.to_string()], false, "{submissions}");
