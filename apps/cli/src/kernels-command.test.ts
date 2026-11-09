@@ -300,3 +300,34 @@ test("--help answers with usage and exit 0 for every agent command; bare termina
     }
   } finally { console.log = log; process.exitCode = previous }
 })
+
+test("exec place sends exec_place to this kernel and names the target in the operation, not as a route", async () => {
+  const seen: { operation: unknown; kernel: unknown }[] = []
+  const kernel = await startFakeKernel((socket, frame) => {
+    const body = frame.request.RoomTerminal as { session_id: string; operation: unknown }
+    seen.push({ operation: { session: body.session_id, ...(body.operation as object) }, kernel: (frame as { kernel?: unknown }).kernel })
+    replyWith(socket, frame, { response: { RoomTerminal: { result: { result: "exec_opened", exec_id: "exec-held" } } } })
+  })
+  const printed: string[] = []
+  const log = console.log
+  console.log = (line: string) => { printed.push(line) }
+  try {
+    await runKernelsCommand(["exec", "place", "exec-held", "--session", "room-1", "--kernel", "b3", "--directory", "/srv/work", "--socket", kernel.path])
+  } finally { console.log = log; await kernel.close() }
+  assert.deepEqual(seen, [{ operation: { session: "room-1", operation: "exec_place", exec_id: "exec-held", kernel: "b3", directory: "/srv/work" }, kernel: undefined }])
+  assert.deepEqual(JSON.parse(printed.at(-1)!), { exec_id: "exec-held" })
+})
+
+test("exec place without a target kernel is a usage error and sends nothing", async () => {
+  let sent = 0
+  const kernel = await startFakeKernel(() => { sent += 1 })
+  const written: string[] = []
+  const write = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string) => { written.push(String(chunk)); return true }) as typeof process.stderr.write
+  const code = process.exitCode
+  try {
+    await runKernelsCommand(["exec", "place", "exec-held", "--session", "room-1", "--socket", kernel.path])
+  } finally { process.stderr.write = write; process.exitCode = code; await kernel.close() }
+  assert.equal(sent, 0)
+  assert.match(written.join(""), /"code":"usage"/)
+})
