@@ -300,6 +300,28 @@ fn finish(handle: &OperationHandle) {
     }
 }
 
+/// Why an import that selects a Secret does not start while this kernel's Vault is closed.
+const VAULT_LOCKED_REFUSAL: &str =
+    "This kernel's Vault is locked; unlock it and try again. Nothing was imported.";
+
+/// Whether the entries this import would bring include a Secret that cannot be written because the
+/// Vault is closed. Checked on the selection resolved against the record, before anything lands.
+fn secret_selected_while_vault_locked(
+    record: &ProjectEnvironmentRecord,
+    requested: Option<&[EnvironmentEntryRef]>,
+    target: &ImportTarget<'_>,
+) -> bool {
+    plan(record, requested, target)
+        .iter()
+        .filter(|(entry, _)| entry.kind == EnvironmentEntryKind::Secret)
+        .any(|(entry, _)| {
+            matches!(
+                secret_here(target, &entry.name),
+                Err(error) if crate::secret::is_chariox_vault_locked_error(&error)
+            )
+        })
+}
+
 pub(crate) async fn run_import<S: EnvironmentSource>(
     handle: OperationHandle,
     source: &S,
@@ -326,6 +348,19 @@ pub(crate) async fn run_import<S: EnvironmentSource>(
         }
     };
     let local_revision = local.as_ref().map_or(0, |record| record.revision);
+    let newer = snapshot
+        .record
+        .as_ref()
+        .filter(|source_record| source_record.revision > local_revision);
+    if let Some(record) = newer.or(local.as_ref()) {
+        if secret_selected_while_vault_locked(record, requested.as_deref(), &target) {
+            handle.finish(
+                EnvironmentOperationState::Failed,
+                Some(VAULT_LOCKED_REFUSAL.into()),
+            );
+            return;
+        }
+    }
     let record = match snapshot.record.clone() {
         Some(source_record) if source_record.revision > local_revision => {
             match target.store.adopt(target.project_id, source_record.clone()) {
@@ -1422,6 +1457,73 @@ mod tests {
             ["A_KEY", "B_KEY"],
             "a locked Vault cannot tell, so the target tries each row and the pull names the lock"
         );
+    }
+
+    async fn update_with_a_locked_vault(
+        rig: &Rig,
+        id: &str,
+        from: &FakeSource,
+    ) -> EnvironmentOperationView {
+        let on_record =
+            |record: &ProjectEnvironmentRecord| rig.adopted.lock().unwrap().push(record.revision);
+        run_import(
+            rig.begin(id),
+            from,
+            ImportTarget {
+                project_id: "p",
+                checkout: &rig.checkout,
+                store: &rig.store,
+                vault: &LockedVault,
+                registrations: &rig.registrations,
+                on_record: &on_record,
+            },
+            None,
+        )
+        .await;
+        rig.operations.get(id).unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_update_that_resolves_to_a_secret_is_refused_whole_while_the_vault_is_locked() {
+        let rig = Rig::new();
+        let from = source(
+            Some(record(2, &["A_KEY"], &["config/s.json"])),
+            &["A_KEY"],
+            &["config/s.json"],
+        );
+        let view = update_with_a_locked_vault(&rig, "locked", &from).await;
+        assert_eq!(view.state, EnvironmentOperationState::Failed);
+        assert!(
+            rig.store.load("p").unwrap().is_none(),
+            "the newer record is not adopted"
+        );
+        assert!(rig.adopted.lock().unwrap().is_empty());
+        assert!(
+            !rig.checkout.join("config/s.json").exists(),
+            "no File lands beside the refused Secret"
+        );
+        assert!(from.pulls.lock().unwrap().is_empty());
+        assert!(
+            view.reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("Vault is locked")),
+            "{:?}",
+            view.reason
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_without_a_secret_does_not_need_the_vault() {
+        let rig = Rig::new();
+        let from = source(
+            Some(record(2, &[], &["config/s.json"])),
+            &[],
+            &["config/s.json"],
+        );
+        let view = update_with_a_locked_vault(&rig, "files-only", &from).await;
+        assert_eq!(view.state, EnvironmentOperationState::Succeeded, "{view:?}");
+        assert_eq!(rig.store.load("p").unwrap().unwrap().revision, 2);
+        assert!(rig.checkout.join("config/s.json").exists());
     }
 
     #[tokio::test]
