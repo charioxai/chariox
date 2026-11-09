@@ -922,6 +922,118 @@ mod tests {
         assert_eq!(done, Some(reply));
         assert!(flights <= 2, "480 KB needed {flights} round trips");
     }
+    // MP-08 / MP-09 / MP-10 / MP-11 (relayflood): a receiver that cannot write holds at most
+    // its bulk byte budget, however much is offered to it.
+    #[tokio::test]
+    async fn bulk_to_one_receiver_stays_within_its_byte_budget() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        const REPLY: usize = 350_000;
+        let sink = Box::pin(futures_util::sink::unfold(
+            (),
+            |(), _: Message| async move {
+                std::future::pending::<()>().await;
+                Ok::<_, std::convert::Infallible>(())
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(1024, control);
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue.clone()),
+        ));
+        let (mut admitted, mut refused) = (0, 0);
+        for n in 0..100 {
+            let reply = serde_json::json!({"kind":"client_response","request_id":format!("r{n}"),"payload":"y".repeat(REPLY)});
+            match sender.try_send(Message::Text(reply.to_string().into())) {
+                Ok(()) => admitted += 1,
+                Err(SendRefused::Backlogged) => refused += 1,
+                Err(SendRefused::Gone) => panic!("the writer ended"),
+            }
+            assert!(queue.queued_bytes() <= RECEIVER_BULK_BUDGET + REPLY + 100);
+            tokio::task::yield_now().await;
+        }
+        task.abort();
+        assert!(refused > 0, "all {admitted} replies were queued");
+        assert!(queue.stats().queued_bytes_high_water <= RECEIVER_BULK_BUDGET + REPLY + 100);
+    }
+    // A message larger than the budget still reaches a receiver whose bulk queue is empty.
+    #[tokio::test]
+    async fn a_message_over_the_budget_passes_an_empty_queue() {
+        use crate::outgoing::{SendRefused, RECEIVER_BULK_BUDGET};
+        let (sender, mut receiver) = RelaySender::detached_channel(8);
+        let big = || Message::Binary(vec![0; RECEIVER_BULK_BUDGET + 1].into());
+        sender.try_send(big()).expect("an empty queue admits it");
+        assert_eq!(sender.try_send(big()), Err(SendRefused::Backlogged));
+        receiver.recv().await.unwrap();
+        sender.try_send(big()).expect("the queue emptied");
+    }
+    // Control and small replies are written ahead of the bulk behind them.
+    #[tokio::test]
+    async fn control_is_not_delayed_by_a_bulk_backlog() {
+        let (wire_tx, mut wire) = mpsc::unbounded_channel();
+        let sink = Box::pin(futures_util::sink::unfold(
+            wire_tx,
+            |tx, message: Message| async move {
+                let _ = tx.send(message);
+                Ok::<_, std::convert::Infallible>(tx)
+            },
+        ));
+        let (control, controls) = mpsc::channel(8);
+        let (sender, outgoing) = RelaySender::channel(64, control.clone());
+        let (_ack_tx, ack_rx) = mpsc::channel(16);
+        for n in 0..20 {
+            let bulk = serde_json::json!({"kind":"client_response","request_id":format!("bulk-{n}"),"payload":"y".repeat(300_000)});
+            sender
+                .try_send(Message::Text(bulk.to_string().into()))
+                .unwrap();
+        }
+        let small =
+            serde_json::json!({"kind":"client_response","request_id":"small-reply","payload":"ok"});
+        sender
+            .try_send(Message::Text(small.to_string().into()))
+            .unwrap();
+        control.try_send(Message::Ping(Vec::new().into())).unwrap();
+        let queue = sender.queue();
+        let task = tokio::spawn(run_writer(
+            sink,
+            outgoing,
+            true,
+            true,
+            ack_rx,
+            controls,
+            WriterUsage::fixture_with_queue(true, queue),
+        ));
+        let mut written = Vec::new();
+        while let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(300), wire.recv()).await
+        {
+            written.push(message);
+        }
+        task.abort();
+        assert!(
+            matches!(written.first(), Some(Message::Ping(_))),
+            "the ping goes first"
+        );
+        let small_at = written
+            .iter()
+            .position(|m| matches!(m, Message::Text(t) if t.contains("small-reply")))
+            .expect("the small reply was written while bulk waited for credit");
+        let bulk_frames_before = written[..small_at]
+            .iter()
+            .filter(|m| matches!(m, Message::Text(t) if t.contains("bulk-")))
+            .count();
+        assert!(
+            bulk_frames_before <= 4,
+            "{bulk_frames_before} bulk frames before the small reply"
+        );
+    }
     // MP-08/MP-10: queued mirror credits answer back-to-back. A written reply
     // must not hold one of the two reply slots until its WAN receipt returns
     // (appsfix r14: packets 2-3 of one click arrived one RTT apart).
