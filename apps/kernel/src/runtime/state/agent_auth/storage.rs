@@ -114,6 +114,7 @@ impl KernelRuntimeState {
                 value: "Bearer ${secret}".into(),
             },
             metadata: Some(UserCredentialMetadataConfig {
+                payment_card: None,
                 use_binding: Some(crate::config::VaultUseBinding {
                     target: crate::config::VaultUseTarget::Site {
                         origin: http::endpoint(&issued.resource)?

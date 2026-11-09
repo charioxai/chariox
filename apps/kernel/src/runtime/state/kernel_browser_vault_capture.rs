@@ -311,6 +311,7 @@ impl KernelRuntimeState {
                 crate::config::UserCredentialInjectionConfig::Browser
             },
             metadata: Some(UserCredentialMetadataConfig {
+                payment_card: None,
                 use_binding: Some(crate::config::VaultUseBinding {
                     target: use_target.clone(),
                     value_kind: crate::config::VaultValueKind::Secret,

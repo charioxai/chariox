@@ -739,6 +739,7 @@ fn owner_credential(f: &Fixture, id: &str, hosts: &[&str], generated_in: Option<
                 allowed_uses: vec![crate::config::UserCredentialUse::Browser],
                 injection: crate::config::UserCredentialInjectionConfig::Browser,
                 metadata: generated_in.map(|session| UserCredentialMetadataConfig {
+                    payment_card: None,
                     use_binding: Some(crate::config::VaultUseBinding {
                         target: crate::config::VaultUseTarget::site(hosts[0]).unwrap(),
                         value_kind: crate::config::VaultValueKind::Secret,
