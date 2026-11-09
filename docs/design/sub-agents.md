@@ -15,7 +15,7 @@ The first milestone is **one room agent per room, plus sub-agents** (section 10)
 6. A decision is **one card with one holder** that moves up the tree, parent to user. When it reaches the user, **only the room agent (the top parent) shows it**; a sub-agent's pane never shows a card (section 4).
 7. A child never has more authority than its parent, the **authority limit**, checked at spawn and at every control command and answer under the action's lock (section 5). No usage budget.
 8. A parent controls its whole subtree without /sudo (section 6).
-9. Peers (any agent, any room of the same owner, any kernel) can **message**, **reply**, **subscribe**, **steer** and **cancel** (Miguel, 11-08); they never answer a decision card, read files, run in another's shell, act as the user, delete, set a deadline, list children or reparent. Only room agents create peers (7.2).
+9. Peers (any agent, any room of the same owner, any kernel) can **message**, **reply**, **subscribe**, **steer** and **cancel** (Miguel, 11-08); they never answer a decision card, read files, run in another's shell, act as the user, delete, set a deadline, list children or reparent. Only room agents create peers (7.2). A message to an agent on another kernel cannot ask for a reply yet: the kernel refuses `reply_requested` there before sending anything, and the agent there answers by messaging the sender back.
 10. Everything is event-driven: a parent parks on `events.yield` and the kernel resumes it. Nothing polls.
 
 Assistants are not designed here; the model leaves room for them (7.4). **Removed since round 1:** the lease path, the remote-spawn card, the hop timer, the usage budget, App grants, the history outline, batched completion wakes.

@@ -206,6 +206,16 @@ impl KernelRuntimeState {
         call: PeerAgentCall,
         request_id: String,
     ) -> Result<(PeerAgentStamp, bool), DaemonError> {
+        // Nothing on the other kernel answers a reply request yet; accepting one would drop it.
+        if let PeerAgentCall::Message {
+            reply_requested: true,
+            ..
+        } = call
+        {
+            return Err(denied(
+                "a reply to a message on another kernel is not supported yet: ask the agent there to message you back",
+            ));
+        }
         let caller = self.peer_agent_caller(sender, kernel)?;
         let target = PeerAgentAddress {
             room: room.trim().into(),
