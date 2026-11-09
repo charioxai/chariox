@@ -31,7 +31,7 @@ await mkdir(out, { recursive: true });
 const scratchRoot = option('scratch', out);
 
 const results = {}; // check -> arm name -> {outcome, detail}
-const record = (check, arm, value) => { (results[check] ??= {})[arm.name] = value; };
+const record = (check, arm, value) => { (results[check] ??= {})[arm.name] = { ...value, outcome: String(value.outcome).replace(/\s+/g, ' ') }; };
 
 if (wanted.includes('signals')) {
   const per = {};
