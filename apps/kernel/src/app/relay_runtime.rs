@@ -44,7 +44,7 @@ impl DaemonApp {
             auth_token: self.config.relay_token.clone().unwrap_or_default(),
             daemon_id: self.config.daemon_id.clone(),
             machine_id: self.config.host_machine_id.clone(),
-            machine_alias: self.config.host_machine_alias.clone(),
+            machine_alias: self.config.relay_machine_alias(),
             os_name: Some(self.config.os_name.clone()),
             kernel_started_at_ms: self.started_at_ms,
             daemon_alias: self.config.daemon_alias.clone(),
