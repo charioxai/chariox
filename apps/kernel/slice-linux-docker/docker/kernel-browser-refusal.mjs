@@ -31,6 +31,7 @@ const toolReasons = new Map([
   ['node_unavailable', 'the node is gone or has no box on the page; take a fresh snapshot'],
   ['node_not_visible', 'the node has no visible area in the viewport'],
   ['clip_invalid', 'clip needs integers x, y >= 0 and width, height >= 1 inside the state viewport (css_width x css_height)'],
+  ['scroll_target_conflict', 'scroll takes a target node_ref or x, y and deltas, not both'],
   ['image_too_large', 'the image is too large to deliver; use a clip or node_ref'],
   ['save_source_conflict', 'save takes a node_ref or a url, not both'],
   ['save_path_invalid', 'save needs a file path inside the Room workspace that is not a directory'],
