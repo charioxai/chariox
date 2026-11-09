@@ -15,6 +15,10 @@ const runId=l.ProviderRunsLaunchAccepted.provider_runs[0].provider_run.id;
 let run;for(let i=0;i<120;i++){const r=Object.values(await rig.send(requests.getProviderRunRequest(runId)))[0];const p=r.provider_run??r;if(p.state==='Running'){run=p;break}await sleep(500)}
 if(!run)throw Error('fixture run not running');
 const fx=bindProviderMcpFixture(run,{client:rig.client,requests,sessionId:rig.sessionId,attachmentId:att});
+// A 'go' sent before the fixture's READY banner settles on the banner alone and leaves no active task.
+const runningAt=Date.now();let banner='';
+while(!banner.includes('MP11_MCP_FIXTURE_READY')&&Date.now()-runningAt<1000){const o=await rig.send(requests.pumpTerminalOutputRequest(rig.sessionId,att));for(const r of (o.TerminalOutput??o.TerminalOutputPumped)?.records??[])if(r.provider_run_id===runId)banner+=Array.isArray(r.bytes)?Buffer.from(r.bytes).toString('utf8'):String(r.text??'');await sleep(50)}
+console.log('FIXTURE_READY',banner.includes('MP11_MCP_FIXTURE_READY')?'banner':'running-1s',Date.now()-runningAt,'ms');
 const sp=await rig.send(requests.submitPromptRequest(rig.sessionId,att,agentId,'go',[]));
 await sleep(1500);
 const tool=async(name,args)=>{const res=await fx.fixtureMcp.call('tools/call',{name,arguments:args},{timeoutMs:40000,rawEnvelope:true});return res.error?{rpcError:res.error}:(res.result??res)};
