@@ -204,11 +204,19 @@ fn metaagent_commands_carry_the_kernel_agent_connection_class() {
     }
 }
 
-/// A spawned agent bound to a worker: the binding, not the agent, names its folder.
-fn remote_spawned_agent(worker_worktree_id: Option<&str>) -> crate::agent::AgentInstance {
-    let mut agent = crate::agent::AgentInstance::new(
-        "remote-1",
-        "remote-1",
+/// What the kernel read for a spawn; the answer states it as it is.
+fn spawn_facts(worktree: Option<&str>) -> crate::runtime::state::SpawnedAgentFacts {
+    crate::runtime::state::SpawnedAgentFacts {
+        worktree: worktree.map(str::to_string),
+        branch: None,
+        deadline_ms: None,
+    }
+}
+
+fn spawned_agent() -> crate::agent::AgentInstance {
+    crate::agent::AgentInstance::new(
+        "agent-1",
+        "agent-1",
         "session-1",
         None,
         "codex",
@@ -216,38 +224,15 @@ fn remote_spawned_agent(worker_worktree_id: Option<&str>) -> crate::agent::Agent
         None,
         None,
         crate::agent::GridPosition::new(0, 0, 1, 1),
-    );
-    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
-        worker_kernel_id: "worker-1".to_string(),
-        worker_machine_id: "machine-1".to_string(),
-        execution_lease_id: "lease-1".to_string(),
-        leased_agent_id: "leased-1".to_string(),
-        active_worker_provider_run_id: None,
-        relay_url: None,
-        relay_token: None,
-        relay_peer_protocol_version: None,
-        worker_worktree_id: worker_worktree_id.map(str::to_string),
-    }));
-    agent
+    )
 }
 
 #[test]
-fn a_remote_spawn_answer_names_the_worker_folder_not_the_home_room_folder() {
-    let answer = super::summary::summarize_spawned_agent(
-        &remote_spawned_agent(Some("/workspace")),
-        &test_session(),
-        None,
-    );
+fn a_spawn_answer_states_the_worktree_the_facts_name_and_none_when_they_name_none() {
+    let named =
+        super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(Some("/workspace")));
+    assert_eq!(named["worktree"], "/workspace");
 
-    assert_eq!(answer["worktree"], "/workspace");
-    assert_eq!(answer["branch"], serde_json::Value::Null);
-}
-
-#[test]
-fn a_remote_spawn_answer_leaves_the_worktree_out_when_the_worker_folder_is_unknown() {
-    let answer =
-        super::summary::summarize_spawned_agent(&remote_spawned_agent(None), &test_session(), None);
-
-    assert_eq!(answer["worktree"], serde_json::Value::Null);
-    assert_eq!(answer["branch"], serde_json::Value::Null);
+    let unnamed = super::summary::summarize_spawned_agent(&spawned_agent(), &spawn_facts(None));
+    assert_eq!(unnamed["worktree"], serde_json::Value::Null);
 }

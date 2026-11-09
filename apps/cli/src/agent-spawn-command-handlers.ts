@@ -400,7 +400,10 @@ function formatSpawnedAgentFooter(
     : remote
       ? `remote ${worker ?? "worker"}`
       : "local"
-  const worktree = agent.worktree_id || options.resolvedWorktreeId || null
+  // A remote agent works in its worker's folder; the room's is the home's, so an unnamed one stays out.
+  const worktree = remote
+    ? remote.worker_worktree_id || null
+    : agent.worktree_id || options.resolvedWorktreeId || null
   const parts = [
     `spawned ${formatAgentLabel({ ...agent, alias })}`,
     placement,
