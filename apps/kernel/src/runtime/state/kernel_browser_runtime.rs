@@ -961,10 +961,21 @@ impl KernelRuntimeState {
         }
         self.claim_app_view_tab(&user, &admission, &mut params)?;
         params["_download_session"] = serde_json::json!(agent.session_id());
-        let payload = self
+        let mut payload = self
             .kernel_browser_operation_admitted(&user, Some(admission), "host.browser", params)
             .await?;
+        image_for_mcp(&mut payload);
         Ok(RuntimeToolResult { ok: true, payload })
+    }
+}
+/// The host puts a screenshot's PNG under `data_base64`; MCP delivery turns `image_base64` into one
+/// image content block, so the base64 never stays in the 64 KiB text part.
+pub(super) fn image_for_mcp(payload: &mut serde_json::Value) {
+    if let Some(data) = payload
+        .as_object_mut()
+        .and_then(|object| object.remove("data_base64"))
+    {
+        payload["image_base64"] = data;
     }
 }
 impl KernelRuntimeState {

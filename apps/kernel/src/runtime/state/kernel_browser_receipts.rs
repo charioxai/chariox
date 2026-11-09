@@ -71,6 +71,26 @@ impl KernelRuntimeState {
     }
     #[cfg(test)]
     pub(crate) fn install_kernel_browser_fixture(&self, user: &str, root: &std::path::Path) {
+        self.install_unstarted_kernel_browser_fixture(user, root);
+        // MP-11: fixture setup explicitly starts.
+        self.owned
+            .kernel_browser_host
+            .protected_request(
+                user,
+                None,
+                "host.browser",
+                serde_json::json!({"op":"start"}),
+                serde_json::json!({"unknown":false,"values":[],"targets":[]}),
+            )
+            .unwrap();
+    }
+    /// The controller exists but nothing ran yet: a first read finds it stopped.
+    #[cfg(test)]
+    pub(crate) fn install_unstarted_kernel_browser_fixture(
+        &self,
+        user: &str,
+        root: &std::path::Path,
+    ) {
         let script = root.join("MD5-controller.sh");
         std::fs::write(&script, r##"set -eu
 while IFS= read -r request; do
@@ -84,10 +104,11 @@ while IFS= read -r request; do
   *'"method":"host.browser.retire_input"'*) printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"op":"state_signal"'*) after=${request#*'"after":'}; after=${after%%,*}; ms=${request#*'"wait_ms":'}; ms=${ms%%[!0-9]*}; ( n=0; while test "$(cat "$1/signal" 2>/dev/null || echo 0)" = "$after" && test "$n" -lt $((ms / 10)); do sleep 0.01; n=$((n+1)); done; printf '{"id":%s,"ok":true,"result":{"signal":%s}}\n' "$id" "$(cat "$1/signal" 2>/dev/null || echo 0)" ) & ;;
   *'"state_wait":true'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document","title":"%s"}],"_state_signal":%s}}\n' "$id" "$(cat "$1/title" 2>/dev/null || echo first)" "$(cat "$1/signal" 2>/dev/null || echo 0)" ;;
-  *'"op":"state"'*|*'"op":"start"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
+  *'"op":"start"'*) printf 'start\n' >> "$1/starts"; printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
+  *'"op":"state"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tabs":[{"tab_id":"host-tab-fixture","document_id":"document"}]}}\n' "$id" ;;
   *'"op":"open"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-new","tabs":[{"tab_id":"host-tab-fixture","document_id":"document"},{"tab_id":"host-tab-new","document_id":"new-document"}]}}\n' "$id" ;;
   *'"op":"snapshot"'*) printf '{"id":%s,"ok":true,"result":{"snapshot":{"browser_generation":1,"target_id":"target","document_id":"document","snapshot_revision":1,"accessibility_nodes":[],"dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"document_index":0,"node_type":3,"node_name":"#text","text":"MD5-sensitive-fixture","attributes":{},"bounds":null}]}}}\n' "$id" ;;
-  *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"data_base64":"cGl4ZWxzLWZpeHR1cmU="}}\n' "$id" ;;
+  *'"op":"screenshot"'*) printf '{"id":%s,"ok":true,"result":{"generation":1,"tab_id":"host-tab-fixture","document_id":"document","mime_type":"image/png","data_base64":"%s","width":2560,"height":1600}}\n' "$id" "$(cat "$1/screenshot.b64" 2>/dev/null || echo cGl4ZWxzLWZpeHR1cmU=)" ;;
   *'"op":"input"'*) printf 'input\n' > "$1/input"; printf '{"id":%s,"ok":true,"result":{}}\n' "$id" ;;
   *'"method":"shutdown"'*) printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"; exit 0 ;;
  esac
@@ -96,17 +117,6 @@ done
         self.owned
             .kernel_browser_host
             .install_fixture_backend(user, &script, root);
-        // MP-11: fixture setup explicitly starts; observation reads never do.
-        self.owned
-            .kernel_browser_host
-            .protected_request(
-                user,
-                None,
-                "host.browser",
-                serde_json::json!({"op":"start"}),
-                serde_json::json!({"unknown":false,"values":[],"targets":[]}),
-            )
-            .unwrap();
     }
     #[cfg(test)]
     pub(crate) fn kernel_browser_fixture_actors(&self, user: &str) -> serde_json::Value {
