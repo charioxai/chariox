@@ -1727,6 +1727,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[path = "slow_link_tests.rs"]
+mod slow_link_tests;
+
+#[cfg(test)]
 mod binary_reply_regression {
     use super::*;
     #[test]
