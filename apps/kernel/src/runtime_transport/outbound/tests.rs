@@ -428,6 +428,21 @@ fn account_copy_refusals_are_constant_at_public_error_boundary() {
 }
 
 #[test]
+fn a_locked_receiving_vault_refusal_is_constant_at_public_error_boundary() {
+    let error = project_error(
+        &serde_json::json!({"code":"target_vault_locked","message":CANARY,"retryable":true}),
+    );
+    assert_eq!(error.code, "target_vault_locked");
+    assert!(error.retryable);
+    assert!(
+        error.message.contains("Vault is locked") && error.message.contains("repeat"),
+        "{}",
+        error.message
+    );
+    assert!(!error.message.contains(CANARY));
+}
+
+#[test]
 fn control_plane_refusals_keep_their_codes_without_service_diagnostics() {
     for code in [
         "control_plane_grant_required",
