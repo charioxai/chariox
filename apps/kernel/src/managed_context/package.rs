@@ -862,6 +862,29 @@ fn import_package_kernel_context(
     ))
 }
 
+/// Vault logins are written into the receiving Vault. Refuse before anything is imported unless
+/// the package installs that Vault itself (a transferred kernel context) or it is already open.
+fn require_open_vault_for_carried_logins(
+    request: &ManagedContextPackageApplicationRequest,
+    extracted: &ExtractedManagedContextPackage,
+) -> Result<(), DaemonError> {
+    let ManagedContextPackageProviderAccounts::Selected { vault_logins, .. } =
+        &extracted.provider_accounts
+    else {
+        return Ok(());
+    };
+    let installs_vault = matches!(
+        &extracted.kernel_context,
+        ManagedContextPackageKernel::FromKernel(snapshot) if snapshot.payload.vault.is_some()
+    );
+    match request.provider_account_target.as_ref() {
+        Some(target) if !vault_logins.is_empty() && !installs_vault => {
+            super::target_vault::require_open_target_vault(&target.config)
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
@@ -889,6 +912,7 @@ pub(crate) fn apply_managed_context_package(
         }
     }
     preflight_import_receipt_capacity(&request, &extracted)?;
+    require_open_vault_for_carried_logins(&request, &extracted)?;
     // MP-08 / MP-10 / MP-11: Install/unlock the transferred Vault first: provider logins and
     // selected Project values are committed to that target-owned Vault.
     let (kernel_context, kernel_context_rollback) =
@@ -1079,33 +1103,6 @@ pub(crate) fn apply_managed_context_package(
     })
 }
 
-/// Logins that need the owner's Vault, named for a machine whose Vault is not open.
-fn omitted_vault_logins(
-    vault_logins: &[VaultLoginMaterialization],
-) -> Vec<ManagedContextOmittedProviderAccount> {
-    vault_logins
-        .iter()
-        .map(|login| ManagedContextOmittedProviderAccount {
-            provider: login.profile.provider.clone(),
-            profile_id: login.profile.profile_id.clone(),
-            label: login.profile.label.clone(),
-            reason: ManagedContextProviderAccountOmission::VaultClosed,
-            next_step: ManagedContextProviderAccountNextStep::SignInAgain,
-        })
-        .collect()
-}
-
-/// Whether a provider login can be written into the target's own Vault now.
-fn target_vault_is_open(config: &crate::config::DaemonConfig) -> Result<bool, DaemonError> {
-    let vault = &config.user_config.credential_vault;
-    match vault.backend {
-        crate::config::CredentialVaultBackend::CharioxEncrypted => {
-            Ok(crate::secret::chariox_encrypted_vault_status(&vault.path)?.unlocked)
-        }
-        crate::config::CredentialVaultBackend::ProcessMemory => Ok(true),
-    }
-}
-
 fn import_provider_accounts(
     request: &ManagedContextPackageApplicationRequest,
     provider_accounts: &ManagedContextPackageProviderAccounts,
@@ -1128,19 +1125,6 @@ fn import_provider_accounts(
             let target = request.provider_account_target.as_ref().ok_or_else(|| {
                 package_error("managed context provider-account target is unavailable")
             })?;
-            let (vault_logins, omitted) =
-                if vault_logins.is_empty() || target_vault_is_open(&target.config)? {
-                    (vault_logins.as_slice(), Vec::new())
-                } else {
-                    // Only the owner creates or opens this machine's Vault; the rest of the context
-                    // still arrives, and the receipt tells the owner which accounts to sign in here.
-                    tracing::info!(
-                        context_id = %request.expected_binding.plan.context_id,
-                        logins = vault_logins.len(),
-                        "provider logins not carried: this machine's Vault is not open"
-                    );
-                    (&[][..], omitted_vault_logins(vault_logins))
-                };
             let mut accounts = Vec::with_capacity(materializations.len() + vault_logins.len());
             for materialization in materializations {
                 match target
@@ -1226,7 +1210,10 @@ fn import_provider_accounts(
                     }
                 }
             }
-            Ok(ManagedContextImportedProviderAccounts::Selected { accounts, omitted })
+            Ok(ManagedContextImportedProviderAccounts::Selected {
+                accounts,
+                omitted: Vec::new(),
+            })
         }
         _ => Err(package_error(
             "managed context provider-account component does not match the launch plan",
@@ -1569,15 +1556,14 @@ fn preflight_import_receipt_capacity(
     };
     let provider_accounts = match &extracted.provider_accounts {
         ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
-        selected @ ManagedContextPackageProviderAccounts::Selected { vault_logins, .. } => {
-            // Either outcome of a login must fit: installed (an account) or left out (omitted).
+        selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
             ManagedContextImportedProviderAccounts::Selected {
                 accounts: provider_account_receipts(
                     &request.expected_binding.plan.context_id,
                     &request.expected_package_sha256,
                     selected,
                 )?,
-                omitted: omitted_vault_logins(vault_logins),
+                omitted: Vec::new(),
             }
         }
     };

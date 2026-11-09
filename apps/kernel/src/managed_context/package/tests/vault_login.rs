@@ -618,8 +618,21 @@ fn two_imports_of_one_login_never_delete_the_winning_credential() {
     );
 }
 
+/// The refusal every client reads: the whole import is refused, before anything is written.
+fn assert_target_vault_locked(error: &DaemonError) {
+    match error {
+        DaemonError::ManagedContext {
+            code, retryable, ..
+        } => {
+            assert_eq!(*code, "target_vault_locked", "{error:?}");
+            assert!(*retryable, "the owner retries after unlocking: {error:?}");
+        }
+        other => panic!("expected the target_vault_locked refusal: {other:?}"),
+    }
+}
+
 #[test]
-fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() {
+fn a_new_machine_without_an_open_vault_refuses_the_whole_import_and_writes_nothing() {
     crate::test_support::isolated_env_test!();
     let transfer = Transfer::with_unopened_target("vault-login-unopened");
     let profile_id = transfer
@@ -629,17 +642,11 @@ fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() 
     let target_vault = PathBuf::from(&transfer.target.config.user_config.credential_vault.path);
     assert!(!target_vault.exists(), "the new machine has no Vault yet");
 
-    let receipt = transfer
+    let error = transfer
         .apply(&exported)
-        .expect("the import completes although the target Vault is not open");
+        .expect_err("a package that carries a Vault login is refused while the Vault is closed");
 
-    match &receipt.provider_accounts {
-        ManagedContextImportedProviderAccounts::Selected { accounts, .. } => assert!(
-            accounts.is_empty(),
-            "the login is not carried while no Vault is open: {accounts:?}"
-        ),
-        other => panic!("the selection stays recorded: {other:?}"),
-    }
+    assert_target_vault_locked(&error);
     assert!(
         transfer
             .target
@@ -650,68 +657,69 @@ fn a_new_machine_without_an_open_vault_completes_the_import_without_the_login() 
     );
     assert!(
         !target_vault.exists(),
-        "the import neither creates nor half-installs a Vault"
+        "the refusal neither creates nor half-installs a Vault"
     );
-    assert!(!format!("{receipt:?}").contains(FIRST_TOKEN));
+    assert!(!format!("{error:?}").contains(FIRST_TOKEN));
     assert!(plain_files_containing(&transfer.fixture.root, FIRST_TOKEN).is_empty());
 }
 
 #[test]
-fn the_receipt_names_each_selected_login_a_closed_vault_left_out_and_the_step_to_take() {
+fn the_retry_after_unlocking_the_receiving_vault_completes_the_same_package() {
     crate::test_support::isolated_env_test!();
-    let transfer = Transfer::with_unopened_target("vault-login-omitted");
-    let first = transfer
+    let transfer = Transfer::with_unopened_target("vault-login-locked-retry");
+    let profile_id = transfer
         .source
-        .vault_login_profile("Work Claude", FIRST_TOKEN);
-    let second = transfer
-        .source
-        .vault_login_profile("Home Claude", SECOND_TOKEN);
-    let exported = transfer.export("context-omitted", &[&first, &second]);
+        .vault_login_profile("Vault token", FIRST_TOKEN);
+    let exported = transfer.export("context-locked-retry", &[&profile_id]);
 
+    let error = transfer
+        .apply(&exported)
+        .expect_err("the closed Vault refuses the whole import");
+    assert_target_vault_locked(&error);
+    assert!(transfer
+        .target
+        .registry
+        .get(OWNER, "claude", &profile_id)
+        .is_err());
+
+    transfer.target.enter();
+    crate::secret::unlock_chariox_encrypted_vault(
+        Path::new(&transfer.target.config.user_config.credential_vault.path),
+        PASSPHRASE,
+        crate::secret::VaultUnlockLease::KernelShutdown,
+    )
+    .expect("the owner unlocks the receiving Vault");
     let receipt = transfer
         .apply(&exported)
-        .expect("the rest of the context still arrives");
+        .expect("the same package imports once the Vault is open");
+    let ManagedContextImportedProviderAccounts::Selected { accounts, .. } =
+        &receipt.provider_accounts
+    else {
+        panic!("the selection stays recorded");
+    };
+    assert_eq!(accounts.len(), 1, "the login is carried on the retry");
+    assert_eq!(
+        transfer.target.vault_token(&profile_id).as_deref(),
+        Some(FIRST_TOKEN)
+    );
+}
 
-    let serialized = serde_json::to_value(&receipt).expect("serialize the receipt");
-    let omitted = serialized
-        .pointer("/providerAccounts/omitted")
-        .and_then(serde_json::Value::as_array)
-        .unwrap_or_else(|| panic!("the receipt names the logins left out: {serialized}"));
-    let mut named = omitted
-        .iter()
-        .map(|account| {
-            (
-                account["provider"].as_str().unwrap_or_default().to_string(),
-                account["profileId"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                account["label"].as_str().unwrap_or_default().to_string(),
-                account["reason"].as_str().unwrap_or_default().to_string(),
-                account["nextStep"].as_str().unwrap_or_default().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    named.sort();
-    let mut expected = [
-        (first.as_str(), "Work Claude"),
-        (second.as_str(), "Home Claude"),
-    ]
-    .into_iter()
-    .map(|(profile_id, label)| {
-        (
-            "claude".to_string(),
-            profile_id.to_string(),
-            label.to_string(),
-            "vault_closed".to_string(),
-            "sign_in_again".to_string(),
-        )
-    })
-    .collect::<Vec<_>>();
-    expected.sort();
-    assert_eq!(named, expected);
-    assert!(!serialized.to_string().contains(FIRST_TOKEN));
-    assert!(!serialized.to_string().contains(SECOND_TOKEN));
+#[test]
+fn a_package_without_vault_information_imports_while_the_vault_is_closed() {
+    crate::test_support::isolated_env_test!();
+    let transfer = Transfer::with_unopened_target("vault-login-none");
+    let mut request = transfer
+        .fixture
+        .export_request(ManagedContextPackageKernel::Empty);
+    request.plan.context_id = "context-none".to_string();
+    request.plan.development = ManagedContextDevelopmentSelection::Empty;
+    request.development = ManagedContextPackageDevelopment::Empty;
+    request.package_path = transfer.fixture.root.join("context-none.chariox");
+    let exported = export_managed_context_package(request).expect("export package");
+
+    transfer
+        .apply(&exported)
+        .expect("nothing needs the receiving Vault");
 }
 
 #[test]

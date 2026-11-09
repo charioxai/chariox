@@ -184,6 +184,7 @@ pub(super) fn restore(
     let authority = authority
         .ok_or_else(|| context_error("Vault artifacts require authenticated target authority"))?;
     require_encrypted_vault(&authority.config)?;
+    crate::managed_context::target_vault::require_open_target_vault(&authority.config)?;
     let vault = crate::secret::project_environment_vault(&authority.config)?;
     let restored_root = workspace.join(".vault-transfer-artifacts");
     create_private_directory(&restored_root)?;
@@ -546,6 +547,95 @@ mod tests {
             .destination_root
             .join(".vault-transfer-artifacts")
             .exists());
+        crate::secret::lock_chariox_encrypted_vault(&source.user_config.credential_vault.path)
+            .unwrap();
+        crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_locked_target_vault_refuses_the_import_before_anything_is_written() {
+        let root =
+            std::env::temp_dir().join(format!("mp08-vault-locked-{:032x}", rand::random::<u128>()));
+        fs::create_dir_all(&root).unwrap();
+        let _cleanup = Cleanup(root.clone());
+        let source = config(&root, "source");
+        let target = config(&root, "target");
+        let workspace = root.join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        fs::write(workspace.join(".env"), b"PASSWORD=locked-target-secret\n").unwrap();
+        let vault = ExportVault::new(
+            &source,
+            "context",
+            &target.daemon_id,
+            &target.relay_public_key,
+            "project",
+        );
+        let exported = super::super::export::export_development_context_with_vault(
+            DevelopmentContextExportRequest {
+                project_id: "project".into(),
+                repositories: vec![DevelopmentRepositorySelection {
+                    workspace_id: "workspace".into(),
+                    worktree_id: None,
+                    worktree_path: workspace,
+                    role: DevelopmentRepositoryRole::Primary,
+                }],
+                archive_path: root.join("copy.tar.gz"),
+            },
+            Some(&vault),
+        )
+        .unwrap();
+        let authority = crate::managed_context::development::ContextImportAuthority {
+            config: target.clone(),
+            context_id: "context".into(),
+            source_kernel_id: source.daemon_id.clone(),
+            source_key_thumbprint: crate::runtime::terminal_pairings::public_key_thumbprint(
+                &source.relay_public_key,
+            ),
+            target_kernel_id: target.daemon_id.clone(),
+        };
+        let request = DevelopmentContextImportRequest {
+            archive_path: exported.archive_path.clone(),
+            expected_archive_sha256: exported.archive_sha256.clone(),
+            expected_project_id: "project".into(),
+            expected_source_repositories: None,
+            destination_root: root.join("target-project"),
+        };
+        crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
+            .unwrap();
+
+        let error = super::super::import::import_development_context_with_options(
+            request.clone(),
+            UNBOUNDED_BYTES,
+            u64::MAX,
+            None,
+            Some(&authority),
+        )
+        .expect_err("a closed receiving Vault refuses the import");
+
+        assert!(
+            matches!(
+                &error,
+                DaemonError::ManagedContext { code: "target_vault_locked", retryable: true, .. }
+            ),
+            "{error:?}"
+        );
+        assert!(!request.destination_root.exists(), "nothing was materialized");
+
+        crate::secret::unlock_chariox_encrypted_vault(
+            &target.user_config.credential_vault.path,
+            "supplementary-test-passphrase",
+            crate::secret::VaultUnlockLease::KernelShutdown,
+        )
+        .unwrap();
+        super::super::import::import_development_context_with_options(
+            request,
+            UNBOUNDED_BYTES,
+            u64::MAX,
+            None,
+            Some(&authority),
+        )
+        .expect("the same import completes once the Vault is open");
         crate::secret::lock_chariox_encrypted_vault(&source.user_config.credential_vault.path)
             .unwrap();
         crate::secret::lock_chariox_encrypted_vault(&target.user_config.credential_vault.path)
