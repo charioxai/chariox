@@ -226,21 +226,33 @@ impl KernelRuntimeState {
         owner: &str,
         address: &PeerAgentAddress,
     ) -> Result<crate::agent::AgentInstance, PeerAgentRefusal> {
+        let room = self.peer_room(owner, &address.room)?;
+        self.resolve_peer_agent(owner, room.id(), &address.agent)
+            .map_err(|_| PeerAgentRefusal::AgentUnavailable)
+    }
+
+    /// A room of `owner` named by its id or alias on this kernel, through the visible, non-ended
+    /// room resolver a spawn on this kernel uses.
+    fn peer_room(
+        &self,
+        owner: &str,
+        room: &str,
+    ) -> Result<crate::session::RuntimeSession, PeerAgentRefusal> {
         let room = self
             .owned
             .session_store
-            .get_session(&address.room)
+            .read()
+            .resolve_session_ref(room, None)
             .map_err(|_| PeerAgentRefusal::RoomUnavailable)?;
         if room.owner_user_id() != owner {
             return Err(PeerAgentRefusal::RoomUnavailable);
         }
-        self.resolve_peer_agent(owner, &address.room, &address.agent)
-            .map_err(|_| PeerAgentRefusal::AgentUnavailable)
+        Ok(room)
     }
 
     /// A peer spawn from another kernel: the room is one of `owner`'s, and the new agent gets
     /// what it asks for lowered to the caller's authority, itself lowered to this kernel's own
-    /// record of the room.
+    /// record of the room. Answers the room's id with it.
     pub(crate) fn admit_room_peer_spawn(
         &self,
         owner: &str,
@@ -248,26 +260,22 @@ impl KernelRuntimeState {
         claimed: PeerCallerAuthority,
         mode: Option<crate::provider::AgentExecutionMode>,
         level: Option<crate::provider::AgentPermissionLevel>,
-    ) -> Result<crate::session::EffectiveAgentExecutionConfig, PeerAgentRefusal> {
-        let session = self
-            .owned
-            .session_store
-            .get_session(room)
-            .map_err(|_| PeerAgentRefusal::RoomUnavailable)?;
-        if session.owner_user_id() != owner {
-            return Err(PeerAgentRefusal::RoomUnavailable);
-        }
+    ) -> Result<(String, crate::session::EffectiveAgentExecutionConfig), PeerAgentRefusal> {
+        let session = self.peer_room(owner, room)?;
         let record = crate::session::effective_agent_execution_config(&session, None);
         let mine = crate::session::EffectiveAgentExecutionConfig {
             mode: claimed.mode.lower(record.mode),
             permission_level: claimed.permission_level.lower(record.permission_level),
         };
-        Ok(crate::session::EffectiveAgentExecutionConfig {
-            mode: mode.unwrap_or(mine.mode).lower(mine.mode),
-            permission_level: level
-                .unwrap_or(mine.permission_level)
-                .lower(mine.permission_level),
-        })
+        Ok((
+            session.id().to_string(),
+            crate::session::EffectiveAgentExecutionConfig {
+                mode: mode.unwrap_or(mine.mode).lower(mine.mode),
+                permission_level: level
+                    .unwrap_or(mine.permission_level)
+                    .lower(mine.permission_level),
+            },
+        ))
     }
 
     /// The caller's authority, lowered to this kernel's own record of the target room, must

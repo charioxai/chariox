@@ -91,14 +91,14 @@ impl CommandRouter {
             }
             return Ok(answer);
         }
-        let authority = match self.runtime_state.admit_room_peer_spawn(
+        let (room, authority) = match self.runtime_state.admit_room_peer_spawn(
             owner,
             &room,
             caller_authority,
             execution_mode,
             permission_level,
         ) {
-            Ok(authority) => authority,
+            Ok(admitted) => admitted,
             Err(refusal) => return Ok(refused(refusal)),
         };
         let spawn_key = format!("peer-spawn-{kernel}-{request_id}");
