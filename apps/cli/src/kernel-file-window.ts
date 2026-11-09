@@ -7,10 +7,13 @@ import { CommandFailure } from "./agent-command-table.js"
 export const FILE_CHUNK_BYTES = 64 * 1024
 // Requests in flight at the start, and the least ever: a transfer on a slow link stays here.
 export const MIN_WINDOW = 4
-// What one transfer may hold requested and not yet written, however fast or long the link.
-export const MAX_IN_FLIGHT_BYTES = 4 * 1024 * 1024
+// What one transfer may hold requested and not yet written, however fast or long the link: below the
+// 32 requests a kernel admits at once from one connection.
+export const MAX_IN_FLIGHT_BYTES = 30 * FILE_CHUNK_BYTES
 // The window is the bandwidth-delay product in chunks, measured, plus this many for jitter.
 const HEADROOM = 2
+// A window-limited transfer measures only its own window: asking for twice the measured product lets it double per step.
+const GAIN = 2
 const RATE_SAMPLES = 16
 
 // One request for `length` bytes at `offset`. It answers with `length` set to the bytes it moved,
@@ -24,6 +27,7 @@ class WindowSizer {
   private readonly done: { at: number; bytes: number }[] = []
   private readonly most = MAX_IN_FLIGHT_BYTES / FILE_CHUNK_BYTES
   size = MIN_WINDOW
+  private grewAt = Number.NEGATIVE_INFINITY
 
   constructor(private readonly roundTripMs: number) {}
 
@@ -34,7 +38,13 @@ class WindowSizer {
     const spanMs = now - first.at
     if (spanMs <= 0) return
     const bytesPerMs = this.done.slice(1).reduce((sum, sample) => sum + sample.bytes, 0) / spanMs
-    this.size = Math.min(this.most, Math.max(MIN_WINDOW, Math.ceil(bytesPerMs * this.roundTripMs / FILE_CHUNK_BYTES) + HEADROOM))
+    const wanted = Math.min(this.most, Math.max(MIN_WINDOW, Math.ceil(GAIN * bytesPerMs * this.roundTripMs / FILE_CHUNK_BYTES) + HEADROOM))
+    if (wanted <= this.size) { this.size = wanted; return }
+    // Replies that land together after a stall say how fast the burst was, not how fast the link is: a
+    // larger window is earned by at most doubling per half round trip, and the next samples take it back.
+    if (now - this.grewAt < this.roundTripMs / 2) return
+    this.size = Math.min(wanted, 2 * this.size)
+    this.grewAt = now
   }
 }
 
