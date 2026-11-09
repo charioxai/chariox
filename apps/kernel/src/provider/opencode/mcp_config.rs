@@ -138,3 +138,28 @@ fn opencode_mcp_timeout_ms(server: &CharioxMcpServerConfig) -> u64 {
         .unwrap_or(45)
         .saturating_mul(1_000)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::provider::{LaunchProviderRequest, RuntimeMcpBinding};
+
+    // The reach passthrough is retired (docs/design/sub-agents.md 7.2).
+    #[test]
+    fn a_room_agent_gets_only_the_chariox_mcp_server() {
+        let request =
+            LaunchProviderRequest::new("session-1", "opencode", "opencode", "default", "model")
+                .with_runtime_mcp_binding(RuntimeMcpBinding::new(
+                    "http://127.0.0.1:43120/mcp",
+                    "private-token",
+                ));
+        let env = super::runtime_mcp_env(Some(&request)).expect("config");
+        let config: serde_json::Value =
+            serde_json::from_str(&env[super::OPENCODE_CONFIG_CONTENT_ENV]).expect("json");
+        let servers: Vec<_> = config["mcp"]
+            .as_object()
+            .expect("mcp servers")
+            .keys()
+            .collect();
+        assert_eq!(servers, ["chariox"]);
+    }
+}

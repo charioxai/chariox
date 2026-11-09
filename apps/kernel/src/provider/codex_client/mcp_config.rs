@@ -150,3 +150,24 @@ pub(super) fn append_codex_mcp_overrides(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // The reach passthrough is retired (docs/design/sub-agents.md 7.2).
+    #[test]
+    fn a_room_agent_gets_only_the_chariox_mcp_server() {
+        let mut overrides = std::collections::BTreeMap::new();
+        super::append_runtime_mcp_overrides(
+            &mut overrides,
+            "http://127.0.0.1:43120/mcp",
+            "private-token",
+        );
+        assert!(
+            overrides
+                .keys()
+                .all(|key| key.starts_with("mcp_servers.chariox.")),
+            "{:?}",
+            overrides.keys().collect::<Vec<_>>()
+        );
+    }
+}
