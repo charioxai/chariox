@@ -295,6 +295,7 @@ impl KernelRuntimeState {
                         reason,
                     },
                     Some(value) if value.as_str() == Some("browser_access") => {
+                        self.refuse_browser_access_card_while_granted(room, actor)?;
                         Operation::BlockForBrowserAccess {
                             task,
                             prompt,

@@ -2037,6 +2037,62 @@ async fn dropping_the_runtime_frees_the_terminal_wake_driver() {
 #[path = "async_popup.rs"]
 mod async_popup;
 
+/// A browser that failed to start is not a permission question: while the agent still holds its
+/// grant the "allow browser access" card is refused, with what to do instead.
+#[tokio::test]
+async fn blocked_for_browser_access_is_refused_while_the_grant_is_held() {
+    let f = fixture("owner-browser-card-granted", true).await;
+    let task = f.begin(&f.prompt_id);
+    let token = f
+        .app
+        .lock()
+        .await
+        .providers
+        .get_run(&f.run)
+        .unwrap()
+        .runtime_mcp_auth_token()
+        .unwrap()
+        .to_owned();
+    let host = &f.runtime.owned.kernel_browser_host;
+    host.set_focus("local", Some(&f.agent));
+    host.load("local", &f.agent).unwrap();
+    let error = call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({
+            "reason":"The browser did not start.", "owner_action":"browser_access"
+        }),
+    )
+    .await
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(
+        message.contains("not revoked") && message.contains("call start once more"),
+        "{message}"
+    );
+    let session = f.runtime.owned.session_store.get_session(&f.room).unwrap();
+    assert!(
+        session.active_interactions().is_empty(),
+        "no card for an access nobody revoked"
+    );
+    assert!(!matches!(
+        f.task(&task.task_id).state,
+        ExecutionState::Blocked
+    ));
+    // The same words without owner_action stay an ordinary block.
+    call(
+        &f,
+        &token,
+        "chariox.events.blocked",
+        &task,
+        serde_json::json!({"reason":"The browser did not start."}),
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn owner_browser_decision_restores_access_and_rejects_stale_answers() {
     for stale in [false, true] {
