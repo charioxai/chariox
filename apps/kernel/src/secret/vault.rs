@@ -133,6 +133,9 @@ pub struct CharioxVaultUnlockStatus {
     pub unlocked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<u64>,
+    /// The owner's "Just this once" unlock, which the next credential operation uses up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub single_use: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -361,6 +364,7 @@ pub fn unlock_chariox_encrypted_vault(
         path,
         unlocked: true,
         expires_at_ms,
+        single_use: lease == VaultUnlockLease::SingleUse,
     })
 }
 
@@ -398,6 +402,7 @@ pub fn unlock_existing_chariox_encrypted_vault(
         path,
         unlocked: true,
         expires_at_ms,
+        single_use: lease == VaultUnlockLease::SingleUse,
     }))
 }
 
@@ -576,16 +581,16 @@ pub fn change_chariox_encrypted_vault_passphrase(
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     let now_ms = crate::session::unix_epoch_ms();
-    let expires_at_ms = match unlocked.get_mut(&path) {
+    let (expires_at_ms, single_use) = match unlocked.get_mut(&path) {
         Some(vault) if !vault.is_expired(now_ms) => {
             vault.key = new_key;
-            Some(vault.expires_at_ms)
+            (Some(vault.expires_at_ms), vault.single_use)
         }
         Some(_) => {
             unlocked.remove(&path);
-            None
+            (None, false)
         }
-        None => None,
+        None => (None, false),
     };
     written.map_err(|error| {
         secret_error(format!(
@@ -596,6 +601,7 @@ pub fn change_chariox_encrypted_vault_passphrase(
         path,
         unlocked: expires_at_ms.is_some(),
         expires_at_ms: expires_at_ms.flatten(),
+        single_use,
     }))
 }
 
@@ -630,6 +636,7 @@ pub fn extend_chariox_encrypted_vault(
         path,
         unlocked: true,
         expires_at_ms: vault.expires_at_ms,
+        single_use: vault.single_use,
     })
 }
 
@@ -691,18 +698,19 @@ pub fn chariox_encrypted_vault_status(
         .lock()
         .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?;
     let now_ms = crate::session::unix_epoch_ms();
-    let (is_unlocked, expires_at_ms) = match unlocked.get(&path) {
-        Some(vault) if !vault.is_expired(now_ms) => (true, vault.expires_at_ms),
+    let (is_unlocked, expires_at_ms, single_use) = match unlocked.get(&path) {
+        Some(vault) if !vault.is_expired(now_ms) => (true, vault.expires_at_ms, vault.single_use),
         Some(_) => {
             unlocked.remove(&path);
-            (false, None)
+            (false, None, false)
         }
-        None => (false, None),
+        None => (false, None, false),
     };
     Ok(CharioxVaultUnlockStatus {
         path,
         unlocked: is_unlocked,
         expires_at_ms,
+        single_use,
     })
 }
 
@@ -2187,6 +2195,27 @@ mod tests {
         assert!(status.unlocked && status.expires_at_ms.is_none());
         lock_chariox_encrypted_vault(&single).unwrap();
         lock_chariox_encrypted_vault(&shutdown).unwrap();
+    }
+
+    // MP-08 / MP-09 / MP-10 / MP-11: the Vault window says "Just this once".
+    #[cfg(unix)]
+    #[test]
+    fn status_says_when_the_unlock_is_just_this_once() {
+        let single = unlocked_test_vault("status-single", VaultUnlockLease::SingleUse);
+        let minutes = unlocked_test_vault("status-minutes", VaultUnlockLease::TtlMinutes(30));
+        let wire = |path: &PathBuf| {
+            serde_json::to_value(chariox_encrypted_vault_status(path).unwrap()).unwrap()
+        };
+        assert_eq!(wire(&single)["single_use"], true);
+        assert!(wire(&minutes).get("single_use").is_none());
+        let extended =
+            extend_chariox_encrypted_vault(&minutes, VaultUnlockLease::SingleUse).unwrap();
+        assert_eq!(serde_json::to_value(extended).unwrap()["single_use"], true);
+        assert!(take_chariox_vault_single_use_unlock(&single).unwrap());
+        assert!(wire(&single).get("single_use").is_none());
+        lock_chariox_encrypted_vault(&single).unwrap();
+        lock_chariox_encrypted_vault(&minutes).unwrap();
+        assert!(wire(&single).get("single_use").is_none());
     }
 
     #[cfg(unix)]
