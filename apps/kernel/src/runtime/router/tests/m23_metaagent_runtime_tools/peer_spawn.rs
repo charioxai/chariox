@@ -350,3 +350,36 @@ async fn follows() {
         "{refused}"
     );
 }
+
+#[test]
+fn room_naming_the_callers_own_room_is_refused_instead_of_making_a_child() {
+    run_large_stack_async_test("peer-spawn-own-room", own_room_refused);
+}
+
+async fn own_room_refused() {
+    let world = world("peer-spawn-own-room").await;
+    let own = world.room.clone();
+    let before = agents_of(&world, &own).await.len();
+    for who in ["a", "b"] {
+        let refused = spawn_into(&world, who, &own, "").await;
+        assert!(
+            !refused.ok && error_text(&refused).contains("omit --room"),
+            "{who}: {refused:?}"
+        );
+    }
+    assert_eq!(
+        agents_of(&world, &own).await.len(),
+        before,
+        "nothing was created"
+    );
+    // Without --room the same call is the sub-agent path.
+    let child = room_command(&world, "a", "agent spawn cx --provider dev-stub").await;
+    assert!(child.ok, "{child:?}");
+    let id = child.payload["response"]["agent"]["id"].as_str().unwrap();
+    let child = agents_of(&world, &own)
+        .await
+        .into_iter()
+        .find(|agent| agent.id() == id)
+        .unwrap();
+    assert_eq!(child.parent_agent_id(), Some(world.ids["a"].as_str()));
+}

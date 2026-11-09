@@ -731,6 +731,15 @@ impl CommandRouter {
             },
             None => None,
         };
+        // A spawn in the caller's own room is a sub-agent, so `--room` never names that room.
+        if target_room.as_deref() == Some(session.id()) {
+            return Ok(meta_command_failure_result(
+                command,
+                meta_command_error(
+                    "usage: agent spawn --room names another room of yours (see `room list`); to create an agent in this room omit --room, it becomes your sub-agent",
+                ),
+            ));
+        }
         let same_provider = spawns_same_provider(spawn.provider.as_deref(), metaagent);
         let follow = target_room.is_some() && !spawn.no_follow;
         let request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
