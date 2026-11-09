@@ -34,6 +34,11 @@ Variants (`--variant`, comma separated):
 Heartbeat gaps: the serving kernel logs `kernel cloud presence visible` for each presence publish; the harness
 lists their timestamps (the relay does not log heartbeats). At a 35 s cadence the 8m runs show a few lines.
 
+Profiles (`--profile`): `8m` (8 Mbit/s down, 2 up, 256 KiB bottleneck buffer), `1m` (1 Mbit/s both ways), `1m-bloat` (`1m` with a 1 MiB
+buffer), `600k` (600 kbit/s, 1 MiB buffer: the incident link), `8m-bdp` and `1m-bdp` (small buffers, so bulk waits in the sender's
+socket). The frozen-reader variant moves `--stalled-size-mb` (30) MiB and queues `--stall-burst` (3000) small requests for the frozen
+client. Results of round 1: `RESULTS.md`.
+
 ## Run it
 
 ```sh
