@@ -24,7 +24,7 @@ const PARTIAL_SUFFIX: &str = ".chariox-partial";
 /// thread, so one can start before the chunk ahead of it has landed. It waits that long for the
 /// staged bytes to reach its offset before it is refused as out of order. On a slow uplink the chunk
 /// ahead can land a whole queue of chunks later: as long as the client waits for any answer.
-const TURN_WAIT: Duration = Duration::from_secs(2);
+const TURN_WAIT: Duration = Duration::from_secs(30);
 const TURN_POLL: Duration = Duration::from_millis(2);
 
 /// Codes whose message this module writes itself, so the grant holder reads them in full.
