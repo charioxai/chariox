@@ -10,6 +10,30 @@ pub(super) fn summarize_meta_agent(agent: &crate::agent::AgentInstance) -> serde
     })
 }
 
+/// What `agent spawn` answers: the agent, and the options the kernel applied to it, so the
+/// spawner verifies them without a second call. Options nobody gave stay null.
+pub(super) fn summarize_spawned_agent(
+    agent: &crate::agent::AgentInstance,
+    room: &crate::session::RuntimeSession,
+    deadline_ms: Option<u64>,
+) -> serde_json::Value {
+    // Without a folder of its own the agent works in its room's.
+    let worktree = agent.worktree_id().unwrap_or_else(|| room.worktree_id());
+    let mut summary = summarize_meta_agent(agent);
+    summary["profile"] = serde_json::json!(agent.account_profile());
+    summary["effort"] = serde_json::json!(agent.effort());
+    summary["permission"] = serde_json::json!(agent.permission_level_override());
+    summary["deadline_ms"] = serde_json::json!(deadline_ms);
+    summary["worktree"] = serde_json::json!(worktree);
+    // A remote agent's folder lies on its worker, so this kernel cannot name its branch.
+    summary["branch"] = serde_json::json!(agent
+        .remote_execution()
+        .is_none()
+        .then(|| crate::git_worktree_placement::checked_out_branch(worktree))
+        .flatten());
+    summary
+}
+
 pub(super) fn summarize_meta_workflow(
     workflow: &crate::session::WorkflowDefinition,
 ) -> serde_json::Value {
