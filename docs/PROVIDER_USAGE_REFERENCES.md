@@ -52,8 +52,9 @@ requests. A failed read keeps the last reading with its observed time. Claude
 windows come from official running-turn `rate_limit_event` and native status-line
 observations. The documented status-line windows appear after an API response;
 no supported idle usage read is established for enrolled setup tokens. The kernel
-does not poll Claude's HTTP API or spend a turn to refresh
-usage. Missing windows stay unavailable.
+does not poll Claude's HTTP API, and spends a turn (one minimal Haiku turn, at most
+every 5 minutes) only while it holds prompt work for an agent on the account.
+Missing windows stay unavailable.
 
 A window whose reset time has passed is reported with state `unknown`
 and no percent ("not measured yet") until a new reading arrives; a stale percent is

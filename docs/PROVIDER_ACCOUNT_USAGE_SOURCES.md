@@ -83,10 +83,12 @@ window of that map into its own meter, so the weekly meter carries
 no 5-hour window any more: a meter whose reset has passed and that was not
 observed for `PROVIDER_USAGE_STALE_AFTER_MS` is retired (dropped on read and on
 the next write), while a 5-hour window Claude still sends stays. A stream-json process reports that event
-once, not again while the percent holds, so while an agent runs on the account
-the usage refresher (at most every 5 minutes) reads it again from one minimal
-Haiku turn of the official CLI in the account's own profile (about 400 tokens);
-an idle account is never read. The usage
+once, not again while the percent holds, so while the kernel holds prompt work
+(a turn in progress or queued) for an agent on the account the usage refresher
+(at most every 5 minutes) reads it again from one minimal Haiku turn of the
+official CLI in the account's own profile (about 400 tokens). An agent that
+finished its prompt but is still attached does not count: the account is idle
+and is never read, and the work is checked again right before each read. The usage
 endpoint (`/api/oauth/usage`) is not an option: it requires the `user:profile`
 scope, which a setup token lacks.
 
