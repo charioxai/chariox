@@ -236,6 +236,10 @@ pub(crate) struct KernelRuntimeState {
     /// When Cloud's kernel directory was last read, and the kernels it listed as unlinked.
     unlinked_kernels: Arc<std::sync::Mutex<Option<UnlinkedKernels>>>,
     lifecycle_sweeps: lifecycle_sweep_flight::SweepFlight,
+    /// One peer outcome delivery pass at a time, apart from the lifecycle sweep.
+    peer_outcome_deliveries: lifecycle_sweep_flight::SweepFlight,
+    /// The relay link is back: the next delivery pass sends every owed outcome, due or not.
+    peer_outcomes_owed_now: Arc<std::sync::atomic::AtomicBool>,
     /// What the person granted with "Allow for this session" on Claude permission prompts, per
     /// agent, so a restarted Claude process starts with it again.
     claude_session_grants: claude_permission_rules::StandingGrants,
@@ -1089,6 +1093,8 @@ impl KernelRuntimeState {
             peer_spawns_in_flight: Default::default(),
             unlinked_kernels: Default::default(),
             lifecycle_sweeps: Default::default(),
+            peer_outcome_deliveries: Default::default(),
+            peer_outcomes_owed_now: Default::default(),
             claude_session_grants: claude_permission_rules::StandingGrants::default(),
             terminal_input_grants: terminal_input_grants::TerminalInputGrants::default(),
             terminal_wake_driver: None,

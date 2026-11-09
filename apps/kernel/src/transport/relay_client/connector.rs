@@ -973,8 +973,7 @@ async fn run_daemon_relay_connector_inner(
                 router
                     .runtime_state()
                     .retry_pending_slice_observation_revocations();
-                let peers = router.runtime_state();
-                tokio::spawn(async move { peers.peer_links_restored().await });
+                router.runtime_state().peer_links_restored();
                 let mut slice_activation = ManagedSliceActivationConfirmation::default();
                 if static_relay.is_none()
                     && socket_has_current_token(

@@ -381,11 +381,7 @@ fn a_card_raised_and_answered_on_the_followed_kernel_gives_no_outcome() {
             .resolve_runtime_interaction(&b.room, "perm-follow", "allow", None)
             .await
             .unwrap();
-        b.router
-            .runtime_state
-            .deliver_peer_agent_outcomes()
-            .await
-            .unwrap();
+        b.router.runtime_state.deliver_peer_agent_outcomes().await;
         assert!(b.outbox().await.is_empty());
         assert!(
             a.peer_events().await.is_empty(),
@@ -663,7 +659,7 @@ fn link_ending_the_turn_before_answering(kernel: &Kernel) {
                             .runtime_state
                             .end_agent_turn_for_tests(&room, &agent, false)
                             .await?;
-                        router.runtime_state.deliver_peer_agent_outcomes().await?;
+                        router.runtime_state.deliver_peer_agent_outcomes().await;
                     }
                     answer
                 })

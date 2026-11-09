@@ -18,6 +18,10 @@ const RETRY_CEILING_MS: u64 = 10 * 60 * 1_000;
 const UNKNOWN_PEER_FOLLOW_MS: u64 = 10 * 60 * 1_000;
 /// How often Cloud's kernel directory is read while this kernel follows a peer on another one.
 const KERNEL_DIRECTORY_READ_MS: u64 = 60 * 1_000;
+/// How long one outcome waits for the following kernel's answer before it is retried later.
+const OUTCOME_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How many following kernels one delivery pass reaches at once.
+const OUTCOME_KERNELS_AT_ONCE: usize = 8;
 
 fn ack(ack: PeerOutcomeAck) -> RelayPeerResponse {
     RelayPeerResponse::PeerAgentOutcomeAck {
@@ -360,66 +364,118 @@ impl KernelRuntimeState {
             .map(|_| ())
     }
 
-    /// Followed side: sends every outcome that is due to the kernel that follows. A kernel that
-    /// does not answer gets it again later, until the outcome expires.
-    pub(crate) async fn deliver_peer_agent_outcomes(&self) -> Result<(), DaemonError> {
-        let now = crate::session::unix_epoch_ms();
-        self.deliver_peer_agent_outcomes_due_by(now, now).await
+    /// Followed side: asks for every outcome that is due to go out, off the caller's path. One
+    /// delivery pass runs at a time and asking while it runs makes it run once more, so a kernel
+    /// that does not answer delays only its own outcomes, never a sweep or a settlement.
+    pub(super) fn spawn_peer_agent_outcome_delivery(&self) {
+        let Some(run) = self.peer_outcome_deliveries.ask() else {
+            return;
+        };
+        let state = self.clone();
+        tokio::spawn(async move { state.run_peer_agent_outcome_deliveries(run).await });
     }
 
+    /// Followed side: this kernel's relay connection is back, so the kernels it owes outcomes
+    /// can be reached again: every owed outcome goes out now, not when its retry falls due.
+    pub(crate) fn peer_links_restored(&self) {
+        self.peer_outcomes_owed_now
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.spawn_peer_agent_outcome_delivery();
+    }
+
+    async fn run_peer_agent_outcome_deliveries(&self, mut run: lifecycle_sweep_flight::SweepRun) {
+        loop {
+            let now = crate::session::unix_epoch_ms();
+            let owed_now = self
+                .peer_outcomes_owed_now
+                .swap(false, std::sync::atomic::Ordering::SeqCst);
+            let due_by = if owed_now { i64::MAX as u64 } else { now };
+            if let Err(error) = self.deliver_peer_agent_outcomes_due_by(due_by, now).await {
+                tracing::warn!(%error, "peer outcomes retained for the next delivery");
+            }
+            if !run.asked_again() {
+                break;
+            }
+        }
+    }
+
+    /// One pass: each following kernel gets its outcomes in order, several kernels at once. A
+    /// kernel that does not take one within the answer time keeps it and the rest for a later
+    /// pass, so it costs the pass one wait at most and the other kernels none.
     async fn deliver_peer_agent_outcomes_due_by(
         &self,
         due_by: u64,
         now: u64,
     ) -> Result<(), DaemonError> {
+        use futures_util::StreamExt;
+        let mut by_kernel = BTreeMap::<String, Vec<PeerOutboxRow>>::new();
+        for row in self
+            .owned
+            .durable_state_store
+            .peer_agent_outbox_due(due_by, now)?
+        {
+            by_kernel
+                .entry(row.subscriber_kernel_id.clone())
+                .or_default()
+                .push(row);
+        }
+        let failures = futures_util::stream::iter(by_kernel.into_values())
+            .map(|rows| self.deliver_peer_agent_outcomes_to_kernel(rows, now))
+            .buffer_unordered(OUTCOME_KERNELS_AT_ONCE)
+            .filter_map(|delivered| std::future::ready(delivered.err()))
+            .collect::<Vec<_>>()
+            .await;
+        failures.into_iter().next().map_or(Ok(()), Err)
+    }
+
+    async fn deliver_peer_agent_outcomes_to_kernel(
+        &self,
+        rows: Vec<PeerOutboxRow>,
+        now: u64,
+    ) -> Result<(), DaemonError> {
         let store = &self.owned.durable_state_store;
         let kernel_id = self.owned.config_projection.snapshot().daemon_id;
-        for row in store.peer_agent_outbox_due(due_by, now)? {
+        for row in rows {
             let delivery = row.delivery_id.clone();
-            let answered = self
-                .peer_agent_link(
+            let answered = tokio::time::timeout(
+                OUTCOME_ANSWER_TIMEOUT,
+                self.peer_agent_link(
                     &row.owner,
                     &row.subscriber_kernel_id.clone(),
                     outcome_request(&kernel_id, row.clone()),
-                )
-                .await;
-            let operation = match answered {
-                Ok(RelayPeerResponse::PeerAgentOutcomeAck { .. }) => {
-                    Operation::PeerOutboxDelivered { delivery }
-                }
-                _ => Operation::PeerOutboxRetry {
-                    delivery,
-                    now,
-                    at: now.saturating_add(
-                        RETRY_FIRST_MS
-                            .saturating_mul(1 << row.attempts.min(16))
-                            .min(RETRY_CEILING_MS),
-                    ),
-                },
-            };
-            store.agent_lifecycle(operation)?;
+                ),
+            )
+            .await;
+            if let Ok(Ok(RelayPeerResponse::PeerAgentOutcomeAck { .. })) = answered {
+                store.agent_lifecycle(Operation::PeerOutboxDelivered { delivery })?;
+                continue;
+            }
+            store.agent_lifecycle(Operation::PeerOutboxRetry {
+                delivery,
+                now,
+                at: now.saturating_add(
+                    RETRY_FIRST_MS
+                        .saturating_mul(1 << row.attempts.min(16))
+                        .min(RETRY_CEILING_MS),
+                ),
+            })?;
+            return Ok(());
         }
         Ok(())
     }
 
-    /// Followed side: this kernel's relay connection is back, so the kernels it owes outcomes
-    /// can be reached again: every owed outcome goes out now, not when its retry falls due.
-    pub(crate) async fn peer_links_restored(&self) {
-        let now = crate::session::unix_epoch_ms();
-        let owed = self.deliver_peer_agent_outcomes_due_by(i64::MAX as u64, now);
-        if let Err(error) = owed.await {
-            tracing::warn!(%error, "peer outcomes retained for the next delivery");
-        }
+    /// Delivers what is due and waits until no delivery pass runs.
+    #[cfg(test)]
+    pub(crate) async fn deliver_peer_agent_outcomes(&self) {
+        self.spawn_peer_agent_outcome_delivery();
+        self.peer_agent_outcome_deliveries_settled().await;
     }
 
-    /// Delivers due outcomes off the caller's path; a settlement never waits on another kernel.
-    pub(super) fn spawn_peer_agent_outcome_delivery(&self) {
-        let state = self.clone();
-        tokio::spawn(async move {
-            if let Err(error) = state.deliver_peer_agent_outcomes().await {
-                tracing::warn!(%error, "peer outcomes retained for the next delivery");
-            }
-        });
+    #[cfg(test)]
+    pub(crate) async fn peer_agent_outcome_deliveries_settled(&self) {
+        while !self.peer_outcome_deliveries.is_idle() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// Following side: this kernel speaks for its owner to the owner's other kernels. Once it no

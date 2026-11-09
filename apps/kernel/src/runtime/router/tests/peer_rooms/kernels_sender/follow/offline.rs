@@ -339,22 +339,26 @@ fn an_outcome_owed_across_a_restart_of_the_followed_kernel_arrives_once() {
         let (a, b, _task, _follow) = followed("peer-offline-restart").await;
         link_stopped(&a);
         b.end_turn(false).await;
-        b.router
-            .runtime_state
-            .deliver_peer_agent_outcomes()
-            .await
-            .unwrap();
+        b.router.runtime_state.deliver_peer_agent_outcomes().await;
         assert_eq!(b.outbox().await.len(), 1, "owed while the follower is away");
         let b = restarted(b).await;
         assert_eq!(b.outbox().await.len(), 1, "the outbox outlives the restart");
         link(&a);
         // The restarted kernel's relay connection is a reconnect.
-        b.router.runtime_state.peer_links_restored().await;
+        b.router.runtime_state.peer_links_restored();
+        b.router
+            .runtime_state
+            .peer_agent_outcome_deliveries_settled()
+            .await;
         let events = a.peer_events_after_delivery(1).await;
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].payload["event"], "turn_ended");
         assert!(b.outbox_drained().await);
-        b.router.runtime_state.peer_links_restored().await;
+        b.router.runtime_state.peer_links_restored();
+        b.router
+            .runtime_state
+            .peer_agent_outcome_deliveries_settled()
+            .await;
         assert_eq!(a.peer_events().await.len(), 1, "once");
         unlink(&[&a, &b]);
     });
@@ -366,15 +370,15 @@ fn an_outcome_owed_to_a_kernel_that_was_away_is_delivered_when_the_relay_reconne
         let (a, b, _task, _follow) = followed("peer-offline-reconnect").await;
         link_stopped(&a);
         b.end_turn(false).await;
-        b.router
-            .runtime_state
-            .deliver_peer_agent_outcomes()
-            .await
-            .unwrap();
+        b.router.runtime_state.deliver_peer_agent_outcomes().await;
         assert_eq!(b.outbox().await.len(), 1, "owed while the follower is away");
         link(&a);
         // The retry backoff has not run out: only the reconnect can bring the outcome now.
-        b.router.runtime_state.peer_links_restored().await;
+        b.router.runtime_state.peer_links_restored();
+        b.router
+            .runtime_state
+            .peer_agent_outcome_deliveries_settled()
+            .await;
         assert_eq!(a.peer_events().await.len(), 1, "delivered on reconnect");
         assert!(b.outbox().await.is_empty());
         unlink(&[&a, &b]);
@@ -607,7 +611,7 @@ fn link_ending_the_spawned_turn_before_answering(kernel: &Kernel) {
                             .runtime_state
                             .end_agent_turn_for_tests(&room, &agent.agent_id, false)
                             .await?;
-                        router.runtime_state.deliver_peer_agent_outcomes().await?;
+                        router.runtime_state.deliver_peer_agent_outcomes().await;
                     }
                     answer
                 })
@@ -707,11 +711,7 @@ fn a_spawned_peer_whose_turn_ends_before_a_lost_spawn_answer_is_retried_reaches_
             .end_agent_turn_for_tests(&b.room, &peer, false)
             .await
             .unwrap();
-        b.router
-            .runtime_state
-            .deliver_peer_agent_outcomes()
-            .await
-            .unwrap();
+        b.router.runtime_state.deliver_peer_agent_outcomes().await;
         let spawned = a
             .command(spawn)
             .await
@@ -721,11 +721,7 @@ fn a_spawned_peer_whose_turn_ends_before_a_lost_spawn_answer_is_retried_reaches_
         assert_eq!(events.len(), 1, "{events:?}");
         assert_eq!(events[0].source_id, format!("{}/{}/{peer}", b.id, b.room));
         assert_eq!(events[0].payload["event"], "turn_ended");
-        b.router
-            .runtime_state
-            .deliver_peer_agent_outcomes()
-            .await
-            .unwrap();
+        b.router.runtime_state.deliver_peer_agent_outcomes().await;
         assert_eq!(a.peer_events().await.len(), 1, "once");
         unlink(&[&a, &b]);
     });
