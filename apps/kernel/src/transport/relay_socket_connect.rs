@@ -23,7 +23,15 @@ pub(super) fn connect_binary_events(relay_url: &str) -> ConnectFuture<'_> {
     match chariox_relay::binary_event::connection_request(
         &chariox_relay::frame_transport::transport_url(relay_url),
     ) {
-        Ok(request) => Box::pin(connect_websocket(request)),
+        Ok(mut request) => {
+            request.headers_mut().insert(
+                chariox_relay::frame_transport::UPLOAD_HEADER,
+                chariox_relay::frame_transport::UPLOAD_CHUNKS
+                    .parse()
+                    .expect("a valid header value"),
+            );
+            Box::pin(connect_websocket(request))
+        }
         Err(error) => Box::pin(async move { Err(error) }),
     }
 }
