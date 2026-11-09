@@ -289,8 +289,8 @@ pub use api::{
     KernelFileStat, KernelSudoTurn, ListGatewayKernelsRequest, ListKernelAccessGrantsRequest,
     ListKernelDirectoryRequest, OnBehalfOf, ReadKernelFileRequest, RenewKernelSudoRequesterRequest,
     RequestKernelAccessRequest, RequestKernelSudoRequest, RequestVaultSecretRequest,
-    RevokeKernelAccessGrantRequest, StatKernelFileRequest, VaultSecretStatus,
-    WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
+    RevokeKernelAccessGrantRequest, StatKernelFileRequest, VaultPaymentApproval, VaultPaymentClaim,
+    VaultSecretStatus, WriteKernelFileRequest, KERNEL_FILE_MAX_BYTES, KERNEL_FILE_MAX_CHUNK_BYTES,
 };
 pub use api::{
     DictationCommand, DictationContext, DictationKeyState, DictationModelState, DictationProvider,

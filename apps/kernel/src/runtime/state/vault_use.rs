@@ -1,8 +1,31 @@
 //! MP-08 / MP-09 / MP-10 / MP-11: ordinary agent Vault operations.
 //! Authentication identifies the actor; the stored use identifies the destination.
 use super::*;
-use crate::config::{UserCredentialConfig, VaultUseTarget, VaultValueKind};
+use crate::config::{
+    PaymentCardField, UserCredentialConfig, VaultUseBinding, VaultUseTarget, VaultValueKind,
+};
 use crate::runtime::kernel_access::error;
+
+/// How long the fields of one approved card payment may be filled.
+const VAULT_PAYMENT_FILL_WINDOW: Duration = Duration::from_secs(120);
+
+/// Who asks for a Vault use and, for a payment card, which field and payment.
+#[derive(Clone, Copy, Default)]
+pub(super) struct VaultUseAsk<'a> {
+    pub(super) agent_id: Option<&'a str>,
+    pub(super) session_id: Option<&'a str>,
+    pub(super) card_field: Option<PaymentCardField>,
+    pub(super) claim: Option<&'a crate::local::VaultPaymentClaim>,
+}
+
+/// One approved card payment. Kernel memory only: never serialized or shown to an agent.
+pub(super) struct VaultPaymentGrant {
+    actor: String,
+    credential_id: String,
+    binding: VaultUseBinding,
+    filled: Vec<PaymentCardField>,
+    pub(super) expires_at: std::time::Instant,
+}
 
 fn vault_use_destination(target: &VaultUseTarget) -> String {
     match target {
@@ -164,6 +187,11 @@ impl KernelRuntimeState {
                 &context.agent_id,
                 &credential,
                 target,
+                VaultUseAsk {
+                    agent_id: Some(&context.agent_id),
+                    session_id: Some(&context.session_id),
+                    ..Default::default()
+                },
             )
             .await?;
         self.recheck_vault_agent(context)?;
@@ -187,7 +215,8 @@ impl KernelRuntimeState {
         Ok(value)
     }
 
-    /// No consent for ordinary values. Cards receive one owner decision per use.
+    /// No consent for ordinary values. A card gets one owner decision per payment: Allow once
+    /// lets the same agent fill each field of that card at that destination once, briefly.
     /// Call before reading a value, then recheck the binding under the use barrier.
     pub(super) async fn authorize_vault_use(
         &self,
@@ -195,6 +224,7 @@ impl KernelRuntimeState {
         actor: &str,
         credential: &UserCredentialConfig,
         target: &VaultUseTarget,
+        ask: VaultUseAsk<'_>,
     ) -> Result<crate::secret::VaultUseApproval, DaemonError> {
         let binding = credential
             .metadata
@@ -209,46 +239,120 @@ impl KernelRuntimeState {
             self.record_vault_refusal(&credential.id, target, actor)?;
             return Err(error);
         }
-        if binding.value_kind == VaultValueKind::PaymentCard {
-            let id = format!("vault-card-{:016x}", rand::random::<u64>());
-            let destination = vault_use_destination(target);
-            let label = credential.description.as_deref().unwrap_or(&credential.id);
-            let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
-                &id,
-                &id,
-                "Use payment card",
-                format!("Allow {label} to be used at {destination}?"),
-                vec![
-                    crate::session::RuntimeInteractionChoice::new(
-                        "allow",
-                        "Allow once",
-                        "allow",
-                        None,
-                    ),
-                    crate::session::RuntimeInteractionChoice::new(
-                        "cancel", "Cancel", "cancel", None,
-                    ),
-                ],
-            )
-            .with_timeout_sec(300);
-            let scope = "";
-            let receiver = self
-                .create_kernel_operation_interaction(scope, owner, interaction)
-                .await?;
-            let resolution = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
-                Ok(Ok(resolution)) => resolution,
-                _ => {
-                    let _ = self.timeout_runtime_interaction(scope, &id).await;
-                    return Err(error("payment card approval ended; try again"));
-                }
-            };
-            if resolution.choice_id.as_deref() != Some("allow") {
-                return Err(error("payment card use was not approved"));
-            }
+        let card = credential
+            .metadata
+            .as_ref()
+            .and_then(|m| m.payment_card.as_ref());
+        if card.is_some() != ask.card_field.is_some()
+            || (binding.value_kind != VaultValueKind::PaymentCard && ask.claim.is_some())
+        {
+            return Err(error(if card.is_some() {
+                "fill a saved card one checkout field at a time: name it with card_field"
+            } else {
+                "card_field and payment are only for payment cards"
+            }));
         }
-        Ok(crate::secret::VaultUseApproval::new(
+        if let Some(claim) = ask.claim {
+            claim.validate()?;
+        }
+        let approval = crate::secret::VaultUseApproval::new(
             credential.id.clone(),
             binding.clone(),
-        ))
+            ask.card_field,
+        );
+        if binding.value_kind != VaultValueKind::PaymentCard
+            || self.take_vault_payment_grant(actor, credential, binding, ask.card_field)
+        {
+            return Ok(approval);
+        }
+        let id = format!("vault-card-{:016x}", rand::random::<u64>());
+        let destination = vault_use_destination(target);
+        let label = credential.description.as_deref().unwrap_or(&credential.id);
+        let interaction = crate::session::RuntimeInteraction::for_kernel_operation(
+            &id,
+            &id,
+            "Use payment card",
+            format!("Allow {label} to be used at {destination}?"),
+            vec![
+                crate::session::RuntimeInteractionChoice::new("allow", "Allow once", "allow", None)
+                    .requiring_passkey(),
+                crate::session::RuntimeInteractionChoice::new("cancel", "Cancel", "cancel", None),
+            ],
+        )
+        .with_timeout_sec(300)
+        .with_payment(crate::local::VaultPaymentApproval {
+            origin: destination,
+            entry: label.to_owned(),
+            card_last4: card.map(|card| card.last4.clone()),
+            card_brand: card.and_then(|card| card.brand.clone()),
+            claim: ask.claim.cloned(),
+            requested_by_agent_id: ask.agent_id.map(str::to_owned),
+            session_id: ask.session_id.map(str::to_owned),
+        });
+        let scope = "";
+        let receiver = self
+            .create_kernel_operation_interaction(scope, owner, interaction)
+            .await?;
+        let resolution = match tokio::time::timeout(Duration::from_secs(300), receiver).await {
+            Ok(Ok(resolution)) => resolution,
+            _ => {
+                let _ = self.timeout_runtime_interaction(scope, &id).await;
+                return Err(error("payment card approval ended; try again"));
+            }
+        };
+        if resolution.choice_id.as_deref() != Some("allow") {
+            return Err(error("payment card use was not approved"));
+        }
+        if let Some(field) = ask.card_field {
+            let mut grants = self.vault_payment_grants();
+            grants.push(VaultPaymentGrant {
+                actor: actor.to_owned(),
+                credential_id: credential.id.clone(),
+                binding: binding.clone(),
+                filled: vec![field],
+                expires_at: std::time::Instant::now() + VAULT_PAYMENT_FILL_WINDOW,
+            });
+        }
+        Ok(approval)
+    }
+
+    fn vault_payment_grants(&self) -> std::sync::MutexGuard<'_, Vec<VaultPaymentGrant>> {
+        let mut grants = self
+            .owned
+            .vault_payment_grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        grants.retain(|grant| grant.expires_at > now);
+        grants
+    }
+
+    /// Uses a field of a live approved payment by the same agent, at most once.
+    fn take_vault_payment_grant(
+        &self,
+        actor: &str,
+        credential: &UserCredentialConfig,
+        binding: &VaultUseBinding,
+        field: Option<PaymentCardField>,
+    ) -> bool {
+        let Some(field) = field else {
+            return false;
+        };
+        self.vault_payment_grants()
+            .iter_mut()
+            .find(|grant| {
+                grant.actor == actor
+                    && grant.credential_id == credential.id
+                    && &grant.binding == binding
+                    && !grant.filled.contains(&field)
+            })
+            .map(|grant| grant.filled.push(field))
+            .is_some()
+    }
+
+    /// A replaced or deleted card ends the payments approved for it.
+    pub(super) fn forget_vault_payment_grants(&self, credential_id: &str) {
+        self.vault_payment_grants()
+            .retain(|grant| grant.credential_id != credential_id);
     }
 }

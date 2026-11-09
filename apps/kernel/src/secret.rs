@@ -188,13 +188,20 @@ impl PreparedCredentialHttpRequest {
 pub(crate) struct VaultUseApproval {
     credential_id: String,
     binding: crate::config::VaultUseBinding,
+    /// The one checkout field a structured payment card fills under this approval.
+    card_field: Option<crate::config::PaymentCardField>,
 }
 
 impl VaultUseApproval {
-    pub(crate) fn new(credential_id: String, binding: crate::config::VaultUseBinding) -> Self {
+    pub(crate) fn new(
+        credential_id: String,
+        binding: crate::config::VaultUseBinding,
+        card_field: Option<crate::config::PaymentCardField>,
+    ) -> Self {
         Self {
             credential_id,
             binding,
+            card_field,
         }
     }
 }
@@ -972,22 +979,61 @@ impl RuntimeSecretService {
     }
 
     fn resolve_secret(&self, credential: &UserCredentialConfig) -> Result<String, DaemonError> {
-        if let Some(binding) = credential
-            .metadata
+        let card_field = self.approved_card_field(credential)?;
+        let value = self.resolve_source(credential)?;
+        let Some(field) = card_field else {
+            return Ok(value);
+        };
+        let value = Zeroizing::new(value);
+        let card = crate::config::PaymentCard::parse(&value, crate::session::unix_epoch_ms())
+            .map_err(|_| {
+                secret_error(
+                    "vault_card",
+                    "this payment card has expired or its saved details are incomplete; the owner can replace it".into(),
+                )
+            })?;
+        Ok(card.field(field).to_string())
+    }
+
+    /// A card value needs the owner's approval for this operation; a structured
+    /// card yields only the one field that approval names.
+    fn approved_card_field(
+        &self,
+        credential: &UserCredentialConfig,
+    ) -> Result<Option<crate::config::PaymentCardField>, DaemonError> {
+        let Some(metadata) = credential.metadata.as_ref() else {
+            return Ok(None);
+        };
+        let Some(binding) = metadata
+            .use_binding
             .as_ref()
-            .and_then(|m| m.use_binding.as_ref())
-        {
-            if binding.value_kind == crate::config::VaultValueKind::PaymentCard
-                && self.vault_use_approval.as_ref().is_none_or(|approval| {
-                    approval.credential_id != credential.id || &approval.binding != binding
-                })
-            {
-                return Err(secret_error(
+            .filter(|binding| binding.value_kind == crate::config::VaultValueKind::PaymentCard)
+        else {
+            return Ok(None);
+        };
+        let approval = self
+            .vault_use_approval
+            .as_ref()
+            .filter(|approval| {
+                approval.credential_id == credential.id && &approval.binding == binding
+            })
+            .ok_or_else(|| {
+                secret_error(
                     "vault_card_approval",
                     "payment card use requires the owner's approval for this operation".into(),
-                ));
-            }
+                )
+            })?;
+        match (metadata.payment_card.is_some(), approval.card_field) {
+            (true, Some(field)) => Ok(Some(field)),
+            (false, None) => Ok(None),
+            _ => Err(secret_error(
+                "vault_card_field",
+                "fill a saved card one checkout field at a time with card_field".into(),
+            )),
         }
+    }
+
+    fn resolve_source(&self, credential: &UserCredentialConfig) -> Result<String, DaemonError> {
         match &credential.source {
             UserCredentialSourceConfig::Env { name } => std::env::var(name).map_err(|_| {
                 secret_error(
