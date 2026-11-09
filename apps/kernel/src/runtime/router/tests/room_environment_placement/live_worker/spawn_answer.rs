@@ -8,8 +8,13 @@ fn a_slice_spawn_answer_names_the_worker_folder_not_the_home_room_folder() {
     run_test(slice_spawn_answer_names_the_worker_folder);
 }
 
-async fn slice_spawn_answer_names_the_worker_folder() {
-    let mut fixture = LiveWorker::start_configured_with_home_vault_and_worker_id(
+#[test]
+fn a_slice_worktree_spawn_answer_names_the_checkout_the_worker_created() {
+    run_test(slice_worktree_spawn_answer_names_the_created_checkout);
+}
+
+async fn start_fixture() -> LiveWorker {
+    LiveWorker::start_configured_with_home_vault_and_worker_id(
         false,
         false,
         None,
@@ -19,10 +24,10 @@ async fn slice_spawn_answer_names_the_worker_folder() {
         true,
         None,
     )
-    .await;
-    let result = std::panic::AssertUnwindSafe(check_spawn_answer(&fixture))
-        .catch_unwind()
-        .await;
+    .await
+}
+
+async fn finish(mut fixture: LiveWorker, result: std::thread::Result<()>) {
     for app in [&fixture.worker.app, &fixture.home.app] {
         app.lock()
             .await
@@ -35,26 +40,47 @@ async fn slice_spawn_answer_names_the_worker_folder() {
     }
 }
 
-async fn check_spawn_answer(fixture: &LiveWorker) {
+async fn slice_spawn_answer_names_the_worker_folder() {
+    let fixture = start_fixture().await;
+    let result = std::panic::AssertUnwindSafe(check_spawn_answer(&fixture))
+        .catch_unwind()
+        .await;
+    finish(fixture, result).await;
+}
+
+async fn slice_worktree_spawn_answer_names_the_created_checkout() {
+    let mut fixture = start_fixture().await;
+    let checkout = fixture.placement()["target_directory"]
+        .as_str()
+        .expect("the fixture checkout path")
+        .to_string();
+    let result = std::panic::AssertUnwindSafe(check_created_checkout_answer(&fixture, &checkout))
+        .catch_unwind()
+        .await;
+    finish(fixture, result).await;
+}
+
+/// Binds the slice to the first Room and spawns `kid` with the command `spawn_command` builds
+/// from the slice's worker kernel ref. Returns the answer's agent and the stored agent.
+async fn spawn_kid(
+    fixture: &LiveWorker,
+    spawn_command: impl FnOnce(&str) -> String,
+) -> (serde_json::Value, crate::agent::AgentInstance) {
     let room = &fixture.rooms[0];
     dispatch_json(&fixture.home, bind(room, "desktop"))
         .await
         .unwrap();
-    fixture
-        .home
-        .app
-        .lock()
-        .await
-        .slices()
-        .set_status(
-            "desktop",
-            SliceStatus::Running,
-            crate::session::unix_epoch_ms(),
-        )
-        .unwrap();
-    let worker_folder = fixture._worker_state.worktree.path().display().to_string();
-    let home_folder = fixture.home_state.worktree.path().display().to_string();
-    assert_ne!(worker_folder, home_folder);
+    let worker_ref = {
+        let app = fixture.home.app.lock().await;
+        app.slices()
+            .set_status(
+                "desktop",
+                SliceStatus::Running,
+                crate::session::unix_epoch_ms(),
+            )
+            .unwrap();
+        app.slices().resolve("desktop").unwrap().worker_kernel_ref
+    };
     let token = {
         let mut app = fixture.home.app.lock().await;
         let spawner = spawn_test_agent(&mut app, room, "spawner", "dev-stub");
@@ -73,13 +99,13 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
         .dispatch_authenticated_runtime_tool_call(
             &token,
             crate::transport::runtime_tools::META_RUN_COMMAND_TOOL,
-            json!({"command": "agent spawn kid --provider managed-dev-stub --slice desktop"}),
+            json!({"command": spawn_command(&worker_ref)}),
         )
         .await
-        .expect("the slice spawn dispatches");
+        .expect("the spawn dispatches");
     assert!(spawned.ok, "{:?}", spawned.payload);
 
-    let answer = &spawned.payload["response"]["agent"];
+    let answer = spawned.payload["response"]["agent"].clone();
     let stored = fixture
         .home
         .app
@@ -88,6 +114,19 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
         .agents()
         .get_agent(answer["id"].as_str().unwrap())
         .unwrap();
+    (answer, stored)
+}
+
+async fn check_spawn_answer(fixture: &LiveWorker) {
+    let worker_folder = fixture._worker_state.worktree.path().display().to_string();
+    let home_folder = fixture.home_state.worktree.path().display().to_string();
+    assert_ne!(worker_folder, home_folder);
+
+    let (answer, stored) = spawn_kid(fixture, |_| {
+        "agent spawn kid --provider managed-dev-stub --slice desktop".to_string()
+    })
+    .await;
+
     assert_eq!(
         stored
             .remote_execution()
@@ -96,5 +135,37 @@ async fn check_spawn_answer(fixture: &LiveWorker) {
         "the binding holds the worker's folder"
     );
     assert_eq!(answer["worktree"], worker_folder, "{answer}");
+    assert_eq!(answer["branch"], serde_json::Value::Null, "{answer}");
+}
+
+/// The slice's published folder is where the worker is told to start from; `--worktree` makes
+/// the worker create a checkout of its own, and that checkout is where the agent runs.
+async fn check_created_checkout_answer(fixture: &LiveWorker, checkout: &str) {
+    let worker_folder = fixture._worker_state.worktree.path().display().to_string();
+    let home_folder = fixture.home_state.worktree.path().display().to_string();
+    assert_ne!(worker_folder, home_folder);
+    assert_ne!(checkout, worker_folder);
+    assert_ne!(checkout, home_folder);
+
+    let (answer, stored) = spawn_kid(fixture, |worker_ref| {
+        format!(
+            "agent spawn kid --provider managed-dev-stub --kernel {worker_ref} \
+             --worktree {checkout} --branch feature/kid"
+        )
+    })
+    .await;
+
+    assert!(
+        std::path::Path::new(checkout).join(".git").exists(),
+        "the worker created the checkout"
+    );
+    assert_eq!(
+        stored
+            .remote_execution()
+            .and_then(|binding| binding.worker_worktree_id.as_deref()),
+        Some(checkout),
+        "the binding holds the checkout the worker created, not the folder it started from"
+    );
+    assert_eq!(answer["worktree"], checkout, "{answer}");
     assert_eq!(answer["branch"], serde_json::Value::Null, "{answer}");
 }
