@@ -466,6 +466,68 @@ fn a_retried_spawn_on_another_kernel_returns_the_same_peer() {
 }
 
 #[test]
+fn a_room_on_another_kernel_is_named_by_its_alias_there() {
+    run_peer_test("peer-kernel-room-alias", || async {
+        let (a, b) = two_kernels(
+            "peer-kernel-room-alias",
+            AgentPermissionLevel::Yolo,
+            AgentPermissionLevel::Yolo,
+        );
+        let qa = {
+            let mut app = b.app.lock().await;
+            let request = CreateSessionRequest::new(
+                "peer-kernel-room-alias-qa",
+                std::env::temp_dir().to_string_lossy(),
+            )
+            .with_alias("qa-room")
+            .with_owner_user_id(OWNER);
+            let (room, _) = crate::app::KernelSessionService::new(&mut app)
+                .create_session(request)
+                .expect("room should create");
+            room.id().to_string()
+        };
+        let spawned = a
+            .command(format!(
+                "agent spawn reviewer --room qa-room --kernel {} --no-follow",
+                b.name
+            ))
+            .await
+            .expect("a peer spawns in the room the alias names");
+        let spawned = &spawned["response"]["spawned"];
+        assert_eq!(spawned["room"], qa.as_str());
+        let reviewers = b
+            .app
+            .lock()
+            .await
+            .agents()
+            .get_session_agents(&qa)
+            .into_iter()
+            .filter(|agent| agent.alias() == Some("reviewer"))
+            .count();
+        assert_eq!(reviewers, 1);
+
+        a.command(format!(
+            "agent message reviewer \"take the parser\" --room qa-room --kernel {}",
+            b.name
+        ))
+        .await
+        .expect("a message reaches the peer in the room the alias names");
+        let inbox = b
+            .app
+            .lock()
+            .await
+            .durable_state_store()
+            .agent_inbox(&qa, spawned["agent"].as_str().unwrap(), 0)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.kind == "message")
+            .count();
+        assert_eq!(inbox, 1);
+        unlink(&[&a, &b]);
+    });
+}
+
+#[test]
 fn every_cross_kernel_refusal_is_typed_and_tells_nothing_about_what_the_caller_cannot_address() {
     run_peer_test("peer-kernel-refusals", || async {
         let (a, b) = two_kernels(
