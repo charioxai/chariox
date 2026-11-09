@@ -296,6 +296,14 @@ fn public_tool_value(value: serde_json::Value) -> serde_json::Value {
     project(value, 0)
 }
 
+/// A history read that broke is a failure to retry, not a refusal of the caller.
+fn history_failed(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "room history",
+        message: message.to_owned(),
+    }
+}
+
 impl KernelRuntimeState {
     fn authorize_public_history_room(
         &self,
@@ -364,7 +372,7 @@ impl KernelRuntimeState {
                 .public_history_revision_locked(room.id())?
                 != revision
         {
-            return Err(crate::runtime::room_tool_admission::denied(
+            return Err(crate::runtime::room_tool_admission::retry_later(
                 "Public history changed; retry the query",
             ));
         }
@@ -433,15 +441,12 @@ impl KernelRuntimeState {
             )?;
             Ok(RuntimeToolResult {
                 ok: true,
-                payload: serde_json::to_value(result).map_err(|_| {
-                    crate::runtime::room_tool_admission::denied("invalid public history projection")
-                })?,
+                payload: serde_json::to_value(result)
+                    .map_err(|_| history_failed("invalid public history projection"))?,
             })
         })
         .await
-        .map_err(|_| {
-            crate::runtime::room_tool_admission::denied("history query did not complete")
-        })?
+        .map_err(|_| history_failed("history query did not complete"))?
     }
 
     pub(super) async fn read_room_history(
@@ -498,7 +503,7 @@ impl KernelRuntimeState {
             })
         })
         .await
-        .map_err(|_| crate::runtime::room_tool_admission::denied("history read did not complete"))?
+        .map_err(|_| history_failed("history read did not complete"))?
     }
 
     pub(super) async fn room_public_turn(
@@ -551,7 +556,7 @@ impl KernelRuntimeState {
                 })
             })
             .await
-            .map_err(|_| crate::runtime::room_tool_admission::denied("history turn did not complete"))?
+            .map_err(|_| history_failed("history turn did not complete"))?
     }
 }
 
@@ -1124,5 +1129,52 @@ mod admission_tests {
                 drop(stale);drop(state);let _=std::fs::remove_dir_all(root);
             })
         }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn public_history_revision_change_is_a_retryable_error() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let root = std::env::temp_dir().join(format!(
+                    "chariox-am9-revision-{:016x}",
+                    rand::random::<u64>()
+                ));
+                std::fs::create_dir(&root).unwrap();
+                let mut config = crate::config::DaemonConfig::for_tests()
+                    .with_session_history_root(root.join("history"));
+                config.room_agent_tools = true;
+                let mut app = crate::DaemonApp::bootstrap(config).unwrap();
+                let (room, actor) = crate::app::KernelSessionService::new(&mut app)
+                    .create_session(crate::session::CreateSessionRequest::new(
+                        root.to_string_lossy(),
+                        root.to_string_lossy(),
+                    ))
+                    .unwrap();
+                let state = crate::runtime::router::CommandRouter::with_interactive_capacity(
+                    Arc::new(Mutex::new(app)),
+                    1,
+                )
+                .runtime_state();
+                let changed = match state.finish_public_history_snapshot(
+                    &room,
+                    &actor,
+                    &room,
+                    None,
+                    u64::MAX,
+                ) {
+                    Err(error) => error,
+                    Ok(_) => panic!("a revision nobody read must not validate"),
+                };
+                assert!(
+                    crate::transport::kernel_protocol::map_kernel_error(&changed).retryable,
+                    "{changed}"
+                );
+                drop(state);
+                let _ = std::fs::remove_dir_all(root);
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }
