@@ -42,7 +42,7 @@ fn an_agent_screenshot_larger_than_the_text_limit_is_an_image_part() {
                 .install_kernel_browser_fixture(agent.owner_user_id(), &root);
             // A Retina 2560x1600 PNG: signature plus 192 KiB of body, well past 64 KiB of text.
             let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-            png.extend(std::iter::repeat(7u8).take(192 * 1024));
+            png.extend(std::iter::repeat_n(7u8, 192 * 1024));
             let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
             std::fs::write(root.join("screenshot.b64"), &encoded).unwrap();
             focus(&router, session.id(), agent.id()).await;
