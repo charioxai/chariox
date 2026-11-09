@@ -4,8 +4,9 @@ use super::*;
 use crate::local::{GetAgentDeadlineRequest, LocalDaemonResponse};
 
 pub(crate) struct SpawnedAgentFacts {
-    /// The folder the agent works in; without one of its own, its room's.
-    pub(crate) worktree: String,
+    /// The folder the agent works in: a remote agent's is its worker's, which only its binding
+    /// names (None until it does); a local agent's is its own, else its room's.
+    pub(crate) worktree: Option<String>,
     /// None when HEAD is detached, the folder is no git worktree, or it lies on a worker.
     pub(crate) branch: Option<String>,
     pub(crate) deadline_ms: Option<u64>,
@@ -25,15 +26,19 @@ impl KernelRuntimeState {
             }
             _ => None,
         };
-        let room = self.session_snapshot(agent.session_id()).await?;
-        let worktree = agent.worktree_id().unwrap_or_else(|| room.worktree_id());
-        let branch = agent
-            .remote_execution()
-            .is_none()
-            .then(|| crate::git_worktree_placement::checked_out_branch(worktree))
-            .flatten();
+        let (worktree, branch) = match agent.remote_execution() {
+            Some(binding) => (binding.worker_worktree_id.clone(), None),
+            None => {
+                let room = self.session_snapshot(agent.session_id()).await?;
+                let worktree = agent.worktree_id().unwrap_or_else(|| room.worktree_id());
+                (
+                    Some(worktree.to_string()),
+                    crate::git_worktree_placement::checked_out_branch(worktree),
+                )
+            }
+        };
         Ok(SpawnedAgentFacts {
-            worktree: worktree.to_string(),
+            worktree,
             branch,
             deadline_ms,
         })
