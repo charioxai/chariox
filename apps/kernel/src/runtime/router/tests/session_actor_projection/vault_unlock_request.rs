@@ -1151,6 +1151,141 @@ async fn owner_vault_roundtrip_preserves_identity_and_audits_reveal() {
     assert!(entries.is_empty());
 }
 
+// MP-08 / MP-09 / MP-10 / MP-11: a payment card is one structured Vault value. The owner's
+// list carries its non-secret summary; number and security code stay in the Vault.
+#[tokio::test]
+async fn owner_vault_saves_a_payment_card_and_lists_only_its_summary() {
+    crate::test_support::isolated_env_test!();
+    use crate::local::{OwnerVaultRequest as Request, OwnerVaultResult as Result};
+    // Published payment-provider test cards, never real ones.
+    const NUMBER: &str = "4242424242424242";
+    const OTHER: &str = "5555555555554444";
+    const CODE: &str = "7316";
+    fn no_card_data(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::String(text) => assert!(
+                !text.contains(NUMBER) && !text.contains(OTHER) && text != CODE,
+                "card data in an output"
+            ),
+            serde_json::Value::Array(items) => items.iter().for_each(no_card_data),
+            serde_json::Value::Object(fields) => {
+                assert!(!fields.contains_key("security_code"));
+                fields.values().for_each(no_card_data);
+            }
+            _ => {}
+        }
+    }
+    let fixture = Fixture::locked();
+    fixture.unlock(PASSPHRASE).await.unwrap();
+    let send = |request| fixture.send(LocalDaemonRequest::OwnerVault(request));
+    let card = |number: &str, year: u16| {
+        serde_json::json!({"number": number, "expiry_month": 12, "expiry_year": year,
+            "security_code": CODE, "name": "Ada Lovelace"})
+        .to_string()
+    };
+    let create = |kind: &str, value: String| Request::Create {
+        name: "Travel card".into(),
+        kind: kind.into(),
+        use_binding: crate::config::VaultUseBinding {
+            target: crate::config::VaultUseTarget::Site {
+                origin: "https://shop.example".into(),
+            },
+            value_kind: crate::config::VaultValueKind::PaymentCard,
+        },
+        value: VaultPassphrase::new(value),
+    };
+    // Refusals are calm fixed sentences that never echo what was typed.
+    for bad in [
+        card("4242424242424241", 2099),
+        card("4242 4242 4242 4242", 2099),
+        card(NUMBER, 2001),
+        card(NUMBER, 2099).replace(CODE, "73a6"),
+        "4242424242424242|12/99|7316".into(),
+    ] {
+        let error = send(create("Payment card", bad)).await.unwrap_err();
+        let text = format!("{error} {error:?}");
+        assert!(!text.contains("4242") && !text.contains(CODE), "{text}");
+    }
+    // A card is never saved under another kind.
+    assert!(send(create("API key", card(NUMBER, 2099))).await.is_err());
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Saved { id },
+    } = send(create("Payment card", card(NUMBER, 2099)))
+        .await
+        .unwrap()
+    else {
+        panic!("save not confirmed")
+    };
+    let list = || async {
+        serde_json::to_value(
+            fixture
+                .send(LocalDaemonRequest::ListCredentials(
+                    crate::local::ListCredentialsRequest,
+                ))
+                .await
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let listed = list().await;
+    no_card_data(&listed);
+    let entry = &listed["CredentialsListed"]["credentials"][0];
+    assert_eq!(
+        entry["metadata"]["payment_card"],
+        serde_json::json!({"last4": "4242", "expiry_month": 12, "expiry_year": 2099,
+            "name": "Ada Lovelace", "brand": "Visa"})
+    );
+    assert_eq!(
+        entry["metadata"]["use_binding"]["value_kind"],
+        "payment_card"
+    );
+    assert_eq!(entry["metadata"]["created_by_kind"], "owner_payment_card");
+    // Agents see the entry, never its card details.
+    let handles = serde_json::to_value(
+        crate::secret::RuntimeSecretService::new(
+            crate::credential::load_user_credentials().unwrap(),
+        )
+        .list_handles(),
+    )
+    .unwrap();
+    no_card_data(&handles);
+    assert!(!handles.to_string().contains("payment_card\":{"));
+    assert!(!handles.to_string().contains("expiry"));
+    no_card_data(&serde_json::to_value(fixture.status().await).unwrap());
+    let activity = send(Request::Activity { id: id.clone() }).await.unwrap();
+    no_card_data(&serde_json::to_value(&activity).unwrap());
+    // The owner's own view is not masked: Reveal returns the canonical card.
+    let LocalDaemonResponse::OwnerVault {
+        result: Result::Revealed { value, .. },
+    } = send(Request::Reveal { id: id.clone() }).await.unwrap()
+    else {
+        panic!("reveal not confirmed")
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(value.expose_secret()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(&card(NUMBER, 2099)).unwrap()
+    );
+    // Replacing keeps the card structure and refreshes the summary.
+    assert!(send(Request::Replace {
+        id: id.clone(),
+        value: VaultPassphrase::new("plain value"),
+    })
+    .await
+    .is_err());
+    send(Request::Replace {
+        id,
+        value: VaultPassphrase::new(card(OTHER, 2098)),
+    })
+    .await
+    .unwrap();
+    let listed = list().await;
+    no_card_data(&listed);
+    let summary = &listed["CredentialsListed"]["credentials"][0]["metadata"]["payment_card"];
+    assert_eq!(summary["last4"], "4444");
+    assert_eq!(summary["expiry_year"], 2098);
+    assert_eq!(summary["brand"], "Mastercard");
+}
+
 #[tokio::test]
 async fn owner_vault_rejects_agents_other_users_and_locked_values() {
     use crate::local::OwnerVaultRequest;

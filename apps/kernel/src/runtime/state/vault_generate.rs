@@ -99,6 +99,7 @@ impl KernelRuntimeState {
             allowed_uses: vec![crate::config::UserCredentialUse::Browser],
             injection: crate::config::UserCredentialInjectionConfig::Browser,
             metadata: Some(UserCredentialMetadataConfig {
+                payment_card: None,
                 use_binding: Some(crate::config::VaultUseBinding {
                     target: crate::config::VaultUseTarget::site(&origin)?,
                     value_kind: crate::config::VaultValueKind::Secret,
