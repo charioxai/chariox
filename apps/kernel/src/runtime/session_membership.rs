@@ -90,10 +90,7 @@ pub(crate) fn request_room_member_user_id(
     request: &LocalDaemonRequest,
     user_id: &str,
 ) -> String {
-    if !command.is_terminal_caller()
-        && !command.is_sudo_command()
-        && command.reach_caller_id().is_none()
-    {
+    if !command.is_terminal_caller() && !command.is_sudo_command() {
         return user_id.to_string();
     }
     // A provider run carries no session scope of its own; it belongs to the room it ran in.
@@ -148,11 +145,8 @@ fn is_member(
     session: &crate::session::RuntimeSession,
     user_id: &str,
 ) -> bool {
-    // Sudo and reach admission recheck the live caller before this membership check.
-    if command.is_terminal_caller()
-        || command.is_sudo_command()
-        || command.reach_caller_id().is_some()
-    {
+    // Sudo admission rechecks the live caller before this membership check.
+    if command.is_terminal_caller() || command.is_sudo_command() {
         runtime_state.is_room_member(session, user_id)
     } else {
         session.has_member(user_id)
