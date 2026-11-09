@@ -1177,7 +1177,6 @@ mod tests {
             plan_digest: plan_digest.to_string(),
             development: RelayManagedDevelopmentContextImportReceipt::Empty,
             kernel_context: RelayManagedKernelContextImportReceipt::Empty,
-            omitted_provider_accounts: Vec::new(),
             receipt_sha256: "b".repeat(64),
         }
     }

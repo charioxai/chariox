@@ -6943,15 +6943,12 @@ omitted when absent; no protocol number of its own): an export whose start names
 held unlock and, when it has to ask again, shows the unlock card in the session that ran that launch's preflight, so
 two launches in flight never ask in each other's room whichever machine is ready first. Without a `launchId` the hold is
 found by the launching session, else the latest launch. Focused check:
-`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package without a transferred Vault that reaches a machine whose Vault is not open
-still imports, without those logins: the import receipt names each one in `providerAccounts.omitted`, the relay peer
-receipt in `omitted_provider_accounts` and the local `ManagedContextTransferStatus` receipt in
-`omittedProviderAccounts`, each `{provider, profileId, label, reason: "vault_closed", nextStep: "sign_in_again"}`
-(snake_case keys on the relay peer wire). Nothing keeps those logins for later; the owner signs the account in on the
-new machine. The list is omitted when every selected login was installed. Focused checks:
-`cargo test -p chariox-kernel --lib vault_login`, `vault_login_1000_shapes_are_pinned` and
-`managed_context_omitted_logins_1000_snapshot_and_hash`
-(`protocol_shapes/managed-context-omitted-logins-1000.json`).
+`each_export_asks_in_the_room_of_its_launch_in_either_ready_order`. A package that carries Vault logins and reaches a machine whose Vault is not open
+is refused whole, before anything is imported, with `target_vault_locked` (unless the package installs that Vault
+itself); the retry after the owner unlocks completes. The `omittedProviderAccounts` receipt (relay peer
+`omitted_provider_accounts`, import `providerAccounts.omitted`) is retired with local 1002 / relay peer 441. Focused
+checks: `cargo test -p chariox-kernel --lib vault_login`, `vault_login_1000_shapes_are_pinned` and
+`the_closed_receiving_vault_reason_classes_are_wire_stable`.
 
 ### Remote notification follows fenced by generation at the source — relay peer 439
 

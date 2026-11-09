@@ -322,35 +322,7 @@ pub(crate) enum ManagedContextImportedProviderAccounts {
     None,
     Selected {
         accounts: Vec<ManagedContextProviderAccountReceipt>,
-        /// Selected logins this machine could not install; the owner acts on each one here.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        omitted: Vec<ManagedContextOmittedProviderAccount>,
     },
-}
-
-/// A selected provider login that the import left out, named the way the owner selected it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ManagedContextOmittedProviderAccount {
-    pub provider: String,
-    pub profile_id: String,
-    pub label: String,
-    pub reason: ManagedContextProviderAccountOmission,
-    pub next_step: ManagedContextProviderAccountNextStep,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedContextProviderAccountOmission {
-    /// The login lives only in the owner's Vault, and this machine's Vault was not open.
-    VaultClosed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedContextProviderAccountNextStep {
-    /// Nothing keeps the login for later: the owner signs this account in on this machine.
-    SignInAgain,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1152,10 +1124,8 @@ fn import_provider_accounts(
                     }) {
                     Ok(()) => {}
                     Err(error) => {
-                        let imported = ManagedContextImportedProviderAccounts::Selected {
-                            accounts,
-                            omitted: Vec::new(),
-                        };
+                        let imported =
+                            ManagedContextImportedProviderAccounts::Selected { accounts };
                         if let Err(rollback_error) =
                             rollback_imported_provider_accounts(Some(target), &imported)
                         {
@@ -1195,10 +1165,8 @@ fn import_provider_accounts(
                     }) {
                     Ok(()) => {}
                     Err(error) => {
-                        let imported = ManagedContextImportedProviderAccounts::Selected {
-                            accounts,
-                            omitted: Vec::new(),
-                        };
+                        let imported =
+                            ManagedContextImportedProviderAccounts::Selected { accounts };
                         if let Err(rollback_error) =
                             rollback_imported_provider_accounts(Some(target), &imported)
                         {
@@ -1210,10 +1178,7 @@ fn import_provider_accounts(
                     }
                 }
             }
-            Ok(ManagedContextImportedProviderAccounts::Selected {
-                accounts,
-                omitted: Vec::new(),
-            })
+            Ok(ManagedContextImportedProviderAccounts::Selected { accounts })
         }
         _ => Err(package_error(
             "managed context provider-account component does not match the launch plan",
@@ -1423,7 +1388,6 @@ pub(crate) fn rollback_persisted_managed_context_publication(
         selected @ ManagedContextPackageProviderAccounts::Selected { .. } => {
             ManagedContextImportedProviderAccounts::Selected {
                 accounts: provider_account_receipts(&context_id, &package_sha256, selected)?,
-                omitted: Vec::new(),
             }
         }
     };
@@ -1563,7 +1527,6 @@ fn preflight_import_receipt_capacity(
                     &request.expected_package_sha256,
                     selected,
                 )?,
-                omitted: Vec::new(),
             }
         }
     };

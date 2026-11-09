@@ -674,7 +674,6 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
     conflicting_receipt.materialization_sha256 = "b".repeat(64);
     let imported = ManagedContextImportedProviderAccounts::Selected {
         accounts: vec![receipts[0].clone(), conflicting_receipt],
-        omitted: Vec::new(),
     };
     let target_binding = ManagedContextProviderAccountImportTarget {
         registry: target.clone(),
