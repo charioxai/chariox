@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use std::sync::{Arc, RwLock as StdRwLock};
 
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::Message;
 
 use crate::auth::{RelayAction, DEFAULT_RELAY_REALM_ID};
 use crate::protocol::{
@@ -939,6 +938,7 @@ fn normalized_kernel_started_at_ms(registration: &DaemonRegistration) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[tokio::test]
     async fn route_index_resolves_packet_paths_without_registry_state() {
