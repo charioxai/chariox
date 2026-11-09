@@ -91,19 +91,12 @@ impl KernelRuntimeState {
         else {
             unreachable!("only ExecPlace is placed");
         };
-        let directory = match directory {
-            Some(directory) => directory,
-            None => self
-                .room_project_directory(&request.session_id)?
-                .to_string_lossy()
-                .into_owned(),
-        };
         crate::room_exec::run_on_kernel(
             &self.owned.room_execs,
             Placement {
                 session_id: &request.session_id,
                 exec_id: &exec_id,
-                directory: &directory,
+                directory: directory.as_deref(),
                 origin_kernel: own_name,
             },
             requester,

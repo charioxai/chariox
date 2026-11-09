@@ -473,7 +473,11 @@ fn code_of(failure: &crate::error::DaemonError) -> &str {
 }
 
 // The `exec place` command: a Room is made on the target, then the held launch runs there.
-fn placement<'a>(second: &'a SecondKernel, id: &'a str, directory: &'a str) -> Placement<'a> {
+fn placement<'a>(
+    second: &'a SecondKernel,
+    id: &'a str,
+    directory: Option<&'a str>,
+) -> Placement<'a> {
     Placement {
         session_id: "room",
         exec_id: id,
@@ -497,7 +501,7 @@ async fn the_owning_agent_places_its_held_launch_into_a_room_made_on_the_target(
 
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, &directory),
+        placement(&second, &id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -538,7 +542,7 @@ async fn a_person_places_the_launch_of_an_agent() {
     let directory = target_directory(&second);
     crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, &directory),
+        placement(&second, &id, Some(&directory)),
         &Requester::Person,
         second.clone(),
     )
@@ -561,7 +565,7 @@ async fn another_agent_cannot_place_the_launch_and_nothing_is_sent() {
     for id in [&by_agent, &by_person] {
         let refused = crate::room_exec::run_on_kernel(
             &home,
-            placement(&second, id, &directory),
+            placement(&second, id, Some(&directory)),
             &Requester::Agent("agent-2".into()),
             second.clone(),
         )
@@ -589,7 +593,7 @@ async fn a_started_launch_is_not_placed() {
     let directory = target_directory(&second);
     let refused = crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, &directory),
+        placement(&second, &id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -612,7 +616,7 @@ async fn a_target_that_cannot_make_the_room_leaves_the_launch_held() {
     let directory = target_directory(&second);
     let failed = crate::room_exec::run_on_kernel(
         &home,
-        placement(&second, &id, &directory),
+        placement(&second, &id, Some(&directory)),
         &Requester::Agent("agent-1".into()),
         second.clone(),
     )
@@ -651,7 +655,7 @@ async fn an_unreachable_kernel_is_a_typed_refusal_and_the_launch_stays_held() {
         Placement {
             session_id: "room",
             exec_id: &id,
-            directory: "/",
+            directory: Some("/"),
             origin_kernel: ORIGIN_NAME,
         },
         &Requester::Person,
@@ -664,4 +668,108 @@ async fn an_unreachable_kernel_is_a_typed_refusal_and_the_launch_stays_held() {
         home.list("room")[0].state,
         ExecState::Queued { .. }
     ));
+}
+
+impl SecondKernel {
+    async fn snapshot(&self) -> crate::local::WaitingRoomPublicSnapshot {
+        let request = LocalDaemonRequest::GetWaitingRoomPublicSnapshot(
+            crate::local::GetWaitingRoomPublicSnapshotRequest,
+        );
+        let answer = self
+            .dispatch(format!("probe:{}", rand::random::<u64>()), &request)
+            .await
+            .unwrap();
+        match serde_json::from_value(answer).unwrap() {
+            LocalDaemonResponse::WaitingRoomPublicSnapshot { snapshot } => snapshot,
+            other => panic!("not a snapshot: {other:?}"),
+        }
+    }
+}
+
+// Without a directory the Room is made where the target kernel itself would make one, not in
+// the home Room's path, which may not exist there.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_launch_placed_without_a_directory_gets_the_targets_own_default_room() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "exit 4", None);
+    queued(&home, &id).await;
+    let default = second
+        .snapshot()
+        .await
+        .launch_target
+        .expect("the target has a default Room directory");
+    assert_ne!(default.workspace_id, home_dir.path().display().to_string());
+
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, None),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .unwrap();
+
+    let (_, _, outcome) = collect(&home, &id).await;
+    assert_eq!(outcome, ExecOutcome::Exited { code: 4 });
+    let made = second
+        .snapshot()
+        .await
+        .sessions
+        .into_iter()
+        .filter(|session| session.id != second.session_id)
+        .collect::<Vec<_>>();
+    assert_eq!(made.len(), 1, "one Room made for the launch");
+    assert_eq!(made[0].workspace_id, default.workspace_id);
+    assert_eq!(made[0].worktree_id, default.worktree_id);
+}
+
+// `--directory` still decides, and then the target is not asked for a default.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_given_directory_is_used_and_the_target_default_is_not_read() {
+    let second = SecondKernel::new(&[]);
+    let home_dir = TempDir::new();
+    let home = limited(0, u64::MAX / 2);
+    let id = hold(&home, home_dir.path(), "exit 0", None);
+    queued(&home, &id).await;
+    let directory = target_directory(&second);
+    crate::room_exec::run_on_kernel(
+        &home,
+        placement(&second, &id, Some(&directory)),
+        &Requester::Person,
+        second.clone(),
+    )
+    .await
+    .unwrap();
+    let sent = second.sent.lock().unwrap().clone();
+    assert!(sent.iter().all(|id| !id.ends_with(":target")), "{sent:?}");
+}
+
+#[test]
+fn a_room_without_a_directory_needs_a_default_on_the_target() {
+    use crate::room_exec::gateway_placement::room_location;
+    let target = crate::local::WaitingRoomLaunchTarget {
+        repository_state: None,
+        workspace_id: "/srv/work".into(),
+        worktree_id: "/srv/work/wt".into(),
+        workspace_label: None,
+        directory: None,
+        worktree_label: None,
+    };
+    assert_eq!(
+        room_location(None, Some(target.clone())).unwrap(),
+        ("/srv/work".to_string(), "/srv/work/wt".to_string())
+    );
+    assert_eq!(
+        room_location(Some("/given"), Some(target)).unwrap(),
+        ("/given".to_string(), "/given".to_string())
+    );
+    assert_eq!(
+        room_location(Some("/given"), None).unwrap(),
+        ("/given".to_string(), "/given".to_string())
+    );
+    let refused = room_location(None, None).unwrap_err();
+    assert_eq!(code_of(&refused), "exec_target_no_directory");
+    assert!(refused.to_string().contains("--directory"), "{refused}");
 }

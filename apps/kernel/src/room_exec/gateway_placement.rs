@@ -118,8 +118,9 @@ impl GatewayExecPlacement {
 pub(crate) async fn create_target_room(
     grant: &dyn GrantedSend,
     exec_id: &str,
-    directory: &str,
+    directory: Option<&str>,
 ) -> Result<String, DaemonError> {
+    let directory = directory.unwrap_or_default();
     let mut create = crate::session::CreateSessionRequest::new(directory, directory);
     create.no_subscribe = true;
     let request = LocalDaemonRequest::CreateSession(create);
@@ -136,6 +137,14 @@ pub(crate) async fn create_target_room(
             "the other kernel answered with something that is not a new Room",
         )),
     }
+}
+
+/// The workspace and worktree of a Room made without a directory.
+pub(crate) fn room_location(
+    _directory: Option<&str>,
+    _launch_target: Option<crate::local::WaitingRoomLaunchTarget>,
+) -> Result<(String, String), DaemonError> {
+    Err(error("exec_target_no_directory", "not implemented"))
 }
 
 fn unexpected() -> DaemonError {

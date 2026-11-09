@@ -30,8 +30,8 @@ impl Requester {
 pub(crate) struct Placement<'a> {
     pub(crate) session_id: &'a str,
     pub(crate) exec_id: &'a str,
-    /// The Room directory on the other kernel.
-    pub(crate) directory: &'a str,
+    /// The Room directory on the other kernel; none means that kernel's own default.
+    pub(crate) directory: Option<&'a str>,
     /// What the other kernel calls this one: it labels the launch's process with it.
     pub(crate) origin_kernel: &'a str,
 }
