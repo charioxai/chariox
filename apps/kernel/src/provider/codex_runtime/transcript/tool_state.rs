@@ -22,6 +22,72 @@ pub(in crate::provider::codex_runtime) struct CodexToolTranscriptState {
     pub(in crate::provider::codex_runtime) last_emitted: Option<String>,
     /// What a completed `view_image` call showed, read once when the call completes.
     pub(in crate::provider::codex_runtime) pictures: Option<CodexToolPictures>,
+    /// When the kernel first saw the call.
+    pub(in crate::provider::codex_runtime) started_at_ms: u64,
+    /// A command the agent left running past its call: polled through its
+    /// terminal, or still in progress when its turn completed.
+    pub(in crate::provider::codex_runtime) background: bool,
+    pub(in crate::provider::codex_runtime) finished_at_ms: Option<u64>,
+}
+
+impl CodexToolTranscriptState {
+    pub(in crate::provider::codex_runtime) fn new(item: Value, now_ms: u64) -> Self {
+        Self {
+            item,
+            streamed_output: String::new(),
+            pending_output_bytes: Vec::new(),
+            output_stream: None,
+            progress_messages: Vec::new(),
+            last_emitted: None,
+            pictures: None,
+            started_at_ms: now_ms,
+            background: false,
+            finished_at_ms: None,
+        }
+    }
+
+    fn running_command(&self) -> bool {
+        self.item.get("type").and_then(Value::as_str) == Some("commandExecution")
+            && self.item.get("status").and_then(Value::as_str) == Some("inProgress")
+    }
+}
+
+/// The command keeps running after the agent moved on: from now on its call
+/// shows as a background command until Codex reports its exit.
+pub(in crate::provider::codex_runtime) fn mark_background_command(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+) -> Option<CodexOutputChunk> {
+    let entry = tool_items.get_mut(item_id)?;
+    if entry.background || !entry.running_command() {
+        return None;
+    }
+    entry.background = true;
+    render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
+}
+
+/// Every command still running when its turn completed is a background one.
+pub(in crate::provider::codex_runtime) fn mark_running_commands_background(
+    tool_items: &mut BTreeMap<String, CodexToolTranscriptState>,
+) -> Vec<CodexOutputChunk> {
+    let running = tool_items
+        .iter()
+        .filter(|(_, entry)| !entry.background && entry.running_command())
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    running
+        .iter()
+        .filter_map(|id| mark_background_command(tool_items, id))
+        .collect()
+}
+
+pub(in crate::provider::codex_runtime) fn is_running_background_command(
+    tool_items: &BTreeMap<String, CodexToolTranscriptState>,
+    item_id: &str,
+) -> bool {
+    tool_items
+        .get(item_id)
+        .is_some_and(|entry| entry.background && entry.finished_at_ms.is_none())
 }
 
 /// The pictures a call carries to the transcript, and how many were too large to keep.
@@ -97,6 +163,7 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     if !is_codex_tool_item(item) {
         return None;
     }
+    let now_ms = crate::session::unix_epoch_ms();
     let item_id = item.get("id").and_then(Value::as_str)?.to_string();
     let mut item = item.clone();
     if matches!(
@@ -112,16 +179,13 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     let item = &item;
     let entry = tool_items
         .entry(item_id.clone())
-        .or_insert_with(|| CodexToolTranscriptState {
-            item: item.clone(),
-            streamed_output: String::new(),
-            pending_output_bytes: Vec::new(),
-            output_stream: None,
-            progress_messages: Vec::new(),
-            last_emitted: None,
-            pictures: None,
-        });
+        .or_insert_with(|| CodexToolTranscriptState::new(item.clone(), now_ms));
     entry.item = item.clone();
+    // Only the command's own end finishes it: a completed turn that still
+    // lists the command in progress leaves it running.
+    if entry.background && entry.finished_at_ms.is_none() && command_ended(item) {
+        entry.finished_at_ms = Some(now_ms);
+    }
     if entry.pictures.is_none() && is_completed_image_view(item) {
         entry.pictures = Some(viewed_pictures(item, workspace_root));
     }
@@ -142,6 +206,13 @@ pub(in crate::provider::codex_runtime) fn sync_tool_item_with_manifest(
     }
     super::output_window::trim(&mut entry.streamed_output);
     render_tool_chunk_if_changed(&item_id, entry, remote_extension_manifest)
+}
+
+fn command_ended(item: &Value) -> bool {
+    matches!(
+        item.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "declined" | "cancelled" | "canceled" | "interrupted")
+    )
 }
 
 fn is_completed_image_view(item: &Value) -> bool {
@@ -220,17 +291,12 @@ fn append_output_delta_from_stream(
     if delta.is_empty() {
         return None;
     }
-    let entry = tool_items
-        .entry(item_id.to_string())
-        .or_insert_with(|| CodexToolTranscriptState {
-            item: placeholder_tool_item(item_id, item_type),
-            streamed_output: String::new(),
-            pending_output_bytes: Vec::new(),
-            output_stream: None,
-            progress_messages: Vec::new(),
-            last_emitted: None,
-            pictures: None,
-        });
+    let entry = tool_items.entry(item_id.to_string()).or_insert_with(|| {
+        CodexToolTranscriptState::new(
+            placeholder_tool_item(item_id, item_type),
+            crate::session::unix_epoch_ms(),
+        )
+    });
     // MP-08 / MP-10: app-server can emit both legacy and modern deltas for
     // one call. Keep the first live stream, avoiding duplicated bytes while
     // preserving the prefix delivered before the modern stream starts.
@@ -283,17 +349,12 @@ pub(in crate::provider::codex_runtime) fn append_tool_progress(
     if message.trim().is_empty() {
         return None;
     }
-    let entry = tool_items
-        .entry(item_id.to_string())
-        .or_insert_with(|| CodexToolTranscriptState {
-            item: placeholder_tool_item(item_id, "mcpToolCall"),
-            streamed_output: String::new(),
-            pending_output_bytes: Vec::new(),
-            output_stream: None,
-            progress_messages: Vec::new(),
-            last_emitted: None,
-            pictures: None,
-        });
+    let entry = tool_items.entry(item_id.to_string()).or_insert_with(|| {
+        CodexToolTranscriptState::new(
+            placeholder_tool_item(item_id, "mcpToolCall"),
+            crate::session::unix_epoch_ms(),
+        )
+    });
     entry.progress_messages.push(message.trim().to_string());
     render_tool_chunk_if_changed(item_id, entry, &RemoteExtensionManifest::default())
 }
@@ -586,5 +647,49 @@ mod view_image_tests {
         std::fs::write(scratch.workspace().join("fits.png"), &large).unwrap();
         let fits = completed_view(&scratch.workspace().join("fits.png"), &scratch.workspace());
         assert_eq!(fits["images"].as_array().map(Vec::len), Some(1));
+    }
+}
+
+#[cfg(test)]
+mod background_command_tests {
+    use super::*;
+
+    #[test]
+    fn a_background_command_is_finished_only_by_its_own_exit_never_by_a_completed_turn() {
+        let manifest = RemoteExtensionManifest::default();
+        let running = json!({"id":"bg", "type":"commandExecution", "status":"inProgress", "command":"sleep 40"});
+        let mut tools = BTreeMap::new();
+        sync_tool_item_with_manifest(
+            &mut tools,
+            &running,
+            CodexItemLifecycle::Started,
+            &manifest,
+            None,
+        );
+        mark_background_command(&mut tools, "bg").unwrap();
+        // A completed turn's item list, or its read-back, still holds the running command.
+        sync_tool_item_with_manifest(
+            &mut tools,
+            &running,
+            CodexItemLifecycle::Completed,
+            &manifest,
+            None,
+        );
+        assert!(tools["bg"].finished_at_ms.is_none());
+        assert!(is_running_background_command(&tools, "bg"));
+        // Its own exit finishes it.
+        let exited =
+            json!({"id":"bg", "type":"commandExecution", "status":"completed", "exitCode":0});
+        let chunk = sync_tool_item_with_manifest(
+            &mut tools,
+            &exited,
+            CodexItemLifecycle::Completed,
+            &manifest,
+            None,
+        )
+        .unwrap();
+        let rendered: Value = serde_json::from_slice(&chunk.bytes).unwrap();
+        assert!(rendered["finished_at_ms"].is_u64(), "{rendered}");
+        assert!(!is_running_background_command(&tools, "bg"));
     }
 }

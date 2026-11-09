@@ -14,6 +14,7 @@ use crate::terminal::TerminalOutputKind;
 use super::transcript::{
     append_legacy_tool_output_delta, append_text_delta, append_tool_output_delta,
     append_tool_progress, codex_exec_command_item, decode_codex_output_delta_chunk,
+    is_running_background_command, mark_background_command, mark_running_commands_background,
     normalize_codex_item_type, sync_completed_text_item, sync_tool_item_with_manifest,
     text_from_content_value, CodexItemLifecycle, CodexTextTranscriptState,
     CodexToolTranscriptState,
@@ -87,6 +88,20 @@ pub(super) fn apply_notification_with_manifest(
             // A successful interrupt settles the old prompt before the next
             // FIFO submit. Late output must not inherit that prompt's retry.
             if active_turn_id.as_deref() != Some(turn_id.as_str()) {
+                // A background command outlives its turn; its exit still
+                // settles its own call.
+                if let CodexNotification::ItemCompleted { item } = *notification {
+                    let id = item.get("id").and_then(Value::as_str).unwrap_or_default();
+                    if is_running_background_command(tool_items, id) {
+                        chunks.extend(sync_tool_item_with_manifest(
+                            tool_items,
+                            &item,
+                            CodexItemLifecycle::Completed,
+                            remote_extension_manifest,
+                            workspace_root,
+                        ));
+                    }
+                }
                 return;
             }
             apply_notification_with_manifest(
@@ -228,6 +243,10 @@ pub(super) fn apply_notification_with_manifest(
                 chunks.push(chunk);
             }
         }
+        CodexNotification::TerminalInteraction { item_id } => {
+            turn_tracker.note_activity();
+            chunks.extend(mark_background_command(tool_items, &item_id));
+        }
         CodexNotification::ExecCommandOutputDelta { call_id, chunk } => {
             turn_tracker.note_activity();
             let delta = decode_codex_output_delta_chunk(&chunk);
@@ -336,6 +355,7 @@ pub(super) fn apply_notification_with_manifest(
                     chunks.push(chunk);
                 }
             }
+            chunks.extend(mark_running_commands_background(tool_items));
             crate::logging::debug_with_fields(
                 "daemon.provider.codex",
                 "codex turn completion candidate accepted",

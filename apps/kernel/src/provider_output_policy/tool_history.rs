@@ -8,9 +8,13 @@ use super::output_bounds::bounded_terminal_output_bytes;
 
 const PROVIDER_TOOL_HISTORY_GATE_LIMIT: usize = 4096;
 
+/// What a stored tool row must keep current: its status, and for a command
+/// left running in the background, that it is one and whether it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderToolHistoryState {
     status: String,
+    background: bool,
+    finished: bool,
 }
 
 pub(crate) fn should_persist_provider_tool_history(entry: &SessionHistoryEntry) -> bool {
@@ -83,8 +87,16 @@ fn provider_tool_history_key(entry: &SessionHistoryEntry) -> Option<String> {
 }
 
 fn provider_tool_history_state(entry: &SessionHistoryEntry) -> Option<ProviderToolHistoryState> {
-    provider_tool_json_string_field(&entry.text, "status")
-        .map(|status| ProviderToolHistoryState { status })
+    let record = serde_json::from_str::<Value>(&entry.text).ok()?;
+    let status = record
+        .get("status")?
+        .as_str()
+        .filter(|value| !value.trim().is_empty())?;
+    Some(ProviderToolHistoryState {
+        status: status.to_string(),
+        background: record.get("background") == Some(&Value::Bool(true)),
+        finished: record.get("finished_at_ms").is_some_and(Value::is_u64),
+    })
 }
 
 fn provider_tool_json_string_field(text: &str, field: &str) -> Option<String> {
@@ -163,6 +175,50 @@ mod tests {
         assert!(should_persist_provider_tool_history(&second));
         assert!(!should_persist_provider_tool_history(&first));
         assert!(!should_persist_provider_tool_history(&second));
+    }
+
+    #[test]
+    fn provider_tool_history_persists_a_background_command_becoming_one_and_its_end() {
+        let lifecycle = |status: &str, background: Option<bool>, finished_at_ms: Option<u64>| {
+            let mut entry = provider_tool_entry("background", status);
+            let mut record: Value = serde_json::from_str(&entry.text).unwrap();
+            if let Some(background) = background {
+                record["background"] = serde_json::json!(background);
+                record["finished_at_ms"] = serde_json::json!(finished_at_ms);
+            }
+            entry.text = record.to_string();
+            entry
+        };
+        // Codex: still running when its turn ends, then its exit.
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "running", None, None
+        )));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "running",
+            Some(true),
+            None
+        )));
+        assert!(!should_persist_provider_tool_history(&lifecycle(
+            "running",
+            Some(true),
+            None
+        )));
+        // Claude: the launch completed earlier; only its end changes.
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            None
+        )));
+        assert!(should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            Some(9)
+        )));
+        assert!(!should_persist_provider_tool_history(&lifecycle(
+            "completed",
+            Some(true),
+            Some(9)
+        )));
     }
 
     fn provider_tool_entry(test_id: &str, status: &str) -> SessionHistoryEntry {

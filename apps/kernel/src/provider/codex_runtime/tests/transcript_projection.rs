@@ -548,6 +548,9 @@ fn mcp_tool_progress_is_projected_into_tool_text() {
             progress_messages: vec!["checking schema".to_string()],
             last_emitted: None,
             pictures: None,
+            started_at_ms: 0,
+            background: false,
+            finished_at_ms: None,
         },
         &crate::extension::RemoteExtensionManifest::default(),
     )
@@ -594,6 +597,9 @@ fn home_proxy_mcp_tool_is_projected_into_tool_placement() {
             progress_messages: Vec::new(),
             last_emitted: None,
             pictures: None,
+            started_at_ms: 0,
+            background: false,
+            finished_at_ms: None,
         },
         &manifest,
     )
@@ -694,4 +700,251 @@ fn a_completed_view_image_notification_carries_the_picture_of_the_agents_working
         "without a working directory nothing is read"
     );
     std::fs::remove_dir_all(workspace).unwrap();
+}
+
+/// One Codex app-server connection's projection state, fed wire notifications
+/// in the codex-cli 0.159.3 app-server v2 shapes.
+#[derive(Default)]
+struct CodexWire {
+    active_turn_id: Option<String>,
+    turn_tracker: CodexTurnTracker,
+    text_items:
+        BTreeMap<String, crate::provider::codex_runtime::transcript::CodexTextTranscriptState>,
+    tool_items: BTreeMap<String, CodexToolTranscriptState>,
+}
+
+impl CodexWire {
+    /// The tool snapshots one notification produced, by call id.
+    fn receive(&mut self, method: &str, params: Value) -> Vec<(String, Value)> {
+        let mut chunks = Vec::new();
+        apply_notification(
+            crate::provider::codex_client::fixture_codex_notification(method, params),
+            &mut self.active_turn_id,
+            &mut self.turn_tracker,
+            &mut self.text_items,
+            &mut self.tool_items,
+            &mut chunks,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            &mut false,
+            &mut None,
+            &mut None,
+        );
+        chunks
+            .into_iter()
+            .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderTool)
+            .map(|chunk| {
+                (
+                    chunk.merge_key.unwrap_or_default(),
+                    serde_json::from_slice(&chunk.bytes).unwrap(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn command_item(id: &str, command: &str, status: &str, exit_code: Option<i64>) -> Value {
+    json!({
+        "type": "commandExecution", "id": id, "command": command, "cwd": "/workspace",
+        "processId": format!("pty-{id}"), "source": "agent", "status": status,
+        "commandActions": [{"type": "unknown", "command": command}],
+        "aggregatedOutput": exit_code.map(|_| "done\n"), "exitCode": exit_code,
+        "durationMs": exit_code.map(|_| 40_012),
+    })
+}
+
+fn item_event(turn_id: &str, item: Value) -> Value {
+    json!({"threadId": "thread-1", "turnId": turn_id, "item": item})
+}
+
+fn turn_completed(turn_id: &str) -> Value {
+    json!({"threadId": "thread-1", "turn": {"id": turn_id, "status": "completed", "items": [], "error": null}})
+}
+
+#[test]
+fn codex_commands_left_running_settle_on_their_own_exit_after_newer_turns() {
+    let mut wire = CodexWire {
+        active_turn_id: Some("turn-1".to_string()),
+        ..Default::default()
+    };
+    let before = crate::session::unix_epoch_ms();
+    // A foreground command: started time only.
+    let started = wire.receive(
+        "item/started",
+        item_event("turn-1", command_item("call_fg", "ls", "inProgress", None)),
+    );
+    let completed = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_fg", "ls", "completed", Some(0)),
+        ),
+    );
+    assert_eq!(completed[0].1["status"], "completed");
+    assert_eq!(
+        completed[0].1["started_at_ms"],
+        started[0].1["started_at_ms"]
+    );
+    let foreground_start = started[0].1["started_at_ms"].as_u64().unwrap();
+    assert!(foreground_start >= before, "{}", started[0].1);
+    for (_, snapshot) in started.iter().chain(&completed) {
+        assert!(snapshot.get("background").is_none(), "{snapshot}");
+        assert!(snapshot.get("finished_at_ms").is_none(), "{snapshot}");
+    }
+
+    // Two commands the agent leaves running; one it polls through its terminal.
+    let polled = wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_poll", "npm run dev", "inProgress", None),
+        ),
+    );
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
+    let interaction = wire.receive(
+        "item/commandExecution/terminalInteraction",
+        json!({"threadId": "thread-1", "turnId": "turn-1", "itemId": "call_poll", "processId": "pty-call_poll", "stdin": ""}),
+    );
+    assert_eq!(interaction.len(), 1);
+    assert_eq!(interaction[0].0, "call_poll");
+    assert_eq!(interaction[0].1["background"], true);
+    assert!(interaction[0].1["finished_at_ms"].is_null());
+    assert_eq!(
+        interaction[0].1["started_at_ms"],
+        polled[0].1["started_at_ms"]
+    );
+
+    // The turn completes with `sleep 40` still running: it becomes background too.
+    let settled = wire.receive("turn/completed", turn_completed("turn-1"));
+    assert_eq!(settled.len(), 1, "{settled:?}");
+    assert_eq!(settled[0].0, "call_sleep");
+    assert_eq!(settled[0].1["status"], "running");
+    assert_eq!(settled[0].1["background"], true);
+    assert!(settled[0].1["finished_at_ms"].is_null());
+
+    // A newer turn runs; the old turn's exits still settle their own calls.
+    wire.active_turn_id = Some("turn-2".to_string());
+    wire.receive("turn/started", json!({"threadId": "thread-1", "turn": {"id": "turn-2", "status": "inProgress", "items": []}}));
+    let exited = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "completed", Some(0)),
+        ),
+    );
+    assert_eq!(exited.len(), 1);
+    assert_eq!(exited[0].0, "call_sleep");
+    assert_eq!(exited[0].1["status"], "completed");
+    assert_eq!(exited[0].1["background"], true);
+    assert_eq!(exited[0].1["started_at_ms"], settled[0].1["started_at_ms"]);
+    assert!(exited[0].1["finished_at_ms"].as_u64().unwrap() >= foreground_start);
+    // Killed by the agent: the exit reports failure and still settles.
+    let killed = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_poll", "npm run dev", "failed", Some(143)),
+        ),
+    );
+    assert_eq!(killed[0].1["status"], "error");
+    assert!(killed[0].1["finished_at_ms"].is_u64());
+    // An unrelated old-turn item is still ignored once its turn is over.
+    assert!(wire
+        .receive(
+            "item/completed",
+            item_event(
+                "turn-1",
+                command_item("call_other", "true", "completed", Some(0))
+            )
+        )
+        .is_empty());
+}
+
+#[test]
+fn codex_turn_completion_holding_a_running_background_command_keeps_it_running() {
+    let mut wire = CodexWire {
+        active_turn_id: Some("turn-1".to_string()),
+        ..Default::default()
+    };
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
+    wire.receive(
+        "item/commandExecution/terminalInteraction",
+        json!({"threadId": "thread-1", "turnId": "turn-1", "itemId": "call_sleep", "processId": "pty-call_sleep", "stdin": ""}),
+    );
+    // The completed turn lists the command still in progress.
+    let settled = wire.receive(
+        "turn/completed",
+        json!({"threadId": "thread-1", "turn": {"id": "turn-1", "status": "completed", "error": null,
+            "items": [command_item("call_sleep", "sleep 40", "inProgress", None)]}}),
+    );
+    for (_, snapshot) in &settled {
+        assert!(snapshot["finished_at_ms"].is_null(), "{snapshot}");
+        assert_eq!(snapshot["status"], "running", "{snapshot}");
+    }
+    wire.active_turn_id = Some("turn-2".to_string());
+    let exited = wire.receive(
+        "item/completed",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "completed", Some(0)),
+        ),
+    );
+    assert_eq!(exited.len(), 1, "the late exit must still settle its call");
+    assert_eq!(exited[0].1["status"], "completed");
+    assert!(exited[0].1["finished_at_ms"].is_u64());
+}
+
+#[test]
+fn codex_background_lifecycle_matches_the_protocol_snapshot() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../local/api/tests/protocol_shapes/provider-tool-background-lifecycle.json"
+    ))
+    .unwrap();
+    let mut wire = CodexWire {
+        active_turn_id: Some("turn-1".to_string()),
+        ..Default::default()
+    };
+    wire.receive(
+        "item/started",
+        item_event(
+            "turn-1",
+            command_item("call_sleep", "sleep 40", "inProgress", None),
+        ),
+    );
+    let mut running = wire
+        .receive("turn/completed", turn_completed("turn-1"))
+        .remove(0)
+        .1;
+    wire.active_turn_id = None;
+    let mut finished = wire
+        .receive(
+            "item/completed",
+            item_event(
+                "turn-1",
+                command_item("call_sleep", "sleep 40", "completed", Some(0)),
+            ),
+        )
+        .remove(0)
+        .1;
+    // The kernel clock stamps these; pin them to the snapshot's values.
+    assert!(finished["finished_at_ms"].as_u64() >= running["started_at_ms"].as_u64());
+    for snapshot in [&mut running, &mut finished] {
+        assert!(snapshot["started_at_ms"].is_u64());
+        snapshot["started_at_ms"] = json!(1_793_700_000_000_u64);
+    }
+    finished["finished_at_ms"] = json!(1_793_700_040_000_u64);
+    assert_eq!(running, fixture["codex_background_running"]);
+    assert_eq!(finished, fixture["codex_background_finished"]);
 }

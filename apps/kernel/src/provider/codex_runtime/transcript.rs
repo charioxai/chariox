@@ -14,7 +14,8 @@ pub(super) use text::{
 };
 pub(super) use tool_state::{
     append_legacy_tool_output_delta, append_tool_output_delta, append_tool_progress,
-    codex_exec_command_item, decode_codex_output_delta_chunk, sync_tool_item_with_manifest,
+    codex_exec_command_item, decode_codex_output_delta_chunk, is_running_background_command,
+    mark_background_command, mark_running_commands_background, sync_tool_item_with_manifest,
     CodexItemLifecycle, CodexToolTranscriptState,
 };
 #[cfg(test)]

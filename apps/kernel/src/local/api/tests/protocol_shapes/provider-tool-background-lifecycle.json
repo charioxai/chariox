@@ -1,0 +1,71 @@
+{
+  "local_protocol": 1001,
+  "peer_protocol": 440,
+  "claude_foreground_completed": {
+    "tool": "Read",
+    "status": "completed",
+    "input": {
+      "file_path": "/work/notes.txt"
+    },
+    "id": "toolu_fg",
+    "started_at_ms": 1793700000000,
+    "output": "notes"
+  },
+  "claude_background_launched": {
+    "tool": "Bash",
+    "status": "completed",
+    "input": {
+      "command": "sleep 40",
+      "description": "Sleep in the background",
+      "run_in_background": true
+    },
+    "id": "toolu_bg",
+    "started_at_ms": 1793700000000,
+    "background": true,
+    "finished_at_ms": null,
+    "output": "Command running in background with ID: b1. Output is being written to: /tmp/claude-0/tasks/b1.output. You will be notified when it completes. To check interim output, use Read on that file path."
+  },
+  "claude_background_finished": {
+    "tool": "Bash",
+    "status": "completed",
+    "input": {
+      "command": "sleep 40",
+      "description": "Sleep in the background",
+      "run_in_background": true
+    },
+    "id": "toolu_bg",
+    "started_at_ms": 1793700000000,
+    "background": true,
+    "finished_at_ms": 1793700040000,
+    "output": "Command running in background with ID: b1. Output is being written to: /tmp/claude-0/tasks/b1.output. You will be notified when it completes. To check interim output, use Read on that file path."
+  },
+  "codex_background_running": {
+    "id": "call_sleep",
+    "tool": "bash",
+    "status": "running",
+    "description": "cwd /workspace",
+    "input": {
+      "command": "sleep 40",
+      "cwd": "/workspace"
+    },
+    "raw": "process_id: pty-call_sleep",
+    "started_at_ms": 1793700000000,
+    "background": true,
+    "finished_at_ms": null
+  },
+  "codex_background_finished": {
+    "id": "call_sleep",
+    "tool": "bash",
+    "status": "completed",
+    "description": "cwd /workspace",
+    "input": {
+      "command": "sleep 40",
+      "cwd": "/workspace"
+    },
+    "output": "done",
+    "raw": "exit_code: 0\nduration_ms: 40012\nprocess_id: pty-call_sleep",
+    "started_at_ms": 1793700000000,
+    "background": true,
+    "finished_at_ms": 1793700040000
+  }
+}

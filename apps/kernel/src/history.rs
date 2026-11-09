@@ -227,6 +227,35 @@ pub struct HistoryEventQuery {
 }
 
 impl HistoryEvent {
+    /// Takes `origin`'s turn, prompt, workflow and workspace attribution.
+    fn keep_attribution_of(&mut self, origin: &HistoryEvent) {
+        self.workspace_id.clone_from(&origin.workspace_id);
+        self.agent_alias.clone_from(&origin.agent_alias);
+        self.turn_id.clone_from(&origin.turn_id);
+        self.prompt_id.clone_from(&origin.prompt_id);
+        self.workflow_id.clone_from(&origin.workflow_id);
+        self.workflow_run_id.clone_from(&origin.workflow_run_id);
+        self.workflow_node_id.clone_from(&origin.workflow_node_id);
+        self.machine_id.clone_from(&origin.machine_id);
+        self.repo_root.clone_from(&origin.repo_root);
+        self.worktree_path.clone_from(&origin.worktree_path);
+        self.caused_by_event_id
+            .clone_from(&origin.caused_by_event_id);
+        for key in ["prompt_origin", "source_attachment_id"] {
+            match origin.metadata.get(key) {
+                Some(value) => self.metadata.insert(key.to_string(), value.clone()),
+                None => self.metadata.remove(key),
+            };
+        }
+        self.candidate_agent_ids
+            .clone_from(&origin.candidate_agent_ids);
+        self.candidate_prompt_ids
+            .clone_from(&origin.candidate_prompt_ids);
+        self.candidate_turn_ids
+            .clone_from(&origin.candidate_turn_ids);
+        self.attribution_confidence = origin.attribution_confidence;
+    }
+
     pub fn transcript(
         sequence: u64,
         entry: &SessionHistoryEntry,
@@ -842,6 +871,32 @@ impl OperationalHistoryStore {
         entry: &SessionHistoryEntry,
         context: HistoryEventTurnContext,
     ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.replace_transcript_row(session_id, agent_id, merge_key, entry, context, false)
+    }
+
+    /// Replaces the newest row of `merge_key` in place: the row keeps its
+    /// sequence and attribution, so it stays in the turn, prompt and workflow
+    /// it was written in.
+    pub fn replace_latest_transcript_by_merge_key(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
+        self.replace_transcript_row(session_id, agent_id, merge_key, entry, context, true)
+    }
+
+    fn replace_transcript_row(
+        &self,
+        session_id: &str,
+        agent_id: Option<&str>,
+        merge_key: &str,
+        entry: &SessionHistoryEntry,
+        context: HistoryEventTurnContext,
+        newest: bool,
+    ) -> Result<Option<HistoryEvent>, DaemonError> {
         if !self.capture_enabled() {
             return Ok(None);
         }
@@ -858,11 +913,19 @@ impl OperationalHistoryStore {
                 })?;
         let existing = connection
             .query_row(
-                "SELECT event_json
-                 FROM history_events
-                 WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
-                 ORDER BY sequence ASC
-                 LIMIT 1",
+                if newest {
+                    "SELECT event_json
+                     FROM history_events
+                     WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+                     ORDER BY sequence DESC
+                     LIMIT 1"
+                } else {
+                    "SELECT event_json
+                     FROM history_events
+                     WHERE session_id = ?1 AND agent_id IS ?2 AND merge_key = ?3
+                     ORDER BY sequence ASC
+                     LIMIT 1"
+                },
                 params![session_id, agent_id, merge_key],
                 |row| row.get::<_, String>(0),
             )
@@ -888,6 +951,9 @@ impl OperationalHistoryStore {
         let mut replacement = HistoryEvent::transcript(existing.sequence, entry, context);
         replacement.event_id = existing.event_id.clone();
         replacement.sequence = existing.sequence;
+        if newest {
+            replacement.keep_attribution_of(&existing);
+        }
         let event_json = serde_json::to_string(&replacement).map_err(|error| {
             DaemonError::SessionHistoryFailed {
                 session_id: replacement.session_id.clone(),

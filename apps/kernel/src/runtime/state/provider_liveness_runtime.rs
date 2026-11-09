@@ -58,6 +58,8 @@ impl KernelRuntimeState {
                 .connector_adapter_processes
                 .shutdown_run(provider_run_id)
                 .await;
+            self.end_background_tools_of_exited_run(&exit.ended_run)
+                .await;
             let terminal_diagnostic = exit.ended_run.terminal_diagnostic().map(str::to_string);
             if let Some(diagnostic) = terminal_diagnostic.as_deref() {
                 if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
@@ -187,6 +189,8 @@ impl KernelRuntimeState {
             .connector_adapter_processes
             .shutdown_run(provider_run_id)
             .await;
+        self.end_background_tools_of_exited_run(&exit.ended_run)
+            .await;
         if let Some(diagnostic) = terminal_diagnostic.as_deref() {
             if owned.provider_run_has_active_prompt(session_id, &exit.ended_run)? {
                 let agent_id = exit.ended_run.agent_instance_id().ok_or_else(|| {
@@ -283,6 +287,23 @@ impl KernelRuntimeState {
             ),
         );
         Ok(true)
+    }
+
+    /// A provider process that ended took its background commands with it,
+    /// whether or not a prompt was still running: the settlement reads the
+    /// run's stored rows, so the queued ones go first.
+    async fn end_background_tools_of_exited_run(&self, run: &crate::provider::RuntimeProviderRun) {
+        match self.flush_provider_history(run.id()).await {
+            Ok(()) => self.owned.end_background_provider_tools_of_ended_run(run),
+            Err(error) => crate::logging::warn_with_fields(
+                "daemon.history",
+                "failed to flush history before ending background provider tools",
+                serde_json::json!({
+                    "provider_run_id": run.id(),
+                    "error": error.to_string(),
+                }),
+            ),
+        }
     }
 
     async fn settle_completed_claude_prompt_after_provider_exit(

@@ -549,6 +549,10 @@ impl KernelRuntimeState {
             .terminate_run_provider_only(session_id, provider_run_id)
         {
             let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+            // The settlement reads the run's tool rows, including queued ones.
+            if self.flush_provider_history(provider_run_id).await.is_ok() {
+                owned.end_background_provider_tools_of_ended_run(outcome.run());
+            }
             owned.provider_run_projection.update(outcome.into_run());
         }
         let (_, process_key) = self

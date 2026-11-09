@@ -261,6 +261,7 @@ impl KernelRuntimeOwnedState {
                 .terminate_run_provider_only(session_id, provider_run.id())?;
             self.clear_active_provider_run_session_pointer(session_id, outcome.run().id())?;
             let ended_run = outcome.into_run();
+            self.end_background_provider_tools_of_ended_run(&ended_run);
             terminated_run_ids.push(ended_run.id().to_string());
             self.provider_run_projection.update(ended_run.clone());
             self.clear_prompt_activity(ended_run.id());
@@ -387,6 +388,7 @@ impl KernelRuntimeOwnedState {
                 .provider_store
                 .terminate_run_provider_only(&session_id, &provider_run_id)?
                 .into_run();
+            self.end_background_provider_tools_of_ended_run(&ended);
             if self
                 .session_store
                 .get_session(&session_id)?
