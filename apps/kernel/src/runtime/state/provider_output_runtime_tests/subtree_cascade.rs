@@ -5,6 +5,8 @@ struct Tree {
     runtime: KernelRuntimeState,
     room: String,
     ids: std::collections::BTreeMap<&'static str, String>,
+    config: crate::config::DaemonConfig,
+    _worktree: crate::test_support::TestWorktree,
 }
 
 /// r -> {c1 -> {g}, c2}, all in one room.
@@ -12,7 +14,7 @@ async fn tree(label: &str) -> Tree {
     let worktree = crate::test_support::TestWorktree::new(label);
     let mut config = crate::config::DaemonConfig::for_tests();
     config.room_agent_tools = true;
-    let mut app = DaemonApp::bootstrap(config).unwrap();
+    let mut app = DaemonApp::bootstrap(config.clone()).unwrap();
     let (session, root) = crate::app::KernelSessionService::new(&mut app)
         .create_session(worktree.session_request())
         .unwrap();
@@ -33,7 +35,34 @@ async fn tree(label: &str) -> Tree {
     let room = session.id().to_owned();
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
-    Tree { runtime, room, ids }
+    Tree {
+        runtime,
+        room,
+        ids,
+        config,
+        _worktree: worktree,
+    }
+}
+
+/// SIGKILL and a new kernel on the same durable state.
+async fn restart(tree: Tree) -> Tree {
+    let Tree {
+        runtime,
+        room,
+        ids,
+        config,
+        _worktree,
+    } = tree;
+    drop(runtime);
+    let app = crate::test_support::bootstrap_after_test_owner_exit(config.clone()).await;
+    let runtime = owned_runtime_state(&Arc::new(Mutex::new(app))).await;
+    Tree {
+        runtime,
+        room,
+        ids,
+        config,
+        _worktree,
+    }
 }
 
 fn alive(tree: &Tree, name: &str) -> bool {
@@ -77,6 +106,26 @@ async fn a_cascade_cut_short_is_completed_by_the_recovery_pass() {
         assert!(!alive(&tree, name), "{name} survived the recovery pass");
     }
     assert_eq!(tree.runtime.end_orphaned_sub_agents().await, 0);
+}
+
+/// A destroy removes c1 from memory, then waits on its processes before its
+/// own record is durable, and the scheduler's pass runs meanwhile. A crash in
+/// that window must not bring c1 back without its sub-agent.
+#[tokio::test]
+async fn a_crash_while_a_parent_is_torn_down_leaves_no_half_deleted_subtree() {
+    let tree = tree("cascade-crash-teardown").await;
+    tree.runtime
+        .owned
+        .destroy_agent(&tree.ids["c1"], USER)
+        .unwrap();
+    tree.runtime.end_orphaned_sub_agents().await;
+    let tree = restart(tree).await;
+    tree.runtime.end_orphaned_sub_agents().await;
+    assert_eq!(
+        alive(&tree, "c1"),
+        alive(&tree, "g"),
+        "c1 and its sub-agent g must end together"
+    );
 }
 
 #[tokio::test]
