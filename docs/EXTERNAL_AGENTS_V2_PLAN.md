@@ -261,7 +261,7 @@ The extension can ship after the core; the core's popups cover the Mac TUI, and 
 
 **How.**
 - They are ordinary kernel API requests (`ReadKernelFile`, `WriteKernelFile`), not terminal traffic. There is no stat or listing request: the terminal does that. The gateway routes them to the target kernel like any other request with `kernel`; the target kernel does the file work and answers.
-- Chunked: each request moves one bounded chunk (offset, length) of at most 256 KiB, so it fits the relay's 768 KiB request bound after base64 (found in the r5 drill: 1 MiB chunks were refused). A large file is a sequence of chunks.
+- Chunked: each request moves one bounded chunk (offset, length) of at most 64 KiB, so a reply is about 117 KB on the wire and never holds the link for long (1 MiB chunks were refused by the relay's request bound; 256 KiB held an 8 Mbit/s link for half a second). A large file is a sequence of chunks, several in flight at once.
 - Resumable: a zero-length `ReadKernelFile` of `<path>.chariox-partial` returns the bytes an unfinished upload holds (`file_not_found` means start at 0); the client continues at that offset after an interruption (drill EA2-07 interrupts at 40 %). `files get` takes the size from a zero-length first read and resumes from its own local `.chariox-partial` only with `--sha256 HEX`. Without an expected hash it discards any partial and starts from zero. A hash mismatch deletes the partial before failing, so a later retry starts fresh.
 - Verified: the final sha256 is compared by the receiving kernel; a mismatch is a typed error and the partial file is never presented as complete.
 - Capped: 2 GiB per file; a larger file is refused with a typed error naming the cap.
